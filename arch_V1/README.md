@@ -32,25 +32,27 @@ A research report, audit snapshot, archived plan, source repository, test result
 | End-to-end flows | 03-FLOWS.md |
 | Durable/ephemeral events and recovery | 04-STATE-EVENTS.md |
 | Threat model and security policy | 05-SECURITY.md |
-| Delivery dependency order | 10-DELIVERY.md |
+| Delivery dependency order; §10.18 priorities; §10.19 product excellence bundle | 10-DELIVERY.md |
 | Current state machines and terminal criteria | 11-LIFECYCLE.md |
 | Canonical schema registry and ownership | 12-DOMAIN-SCHEMAS.md |
 | Process composition and IPC | 13-COMPOSITION-IPC.md |
 | Guard, EffectService, ExecutionHost, sandboxing | 14-EFFECTS-EXECUTION-SECURITY.md |
 | Direct/managed runtime, context, providers, recovery | 15-RUNTIME-EXECUTION.md |
-| UI, ActionDescriptor, settings, provider/model UX | 16-UX-SETTINGS-ECOSYSTEM.md |
+| UI, ActionDescriptor, settings, provider/model UX; §16.21 session layout | 16-UX-SETTINGS-ECOSYSTEM.md |
 | Decisions and unresolved capability gates | 17-GOVERNANCE-DECISIONS.md |
 | Storage, telemetry, packaging, release | 18-OPERATIONS-RELEASE.md |
 | Existing OpenCode/local source integration map | 20-OPENCODE-INTEGRATION-LLD.md |
 | Healing, permissions, bounded worktree pool | 21-HEALING-PERMISSIONS-WORKTREE-POOL.md |
 | Agents, subagents, skills, hooks, MCP | 29-AGENTS-SKILLS-HOOKS-MCP.md |
-| Context, indexing, LSP and local/small models | 30-CONTEXT-INDEXING-LOCAL-MODELS.md |
-| Streaming UI, artifacts, analytics, automations | 31-UI-PERFORMANCE-ARTIFACTS-ANALYTICS.md |
+| Context, indexing, §30.26–30.30 (compile, epochs, speed, accuracy, reliability) | 30-CONTEXT-INDEXING-LOCAL-MODELS.md |
+| Streaming UI, artifacts, analytics, automations; §31.22 activity cards; §31.23 code display/RAM | 31-UI-PERFORMANCE-ARTIFACTS-ANALYTICS.md |
+| V1 audit package (backlog, **wire tracker**, inventory, runbook, source alignment, **migration parity**) | 46-V1-DESIGN-AUDIT.md, 46-V1-WIRE-TRACKER.md, 46-V1-SOURCE-ALIGNMENT-AUDIT.md, 46-V1-MIGRATION-PARITY.md, 46-V1-IMPLEMENTATION-BACKLOG.md |
 | Real-work, security and regression acceptance | 32-TASK-BASED-AGENT-TEST-CATALOG.md |
-| Canonical public capability IDs | 33-BUILTIN-CAPABILITIES-CATALOG.md |
+| Canonical capability IDs; §33.32–33 exposure tiers + Horizon Coding Profile | 33-BUILTIN-CAPABILITIES-CATALOG.md |
 | Runtime service interfaces including browser, desktop, web search, DAP and REPL | 37-RUNTIME-SERVICE-LLD.md |
 | External source pins/provenance | 42-EXTERNAL-SOURCE-PROVENANCE-REGISTER.md |
 | Terms | GLOSSARY.md |
+| **V1 implementation package (backlog, inventory, runbook)** | **46-V1-DESIGN-AUDIT.md** (start here for code-only work) |
 
 ## Compatibility/non-normative documents
 
@@ -61,6 +63,8 @@ Research material for OMP and other competitors is evidence only. Accepted behav
 **Derived navigation (non-normative):** `45-V1-EVENT-FLOWS-ATLAS.md` is a derived, non-authoritative synthesis of V1 flows, events and state machines with a full document coverage matrix. On any conflict, the normative topic owner wins; the atlas must never be cited as authority or evidence.
 
 ## Implementation reading rule
+
+**Backlog and inventories (2026-10-22):** [`46-V1-DESIGN-AUDIT.md`](46-V1-DESIGN-AUDIT.md) → [`46-V1-WIRE-TRACKER.md`](46-V1-WIRE-TRACKER.md) → [`46-V1-IMPLEMENTATION-BACKLOG.md`](46-V1-IMPLEMENTATION-BACKLOG.md) → [`46-V1-FEATURE-INVENTORY.md`](46-V1-FEATURE-INVENTORY.md) → after coding [`46-V1-VERIFICATION-RUNBOOK.md`](46-V1-VERIFICATION-RUNBOOK.md). Code status: `HANDOFF.md` and `implementationtov1release.md`.
 
 Do not read every architecture file for every task.
 
@@ -105,4 +109,4 @@ The executable checklist is the existing `docs/superpowers/plans/2026-10-11-hori
 
 Existing §§3.16–3.18 and §29 agent adapters imply explicit external-agent, source-selection and deployment boundaries. The source/owner map is §20.13, safety §14.18, AgentProfile and adapter rules §29.19, design-only catalog IDs §33.30, service contracts §§37.20–21 and release/negative tests §32.35. This adds no second provider, capability registry, Session writer or effect path. Upstream ACP **server** support is not evidence of an outbound Horizon ACP **client**.
 
-Some numbered heading gaps (e.g. §14.11–14.14, §20.9 and §32.30) are unallocated after earlier consolidation. Do not infer that a missing numbered heading is a missing product requirement; verify against the active owner and test catalog, and preserve existing cross-references when renumbering. Current accepted flows are normative regardless of these historical gaps.
+Some numbered heading gaps (e.g. §14.11–14.14 and §32.30) are unallocated after earlier consolidation. §20.9 is an explicit reserved stub; §14.28 is allocated to direct-session Git read effects (§17.31). Do not infer that a missing numbered heading is a missing product requirement; verify against the active owner and test catalog, and preserve existing cross-references when renumbering. Current accepted flows are normative regardless of these historical gaps.

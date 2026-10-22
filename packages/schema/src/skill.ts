@@ -23,10 +23,23 @@ export const HorizonDocsIdentityV1 = {
   revision: "sha256:83d9a8e079486da8b673158cf2c2527ddb690eb55e56147c75b4d6489b3bb74e",
 } as const
 
+export const HorizonCodeIdentityV1 = {
+  id: "builtin.horizoncode",
+  alias: "horizoncode",
+  revision: "sha256:b784cb02d1655c7606bfc6548d17de2b237ca28e02c7e58b0f57c1c5ffece90f",
+} as const
+
+export const SealedBuiltinIdentitiesV1 = {
+  [HorizonDocsIdentityV1.id]: HorizonDocsIdentityV1,
+  [HorizonCodeIdentityV1.id]: HorizonCodeIdentityV1,
+} as const
+
 export interface Identity extends Schema.Schema.Type<typeof Identity> {}
 export const Identity = Schema.Struct({
   schemaVersion: Schema.Literal(1),
-  id: Schema.String.check(Schema.isPattern(/^(?:builtin\.horizon-docs|(?:project|user|remote)\.[a-f0-9]{64})$/)),
+  id: Schema.String.check(
+    Schema.isPattern(/^(?:builtin\.horizon-docs|builtin\.horizoncode|(?:project|user|remote)\.[a-f0-9]{64})$/),
+  ),
   alias: Schema.String.check(Schema.isNonEmpty()),
   source: Schema.Literals(["builtin", "project", "user", "remote"]),
   trust: Schema.Literals(["sealed_builtin", "untrusted"]),
@@ -35,13 +48,15 @@ export const Identity = Schema.Struct({
   .annotate({ identifier: "SkillV2.Identity" })
   .check(
     Schema.makeFilter((identity) => {
-      if (identity.source === "builtin")
-        return identity.id === HorizonDocsIdentityV1.id &&
-          identity.alias === HorizonDocsIdentityV1.alias &&
+      if (identity.source === "builtin") {
+        const canonical = SealedBuiltinIdentitiesV1[identity.id as keyof typeof SealedBuiltinIdentitiesV1]
+        return canonical &&
+          identity.alias === canonical.alias &&
           identity.trust === "sealed_builtin" &&
-          identity.revision === HorizonDocsIdentityV1.revision
+          identity.revision === canonical.revision
           ? undefined
-          : "the sealed builtin identity must match the canonical Horizon docs skill"
+          : "the sealed builtin identity must match a canonical built-in skill"
+      }
       if (identity.trust !== "untrusted" || identity.id.startsWith("builtin."))
         return "project, user, and remote skills must be untrusted and cannot use reserved builtin IDs"
       if (!identity.id.startsWith(`${identity.source}.`))

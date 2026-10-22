@@ -11,15 +11,19 @@
     "profileID": "profile-review-1",
     "profileRevision": "9007199254740993",
     "profileDigest": "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "providerID": "provider-test",
+    "modelID": "model-test",
+    "profileTokenBudget": "42000",
     "criteriaIDs": ["criterion-a", "criterion-b"],
     "workspaceLeaseID": "workspace-lease-1",
     "sourceRevision": "blake3:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
     "capabilityCeilingDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "permissionScopeDigest": "blake3:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
     "contextSelectionDigest": "blake3:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
     "budgetLeaseID": "budget-lease-1",
     "resourceLeaseIDs": ["resource-lease-a", "resource-lease-b"],
     "ownerEpoch": "9007199254740995",
     "admittedManagedRevision": "9007199254740997"
   },
-  "canonicalBindingDigest": "blake3:1fd75f1bc0f3999bfc38131ce367cd71ff22e9d0e442de1264ebced0b2c1e81b"
+  "canonicalBindingDigest": "blake3:85f5dd99f97d178f1fe7c41b0ea78fb1de0df4361f50f0f11dc3c58198a162ad"
 }

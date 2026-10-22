@@ -1,0 +1,355 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "horizon://schemas/managed-pre-admission-target-v1",
+  "title": "ManagedPreAdmissionTargetV1",
+  "description": "Authenticated two-stage, no-dispatch child worktree reservation. Stage A binds only HostKernel/P8-derived pre-context facts. Stage B binds the exact Rust-validated ContextSelection to the same reservation.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/ReserveRequest"
+    },
+    {
+      "$ref": "#/$defs/BindContextRequest"
+    },
+    {
+      "$ref": "#/$defs/ReserveResponse"
+    },
+    {
+      "$ref": "#/$defs/BindContextResponse"
+    }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^blake3:[0-9a-f]{64}$"
+    },
+    "revision": {
+      "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64"
+    },
+    "proof": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "proofDigest",
+        "leaseProofDigest",
+        "pinsDigest",
+        "ownerLogID",
+        "ownerLogSequence",
+        "ownerLogEventDigest",
+        "ownerEpoch",
+        "workerPoolRevision",
+        "workerExecutionID",
+        "ticketID"
+      ],
+      "properties": {
+        "proofDigest": {
+          "$ref": "#/$defs/digest",
+          "description": "Stable context-free Stage-A candidate receipt; remains available on bound replay."
+        },
+        "receiptDigest": {
+          "$ref": "#/$defs/digest",
+          "description": "Stable Stage-B context-bound receipt; present only once contextSelectionDigest is bound."
+        },
+        "leaseProofDigest": {
+          "$ref": "#/$defs/digest",
+          "description": "Fresh current cursor/pool-bound P8 proof; never used as an idempotency key."
+        },
+        "pinsDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "ownerLogID": {
+          "$ref": "#/$defs/id"
+        },
+        "ownerLogSequence": {
+          "$ref": "#/$defs/revision"
+        },
+        "ownerLogEventDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "ownerEpoch": {
+          "$ref": "#/$defs/revision"
+        },
+        "workerPoolRevision": {
+          "$ref": "#/$defs/revision"
+        },
+        "workerExecutionID": {
+          "$ref": "#/$defs/id"
+        },
+        "ticketID": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "worktreeID",
+        "worktreeBaseRevision",
+        "worktreePoolRevision",
+        "locationID",
+        "workspaceID",
+        "workspaceRef",
+        "canonicalRoot",
+        "workspaceRevision"
+      ],
+      "properties": {
+        "worktreeID": {
+          "$ref": "#/$defs/id"
+        },
+        "worktreeBaseRevision": {
+          "$ref": "#/$defs/digest"
+        },
+        "worktreePoolRevision": {
+          "$ref": "#/$defs/revision"
+        },
+        "locationID": {
+          "$ref": "#/$defs/id"
+        },
+        "workspaceID": {
+          "$ref": "#/$defs/id"
+        },
+        "workspaceRef": {
+          "$ref": "#/$defs/id"
+        },
+        "canonicalRoot": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "workspaceRevision": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "selection": {
+      "$ref": "context-selection-v1.schema.json"
+    },
+    "commonRequest": {
+      "type": "object",
+      "required": [
+        "goalID",
+        "runID",
+        "taskID",
+        "expectedRevision",
+        "parentSessionID",
+        "locationID",
+        "sessionID",
+        "profileDefinition"
+      ],
+      "properties": {
+        "goalID": {
+          "$ref": "#/$defs/id"
+        },
+        "runID": {
+          "$ref": "#/$defs/id"
+        },
+        "taskID": {
+          "$ref": "#/$defs/id"
+        },
+        "expectedRevision": {
+          "$ref": "#/$defs/revision"
+        },
+        "parentSessionID": {
+          "$ref": "#/$defs/id"
+        },
+        "locationID": {
+          "$ref": "#/$defs/id"
+        },
+        "sessionID": {
+          "$ref": "#/$defs/id"
+        },
+        "profileDefinition": {
+          "$ref": "agent-profile-v2.schema.json"
+        },
+        "resourcePolicyProjectionRevision": {
+          "$ref": "#/$defs/revision",
+          "description": "Optional compare-only HostKernel projection; never authority."
+        },
+        "resourcePolicyProjectionDigest": {
+          "$ref": "#/$defs/digest",
+          "description": "Optional compare-only HostKernel projection; never authority."
+        }
+      }
+    },
+    "ReserveRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/commonRequest"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "operation": {
+              "const": "managed.pre_admission_target.reserve"
+            }
+          },
+          "required": [
+            "operation"
+          ]
+        }
+      ],
+      "description": "HostKernel derives Attempt identity, idempotency key, root/worktree, resource and deadline pins. No caller-selected authority or ContextSelection is accepted."
+    },
+    "BindContextRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/commonRequest"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "candidateAttemptID",
+            "preAdmissionProofDigest",
+            "contextSelection"
+          ],
+          "properties": {
+            "operation": {
+              "const": "managed.pre_admission_target.bind_context"
+            },
+            "candidateAttemptID": {
+              "$ref": "#/$defs/id",
+              "description": "Echo of Stage-A response; Rust recomputes it from Task counters."
+            },
+            "preAdmissionProofDigest": {
+              "$ref": "#/$defs/digest",
+              "description": "Exact Stage-A proof digest."
+            },
+            "contextSelection": {
+              "$ref": "#/$defs/selection"
+            }
+          }
+        }
+      ],
+      "description": "Binds the canonical digest of this exact sequence-1 ContextSelection to the same still-RESERVED P8 lease."
+    },
+    "responseBase": {
+      "type": "object",
+      "required": [
+        "goalID",
+        "runID",
+        "taskID",
+        "candidateAttemptID",
+        "taskRevision",
+        "preAdmissionProof",
+        "preAdmissionTarget"
+      ],
+      "properties": {
+        "goalID": {
+          "$ref": "#/$defs/id"
+        },
+        "runID": {
+          "$ref": "#/$defs/id"
+        },
+        "taskID": {
+          "$ref": "#/$defs/id"
+        },
+        "candidateAttemptID": {
+          "$ref": "#/$defs/id"
+        },
+        "taskRevision": {
+          "$ref": "#/$defs/revision"
+        },
+        "preAdmissionProof": {
+          "$ref": "#/$defs/proof"
+        },
+        "preAdmissionTarget": {
+          "$ref": "#/$defs/target"
+        }
+      }
+    },
+    "ReserveResponse": {
+      "oneOf": [
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/responseBase"
+            },
+            {
+              "type": "object",
+              "required": [
+                "status"
+              ],
+              "properties": {
+                "status": {
+                  "const": "RESERVED_CONTEXT_UNBOUND"
+                }
+              },
+              "not": {
+                "required": [
+                  "contextSelectionDigest"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/responseBase"
+            },
+            {
+              "type": "object",
+              "required": [
+                "status",
+                "contextSelectionDigest"
+              ],
+              "properties": {
+                "status": {
+                  "const": "RESERVED_CONTEXT_BOUND"
+                },
+                "contextSelectionDigest": {
+                  "$ref": "#/$defs/digest"
+                },
+                "preAdmissionProof": {
+                  "required": [
+                    "receiptDigest",
+                    "leaseProofDigest"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "description": "Exact Stage-A replay may reveal that Stage B committed before the prior response was lost. Bound replay returns the immutable receipt and saved ContextSelection digest; it cannot accept a replacement context. Neither state grants claim, dispatch, or effect authority."
+    },
+    "BindContextResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/responseBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "status",
+            "contextSelectionDigest"
+          ],
+          "properties": {
+            "status": {
+              "const": "RESERVED_CONTEXT_BOUND"
+            },
+            "contextSelectionDigest": {
+              "$ref": "#/$defs/digest"
+            },
+            "preAdmissionProof": {
+              "required": [
+                "receiptDigest",
+                "leaseProofDigest"
+              ]
+            }
+          }
+        }
+      ],
+      "description": "Immutable Stage-B receipt for the same reservation."
+    }
+  }
+}

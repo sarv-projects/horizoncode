@@ -20,31 +20,69 @@ import unittest
 import zipfile
 from unittest.mock import patch
 
-from scripts.release.audit_distribution import audit_repository, inspect_artifact
+from scripts.release.audit_distribution import (
+    MAX_PACKAGE_MANIFEST_BYTES,
+    audit_repository,
+    inspect_artifact,
+    scan_runtime_dependencies,
+)
 from scripts.release import clean_install
 from scripts.release.clean_install import run_matrix
-from scripts.release.prepare_build import _run_checked, build_candidate
+from scripts.release.prepare_build import _guard_build_script, _run_checked, build_candidate
 from scripts.release.release_gate import build_platform_support_matrix, evaluate_release_gate
 
 
-SANDBOX_PARENT = Path("/tmp/opencode")
+SANDBOX_PARENT = clean_install.APPROVED_TEMP_ROOT
 
 
-def _process_with_marker_running(marker: str) -> bool:
-    encoded = marker.encode()
-    for entry in Path("/proc").iterdir():
-        if not entry.name.isdigit():
-            continue
-        try:
-            cmdline = (entry / "cmdline").read_bytes()
-        except OSError:
-            continue
-        if encoded in cmdline:
-            return True
-    return False
+def setUpModule() -> None:
+    clean_install._ensure_approved_temp_root()
+
+
+def _process_id_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 class ReleaseGateCliTests(unittest.TestCase):
+    def test_evidence_output_must_stay_under_the_repository_artifact_root(self) -> None:
+        with self.assertRaisesRegex(ValueError, "release evidence output must be a new file under"):
+            clean_install._validated_output_path(Path("release-report.json"))
+
+    def test_evidence_writer_creates_without_replacing_an_existing_file(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="p9-evidence-write-", dir=SANDBOX_PARENT) as temporary:
+            report = Path(temporary) / "report.json"
+            clean_install._write_new_artifact_file(report, "first\n")
+            self.assertEqual(report.read_text(encoding="utf-8"), "first\n")
+            with self.assertRaises(FileExistsError):
+                clean_install._write_new_artifact_file(report, "replacement\n")
+            self.assertEqual(report.read_text(encoding="utf-8"), "first\n")
+
+    def test_evidence_writer_does_not_follow_a_final_symlink(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="p9-evidence-link-", dir=SANDBOX_PARENT) as temporary:
+            root = Path(temporary)
+            sentinel = root / "sentinel.txt"
+            sentinel.write_text("unchanged\n", encoding="utf-8")
+            link = root / "report.json"
+            link.symlink_to(sentinel)
+            with self.assertRaises(ValueError):
+                clean_install._write_new_artifact_file(link, "replacement\n")
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "unchanged\n")
+
+    def test_state_root_is_created_exclusively_under_the_pinned_artifact_root(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="p9-state-root-", dir=SANDBOX_PARENT) as temporary:
+            state_root = Path(temporary) / "evidence"
+            clean_install._create_state_root(clean_install._validated_state_root(state_root))
+            self.assertTrue(state_root.is_dir())
+            self.assertEqual(stat.S_IMODE(state_root.stat(follow_symlinks=False).st_mode), 0o700)
+            with self.assertRaises(FileExistsError):
+                clean_install._create_state_root(state_root)
+
     def test_release_gate_cli_runs_directly_from_the_repository_root(self) -> None:
         repository_root = Path(__file__).resolve().parents[2]
         environment = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
@@ -146,6 +184,108 @@ class StandaloneInstallerCommandTests(unittest.TestCase):
                 )
                 self.assertEqual(launched.returncode, 0, f"{command_name}: {launched.stderr}")
 
+    def test_network_install_fails_before_creating_install_state_until_signing_policy_exists(self) -> None:
+        repository_root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory(prefix="p9-no-network-install-", dir=SANDBOX_PARENT) as temporary:
+            home = Path(temporary) / "home"
+            home.mkdir(mode=0o700)
+            result = subprocess.run(
+                ["bash", str(repository_root / "install")],
+                cwd=repository_root,
+                env=dict(os.environ, HOME=str(home), SHELL="/bin/bash"),
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("release signing trust policy", result.stderr)
+            self.assertFalse((home / ".opencode" / "bin").exists())
+
+    def test_version_selector_cannot_be_silently_ignored_for_local_candidate(self) -> None:
+        repository_root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory(prefix="p9-versioned-local-install-", dir=SANDBOX_PARENT) as temporary:
+            root = Path(temporary)
+            home = root / "home"
+            home.mkdir(mode=0o700)
+            candidate = root / "candidate"
+            candidate.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            candidate.chmod(0o755)
+
+            result = subprocess.run(
+                ["bash", str(repository_root / "install"), "--version", "1.2.3", "--binary", str(candidate)],
+                cwd=repository_root,
+                env=dict(os.environ, HOME=str(home), SHELL="/bin/bash"),
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("cannot be combined with --binary", result.stderr)
+            self.assertFalse((home / ".opencode" / "bin").exists())
+
+    def test_installer_rejects_native_windows_before_creating_install_state(self) -> None:
+        repository_root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory(prefix="p9-windows-installer-", dir=SANDBOX_PARENT) as temporary:
+            root = Path(temporary)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            uname = fake_bin / "uname"
+            uname.write_text("#!/bin/sh\nprintf '%s\\n' MINGW_NT\n", encoding="utf-8")
+            uname.chmod(0o755)
+            home = root / "home"
+            home.mkdir(mode=0o700)
+            candidate = root / "candidate"
+            candidate.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            candidate.chmod(0o755)
+
+            result = subprocess.run(
+                ["bash", str(repository_root / "install"), "--binary", str(candidate), "--no-modify-path"],
+                cwd=repository_root,
+                env=dict(os.environ, HOME=str(home), PATH=f"{fake_bin}:{os.environ.get('PATH', '')}"),
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("native Windows is unavailable", result.stderr)
+            self.assertFalse((home / ".opencode" / "bin").exists())
+
+    def test_installer_rejects_symlink_candidate_and_preserves_existing_cli(self) -> None:
+        repository_root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory(prefix="p9-symlink-candidate-", dir=SANDBOX_PARENT) as temporary:
+            root = Path(temporary)
+            home = root / "home"
+            install_dir = home / ".opencode" / "bin"
+            install_dir.mkdir(parents=True, mode=0o700)
+            existing = install_dir / "horizoncode"
+            existing.write_text("existing candidate\n", encoding="utf-8")
+            source = root / "candidate"
+            source.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            source.chmod(0o755)
+            candidate_link = root / "candidate-link"
+            candidate_link.symlink_to(source)
+
+            result = subprocess.run(
+                ["bash", str(repository_root / "install"), "--binary", str(candidate_link), "--no-modify-path"],
+                cwd=repository_root,
+                env=dict(os.environ, HOME=str(home), SHELL="/bin/bash"),
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("regular executable file", result.stderr)
+            self.assertEqual(existing.read_text(encoding="utf-8"), "existing candidate\n")
+            self.assertFalse((install_dir / "hzcode").exists())
+
 
 class DistributionAuditTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -218,6 +358,43 @@ class DistributionAuditTests(unittest.TestCase):
             ["git", "rev-parse", "HEAD"], cwd=self.root, check=True, capture_output=True, text=True
         ).stdout.strip()
 
+    def test_runtime_dependency_symlink_cannot_escape_audited_root(self) -> None:
+        external = self.root.parent / f"{self.root.name}-external"
+        external.mkdir()
+        try:
+            (external / "package.json").write_text(
+                json.dumps({"name": "outside", "version": "1", "license": "MIT"}),
+                encoding="utf-8",
+            )
+            runtime = self.root / "node_modules" / "first-party-runtime"
+            shutil.rmtree(runtime)
+            runtime.symlink_to(external, target_is_directory=True)
+
+            inventory = scan_runtime_dependencies(self.root / "packages" / "opencode", self.root)
+
+            self.assertEqual(inventory["package_count"], 0)
+            self.assertEqual(
+                [item["name"] for item in inventory["unresolved_required_dependencies"]],
+                ["first-party-runtime"],
+            )
+        finally:
+            shutil.rmtree(external, ignore_errors=True)
+
+    def test_runtime_dependency_manifest_and_graph_limits_fail_closed(self) -> None:
+        package_manifest = self.root / "packages" / "opencode" / "package.json"
+        package_manifest.write_text(
+            json.dumps({"dependencies": {f"dep-{index}": "1" for index in range(4097)}}),
+            encoding="utf-8",
+        )
+        inventory = scan_runtime_dependencies(self.root / "packages" / "opencode", self.root)
+        self.assertTrue(any("4096 dependencies" in item for item in inventory["inventory_errors"]))
+
+        package_manifest.write_text(json.dumps({"dependencies": {"first-party-runtime": "1"}}), encoding="utf-8")
+        dependency_manifest = self.root / "node_modules" / "first-party-runtime" / "package.json"
+        dependency_manifest.write_bytes(b"{" + b" " * MAX_PACKAGE_MANIFEST_BYTES)
+        inventory = scan_runtime_dependencies(self.root / "packages" / "opencode", self.root)
+        self.assertTrue(any("bounded regular file" in item for item in inventory["inventory_errors"]))
+
     def test_audit_reports_vendor_license_copy_and_full_runtime_dependency_closure(self) -> None:
         report = audit_repository(self.root)
 
@@ -250,6 +427,14 @@ class DistributionAuditTests(unittest.TestCase):
         self.assertIn(
             "first-party-runtime",
             {item["name"] for item in report["runtime_dependencies"]["missing_license_files"]},
+        )
+
+    def test_package_legal_file_scan_limit_marks_inventory_incomplete(self) -> None:
+        with patch("scripts.release.audit_distribution.MAX_PACKAGE_DIRECTORY_ENTRIES", 1):
+            inventory = scan_runtime_dependencies(self.root / "packages" / "opencode", self.root)
+
+        self.assertTrue(
+            any("legal-file inventory exceeds 1 entries" in item for item in inventory["inventory_errors"])
         )
 
     def test_artifact_inventory_finds_licenses_without_claiming_legal_clearance(self) -> None:
@@ -939,7 +1124,7 @@ class SyntheticCleanInstallMatrixTests(unittest.TestCase):
                 previous_binary=None,
                 migration_fixture=None,
                 expected_model=None,
-                state_root=Path.home() / "horizoncode-release-test",
+                state_root=Path(__file__).resolve().parents[2] / "release-state-outside-artifact-root",
                 require_clean_checkout=False,
             )
 
@@ -1077,7 +1262,10 @@ class SyntheticTuiShutdownWindowTests(unittest.TestCase):
             spawn = (
                 "import subprocess\n"
                 "import sys\n\n"
-                f"subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(3600)', {spawn_marker!r}])\n"
+                "import os\n"
+                "from pathlib import Path\n\n"
+                f"child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(3600)', {spawn_marker!r}])\n"
+                "Path(os.environ['XDG_STATE_HOME'], 'p9-leftover-child.pid').write_text(str(child.pid), encoding='utf-8')\n"
             )
         binary.write_text(
             "#!/usr/bin/env python3\n"
@@ -1149,8 +1337,7 @@ class SyntheticTuiShutdownWindowTests(unittest.TestCase):
         self.assertEqual(report["exit_code"], 130)
 
     def test_tui_smoke_fails_when_the_app_leaves_a_background_descendant(self) -> None:
-        marker = f"P9-LEFTOVER-{os.getpid()}-{int(time.time() * 1000)}"
-        self._write_tui_binary(spawn_marker=marker)
+        self._write_tui_binary(spawn_marker="P9-LEFTOVER")
 
         report = clean_install._tui_smoke(
             self.home, self.env, source_checkout=self.checkout, state_root=self.state_root
@@ -1163,13 +1350,13 @@ class SyntheticTuiShutdownWindowTests(unittest.TestCase):
             report["reason"],
             "interactive process left background descendants running after the shutdown signal",
         )
+        pid_path = self.env["XDG_STATE_HOME"]
+        child_pid_file = Path(pid_path) / "p9-leftover-child.pid"
+        child_pid = int(child_pid_file.read_text(encoding="utf-8"))
         deadline = time.monotonic() + 3.0
-        marker_still_running = True
-        while time.monotonic() < deadline and marker_still_running:
-            marker_still_running = _process_with_marker_running(marker)
-            if marker_still_running:
-                time.sleep(0.1)
-        self.assertFalse(marker_still_running)
+        while time.monotonic() < deadline and _process_id_running(child_pid):
+            time.sleep(0.1)
+        self.assertFalse(_process_id_running(child_pid))
 
 
 class IsolatedBuildPreparationTests(unittest.TestCase):
@@ -1178,6 +1365,15 @@ class IsolatedBuildPreparationTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.source = self.root / "source"
         self.source.mkdir()
+        (self.source / "bun.lock").write_text("{}\n", encoding="utf-8")
+        (self.source / "kernel").mkdir()
+        (self.source / "kernel" / "Cargo.lock").write_text("version = 4\n", encoding="utf-8")
+        migration = self.source / "packages" / "core" / "src" / "database" / "migration" / "20260101000000_fixture.ts"
+        migration.parent.mkdir(parents=True)
+        migration.write_text("export {}\n", encoding="utf-8")
+        contract = self.source / "arch_V1" / "contracts-v2" / "fixture.schema.json"
+        contract.parent.mkdir(parents=True)
+        contract.write_text('{"$schema":"fixture"}\n', encoding="utf-8")
         (self.source / ".gitignore").write_text(
             "node_modules/\n**/dist/\npackages/plugin/\npackages/opencode/test/\n", encoding="utf-8"
         )
@@ -1193,8 +1389,13 @@ class IsolatedBuildPreparationTests(unittest.TestCase):
         build_script.write_text(
             'import { createHash } from "node:crypto"\n'
             'const dir = path.resolve(__dirname, "..")\n'
-            'await $`rm -rf dist`\n'
-            'await $`rm -rf ./dist/${name}/bin/tui`\n',
+            'const clearBuildOutput = async (relative: string) => {\n'
+            '  const p9BuildRoot = process.env.HORIZONCODE_P9_BUILD_ROOT\n'
+            '  const p9BuildMarker = process.env.HORIZONCODE_P9_BUILD_MARKER\n'
+            '  await $`rm -rf ${target}`\n'
+            '}\n'
+            'await clearBuildOutput("dist")\n'
+            'await clearBuildOutput(`dist/${name}/bin/tui`)\n',
             encoding="utf-8",
         )
         fixture = self.source / "opencode" / "packages" / "opencode" / "test" / "tool" / "fixtures" / "models-api.json"
@@ -1214,6 +1415,10 @@ class IsolatedBuildPreparationTests(unittest.TestCase):
             "add",
             ".gitignore",
             "package.json",
+            "bun.lock",
+            "kernel/Cargo.lock",
+            "packages/core/src/database/migration/20260101000000_fixture.ts",
+            "arch_V1/contracts-v2/fixture.schema.json",
             "packages/opencode/script/build.ts",
             "opencode",
             "scripts/architecture/bootstrap_source.py",
@@ -1269,6 +1474,29 @@ class IsolatedBuildPreparationTests(unittest.TestCase):
             '{"fixture":true}\n',
         )
 
+    def test_build_script_guard_rejects_a_final_symlink_without_touching_its_target(self) -> None:
+        build_script = self.source / "packages" / "opencode" / "script" / "build.ts"
+        sentinel = build_script.with_name("build-script-sentinel.ts")
+        original = build_script.read_bytes()
+        sentinel.write_bytes(original)
+        build_script.unlink()
+        build_script.symlink_to(sentinel.name)
+
+        with self.assertRaisesRegex(ValueError, "regular, non-symlink file"):
+            _guard_build_script(self.source)
+
+        self.assertEqual(sentinel.read_bytes(), original)
+
+    def test_build_candidate_rejects_marker_for_another_source_revision(self) -> None:
+        report = self._prepare()
+        marker = Path(report["build_copy"]["build_marker"])
+        marker_data = json.loads(marker.read_text(encoding="utf-8"))
+        marker_data["sourceRevision"] = "0" * 40
+        marker.write_text(json.dumps(marker_data), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "does not bind this source revision"):
+            build_candidate(report)
+
     def test_isolated_build_copy_hydrates_ignored_pinned_workspaces(self) -> None:
         report = self._prepare()
 
@@ -1319,7 +1547,7 @@ class IsolatedBuildPreparationTests(unittest.TestCase):
 
         def fake_run(command, *, cwd, env, timeout):
             build_calls.append((command, cwd, env, timeout))
-            if len(build_calls) == 3:
+            if "script/build.ts" in command:
                 binary = build_root / "packages" / "opencode" / "dist" / "opencode-linux-x64" / "bin" / "opencode"
                 binary.parent.mkdir(parents=True)
                 binary.write_bytes(b"candidate-linux-binary")
@@ -1335,13 +1563,58 @@ class IsolatedBuildPreparationTests(unittest.TestCase):
         manifest = json.loads((artifact / "release-manifest.json").read_text(encoding="utf-8"))
         binary = artifact / "opencode"
         self.assertEqual(result["build"]["status"], "BUILT")
+        self.assertEqual(manifest["schemaVersion"], 2)
         self.assertEqual(manifest["binarySha256"], hashlib.sha256(binary.read_bytes()).hexdigest())
+        self.assertEqual(manifest["binarySizeBytes"], binary.stat().st_size)
         self.assertEqual(manifest["sourceRevision"], result["source"]["revision"])
         self.assertEqual(manifest["sourceStateSha256"], result["source"]["source_state_sha256"])
+        self.assertEqual(manifest["postBuildSourceStateSha256"], manifest["sourceStateSha256"])
         self.assertEqual(manifest["target"], "opencode-linux-x64")
+        self.assertEqual(manifest["lockfileSha256"].keys(), {"bun.lock", "kernel/Cargo.lock"})
+        self.assertEqual(manifest["artifactFiles"], [{
+            "path": "opencode",
+            "sizeBytes": len(b"candidate-linux-binary"),
+            "sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+        }])
+        artifact_inspection = inspect_artifact(artifact)
+        self.assertTrue(artifact_inspection["artifact_inventory_valid"])
+        self.assertEqual(artifact_inspection["artifact_inventory_errors"], [])
+        self.assertTrue(manifest["configAndSchema"]["contractSetSha256"])
         self.assertEqual(manifest["packageTarget"]["classification"], "UPSTREAM_OPENCODE")
+        self.assertEqual(build_calls[0][2]["RUSTUP_TOOLCHAIN"], "stable")
         self.assertEqual(build_calls[2][2]["MODELS_DEV_API_JSON"], result["build_copy"]["models_dev_api_json"])
+        self.assertEqual(build_calls[0][2]["CARGO_HOME"], str(build_root.parent / f".{build_root.name}.cargo"))
+        self.assertEqual(
+            build_calls[0][2]["RUSTUP_HOME"],
+            str(build_root.parent / f".{build_root.name}.rustup"),
+        )
+        self.assertTrue(Path(build_calls[0][2]["RUSTUP_HOME"]).is_dir())
+        self.assertNotEqual(build_calls[0][2]["RUSTUP_HOME"], os.environ.get("RUSTUP_HOME"))
         self.assertEqual(result["qualification_status"], "NON_RELEASE_QUALIFIED")
+
+    def test_artifact_inventory_rejects_legacy_manifest_schema(self) -> None:
+        artifact = self.source / "legacy-artifact"
+        artifact.mkdir()
+        binary = artifact / "opencode"
+        binary.write_bytes(b"candidate")
+        manifest = {
+            "schemaVersion": 1,
+            "sourceStateSha256": "0" * 64,
+            "postBuildSourceStateSha256": "0" * 64,
+            "binaryPath": "opencode",
+            "binarySizeBytes": len(b"candidate"),
+            "artifactFiles": [{
+                "path": "opencode",
+                "sizeBytes": len(b"candidate"),
+                "sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+            }],
+        }
+        (artifact / "release-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+        report = inspect_artifact(artifact)
+
+        self.assertFalse(report["artifact_inventory_valid"])
+        self.assertIn("candidate provenance manifest must use schemaVersion 2", report["artifact_inventory_errors"])
 
     def test_failed_build_command_surfaces_captured_diagnostics(self) -> None:
         try:
@@ -1362,7 +1635,7 @@ class IsolatedBuildPreparationTests(unittest.TestCase):
 
 
 class QualificationWorkflowTests(unittest.TestCase):
-    def test_release_qualification_workflow_is_read_only_offline_for_model_catalog_and_never_publishes(self) -> None:
+    def test_release_qualification_workflow_is_read_only_for_model_catalog_and_never_publishes(self) -> None:
         repository_root = Path(__file__).resolve().parents[2]
         workflow = repository_root / ".github" / "workflows" / "horizoncode-release-qualification.yml"
         self.assertTrue(workflow.is_file(), f"qualification workflow is missing: {workflow}")
@@ -1375,6 +1648,9 @@ class QualificationWorkflowTests(unittest.TestCase):
         self.assertIn("python3 scripts/release/prepare_build.py", contents)
         self.assertIn("MODELS_DEV_API_JSON", contents)
         self.assertIn("opencode/packages/opencode/test/tool/fixtures/models-api.json", contents)
+        self.assertIn("kernel/target/horizoncode-release", contents)
+        self.assertNotIn("/tmp/", contents)
+        self.assertNotIn("$RUNNER_TEMP", contents)
         self.assertNotIn("npm publish", contents)
         self.assertNotIn("gh release upload", contents)
         self.assertNotIn("codesign", contents)

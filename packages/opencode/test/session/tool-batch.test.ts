@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test"
+import { Buffer } from "node:buffer"
 import type { LanguageModelV3StreamPart } from "@ai-sdk/provider"
 import { Location } from "@opencode-ai/core/location"
 import { AbsolutePath } from "@opencode-ai/core/schema"
@@ -13,6 +14,8 @@ import {
   type ToolBatchDefinition,
   type ToolBatchGateInput,
 } from "../../src/session/tool-batch"
+import * as ToolBatch from "../../src/session/tool-batch"
+import type { ManagedAttemptScopeV1 } from "../../src/session/managed-control"
 
 const writeDefinition: ToolBatchDefinition = {
   capability: { id: "files.write", effectClass: "effect" },
@@ -77,6 +80,32 @@ const terminalDefinition: ToolBatchDefinition = {
   },
 }
 
+test("CodeMode callback projection is credential-redacted and byte-bounded", () => {
+  const value = ToolBatch.redactCodeModeOutputV1(
+    `Bearer ghp_abcdefghijk12345 api_key=supersecret\n-----BEGIN PRIVATE KEY-----\nprivate-material\n-----END PRIVATE KEY-----\u001b[31mred\u001b[0m\u202e`,
+    1_024,
+  )
+  expect(value).not.toContain("ghp_abcdefghijk12345")
+  expect(value).not.toContain("supersecret")
+  expect(value).not.toContain("private-material")
+  expect(value).not.toContain("\u001b")
+  expect(value).not.toContain("\u202e")
+  expect(value).toContain("[REDACTED PRIVATE KEY]")
+
+  const clipped = ToolBatch.redactCodeModeOutputV1(`prefix ${"secretvalue".repeat(20_000)}`, 128)
+  expect(clipped).not.toContain("secretvalue")
+  expect(Buffer.byteLength(clipped, "utf8")).toBeLessThanOrEqual(128)
+})
+
+test("CodeMode content block projection marks omitted tail blocks", () => {
+  const output = ToolBatch.codeModeOutputTextV1({
+    content: Array.from({ length: 300 }, (_, index) => ({ type: "text", text: `block-${index}` })),
+  })
+  expect(output).toContain("block-255")
+  expect(output).not.toContain("block-256")
+  expect(output).toContain("…[truncated]")
+})
+
 const finish = {
   type: "finish",
   finishReason: { unified: "tool-calls", raw: "tool-calls" },
@@ -129,6 +158,54 @@ function gateInput(overrides: Partial<ToolBatchGateInput> = {}): ToolBatchGateIn
     cancelToolBatch: async () => {},
     context: createToolBatchContext(),
     ...overrides,
+  }
+}
+
+function directAttemptScope(expectedRevision = "1", workspaceRevision = "blake3:" + "a".repeat(64)) {
+  return {
+    attemptID: "att_0123456789abcdef",
+    parentSessionID: "session_parent",
+    childSessionID: "session_1",
+    profileID: "profile_child",
+    profileRevision: "1",
+    profileDigest: "sha256:" + "9".repeat(64),
+    ownerEpoch: "1",
+    expectedRevision,
+    locationID: "loc_child",
+    workspaceID: "wrk_child",
+    workspaceRevision,
+    capabilityDigest: "sha256:" + "b".repeat(64),
+    permissionsDigest: "sha256:" + "c".repeat(64),
+    budgetDigest: "sha256:" + "d".repeat(64),
+    scopeDigest: "sha256:" + "e".repeat(64),
+  }
+}
+
+function managedAttemptScope(expectedManagedRevision = "1"): ManagedAttemptScopeV1 {
+  const workspaceRevision = "blake3:" + "a".repeat(64)
+  return {
+    goalID: "goal_serial",
+    runID: "run_serial",
+    taskID: "task_serial",
+    attemptID: "att_managed_serial",
+    ownerEpoch: "1",
+    expectedManagedRevision,
+    locationID: "loc_child",
+    sessionID: "session_1",
+    workspaceRevision,
+    effectiveMaxTokens: "5000",
+    remainingTokens: "5000",
+    delegationBindingDigest: "blake3:" + "b".repeat(64),
+    worktreeTarget: {
+      worktreeID: "wt_serial",
+      worktreeBaseRevision: "base_serial",
+      worktreePoolRevision: "1",
+      locationID: "loc_child",
+      workspaceID: "wrk_child",
+      workspaceRef: "refs/heads/serial",
+      canonicalRoot: "/workspace",
+      workspaceRevision,
+    },
   }
 }
 
@@ -228,33 +305,19 @@ test("child read-only calls remain available without Attempt-bound effect author
 })
 
 test("child effect batch binds every prepared effect atomically before exposing calls", async () => {
-  const originalScope = {
-    attemptID: "att_0123456789abcdef",
-    parentSessionID: "session_parent",
-    childSessionID: "session_1",
-    ownerEpoch: "1",
-    expectedRevision: "1",
-    locationID: "loc_child",
-    workspaceID: "wrk_child",
-    workspaceRevision: "blake3:" + "a".repeat(64),
-    capabilityDigest: "sha256:" + "b".repeat(64),
-    permissionsDigest: "sha256:" + "c".repeat(64),
-    budgetDigest: "sha256:" + "d".repeat(64),
-    scopeDigest: "sha256:" + "e".repeat(64),
-  }
+  const originalScope = directAttemptScope()
   const refreshedScope = { ...originalScope, expectedRevision: "2" }
   let currentScope = originalScope
   let prepareScope: unknown
-  let boundIDs: readonly string[] = []
+  const accepted: Array<{ previous: unknown; refreshed: unknown; transition: string }> = []
   const gate = gateInput({
     parentSessionID: "session_parent",
     directAttempt: {
       currentScope: () => currentScope,
-      bindBatch: async (request: { scope: typeof originalScope; effectIDs: readonly string[] }) => {
-        expect(request.scope).toEqual(originalScope)
-        boundIDs = request.effectIDs
-        currentScope = refreshedScope
-        return refreshedScope
+      acceptRefreshedScope: ({ previous, refreshed, transition }) => {
+        accepted.push({ previous, refreshed, transition })
+        expect(previous).toEqual(currentScope)
+        currentScope = refreshed
       },
     },
     definitions: { write: writeDefinition, bash: terminalDefinition },
@@ -287,6 +350,8 @@ test("child effect batch binds every prepared effect atomically before exposing 
             execution: { command: "echo safe", cwd: "/workspace", timeoutMs: 1000 },
           },
         ],
+        directAttempt: refreshedScope,
+        attemptScopeTransition: "batch_bind" as const,
       }
     },
   } as Partial<ToolBatchGateInput>)
@@ -304,40 +369,24 @@ test("child effect batch binds every prepared effect atomically before exposing 
 
   expect(output.filter((part) => part.type === "tool-call")).toHaveLength(2)
   expect(prepareScope).toEqual(originalScope)
-  expect(boundIDs).toEqual(["eff_child_write", "eff_child_shell"])
+  expect(accepted).toEqual([{ previous: originalScope, refreshed: refreshedScope, transition: "batch_bind" }])
   expect(currentScope).toEqual(refreshedScope)
-  expect(toolCallOutcome(gate.context, "child_write_batch")).toMatchObject({
-    status: "admitted",
-    directAttempt: refreshedScope,
-  })
-  expect(toolCallOutcome(gate.context, "child_shell_batch")).toMatchObject({
-    status: "admitted",
-    directAttempt: refreshedScope,
-  })
+  expect(toolCallOutcome(gate.context, "child_write_batch")).toMatchObject({ status: "admitted" })
+  expect(toolCallOutcome(gate.context, "child_shell_batch")).toMatchObject({ status: "admitted" })
+  expect((toolCallOutcome(gate.context, "child_write_batch") as any).directAttempt.scope).toEqual(refreshedScope)
+  expect((toolCallOutcome(gate.context, "child_shell_batch") as any).directAttempt.scope).toEqual(refreshedScope)
 })
 
 test("child batch binding failure cancels and exposes no effect call", async () => {
   let cancellations = 0
   let callbacks = 0
-  const scope = {
-    attemptID: "att_0123456789abcdef",
-    parentSessionID: "session_parent",
-    childSessionID: "session_1",
-    ownerEpoch: "1",
-    expectedRevision: "1",
-    locationID: "loc_child",
-    workspaceID: "wrk_child",
-    workspaceRevision: "blake3:" + "a".repeat(64),
-    capabilityDigest: "sha256:" + "b".repeat(64),
-    permissionsDigest: "sha256:" + "c".repeat(64),
-    budgetDigest: "sha256:" + "d".repeat(64),
-    scopeDigest: "sha256:" + "e".repeat(64),
-  }
+  const scope = directAttemptScope()
+  const refreshedScope = { ...scope, expectedRevision: "2" }
   const gate = gateInput({
     parentSessionID: "session_parent",
     directAttempt: {
       currentScope: () => scope,
-      bindBatch: async () => {
+      acceptRefreshedScope: () => {
         throw new Error("stale direct Attempt scope")
       },
     },
@@ -350,6 +399,8 @@ test("child batch binding failure cancels and exposes no effect call", async () 
         resource: "a.txt",
         existed: false,
       },
+      directAttempt: refreshedScope,
+      attemptScopeTransition: "batch_bind" as const,
     }),
     cancelToolBatch: async () => {
       cancellations++
@@ -378,32 +429,18 @@ test("child batch binding failure cancels and exposes no effect call", async () 
 })
 
 test("child Attempt batches use the refreshed trusted revision on the next turn", async () => {
-  const initial = {
-    attemptID: "att_0123456789abcdef",
-    parentSessionID: "session_parent",
-    childSessionID: "session_1",
-    ownerEpoch: "1",
-    expectedRevision: "1",
-    locationID: "loc_child",
-    workspaceID: "wrk_child",
-    workspaceRevision: "blake3:" + "a".repeat(64),
-    capabilityDigest: "sha256:" + "b".repeat(64),
-    permissionsDigest: "sha256:" + "c".repeat(64),
-    budgetDigest: "sha256:" + "d".repeat(64),
-    scopeDigest: "sha256:" + "e".repeat(64),
-  }
+  const initial = directAttemptScope()
   let current = initial
   const seenPrepare: string[] = []
-  const seenBind: Array<{ revision: string; effectIDs: readonly string[] }> = []
+  const seenBind: Array<{ revision: string; transition: string }> = []
   const gate = gateInput({
     parentSessionID: "session_parent",
     directAttempt: {
       currentScope: () => current,
-      bindBatch: async ({ scope, effectIDs }) => {
-        expect(scope.expectedRevision).toBe(current.expectedRevision)
-        seenBind.push({ revision: String(scope.expectedRevision), effectIDs })
-        current = { ...current, expectedRevision: String(Number(current.expectedRevision) + 1) }
-        return current
+      acceptRefreshedScope: ({ previous, refreshed, transition }) => {
+        expect(previous).toEqual(current)
+        seenBind.push({ revision: String(previous.expectedRevision), transition })
+        current = refreshed
       },
     },
     prepareToolBatch: async (request: { directAttempt?: typeof initial }) => {
@@ -418,6 +455,8 @@ test("child Attempt batches use the refreshed trusted revision on the next turn"
           resource: "a.txt",
           existed: false,
         },
+        directAttempt: { ...request.directAttempt!, expectedRevision: String(Number(request.directAttempt!.expectedRevision) + 1) },
+        attemptScopeTransition: "batch_bind" as const,
       }
     },
   } as Partial<ToolBatchGateInput>)
@@ -429,41 +468,79 @@ test("child Attempt batches use the refreshed trusted revision on the next turn"
     expect(output.filter((part) => part.type === "tool-call")).toHaveLength(1)
     expect(toolCallOutcome(gate.context, callID)).toMatchObject({
       status: "admitted",
-      directAttempt: { ...initial, expectedRevision: String(Number(expectedRevision) + 1) },
+    })
+    expect((toolCallOutcome(gate.context, callID) as any).directAttempt.scope).toEqual({
+      ...initial,
+      expectedRevision: String(Number(expectedRevision) + 1),
     })
   }
   expect(seenPrepare).toEqual(["1", "2"])
   expect(seenBind).toEqual([
-    { revision: "1", effectIDs: ["effect_1"] },
-    { revision: "2", effectIDs: ["effect_2"] },
+    { revision: "1", transition: "batch_bind" },
+    { revision: "2", transition: "batch_bind" },
   ])
   expect(current.expectedRevision).toBe("3")
 })
 
-test("validates every child effect identity before binding the batch to its Attempt", async () => {
-  const scope = {
-    attemptID: "att_0123456789abcdef",
-    parentSessionID: "session_parent",
-    childSessionID: "session_1",
-    ownerEpoch: "1",
-    expectedRevision: "1",
-    locationID: "loc_child",
-    workspaceID: "wrk_child",
-    workspaceRevision: "blake3:" + "a".repeat(64),
-    capabilityDigest: "sha256:" + "b".repeat(64),
-    permissionsDigest: "sha256:" + "c".repeat(64),
-    budgetDigest: "sha256:" + "d".repeat(64),
-    scopeDigest: "sha256:" + "e".repeat(64),
+test("direct Attempt receipt scope is accepted and exposed for the next ToolBatch member", async () => {
+  const original = directAttemptScope()
+  const bound = { ...original, expectedRevision: "2" }
+  const receiptScope = {
+    ...bound,
+    expectedRevision: "3",
+    workspaceRevision: "blake3:" + "f".repeat(64),
   }
+  let current = original
+  const gate = gateInput({
+    parentSessionID: "session_parent",
+    directAttempt: {
+      currentScope: () => current,
+      acceptRefreshedScope: ({ previous, refreshed }) => {
+        expect(previous).toEqual(current)
+        current = refreshed
+      },
+    },
+    prepareToolBatch: async () => ({
+      status: "admitted" as const,
+      challenge: {
+        challengeID: "ch_receipt_scope",
+        effectID: "eff_receipt_scope",
+        target: "/workspace/a.txt",
+        resource: "a.txt",
+        existed: false,
+      },
+      directAttempt: bound,
+      attemptScopeTransition: "batch_bind" as const,
+    }),
+  } as Partial<ToolBatchGateInput>)
+  await collect(
+    gateToolCallStream(
+      stream([toolCall("direct_receipt_scope", "write", '{"filePath":"/workspace/a.txt","content":"x"}'), finish]),
+      gate,
+    ),
+  )
+
+  const outcome = toolCallOutcome(gate.context, "direct_receipt_scope") as any
+  expect(outcome.status).toBe("admitted")
+  expect(outcome.directAttempt.scope).toEqual(bound)
+  ToolBatch.acceptDirectAttemptReceipt(outcome.directAttempt, bound, {
+    directAttempt: receiptScope,
+    attemptScopeTransition: "effect_receipt",
+  })
+  expect(current).toEqual(receiptScope)
+  expect(ToolBatch.currentDirectAttemptScope(outcome.directAttempt)).toEqual(receiptScope)
+})
+
+test("validates every child effect identity before binding the batch to its Attempt", async () => {
+  const scope = directAttemptScope()
   let bindings = 0
   let cancellations = 0
   const gate = gateInput({
     parentSessionID: "session_parent",
     directAttempt: {
       currentScope: () => scope,
-      bindBatch: async () => {
+      acceptRefreshedScope: () => {
         bindings++
-        return { ...scope, expectedRevision: "2" }
       },
     },
     prepareToolBatch: async (request) => ({
@@ -504,23 +581,10 @@ test("validates every child effect identity before binding the batch to its Atte
 
 test("a forged Attempt child or parent binding is denied before Guard preparation", async () => {
   let preparations = 0
-  const scope = {
-    attemptID: "att_0123456789abcdef",
-    parentSessionID: "some_other_parent",
-    childSessionID: "session_1",
-    ownerEpoch: "1",
-    expectedRevision: "1",
-    locationID: "loc_child",
-    workspaceID: "wrk_child",
-    workspaceRevision: "blake3:" + "a".repeat(64),
-    capabilityDigest: "sha256:" + "b".repeat(64),
-    permissionsDigest: "sha256:" + "c".repeat(64),
-    budgetDigest: "sha256:" + "d".repeat(64),
-    scopeDigest: "sha256:" + "e".repeat(64),
-  }
+  const scope = { ...directAttemptScope(), parentSessionID: "some_other_parent" }
   const gate = gateInput({
     parentSessionID: "session_parent",
-    directAttempt: { currentScope: () => scope, bindBatch: async () => scope },
+    directAttempt: { currentScope: () => scope, acceptRefreshedScope: () => {} },
     prepareToolBatch: async () => {
       preparations++
       return { status: "denied", reason: "must not reach Guard" }
@@ -1760,10 +1824,350 @@ test("refuses a patch challenge whose target set does not match its operations",
   ).toThrow("Tool batch denied")
 })
 
+test("serial Attempt batch requests each later lease only after the previous receipt", async () => {
+  const original = directAttemptScope()
+  const bound = { ...original, expectedRevision: "2" }
+  const firstLease = { effectID: "eff_serial_first", capabilityLeaseDigest: `blake3:${"a".repeat(64)}` }
+  const secondLease = { effectID: "eff_serial_second", capabilityLeaseDigest: `blake3:${"b".repeat(64)}` }
+  let current = original
+  const leaseNextCalls: Array<{ callID: string; previousEffectID: string }> = []
+  const gate = gateInput({
+    parentSessionID: "session_parent",
+    directAttempt: {
+      currentScope: () => current,
+      acceptRefreshedScope: ({ previous, refreshed }) => {
+        expect(previous).toEqual(current)
+        current = refreshed
+      },
+    },
+    prepareToolBatch: async (request) => ({
+      status: "prepared_batch",
+      calls: [
+        { callID: request.calls[0]!.callID, capabilityID: "files.write", lease: firstLease },
+        { callID: request.calls[1]!.callID, capabilityID: "files.write" },
+      ],
+      leaseNext: ({ callID, previousEffectID }) => {
+        leaseNextCalls.push({ callID, previousEffectID })
+        return Effect.succeed({ callID, capabilityID: "files.write", lease: secondLease })
+      },
+      directAttempt: bound,
+      attemptScopeTransition: "batch_bind",
+    }),
+  } as Partial<ToolBatchGateInput>)
+  const output = await collect(
+    gateToolCallStream(
+      stream([
+        toolCall("serial_first", "write", '{"filePath":"/workspace/first.txt","content":"one"}'),
+        toolCall("serial_second", "write", '{"filePath":"/workspace/second.txt","content":"two"}'),
+        finish,
+      ]),
+      gate,
+    ),
+  )
+
+  expect(output.filter((part) => part.type === "tool-call")).toHaveLength(2)
+  const first = toolCallOutcome(gate.context, "serial_first") as any
+  const second = toolCallOutcome(gate.context, "serial_second") as any
+  expect(first.status).toBe("prepared")
+  expect(second.status).toBe("prepared")
+  const resolveLease = (ToolBatch as any).resolveToolBatchLease as (lease: unknown) => Promise<unknown>
+  const settleLease = (ToolBatch as any).settleToolBatchLease as (lease: unknown, receipt: { effectID: string }) => Promise<void>
+  let secondResolved = false
+  const secondLeasePromise = resolveLease(second.lease).then((lease) => {
+    secondResolved = true
+    return lease
+  })
+  await Promise.resolve()
+  expect(secondResolved).toBe(false)
+  expect(leaseNextCalls).toEqual([])
+
+  const resolvedFirst = await resolveLease(first.lease) as { effectID: string }
+  expect(resolvedFirst).toEqual(firstLease)
+  await settleLease(first.lease, { effectID: resolvedFirst.effectID })
+  expect(await secondLeasePromise).toEqual(secondLease)
+  expect(leaseNextCalls).toEqual([{ callID: "serial_second", previousEffectID: "eff_serial_first" }])
+  await settleLease(second.lease, { effectID: secondLease.effectID })
+  expect(leaseNextCalls).toHaveLength(1)
+})
+
+test("serial Attempt batch advances a managed Attempt lease scope from the receipt", async () => {
+  const original = managedAttemptScope("1")
+  const bound = { ...original, expectedManagedRevision: "2" }
+  const advanced = { ...bound, expectedManagedRevision: "3" }
+  const firstLease = { effectID: "eff_managed_first", capabilityLeaseDigest: `blake3:${"a".repeat(64)}` }
+  const secondLease = {
+    effectID: "eff_managed_second",
+    capabilityLeaseDigest: `blake3:${"b".repeat(64)}`,
+    managedAttempt: advanced,
+  }
+  let current = original
+  const accepted: string[] = []
+  const order: string[] = []
+  const gate = gateInput({
+    managedAttempt: {
+      currentScope: () => current,
+      acceptRefreshedScope: ({ previous, refreshed, transition }) => {
+        expect(previous).toEqual(current)
+        accepted.push(`${previous.expectedManagedRevision}->${refreshed.expectedManagedRevision}:${transition}`)
+        current = refreshed
+      },
+    },
+    beforeManagedEffects: async ({ stepFinishIndex }) => {
+      expect(stepFinishIndex).toBe(0)
+      order.push("usage")
+      return "ACCOUNTED"
+    },
+    prepareToolBatch: async (request) => {
+      order.push("guard")
+      return {
+        status: "prepared_batch",
+        calls: [
+          { callID: request.calls[0]!.callID, capabilityID: "files.write", lease: firstLease },
+          { callID: request.calls[1]!.callID, capabilityID: "files.write" },
+        ],
+        leaseNext: ({ callID }) => Effect.succeed({ callID, capabilityID: "files.write", lease: secondLease }),
+        managedAttempt: bound,
+        attemptScopeTransition: "batch_bind",
+      }
+    },
+  } as Partial<ToolBatchGateInput>)
+  await collect(
+    gateToolCallStream(
+      stream([
+        toolCall("managed_first", "write", '{"filePath":"/workspace/first.txt","content":"one"}'),
+        toolCall("managed_second", "write", '{"filePath":"/workspace/second.txt","content":"two"}'),
+        finish,
+      ]),
+      gate,
+    ),
+  )
+
+  const first = toolCallOutcome(gate.context, "managed_first") as any
+  const second = toolCallOutcome(gate.context, "managed_second") as any
+  expect(first.status).toBe("prepared")
+  expect(second.status).toBe("prepared")
+  expect(accepted).toEqual(["1->2:batch_bind"])
+  const resolveLease = (ToolBatch as any).resolveToolBatchLease as (lease: unknown) => Promise<unknown>
+  const settleLease = (ToolBatch as any).settleToolBatchLease as (lease: unknown, receipt: { effectID: string }) => Promise<void>
+  await resolveLease(first.lease)
+  await settleLease(first.lease, { effectID: firstLease.effectID })
+  expect(await resolveLease(second.lease)).toEqual(secondLease)
+  expect(accepted).toEqual(["1->2:batch_bind", "2->3:effect_receipt"])
+  expect(current).toEqual(advanced)
+  expect(order).toEqual(["usage", "guard"])
+})
+
+test("fails closed when a serial lease returns a stale managed Attempt scope", async () => {
+  const original = managedAttemptScope("1")
+  const bound = { ...original, expectedManagedRevision: "2" }
+  const stale = { ...bound, expectedManagedRevision: "1" }
+  const firstLease = { effectID: "eff_stale_first", capabilityLeaseDigest: `blake3:${"c".repeat(64)}` }
+  const secondLease = {
+    effectID: "eff_stale_second",
+    capabilityLeaseDigest: `blake3:${"d".repeat(64)}`,
+    managedAttempt: stale,
+  }
+  let current = original
+  const gate = gateInput({
+    managedAttempt: {
+      currentScope: () => current,
+      acceptRefreshedScope: ({ previous, refreshed }) => {
+        expect(previous).toEqual(current)
+        current = refreshed
+      },
+    },
+    beforeManagedEffects: async () => "ACCOUNTED",
+    prepareToolBatch: async (request) => ({
+      status: "prepared_batch",
+      calls: [
+        { callID: request.calls[0]!.callID, capabilityID: "files.write", lease: firstLease },
+        { callID: request.calls[1]!.callID, capabilityID: "files.write" },
+      ],
+      leaseNext: ({ callID }) => Effect.succeed({ callID, capabilityID: "files.write", lease: secondLease }),
+      managedAttempt: bound,
+      attemptScopeTransition: "batch_bind",
+    }),
+  } as Partial<ToolBatchGateInput>)
+  await collect(
+    gateToolCallStream(
+      stream([
+        toolCall("stale_managed_first", "write", '{"filePath":"/workspace/first.txt","content":"one"}'),
+        toolCall("stale_managed_second", "write", '{"filePath":"/workspace/second.txt","content":"two"}'),
+        finish,
+      ]),
+      gate,
+    ),
+  )
+
+  const first = toolCallOutcome(gate.context, "stale_managed_first") as any
+  const second = toolCallOutcome(gate.context, "stale_managed_second") as any
+  const resolveLease = (ToolBatch as any).resolveToolBatchLease as (lease: unknown) => Promise<unknown>
+  const settleLease = (ToolBatch as any).settleToolBatchLease as (lease: unknown, receipt: { effectID: string }) => Promise<void>
+  await resolveLease(first.lease)
+  let settlementFailure: unknown
+  await settleLease(first.lease, { effectID: firstLease.effectID }).catch((error) => {
+    settlementFailure = error
+  })
+  expect(String(settlementFailure)).toContain("stale managed Attempt scope")
+  let continuationFailure: unknown
+  await resolveLease(second.lease).catch((error) => {
+    continuationFailure = error
+  })
+  expect(String(continuationFailure)).toContain("stale managed Attempt scope")
+})
+
+test("managed effects stay fail-closed when pre-Guard usage accounting is absent or stopped", async () => {
+  for (const beforeManagedEffects of [undefined, async () => "STOPPED" as const]) {
+    let preparations = 0
+    const gate = gateInput({
+      managedAttempt: {
+        currentScope: () => managedAttemptScope(),
+        acceptRefreshedScope: () => {},
+      },
+      ...(beforeManagedEffects ? { beforeManagedEffects } : {}),
+      prepareToolBatch: async () => {
+        preparations++
+        return { status: "denied", reason: "must not run" }
+      },
+    } as Partial<ToolBatchGateInput>)
+    const output = await collect(gateToolCallStream(
+      stream([toolCall("managed_unaccounted", "write", '{"filePath":"/workspace/a.txt","content":"x"}'), finish]),
+      gate,
+    ))
+    expect(preparations).toBe(0)
+    expect(output.filter((part) => part.type === "tool-call")).toHaveLength(0)
+    expect(toolCallOutcome(gate.context, "managed_unaccounted")).toMatchObject({ status: "denied" })
+  }
+})
+
+test("an authenticated exhausted managed scope is denied before ToolBatch prepare or lease admission", async () => {
+  let preparations = 0
+  const exhausted = { ...managedAttemptScope(), remainingTokens: "0" }
+  const gate = gateInput({
+    managedAttempt: {
+      currentScope: () => exhausted,
+      acceptRefreshedScope: () => {},
+    },
+    beforeManagedEffects: async () => "ACCOUNTED" as const,
+    prepareToolBatch: async () => {
+      preparations++
+      return { status: "denied", reason: "must not run" }
+    },
+  } as Partial<ToolBatchGateInput>)
+  const output = await collect(gateToolCallStream(
+    stream([toolCall("managed_exhausted", "write", '{"filePath":"/workspace/a.txt","content":"x"}'), finish]),
+    gate,
+  ))
+  expect(preparations).toBe(0)
+  expect(output.filter((part) => part.type === "tool-call")).toHaveLength(0)
+  expect(toolCallOutcome(gate.context, "managed_exhausted")).toMatchObject({ status: "denied" })
+})
+
+test("a failed serial Attempt member aborts later members instead of leaving them pending", async () => {
+  const original = directAttemptScope()
+  const bound = { ...original, expectedRevision: "2" }
+  const firstLease = { effectID: "eff_failed_first", capabilityLeaseDigest: `blake3:${"e".repeat(64)}` }
+  const leaseNextCalls: string[] = []
+  let current = original
+  const gate = gateInput({
+    parentSessionID: "session_parent",
+    directAttempt: {
+      currentScope: () => current,
+      acceptRefreshedScope: ({ previous, refreshed }) => {
+        expect(previous).toEqual(current)
+        current = refreshed
+      },
+    },
+    prepareToolBatch: async (request) => ({
+      status: "prepared_batch",
+      calls: [
+        { callID: request.calls[0]!.callID, capabilityID: "files.write", lease: firstLease },
+        { callID: request.calls[1]!.callID, capabilityID: "files.write" },
+      ],
+      leaseNext: ({ callID }) => {
+        leaseNextCalls.push(callID)
+        return Effect.succeed({
+          callID,
+          capabilityID: "files.write",
+          lease: { effectID: "eff_failed_second", capabilityLeaseDigest: `blake3:${"f".repeat(64)}` },
+        })
+      },
+      directAttempt: bound,
+      attemptScopeTransition: "batch_bind",
+    }),
+  } as Partial<ToolBatchGateInput>)
+  await collect(
+    gateToolCallStream(
+      stream([
+        toolCall("failed_first", "write", '{"filePath":"/workspace/first.txt","content":"one"}'),
+        toolCall("failed_second", "write", '{"filePath":"/workspace/second.txt","content":"two"}'),
+        finish,
+      ]),
+      gate,
+    ),
+  )
+
+  const first = toolCallOutcome(gate.context, "failed_first") as any
+  const second = toolCallOutcome(gate.context, "failed_second") as any
+  const resolveLease = (ToolBatch as any).resolveToolBatchLease as (lease: unknown) => Promise<unknown>
+  const settleLease = (ToolBatch as any).settleToolBatchLease as (lease: unknown, receipt: { effectID: string }) => Promise<void>
+  const failLease = (ToolBatch as any).failToolBatchLease as (lease: unknown, reason: unknown) => void
+  await resolveLease(first.lease)
+  let continuationFailure: unknown
+  const pending = resolveLease(second.lease).catch((error) => {
+    continuationFailure = error
+  })
+  failLease(first.lease, new Error("write failed before receipt"))
+  await pending
+  expect(String(continuationFailure)).toContain("write failed before receipt")
+  expect(leaseNextCalls).toEqual([])
+  await settleLease(first.lease, { effectID: firstLease.effectID })
+  failLease(first.lease, new Error("late failure"))
+  expect(leaseNextCalls).toEqual([])
+})
+
+test("fails closed when a serial Attempt member has no lease or leaseNext continuation", async () => {
+  const original = directAttemptScope()
+  const bound = { ...original, expectedRevision: "2" }
+  const gate = gateInput({
+    parentSessionID: "session_parent",
+    directAttempt: { currentScope: () => original, acceptRefreshedScope: () => {} },
+    prepareToolBatch: async (request) => ({
+      status: "prepared_batch",
+      calls: [
+        {
+          callID: request.calls[0]!.callID,
+          capabilityID: "files.write",
+          lease: { effectID: "eff_only", capabilityLeaseDigest: `blake3:${"a".repeat(64)}` },
+        },
+        { callID: request.calls[1]!.callID, capabilityID: "files.write" },
+      ],
+      directAttempt: bound,
+      attemptScopeTransition: "batch_bind",
+    }),
+  } as Partial<ToolBatchGateInput>)
+  await collect(
+    gateToolCallStream(
+      stream([
+        toolCall("missing_continuation_first", "write", '{"filePath":"/workspace/first.txt","content":"one"}'),
+        toolCall("missing_continuation_second", "write", '{"filePath":"/workspace/second.txt","content":"two"}'),
+        finish,
+      ]),
+      gate,
+    ),
+  )
+
+  expect(toolCallOutcome(gate.context, "missing_continuation_first")).toMatchObject({
+    status: "denied",
+    reason: expect.stringContaining("serial lease continuation"),
+  })
+  expect(toolCallOutcome(gate.context, "missing_continuation_second")).toMatchObject({ status: "denied" })
+})
+
 test("admits a prepared multi-call batch with one one-use lease per member", async () => {
   const lease = (callID: string) => ({
     effectID: `eff_${callID}`,
-    capabilityLeaseDigest: `blake3:${"b".repeat(64)}`,
+    capabilityLeaseDigest: `blake3:${(callID === "call_left" ? "b" : "c").repeat(64)}`,
   })
   const gate = gateInput({
     prepareToolBatch: async (request) => ({

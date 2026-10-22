@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "horizon://schemas/workspace-command-profile-v1",
+  "title": "WorkspaceCommandProfileV1",
+  "description": "Trusted, user-owned immutable profile for bounded build/test commands. It is configuration, never execution authority; every invocation still requires current Guard admission and an ExecutionHost receipt.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "profileId", "revision", "enabled", "actions", "executable", "arguments", "workingDirectory", "environment", "filesystem", "network", "limits", "profileDigest"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "profileId": {"$ref": "#/definitions/id"},
+    "revision": {"$ref": "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64"},
+    "enabled": {"type": "boolean"},
+    "actions": {"type": "array", "minItems": 1, "maxItems": 2, "uniqueItems": true, "items": {"enum": ["build", "test"]}},
+    "executable": {
+      "type": "object", "additionalProperties": false,
+      "required": ["selector", "resolvedDigest"],
+      "properties": {
+        "selector": {"type": "string", "minLength": 1, "maxLength": 256, "description": "Trusted packaged or user-configured executable selector; never a model-supplied path."},
+        "resolvedDigest": {"$ref": "#/definitions/digest"}
+      }
+    },
+    "arguments": {
+      "type": "object", "additionalProperties": false,
+      "required": ["fixedPrefix", "allowedValuesByPosition", "maxCount", "maxBytes"],
+      "properties": {
+        "fixedPrefix": {"type": "array", "maxItems": 64, "items": {"type": "string", "maxLength": 256}},
+        "allowedValuesByPosition": {"type": "array", "maxItems": 64, "items": {"type": "array", "minItems": 1, "maxItems": 128, "uniqueItems": true, "items": {"type": "string", "maxLength": 256}}},
+        "maxCount": {"type": "integer", "minimum": 0, "maximum": 128},
+        "maxBytes": {"type": "integer", "minimum": 1, "maximum": 32768}
+      },
+      "description": "No shell parsing, substitution, expansion, or concatenation. Invocation is an argv vector validated position by position against immutable literals."
+    },
+    "workingDirectory": {"const": "registered_workspace_root"},
+    "environment": {
+      "type": "object", "additionalProperties": false,
+      "required": ["policy", "allowedNames"],
+      "properties": {"policy": {"const": "sanitized_allowlist"}, "allowedNames": {"type": "array", "maxItems": 64, "uniqueItems": true, "items": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$"}}},
+      "description": "Values are resolved from trusted host configuration; secret-bearing names and values cannot enter the model request or grant."
+    },
+    "filesystem": {"const": "registered_workspace_and_isolated_temp_cache_roots"},
+    "network": {"enum": ["deny", "explicit_network_egress_grant"]},
+    "limits": {
+      "type": "object", "additionalProperties": false,
+      "required": ["maxWallTimeMs", "maxStdoutBytes", "maxStderrBytes", "maxProcesses", "requiredOsGuarantees"],
+      "properties": {
+        "maxWallTimeMs": {"type": "integer", "minimum": 1, "maximum": 3600000},
+        "maxStdoutBytes": {"type": "integer", "minimum": 1, "maximum": 16777216},
+        "maxStderrBytes": {"type": "integer", "minimum": 1, "maximum": 16777216},
+        "maxProcesses": {"type": "integer", "minimum": 1, "maximum": 256},
+        "requiredOsGuarantees": {"type": "array", "uniqueItems": true, "items": {"enum": ["cpu", "memory", "process_count", "file_descriptors", "filesystem_write_confinement", "network_confinement"]}}
+      }
+    },
+    "profileDigest": {"$ref": "#/definitions/digest"}
+  },
+  "definitions": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9._:-]+$"},
+    "digest": {"type": "string", "pattern": "^blake3:[a-f0-9]{64}$"}
+  },
+  "$defs": {
+    "grantRef": {
+      "type": "object", "additionalProperties": false,
+      "required": ["profileId", "revision", "profileDigest", "action"],
+      "properties": {
+        "profileId": {"$ref": "#/definitions/id"},
+        "revision": {"$ref": "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64"},
+        "profileDigest": {"$ref": "#/definitions/digest"},
+        "action": {"enum": ["build", "test"]}
+      }
+    }
+  },
+  "x-horizon-validation": [
+    "profile-is-user-owned-global-config-and-project-or-model-cannot-create-or-change-it",
+    "profile-digest-is-domain-separated-blake3-over-canonical-validated-definition-excluding-profileDigest",
+    "resolved-executable-identity-is-rechecked-by-host-before-each-launch;-path-or-digest-drift-fails-closed",
+    "arguments-are-exact-argv-literals-matching-the-positional-policy-with-no-shell-interpolation",
+    "cpu-memory-process-count-and-fd-limits-are-claims-only-when-the-selected-os-backend-verifies-enforcement-before-start",
+    "network-is-denied-unless-a-separate-current-exact-network-egress-grant-is-bound",
+    "profile-selection-does-not-authorize-execution; Guard-intent-one-use-lease-ExecutionHost-receipt-and-UNKNOWN-reconciliation-remain-required"
+  ]
+}

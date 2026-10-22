@@ -343,6 +343,8 @@ describe("lsp.broker generation ledger", () => {
       locationID: "location-1",
       sessionID: "session-1",
       workspaceRevision: "blake3:" + "1".repeat(64),
+      effectiveMaxTokens: "100000",
+      remainingTokens: "100000",
       delegationBindingDigest: "blake3:" + "e".repeat(64),
     }
     const snapshot = ledger.register(input({ managedAttemptScope }))

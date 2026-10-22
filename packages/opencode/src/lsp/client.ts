@@ -6,6 +6,7 @@ import { Effect, Schema } from "effect"
 import { withTimeout } from "../util/timeout"
 import { Filesystem } from "@/util/filesystem"
 import type { InstanceContext } from "@/project/instance-context"
+import { makeRepoDocumentReader } from "./repo-document-reader"
 import {
   validateExecutionLaunchProfileRef,
   validateHostProcessRef,
@@ -14,11 +15,20 @@ import {
 } from "./process-scope"
 import { assertLanguageServiceProcessAllowed } from "./launch"
 import {
+  validateCodeActionParamsV1,
+  validateCodeActionProposalsV1,
+  validateRenameEditV1,
+  validateRenameParamsV1,
+  type CodeActionEditProposalV1,
+  type VersionedWorkspaceEditV1,
+} from "./edits"
+import {
   type LspRequestMethodV1,
   type LspServerNotificationMethod,
   type LspServerRequestMethod,
   type LspNotificationMethodV1,
 } from "./protocol"
+import type { EditorProcessStatusV1 } from "./process-lifecycle"
 
 const DIAGNOSTICS_DEBOUNCE_MS = 150
 const DIAGNOSTICS_DOCUMENT_WAIT_TIMEOUT_MS = 5_000
@@ -26,7 +36,10 @@ const DIAGNOSTICS_FULL_WAIT_TIMEOUT_MS = 10_000
 const DIAGNOSTICS_REQUEST_TIMEOUT_MS = 3_000
 
 const INITIALIZE_TIMEOUT_MS = 45_000
-const MAX_OPEN_DOCUMENT_BYTES = 6 * 1024 * 1024
+// Keep the source document bound aligned with RepoDocumentReadV1 and
+// HostKernel's authenticated read limit. Larger files remain unavailable to
+// LSP rather than being truncated or loaded through a Core filesystem path.
+const MAX_OPEN_DOCUMENT_BYTES = 128 * 1024
 const MAX_PROTOCOL_VALUE_BYTES = 1024 * 1024
 const documentEncoder = new TextEncoder()
 
@@ -50,6 +63,8 @@ export type LspRequestParams = {
   "workspace/diagnostic": { readonly identifier?: string; readonly previousResultIds: readonly unknown[] }
   "textDocument/definition": Record<string, unknown>
   "textDocument/references": Record<string, unknown>
+  "textDocument/codeAction": Record<string, unknown>
+  "textDocument/rename": Record<string, unknown>
   "textDocument/documentSymbol": Record<string, unknown>
   "workspace/symbol": Record<string, unknown>
 }
@@ -59,11 +74,13 @@ export type LspNotificationParams = {
   "textDocument/didOpen": { readonly textDocument: { readonly uri: string; readonly languageId: string; readonly version: number; readonly text: string } }
   "textDocument/didChange": Record<string, unknown>
   "textDocument/didClose": { readonly textDocument: { readonly uri: string } }
+  "workspace/didChangeConfiguration": { readonly settings: Record<string, unknown> }
+  "workspace/didChangeWatchedFiles": { readonly changes: readonly { readonly uri: string; readonly type: number }[] }
   "$/cancelRequest": { readonly id: string | number }
   exit: Record<string, never>
 }
 
-type LspServerRequestParams = {
+export type LspServerRequestParams = {
   "window/workDoneProgress/create": Record<string, unknown>
   "workspace/configuration": { readonly items?: readonly { readonly section?: string }[] }
   "client/registerCapability": { readonly registrations?: readonly CapabilityRegistration[] }
@@ -96,12 +113,32 @@ export class InitializeError extends Schema.TaggedErrorClass<InitializeError>()(
   cause: Schema.optional(Schema.Defect()),
 }) {}
 
+type DocumentUnavailableReason = "outside_workspace" | "stale_workspace" | "stale_document" | "too_large" | "reader_unavailable"
+
 export class DocumentUnavailableError extends Schema.TaggedErrorClass<DocumentUnavailableError>()(
   "LSPDocumentUnavailableError",
   {
-    reason: Schema.Literals(["outside_workspace", "stale_workspace", "too_large", "reader_unavailable"]),
+    reason: Schema.Literals(["outside_workspace", "stale_workspace", "stale_document", "too_large", "reader_unavailable"]),
   },
 ) {}
+
+function repoDocumentUnavailableReason(error: unknown): DocumentUnavailableReason {
+  if (error instanceof DocumentUnavailableError) return error.reason
+  if (typeof error !== "object" || error === null) return "reader_unavailable"
+  const value = error as Record<string, unknown>
+  const reason = typeof value.reason === "string" ? value.reason.toLowerCase() : ""
+  const hostCode = typeof value.hostCode === "string" ? value.hostCode.toLowerCase() : ""
+  if ([reason, hostCode].some((item) => item.includes("stale") || item.includes("revision"))) {
+    return "stale_workspace"
+  }
+  if ([reason, hostCode].some((item) => item.includes("too_large") || item.includes("oversized"))) {
+    return "too_large"
+  }
+  if ([reason, hostCode].some((item) => item.includes("outside_workspace") || item.includes("out_of_scope"))) {
+    return "outside_workspace"
+  }
+  return "reader_unavailable"
+}
 
 export type GuardedDocumentSnapshot = {
   readonly text: string
@@ -129,7 +166,7 @@ type DiagnosticRequestResult = {
   byFile: Map<string, Diagnostic[]>
 }
 
-type CapabilityRegistration = {
+export type CapabilityRegistration = {
   id: string
   method: string
   registerOptions?: {
@@ -274,7 +311,7 @@ function shouldSeedDiagnosticsOnFirstPush(serverID: string) {
   return serverID === "typescript"
 }
 
-export async function create(input: {
+export type LspClientCreateInput = {
   serverID: string
   /** Injected typed HostKernel protocol adapter; never a ChildProcess or stdio stream. */
   protocol: LspProtocolAdapter
@@ -294,7 +331,33 @@ export async function create(input: {
   }) => Promise<GuardedDocumentSnapshot>
   /** HostKernel process stop adapter bound to the retained process ref. */
   stopServer: (request: { readonly processRef: HostProcessRefV1; readonly expectedWorkspaceRevision: string }) => Promise<void>
-}) {
+  /** Read-only status for this exact HostKernel process and Attempt scope. */
+  readProcessStatus?: () => Promise<Pick<EditorProcessStatusV1, "state">>
+}
+
+/**
+ * Production composition seam for document synchronization. It accepts the
+ * authenticated Core supervisor and trusted effect runner, then creates the
+ * only reader callback used by didOpen/didChange. The adapter has no local
+ * filesystem fallback and binds every read to its Session/Location.
+ */
+export function createWithRepoDocumentReader(input: Omit<LspClientCreateInput, "readDocument"> & {
+  readonly repoDocumentReader: {
+    readonly supervisor: Parameters<typeof makeRepoDocumentReader>[0]
+    readonly identity: Parameters<typeof makeRepoDocumentReader>[1]
+    readonly runTrustedEffect: Parameters<typeof makeRepoDocumentReader>[2]
+  }
+}): Promise<Info> {
+  const { repoDocumentReader, ...clientInput } = input
+  const readDocument = makeRepoDocumentReader(
+    repoDocumentReader.supervisor,
+    repoDocumentReader.identity,
+    repoDocumentReader.runTrustedEffect,
+  )
+  return create({ ...clientInput, readDocument })
+}
+
+export async function create(input: LspClientCreateInput) {
   // The typed adapter contract is inert until P1 supplies the durable HostKernel
   // operation/event route and verified launch authority.
   assertLanguageServiceProcessAllowed("server.spawn")
@@ -756,8 +819,42 @@ export async function create(input: {
     get serverID() {
       return input.serverID
     },
+    /** Reconcile only the exact retained HostKernel process; never starts it. */
+    async readProcessStatus() {
+      const status = await input.readProcessStatus?.()
+      return status === undefined ? undefined : Object.freeze({ state: status.state })
+    },
     get connection() {
       return connection
+    },
+    /** Request bounded code-action proposals from the pinned language server.
+     * Commands are rejected and returned edits must go through files.patch. */
+    async prepareCodeAction(params: Record<string, unknown>): Promise<readonly CodeActionEditProposalV1[]> {
+      const request = validateCodeActionParamsV1(params)
+      const textDocument = request.textDocument as { readonly uri: string }
+      const filePath = workspaceFilePath(textDocument.uri)
+      if (!filePath) throw new DocumentUnavailableError({ reason: "outside_workspace" })
+      await result.notify.open({ path: filePath })
+      const sourceVersion = files[filePath]?.version
+      const response = await connection.sendRequest("textDocument/codeAction", request)
+      if (sourceVersion === undefined || files[filePath]?.version !== sourceVersion) {
+        throw new DocumentUnavailableError({ reason: "stale_document" })
+      }
+      return validateCodeActionProposalsV1(response)
+    },
+    /** Request a versioned rename proposal. No WorkspaceEdit is applied here. */
+    async prepareRename(params: Record<string, unknown>): Promise<VersionedWorkspaceEditV1 | undefined> {
+      const request = validateRenameParamsV1(params)
+      const textDocument = request.textDocument as { readonly uri: string }
+      const filePath = workspaceFilePath(textDocument.uri)
+      if (!filePath) throw new DocumentUnavailableError({ reason: "outside_workspace" })
+      await result.notify.open({ path: filePath })
+      const sourceVersion = files[filePath]?.version
+      const response = await connection.sendRequest("textDocument/rename", request)
+      if (sourceVersion === undefined || files[filePath]?.version !== sourceVersion) {
+        throw new DocumentUnavailableError({ reason: "stale_document" })
+      }
+      return validateRenameEditV1(response)
     },
     notify: {
       async open(request: { path: string }) {
@@ -783,8 +880,8 @@ export async function create(input: {
             expectedWorkspaceRevision: input.workspaceRevision,
             maxBytes: MAX_OPEN_DOCUMENT_BYTES,
           })
-        } catch {
-          throw new DocumentUnavailableError({ reason: "reader_unavailable" })
+        } catch (error) {
+          throw new DocumentUnavailableError({ reason: repoDocumentUnavailableReason(error) })
         }
         if (
           typeof snapshot?.text !== "string" ||
@@ -899,3 +996,5 @@ export async function create(input: {
 }
 
 export * as LSPClient from "./client"
+export { HostKernelLspProtocolClientV1 } from "./host-protocol-client"
+export { makeEditorProtocolGuardAuthorizerV1 } from "./guard-authorizer"

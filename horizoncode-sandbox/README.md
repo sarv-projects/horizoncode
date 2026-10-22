@@ -46,7 +46,11 @@ worker confined by a different profile.
   `--unshare-all` namespaces, scoped `--ro-bind`/`--bind` roots, protected
   subpaths re-applied read-only, deny masks (`--perms 000 --tmpfs` /
   `--ro-bind-data`), `--die-with-parent`, `--new-session`, `--cap-drop ALL`,
-  private `/tmp`, WSL2 interop masking.
+  private `/tmp`, WSL2 interop masking. Linux spawn also arms the direct child
+  with `PR_SET_PDEATHSIG(SIGKILL)` and checks the parent PID after arming to
+  close the fork/exec race. For the enforced bubblewrap process-tree profile,
+  the parent-death signal terminates the namespace supervisor and
+  `--die-with-parent` tears down its confined PID namespace.
 - `ConfinementBackend::LandlockWriteScope` (explicitly requested only): raw
   Landlock syscalls for write scoping plus TCP denial on ABI ≥ 4. Reads,
   process tree and residual gaps are reported, not hidden. It is deliberately
@@ -55,9 +59,11 @@ worker confined by a different profile.
 
 ## Scope boundary
 
-Deadlines, bounded/truncated output receipts, whole-process-tree termination,
-UNKNOWN reconciliation, effect leases and resource budgets belong to the
-kernel `ExecutionHost` (`kernel/src/effect_host.rs`), not to this crate.
+Deadlines, bounded/truncated output receipts, explicit cancellation, observed
+exit, UNKNOWN reconciliation, effect leases and resource budgets belong to the
+kernel `ExecutionHost` (`kernel/src/effect_host.rs`), not to this crate. The
+Linux parent-death signal is only the crash fence; it is not a successful exit
+receipt or proof that an operation completed.
 
 ## Tests
 

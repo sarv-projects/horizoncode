@@ -24,6 +24,12 @@ const cfg = [
 
 const out = (result: { text(): string }) => result.text().trim()
 const nuls = (text: string) => text.split("\0").filter(Boolean)
+/** Git inspection still starts a host process, so read-only flags alone do not
+ * constitute HostKernel Guard authorization. Keep this origin closed until the
+ * canonical guarded reader is connected. */
+export function gitProcessRouteAvailable(): boolean {
+  return false
+}
 const fail = (err: unknown) =>
   ({
     exitCode: 1,
@@ -110,6 +116,9 @@ const layer = Layer.effect(
 
     const run = Effect.fn("Git.run")(
       function* (args: string[], opts: Options) {
+        if (!gitProcessRouteAvailable()) {
+          return fail(new Error("Git process execution is unavailable until HostKernel Guarded read execution is wired"))
+        }
         const result = yield* appProcess.run(
           ChildProcess.make("git", [...cfg, ...args], {
             cwd: opts.cwd,

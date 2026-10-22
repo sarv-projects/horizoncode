@@ -11,7 +11,13 @@ import { LocationServiceMap } from "@opencode-ai/core/location-services"
 import { Location } from "@opencode-ai/core/location"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { TrustedPrincipalContext } from "@opencode-ai/core/trusted-principal"
-import type { DirectAttemptScopeV1, EffectLease } from "@opencode-ai/core/session/supervisor"
+import type { EffectLease } from "@opencode-ai/core/session/supervisor"
+import {
+  acceptDirectAttemptReceipt,
+  acceptDirectTurnBatchReceipt,
+  settleToolBatchLease,
+  type ToolBatchDirectAttemptAuthority,
+} from "@/session/tool-batch"
 import type { Parameters } from "./shell/prompt"
 
 export { Parameters } from "./shell/prompt"
@@ -67,6 +73,8 @@ export const ShellTool = Tool.define(
 
               yield* ctx.metadata({ metadata: { output: "", status: "running" } })
               const locationRef = Location.Ref.make({ directory: AbsolutePath.make(instance.directory) })
+              const directAttempt = ctx.extra?.directAttempt as ToolBatchDirectAttemptAuthority | undefined
+              const directAttemptScope = directAttempt?.currentScope()
               const result = yield* Effect.gen(function* () {
                 const terminal = yield* Pty.Service
                 return yield* terminal.runTool({
@@ -78,14 +86,30 @@ export const ShellTool = Tool.define(
                     capabilityID: "terminal.run",
                     arguments: ctx.extra?.guardedPatch,
                   },
-                  ...(ctx.extra?.directAttempt !== undefined
-                    ? { directAttempt: ctx.extra.directAttempt as DirectAttemptScopeV1 }
-                    : {}),
+                  ...(directAttempt?.directTurn ? { directTurnScope: directAttempt.directTurn.currentScope() } : {}),
                 })
               }).pipe(
                 Effect.provide(locations.value.get(locationRef)),
                 Effect.provideService(TrustedPrincipalContext, { principal: trustedPrincipal }),
               )
+              if (directAttemptScope) {
+                if (!result.directAttempt || result.attemptScopeTransition !== "effect_receipt") {
+                  return yield* Effect.fail(new Error("Shell denied: HostKernel omitted direct Attempt receipt scope"))
+                }
+                acceptDirectAttemptReceipt(directAttempt, directAttemptScope, result)
+                if (directAttempt?.directTurn && result.directTurnScope) {
+                  yield* Effect.promise(() => acceptDirectTurnBatchReceipt(directAttempt, result))
+                }
+              }
+              yield* Effect.promise(() => settleToolBatchLease(lease, { effectID: lease.effectID }))
+              // Give the model the opaque receipt-bound ref needed to search
+              // captured output. Raw artifact contents remain available only
+              // through the existing authenticated ArtifactControl range path.
+              const searchableArtifact = result.artifactRef &&
+                result.artifactRef.classification !== "sensitive" &&
+                (result.artifactFidelity === "FULL" || result.artifactFidelity === "SAMPLE")
+                ? `\n[Captured output artifact: ${JSON.stringify(result.artifactRef)}. Use terminal_search or artifacts_search_text to search its text.]`
+                : ""
               return {
                 title: params.command,
                 metadata: {
@@ -99,7 +123,7 @@ export const ShellTool = Tool.define(
                   artifactFidelity: result.artifactFidelity,
                   truncated: result.previewTruncated || result.artifactTruncated,
                 },
-                output: result.preview,
+                output: `${result.preview}${searchableArtifact}`,
               }
             }).pipe(Effect.orDie),
         }

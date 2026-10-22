@@ -4,7 +4,11 @@ Status: normative dependency order. Current code/test evidence belongs in HANDOF
 
 ## 10.1 Rule
 
-Implement the smallest vertical slice that crosses real production owners, then prove it with negative/recovery tests before advancing. Do not build later UX around a bypass that the next phase intends to remove.
+Implement production-connected slices and prove each boundary with negative/recovery evidence.
+The dependency order is an acceptance gate, not a cap on independent phase work: prepare and
+implement every unblocked phase/module in parallel, while keeping dependent effectful paths
+unavailable until their prerequisite evidence passes. Do not build later UX around a bypass that
+the next phase intends to remove.
 
 ## 10.2 P0 — Preserve and pin the base
 
@@ -58,7 +62,16 @@ Exit:
 - files/search/edit Git/process/build/test wrappers through canonical capabilities;
 - Hashline-style stale-edit strategy inside files.patch, not a second editor API;
 - RepoIntel symbol/index generation and bounded lexical fallback;
-- context operations and tool discovery;
+- V1 ContextService compilation of the bounded provider-visible context for direct and managed
+  prompt paths, with source/revision/token provenance;
+- context operations and progressive authorized tool discovery;
+- V1 CodeMode using the existing OpenCode-derived interpreter as a short-lived helper process
+  under the existing Rust ExecutionHost supervisor and the existing tool registry. Core handles
+  bounded versioned stdio tool RPC through SessionSupervisor and the normal atomic ToolBatch, Guard,
+  lease, receipt and UNKNOWN path. Apply the selected ResourceProfile with OS-enforced cgroup-v2
+  containment before execution; CodeMode is unavailable without accepted containment. Cap one script
+  at 64 calls in waves of at most 32, 30 seconds, 64 KiB source/output and 1 MiB aggregate payload.
+  Do not add a second interpreter, supervisor, or capability authority.
 - benchmark native walker/grep/AST only if they outperform existing code.
 
 Exit: common coding change remains fast, guarded and source-grounded.
@@ -77,11 +90,14 @@ Exit: crash/restart, stale generation, multi-workspace and permission tests pass
 
 Browser automation/attached-browser interaction, desktop/computer control and browser-based visual editing are **deferred post-V1** under A-V2-31. Keep these paths unavailable; a documented service contract or upstream implementation is not a V1 feature. Reopen only through an explicit scope decision and the existing Guard, privacy, auth, cost and platform acceptance gates.
 
-Built-in web search is **in V1** per the 2026-10-18 user scope decision (`DEC-V1-26`): §33.9 `web.search.*`, §37.5 `WebSearchBrokerV1`, §16.7/§16.15 provider settings, `DEC-V1-20` cost/auth/reliability matrix, tests in §32. It remains a V1 goal until its Guarded implementation and acceptance tests pass; the built-in default route plus the BYO-key cascade must never silently change cost or auth class.
+Built-in web search is **in V1** per the 2026-10-18 user scope decision (`DEC-V1-26`): §33.9 `web.search.*`, §37.5 `WebSearchBrokerV1`, §16.7/§16.15 provider settings, `DEC-V1-20` cost/auth/reliability matrix, tests in §32. After first-use search consent, its trusted route plan starts with the default-enabled free anonymous built-in cascade; BYO authenticated routes join only when explicitly user-enabled. Grounded-model search is separate and explicit-only. The model supplies no route/account/auth/cost selection. Record route provenance and failures; auth 4xx may fall through only to another explicitly enabled route. No hidden paid route.
 
 ## 10.8 P6 — Agents, extensions, providers and settings UX (V1 CLI/TUI)
 
 - AgentProfile/Harness registry and bounded specialist delegation;
+- direct Core child-Session fan-out is a distinct V1 delegation lane, bounded by its profile,
+  direct-session grant, resource admission and child limits; it is not contingent on managed
+  Goal/Task settlement;
 - skills/hooks/MCP/plugin registry with sealed IDs and capability scoping;
 - one ActionDescriptor for slash/menu/keybinding/API;
 - session model picker plus provider/model/role hub, with OMP as the preferred source for compatible provider/UI patterns;
@@ -97,7 +113,7 @@ Exit: CLI/TUI state and action semantics agree, and credential/cost/Guard tests 
 - stable-prefix streaming and bounded UiEventMux;
 - safe SVG preview, closed-fence Mermaid, deterministic table charts;
 - terminal graphics capability negotiation and bounded image leases;
-- durable artifact FULL/SAMPLE/FAILED truth;
+- durable artifact wire fidelity `full`/`head_tail_sample`/`failed` (displayed as FULL/SAMPLE/FAILED);
 - analytics measured/estimated/unknown provenance;
 - durable automation scheduling that still invokes Guarded actions.
 
@@ -108,7 +124,9 @@ Exit: render fault isolation, keyboard/accessibility fallback, no scroll/focus t
 ## 10.10 P8 — Resource efficiency, recovery and real-work evaluation (V1)
 
 - measured process-tree baseline and bounded parallelism/worktree/resource pools;
-- worker/subagent DAG with typed results, added only after the single managed Attempt and independent verifier pass;
+- managed multi-Task worker/subagent DAG with typed results, enabled only after each Task has
+  independent current-revision evidence and Rust has a durable aggregate settlement/final-Run
+  contract. Direct-session fan-out is governed separately under P6 and §29;
 - deterministic recovery and effect reconciliation;
 - stopping criteria and quota-aware execution without hidden rerouting;
 - task catalog across strong/small/local models;
@@ -209,4 +227,66 @@ The complete supplied note review refines existing V1 delivery owners; it adds n
 | P7 | Full artifact/evidence refs behind compact redacted UI projection; durable replay separated from ephemeral progress; truthful artifact fidelity | P1/P2 for effectful automation and verifier consumption |
 | P8 | Attribute and reserve child/index/test/verifier resources; recover without releasing unsettled authority | P2 verified single Attempt before fan-out |
 
-P3, P6 and non-effectful P7 preparation proceed while P1/P2 dependencies are open. Effectful dependent paths remain unavailable until upstream contract and adversarial/recovery evidence pass. P4, P5 and P9 retain their current V1 scope. VEO-F1..F8 remain optional post-V1 proposals and do not block release. Contract, flow, event and test detail is owned by §§3.21, 4.13, 12.18, 29.20, 30.23, 31.19, 32.38 and 37.22.
+P3, P6 and non-effectful P7 preparation proceed while P1/P2 dependencies are open. Effectful dependent paths remain unavailable until upstream contract and adversarial/recovery evidence pass. P4, P5 and P9 retain their current V1 scope. VEO-F1..F8 remain optional post-V1 proposals and do not block release. Contract, flow, event and test detail is owned by §§3.21, 4.13, 12.18, 29.20, 30.23–30.25, 31.19, 32.38, 32.47 and 37.22.
+
+## 10.18 V1 competitive adaptation priorities (2026-10-22)
+
+Status: normative **release ordering** distilled from external competitive research (Windsurf/Devin Desktop, OpenCode/mgrep, Cursor indexing, Aider repo-map, code-review-graph, and related MCP marketing). This section does **not** promote competitor features into scope by itself; it records **what V1 must finish wiring and accept** using pinned OpenCode/OMP/Codex **patterns** inside existing owners. Research evidence lives in `docs/research/2026-10-21-pi-codex-harness-decisions.md` and §42.21; product law remains §17 (`DEC-V1-34`, `DEC-V1-35`) and A-V2-31.
+
+**Adapt** means complete integration, negative/recovery tests, and honest feature exposure — **not** bolting on separate products (mgrep, code-review-graph, Windsurf IDE shell) as parallel authorities. **Reject as V1 core:** default cloud semantic indexes, second repository graphs, Wasm plugin VMs, headless browser/desktop surfaces, and episodic vector preference stores (see §10.12 and §30.25).
+
+### 10.18.1 Adapt most for V1 (release-critical)
+
+| Prio | What to adapt | Why V1 | Competitor idea answered (without copying) | Primary owner | Acceptance trace |
+|---:|---|---|---|---|---|
+| 1 | P1 Guard / ExecutionHost / sandbox / receipts / UNKNOWN + **direct migration parity** (`DEC-V1-36`: read fast path, warm IPC, batched read RPC) | Nothing else is shippable or honest without it; must not regress OpenCode/Cursor/Claude/Codex direct UX | Codex sandbox; competitor CLI speed | §14 §14.3.1, §10.3 P1.3, §31.24 | §32.14, §32.20, §32.49 PERF-DIRECT-* |
+| 2 | P2 managed lane: one Task vertical → bounded DAG (`DEC-V1-31`) | Core “agent that doesn’t lie about done” | Codex threads; Pi durable invariants only | §11, §29.18 | §32.9, §32.12, SA-* |
+| 3 | §30 context: ledger/selection, **§30.26 cache-anchor vs minimize-tokens**, progressive tools, pressure ops | Token/$ per useful work; stable prefix on cache routes | Aider/Cursor algorithms in one owner | §30.2–30.6, §30.21, §30.26, §37.30 | §32.10–11 (`CX-014`..`021`), CTX-* §32.45 |
+| 4 | P3 RepoIntel in `indexd`: generations, authenticated `query_structure`, `repo.tree`/`repo.detect`, bounded repo tools | Local-first `@codebase` baseline | Lexical/structure first; not “99% MCP graph” | §30.7–30.10, §30.22–30.25 | §32.4, RD-*, §32.47 V1-ADAPT-004 |
+| 5 | P4 LSP (+ DAP/REPL per A-V2-25): broker, diagnostics, document reads via HostKernel | Correctness (diagnostics), not AST-only | “Smart fix” vs tree-sitter-only | §30.7, §37.6–37.8 | §32.28, LS-* |
+| 6 | P5 built-in web search (`DEC-V1-26`): trusted cascade, provenance, no silent paid | V1-promoted capability | Competitor search; page-fetch/cache deferred | §37.5, §33.9 | §32.28, WS-* |
+| 7 | P6 providers / settings / Doctor / S1 (OMP-style UX, models.dev metadata) | Daily usability on local + BYO providers | Cursor provider UX; no hidden fallback | §16, §37.16–19 | §32.21, §32.31, PD-* |
+| 8 | P7 TUI: streaming lanes, context bar, **activity digest** (§31.22), **fast code/diff** (§31.23), layout (§16.21), artifacts, §31 budgets; P3 **instruction load** (§29.23) | Speed + RAM on CLI/TUI; progressive AGENTS/CLAUDE | Cursor-like **edit digest**; Claude **memory** loading model | §31, §16.21, §29.23 | §32.16–17, §32.48 (`ACT-*`), UI-024–030, INST-* |
+| 9 | P8 worktrees / reservations / RC0 resource accounting (fan-out gated) | Parallel workers when P1/P2 prove safe | OpenCode/Codex worktree patterns; not unbounded agent fan-out | §21, §18.17–18 | §32.32–33, JC-RES-*, GS-* |
+| 10 | `DEC-V1-28`/`DEC-V1-29`: direct grants + CodeMode over existing tool tree (after P1) | Fewer round-trips without new authority | Cloudflare Code Mode **pattern** only | §14, §29.22, §33 | §32.41 CM-*, GRANT-* |
+| 11 | P9 install, `horizoncode`/`hzcode`, release gates | Actually “released” | — | §18, §10.11 | §32 release rows, clean-install gates |
+
+### 10.18.2 Inside P3/P4 — adapt algorithms, same owners
+
+Do **not** add a second stack (Python CRG install, default mgrep cloud sync, or duplicate MCP graph authority).
+
+- **Aider-style repo map** (tree-sitter tags → file/symbol graph → rank to token budget) → `indexd` + `ContextSelection` / Context compile (§30.25).
+- **Cursor-style hybrid retrieval** → lexical `indexd` + **optional explicit** embeddings (§30.7: embeddings only when user enables); no default cloud index.
+- **LSP diagnostic loop** (edit → publish → diagnostics → bounded retry) → P4 broker + session runner; not a separate Rust LSP product unless a measured ADR says otherwise.
+
+### 10.18.3 Strong V1 “nice to have” (only if critical path is green)
+
+| Item | Note | Owner |
+|---|---|---|
+| Symbol/reference edges + `impact.analyze` | Large accuracy win; still one `indexd` owner (§42.11 rejects OMP graph port as-is) | §30.8–30.9, §33 |
+| Opt-in local embeddings | §30 allows; not required to pass V1 release gates | §30.7, §30.21 recall |
+| Light mid-run steering (queue message, goal revision `LH-007`, fresh-turn auth) | Partial V1 via P2/P7; not full CRDT co-editing | §03, §11, §32.12 |
+| Persistent `indexd` packs | HostKernel-owned; not a blocker if rebuildable in-process passes acceptance | §30.21, P1/P8 cache |
+
+### 10.18.4 Explicitly post-V1 (do not spend V1 implementation time)
+
+Headless browser/Playwright visual QA; desktop/computer control; web/desktop GUI shells (Windsurf/Devin Desktop-class IDE); mgrep/CRG/**Codebase Memory MCP** as bundled repo engine; default team cloud embeddings; Wasmtime plugin VM (`DEC-V1-05`); kernel Rhai/Lua scripting; LanceDB-style episodic preference learning; full CRDT “grab the wheel” co-editing; Horizon-as-MCP-server (`DEC-V1-23`); external ACP client (`DEC-V1-24`); thin mobile/iOS client (§42.9 candidate #24); competitor marketing token-reduction percentages without §32/HUP evidence.
+
+**Exit:** Every row in §10.18.1 maps to an owning topic document, flow section, schema/capability ID where applicable, and §32.47 traceability ID. Unmapped competitor ideas remain research-only in §42.21.
+
+## 10.19 Product excellence bundle (speed, accuracy, reliability, capabilities, long horizon)
+
+Status: normative V1 product requirements (`DEC-V1-37`, `DEC-V1-38`). Implementation spans P1–P8;
+acceptance §§32.49–52, §32.40 HUP-*, §30.27–30.30.
+
+| Pillar | Owner sections | Release-critical behaviors |
+|---|---|---|
+| **Speed** | §14.3.1, §30.28, §31.24, `DEC-V1-36` | Read fast path, warm IPC, compile overlap, symbol-first, cold index non-blocking |
+| **Accuracy** | §30.29, §10.18.2, §33.18 hooks | Edit loop + diagnostics, stale-edit fences, verifier ≠ coder, HUP holdout, local verify job |
+| **Reliability** | §30.30, §14 UNKNOWN UX, §16 checkpoints | Pressure ladder, import/export, graceful resource degrade |
+| **Capabilities** | §33.32–33, §29.6 `builtin.horizoncode` | Core/Extended/Experimental tiers; skills + tools.search in Core; honest effective counts |
+| **Long horizon** | §30.27 epochs, §30.26 tiers, §31.22 digest | `/clear` vs compact vs Goal; cache_anchor; activity not in context |
+
+**Competitor parity:** OpenCode skill catalog + tool registry; Codex scoped instructions + thread
+tools—Horizon matches with **metadata-first skills**, **`builtin.horizoncode`** integration
+skill, and Guarded mutations (§42.21, §46-V1-MIGRATION-PARITY.md).

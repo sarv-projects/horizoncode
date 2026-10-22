@@ -1,9 +1,13 @@
 /**
- * RepoIntel — Location/workspace-scoped, generation-bound lexical text-search adapter.
+ * RepoIntel — authenticated structural client plus a legacy local-cache adapter.
  *
- * P3 / Gate 4 slice. This module is the caller side of the existing Rust `indexd`
- * primitives (`indexd/src/lib.rs`: `BaseGeneration`, `BufferOverlay`, `RepoIntelGeneration`,
- * `SearchCursor`, bounded lexical search). It is deliberately not a search engine:
+ * The product structural path uses `repoStructureClientFromSupervisor` below:
+ * Core authenticates Session/Location, HostKernel owns the immutable generation and
+ * indexd supplies bounded lexical candidates. The `make`/`RepoIntelBackend` API in
+ * this file is a separate injectable local-cache adapter retained for isolated tests
+ * and non-production callers; its generations are not the product cache owner and it
+ * must not be wired as a second authoritative index. This module is deliberately not
+ * a search engine:
  *
  * 1. it verifies the requested read scope before any filesystem read;
  * 2. it collects a bounded, UTF-8, indexd-legal snapshot set (`FileSnapshot`);
@@ -11,7 +15,7 @@
  * 4. it reuses a bounded in-memory generation cache keyed by (scope, observation);
  * 5. it relays one bounded query (text, symbol or references) through the injected
  *    `RepoIntelBackend` port, optionally against one exact-generation unsaved-buffer
- *    overlay of caller-supplied editor changes;
+ *    overlay from a trusted editor-buffer producer (none is wired in production yet);
  * 6. it re-verifies the observation and labels results fresh/partial/stale.
  *
  * Symbol and reference operations are relayed truthfully: while the wired backend is
@@ -25,11 +29,11 @@
  * of returning results built from the invalidated observation. Cache-pressure
  * eviction releases in the same deferred way but does not fail in-flight queries.
  *
- * The backend port mirrors the Rust API one call at a time and is transport-agnostic.
- * `RepoIntelBackendError` codes are the exact `IndexError` variant names, so the real
- * transport (host-kernel / `hz-indexd` owned, bounded request/response with its own
- * time and byte budgets) can map them mechanically. Until that transport exists the
- * service fails closed with `backend_unavailable` instead of fabricating results.
+ * The local backend port mirrors the crate's legacy text-query API one call at a time
+ * and is transport-agnostic. `RepoIntelBackendError` codes retain that API's typed
+ * failures. Production structural queries use the distinct authenticated supervisor
+ * adapter below; an unavailable local backend never triggers a filesystem or process
+ * fallback.
  *
  * Safety invariants:
  * - Read-only: this module never writes, never acquires a Guard lease, and its results
@@ -73,6 +77,7 @@ export const DEFAULT_MAX_RESULTS = 50
 export const DEFAULT_MAX_DIRECTORIES = MAX_BASE_FILES * 2
 export const DEFAULT_MAX_DURATION_MS = 5_000
 export const DEFAULT_MAX_CACHE_ENTRIES = 8
+export const DEFAULT_REPO_INTEL_CACHE_TTL_MS = 5 * 60_000
 export const MAX_REPORTED_SKIPS = 64
 export const DEFAULT_IGNORED_DIRECTORIES = [".git", "node_modules"] as const
 
@@ -211,8 +216,9 @@ export interface RepoIntelOverlayChange {
 }
 
 export interface RepoIntelOverlayInput {
-  /** Opaque editor/buffer version pinned into the overlay identity. */
+  /** Trusted producer's immutable editor/buffer version; model/request values are not accepted. */
   readonly editorVersion: string
+  /** Internal service seam only; production requires an authenticated Core producer. */
   readonly changes: ReadonlyArray<RepoIntelOverlayChange>
 }
 
@@ -315,6 +321,15 @@ export interface RepoStructureRequestV1 {
   readonly sessionID: string
   readonly locationRef: typeof LocationSchema.Ref.Type
   readonly query: Omit<RepoIntelligenceSchema.RepoStructureQueryV1, "sourceGeneration">
+  /** Trusted profile projection; not part of the model-authored query DTO. */
+  readonly analysisProfile: RepoIntelAnalysisProfileState
+}
+
+/** Structural page plus the trusted profile decision used to serve the request.
+ * This control-plane provenance does not grant mutation authority. */
+export interface RepoIntelStructureResultV1 {
+  readonly page: RepoIntelligenceSchema.RepoStructurePageV1
+  readonly analysisProfile: RepoIntelAnalysisProfileState
 }
 
 /** Core's authenticated SessionSupervisor producer for structural RepoIntel pages. */
@@ -368,6 +383,29 @@ export const repoStructureClientFromTransport = <R>(transport: RepoStructureTran
       ) {
         return yield* Effect.fail(structureTransportRejected("RepoIntel page exceeds or misreports query bounds"))
       }
+      // A continuation token is useful only when the authenticated host has
+      // actually made bounded progress. Never allow a malformed adapter to
+      // return the caller's token unchanged and create an infinite page loop.
+      // Cursor authority and owner/generation binding remain HostKernel-owned.
+      if (page.nextCursor !== undefined) {
+        const cursorBytes = Buffer.byteLength(page.nextCursor, "utf8")
+        if (
+          cursorBytes === 0 ||
+          cursorBytes > RepoIntelligenceSchema.MAX_STRUCTURE_CURSOR_BYTES ||
+          page.nextCursor === input.query.cursor ||
+          page.nodes.length === 0 ||
+          page.nodes.length !== input.query.maxNodes ||
+          page.status !== "PARTIAL" ||
+          page.freshness !== "current" ||
+          page.completeness !== "partial"
+        ) {
+          return yield* Effect.fail(
+            structureTransportRejected(
+              "RepoIntel continuation cursor is invalid: only a full current page with a proven continuation may carry one",
+            ),
+          )
+        }
+      }
       return page
     }),
 })
@@ -416,7 +454,11 @@ export interface RepoIntelSourceFile {
  */
 export interface RepoIntelSourceRoot {
   readonly stat: (rel: string) => Effect.Effect<RepoIntelSourceStat | undefined>
-  readonly readDirectoryEntries: (rel: string) => Effect.Effect<ReadonlyArray<FSUtil.DirEntry> | undefined>
+  /** Directory traversal must stop before materializing more than this many entries. */
+  readonly readDirectoryEntriesBounded: (
+    rel: string,
+    maxEntries: number,
+  ) => Effect.Effect<{ readonly entries: ReadonlyArray<FSUtil.DirEntry>; readonly truncated: boolean } | undefined>
   readonly readFile: (rel: string, maxBytes: number) => Effect.Effect<RepoIntelSourceFile | undefined>
   readonly close: Effect.Effect<void>
 }
@@ -444,12 +486,49 @@ export type RepoIntelAnalysisProfile = "lightweight" | "adaptive" | "full"
 export interface RepoIntelProfileResolution {
   readonly requested?: unknown
   readonly effective?: unknown
+  readonly configurationSource?: unknown
+  /** Owner of the effective projection, never caller/model supplied. */
+  readonly effectiveSource?: unknown
+  readonly policyLock?: unknown
+  /** Why the requested mode was narrowed or cannot currently be served. */
+  readonly reason?: unknown
+}
+
+/** Trusted Core/P6 requested→effective projection consumed alongside a query.
+ * It stays out of RepoStructureQueryV1: model parameters cannot select an
+ * analysis profile or smuggle one into HostKernel authority. */
+export interface RepoIntelProfileProjectionV1 {
+  readonly requested: RepoIntelAnalysisProfile
+  readonly effective: RepoIntelAnalysisProfile
+  readonly configurationSource: "default" | "user" | "project" | "system_policy" | "unknown"
+  readonly effectiveSource: "default" | "settings" | "platform" | "policy" | "resource" | "unknown"
+  readonly policyLock: "locked" | "unlocked" | "unknown"
+  readonly reason?: RepoIntelProfileReason
 }
 
 /** Validated profile provenance attached to every query result. */
 export interface RepoIntelAnalysisProfileState {
   readonly requested: RepoIntelAnalysisProfile
   readonly effective: RepoIntelAnalysisProfile
+  readonly configurationSource: "default" | "user" | "project" | "system_policy" | "unknown"
+  readonly effectiveSource: "default" | "settings" | "platform" | "policy" | "resource" | "unknown"
+  readonly policyLock: "locked" | "unlocked" | "unknown"
+  readonly reason?:
+    | "policy_restriction"
+    | "platform_unavailable"
+    | "resource_pressure"
+    | "feature_unavailable"
+    | "invalid_configuration"
+}
+
+export type RepoIntelProfileReason = NonNullable<RepoIntelAnalysisProfileState["reason"]>
+
+export const DEFAULT_ANALYSIS_PROFILE: RepoIntelAnalysisProfileState = {
+  requested: "lightweight",
+  effective: "lightweight",
+  configurationSource: "default",
+  effectiveSource: "default",
+  policyLock: "unlocked",
 }
 
 export interface SearchBudget {
@@ -462,7 +541,7 @@ export interface SearchBudget {
 }
 
 export type SkipReason = "symlink" | "non_file" | "invalid_path" | "too_large" | "not_utf8" | "unreadable"
-export type CollectionStop = "deadline" | "file_limit" | "byte_limit" | "path_limit" | "directory_limit"
+export type CollectionStop = "deadline" | "file_limit" | "byte_limit" | "path_limit" | "directory_limit" | "entry_limit"
 export type TruncationReason = "result_limit" | "work_limit" | "unavailable" | CollectionStop | "skipped_files"
 
 export interface TextSearchInput {
@@ -473,7 +552,7 @@ export interface TextSearchInput {
   readonly maxResults?: number
   readonly cursor?: string
   readonly expectedGenerationId?: string
-  /** Optional exact-generation unsaved-buffer overlay applied to this query only. */
+  /** Optional trusted producer snapshot; no production editor-buffer producer is wired yet. */
   readonly overlay?: RepoIntelOverlayInput
   readonly budget?: SearchBudget
   readonly signal?: AbortSignal
@@ -521,12 +600,45 @@ export interface Interface {
   readonly searchSymbols: (input: TextSearchInput) => Effect.Effect<RepoIntelTextResult, RepoIntelError>
   readonly findReferences: (input: TextSearchInput) => Effect.Effect<RepoIntelTextResult, RepoIntelError>
   readonly invalidate: (scopeId: string) => Effect.Effect<number>
+  /** Internal owner-only callback: evict one idle, rebuildable generation after its pins drain. */
+  readonly evictGeneration: (scopeId: string, generationId: string) => Effect.Effect<{
+    readonly status: "evicted" | "blocked_pinned" | "not_found"
+    /** Backend release is not a memory measurement; this is always unknown here. */
+    readonly reclaimedBytes: null
+  }>
   readonly stats: () => Effect.Effect<{
     readonly entries: number
     readonly bytes: number
     readonly inFlightBuilds: number
     readonly buildWaiters: number
   }>
+}
+
+/** Cache-owner telemetry from the existing RepoIntel LRU. These are source-byte
+ * accounting values, not a claim about physical index memory or reclaimed RAM. */
+export interface RepoIntelCacheOwnerObservationV1 {
+  readonly event: "register" | "use" | "pin" | "unpin" | "evict" | "release"
+  readonly family: "repo-intel-generation"
+  readonly cacheKey: string
+  readonly scopeId: string
+  /** Opaque owner-bound read-scope digest, not a principal credential. */
+  readonly ownerScopeDigest: string
+  readonly repository?: string
+  readonly workspace?: string
+  readonly sourceGeneration: string
+  readonly sourceRevisionSet: string
+  readonly readPolicyDigest: string
+  readonly buildVersion: string
+  readonly accountedSourceBytes: number
+  readonly entryCount: number
+  readonly totalAccountedSourceBytes: number
+  readonly maxEntries: number
+  readonly maxAccountedSourceBytes: number
+  readonly ttlMs: number
+  readonly lastUsedAt: number
+  readonly pinCount: number
+  readonly protection: "pinned" | "rebuildable"
+  readonly reclaimedBytes: null
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/RepoIntel") {}
@@ -567,6 +679,7 @@ type EntryRetirement = "none" | "invalidated" | "evicted"
 interface CacheEntry {
   readonly key: string
   readonly scopeId: string
+  readonly pins: RepoIntelPins
   readonly handle: RepoIntelGenerationHandle
   readonly bytes: number
   lastUsedAt: number
@@ -717,20 +830,36 @@ export const nodeSource: RepoIntelSource = {
                   sourceStat(await handle.stat()),
                 ),
               ),
-            readDirectoryEntries: (rel) =>
+            readDirectoryEntriesBounded: (rel, maxEntries) =>
               Effect.promise(() =>
                 withEntry(rel, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY, async (handle) => {
-                  const entries = await fs.readdir(procFdPath(handle.fd), { withFileTypes: true })
-                  return entries.map((entry) => ({
-                    name: entry.name,
-                    type: entry.isDirectory()
-                      ? ("directory" as const)
-                      : entry.isFile()
-                        ? ("file" as const)
-                        : entry.isSymbolicLink()
-                          ? ("symlink" as const)
-                          : ("other" as const),
-                  }))
+                  if (!Number.isSafeInteger(maxEntries) || maxEntries < 1) return undefined
+                  const directory = await fs.opendir(procFdPath(handle.fd))
+                  const entries: FSUtil.DirEntry[] = []
+                  let truncated = false
+                  try {
+                    while (entries.length <= maxEntries) {
+                      const entry = await directory.read()
+                      if (!entry) break
+                      if (entries.length === maxEntries) {
+                        truncated = true
+                        break
+                      }
+                      entries.push({
+                        name: entry.name,
+                        type: entry.isDirectory()
+                          ? "directory"
+                          : entry.isFile()
+                            ? "file"
+                            : entry.isSymbolicLink()
+                              ? "symlink"
+                              : "other",
+                      })
+                    }
+                    return { entries, truncated }
+                  } finally {
+                    await directory.close().catch(() => {})
+                  }
                 }),
               ),
             readFile: (rel, maxBytes) =>
@@ -926,13 +1055,63 @@ const ANALYSIS_PROFILE_RANK: Record<RepoIntelAnalysisProfile, number> = {
   full: 2,
 }
 
-const resolveAnalysisProfile = (value: unknown): RepoIntelAnalysisProfileState => {
+export const resolveAnalysisProfile = (value: unknown): RepoIntelAnalysisProfileState => {
   const resolution = isRecord(value) ? value : undefined
+  if (resolution === undefined) return DEFAULT_ANALYSIS_PROFILE
+  const requestedValid = isAnalysisProfile(resolution.requested)
+  const effectiveValid = isAnalysisProfile(resolution.effective)
   const requested = isAnalysisProfile(resolution?.requested) ? resolution.requested : "lightweight"
-  const candidate = isAnalysisProfile(resolution?.effective) ? resolution.effective : "lightweight"
+  const unauthenticatedPressureClaim =
+    resolution?.effectiveSource === "resource" || resolution?.reason === "resource_pressure"
+  const candidate = unauthenticatedPressureClaim
+    ? requested
+    : isAnalysisProfile(resolution?.effective)
+      ? resolution.effective
+      : "lightweight"
+  const overRequested = ANALYSIS_PROFILE_RANK[candidate] > ANALYSIS_PROFILE_RANK[requested]
+  const effective = ANALYSIS_PROFILE_RANK[candidate] <= ANALYSIS_PROFILE_RANK[requested] ? candidate : requested
+  const effectiveSource = unauthenticatedPressureClaim
+    ? "unknown"
+    : resolution?.effectiveSource === "default" ||
+        resolution?.effectiveSource === "settings" ||
+        resolution?.effectiveSource === "platform" ||
+        resolution?.effectiveSource === "policy" ||
+        resolution?.effectiveSource === "resource" ||
+        resolution?.effectiveSource === "unknown"
+      ? resolution.effectiveSource
+      : "default"
+  const configurationSource =
+    resolution?.configurationSource === "default" ||
+    resolution?.configurationSource === "user" ||
+    resolution?.configurationSource === "project" ||
+    resolution?.configurationSource === "system_policy" ||
+    resolution?.configurationSource === "unknown"
+      ? resolution.configurationSource
+      : "unknown"
+  const policyLock =
+    resolution?.policyLock === "locked" || resolution?.policyLock === "unlocked" || resolution?.policyLock === "unknown"
+      ? resolution.policyLock
+      : "unknown"
+  const allowedReasons: ReadonlyArray<RepoIntelProfileReason> = [
+    "policy_restriction",
+    "platform_unavailable",
+    "feature_unavailable",
+    "invalid_configuration",
+  ]
+  const reason = allowedReasons.includes(resolution?.reason as RepoIntelProfileReason)
+    ? (resolution?.reason as RepoIntelProfileReason)
+    : !requestedValid || !effectiveValid || overRequested
+      ? "invalid_configuration"
+      : effective !== requested
+        ? "feature_unavailable"
+        : undefined
   return {
     requested,
-    effective: ANALYSIS_PROFILE_RANK[candidate] <= ANALYSIS_PROFILE_RANK[requested] ? candidate : requested,
+    effective,
+    configurationSource,
+    effectiveSource,
+    policyLock,
+    ...(reason !== undefined ? { reason } : {}),
   }
 }
 
@@ -1234,6 +1413,10 @@ export const make = (options: {
   readonly resolveProfile?: (scope: ReadScope) => unknown
   readonly maxEntries?: number
   readonly maxCacheBytes?: number
+  /** Idle derived generations expire after this interval; live query pins defer release. */
+  readonly ttlMs?: number
+  /** Optional telemetry port for the single RepoIntel LRU owner. */
+  readonly onCacheOwnerEvent?: (observation: RepoIntelCacheOwnerObservationV1) => void
   readonly now?: () => number
 }): Interface => {
   const fs = options.fs
@@ -1244,10 +1427,46 @@ export const make = (options: {
     Number.isSafeInteger(options.maxCacheBytes) && options.maxCacheBytes! >= 0
       ? Math.min(options.maxCacheBytes!, MAX_BASE_CONTENT_BYTES)
       : MAX_BASE_CONTENT_BYTES
+  const ttlMs = Number.isSafeInteger(options.ttlMs) && options.ttlMs! > 0
+    ? Math.min(options.ttlMs!, 24 * 60 * 60_000)
+    : DEFAULT_REPO_INTEL_CACHE_TTL_MS
   const now = options.now ?? (() => Date.now())
   const cache = new Map<string, CacheEntry>()
   const builds = new Map<string, BuildFlight>()
   const scopeEpoch = new Map<string, number>()
+
+  const reportCacheEvent = (entry: CacheEntry, event: RepoIntelCacheOwnerObservationV1["event"]) => {
+    if (!options.onCacheOwnerEvent) return
+    const entries = [...cache.values()]
+    const observation: RepoIntelCacheOwnerObservationV1 = {
+      event,
+      family: "repo-intel-generation",
+      cacheKey: pinDigest(entry.key),
+      scopeId: entry.scopeId,
+      ownerScopeDigest: pinDigest(entry.pins.readScope),
+      ...(entry.pins.repository ? { repository: entry.pins.repository } : {}),
+      ...(entry.pins.workspace ? { workspace: entry.pins.workspace } : {}),
+      sourceGeneration: entry.handle.generationId,
+      sourceRevisionSet: entry.pins.revisionSet,
+      readPolicyDigest: entry.pins.readPolicy,
+      buildVersion: entry.pins.parserSet,
+      accountedSourceBytes: entry.bytes,
+      entryCount: entries.length,
+      totalAccountedSourceBytes: entries.reduce((sum, value) => sum + value.bytes, 0),
+      maxEntries,
+      maxAccountedSourceBytes: maxCacheBytes,
+      ttlMs,
+      lastUsedAt: entry.lastUsedAt,
+      pinCount: entry.inflight,
+      protection: entry.inflight > 0 ? "pinned" : "rebuildable",
+      reclaimedBytes: null,
+    }
+    try {
+      options.onCacheOwnerEvent(observation)
+    } catch {
+      // Cache telemetry is advisory and cannot alter query/cache outcomes.
+    }
+  }
 
   const epochOf = (scopeId: string) => scopeEpoch.get(scopeId) ?? 0
   const flightKeyOf = (key: string, scopeId: string, epoch: number) => JSON.stringify([key, scopeId, epoch])
@@ -1258,7 +1477,8 @@ export const make = (options: {
         return Effect.void
       }
       entry.released = true
-      return backend.release ? backend.release(entry.handle).pipe(Effect.catch(() => Effect.void)) : Effect.void
+      const released = backend.release ? backend.release(entry.handle).pipe(Effect.catch(() => Effect.void)) : Effect.void
+      return released.pipe(Effect.tap(() => Effect.sync(() => reportCacheEvent(entry, "release"))))
     })
 
   const retire = (entry: CacheEntry, why: Exclude<EntryRetirement, "none">) => {
@@ -1292,6 +1512,7 @@ export const make = (options: {
     let skippedCount = 0
     let scannedBytes = 0
     let pathBytes = 0
+    let entriesScanned = 0
     let stoppedBy: CollectionStop | undefined
 
     const skip = (rel: string, reason: SkipReason) => {
@@ -1317,6 +1538,7 @@ export const make = (options: {
       }
     } else {
       const pending: string[] = [subpath]
+      const maxEntries = limits.maxFiles + limits.maxDirectories
       while (pending.length > 0) {
         if (aborted()) return yield* cancelled()
         if (expired()) {
@@ -1338,11 +1560,21 @@ export const make = (options: {
           continue
         }
         directories.push({ rel: relDir, mtimeMs: info.mtimeMs })
-        const entries = yield* sourceRoot.readDirectoryEntries(relDir)
-        if (entries === undefined) {
+        const remainingEntries = maxEntries - entriesScanned
+        if (remainingEntries <= 0) {
+          stoppedBy = "entry_limit"
+          break
+        }
+        const listing = yield* sourceRoot.readDirectoryEntriesBounded(relDir, remainingEntries)
+        if (listing === undefined) {
           skip(relDir, "unreadable")
           continue
         }
+        // Enforce the caller-side count even for an injected source that violates
+        // its bounded-listing contract. Production nodeSource stops enumeration
+        // at this limit before materializing the result.
+        const entries = listing.entries.slice(0, remainingEntries)
+        entriesScanned += entries.length
         for (const entry of [...entries].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
           const rel = relDir === "" ? entry.name : `${relDir}/${entry.name}`
           if (entry.type === "directory") {
@@ -1352,6 +1584,10 @@ export const make = (options: {
           } else {
             skip(rel, entry.type === "symlink" ? "symlink" : "non_file")
           }
+        }
+        if (listing.truncated || listing.entries.length > remainingEntries) {
+          stoppedBy = "entry_limit"
+          break
         }
       }
     }
@@ -1461,14 +1697,22 @@ export const make = (options: {
     return true
   })
 
-  const promote = (key: string): CacheEntry | undefined => {
+  const promote = Effect.fnUntraced(function* (key: string) {
     const entry = cache.get(key)
     if (entry === undefined) return undefined
+    if (now() - entry.lastUsedAt >= ttlMs) {
+      cache.delete(key)
+      retire(entry, "evicted")
+      reportCacheEvent(entry, "evict")
+      yield* releaseWhenIdle(entry)
+      return undefined
+    }
     cache.delete(key)
     entry.lastUsedAt = now()
     cache.set(key, entry)
+    reportCacheEvent(entry, "use")
     return entry
-  }
+  })
 
   const evictOverflow = Effect.fnUntraced(function* () {
     const bytes = () => [...cache.values()].reduce((total, entry) => total + entry.bytes, 0)
@@ -1478,6 +1722,7 @@ export const make = (options: {
       const entry = cache.get(oldest)!
       cache.delete(oldest)
       retire(entry, "evicted")
+      reportCacheEvent(entry, "evict")
       yield* releaseWhenIdle(entry)
     }
   })
@@ -1525,6 +1770,7 @@ export const make = (options: {
           const built: CacheEntry = {
             key: input.key,
             scopeId: input.scopeId,
+            pins: input.pins,
             handle,
             bytes: input.bytes,
             lastUsedAt: now(),
@@ -1546,6 +1792,7 @@ export const make = (options: {
 
           if (maxEntries > 0 && built.bytes <= maxCacheBytes) {
             cache.set(input.key, built)
+            reportCacheEvent(built, "register")
             yield* evictOverflow()
           } else {
             retire(built, "evicted")
@@ -1636,7 +1883,7 @@ export const make = (options: {
         const key = cacheKey(input.scope.scopeId, fingerprint, pins)
         const observedPaths = new Set(observed.files.map((file) => file.rel))
 
-        let entry = promote(key)
+        let entry = yield* promote(key)
         let countedByBuild = false
         if (entry === undefined) {
           entry = yield* buildShared({
@@ -1651,6 +1898,7 @@ export const make = (options: {
         }
         const active = entry
         if (!countedByBuild) active.inflight += 1
+        reportCacheEvent(active, "pin")
 
         const useEntry = Effect.gen(function* () {
           if (input.expectedGenerationId !== undefined && active.handle.generationId !== input.expectedGenerationId) {
@@ -1801,6 +2049,7 @@ export const make = (options: {
           Effect.ensuring(
             Effect.suspend(() => {
               active.inflight -= 1
+              reportCacheEvent(active, "unpin")
               return releaseWhenIdle(active)
             }),
           ),
@@ -1837,9 +2086,23 @@ export const make = (options: {
       cache.delete(key)
       removed++
       retire(entry, "invalidated")
+      reportCacheEvent(entry, "evict")
       yield* releaseWhenIdle(entry)
     }
     return removed
+  })
+
+  const evictGeneration = Effect.fn("RepoIntel.evictGeneration")(function* (scopeId: string, generationId: string) {
+    const entry = [...cache.values()].find(
+      (candidate) => candidate.scopeId === scopeId && candidate.handle.generationId === generationId,
+    )
+    if (entry === undefined) return { status: "not_found", reclaimedBytes: null } as const
+    if (entry.inflight !== 0) return { status: "blocked_pinned", reclaimedBytes: null } as const
+    cache.delete(entry.key)
+    retire(entry, "evicted")
+    reportCacheEvent(entry, "evict")
+    yield* releaseWhenIdle(entry)
+    return { status: "evicted", reclaimedBytes: null } as const
   })
 
   const stats = Effect.fn("RepoIntel.stats")(function* () {
@@ -1854,7 +2117,7 @@ export const make = (options: {
     return { entries: cache.size, bytes, inFlightBuilds, buildWaiters }
   })
 
-  return { searchText, searchSymbols, findReferences, invalidate, stats }
+  return { searchText, searchSymbols, findReferences, invalidate, evictGeneration, stats }
 }
 
 /** Backend that fails closed until a real indexd transport is wired. */
@@ -1867,6 +2130,9 @@ export const layer = (
   backend: RepoIntelBackend,
   options?: {
     readonly maxEntries?: number
+    readonly maxCacheBytes?: number
+    readonly ttlMs?: number
+    readonly onCacheOwnerEvent?: (observation: RepoIntelCacheOwnerObservationV1) => void
     readonly resolveProfile?: (scope: ReadScope) => unknown
   },
 ) =>
@@ -1890,11 +2156,13 @@ export const unavailableLayer = Layer.succeed(
     searchSymbols: () => Effect.fail(unavailableServiceError()),
     findReferences: () => Effect.fail(unavailableServiceError()),
     invalidate: () => Effect.succeed(0),
+    evictGeneration: () => Effect.succeed({ status: "not_found", reclaimedBytes: null }),
     stats: () => Effect.succeed({ entries: 0, bytes: 0, inFlightBuilds: 0, buildWaiters: 0 }),
   }),
 )
 
-/** Service node for graphs that need RepoIntel while no real backend transport is wired. */
+/** Disabled local-cache service node; production structural queries use the
+ * authenticated supervisor adapter and HostKernel-owned generation instead. */
 export const node = LayerNode.make({
   service: Service,
   layer: unavailableLayer,

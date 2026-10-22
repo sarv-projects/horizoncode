@@ -112,6 +112,10 @@ type RuntimeState = {
 
 const DISPOSE_TIMEOUT_MS = 5000
 const KV_KEY = "plugin_enabled"
+// TUI plugins receive the host client and can initiate process, network, and other
+// effects through it. There is no registered canonical Rust Guard/ExecutionHost
+// adapter for this API, so plugin initialization remains unavailable.
+const TUI_PLUGIN_RUNTIME_AVAILABLE = false
 const EMPTY_TUI: TuiPluginModule = {
   tui: async () => {},
 }
@@ -461,8 +465,8 @@ function listPluginStatus(state: RuntimeState): TuiPluginStatus[] {
     source: plugin.meta.source,
     spec: plugin.meta.spec,
     target: plugin.meta.target,
-    enabled: plugin.available && plugin.enabled,
-    active: plugin.available && plugin.scope !== undefined,
+    enabled: TUI_PLUGIN_RUNTIME_AVAILABLE && plugin.available && plugin.enabled,
+    active: TUI_PLUGIN_RUNTIME_AVAILABLE && plugin.available && plugin.scope !== undefined,
   }))
 }
 
@@ -481,7 +485,9 @@ async function deactivatePluginEntry(state: RuntimeState, plugin: PluginEntry, p
 }
 
 async function activatePluginEntry(state: RuntimeState, plugin: PluginEntry, persist: boolean) {
-  if (!plugin.available) {
+  // Fail before persisting an enabled state, constructing the host API, syncing
+  // plugin themes, or invoking plugin code.
+  if (!TUI_PLUGIN_RUNTIME_AVAILABLE || !plugin.available) {
     state.view.update({ status: listPluginStatus(state) })
     return false
   }
@@ -804,6 +810,17 @@ async function load(input: {
     )
     const pluginOrigins = config.plugin_origins ?? (await TuiConfig.pluginOrigins())
     const records = Flag.OPENCODE_PURE ? [] : pluginOrigins
+
+    if (!TUI_PLUGIN_RUNTIME_AVAILABLE) {
+      // Retain disabled external-plugin status for the UI, but never import,
+      // initialize, or grant host APIs to extension code before Guard mediation.
+      for (const origin of records) {
+        fail("tui plugin unavailable: guarded plugin execution is not registered", { path: origin.spec })
+      }
+      await addExternalPluginEntries(next, resolveExternalPlugins(records))
+      next.view.update({ status: listPluginStatus(next) })
+      return
+    }
 
     for (const item of internalTuiPlugins(flags)) {
       const entry = loadInternalPlugin(item)

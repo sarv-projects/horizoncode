@@ -2,7 +2,9 @@
 
 **NON-NORMATIVE COMPATIBILITY STUB.** The pre-consolidation body is preserved verbatim in the architecture archive.
 
-Do not implement from this file. Current owners:
+Do not implement from this file. **Implementation queue (2026-10-22):** [46-V1-IMPLEMENTATION-BACKLOG.md](46-V1-IMPLEMENTATION-BACKLOG.md), [46-V1-FEATURE-INVENTORY.md](46-V1-FEATURE-INVENTORY.md), [46-V1-VERIFICATION-RUNBOOK.md](46-V1-VERIFICATION-RUNBOOK.md).
+
+Current owners:
 - [10-DELIVERY.md](10-DELIVERY.md)
 - [20-OPENCODE-INTEGRATION-LLD.md](20-OPENCODE-INTEGRATION-LLD.md)
 - [37-RUNTIME-SERVICE-LLD.md](37-RUNTIME-SERVICE-LLD.md)

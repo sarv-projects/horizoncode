@@ -175,8 +175,8 @@
       }
     },
     "maxBodyTokens": {
-      "type": "integer",
-      "minimum": 1
+      "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64",
+      "description": "Unsigned 64-bit JSON counter/budget; encoded as canonical decimal string."
     },
     "provenance": {
       "type": "string",

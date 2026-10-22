@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "horizon://schemas/resource-policy-v1",
+  "title": "ResourcePolicyV1",
+  "description": "Resource admission policy profile (A-V2-30 §12.16).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "profileRevision",
+    "dimensions",
+    "enforcementStrength",
+    "source",
+    "precedence"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "profileRevision": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "dimensions": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["dimensionId", "hardLimit", "softLimit", "unit"],
+        "properties": {
+          "dimensionId": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "hardLimit": { "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64" },
+          "softLimit": { "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64" },
+          "unit": { "type": "string", "minLength": 1, "maxLength": 64 }
+        }
+      }
+    },
+    "enforcementStrength": { "enum": ["monitor", "admit", "os_required"] },
+    "source": { "enum": ["user", "project", "default", "policy"] },
+    "precedence": { "type": "integer", "minimum": 0, "maximum": 255 },
+    "hysteresisMs": { "type": "integer", "minimum": 0, "maximum": 600000 },
+    "consentRef": { "type": ["string", "null"], "maxLength": 256 }
+  }
+}

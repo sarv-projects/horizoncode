@@ -32,7 +32,7 @@ const cliTry = <Value>(message: string, fn: () => PromiseLike<Value>) =>
   })
 
 export const providerUrlLoginUnavailable = () =>
-  fail("URL-based provider login cannot run through Guard yet; use an environment credential source instead.")
+  fail("URL-based provider login is unavailable until guarded SecretBroker credential entry is implemented; environment credentials are not used for HorizonCode provider dispatch.")
 
 const handlePluginAuth = Effect.fn("Cli.providers.pluginAuth")(function* (
   plugin: { auth: PluginAuth },
@@ -237,7 +237,7 @@ export function resolvePluginProviders(input: {
 export const ProvidersCommand = cmd({
   command: "providers",
   aliases: ["auth"],
-  describe: "manage AI providers and credentials",
+  describe: "manage AI providers and credentials (credential changes unavailable until Guarded SecretBroker support)",
   builder: (yargs) =>
     yargs.command(ProvidersListCommand).command(ProvidersLoginCommand).command(ProvidersLogoutCommand).demandCommand(),
   async handler() {},
@@ -256,7 +256,7 @@ export const ProvidersListCommand = cmd({
 
 export const ProvidersLoginCommand = effectCmd({
   command: "login [url]",
-  describe: "log in to a provider",
+  describe: "provider login (unavailable until Guarded SecretBroker credential entry is implemented)",
   // No provider auth route is Guard mediated yet; skip instance bootstrap as
   // well so plugins cannot initialize before the fail-closed handler.
   instance: false,
@@ -426,7 +426,7 @@ export const ProvidersLoginCommand = effectCmd({
 
 export const ProvidersLogoutCommand = effectCmd({
   command: "logout [provider]",
-  describe: "log out from a configured provider",
+  describe: "provider logout (unavailable until Guarded SecretBroker credential revocation is implemented)",
   builder: (yargs) =>
     yargs.positional("provider", {
       describe: "provider id or name to log out from",

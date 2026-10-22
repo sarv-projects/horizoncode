@@ -34,6 +34,7 @@ import { PluginV2 } from "@opencode-ai/core/plugin"
 import { SessionSupervisorError } from "@opencode-ai/core/session/supervisor"
 import { AgentProfileService } from "@opencode-ai/core/config"
 import * as AgentProfileV2 from "@opencode-ai/schema/agent-profile-v2"
+import { builtinHarnessProfileV1 } from "@opencode-ai/core/harness-profile"
 
 export const Info = Schema.Struct({
   name: Schema.String,
@@ -70,6 +71,8 @@ export interface Interface {
   readonly list: () => Effect.Effect<Info[], SessionSupervisorError>
   readonly defaultInfo: () => Effect.Effect<Info, SessionSupervisorError>
   readonly defaultAgent: () => Effect.Effect<string, SessionSupervisorError>
+  /** The exact global Config-selected main profile, if explicitly configured. No display-name fallback. */
+  readonly primaryProfileDefinition: () => Effect.Effect<AgentProfileV2.AgentProfileDefinitionV2 | undefined, SessionSupervisorError>
   readonly generate: (input: {
     description: string
     model?: { providerID: ProviderV2.ID; modelID: ModelV2.ID }
@@ -83,7 +86,7 @@ export interface Interface {
   >
 }
 
-type State = Omit<Interface, "generate" | "getProfile">
+type State = Omit<Interface, "generate" | "getProfile" | "primaryProfileDefinition">
 
 // AgentProfileV2 uses canonical capability IDs. The direct-session permission
 // engine still evaluates OpenCode tool IDs, so translate only the capability IDs
@@ -96,9 +99,12 @@ const PROFILE_CAPABILITY_TO_TOOLS: Readonly<Record<string, readonly string[]>> =
   "glob.search": ["glob"],
   "text.search": ["grep"],
   "repo.tree": ["repo_tree"],
+  "repo.detect": ["repo_detect"],
   "symbols.search": ["symbols_search"],
+  "definitions.find": ["definitions_find"],
   "references.find": ["references_find"],
   "question.ask": ["question"],
+  "tools.search": ["tools_search"],
 }
 
 function profileAgent(profile: AgentProfileV2.AgentProfileDefinitionV2): Info {
@@ -123,6 +129,7 @@ function profileAgent(profile: AgentProfileV2.AgentProfileDefinitionV2): Info {
       profile.whenNotToUse ? `When not to use: ${profile.whenNotToUse}` : "",
     ].filter(Boolean).join("\n\n"),
     options: {
+      horizonHarness: profile.harness,
       reasoning: profile.reasoning,
       ...(profile.model.reasoningEffort ? { reasoningEffort: profile.model.reasoningEffort } : {}),
       horizonAgentProfile: {
@@ -170,6 +177,10 @@ const layer = Layer.effect(
     const state = yield* InstanceState.make<State, SessionSupervisorError>(
       Effect.fn("Agent.state")(function* (ctx) {
         const cfg = yield* config.get()
+        const selectedHarness = cfg.harness ?? "native-rich"
+        if (!builtinHarnessProfileV1(selectedHarness)) {
+          throw new SessionSupervisorError({ stage: "agent-profile", reason: `selected harness ${selectedHarness} is unavailable` })
+        }
         const skillDirs = yield* skill.dirs()
         const referenceDirs = Object.keys(cfg.references ?? cfg.reference ?? {}).length
           ? yield* Effect.gen(function* () {
@@ -336,6 +347,12 @@ const layer = Layer.effect(
           },
         }
 
+        for (const agent of Object.values(agents)) {
+          if (agent.mode !== "subagent" && agent.options.horizonHarness === undefined) {
+            agent.options.horizonHarness = selectedHarness
+          }
+        }
+
         for (const [key, value] of Object.entries(cfg.agent ?? {})) {
           if (value.disable) {
             delete agents[key]
@@ -450,7 +467,7 @@ const layer = Layer.effect(
               reason: `pinned profile ${profileID}@${revision} references instructions that the direct-session artifact resolver cannot load`,
             })
           }
-          if (profile.adapter.kind !== "native" || profile.adapter.adapterId !== "horizon.native" || profile.harness !== "native-rich") {
+          if (profile.adapter.kind !== "native" || profile.adapter.adapterId !== "horizon.native" || !builtinHarnessProfileV1(profile.harness)) {
             return yield* new SessionSupervisorError({
               stage: "agent-profile",
               reason: `adapter ${profile.adapter.kind}/${profile.adapter.adapterId} with harness ${profile.harness} is not available in the direct-session runtime`,
@@ -517,6 +534,20 @@ const layer = Layer.effect(
       }),
       defaultAgent: Effect.fn("Agent.defaultAgent")(function* () {
         return yield* InstanceState.useEffect(state, (s) => s.defaultAgent())
+      }),
+      primaryProfileDefinition: Effect.fn("Agent.primaryProfileDefinition")(function* () {
+        const ctx = yield* InstanceState.context
+        return yield* Effect.gen(function* () {
+          const profiles = yield* AgentProfileService
+          return yield* profiles.primaryAgentProfile().pipe(
+            Effect.mapError((error) => new SessionSupervisorError({
+              stage: "agent-profile",
+              reason: `primary AgentProfileV2 selection is unavailable: ${error.message}`,
+            })),
+          )
+        }).pipe(
+          Effect.provide(locations.get(Location.Ref.make({ directory: AbsolutePath.make(ctx.directory) }))),
+        )
       }),
       generate: Effect.fn("Agent.generate")(function* (input: {
         description: string

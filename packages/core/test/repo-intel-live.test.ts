@@ -1,7 +1,6 @@
 import { expect, test } from "bun:test"
-import { createHash } from "node:crypto"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { createHash, randomUUID } from "node:crypto"
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { Effect, Layer } from "effect"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
@@ -14,6 +13,7 @@ import { Location } from "@opencode-ai/core/location"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionSupervisor, type Interface as SessionSupervisorInterface } from "@opencode-ai/core/session/supervisor"
 import { TrustedPrincipalContext } from "@opencode-ai/core/trusted-principal"
+import { repoDocumentContentDigest } from "@opencode-ai/schema/repo-intelligence-v1"
 import { location } from "./fixture/location"
 
 const hostKernelRust = resolve(import.meta.dir, "../../../kernel/target/debug/hz-kernel")
@@ -41,7 +41,8 @@ async function withLiveHostKernel<T>(body: (input: {
   readonly locationRef: typeof Location.Ref.Type
   readonly workspace: string
 }) => Effect.Effect<T, unknown>): Promise<T> {
-  const state = mkdtempSync(join(tmpdir(), "hc-repo-intel-live-"))
+  const state = resolve(import.meta.dir, "../../../kernel/target/repo-intel-live-tests", randomUUID())
+  mkdirSync(state, { recursive: true })
   const root = join(state, "workspace")
   mkdirSync(root)
   const workspace = realpathSync(root)
@@ -115,5 +116,47 @@ test("Core pins RepoIntel generation before querying on the authenticated Sessio
           }),
         ),
       )
+  })
+})
+
+test("Core reads an LSP document only through authenticated HostKernel RepoIntel", async () => {
+  await withLiveHostKernel(({ supervisor, locationRef }) => {
+    if (!supervisor.queryRepoStructure || !supervisor.readRepoDocument) {
+      return Effect.die(new Error("Core authenticated RepoIntel document reader is unavailable"))
+    }
+    const principal = { principal: { kind: "server_auth" as const, subject: "repo-intel-reviewer" } }
+    return Effect.gen(function* () {
+      const page = yield* supervisor.queryRepoStructure!({
+        sessionID: "ses_repo_document_live",
+        locationRef,
+        query: {
+          schemaVersion: 1,
+          messageType: "query",
+          queryId: "query_repo_document_live",
+          rootRef: ".",
+          selector: { symbols: ["example"] },
+          maxNodes: 32,
+          maxBytes: 32_768,
+          maxDepth: 8,
+          deadline: new Date(Date.now() + 20_000).toISOString(),
+        },
+      }).pipe(Effect.provideService(TrustedPrincipalContext, principal))
+      const document = yield* supervisor.readRepoDocument!({
+        sessionID: "ses_repo_document_live",
+        locationRef,
+        request: {
+          schemaVersion: 1,
+          pathRef: "example.ts",
+          revisionKind: "workspace",
+          expectedWorkspaceRevision: page.sourceRevision,
+          maxBytes: 1024,
+        },
+      }).pipe(Effect.provideService(TrustedPrincipalContext, principal))
+      expect(document.pathRef).toBe("example.ts")
+      expect(document.text).toBe("export function example(): number { return 1 }\n")
+      expect(document.contentDigest).toBe(repoDocumentContentDigest(document.text))
+      expect(document.observedWorkspaceRevision).toBe(page.sourceRevision)
+      return document
+    })
   })
 })

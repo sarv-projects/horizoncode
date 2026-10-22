@@ -18,17 +18,65 @@ type ListedModelCapabilities = {
   output?: { image?: boolean; audio?: boolean; video?: boolean; pdf?: boolean }
 }
 
+type ListedModelLimits = {
+  context?: number
+  input?: number
+  output?: number
+}
+
+const tokenLimitFormatter = new Intl.NumberFormat("en-US")
+
+function tokenLimit(value: number | undefined) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? tokenLimitFormatter.format(value)
+    : "unknown"
+}
+
+function support(value: boolean | undefined) {
+  return value === undefined ? "unknown" : value ? "yes" : "no"
+}
+
 /** Catalog capability hints and connection state; this is not a live endpoint probe. */
 export function modelAvailabilityLabel(input: {
+  providerID?: string
   connected: boolean
+  source?: string
+  anonymousOffer?: boolean
   status?: "active" | "alpha" | "beta" | "deprecated"
+  cost?: ModelCostShape
   capabilities?: ListedModelCapabilities
+  limits?: ListedModelLimits
 }) {
   const labels = [
-    input.connected ? "Provider available" : "Provider unavailable",
+    input.providerID === "opencode" && input.anonymousOffer
+      ? "Anonymous OpenCode offer · zero-priced catalog only"
+      : input.connected
+        ? input.source === "env"
+          ? "Legacy environment source detected · not used for dispatch"
+          : input.source === "api"
+            ? "Legacy Auth source detected · not used for dispatch"
+            : input.source === "config"
+              ? "Provider configuration present · credential status unknown"
+              : "Credential reference or provider configuration present · dispatch unavailable pending SecretBroker transport"
+        : "No Guarded credential reference or anonymous route detected",
     `Catalog ${input.status ?? "status unknown"}`,
+    "Endpoint not probed",
+    modelSelectableInV1({
+      providerID: input.providerID ?? "",
+      credentialSourceDetected: input.connected,
+      anonymousOffer: input.anonymousOffer,
+      status: input.status,
+      cost: input.cost,
+    }) ? "Selectable by HorizonCode V1 policy; dispatch unverified" : "Dispatch unavailable in HorizonCode V1",
   ]
+  labels.push(
+    `Catalog limits: context ${tokenLimit(input.limits?.context)} · input ${tokenLimit(input.limits?.input)} · output ${tokenLimit(input.limits?.output)}`,
+  )
+  labels.push("Price freshness unknown")
   const capabilities = input.capabilities
+  labels.push(
+    `Capabilities: tools ${support(capabilities?.toolcall)} · reasoning ${support(capabilities?.reasoning)} · image-in ${support(capabilities?.input?.image)} · audio-in ${support(capabilities?.input?.audio)} · video-in ${support(capabilities?.input?.video)} · pdf-in ${support(capabilities?.input?.pdf)} · image-out ${support(capabilities?.output?.image)} · audio-out ${support(capabilities?.output?.audio)} · video-out ${support(capabilities?.output?.video)} · pdf-out ${support(capabilities?.output?.pdf)}`,
+  )
   const listed = [
     capabilities?.toolcall ? "tools" : undefined,
     capabilities?.reasoning ? "reasoning" : undefined,
@@ -77,12 +125,23 @@ export function DialogModel(props: { providerID?: string }) {
             title: model.name ?? item.modelID,
             description: provider.name,
             category,
-            disabled: provider.id === "opencode" && model.id.includes("-nano"),
-            footer: `${modelPriceLabel(model.cost)} · ${modelAvailabilityLabel({
-              connected: sync.data.provider_next.connected.includes(provider.id),
+            disabled: !modelSelectableInV1({
+              providerID: provider.id,
+              credentialSourceDetected: sync.data.provider_next.connected.includes(provider.id),
+              anonymousOffer: sync.data.provider_next.anonymousFreeModels?.includes(`${provider.id}/${model.id}`),
               status: model.status,
+              cost: model.cost,
+            }),
+            footer: `${modelPriceLabel(model.cost)} · ${modelAvailabilityLabel({
+              providerID: provider.id,
+              connected: sync.data.provider_next.connected.includes(provider.id),
+              source: provider.source,
+              anonymousOffer: sync.data.provider_next.anonymousFreeModels?.includes(`${provider.id}/${model.id}`),
+              status: model.status,
+              cost: model.cost,
               capabilities: model.capabilities,
-            })}`,
+              limits: model.limit,
+            })} · Catalog metadata ${sync.data.provider_next.catalogSnapshot.source}/${sync.data.provider_next.catalogSnapshot.freshness}`,
             onSelect: () => {
               onSelect(provider.id, model.id)
             },
@@ -127,12 +186,23 @@ export function DialogModel(props: { providerID?: string }) {
                 .filter(Boolean)
                 .join(" ") || undefined,
             category: connected() ? provider.name : undefined,
-            disabled: provider.id === "opencode" && model.includes("-nano"),
-            footer: `${modelPriceLabel(info.cost)} · ${modelAvailabilityLabel({
-              connected: sync.data.provider_next.connected.includes(provider.id),
+            disabled: !modelSelectableInV1({
+              providerID: provider.id,
+              credentialSourceDetected: sync.data.provider_next.connected.includes(provider.id),
+              anonymousOffer: sync.data.provider_next.anonymousFreeModels?.includes(`${provider.id}/${model}`),
               status: info.status,
+              cost: info.cost,
+            }),
+            footer: `${modelPriceLabel(info.cost)} · ${modelAvailabilityLabel({
+              providerID: provider.id,
+              connected: sync.data.provider_next.connected.includes(provider.id),
+              source: provider.source,
+              anonymousOffer: sync.data.provider_next.anonymousFreeModels?.includes(`${provider.id}/${model}`),
+              status: info.status,
+              cost: info.cost,
               capabilities: info.capabilities,
-            })}`,
+              limits: info.limit,
+            })} · Catalog metadata ${sync.data.provider_next.catalogSnapshot.source}/${sync.data.provider_next.catalogSnapshot.freshness}`,
             onSelect() {
               onSelect(provider.id, model)
             },
@@ -260,6 +330,20 @@ type ModelCostShape = ModelPriceRates & {
  */
 export function isZeroPricedModel(model: { cost?: ModelCostShape }) {
   return explicitZeroPriceLabel(model.cost) !== undefined
+}
+
+/** V1 dispatch currently supports only the anonymous, fully zero-priced offer. */
+export function modelSelectableInV1(input: {
+  providerID: string
+  credentialSourceDetected: boolean
+  anonymousOffer?: boolean
+  status?: "active" | "alpha" | "beta" | "deprecated"
+  cost?: ModelCostShape
+}) {
+  return input.providerID === "opencode" &&
+    input.anonymousOffer === true &&
+    input.status === "active" &&
+    isZeroPricedModel({ cost: input.cost })
 }
 
 export function sortModelOptions<T extends { footer?: string; releaseDate: string | number; title: string }>(

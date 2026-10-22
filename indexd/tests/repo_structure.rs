@@ -4,6 +4,7 @@ use horizon_indexd_library::{
     RepoStructureProvenanceV1, RepoStructureQueryV1, RepoStructureSelectorV1,
     RepoStructureSourceKindV1, RepoStructureStatusV1,
 };
+use horizon_indexd_library::repo_structure::RepoStructurePositionV1;
 
 fn pin(value: &str) -> OpaquePin {
     OpaquePin::new(value.as_bytes().to_vec()).unwrap()
@@ -64,31 +65,178 @@ fn main_file_digest() -> String {
 }
 
 #[test]
-fn unsupported_structure_query_returns_an_explicit_bounded_unavailable_page() {
+fn structure_query_returns_exact_bounded_lexical_evidence_without_ast_claims() {
     let generation = generation();
     let page = generation
         .query_structure(&query(&generation), &provenance(), None)
-        .expect("valid query returns an unavailable page, not guessed structure");
+        .expect("valid query returns lexical evidence, not guessed AST structure");
 
     assert_eq!(page.schema_version, 1);
     assert_eq!(page.message_type, "page");
     assert_eq!(page.query_id, "query-1");
     assert_eq!(page.source_generation, generation.id().to_string());
     assert_eq!(page.workspace_binding, "workspace-binding-1");
-    assert_eq!(page.source_kind, RepoStructureSourceKindV1::None);
-    assert_eq!(page.status, RepoStructureStatusV1::Unavailable);
-    assert_eq!(page.freshness, RepoStructureFreshnessV1::Unknown);
-    assert_eq!(page.completeness, RepoStructureCompletenessV1::Unavailable);
-    assert_eq!(page.coverage.files, 0);
-    assert_eq!(page.coverage.nodes, 0);
-    assert!(page.nodes.is_empty());
+    assert_eq!(page.source_kind, RepoStructureSourceKindV1::Lexical);
+    assert_eq!(page.status, RepoStructureStatusV1::Partial);
+    assert_eq!(page.freshness, RepoStructureFreshnessV1::Current);
+    assert_eq!(page.completeness, RepoStructureCompletenessV1::Partial);
+    assert_eq!(page.coverage.files, 1);
+    assert_eq!(page.coverage.bytes, b"fn main() {}\n".len());
+    assert_eq!(page.coverage.nodes, 1);
+    assert_eq!(page.nodes.len(), 1);
+    assert_eq!(page.nodes[0].node_kind, "text_occurrence");
+    assert_eq!(page.nodes[0].parser_id, "horizoncode.lexical");
+    assert_eq!(page.nodes[0].parser_version, "1");
+    assert_eq!(page.nodes[0].byte_range.start, 3);
+    assert_eq!(page.nodes[0].byte_range.end, 7);
+    assert_eq!(page.nodes[0].file_digest, main_file_digest());
     assert_eq!(page.next_cursor, None);
     let fallback = page.fallback.unwrap();
     assert_eq!(
         fallback.reason,
         RepoStructureFallbackReasonV1::ParserUnsupported
     );
-    assert_eq!(fallback.source_kind, RepoStructureSourceKindV1::None);
+    assert_eq!(fallback.source_kind, RepoStructureSourceKindV1::Lexical);
+}
+
+#[test]
+fn structure_query_marks_lexical_limits_partial_without_minting_a_cursor() {
+    let generation = generation();
+    let mut bounded = query(&generation);
+    bounded.max_nodes = 1;
+    bounded.selector.symbols = vec!["n".to_owned()];
+    let page = generation
+        .query_structure(&bounded, &provenance(), None)
+        .unwrap();
+
+    assert_eq!(page.status, RepoStructureStatusV1::Partial);
+    assert_eq!(page.completeness, RepoStructureCompletenessV1::Partial);
+    assert_eq!(page.nodes.len(), 1);
+    assert_eq!(page.fallback.unwrap().reason, RepoStructureFallbackReasonV1::ParsePartial);
+    assert_eq!(page.next_cursor, None);
+}
+
+#[test]
+fn structure_query_skips_over_budget_files_and_keeps_scanning_later_paths() {
+    let generation = RepoIntelGeneration::build(
+        GenerationPins {
+            repository: pin("repo"),
+            workspace: Some(pin("workspace")),
+            revision_set: pin("revision-set"),
+            read_scope: pin("read-scope"),
+            read_policy: pin("read-policy"),
+            source_receipt: pin("receipt"),
+            parser_set: pin("lexical-v1"),
+        },
+        [
+            FileSnapshot::new("a/large.rs", b"hit hit hit hit".to_vec()),
+            FileSnapshot::new("z/small.rs", b"hit".to_vec()),
+        ],
+    )
+    .unwrap();
+    let mut request = query(&generation);
+    request.selector.symbols = vec!["hit".to_owned()];
+    request.max_bytes = 3;
+
+    let page = generation
+        .query_structure(&request, &provenance(), None)
+        .expect("over-budget files are skipped while later paths remain queryable");
+
+    assert_eq!(page.coverage.files, 1);
+    assert_eq!(page.coverage.bytes, 3);
+    assert_eq!(page.nodes.len(), 1);
+    assert_eq!(page.nodes[0].path_ref, "z/small.rs");
+    assert_eq!(page.nodes[0].byte_range.start, 0);
+    assert_eq!(page.completeness, RepoStructureCompletenessV1::Partial);
+    assert_eq!(page.fallback.unwrap().reason, RepoStructureFallbackReasonV1::ParsePartial);
+    assert_eq!(page.next_position, None);
+}
+
+#[test]
+fn structure_query_bounds_repeated_selector_scan_work() {
+    let contents = vec![b'x'; 50_000];
+    let generation = RepoIntelGeneration::build(
+        GenerationPins {
+            repository: pin("repo"),
+            workspace: Some(pin("workspace")),
+            revision_set: pin("revision-set"),
+            read_scope: pin("read-scope"),
+            read_policy: pin("read-policy"),
+            source_receipt: pin("receipt"),
+            parser_set: pin("lexical-v1"),
+        },
+        [FileSnapshot::new("src/large.rs", contents.clone())],
+    )
+    .unwrap();
+    let mut request = query(&generation);
+    request.selector.symbols = (0..100).map(|_| "needle".to_owned()).collect();
+    request.max_bytes = contents.len();
+
+    let page = generation
+        .query_structure(&request, &provenance(), None)
+        .expect("bounded work returns typed partial coverage");
+
+    assert_eq!(page.coverage.bytes, contents.len());
+    assert!(page.nodes.is_empty());
+    assert_eq!(page.source_kind, RepoStructureSourceKindV1::Lexical);
+    assert_eq!(page.status, RepoStructureStatusV1::Partial);
+    assert_eq!(page.completeness, RepoStructureCompletenessV1::Partial);
+    assert_eq!(
+        page.fallback.unwrap().reason,
+        RepoStructureFallbackReasonV1::ResourceRefused
+    );
+    assert_eq!(page.next_position, None);
+}
+
+#[test]
+fn structure_continuation_resumes_after_host_resolved_occurrence() {
+    let generation = RepoIntelGeneration::build(
+        GenerationPins {
+            repository: pin("repo"),
+            workspace: Some(pin("workspace")),
+            revision_set: pin("revision-set"),
+            read_scope: pin("read-scope"),
+            read_policy: pin("read-policy"),
+            source_receipt: pin("receipt"),
+            parser_set: pin("lexical-v1"),
+        },
+        [FileSnapshot::new("src/hits.rs", b"hit hit hit".to_vec())],
+    )
+    .unwrap();
+    let mut first_request = query(&generation);
+    first_request.selector.symbols = vec!["hit".to_owned()];
+    first_request.max_nodes = 2;
+
+    let first = generation
+        .query_structure(&first_request, &provenance(), None)
+        .unwrap();
+    let anchor = first
+        .next_position
+        .clone()
+        .expect("a real extra occurrence proves that another page exists");
+    assert_eq!(first.nodes.len(), 2);
+    assert_eq!(anchor.byte_offset, first.nodes[1].byte_range.start);
+
+    let mut continuation = first_request.clone();
+    continuation.cursor = Some("host_cursor_opaque".to_owned());
+    let second = generation
+        .query_structure_page(&continuation, &provenance(), None, Some(&anchor))
+        .unwrap();
+    assert_eq!(second.nodes.len(), 1);
+    assert_eq!(second.nodes[0].byte_range.start, 8);
+    assert_eq!(second.next_position, None);
+
+    let forged = RepoStructurePositionV1 {
+        path_ref: "src/hits.rs".to_owned(),
+        symbol_index: 0,
+        byte_offset: 0,
+    };
+    assert!(generation
+        .query_structure_page(&continuation, &provenance(), None, Some(&forged))
+        .is_err());
+    assert!(generation
+        .query_structure_page(&continuation, &provenance(), None, None)
+        .is_err());
 }
 
 #[test]

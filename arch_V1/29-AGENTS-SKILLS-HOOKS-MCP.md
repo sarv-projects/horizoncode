@@ -57,7 +57,7 @@ type AgentVariantV2 = {
 type AgentProfileV2 = {
   schemaVersion: 2
   profileId: AgentProfileId
-  revision: number
+  revision: string // canonical decimal u64 on JSON/MessagePack boundaries
   name: string
   description: string
   source: "builtin" | "user" | "project" | "plugin" | "external"
@@ -129,6 +129,22 @@ Core Config is the single mutable owner of `AgentProfileV2` definitions and immu
 
 The Core `ContextService` is the single owner that compiles bounded model context. `ContextLedgerV2` remains a read-only projection; a task-specific `ContextSelectionV1` records the selected mode, bounded source/artifact refs, revisions, trust/inclusion provenance, and exact digest. It never copies the canonical transcript into managed state. Rust managed control stores only the immutable per-Attempt profile/context refs and digests in `DelegationBindingV1`; it does not create a second global profile registry or transcript owner. Rust computes the effective capability ceiling by intersecting accepted Task/Spec scope, the profile ceiling, and current Guard policy. Missing or stale proofs deny admission before preparation.
 
+For a managed Task with multiple model/tool steps, ContextSelection is bound per provider request. Attempt admission pins sequence 1; each later model request must advance the exact next bounded sequence through HostKernel with the live Attempt/owner epoch and request ID. The durable managed event retains bounded source refs and the HostKernel-computed digest, never copied prompt content. An exact retry replays its receipt; stale/gapped/conflicting state denies before provider dispatch. The selection Session is the Attempt's child Core Session that owns the prompt and transcript; parent Session remains lineage only. Core passes the same immutable compiled request and returned digest to the provider. This context binding does not grant or widen tool/effect permissions.
+
+The required aggregate source is `provider-input`: `sourceID=requestID`,
+`sourceRevision=requestSequence` (or the canonical Session cursor for direct
+sessions), `sourceAuthority=core-prompt-compiler`, `trust=mixed`,
+`included=true`, and `inclusionReason=current_request`. Its content digest is
+Core's BLAKE3 digest of the exact canonical normalized provider-visible
+system/messages/tool definitions. For managed work there is exactly one such
+source and exactly one each of `managed-task`, `accepted-spec`, and
+`agent-profile`; HostKernel checks those source IDs, revisions, digests and
+profile owner trust against the live Rust Task/Spec and Task-pinned profile.
+The `mixed` label describes a combined payload trust class; it conveys no
+authority. The Core compiler freezes the payload and may dispatch only those
+same bytes after HostKernel acknowledges the matching request ID, sequence and
+canonical ContextSelection digest. Rust retains references/digests only.
+
 This same profile authority applies to V1 direct-session children. Core Config resolves the
 trusted `AgentProfileV2` revision; the resolved profile must drive the child's actual model,
 harness, instructions, tool exposure and effective permission scope before Core pins the
@@ -160,7 +176,7 @@ were trained or tuned against.
 ```ts
 type HarnessProfileV1 = {
   harnessId: string
-  revision: number
+  revision: string // canonical decimal u64 on JSON/MessagePack boundaries
   displayName: string
   source: "builtin" | "user" | "project" | "plugin"
   supportedWireApis: Array<"responses" | "chat_completions" | "anthropic_messages" | "custom">
@@ -294,11 +310,25 @@ creation releases only reservations that have not crossed the durable launch bou
 launch whose outcome cannot be observed is reported UNKNOWN and reconciled under the same
 identity.
 
-`message` enqueues bounded data for the identified child and does not imply that a turn was
-started. `followup` is a message with an explicit wake/turn trigger; it cannot mutate an
-already-running request or splice into an in-flight model token stream. Both use stable
-request/message IDs, bounded payload refs, ownership checks and explicit queued/delivered/
-acknowledged/expired/unknown outcomes. `wait` observes a named child or bounded subtree until
+`agents.message` carries `deliveryMode: "queued" | "follow_up"`. `queued` enqueues bounded
+data for the identified child and does not imply that a turn was started. `follow_up` is the
+same message operation with an explicit wake/turn trigger; it queues exactly one child turn
+at the next safe input boundary and cannot mutate an already-running request or splice into
+an in-flight model token stream. This does not add a separate `agents.followup` capability.
+Both modes use stable request/message IDs, bounded payload refs, ownership checks and explicit
+queued/delivered/acknowledged/expired/unknown outcomes. Because message appends durable child
+input and follow_up can cause a provider turn, this is a guarded mutation and cannot inherit
+question.ask's standalone-control bypass. Core's private direct.message.prepare/commit/inspect
+sequence uses the existing Guard owner and binds authenticated parent/child Sessions, current
+child epoch, pinned AgentProfileV2 ID/revision/digest, effective permission-scope digest,
+the exact durable `directAttemptID`, mode, message ID, payload digest/bytes, mailbox and
+next-turn sequences and capacity. HostKernel re-resolves that Attempt and matches its
+durable parent/child/profile/scope/epoch/workspace binding; a Session ID alone cannot select
+an Attempt. A
+one-use HostKernel lease authorizes only the exact append; Core acknowledges it with its
+durable inbox receipt, and inspect reconciles a lost response without replay. `follow_up`
+also needs a separate HostKernel fresh-turn proof; queued never does. Missing Guard lease,
+receipt or turn proof leaves the model-facing operation unavailable. `wait` observes a named child or bounded subtree until
 new activity, terminal state or deadline; timeout reports the still-current child state and
 does not cancel it. `cancel` fences future child admissions before requesting cancellation
 of owned work, then reports cancelled/still-running/unknown from observed lifecycle state.
@@ -308,6 +338,71 @@ parent. In direct mode, Core persists parent/child Session linkage and owns mess
 turn-delivery state; the Rust resource owner persists only its own capacity/lease facts. In
 managed mode, Rust persists Task/Attempt lineage and delivery/effect/evidence cursors. The
 same logical delivery ID may correlate these projections, but the stores are not merged.
+
+Managed `follow_up` uses a managed-lane turn proof, never the direct lane's
+`DirectTurnScopeV1` or `FreshTurnAuthorizationV1`. `managed_provider.settle` records one exact
+provider response and usage receipt, which may be an intermediate tool-call result. Core calls
+`managed_provider.complete_turn` only at the persisted final-assistant boundary after no tool
+calls remain. HostKernel accepts it only when that response is the latest SETTLED request for
+the live Attempt, all provider requests are settled, and every Attempt effect has a terminal
+non-UNKNOWN receipt. It persists an Attempt/owner-epoch-bound completion receipt. A restart
+rehydrates response/usage pins only through the authenticated `managed_provider.inspect_settlement`
+projection; Core must not recompute them from transcript text. Follow-up must consume the
+completion receipt once against the exact message and next request sequence. HostKernel journals
+that one-use claim before Core persists the claim receipt in its inbox row. The following
+`managed_context.advance` carries the same receipt and a newly durable ContextSelection whose
+request ID and sequence equal the claimed next request; HostKernel rejects advancing a completed
+turn without that claim. This context receipt pins the request but grants no provider-send
+authority, which still requires the exact selected route and Guarded provider begin. Consumption
+ACK binds both delivery-time and post-advance live consumer scopes, and follow_up additionally
+binds the exact wake-claim receipt. Queue never consumes the completion proof or wakes the child.
+Until the complete wake/consume path is integrated and accepted, managed follow_up remains
+unavailable.
+
+**Direct inbox implementation status (2026-10-20, source only):** Core's dedicated
+Session-owned SQLite inbox now reserves message IDs, mailbox sequence, pending capacity and
+per-child receipt count in one transaction. Queue receipt retries are idempotent across child
+Attempt changes and use the original pins for inspect-only recovery after append. A lost prepare
+reply leaves the row `preparing`; Core replays only the exact same request/message ID, pins and
+payload while the original child Attempt remains live in the same owner epoch, allowing
+HostKernel to return its retained challenge or lease. A stale Attempt or changed epoch permits
+inspection only and unresolved state becomes UNKNOWN; no new prepare or append is allowed.
+Approval continuation re-prepares the same request only while the exact Attempt/profile/epoch remains live. The
+TaskTool consumes committed messages only at a later prompt boundary and records an immutable
+per-row consumption proof after prompt return. It separately persists HostKernel's
+`acknowledge_consumed` receipt; a lost response keeps pending capacity occupied and is retried
+under a fresh authenticated consumer Attempt without replaying model input. It does not wake or
+interrupt an active request. Follow-up remains unavailable without fresh-turn authority, and all
+direct-message dispatch remains gated on P1's integrated OwnerLog/Guard evidence. This code and
+the TUI cancel/wait paths are not yet tested or verified on the integrated revision.
+
+**Direct follow-up source update (2026-10-21; not acceptance evidence):** Core now has a
+server-callable serialized child runner for an exact committed `follow_up`. It re-resolves the
+authenticated parent/child ownership and current DirectAttempt, requires the prior turn's
+persisted completion receipt, obtains a one-use HostKernel fresh-turn authorization, claims only
+the exact committed inbox row at the safe boundary, begins the next turn, and persists its
+completion and consumption acknowledgements. Restart or ambiguous delivery is inspect/reconcile
+only; no second prompt is injected. The HTTP route can replay the same committed request to
+recover that exact delivery. The HostKernel turn lifecycle remains false-gated pending P1
+Guard/recovery and P8 acceptance, so this source is not runnable acceptance evidence.
+
+**Managed inbox and follow-up source update (2026-10-22; implementation only):** Core uses a
+separate managed-Attempt inbox table; it does not reuse the direct Session inbox or its authority.
+The managed prepare/commit/inspect path derives Goal/Run/Task/Attempt, owner epoch, profile,
+permission-scope and workspace pins from HostKernel, persists the exact bounded message, and
+reconciles a lost response against the retained HostKernel receipt. `queued` only appends durable
+input. A managed `follow_up` can be claimed only after HostKernel has persisted a
+`managed_provider.complete_turn` receipt from the final persisted assistant boundary (current
+user parent, final finish, no outstanding tool calls), tied to the latest settled provider
+request/response/usage and live Attempt epoch. The P2 coordinator claims the exact committed
+inbox row and one-use wake receipt, compiles a distinct next request/ContextSelection, advances
+the managed context, persists prompt-consumption evidence and HostKernel ACK, then marks the
+inbox consumed. The P7 prompt callback and P2 coordinator are source-wired; this is not evidence
+of runnable acceptance. A row left `delivering` by restart is inspect/reconcile-only and is never
+injected again without exact owner and consumption proof. Any missing/ambiguous receipt becomes
+`unknown`; `queued` never enters the wake path. Managed follow-up and managed provider dispatch
+remain unavailable until P1 Guard/ExecutionHost and P6 SecretBroker transport dependencies pass
+the final integrated acceptance gates. No tests, builds, or runtime journeys are claimed here.
 
 At dispatch, freeze the profile revision, selected provider/model/harness policy, context
 selection digest, parent capability ceiling, workspace/source revision, budget/deadline and
@@ -423,6 +518,29 @@ It must:
 - consume no network when local docs are sufficient.
 
 This replaces the temptation to place the complete HorizonCode manual in every system prompt.
+
+### Required built-in skill: HorizonCode integration (`builtin.horizoncode`)
+
+`builtin.horizoncode` is the **product integration** skill: built-in tools, skills, agents,
+capability tiers, direct vs managed lanes, slash commands, and honest WIRED vs DESIGNED
+status pointers. It complements `builtin.horizon-docs` (architecture retrieval).
+
+**Ownership:** `packages/core/src/horizon/skills/horizoncode/SKILL.md` (bundled `SkillV2`).
+
+**Exposure law (`DEC-V1-38`):**
+
+1. **Catalog tier (always):** every enabled built-in skill ID, name, and one-line description
+   appear in the system prompt (OpenCode `Skill.instructions` / `<available_skills>` pattern;
+   Codex exposes skill lists similarly—metadata only, no bodies).
+2. **Core tier tools:** `skills.search`, `skill`, and `tools.search` are in the **Core**
+   exposure tier (§33.23) for all default coding profiles—not optional extras.
+3. **Invoke:** model or user loads `builtin.horizoncode` when the task needs the full
+   integration map (tools, tiers, migration from other agents).
+4. **No shadowing:** same identity rules as §29.6; `horizoncode` display name cannot replace
+   the built-in ID.
+
+Project `.agents/skills/` or `.opencode/skills/` may add skills; they do not remove built-in
+catalog entries unless an explicit Profile composition disables them.
 
 ## 29.7 HookBindingV2
 
@@ -620,6 +738,16 @@ Subagent configuration includes explicit:
 - maximum pending inter-agent messages and bytes;
 - blocking-wait timeout and cancellation behavior.
 
+For the V1 direct Core Session lane, the aggregate lifetime ceiling is fixed at
+64 child Sessions per parent across all AgentProfileV2 selections. Terminal
+children count toward this lifetime total; abandoned reservations that never
+cross Attempt admission do not. Exact retries of the same durable DirectAttempt
+do not consume another slot. Each selected profile's `maxTotalChildren` remains
+an independent stricter per-profile cap, and its active-child limits govern
+concurrent work. Core may reject early from its Session view, but HostKernel
+must atomically enforce the aggregate and profile limits against authenticated
+parent lineage in durable admission state.
+
 Agent mail/results are delivered at safe input boundaries rather than spliced into an in-flight
 model token stream. Delivery has request/message IDs and bounded queues. Overflow produces a
 visible backpressure/error state rather than dropping authority-relevant results.
@@ -692,12 +820,19 @@ type TaskDeliveryEnvelopeV1 = {
 };
 type CandidateTaskResultV1 = {
   attemptId: string; status: "PRODUCED" | "BLOCKED" | "FAILED" | "UNKNOWN";
-  artifacts: {ref:string;sha256:string;mime:string;sourceRevision:string;fidelity:"FULL"|"SAMPLE"}[];
+  artifacts: {ref:string;sha256:string;mime:string;sourceRevision:string;fidelity:"full"|"head_tail_sample"|"failed"}[];
   touchedFiles: {pathRef:string;sourceRevision:string;access:"READ"|"WRITE"}[];
   toolReceiptRefs: string[]; proposedEvidenceRefs: string[];
   missingCriteriaIds: string[]; errors: {category:string;safeMessage:string}[];
 };
 ~~~
+
+For the managed Core Task adapter, the accepted planned Task pins `title` (1–256 UTF-8
+bytes) and `purpose` (1–8192 UTF-8 bytes). Preserve their exact bytes in the canonical
+Task-plan digest and durable replay. They supply descriptive child-prompt text only and
+grant no permissions, capabilities, provider/model choice, workspace scope, or review
+authority. A legacy plan without both strings may be replayed for history but cannot be
+newly started or dispatched.
 
 **Plan/graph compile:** accept user-approved full SpecVersion criteria; decompose into tasks with explicit input/output artifact kinds, exact criterion ID coverage, scopes and dependency edges. Reject a graph that lacks accepted criteria unless the user explicitly defers them; no Task may secretly extend write roots or increase model spend. Topologically sort using stable ID order; every leaf must have explicit useful output or bounded inspection deliverable. Critical-file single-writer rule is a default; concurrent readers are safe only under workspace policy. Resolve parent dependencies and project sources through the same Rust Task owner.
 
@@ -736,3 +871,176 @@ runtime. A legacy Agent name is only a migration selector, never a profile autho
 uses the exact saved revision and fails closed if it cannot be recovered.
 
 Context selection records source, trust, generation/revision and inclusion reason. It may use existing `fresh`, `conversation_slice` or `fork` modes; it must not clone the full parent transcript by default. Summaries remain derived artifacts with source/evidence lineage and never replace canonical history, exact test output, receipts or verifier results. P2 acceptance is one real managed Attempt and its recovery/forgery cases; broader DAG/fan-out remains gated by P8.
+
+
+## 29.21 Pi context and tool-disclosure patterns (2026-10-21)
+
+Pi's resource loader, skills, prompt templates, dynamic context, and transcript-aware
+prompt/tool changes are useful progressive-disclosure patterns. HorizonCode applies them
+through the existing trusted-source resolver and `ContextService`: each request uses one
+bounded, revisioned `ContextSelectionV1` with source/trust/inclusion provenance and digest;
+changes after dispatch take effect at the next request boundary. Tool deferral/search may
+reduce prompt size but only selects among registry entries already authorized for that
+Attempt and policy generation. It never grants authority. Extension-provided classifier,
+image, or virtual-model operations must use the existing selected provider/model registry
+and explicit profile-bound calls; they must not create hidden routing or a second registry.
+
+Pi's `packages/durable` is an experimental separate harness. HorizonCode adopts its
+checkpoint-before-effect, idempotent submission, replay classification, ownership-tree,
+bounded child-result and snapshot-on-attach invariants through the existing Core Session
+and Rust managed owners. It does not add Pi's conversation store, generic execution
+environment, extension hook runtime or a second transcript authority. See
+[`docs/research/2026-10-21-pi-codex-harness-decisions.md`](../docs/research/2026-10-21-pi-codex-harness-decisions.md)
+and §42.16 for the reviewed source links and decisions.
+
+## 29.22 V1 runtime lanes, bounded grants and CodeMode orchestration (2026-10-21)
+
+**Runtime lane boundary.** A normal direct TUI/CLI prompt, continuation, provider response,
+and tool turn runs through the HorizonCode Core `SessionRunner`, which remains the direct
+conversation owner. Managed Goal/Task provider turns use the separate managed `SessionPrompt`
+adapter because they must bind each provider request and effect to a live Attempt. The managed
+adapter is not a second direct-session implementation and cannot replace the direct runner.
+Both lanes must preserve the selected provider/model/harness, canonical prompt/context rules,
+tool schemas and ordering, stream/result semantics, usage and cost provenance, cancellation,
+error behavior, and multimodal payload fidelity where supported. Differences are explicit
+capability limitations, never silent fallbacks. Release acceptance compares these observable
+contracts on equivalent direct and managed turns while retaining managed Attempt authority.
+
+**Direct-session grants.** Direct coding uses the same Guard/ExecutionHost as managed effects,
+but ordinary work must not ask the user to re-approve every operation already covered by a
+grant. An authenticated user can approve a bounded grant for a direct Session: canonical
+capability IDs, workspace/path roots, operation classes, finite call/byte/time limits, and an
+expiry or revocation boundary are explicit. The Guard admits matching operations without a
+repeat dialog and denies or asks only when an operation exceeds that grant or immutable policy.
+The model, profile, skill, plugin, MCP server and child cannot create, widen, or renew a grant.
+The direct grant may be Session-scoped or a user-owned persisted workspace setting with at
+most 30 days' lifetime and exact principal/Location/root/policy/backend/guarantee pins. Neither
+grant becomes managed Task/Attempt authority. User-selected
+Ask/Safe Auto/YOLO presentation remains a view over the same Guard and cannot weaken hard
+denies. Missing, expired or revoked grants fail closed before dispatch.
+
+**Direct fan-out and managed DAG settlement are distinct.** Direct-session subagent fan-out is
+bounded Core child-session work. Children may complete independently and return candidate
+results to the parent; there is no implicit Rust Task graph, dependency settlement, or
+aggregate PASS. The parent remains responsible for deciding what to integrate and for
+ordinary direct-session verification. Bounded managed DAG execution is also required for
+V1 under DEC-V1-31, after the single-Task managed vertical passes its acceptance gate. It is
+Rust-owned: dependencies, Attempt settlement and aggregate Run success require the accepted
+SpecVersion, current revision, settled receipts and independent verifier evidence from §§11,
+15, 21 and 29.18. A direct child result cannot satisfy a managed Task or be promoted to
+managed evidence without a new authenticated managed Attempt and its complete evidence
+checks. Until aggregate settlement acceptance passes, multi-Task dispatch remains
+unavailable; this implementation gate does not remove the DAG from V1 release scope.
+
+**CodeMode contract.** V1 reuses the existing OpenCode-derived CodeMode interpreter; it does
+not add a second interpreter. The model-facing function name is `execute`; its canonical
+HorizonCode capability ID is `codemode.execute`. Existing `$codemode.search` progressively
+discovers only the authenticated caller's currently authorized capability tree. Existing MCP
+adapters may participate only through Core and the same dispatcher; the helper has no MCP client.
+Every nested call is validated as a complete wave and crosses normal ToolBatch, Guard, one-use
+lease, ExecutionHost, receipt and UNKNOWN-reconciliation paths. A script has at most 64 calls
+across at most 64 sequential waves of up to 32 concurrent calls, a trusted 30-second deadline,
+65,536-byte source/output caps and 1 MiB aggregate argument cap. A later wave waits for exact
+settled receipts and refreshed live scope. The helper has no ambient filesystem, process, network,
+credential or registry APIs. Run it as a short-lived helper under the existing Rust ExecutionHost
+with only fixed trusted `horizoncode:codemode:bun` selection. HostKernel applies and verifies
+`CodeModeResourceProfileV1` before first instruction: cgroup-v2 memory 536870912 bytes, CPU
+`100000 100000`, PIDs 64, and nofile 256. The profile digest binds its schema version and exact
+limits. Missing runtime or unverified limit keeps `codemode.execute` unavailable on that backend.
+Managed waves append `attempt_effect_wave_bound` before leases become consumable; direct waves use
+DirectTurnJournal. Cancellation terminates and reaps the helper; possible-dispatch calls still
+require receipt/UNKNOWN reconciliation. §32.41 is integrated release acceptance.
+
+**Counter representation.** Any unsigned 64-bit sequence, cursor, revision counter or byte
+count crossing JSON/MessagePack language boundaries is represented as a canonical decimal
+string (zero is `"0"`; otherwise no sign or leading zero). Bounded enums, booleans, and integer
+limits proven to remain within JavaScript's safe-integer range may remain JSON numbers. A
+decoder rejects overflow, noncanonical spelling and lossy number coercion before admission.
+
+## 29.23 Project instruction files — AGENTS.md, CLAUDE.md, rules and on-demand loading (V1)
+
+HorizonCode must load project and user instruction files **progressively**, like modern coding
+agents, without dumping every nested package's rules into the first prompt or duplicating them in
+UI render caches. Resolution is a **Core ContextService** concern: output is always a bounded,
+digest-pinned slice in `ContextSelectionV1` / `ContextLedgerV2` with inclusion reason
+`project_instruction` or `user_instruction`, never ambient prompt injection from tools/plugins.
+
+### 29.23.1 Trusted sources and precedence
+
+Load order (broad → narrow; later slices may narrow behavior but cannot widen Guard):
+
+| Scope | Typical paths | When loaded |
+|---|---|---|
+| Managed policy | org-managed instruction store (platform-defined) | Session start |
+| User | `~/.config/opencode/` / `~/.claude/CLAUDE.md`, user `instructions` config | Session start |
+| Project ancestors | `AGENTS.md`, `CLAUDE.md`, `.claude/CLAUDE.md`, `./CLAUDE.local.md` from **cwd → repo root** | Session start (concatenate root→cwd, local after project file per directory) |
+| Project config | `opencode.json(c)` `instructions[]` globs | Session start after glob resolve |
+| Subdirectory | `AGENTS.md` / `CLAUDE.md` under cwd | **On demand** when a Guarded read/write targets a file in that subtree |
+| Skills | `SKILL.md` bodies | **On demand** via `skill` tool only; system prompt lists metadata (OpenCode `SystemPrompt.skills` pattern) |
+
+**Horizon policy:** root `AGENTS.md` is authoritative over nested upstream `packages/**/AGENTS.md`
+for Horizon agent work (`DOC-012` / root policy). Nested upstream guides are coding conventions,
+not architecture authority.
+
+### 29.23.2 `ProjectInstructionModeV1`
+
+~~~ts
+type ProjectInstructionModeV1 =
+  | "prefer_agents_md"      // AGENTS.md; CLAUDE.md only if AGENTS absent (Claude Code agents-md style)
+  | "prefer_claude_md"
+  | "merge_both"            // deterministic order: AGENTS then CLAUDE per directory
+  | "config_only";          // only explicit instructions[] globs
+
+type ProjectInstructionResolverV1 = {
+  mode: ProjectInstructionModeV1;
+  maxCompiledBytes: number;       // initial safety default: 131_072 (128 KiB) per compile
+  maxAncestorFiles: number;       // initial safety default: 32
+  excludeGlobs: string[];         // e.g. vendor/, repo_take/
+  onDemandSubdir: boolean;          // default true
+};
+~~~
+
+Feature exposure and user settings select the mode; the model cannot change it mid-turn.
+
+### 29.23.3 On-demand subdirectory load (monorepo-safe)
+
+At Session start, load **ancestor** files only (Claude Code memory model:
+[How Claude remembers your project](https://code.claude.com/docs/en/memory),
+[CLAUDE.md loading](https://code.claude.com/docs/en/claude-md)). Do **not** walk all
+subdirectories at launch. When the first Guarded operation touches path `P`, load at most one
+instruction file from each ancestor directory of `P` under the project root that was not yet
+loaded, cache by `(path, revision, digest)`, and append to the **next** context compile, not
+the in-flight provider request.
+
+Codex-style **inherited instructions** for child sessions apply the child's pinned
+`SubagentDeliveryV1` workspace root, not the parent's full instruction union, unless
+`conversation_slice` explicitly includes parent instruction refs.
+
+### 29.23.4 External imports and trust
+
+Markdown `@import` / file includes in project instruction files follow Claude Code rules:
+imports resolving **outside** the authenticated workspace require explicit user approval once
+per project; user-scope personal files may load without project approval. Denied imports stay
+disabled; never partial-load untrusted paths. Record each included file's digest in the ledger.
+
+### 29.23.5 What not to auto-load
+
+- Full skill bodies, hook scripts, MCP server READMEs, or every `SKILL.md` under `.agents/`.
+- All `AGENTS.md` files in sibling monorepo packages when cwd is one package.
+- Entire `arch_V1/` or `repo_take/` trees via broad glob unless user config explicitly lists them.
+- Duplicate instruction text in TUI highlight caches (instructions are context, not paint).
+
+### 29.23.6 OpenCode / Codex / Claude reference behavior (non-authoritative)
+
+| Product | Pattern adopted in Horizon |
+|---|---|
+| OpenCode | `config.instructions[]`; skill metadata in system prompt; skill tool loads body; `Reference` directories in environment block |
+| Claude Code | Ancestor CLAUDE.md at launch; subdir on demand; AGENTS.md interchange; managed/user/local scopes |
+| Codex | Parent→child instruction inheritance scoped to child thread environment (§42.17) |
+
+See §42.21 competitive note and `docs/research/2026-10-21-pi-codex-harness-decisions.md`.
+
+### 29.23.7 Acceptance
+
+§32.12 `INST-001`..`INST-008` and context rows `CX-022`..`CX-025` (instruction digest in
+ledger, on-demand subdir, monorepo cwd isolation, no skill body without tool call).

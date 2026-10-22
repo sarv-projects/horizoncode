@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://horizoncode.dev/contracts/execution-repl-operation-receipt-v1.schema.json",
+  "title": "HorizonCode ExecutionHost REPL operation receipt v1",
+  "description": "Durable dispatch acknowledgement only; it is not evidence that evaluated code produced a correct result.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "status",
+    "hostProcessRef",
+    "requestSequence",
+    "effectID",
+    "challengeID",
+    "capabilityID",
+    "capabilityLeaseDigest",
+    "operationDigest",
+    "dispatchReceiptDigest"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "const": "DISPATCHED"
+    },
+    "hostProcessRef": {
+      "allOf": [
+        {
+          "$ref": "execution-launch-profile-v1.schema.json#/$defs/HostProcessRefV1"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "interpreter"
+            }
+          }
+        }
+      ]
+    },
+    "requestSequence": {
+      "$ref": "execution-launch-profile-v1.schema.json#/$defs/DecimalU64",
+      "not": {
+        "const": "0"
+      }
+    },
+    "effectID": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "challengeID": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "capabilityID": {
+      "enum": [
+        "repl.execute",
+        "repl.reset"
+      ]
+    },
+    "capabilityLeaseDigest": {
+      "$ref": "execution-launch-profile-v1.schema.json#/$defs/Digest"
+    },
+    "operationDigest": {
+      "$ref": "execution-launch-profile-v1.schema.json#/$defs/Digest"
+    },
+    "dispatchReceiptDigest": {
+      "$ref": "execution-launch-profile-v1.schema.json#/$defs/Digest"
+    },
+    "replacementHostProcessRef": {
+      "allOf": [
+        {
+          "$ref": "execution-launch-profile-v1.schema.json#/$defs/HostProcessRefV1"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "interpreter"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "capabilityID": {
+            "const": "repl.reset"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "replacementHostProcessRef"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "capabilityID": {
+            "const": "repl.execute"
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "required": [
+            "replacementHostProcessRef"
+          ]
+        }
+      }
+    }
+  ],
+  "$comment": "Private HostKernel contract only. Current HostKernel denies interpreter operations pending OS-enforced resource limits and callback/result receipt acceptance."
+}

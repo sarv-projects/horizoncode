@@ -1,71 +1,67 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "horizon://schemas/web-search-request-v1",
   "title": "WebSearchRequestV1",
+  "description": "Model-facing query intent only. Trusted code derives route, provider, credential, auth/cost, retry, budget, and endpoint policy; these cannot be supplied here.",
   "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "requestId",
+    "query",
+    "maxResults"
+  ],
   "properties": {
     "schemaVersion": {
       "const": 1
     },
     "requestId": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9._:-]+$",
+      "description": "Host-assigned stable request/cancellation identity bound to the exact authenticated Session, message, and tool call; model cannot choose an identity for another request."
     },
     "query": {
       "type": "string",
       "minLength": 1,
       "maxLength": 20000
     },
-    "providerId": {
-      "type": "string",
-      "minLength": 1
-    },
-    "routeClass": {
-      "enum": [
-        "direct_search",
-        "grounded_model_search"
-      ]
-    },
-    "accountRef": {
-      "type": [
-        "string",
-        "null"
-      ]
-    },
-    "costPolicy": {
-      "enum": [
-        "free_only",
-        "allow_configured_paid",
-        "unknown_denied"
-      ]
-    },
     "maxResults": {
       "type": "integer",
       "minimum": 1,
       "maximum": 100
     },
-    "timeoutMs": {
-      "type": "integer",
-      "minimum": 1
-    },
     "domains": {
       "type": "array",
+      "description": "Optional bounded query-filter intent passed to the selected providers. It is not an authorization boundary or route selector; HostKernel validates syntax and binds the exact value to the authenticated Guard-approved request.",
       "items": {
         "type": "string",
-        "minLength": 1
+        "minLength": 1,
+        "maxLength": 253,
+        "pattern": "^(\\*\\.)?[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$"
       },
-      "maxItems": 100
+      "maxItems": 100,
+      "uniqueItems": true
+    },
+    "deadlineMs": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 600000,
+      "description": "Bounded caller-requested duration; HostKernel applies its stricter aggregate deadline."
+    },
+    "cancellationId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9._:-]+$",
+      "description": "Host-issued opaque cancellation correlation identity; cancellation is authorized and scoped by authenticated host state, never by the model."
     }
   },
-  "required": [
-    "schemaVersion",
-    "requestId",
-    "query",
-    "providerId",
-    "routeClass",
-    "costPolicy",
-    "maxResults",
-    "timeoutMs",
-    "domains"
-  ],
-  "additionalProperties": false
+  "x-horizon-validation": [
+    "bind-request-to-authenticated-session-message-and-tool-call",
+    "validate-domain-filter-syntax-count-and-bytes-and-exact-match-to-guard-approved-request",
+    "caller-cannot-select-route-provider-account-credential-cost-auth-endpoint-retry-or-budget",
+    "requestId-and-cancellationId-are-host-assigned-context-fields-not-model-authority"
+  ]
 }

@@ -2,6 +2,7 @@
 
 import { $ } from "bun"
 import { createHash } from "node:crypto"
+import { lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs"
 import path from "path"
 import { fileURLToPath } from "url"
 import { createSolidTransformPlugin } from "@opentui/solid/bun-plugin"
@@ -9,6 +10,71 @@ import { createSolidTransformPlugin } from "@opentui/solid/bun-plugin"
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const dir = path.resolve(__dirname, "..")
+
+const clearBuildOutput = async (relative: string) => {
+  const p9BuildRoot = process.env.HORIZONCODE_P9_BUILD_ROOT
+  const p9BuildMarker = process.env.HORIZONCODE_P9_BUILD_MARKER
+  if (!p9BuildRoot && !p9BuildMarker) {
+    await $`rm -rf ${path.resolve(dir, relative)}`
+    return
+  }
+  if (!p9BuildRoot || !p9BuildMarker || typeof process.getuid !== "function") {
+    throw new Error("P9 build output cleanup requires its task-owned isolated build copy")
+  }
+
+  const root = path.resolve(p9BuildRoot)
+  const expectedMarker = path.join(path.dirname(root), `.${path.basename(root)}.p9-build-marker.json`)
+  if (path.resolve(p9BuildMarker) !== expectedMarker) {
+    throw new Error("P9 build marker is not the task-owned sibling of the isolated source copy")
+  }
+  const rootStat = lstatSync(root)
+  const markerStat = lstatSync(p9BuildMarker)
+  const currentUid = process.getuid()
+  if (
+    realpathSync(root) !== root ||
+    !rootStat.isDirectory() ||
+    rootStat.isSymbolicLink() ||
+    rootStat.uid !== currentUid ||
+    (rootStat.mode & 0o022) !== 0 ||
+    !markerStat.isFile() ||
+    markerStat.uid !== currentUid ||
+    (markerStat.mode & 0o022) !== 0
+  ) {
+    throw new Error("P9 build root or marker is not a regular task-owned path")
+  }
+  const marker = JSON.parse(readFileSync(p9BuildMarker, "utf8")) as { buildRoot?: string }
+  if (marker.buildRoot !== root) throw new Error("P9 build marker does not match the isolated copy")
+
+  const outputRoot = path.resolve(root, "packages/opencode/dist")
+  const target = path.resolve(dir, relative)
+  if (target !== outputRoot && !target.startsWith(`${outputRoot}${path.sep}`)) {
+    throw new Error("P9 build cleanup target escaped the isolated package output directory")
+  }
+  let cursor = root
+  for (const part of path.relative(root, target).split(path.sep)) {
+    cursor = path.join(cursor, part)
+    try {
+      if (lstatSync(cursor).isSymbolicLink()) throw new Error("P9 build cleanup target contains a symlink")
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+    }
+  }
+  const assertOwnedTree = (entry: string) => {
+    const metadata = lstatSync(entry)
+    if (metadata.uid !== currentUid || (metadata.mode & 0o022) !== 0) {
+      throw new Error("P9 build cleanup refused a path not owned and protected by the current user")
+    }
+    if (metadata.isDirectory() && !metadata.isSymbolicLink()) {
+      for (const child of readdirSync(entry)) assertOwnedTree(path.join(entry, child))
+    }
+  }
+  try {
+    assertOwnedTree(target)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+  }
+  await $`rm -rf ${target}`
+}
 
 process.chdir(dir)
 
@@ -135,7 +201,7 @@ const targets = singleFlag
     })
   : allTargets
 
-await $`rm -rf dist`
+await clearBuildOutput("dist")
 
 const binaries: Record<string, string> = {}
 const hasNativeLinuxTarget = targets.some(
@@ -256,6 +322,50 @@ for (const item of targets) {
     item.avx2 === undefined &&
     hostKernelAsset.target === `linux-${item.arch}-gnu`
   const hostKernelAssetPath = hostKernelAssetName
+  const codeModeHelperRelativeEntrypoint = "codemode-helper.js"
+  const codeModeHelperAssetName = "codemode-helper.js"
+  let codeModeHelperAssetPath: string | undefined
+  let codeModeHelperManifest: Record<string, unknown>
+  if (includeHostKernel) {
+    const helperPath = path.join(dir, "dist", name, "bin", codeModeHelperAssetName)
+    const helperBuild = await Bun.build({
+      entrypoints: ["./src/cli/codemode-helper.ts"],
+      outdir: path.dirname(helperPath),
+      naming: path.basename(helperPath),
+      target: "bun",
+      format: "esm",
+      minify: true,
+      splitting: false,
+      tsconfig: "./tsconfig.json",
+    })
+    if (!helperBuild.success) {
+      throw new Error(`HorizonCode CodeMode helper build failed: ${helperBuild.logs.map((entry) => entry.message).join("; ")}`)
+    }
+    const helperBytes = await Bun.file(helperPath).bytes()
+    if (helperBytes.length === 0 || helperBytes.length > 16 * 1024 * 1024) {
+      throw new Error("HorizonCode CodeMode helper asset is empty or exceeds its 16 MiB package bound")
+    }
+    codeModeHelperAssetPath = helperPath
+    codeModeHelperManifest = {
+      schemaVersion: 1,
+      status: "available",
+      helperSelector: "horizoncode:codemode:bun",
+      relativeEntrypoint: codeModeHelperRelativeEntrypoint,
+      sha256: `sha256:${createHash("sha256").update(helperBytes).digest("hex")}`,
+      target: `linux-${item.arch}-gnu`,
+    }
+  } else {
+    codeModeHelperManifest = {
+      schemaVersion: 1,
+      status: "unavailable",
+      helperSelector: "horizoncode:codemode:bun",
+      relativeEntrypoint: codeModeHelperRelativeEntrypoint,
+      sha256: null,
+      target: name,
+      reason: `CodeMode helper packaging requires the native Linux GNU HostKernel target; ${name} does not provide it.`,
+    }
+  }
+  await Bun.file(`dist/${name}/bin/codemode-helper.manifest.json`).write(`${JSON.stringify(codeModeHelperManifest, null, 2)}\n`)
   const hostKernelManifest = includeHostKernel
     ? {
         schemaVersion: 1,
@@ -300,6 +410,7 @@ for (const item of targets) {
             assets: [
               ...(includeObserver ? [observerAssetSource!] : []),
               ...(includeHostKernel ? [hostKernelAsset!.source] : []),
+              ...(codeModeHelperAssetPath ? [codeModeHelperAssetPath] : []),
             ],
           }
         : {}),
@@ -327,6 +438,8 @@ for (const item of targets) {
       ...(includeObserver ? { OPENCODE_SESSION_OBSERVER_ASSET: JSON.stringify(bunfsRoot + observerAssetPath) } : {}),
       OPENCODE_HOST_KERNEL_MANIFEST: JSON.stringify(JSON.stringify(hostKernelManifest)),
       OPENCODE_HOST_KERNEL_ASSET: JSON.stringify(includeHostKernel ? bunfsRoot + hostKernelAssetPath : ""),
+      OPENCODE_CODE_MODE_HELPER_MANIFEST: JSON.stringify(JSON.stringify(codeModeHelperManifest)),
+      OPENCODE_CODE_MODE_HELPER_ASSET: JSON.stringify(codeModeHelperAssetPath ? bunfsRoot + codeModeHelperAssetName : ""),
       OPENCODE_CHANNEL: `'${Script.channel}'`,
       OPENCODE_LIBC: item.os === "linux" ? `'${item.abi ?? "glibc"}'` : "",
       ...(item.os === "linux" ? { "process.env.OPENTUI_LIBC": JSON.stringify(item.abi ?? "glibc") } : {}),
@@ -352,7 +465,7 @@ for (const item of targets) {
     }
   }
 
-  await $`rm -rf ./dist/${name}/bin/tui`
+  await clearBuildOutput(`dist/${name}/bin/tui`)
   await Bun.file(`dist/${name}/package.json`).write(
     JSON.stringify(
       {
@@ -378,7 +491,9 @@ if (Script.release) {
       await $`zip -r ../../${key}.zip *`.cwd(`dist/${key}/bin`)
     }
   }
-  await $`gh release upload v${Script.version} ./dist/*.zip ./dist/*.tar.gz --clobber --repo ${process.env.GH_REPO}`
+  throw new Error(
+    "HorizonCode release upload is unavailable until distribution rights, signing trust, and release approval are resolved. Local archives were prepared without publication.",
+  )
 }
 
 export { binaries }

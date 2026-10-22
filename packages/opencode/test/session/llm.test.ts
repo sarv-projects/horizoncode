@@ -8,7 +8,7 @@ import { Cause, Effect, Exit, Fiber, Layer, Stream } from "effect"
 import { InstanceRef } from "../../src/effect/instance-ref"
 import { HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import z from "zod"
-import { LLM } from "../../src/session/llm"
+import { LLM, managedStepOutputTokenLimit } from "../../src/session/llm"
 import { LLMClient, RequestExecutor } from "@opencode-ai/llm/route"
 import { SessionSupervisor, SessionSupervisorError } from "@opencode-ai/core/session/supervisor"
 import type { Service as SessionSupervisorService } from "@opencode-ai/core/session/supervisor"
@@ -63,6 +63,21 @@ const openAIConfig = (
 }
 
 const it = testEffect(AppNodeBuilder.build(LayerNode.group([LLM.node, Provider.node])))
+
+describe("managed per-step token allowance", () => {
+  test("clamps each provider step to the current Rust remainder and model cap", () => {
+    expect(managedStepOutputTokenLimit("200", 128)).toBe(128)
+    expect(managedStepOutputTokenLimit("17", 128)).toBe(17)
+    expect(managedStepOutputTokenLimit("18446744073709551615", 32_000)).toBe(32_000)
+  })
+
+  test("fails closed for exhausted, malformed, or invalid provider limits", () => {
+    expect(() => managedStepOutputTokenLimit("0", 128)).toThrow("exhausted")
+    expect(() => managedStepOutputTokenLimit("01", 128)).toThrow("malformed")
+    expect(() => managedStepOutputTokenLimit("-1", 128)).toThrow("malformed")
+    expect(() => managedStepOutputTokenLimit("10", 0)).toThrow("malformed")
+  })
+})
 
 // LLM.stream returns a Stream, not an Effect, so we can't use the serviceUse proxy.
 const drain = (input: LLM.StreamInput) => LLM.Service.use((svc) => svc.stream(input).pipe(Stream.runDrain))

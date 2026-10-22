@@ -17,7 +17,7 @@ import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { parsePatch } from "diff"
-import { Cause, Deferred, Effect, Exit, Fiber, Layer, Queue } from "effect"
+import { Deferred, Effect, Exit, Fiber, Layer, Queue } from "effect"
 import fs from "fs/promises"
 import path from "path"
 import {
@@ -526,9 +526,12 @@ describe("Vcs apply", () => {
           "",
         ].join("\n")
         const appliedExit = yield* Effect.exit(vcs.apply({ sessionID: session.id, patch }))
+        if (Exit.isFailure(appliedExit)) {
+          yield* Fiber.interrupt(approval)
+          return yield* Effect.failCause(appliedExit.cause)
+        }
         const projectionIssue = yield* Deferred.await(projectionError)
         expect(projectionIssue).toBeUndefined()
-        if (Exit.isFailure(appliedExit)) return yield* Effect.fail(Cause.squash(appliedExit.cause))
         const applied = appliedExit.value
         yield* Fiber.join(approval)
         expect(applied.applied).toBe(true)

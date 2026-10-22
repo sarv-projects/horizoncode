@@ -158,6 +158,123 @@ pub struct PressureObservation {
     pub sustained_calm: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PressureControllerErrorV1 {
+    InvalidConfiguration,
+    StaleOwnerEpoch,
+    StaleSample,
+}
+
+/// Bounded in-memory hysteresis over authenticated, monotonic resource samples.
+/// It is a derived scheduling hint only. OwnerLog durability and a trusted
+/// HostKernel/Core ingress are separate requirements; resetting this controller
+/// never manufactures a calm history or opens worker fan-out.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ResourcePressureControllerV1 {
+    limits: PressureLimits,
+    lower_watermark: u64,
+    required_calm_samples: u16,
+    calm_samples: u16,
+    owner_epoch: u64,
+    last_sample_sequence: u64,
+    state: PressureState,
+}
+
+impl ResourcePressureControllerV1 {
+    pub(crate) fn new(
+        limits: PressureLimits,
+        lower_watermark: u64,
+        required_calm_samples: u16,
+        owner_epoch: u64,
+    ) -> Result<Self, PressureControllerErrorV1> {
+        let Some(recovery_ceiling) = limits.soft.or(limits.hard) else {
+            return Err(PressureControllerErrorV1::InvalidConfiguration);
+        };
+        if owner_epoch == 0
+            || required_calm_samples == 0
+            || required_calm_samples > 1024
+            || lower_watermark >= recovery_ceiling
+            || limits.hard.zip(limits.soft).is_some_and(|(hard, soft)| hard < soft)
+        {
+            return Err(PressureControllerErrorV1::InvalidConfiguration);
+        }
+        Ok(Self {
+            limits,
+            lower_watermark,
+            required_calm_samples,
+            calm_samples: 0,
+            owner_epoch,
+            last_sample_sequence: 0,
+            state: PressureState::Normal,
+        })
+    }
+
+    /// Consume one strictly newer sample from the current authenticated owner
+    /// epoch. Unknown usage never de-escalates pressure. A new owner epoch
+    /// fences the old hysteresis history and requires a fresh calm window
+    /// before leaving pressure recovery.
+    pub(crate) fn observe(
+        &mut self,
+        owner_epoch: u64,
+        sample_sequence: u64,
+        measured_usage: Option<u64>,
+        os_quota_alarm: bool,
+    ) -> Result<PressureState, PressureControllerErrorV1> {
+        if owner_epoch < self.owner_epoch || owner_epoch == 0 {
+            return Err(PressureControllerErrorV1::StaleOwnerEpoch);
+        }
+        if sample_sequence == 0 {
+            return Err(PressureControllerErrorV1::StaleSample);
+        }
+        if owner_epoch > self.owner_epoch {
+            self.owner_epoch = owner_epoch;
+            self.last_sample_sequence = 0;
+            self.calm_samples = 0;
+            self.state = PressureState::Recovering;
+        }
+        if sample_sequence <= self.last_sample_sequence {
+            return Err(PressureControllerErrorV1::StaleSample);
+        }
+        self.last_sample_sequence = sample_sequence;
+
+        if os_quota_alarm {
+            self.calm_samples = 0;
+            self.state = PressureState::HardPressure;
+            return Ok(self.state);
+        }
+        let Some(measured_usage) = measured_usage else {
+            self.calm_samples = 0;
+            return Ok(self.state);
+        };
+        if measured_usage < self.lower_watermark {
+            self.calm_samples = self.calm_samples.saturating_add(1)
+                .min(self.required_calm_samples);
+        } else {
+            self.calm_samples = 0;
+        }
+        let sustained_calm = self.calm_samples >= self.required_calm_samples;
+        self.state = self.state.evaluate(PressureObservation {
+            limits: self.limits,
+            measured_usage,
+            os_quota_alarm: false,
+            sustained_calm,
+        });
+        Ok(self.state)
+    }
+
+    pub(crate) fn state(&self) -> PressureState {
+        self.state
+    }
+
+    pub(crate) fn owner_epoch(&self) -> u64 {
+        self.owner_epoch
+    }
+
+    pub(crate) fn last_sample_sequence(&self) -> u64 {
+        self.last_sample_sequence
+    }
+}
+
 /// Authenticated identity copied from a trusted Rust ingress after principal,
 /// workspace, Session, Run, Task, Attempt, and owner epoch validation. It is
 /// deliberately opaque to callers; constructing it is not an authentication API.
@@ -348,6 +465,350 @@ impl BudgetDimension {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ResourceLimitSourceV1 {
+    OsQuota,
+    User,
+    Workspace,
+    Run,
+    SystemDefault,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ResourceLimitEnforcementPolicyV1 {
+    HardOs,
+    AdmissionOnly,
+    ObserveOnly,
+    Unsupported,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct EffectiveResourceLimitV1 {
+    pub dimension: BudgetDimension,
+    pub soft: Option<u64>,
+    pub hard: Option<u64>,
+    pub source: ResourceLimitSourceV1,
+    pub enforcement: ResourceLimitEnforcementPolicyV1,
+}
+
+/// One strict row from the P6 projection after HostKernel has authenticated
+/// the current Attempt and resolved the exact Config projection. The requested
+/// value and UI provenance remain in the projection digest; they are never
+/// promoted into effective authority here.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct AuthenticatedResourcePolicyRowV1 {
+    pub dimension: BudgetDimension,
+    pub effective: Option<EffectiveResourceLimitV1>,
+    pub enforcement: ResourceLimitEnforcementPolicyV1,
+}
+
+/// Opaque HostKernel-minted policy projection for one exact authenticated
+/// Attempt/owner epoch. It is an immutable pin, not a global resource-policy
+/// registry. Only effective HARD_OS/ADMISSION_ONLY limits can contribute to
+/// resource admission; absent and OBSERVE_ONLY/UNSUPPORTED limits remain
+/// unknown. P8 never accepts raw settings or caller-supplied owner fields.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct AuthenticatedResourcePolicyPinV1 {
+    owner: AuthenticatedOwnerContext,
+    projection_revision: u64,
+    projection_digest: String,
+    rows: BTreeMap<BudgetDimension, AuthenticatedResourcePolicyRowV1>,
+}
+
+impl AuthenticatedResourcePolicyPinV1 {
+    pub(crate) fn from_host_kernel(
+        owner: AuthenticatedOwnerContext,
+        projection_revision: u64,
+        projection_digest: String,
+        rows: Vec<AuthenticatedResourcePolicyRowV1>,
+    ) -> Result<Self, ResourcePolicyPinErrorV1> {
+        const DIMENSIONS: [BudgetDimension; 9] = [
+            BudgetDimension::MemoryBytes,
+            BudgetDimension::CpuMillicores,
+            BudgetDimension::Processes,
+            BudgetDimension::FileDescriptors,
+            BudgetDimension::DiskBytes,
+            BudgetDimension::ToolOutputBytes,
+            BudgetDimension::ActiveWorkers,
+            BudgetDimension::Tokens,
+            BudgetDimension::ProviderCostMicros,
+        ];
+        if projection_revision == 0
+            || !valid_blake3_digest(&projection_digest)
+            || rows.len() != DIMENSIONS.len()
+        {
+            return Err(ResourcePolicyPinErrorV1::InvalidProjection);
+        }
+        owner.validate().map_err(|_| ResourcePolicyPinErrorV1::InvalidOwner)?;
+        let mut indexed = BTreeMap::new();
+        for row in rows {
+            let valid_effective = match row.effective.as_ref() {
+                Some(effective) => {
+                    effective.dimension == row.dimension
+                        && !effective.hard.zip(effective.soft).is_some_and(|(hard, soft)| hard < soft)
+                        && effective.enforcement == row.enforcement
+                        // The enforcement label and its source are a single
+                        // HostKernel assertion. Do not let an admission-only
+                        // settings cap masquerade as an installed OS quota,
+                        // or accept an OS quota label without OS provenance.
+                        && match effective.enforcement {
+                            ResourceLimitEnforcementPolicyV1::HardOs => {
+                                effective.source == ResourceLimitSourceV1::OsQuota
+                                    && effective.hard.is_some_and(|hard| hard > 0)
+                            }
+                            ResourceLimitEnforcementPolicyV1::AdmissionOnly => {
+                                effective.source != ResourceLimitSourceV1::OsQuota
+                            }
+                            ResourceLimitEnforcementPolicyV1::ObserveOnly
+                            | ResourceLimitEnforcementPolicyV1::Unsupported => true,
+                        }
+                }
+                None => row.enforcement == ResourceLimitEnforcementPolicyV1::Unsupported,
+            };
+            if !DIMENSIONS.contains(&row.dimension)
+                || !valid_effective
+                || indexed.insert(row.dimension, row).is_some()
+            {
+                return Err(ResourcePolicyPinErrorV1::InvalidProjection);
+            }
+        }
+        if DIMENSIONS.iter().any(|dimension| !indexed.contains_key(dimension)) {
+            return Err(ResourcePolicyPinErrorV1::InvalidProjection);
+        }
+        Ok(Self { owner, projection_revision, projection_digest, rows: indexed })
+    }
+
+    pub(crate) fn matches_owner(&self, owner: &AuthenticatedOwnerContext) -> bool {
+        &self.owner == owner
+    }
+
+    pub(crate) fn projection_revision(&self) -> u64 {
+        self.projection_revision
+    }
+
+    pub(crate) fn projection_digest(&self) -> &str {
+        &self.projection_digest
+    }
+
+    pub(crate) fn row(
+        &self,
+        dimension: BudgetDimension,
+    ) -> Option<&AuthenticatedResourcePolicyRowV1> {
+        self.rows.get(&dimension)
+    }
+
+    /// Only verified OS hard limits and explicit admission-only caps may
+    /// constrain worker admission. Observation-only/unsupported settings and
+    /// P2-owned token/cost dimensions never become P8 quotas.
+    pub(crate) fn worker_admission_limit(&self, dimension: BudgetDimension) -> Option<u64> {
+        if !matches!(dimension,
+            BudgetDimension::MemoryBytes
+                | BudgetDimension::CpuMillicores
+                | BudgetDimension::Processes
+                | BudgetDimension::FileDescriptors
+                | BudgetDimension::DiskBytes
+                | BudgetDimension::ToolOutputBytes
+                | BudgetDimension::ActiveWorkers
+        ) {
+            return None;
+        }
+        let row = self.rows.get(&dimension)?;
+        match row.enforcement {
+            ResourceLimitEnforcementPolicyV1::HardOs
+            | ResourceLimitEnforcementPolicyV1::AdmissionOnly => row.effective.as_ref()?.hard,
+            ResourceLimitEnforcementPolicyV1::ObserveOnly
+            | ResourceLimitEnforcementPolicyV1::Unsupported => None,
+        }
+    }
+}
+
+/// Process-local pressure tracker bound to one exact HostKernel policy pin and
+/// authenticated owner epoch. The lower watermark and calm window are explicit
+/// inputs from the trusted configuration projection; P8 does not synthesize
+/// either value. This tracker is advisory and must be discarded on owner-epoch
+/// change or policy revision change. It is not durable admission authority.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ManagedResourcePressureTrackerV1 {
+    owner: AuthenticatedOwnerContext,
+    policy_revision: u64,
+    policy_digest: String,
+    dimension: BudgetDimension,
+    lower_watermark: u64,
+    required_calm_samples: u16,
+    last_sampled_at_ms: u64,
+    controller: ResourcePressureControllerV1,
+}
+
+impl ManagedResourcePressureTrackerV1 {
+    pub(crate) fn from_authenticated_policy(
+        policy: &AuthenticatedResourcePolicyPinV1,
+        dimension: BudgetDimension,
+        lower_watermark: u64,
+        required_calm_samples: u16,
+    ) -> Result<Self, ResourcePressureConsumerErrorV1> {
+        // V1 has an accepted owner-attributed PSS source. Other dimensions
+        // require their own same-unit sampler before they may produce pressure.
+        if dimension != BudgetDimension::MemoryBytes {
+            return Err(ResourcePressureConsumerErrorV1::UnsupportedDimension);
+        }
+        let row = policy.row(dimension)
+            .ok_or(ResourcePressureConsumerErrorV1::PolicyUnavailable)?;
+        let effective = row.effective.as_ref()
+            .filter(|limit| limit.enforcement != ResourceLimitEnforcementPolicyV1::Unsupported)
+            .ok_or(ResourcePressureConsumerErrorV1::PolicyUnavailable)?;
+        let limits = PressureLimits { soft: effective.soft, hard: effective.hard };
+        let mut controller = ResourcePressureControllerV1::new(
+            limits,
+            lower_watermark,
+            required_calm_samples,
+            policy.owner.owner_epoch(),
+        ).map_err(|_| ResourcePressureConsumerErrorV1::InvalidPolicy)?;
+        // A new tracker has no authenticated calm history. Require the same
+        // sustained-calm window as a resumed owner before projecting NORMAL.
+        controller.state = PressureState::Recovering;
+        Ok(Self {
+            owner: policy.owner.clone(),
+            policy_revision: policy.projection_revision,
+            policy_digest: policy.projection_digest.clone(),
+            dimension,
+            lower_watermark,
+            required_calm_samples,
+            last_sampled_at_ms: 0,
+            controller,
+        })
+    }
+
+    pub(crate) fn matches_inputs(
+        &self,
+        policy: &AuthenticatedResourcePolicyPinV1,
+        owner: &AuthenticatedOwnerContext,
+        dimension: BudgetDimension,
+        lower_watermark: u64,
+        required_calm_samples: u16,
+    ) -> bool {
+        self.owner == *owner
+            && policy.matches_owner(owner)
+            && self.policy_revision == policy.projection_revision
+            && self.policy_digest == policy.projection_digest
+            && self.dimension == dimension
+            && self.lower_watermark == lower_watermark
+            && self.required_calm_samples == required_calm_samples
+    }
+
+    /// Advisory hysteresis has no durable retention contract. The caller may
+    /// discard it once its last supporting sample is older than the caller's
+    /// bounded freshness window; a later observation then starts RECOVERING.
+    pub(crate) fn is_expired_at(&self, now_ms: u64, max_age_ms: u64) -> bool {
+        self.last_sampled_at_ms == 0
+            || now_ms < self.last_sampled_at_ms
+            || now_ms - self.last_sampled_at_ms > max_age_ms
+    }
+
+    /// P8 calls this only after revalidating the snapshot against the current
+    /// OwnerLog cursor and freshness bound. `None` usage cannot create a NORMAL
+    /// signal or advance the recovery window.
+    pub(crate) fn observe_verified_usage(
+        &mut self,
+        policy: &AuthenticatedResourcePolicyPinV1,
+        owner: &AuthenticatedOwnerContext,
+        sample_sequence: u64,
+        sampled_at_ms: u64,
+        owner_log_id: &str,
+        owner_log_sequence: &str,
+        owner_log_event_digest: &str,
+        worker_pool_revision: u64,
+        measured_usage: Option<u64>,
+    ) -> Result<AuthenticatedResourcePressureSignalV1, ResourcePressureConsumerErrorV1> {
+        if self.owner != *owner
+            || !policy.matches_owner(owner)
+            || policy.projection_revision != self.policy_revision
+            || policy.projection_digest != self.policy_digest
+            || sample_sequence == 0 || sampled_at_ms == 0
+            || sampled_at_ms <= self.last_sampled_at_ms
+            || owner_log_id.is_empty() || owner_log_sequence.is_empty()
+            || !valid_blake3_digest(owner_log_event_digest) || worker_pool_revision == 0
+        {
+            return Err(ResourcePressureConsumerErrorV1::StaleAuthority);
+        }
+        let measured_usage = measured_usage
+            .ok_or(ResourcePressureConsumerErrorV1::UsageUnavailable)?;
+        let state = self.controller.observe(
+            owner.owner_epoch(), sample_sequence, Some(measured_usage), false,
+        ).map_err(|_| ResourcePressureConsumerErrorV1::StaleAuthority)?;
+        self.last_sampled_at_ms = sampled_at_ms;
+        Ok(AuthenticatedResourcePressureSignalV1 {
+            owner: owner.clone(),
+            policy_revision: self.policy_revision,
+            policy_digest: self.policy_digest.clone(),
+            dimension: self.dimension,
+            sample_sequence,
+            sampled_at_ms,
+            owner_log_id: owner_log_id.to_owned(),
+            owner_log_sequence: owner_log_sequence.to_owned(),
+            owner_log_event_digest: owner_log_event_digest.to_owned(),
+            worker_pool_revision,
+            measured_usage,
+            state,
+        })
+    }
+}
+
+/// Opaque, bounded advisory output. It carries provenance so consumers cannot
+/// accidentally reuse pressure from another Attempt, policy revision or
+/// sample sequence. It never grants launch, cancellation, eviction or release
+/// authority.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct AuthenticatedResourcePressureSignalV1 {
+    owner: AuthenticatedOwnerContext,
+    policy_revision: u64,
+    policy_digest: String,
+    dimension: BudgetDimension,
+    sample_sequence: u64,
+    sampled_at_ms: u64,
+    owner_log_id: String,
+    owner_log_sequence: String,
+    owner_log_event_digest: String,
+    worker_pool_revision: u64,
+    measured_usage: u64,
+    state: PressureState,
+}
+
+impl AuthenticatedResourcePressureSignalV1 {
+    pub(crate) fn owner(&self) -> &AuthenticatedOwnerContext { &self.owner }
+    pub(crate) fn policy_revision(&self) -> u64 { self.policy_revision }
+    pub(crate) fn policy_digest(&self) -> &str { &self.policy_digest }
+    pub(crate) fn dimension(&self) -> BudgetDimension { self.dimension }
+    pub(crate) fn sample_sequence(&self) -> u64 { self.sample_sequence }
+    pub(crate) fn sampled_at_ms(&self) -> u64 { self.sampled_at_ms }
+    pub(crate) fn owner_log_id(&self) -> &str { &self.owner_log_id }
+    pub(crate) fn owner_log_sequence(&self) -> &str { &self.owner_log_sequence }
+    pub(crate) fn owner_log_event_digest(&self) -> &str { &self.owner_log_event_digest }
+    pub(crate) fn worker_pool_revision(&self) -> u64 { self.worker_pool_revision }
+    pub(crate) fn measured_usage(&self) -> u64 { self.measured_usage }
+    pub(crate) fn state(&self) -> PressureState { self.state }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ResourcePressureConsumerErrorV1 {
+    PolicyUnavailable,
+    UnsupportedDimension,
+    InvalidPolicy,
+    StaleAuthority,
+    UsageUnavailable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ResourcePolicyPinErrorV1 {
+    InvalidOwner,
+    InvalidProjection,
+}
+
+fn valid_blake3_digest(value: &str) -> bool {
+    value.len() == 71
+        && value.starts_with("blake3:")
+        && value[7..].bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ResourceOwnerError {
     InvalidConfiguration,
@@ -459,7 +920,11 @@ impl ResourceReservationOwner {
         self.owner_epoch
     }
 
-    pub fn update_capacity(
+    /// Internal primitive only. Product ingress must not accept caller-provided
+    /// hard limits or usage values; HostKernel must first mint an authenticated
+    /// policy pin and a same-owner measured observation before a future adapter
+    /// can call this.
+    pub(crate) fn update_capacity(
         &mut self,
         dimension: BudgetDimension,
         hard_limit: Option<u64>,
@@ -1152,8 +1617,9 @@ fn map_transition_error(error: ReservationTransitionError) -> ResourceOwnerError
 impl PressureState {
     /// Pure transition for the §18.18/§11.20 controller. Escalation is immediate, including
     /// `NORMAL → HARD_PRESSURE` on an OS quota alarm. De-escalation requires `sustained_calm`
-    /// and never skips `HARD_PRESSURE → RECOVERING → NORMAL`; `HARD_PRESSURE` does not fall back
-    /// to `SOFT_PRESSURE` while usage merely drops below the hard limit.
+    /// and never skips a pressure state through `RECOVERING → NORMAL`;
+    /// `HARD_PRESSURE` does not fall back to `SOFT_PRESSURE` while usage merely
+    /// drops below the hard limit.
     pub fn evaluate(self, observation: PressureObservation) -> Self {
         use PressureState::{HardPressure, Normal, Recovering, SoftPressure};
         let PressureObservation {
@@ -1173,13 +1639,30 @@ impl PressureState {
                     HardPressure
                 }
             }
-            _ => {
+            SoftPressure => {
+                if limits.soft.is_some_and(|soft| measured_usage >= soft) {
+                    SoftPressure
+                } else if sustained_calm {
+                    Recovering
+                } else {
+                    SoftPressure
+                }
+            }
+            Recovering => {
                 if limits.soft.is_some_and(|soft| measured_usage >= soft) {
                     SoftPressure
                 } else if sustained_calm {
                     Normal
                 } else {
-                    self
+                    Recovering
+                }
+            }
+            Normal => {
+                if limits.soft.is_some_and(|soft| measured_usage >= soft) {
+                    SoftPressure
+                } else {
+                    Normal
+                }
                 }
             }
         }
@@ -1289,8 +1772,226 @@ mod tests {
         )
     }
 
+    fn policy_rows() -> Vec<AuthenticatedResourcePolicyRowV1> {
+        [
+            BudgetDimension::MemoryBytes,
+            BudgetDimension::CpuMillicores,
+            BudgetDimension::Processes,
+            BudgetDimension::FileDescriptors,
+            BudgetDimension::DiskBytes,
+            BudgetDimension::ToolOutputBytes,
+            BudgetDimension::ActiveWorkers,
+            BudgetDimension::Tokens,
+            BudgetDimension::ProviderCostMicros,
+        ]
+        .into_iter()
+        .map(|dimension| AuthenticatedResourcePolicyRowV1 {
+            dimension,
+            effective: None,
+            enforcement: ResourceLimitEnforcementPolicyV1::Unsupported,
+        })
+        .collect()
+    }
+
     fn reservation_owner(epoch: u64) -> ResourceReservationOwner {
         ResourceReservationOwner::new(epoch, 8).expect("valid reservation owner")
+    }
+
+    #[test]
+    fn authenticated_policy_pin_uses_only_effective_admission_limits() {
+        let owner = authenticated_owner(7, "attempt-a");
+        let mut rows = policy_rows();
+        rows[0] = AuthenticatedResourcePolicyRowV1 {
+            dimension: BudgetDimension::MemoryBytes,
+            enforcement: ResourceLimitEnforcementPolicyV1::AdmissionOnly,
+            effective: Some(EffectiveResourceLimitV1 {
+                dimension: BudgetDimension::MemoryBytes,
+                soft: Some(80),
+                hard: Some(100),
+                source: ResourceLimitSourceV1::User,
+                enforcement: ResourceLimitEnforcementPolicyV1::AdmissionOnly,
+            }),
+        };
+        rows[7] = AuthenticatedResourcePolicyRowV1 {
+            dimension: BudgetDimension::Tokens,
+            enforcement: ResourceLimitEnforcementPolicyV1::AdmissionOnly,
+            effective: Some(EffectiveResourceLimitV1 {
+                dimension: BudgetDimension::Tokens,
+                soft: None,
+                hard: Some(500),
+                source: ResourceLimitSourceV1::Run,
+                enforcement: ResourceLimitEnforcementPolicyV1::AdmissionOnly,
+            }),
+        };
+        let pin = AuthenticatedResourcePolicyPinV1::from_host_kernel(
+            owner.clone(), 3, format!("blake3:{}", "a".repeat(64)), rows,
+        ).expect("strict HostKernel pin");
+        assert!(pin.matches_owner(&owner));
+        assert_eq!(pin.projection_revision(), 3);
+        assert_eq!(pin.worker_admission_limit(BudgetDimension::MemoryBytes), Some(100));
+        assert_eq!(pin.worker_admission_limit(BudgetDimension::Tokens), None);
+        assert_eq!(pin.worker_admission_limit(BudgetDimension::ProviderCostMicros), None);
+        assert_eq!(pin.worker_admission_limit(BudgetDimension::Processes), None);
+    }
+
+    #[test]
+    fn authenticated_policy_pin_rejects_incomplete_duplicate_or_invalid_limits() {
+        let owner = authenticated_owner(7, "attempt-a");
+        let digest = format!("blake3:{}", "a".repeat(64));
+        assert_eq!(
+            AuthenticatedResourcePolicyPinV1::from_host_kernel(
+                owner.clone(), 1, digest.clone(), policy_rows().into_iter().take(8).collect(),
+            ),
+            Err(ResourcePolicyPinErrorV1::InvalidProjection),
+        );
+        let mut duplicate = policy_rows();
+        duplicate[8].dimension = BudgetDimension::Tokens;
+        assert_eq!(
+            AuthenticatedResourcePolicyPinV1::from_host_kernel(owner.clone(), 1, digest.clone(), duplicate),
+            Err(ResourcePolicyPinErrorV1::InvalidProjection),
+        );
+        let mut inverted = policy_rows();
+        inverted[0] = AuthenticatedResourcePolicyRowV1 {
+            dimension: BudgetDimension::MemoryBytes,
+            enforcement: ResourceLimitEnforcementPolicyV1::AdmissionOnly,
+            effective: Some(EffectiveResourceLimitV1 {
+                dimension: BudgetDimension::MemoryBytes,
+                soft: Some(101),
+                hard: Some(100),
+                source: ResourceLimitSourceV1::User,
+                enforcement: ResourceLimitEnforcementPolicyV1::AdmissionOnly,
+            }),
+        };
+        assert_eq!(
+            AuthenticatedResourcePolicyPinV1::from_host_kernel(owner, 1, digest, inverted),
+            Err(ResourcePolicyPinErrorV1::InvalidProjection),
+        );
+    }
+
+    #[test]
+    fn authenticated_policy_pin_keeps_os_enforcement_and_source_consistent() {
+        let owner = authenticated_owner(7, "attempt-a");
+        let digest = format!("blake3:{}", "b".repeat(64));
+        let mut rows = policy_rows();
+        rows[0] = AuthenticatedResourcePolicyRowV1 {
+            dimension: BudgetDimension::MemoryBytes,
+            enforcement: ResourceLimitEnforcementPolicyV1::HardOs,
+            effective: Some(EffectiveResourceLimitV1 {
+                dimension: BudgetDimension::MemoryBytes,
+                soft: None,
+                hard: Some(100),
+                source: ResourceLimitSourceV1::User,
+                enforcement: ResourceLimitEnforcementPolicyV1::HardOs,
+            }),
+        };
+        assert_eq!(
+            AuthenticatedResourcePolicyPinV1::from_host_kernel(
+                owner.clone(), 1, digest.clone(), rows,
+            ),
+            Err(ResourcePolicyPinErrorV1::InvalidProjection),
+        );
+
+        let mut rows = policy_rows();
+        rows[0] = AuthenticatedResourcePolicyRowV1 {
+            dimension: BudgetDimension::MemoryBytes,
+            enforcement: ResourceLimitEnforcementPolicyV1::AdmissionOnly,
+            effective: Some(EffectiveResourceLimitV1 {
+                dimension: BudgetDimension::MemoryBytes,
+                soft: None,
+                hard: Some(100),
+                source: ResourceLimitSourceV1::OsQuota,
+                enforcement: ResourceLimitEnforcementPolicyV1::AdmissionOnly,
+            }),
+        };
+        assert_eq!(
+            AuthenticatedResourcePolicyPinV1::from_host_kernel(owner, 1, digest, rows),
+            Err(ResourcePolicyPinErrorV1::InvalidProjection),
+        );
+    }
+
+    #[test]
+    fn authenticated_pressure_consumer_fences_policy_owner_and_unknown_usage() {
+        let owner = authenticated_owner(7, "attempt-a");
+        let mut rows = policy_rows();
+        rows[0] = AuthenticatedResourcePolicyRowV1 {
+            dimension: BudgetDimension::MemoryBytes,
+            enforcement: ResourceLimitEnforcementPolicyV1::AdmissionOnly,
+            effective: Some(EffectiveResourceLimitV1 {
+                dimension: BudgetDimension::MemoryBytes,
+                soft: Some(80),
+                hard: Some(100),
+                source: ResourceLimitSourceV1::Run,
+                enforcement: ResourceLimitEnforcementPolicyV1::AdmissionOnly,
+            }),
+        };
+        let policy = AuthenticatedResourcePolicyPinV1::from_host_kernel(
+            owner.clone(), 3, format!("blake3:{}", "c".repeat(64)), rows.clone(),
+        ).expect("authenticated policy");
+        let mut tracker = ManagedResourcePressureTrackerV1::from_authenticated_policy(
+            &policy, BudgetDimension::MemoryBytes, 60, 2,
+        ).expect("explicit hysteresis policy");
+
+        assert_eq!(
+            tracker.observe_verified_usage(&policy, &owner, 1, 10, "pool", "5",
+                &format!("blake3:{}", "e".repeat(64)), 1, None),
+            Err(ResourcePressureConsumerErrorV1::UsageUnavailable),
+        );
+        assert_eq!(
+            tracker.observe_verified_usage(&policy, &owner, 1, 10, "pool", "5",
+                &format!("blake3:{}", "e".repeat(64)), 1, Some(100))
+                .expect("fresh measured usage").state(),
+            PressureState::HardPressure,
+        );
+        let other_owner = authenticated_owner(7, "attempt-b");
+        assert_eq!(
+            tracker.observe_verified_usage(&policy, &other_owner, 2, 11, "pool", "5",
+                &format!("blake3:{}", "e".repeat(64)), 1, Some(50)),
+            Err(ResourcePressureConsumerErrorV1::StaleAuthority),
+        );
+
+        let changed_policy = AuthenticatedResourcePolicyPinV1::from_host_kernel(
+            owner.clone(), 4, format!("blake3:{}", "d".repeat(64)), rows,
+        ).expect("new policy revision");
+        assert_eq!(
+            tracker.observe_verified_usage(&changed_policy, &owner, 2, 11, "pool", "5",
+                &format!("blake3:{}", "e".repeat(64)), 1, Some(50)),
+            Err(ResourcePressureConsumerErrorV1::StaleAuthority),
+        );
+        assert_eq!(
+            tracker.observe_verified_usage(&policy, &owner, 1, 10, "pool", "5",
+                &format!("blake3:{}", "e".repeat(64)), 1, Some(50)),
+            Err(ResourcePressureConsumerErrorV1::StaleAuthority),
+        );
+
+        let mut fresh_tracker = ManagedResourcePressureTrackerV1::from_authenticated_policy(
+            &policy, BudgetDimension::MemoryBytes, 60, 2,
+        ).expect("fresh owner epoch starts without calm history");
+        assert_eq!(
+            fresh_tracker.observe_verified_usage(&policy, &owner, 1, 10, "pool", "5",
+                &format!("blake3:{}", "e".repeat(64)), 1, Some(50))
+                .expect("first calm sample").state(),
+            PressureState::Recovering,
+        );
+        assert_eq!(
+            fresh_tracker.observe_verified_usage(&policy, &owner, 2, 11, "pool", "5",
+                &format!("blake3:{}", "e".repeat(64)), 1, Some(50))
+                .expect("sustained calm window").state(),
+            PressureState::Normal,
+        );
+        assert_eq!(
+            fresh_tracker.observe_verified_usage(&policy, &owner, 3, 11, "pool", "5",
+                &format!("blake3:{}", "e".repeat(64)), 1, Some(50)),
+            Err(ResourcePressureConsumerErrorV1::StaleAuthority),
+            "a newer sequence with a repeated timestamp cannot advance hysteresis",
+        );
+        assert_eq!(
+            fresh_tracker.observe_verified_usage(&policy, &owner, 3, 12, "pool", "5",
+                &format!("blake3:{}", "e".repeat(64)), 1, Some(50))
+                .expect("strictly newer sample time").state(),
+            PressureState::Normal,
+        );
+        assert!(!fresh_tracker.is_expired_at(21, 10));
+        assert!(fresh_tracker.is_expired_at(22, 10));
     }
 
     fn set_memory_capacity(
@@ -2355,7 +3056,7 @@ mod tests {
     }
 
     #[test]
-    fn hard_pressure_recovers_only_through_recovering_with_sustained_calm() {
+    fn soft_and_hard_pressure_recover_through_recovering_with_sustained_calm() {
         use PressureState::*;
         let mut calm = pressure(10, Some(100), Some(200));
         calm.sustained_calm = true;
@@ -2366,7 +3067,8 @@ mod tests {
         );
         assert_eq!(HardPressure.evaluate(calm), Recovering);
         assert_eq!(Recovering.evaluate(calm), Normal);
-        assert_eq!(SoftPressure.evaluate(calm), Normal);
+        assert_eq!(SoftPressure.evaluate(calm), Recovering);
+        assert_eq!(Recovering.evaluate(calm), Normal);
         // Re-escalation out of RECOVERING is immediate.
         assert_eq!(
             Recovering.evaluate(pressure(200, Some(100), Some(200))),
@@ -2410,6 +3112,54 @@ mod tests {
             Recovering.evaluate(pressure(10_000, None, None)),
             Recovering
         );
+    }
+
+    #[test]
+    fn owned_pressure_controller_derives_calm_window_from_fresh_samples() {
+        use PressureState::*;
+        let mut controller = ResourcePressureControllerV1::new(
+            PressureLimits { soft: Some(100), hard: Some(200) },
+            80,
+            2,
+            7,
+        ).expect("valid pressure policy");
+        assert_eq!(controller.observe(7, 1, Some(100), false), Ok(SoftPressure));
+        assert_eq!(controller.observe(7, 2, Some(79), false), Ok(SoftPressure));
+        assert_eq!(controller.observe(7, 3, Some(79), false), Ok(Recovering));
+        assert_eq!(controller.observe(7, 4, Some(79), false), Ok(Normal));
+        assert_eq!(controller.observe(7, 4, Some(1), false), Err(PressureControllerErrorV1::StaleSample));
+        // Unknown usage and an OS alarm cannot create a calm transition.
+        assert_eq!(controller.observe(7, 5, None, false), Ok(Normal));
+        assert_eq!(controller.observe(7, 6, None, true), Ok(HardPressure));
+        // A new owner epoch fences prior calm history and requires fresh samples.
+        assert_eq!(controller.observe(8, 1, Some(79), false), Ok(Recovering));
+        assert_eq!(controller.owner_epoch(), 8);
+        assert_eq!(controller.observe(7, 2, Some(79), false), Err(PressureControllerErrorV1::StaleOwnerEpoch));
+    }
+
+    #[test]
+    fn owned_pressure_controller_rejects_unordered_policy_and_zero_sample() {
+        assert_eq!(
+            ResourcePressureControllerV1::new(
+                PressureLimits { soft: Some(100), hard: Some(90) }, 80, 2, 1,
+            ),
+            Err(PressureControllerErrorV1::InvalidConfiguration),
+        );
+        let mut controller = ResourcePressureControllerV1::new(
+            PressureLimits { soft: Some(100), hard: None }, 80, 2, 1,
+        ).unwrap();
+        assert_eq!(controller.observe(1, 0, Some(10), false), Err(PressureControllerErrorV1::StaleSample));
+    }
+
+    #[test]
+    fn owner_epoch_rotation_requires_fresh_calm_before_normal_state() {
+        use PressureState::*;
+        let mut controller = ResourcePressureControllerV1::new(
+            PressureLimits { soft: Some(100), hard: Some(200) }, 80, 2, 1,
+        ).unwrap();
+        assert_eq!(controller.observe(2, 1, Some(20), false), Ok(Recovering));
+        assert_eq!(controller.observe(2, 2, Some(20), false), Ok(Recovering));
+        assert_eq!(controller.observe(2, 3, Some(20), false), Ok(Normal));
     }
 
     #[test]

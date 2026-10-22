@@ -27,7 +27,7 @@ use crate::owner_log::{
 };
 use crate::protocol::{
     ArtifactClassificationV1, ArtifactRefV1, CursorV1, DelegationBindingV1,
-    MAX_DIRECT_ATTEMPT_EFFECTS,
+    ManagedMessageAuthorityPinsV1, MAX_DIRECT_ATTEMPT_EFFECTS,
 };
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -38,8 +38,203 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::OnceLock;
 
 const MAX_VERIFICATION_HISTORY: usize = 16;
+const MAX_TASK_TITLE_BYTES: usize = 256;
+const MAX_TASK_PURPOSE_BYTES: usize = 8192;
+const MAX_MANAGED_CHILD_OUTPUT_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_VERIFIER_CRITERION_OUTPUT_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_VERIFIER_RUN_OUTPUT_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_MANAGED_USAGE_PROVENANCE_BYTES: usize = 16 * 1024;
+const MAX_MANAGED_USAGE_RECEIPTS_PER_ATTEMPT: usize = 4096;
+const MANAGED_USAGE_DOMAIN: &[u8] = b"horizoncode.managed-provider-usage.v1\0";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ManagedAttemptUsageProofV1 {
+    pub(crate) goal_id: String,
+    pub(crate) run_id: String,
+    pub(crate) task_id: String,
+    pub(crate) attempt_id: String,
+    pub(crate) owner_epoch: u64,
+    pub(crate) expected_managed_revision: u64,
+    pub(crate) assistant_message_id: String,
+    pub(crate) step_finish_index: u32,
+    pub(crate) delegation_binding_digest: String,
+    pub(crate) operation_key: String,
+    pub(crate) usage_digest: String,
+    pub(crate) usage_provenance: Value,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ManagedAttemptUsageReceiptV1 {
+    pub(crate) goal_id: String,
+    pub(crate) attempt_id: String,
+    pub(crate) operation_key: String,
+    pub(crate) usage_digest: String,
+    pub(crate) managed_revision: u64,
+    pub(crate) accounting_cursor: u64,
+    pub(crate) token_total: u64,
+    pub(crate) effective_max_tokens: u64,
+    pub(crate) remaining_tokens: u64,
+    pub(crate) cost_micros_total: u64,
+    pub(crate) provider_id: String,
+    pub(crate) model_id: String,
+    pub(crate) operation_id: Option<String>,
+    pub(crate) request_id: Option<String>,
+    pub(crate) cost_status: String,
+    pub(crate) metric_statuses: BTreeMap<String, String>,
+    pub(crate) usage_state: String,
+    pub(crate) stop_reason: String,
+    pub(crate) ceiling_digest: String,
+    pub(crate) receipt_digest: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct ManagedAttemptUsageLedgerV1 {
+    token_total: u64,
+    cost_micros_total: u64,
+    unknown_tokens: bool,
+    estimated_tokens: bool,
+    unknown_cost: bool,
+    estimated_cost: bool,
+    stopped: bool,
+    stop_reason: String,
+    ceiling_digest: String,
+    cursor: u64,
+}
+
+/// Immutable accounting projection for a managed Attempt. Totals are explicitly
+/// labeled known subtotals: a zero subtotal is not evidence of zero usage when
+/// the corresponding remainder status is UNKNOWN or ESTIMATED. The chain digest
+/// binds every durable per-operation receipt in accounting-cursor order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ManagedAttemptUsageSummaryV1 {
+    accounting_cursor: u64,
+    token_known_subtotal: u64,
+    cost_known_subtotal_micros: u64,
+    token_remainder_status: String,
+    cost_remainder_status: String,
+    usage_state: String,
+    stop_reason: String,
+    ceiling_digest: String,
+    cost_status: String,
+    metric_statuses: BTreeMap<String, String>,
+    receipt_count: u64,
+    receipt_chain_digest: String,
+}
+
+impl ManagedAttemptUsageSummaryV1 {
+    pub(crate) fn accounting_cursor(&self) -> u64 { self.accounting_cursor }
+    pub(crate) fn token_known_subtotal(&self) -> u64 { self.token_known_subtotal }
+    pub(crate) fn cost_known_subtotal_micros(&self) -> u64 { self.cost_known_subtotal_micros }
+    pub(crate) fn token_remainder_status(&self) -> &str { &self.token_remainder_status }
+    pub(crate) fn cost_remainder_status(&self) -> &str { &self.cost_remainder_status }
+    pub(crate) fn usage_state(&self) -> &str { &self.usage_state }
+    pub(crate) fn stop_reason(&self) -> &str { &self.stop_reason }
+    pub(crate) fn ceiling_digest(&self) -> &str { &self.ceiling_digest }
+    pub(crate) fn cost_status(&self) -> &str { &self.cost_status }
+    pub(crate) fn metric_statuses(&self) -> &BTreeMap<String, String> { &self.metric_statuses }
+    pub(crate) fn receipt_count(&self) -> u64 { self.receipt_count }
+    pub(crate) fn receipt_chain_digest(&self) -> &str { &self.receipt_chain_digest }
+
+    pub(crate) fn to_wire_value(&self) -> Value {
+        json!({
+            "accountingCursor": self.accounting_cursor.to_string(),
+            "tokenKnownSubtotal": self.token_known_subtotal.to_string(),
+            "costKnownSubtotalMicros": self.cost_known_subtotal_micros.to_string(),
+            "tokenRemainderStatus": self.token_remainder_status,
+            "costRemainderStatus": self.cost_remainder_status,
+            "usageState": self.usage_state,
+            "stopReason": self.stop_reason,
+            "ceilingDigest": self.ceiling_digest,
+            "costStatus": self.cost_status,
+            "metricStatuses": self.metric_statuses,
+            "receiptCount": self.receipt_count.to_string(),
+            "receiptChainDigest": self.receipt_chain_digest,
+        })
+    }
+}
+
+fn aggregate_usage_status(current: Option<&str>, next: &str) -> String {
+    match current {
+        None => next.to_owned(),
+        Some(value) if value == next => value.to_owned(),
+        Some("unknown") => "unknown".to_owned(),
+        Some("estimated") if next != "unknown" => "estimated".to_owned(),
+        Some(_) if next == "unknown" || next == "estimated" => next.to_owned(),
+        Some(_) => "mixed".to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod managed_usage_summary_tests {
+    use super::aggregate_usage_status;
+
+    #[test]
+    fn aggregate_status_never_hides_unknown_behind_estimated_or_known() {
+        assert_eq!(aggregate_usage_status(None, "provider-reported"), "provider-reported");
+        assert_eq!(aggregate_usage_status(Some("provider-reported"), "measured"), "mixed");
+        assert_eq!(aggregate_usage_status(Some("estimated"), "unknown"), "unknown");
+        assert_eq!(aggregate_usage_status(Some("unknown"), "provider-reported"), "unknown");
+    }
+}
+
+impl ManagedAttemptUsageProofV1 {
+    pub(crate) fn operation_key(&self) -> &str { &self.operation_key }
+    pub(crate) fn usage_digest(&self) -> &str { &self.usage_digest }
+    pub(crate) fn from_host_kernel(
+        goal_id: String,
+        run_id: String,
+        task_id: String,
+        attempt_id: String,
+        owner_epoch: u64,
+        expected_managed_revision: u64,
+        assistant_message_id: String,
+        step_finish_index: u32,
+        delegation_binding_digest: String,
+        usage_provenance: Value,
+    ) -> Result<Self, ManagedError> {
+        let mut proof = Self {
+            goal_id, run_id, task_id, attempt_id, owner_epoch,
+            expected_managed_revision, assistant_message_id, step_finish_index,
+            delegation_binding_digest, operation_key: String::new(),
+            usage_digest: String::new(), usage_provenance,
+        };
+        proof.operation_key = managed_usage_operation_key(&proof.attempt_id, &proof.assistant_message_id, proof.step_finish_index);
+        proof.usage_digest = managed_usage_digest(&proof);
+        Ok(proof)
+    }
+}
+
+impl ManagedAttemptUsageReceiptV1 {
+    pub(crate) fn operation_key(&self) -> &str { &self.operation_key }
+    pub(crate) fn usage_digest(&self) -> &str { &self.usage_digest }
+    pub(crate) fn stopped(&self) -> bool { self.stop_reason != "NONE" }
+
+    pub(crate) fn to_wire_value(&self) -> Value {
+        json!({
+            "status": if self.stopped() { "STOPPED" } else { "ACCOUNTED" },
+            "goalID": self.goal_id,
+            "attemptID": self.attempt_id,
+            "operationKey": self.operation_key,
+            "usageDigest": self.usage_digest,
+            "managedRevision": self.managed_revision.to_string(),
+            "accountingCursor": self.accounting_cursor.to_string(),
+            "tokenTotal": self.token_total.to_string(),
+            "effectiveMaxTokens": self.effective_max_tokens.to_string(),
+            "remainingTokens": self.remaining_tokens.to_string(),
+            "costMicrosTotal": self.cost_micros_total.to_string(),
+            "providerID": self.provider_id,
+            "modelID": self.model_id,
+            "operationID": self.operation_id,
+            "requestID": self.request_id,
+            "costStatus": self.cost_status,
+            "metricStatuses": self.metric_statuses,
+            "usageState": self.usage_state,
+            "stopReason": self.stop_reason,
+            "ceilingDigest": self.ceiling_digest,
+            "receiptDigest": self.receipt_digest,
+        })
+    }
+}
 const MAX_VERIFIER_ARTIFACT_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug)]
@@ -203,6 +398,9 @@ pub struct Task {
     /// must resolve this exact digest; a later profile edit cannot silently
     /// change the Task's execution authority.
     pub agent_profile_revision: Option<ProfileRevisionRefV1>,
+    /// Core-projected `AgentProfileV2.limits.tokenBudget`, validated and pinned
+    /// with the profile digest at Task admission. Managed V1 requires it.
+    pub profile_token_budget: Option<u64>,
     pub profile_owner_binding_digest: Option<String>,
     pub ready: bool,
     pub active_attempt: Option<String>,
@@ -400,8 +598,54 @@ pub(crate) struct ManagedAttemptTerminalSnapshotV1 {
     effect_chain_state: ManagedAttemptEffectChainStateV1,
     effect_chain_digest: String,
     effects: Vec<ManagedAttemptTerminalEffectV1>,
+    usage_accounting: Option<ManagedAttemptUsageSummaryV1>,
     evidence_digest: Option<String>,
     evidence_refs: Vec<ArtifactRefV1>,
+}
+
+/// Nonterminal settlement view for the final independently guarded Inspect.
+/// It is available only after typed verifier evidence and every effect receipt
+/// are durable, while the coding Attempt is still SETTLING. It does not settle
+/// the Task or authorize worker release; P8 consumes it only to bind final
+/// Inspect to this exact evidence revision. P2 emits the terminal snapshot
+/// separately after the Inspect receipt has been committed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ManagedAttemptSettlementCandidateV1 {
+    goal_id: String,
+    run_id: String,
+    task_id: String,
+    attempt_id: String,
+    binding_digest: String,
+    spec_id: String,
+    spec_digest: String,
+    evidence_digest: String,
+    final_revision: String,
+    effect_chain_digest: String,
+    attempt_state_digest: String,
+    usage_accounting: ManagedAttemptUsageSummaryV1,
+    owner_log_id: String,
+    owner_log_sequence: u64,
+    owner_log_event_digest: String,
+    managed_revision: u64,
+}
+
+impl ManagedAttemptSettlementCandidateV1 {
+    pub(crate) fn goal_id(&self) -> &str { &self.goal_id }
+    pub(crate) fn run_id(&self) -> &str { &self.run_id }
+    pub(crate) fn task_id(&self) -> &str { &self.task_id }
+    pub(crate) fn attempt_id(&self) -> &str { &self.attempt_id }
+    pub(crate) fn binding_digest(&self) -> &str { &self.binding_digest }
+    pub(crate) fn spec_id(&self) -> &str { &self.spec_id }
+    pub(crate) fn spec_digest(&self) -> &str { &self.spec_digest }
+    pub(crate) fn evidence_digest(&self) -> &str { &self.evidence_digest }
+    pub(crate) fn final_revision(&self) -> &str { &self.final_revision }
+    pub(crate) fn effect_chain_digest(&self) -> &str { &self.effect_chain_digest }
+    pub(crate) fn attempt_state_digest(&self) -> &str { &self.attempt_state_digest }
+    pub(crate) fn usage_accounting(&self) -> &ManagedAttemptUsageSummaryV1 { &self.usage_accounting }
+    pub(crate) fn owner_log_id(&self) -> &str { &self.owner_log_id }
+    pub(crate) fn owner_log_sequence(&self) -> u64 { self.owner_log_sequence }
+    pub(crate) fn owner_log_event_digest(&self) -> &str { &self.owner_log_event_digest }
+    pub(crate) fn managed_revision(&self) -> u64 { self.managed_revision }
 }
 
 impl ManagedAttemptTerminalSnapshotV1 {
@@ -432,14 +676,179 @@ impl ManagedAttemptTerminalSnapshotV1 {
     pub(crate) fn attempt_state_digest(&self) -> &str { &self.attempt_state_digest }
     pub(crate) fn effect_chain_state(&self) -> ManagedAttemptEffectChainStateV1 { self.effect_chain_state }
     pub(crate) fn effect_chain_digest(&self) -> &str { &self.effect_chain_digest }
+    pub(crate) fn usage_accounting(&self) -> Option<&ManagedAttemptUsageSummaryV1> { self.usage_accounting.as_ref() }
     pub(crate) fn effects(&self) -> &[ManagedAttemptTerminalEffectV1] { &self.effects }
     pub(crate) fn evidence_digest(&self) -> Option<&str> { self.evidence_digest.as_deref() }
     pub(crate) fn evidence_refs(&self) -> &[ArtifactRefV1] { &self.evidence_refs }
 }
 
-/// Bounded pre-terminal projection used only by HostKernel's complete-dispatch
-/// path. Prompt completion is recorded while the Attempt is SETTLING, before
-/// verifier evidence and terminal Task settlement are committed.
+/// Fresh current-owner observation for cross-epoch settlement recovery. This is
+/// deliberately separate from the immutable terminal prompt-quiescence marker:
+/// it proves the child is still idle now without rewriting the epoch in which
+/// the original prompt returned.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ManagedAttemptCurrentEpochRecoveryQuiescenceV1 {
+    goal_id: String,
+    run_id: String,
+    task_id: String,
+    attempt_id: String,
+    parent_session_id: String,
+    session_id: String,
+    principal: String,
+    location_id: String,
+    current_owner_epoch: u64,
+    current_process_incarnation: String,
+    current_core_pid: u32,
+    current_core_start_identity: u64,
+    current_core_executable_digest: String,
+    child_session_sequence: u64,
+    child_session_event_digest: String,
+    child_session_state_digest: String,
+    child_observation_digest: String,
+    host_quiescence_digest: String,
+    original_terminal_owner_log_id: String,
+    original_terminal_owner_log_sequence: u64,
+    original_terminal_owner_log_event_digest: String,
+    original_prompt_quiescence_digest: String,
+    original_prompt_quiescence_owner_epoch: u64,
+    original_attempt_state_digest: String,
+    original_effect_chain_digest: String,
+    original_evidence_digest: String,
+    verified_workspace_head: String,
+    receipt_digest: String,
+}
+
+impl ManagedAttemptCurrentEpochRecoveryQuiescenceV1 {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_host_kernel(
+        terminal: &ManagedAttemptTerminalSnapshotV1,
+        parent_session_id: String,
+        principal: String,
+        location_id: String,
+        current_owner_epoch: u64,
+        current_process_incarnation: String,
+        current_core_pid: u32,
+        current_core_start_identity: u64,
+        current_core_executable_digest: String,
+        child_session_sequence: u64,
+        child_session_event_digest: String,
+        child_session_state_digest: String,
+        child_observation_digest: String,
+        host_quiescence_digest: String,
+    ) -> Result<Self, ManagedError> {
+        let original_quiescence = terminal.child_prompt_quiescence()
+            .ok_or(ManagedError::Conflict("original terminal has no immutable prompt-quiescence receipt"))?;
+        let original_proof = original_quiescence.proof();
+        let verified_workspace_head = terminal.observed_workspace_head()
+            .ok_or(ManagedError::Conflict("verified terminal has no confident workspace head"))?;
+        let evidence_digest = terminal.evidence_digest()
+            .ok_or(ManagedError::Conflict("verified terminal has no evidence digest"))?;
+        for value in [terminal.goal_id(), terminal.run_id(), terminal.task_id(), terminal.attempt_id(),
+            &parent_session_id, terminal.spec_id(), &principal, &location_id,
+            &current_process_incarnation, terminal.owner_log_id(),
+            original_quiescence.owner_log_id(), original_proof.delivery_id()] { id(value)?; }
+        for digest in [terminal.owner_log_event_digest(), terminal.attempt_state_digest(),
+            terminal.effect_chain_digest(), evidence_digest, verified_workspace_head,
+            original_quiescence.receipt_digest(), original_quiescence.owner_log_event_digest(),
+            &child_session_event_digest, &child_session_state_digest, &child_observation_digest,
+            &host_quiescence_digest, original_proof.handoff_digest(),
+            original_proof.consume_receipt_digest(), &current_core_executable_digest] { managed_digest(digest)?; }
+        if current_owner_epoch == 0 || current_process_incarnation.is_empty()
+            || current_core_pid == 0 || current_core_start_identity == 0
+            || child_session_sequence == 0 || terminal.attempt_state() != ManagedAttemptTerminalStateV1::Succeeded
+            || terminal.task_state() != ManagedTaskTerminalStateV1::Verified
+            || terminal.effect_chain_state() != ManagedAttemptEffectChainStateV1::AllSettled
+            || terminal.child_prompt_state() != ManagedChildPromptStateV1::Quiesced
+            || original_proof.goal_id() != terminal.goal_id()
+            || original_proof.run_id() != terminal.run_id()
+            || original_proof.task_id() != terminal.task_id()
+            || original_proof.attempt_id() != terminal.attempt_id()
+            || original_proof.parent_session_id() != parent_session_id
+            || original_proof.session_id() != original_quiescence.session_id()
+            || original_proof.owner_epoch() > current_owner_epoch
+            || !matches!(terminal.run_phase(), RunPhase::Succeeded)
+            || terminal.effects().iter().any(|effect| effect.outcome().is_none()
+                || effect.outcome() == Some(AttemptEffectOutcomeV1::Unknown)
+                || effect.observation_digest().is_none())
+        {
+            return Err(ManagedError::Conflict("current recovery observation lacks exact verified terminal or idle child proof"));
+        }
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"horizoncode.managed-attempt-current-epoch-recovery-quiescence.v1\0");
+        for value in [terminal.goal_id(), terminal.run_id(), terminal.task_id(), terminal.attempt_id(),
+            parent_session_id.as_str(), original_quiescence.session_id(), principal.as_str(),
+            location_id.as_str(), current_process_incarnation.as_str(),
+            terminal.owner_log_id(), terminal.owner_log_event_digest(),
+            original_quiescence.receipt_digest(), original_quiescence.owner_log_id(),
+            original_quiescence.owner_log_event_digest(), terminal.attempt_state_digest(),
+            terminal.effect_chain_digest(), evidence_digest, verified_workspace_head,
+            child_session_event_digest.as_str(), child_session_state_digest.as_str(),
+            child_observation_digest.as_str(), host_quiescence_digest.as_str(),
+            current_core_executable_digest.as_str()] {
+            hasher.update(&(value.len() as u64).to_be_bytes());
+            hasher.update(value.as_bytes());
+        }
+        hasher.update(&current_owner_epoch.to_be_bytes());
+        hasher.update(&current_core_pid.to_be_bytes());
+        hasher.update(&current_core_start_identity.to_be_bytes());
+        hasher.update(&child_session_sequence.to_be_bytes());
+        hasher.update(&terminal.owner_log_sequence().to_be_bytes());
+        hasher.update(&original_quiescence.owner_log_sequence().to_be_bytes());
+        hasher.update(&original_proof.owner_epoch().to_be_bytes());
+        let receipt_digest = format!("blake3:{}", hasher.finalize().to_hex());
+        Ok(Self {
+            goal_id: terminal.goal_id().to_owned(), run_id: terminal.run_id().to_owned(),
+            task_id: terminal.task_id().to_owned(), attempt_id: terminal.attempt_id().to_owned(),
+            parent_session_id, session_id: original_quiescence.session_id().to_owned(),
+            principal, location_id, current_owner_epoch, current_process_incarnation,
+            current_core_pid, current_core_start_identity, current_core_executable_digest,
+            child_session_sequence, child_session_event_digest, child_session_state_digest,
+            child_observation_digest, host_quiescence_digest,
+            original_terminal_owner_log_id: terminal.owner_log_id().to_owned(),
+            original_terminal_owner_log_sequence: terminal.owner_log_sequence(),
+            original_terminal_owner_log_event_digest: terminal.owner_log_event_digest().to_owned(),
+            original_prompt_quiescence_digest: original_quiescence.receipt_digest().to_owned(),
+            original_prompt_quiescence_owner_epoch: original_proof.owner_epoch(),
+            original_attempt_state_digest: terminal.attempt_state_digest().to_owned(),
+            original_effect_chain_digest: terminal.effect_chain_digest().to_owned(),
+            original_evidence_digest: evidence_digest.to_owned(),
+            verified_workspace_head: verified_workspace_head.to_owned(), receipt_digest,
+        })
+    }
+
+    pub(crate) fn to_wire_value(&self) -> serde_json::Value {
+        json!({
+            "status": "CURRENT_EPOCH_QUIESCED", "goalID": self.goal_id,
+            "runID": self.run_id, "taskID": self.task_id, "attemptID": self.attempt_id,
+            "parentSessionID": self.parent_session_id, "sessionID": self.session_id,
+            "principal": self.principal, "locationID": self.location_id,
+            "currentOwnerEpoch": self.current_owner_epoch.to_string(),
+            "currentProcessIncarnation": self.current_process_incarnation,
+            "currentCorePID": self.current_core_pid,
+            "currentCoreStartIdentity": self.current_core_start_identity.to_string(),
+            "currentCoreExecutableDigest": self.current_core_executable_digest,
+            "childSessionSequence": self.child_session_sequence.to_string(),
+            "childSessionEventDigest": self.child_session_event_digest,
+            "childSessionStateDigest": self.child_session_state_digest,
+            "childObservationDigest": self.child_observation_digest,
+            "hostQuiescenceDigest": self.host_quiescence_digest,
+            "originalTerminalOwnerLogID": self.original_terminal_owner_log_id,
+            "originalTerminalOwnerLogSequence": self.original_terminal_owner_log_sequence.to_string(),
+            "originalTerminalOwnerLogEventDigest": self.original_terminal_owner_log_event_digest,
+            "originalPromptQuiescenceDigest": self.original_prompt_quiescence_digest,
+            "originalPromptQuiescenceOwnerEpoch": self.original_prompt_quiescence_owner_epoch.to_string(),
+            "originalAttemptStateDigest": self.original_attempt_state_digest,
+            "originalEffectChainDigest": self.original_effect_chain_digest,
+            "originalEvidenceDigest": self.original_evidence_digest,
+            "verifiedWorkspaceHead": self.verified_workspace_head,
+            "receiptDigest": self.receipt_digest,
+        })
+    }
+}
+
+/// Bounded prompt-return projection used by HostKernel's complete-dispatch path.
+/// It proves the coding child returned while the Attempt remains EXECUTING and
+/// its Task is PENDING_VERIFICATION; it is not terminal evidence.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ManagedDispatchCompletionSnapshotV1 {
     goal_id: String,
@@ -504,12 +913,13 @@ impl ManagedDispatchCompletionSnapshotV1 {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PlannedTaskV1 {
     pub(crate) task_id: String,
-    pub(crate) title: String,
-    pub(crate) purpose: String,
+    pub(crate) title: Option<String>,
+    pub(crate) purpose: Option<String>,
     pub(crate) dependencies: Vec<String>,
     pub(crate) criterion_ids: Vec<String>,
     pub(crate) required_capabilities: Vec<String>,
     pub(crate) agent_profile_revision: ProfileRevisionRefV1,
+    pub(crate) profile_token_budget: u64,
     pub(crate) profile_owner_binding_digest: String,
 }
 
@@ -591,6 +1001,9 @@ pub(crate) struct ManagedAttemptVerifierIntentV1 {
     pub(crate) criterion_id: String,
     pub(crate) test_identity: String,
     pub(crate) arguments_digest: String,
+    /// Exact refreshed managed scope under which the verifier process lease was
+    /// admitted. Missing only on legacy replay and therefore not recoverable.
+    pub(crate) attempt_scope_digest: Option<String>,
     pub(crate) source_workspace_revision: String,
     pub(crate) max_duration_ms: u64,
     pub(crate) max_output_bytes: u64,
@@ -765,6 +1178,9 @@ pub(crate) struct ManagedDispatchQuiescenceProofV1 {
     child_session_sequence: u64,
     child_session_event_digest: String,
     child_session_state_digest: String,
+    child_session_outcome_kind: String,
+    child_session_output_digest: String,
+    child_session_output_bytes: u64,
     delivery_id: String,
 }
 
@@ -777,6 +1193,8 @@ impl ManagedDispatchQuiescenceProofV1 {
         consume_delivery_id: String, consume_receipt_digest: String, owner_epoch: u64,
         process_incarnation: String, child_session_sequence: u64,
         child_session_event_digest: String, child_session_state_digest: String,
+        child_session_outcome_kind: String,
+        child_session_output_digest: String, child_session_output_bytes: u64,
         delivery_id: String,
     ) -> Result<Self, ManagedError> {
         for value in [&goal_id, &run_id, &task_id, &parent_session_id, &session_id,
@@ -784,13 +1202,20 @@ impl ManagedDispatchQuiescenceProofV1 {
             &delivery_id] { id(value)?; }
         for digest in [&handoff_digest, &consume_receipt_digest,
             &child_session_event_digest, &child_session_state_digest] { managed_digest(digest)?; }
-        if owner_epoch == 0 || child_session_sequence == 0 {
+        managed_digest(&child_session_output_digest)?;
+        if !matches!(child_session_outcome_kind.as_str(), "assistant_completed" | "assistant_error" | "tool_error") {
+            return Err(ManagedError::Invalid("dispatch quiescence outcome kind is invalid"));
+        }
+        if owner_epoch == 0 || child_session_sequence == 0
+            || child_session_output_bytes > MAX_MANAGED_CHILD_OUTPUT_BYTES {
             return Err(ManagedError::Invalid("dispatch quiescence cursor is invalid"));
         }
         Ok(Self { goal_id, run_id, task_id, parent_session_id, session_id, attempt_id,
             handoff_id, handoff_digest, consume_delivery_id, consume_receipt_digest,
             owner_epoch, process_incarnation, child_session_sequence,
-            child_session_event_digest, child_session_state_digest, delivery_id })
+            child_session_event_digest, child_session_state_digest,
+            child_session_outcome_kind,
+            child_session_output_digest, child_session_output_bytes, delivery_id })
     }
 
     pub(crate) fn goal_id(&self) -> &str { &self.goal_id }
@@ -808,6 +1233,9 @@ impl ManagedDispatchQuiescenceProofV1 {
     pub(crate) fn child_session_sequence(&self) -> u64 { self.child_session_sequence }
     pub(crate) fn child_session_event_digest(&self) -> &str { &self.child_session_event_digest }
     pub(crate) fn child_session_state_digest(&self) -> &str { &self.child_session_state_digest }
+    pub(crate) fn child_session_outcome_kind(&self) -> &str { &self.child_session_outcome_kind }
+    pub(crate) fn child_session_output_digest(&self) -> &str { &self.child_session_output_digest }
+    pub(crate) fn child_session_output_bytes(&self) -> u64 { self.child_session_output_bytes }
     pub(crate) fn delivery_id(&self) -> &str { &self.delivery_id }
 }
 
@@ -839,6 +1267,9 @@ impl ManagedDispatchQuiescedReceiptV1 {
             "childSessionSequence": proof.child_session_sequence.to_string(),
             "childSessionEventDigest": proof.child_session_event_digest,
             "childSessionStateDigest": proof.child_session_state_digest,
+            "childSessionOutcomeKind": proof.child_session_outcome_kind,
+            "childSessionOutputDigest": proof.child_session_output_digest,
+            "childSessionOutputBytes": proof.child_session_output_bytes.to_string(),
             "deliveryID": proof.delivery_id, "managedRevision": managed_revision.to_string(),
             "ownerLogID": owner_log_id, "ownerLogSequence": owner_log_sequence.to_string(),
             "ownerLogEventDigest": owner_log_event_digest,
@@ -854,6 +1285,54 @@ impl ManagedDispatchQuiescedReceiptV1 {
     pub(crate) fn owner_log_sequence(&self) -> u64 { self.owner_log_sequence }
     pub(crate) fn owner_log_event_digest(&self) -> &str { &self.owner_log_event_digest }
     pub(crate) fn receipt_digest(&self) -> &str { &self.receipt_digest }
+}
+
+/// Authenticated read-only recovery projection for one live managed child.
+/// It exposes only immutable plan/authority pins and durable dispatch markers;
+/// it never carries prompt text or grants fresh dispatch authority.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ManagedActiveAttemptRecoverySnapshotV1 {
+    goal_id: String,
+    run_id: String,
+    task_id: String,
+    attempt_id: String,
+    parent_session_id: String,
+    session_id: String,
+    task_title: String,
+    task_purpose: String,
+    attempt_phase: AttemptPhase,
+    run_phase: RunPhase,
+    managed_revision: u64,
+    owner_epoch: u64,
+    profile: ProfileRevisionRefV1,
+    profile_owner_binding_digest: String,
+    binding_digest: String,
+    initial_context_selection: Option<ManagedAttemptContextSelectionRecordV1>,
+    unknown_effect: bool,
+    consumed: Option<ManagedDispatchConsumedReceiptV1>,
+    quiescence: Option<ManagedDispatchQuiescedReceiptV1>,
+}
+
+impl ManagedActiveAttemptRecoverySnapshotV1 {
+    pub(crate) fn goal_id(&self) -> &str { &self.goal_id }
+    pub(crate) fn run_id(&self) -> &str { &self.run_id }
+    pub(crate) fn task_id(&self) -> &str { &self.task_id }
+    pub(crate) fn attempt_id(&self) -> &str { &self.attempt_id }
+    pub(crate) fn parent_session_id(&self) -> &str { &self.parent_session_id }
+    pub(crate) fn session_id(&self) -> &str { &self.session_id }
+    pub(crate) fn task_title(&self) -> &str { &self.task_title }
+    pub(crate) fn task_purpose(&self) -> &str { &self.task_purpose }
+    pub(crate) fn attempt_phase(&self) -> AttemptPhase { self.attempt_phase }
+    pub(crate) fn run_phase(&self) -> RunPhase { self.run_phase }
+    pub(crate) fn managed_revision(&self) -> u64 { self.managed_revision }
+    pub(crate) fn owner_epoch(&self) -> u64 { self.owner_epoch }
+    pub(crate) fn profile(&self) -> &ProfileRevisionRefV1 { &self.profile }
+    pub(crate) fn profile_owner_binding_digest(&self) -> &str { &self.profile_owner_binding_digest }
+    pub(crate) fn binding_digest(&self) -> &str { &self.binding_digest }
+    pub(crate) fn initial_context_selection(&self) -> Option<&ManagedAttemptContextSelectionRecordV1> { self.initial_context_selection.as_ref() }
+    pub(crate) fn unknown_effect(&self) -> bool { self.unknown_effect }
+    pub(crate) fn consumed(&self) -> Option<&ManagedDispatchConsumedReceiptV1> { self.consumed.as_ref() }
+    pub(crate) fn quiescence(&self) -> Option<&ManagedDispatchQuiescedReceiptV1> { self.quiescence.as_ref() }
 }
 
 impl ManagedDispatchConsumedReceiptV1 {
@@ -1044,6 +1523,10 @@ pub struct AttemptRecord {
     /// Durable effects bound to this Attempt. Settlement reconciles each bound
     /// effect's authoritative target receipt; an RPC-supplied digest is never trusted.
     pub effects: Vec<BoundEffect>,
+    /// Immutable proof of each managed Guarded effect wave. Legacy
+    /// `attempt_effects_bound` edges remain readable for replay, but new managed
+    /// ToolBatch waves must carry this richer call/capability/intent binding.
+    pub(crate) effect_waves: Vec<ManagedAttemptEffectWaveV1>,
     /// Per-edge receipts are appended as target effects settle; a missing or
     /// UNKNOWN edge permanently fences redispatch until HostKernel reconciliation.
     pub(crate) effect_receipts: BTreeMap<String, ManagedAttemptEffectReceiptV1>,
@@ -1059,6 +1542,35 @@ pub struct AttemptRecord {
     pub receipt_digest: Option<String>,
     pub failure_code: Option<String>,
     pub retryable: Option<bool>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ManagedAttemptEffectWaveEdgeV1 {
+    pub(crate) call_index: u8,
+    pub(crate) call_id: String,
+    pub(crate) effect_id: String,
+    pub(crate) capability_id: String,
+    pub(crate) arguments_digest: String,
+    pub(crate) intent_digest: String,
+    /// Exact refreshed Attempt authority scope used for this effect's lease and
+    /// process row. This is distinct from the wave's pre-append source scope.
+    pub(crate) attempt_scope_digest: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ManagedAttemptEffectWaveV1 {
+    pub(crate) schema_version: u8,
+    pub(crate) run_id: String,
+    pub(crate) task_id: String,
+    pub(crate) attempt_id: String,
+    pub(crate) batch_id: String,
+    pub(crate) wave_index: u8,
+    pub(crate) location_id: String,
+    pub(crate) session_id: String,
+    pub(crate) source_scope_digest: String,
+    pub(crate) edges: Vec<ManagedAttemptEffectWaveEdgeV1>,
+    pub(crate) wave_digest: String,
+    pub(crate) bound_revision: u64,
 }
 
 /// Exact durable reply for the atomic managed Attempt + DelegationBinding
@@ -1179,12 +1691,89 @@ pub(crate) struct RegisteredAgentProfileProofV1 {
     profile_source: String,
     permission_ceiling_digest: String,
     capability_ceiling: Vec<String>,
+    provider_id: String,
+    model_id: String,
+    token_budget: Option<u64>,
     owner_binding: ProfileOwnerBindingV1,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct BoundedContextSelectionProofV1 {
     context_selection_digest: String,
+    selection: crate::context_selection::ContextSelectionV1,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ManagedAttemptContextSelectionRecordV1 {
+    pub(crate) attempt_id: String,
+    pub(crate) request_sequence: u64,
+    pub(crate) request_id: String,
+    pub(crate) selection: serde_json::Value,
+    pub(crate) selection_digest: String,
+    pub(crate) managed_revision: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ManagedProviderRequestRecordV1 {
+    pub(crate) attempt_id: String,
+    pub(crate) request_sequence: u64,
+    pub(crate) request_id: String,
+    pub(crate) context_selection_digest: String,
+    pub(crate) provider_id: String,
+    pub(crate) model_id: String,
+    pub(crate) harness_id: String,
+    pub(crate) route_id: String,
+    pub(crate) endpoint_revision: String,
+    pub(crate) credential_lease_ref: Option<String>,
+    pub(crate) guard_challenge_id: String,
+    pub(crate) guard_effect_id: String,
+    /// Exact Attempt-scope digest used to create the PREPARED Guard challenge.
+    /// The live managed revision advances after prepare and usage accounting,
+    /// so recovery must not recompute this immutable authorization input from
+    /// the later scope projection.
+    pub(crate) prepared_attempt_scope_digest: Option<String>,
+    /// Absent while the host-created Guard challenge is awaiting approval;
+    /// populated only at the durable DISPATCHING transition.
+    pub(crate) capability_lease_digest: Option<String>,
+    /// Digest of the final approved P1 effect binding, present only after
+    /// HostKernel durably admits DISPATCHING.
+    pub(crate) authorization_binding_digest: Option<String>,
+    pub(crate) request_digest: String,
+    pub(crate) transport_request_digest: String,
+    pub(crate) operation_digest: String,
+    pub(crate) provider_request_id: String,
+    /// Index of the immutable SDK `step-finish` part whose persisted MessageV2
+    /// snapshot is bound by the settlement digest.
+    pub(crate) step_finish_index: Option<u64>,
+    pub(crate) prepare_digest: String,
+    pub(crate) dispatch_digest: Option<String>,
+    pub(crate) assistant_entry_id: Option<String>,
+    pub(crate) response_digest: Option<String>,
+    pub(crate) usage_digest: Option<String>,
+    /// The first terminal UNKNOWN reason is immutable and participates in exact replay.
+    pub(crate) unknown_reason_code: Option<String>,
+    pub(crate) state: String,
+    pub(crate) managed_revision: u64,
+}
+
+/// Immutable HostKernel proof that one exact settled provider response ended a
+/// managed turn. This is separate from request settlement because a response may
+/// contain tool calls and therefore continue the same turn.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ManagedProviderTurnCompletionV1 {
+    pub(crate) attempt_id: String,
+    pub(crate) owner_epoch: u64,
+    pub(crate) request_sequence: u64,
+    pub(crate) request_id: String,
+    pub(crate) context_selection_digest: String,
+    pub(crate) provider_request_id: String,
+    pub(crate) assistant_entry_id: String,
+    pub(crate) response_digest: String,
+    pub(crate) usage_digest: String,
+    /// Ordered digest of every SETTLED dispatch since the prior completed turn
+    /// through `request_sequence`; never accepted from Core.
+    pub(crate) dispatch_settlement_digest: String,
+    pub(crate) receipt_digest: String,
 }
 
 /// The parent is either a real active worker Attempt or the authenticated root
@@ -1415,14 +2004,13 @@ impl ParentExecutionProofV1 {
                 && task_id != &child.task_id
                 && attempt_id != &child.attempt_id,
             Self::RootCoordinator {
-                execution_id, principal_ref, goal_id, run_id, session_id, location_id,
-                workspace_binding, owner_epoch, accepted_spec_digest, ..
+                execution_id, principal_ref, goal_id, run_id, session_id, workspace_binding,
+                owner_epoch, accepted_spec_digest, ..
             } => execution_id != child_worker.worker_execution_id()
                 && principal_ref == &child.executor_principal
                 && goal_id == &child.goal_id
                 && run_id == &child.run_id
                 && session_id == &child.session_id
-                && location_id == &child.location_id
                 && workspace_binding == &child.workspace_binding
                 && owner_epoch == &child.owner_epoch
                 && accepted_spec_digest == child_worker.accepted_spec_digest(),
@@ -1447,8 +2035,85 @@ impl BoundedContextSelectionProofV1 {
             .digest()
             .map_err(|_| ManagedError::Invalid("ContextSelection digest failed"))?;
         blake3_digest(&context_selection_digest)?;
-        Ok(Self { context_selection_digest })
+        Ok(Self { context_selection_digest, selection: selection.clone() })
     }
+}
+
+fn validate_context_selection_record(
+    record: &ManagedAttemptContextSelectionRecordV1,
+    attempt_id: &str,
+    binding: &DelegationBindingV1,
+    expected_managed_revision: u64,
+) -> Result<(), ManagedError> {
+    let selection = crate::context_selection::ContextSelectionV1::decode_json(&record.selection)
+        .ok_or(ManagedError::Invalid("durable ContextSelectionV1 is malformed"))?;
+    let digest = selection.digest()
+        .map_err(|_| ManagedError::Invalid("durable ContextSelection digest failed"))?;
+    if record.attempt_id != attempt_id
+        || record.request_sequence != selection.request_sequence.unwrap_or(0)
+        || record.request_id != selection.request_id
+        || record.selection_digest != digest
+        || record.managed_revision != expected_managed_revision
+        || selection.lane != "managed"
+        || selection.attempt_id.as_deref() != Some(attempt_id)
+        || binding.attempt_id != attempt_id
+    {
+        return Err(ManagedError::Conflict("durable ContextSelection does not match its Attempt binding"));
+    }
+    let profiles = selection.sources.iter().filter(|source| source.kind == "agent-profile").collect::<Vec<_>>();
+    if profiles.len() != 1 || profiles[0].source_id != binding.profile_id
+        || profiles[0].source_revision.parse::<u64>().ok() != Some(binding.profile_revision)
+        || profiles[0].content_digest != binding.profile_digest
+        || !matches!(profiles[0].trust.as_str(), "system" | "user")
+    {
+        return Err(ManagedError::Conflict("durable ContextSelection profile ref differs from Attempt binding"));
+    }
+    Ok(())
+}
+
+pub(crate) fn same_managed_provider_request(
+    prior: &ManagedProviderRequestRecordV1,
+    next: &ManagedProviderRequestRecordV1,
+) -> bool {
+    prior.attempt_id == next.attempt_id
+        && prior.request_sequence == next.request_sequence
+        && prior.request_id == next.request_id
+        && prior.context_selection_digest == next.context_selection_digest
+        && prior.provider_id == next.provider_id
+        && prior.model_id == next.model_id
+        && prior.harness_id == next.harness_id
+        && prior.route_id == next.route_id
+        && prior.endpoint_revision == next.endpoint_revision
+        && prior.credential_lease_ref == next.credential_lease_ref
+        && prior.guard_challenge_id == next.guard_challenge_id
+        && prior.guard_effect_id == next.guard_effect_id
+        && prior.prepared_attempt_scope_digest == next.prepared_attempt_scope_digest
+        && prior.request_digest == next.request_digest
+        && prior.transport_request_digest == next.transport_request_digest
+        && prior.operation_digest == next.operation_digest
+        && prior.provider_request_id == next.provider_request_id
+        && prior.prepare_digest == next.prepare_digest
+}
+
+pub(crate) fn make_context_selection_record(
+    attempt_id: &str,
+    selection: &crate::context_selection::ContextSelectionV1,
+    managed_revision: u64,
+) -> Result<ManagedAttemptContextSelectionRecordV1, ManagedError> {
+    let request_sequence = selection.request_sequence
+        .ok_or(ManagedError::Conflict("managed admission ContextSelection has no request sequence"))?;
+    if selection.lane != "managed" || request_sequence != 1 || selection.attempt_id.as_deref() != Some(attempt_id) {
+        return Err(ManagedError::Conflict("managed admission ContextSelection identity is invalid"));
+    }
+    Ok(ManagedAttemptContextSelectionRecordV1 {
+        attempt_id: attempt_id.to_owned(),
+        request_sequence,
+        request_id: selection.request_id.clone(),
+        selection: selection.json_value(),
+        selection_digest: selection.digest()
+            .map_err(|_| ManagedError::Invalid("ContextSelection digest failed"))?,
+        managed_revision,
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1463,6 +2128,68 @@ pub(crate) struct ResourceLeaseProofV1 {
     resource_lease_ids: Vec<String>,
 }
 
+/// HostKernel's authenticated projection of a P8-reserved worktree. Root
+/// coordinator identity and P8 reservation pins remain separately bound; this
+/// projection identifies the child's registered worktree Location and freshly
+/// measured content revision.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ManagedWorktreeAdmissionProjectionV1 {
+    worktree_id: String,
+    base_revision: String,
+    pool_revision: u64,
+    root_location_id: String,
+    p8_workspace_binding: String,
+    location_id: String,
+    workspace_id: String,
+    workspace_ref: String,
+    canonical_root: String,
+    workspace_revision: String,
+}
+
+impl ManagedWorktreeAdmissionProjectionV1 {
+    pub(crate) fn worktree_id(&self) -> &str { &self.worktree_id }
+    pub(crate) fn base_revision(&self) -> &str { &self.base_revision }
+    pub(crate) fn pool_revision(&self) -> u64 { self.pool_revision }
+    pub(crate) fn root_location_id(&self) -> &str { &self.root_location_id }
+    pub(crate) fn p8_workspace_binding(&self) -> &str { &self.p8_workspace_binding }
+    pub(crate) fn location_id(&self) -> &str { &self.location_id }
+    pub(crate) fn workspace_id(&self) -> &str { &self.workspace_id }
+    pub(crate) fn workspace_ref(&self) -> &str { &self.workspace_ref }
+    pub(crate) fn canonical_root(&self) -> &str { &self.canonical_root }
+    pub(crate) fn workspace_revision(&self) -> &str { &self.workspace_revision }
+
+    pub(crate) fn from_hostkernel_projection(
+        p8_target: &crate::worker_durable::ManagedAttemptWorktreeTargetV1,
+        location_id: String,
+        workspace_id: String,
+        workspace_ref: String,
+        canonical_root: String,
+        measured_workspace_revision: String,
+    ) -> Result<Self, ManagedError> {
+        for value in [p8_target.worktree_id(), p8_target.base_revision(), p8_target.workspace_binding()] { id(value)?; }
+        for value in [&location_id, &workspace_id, &workspace_ref] { id(value)?; }
+        managed_digest(&measured_workspace_revision)?;
+        if p8_target.pool_revision() == 0
+            || p8_target.location_id().is_empty()
+            || canonical_root.is_empty()
+            || canonical_root.len() > 4096
+            || canonical_root.chars().any(char::is_control)
+            || !std::path::Path::new(&canonical_root).is_absolute()
+        {
+            return Err(ManagedError::Invalid("managed worktree target projection is malformed"));
+        }
+        Ok(Self {
+            worktree_id: p8_target.worktree_id().to_owned(),
+            base_revision: p8_target.base_revision().to_owned(),
+            pool_revision: p8_target.pool_revision(),
+            root_location_id: p8_target.location_id().to_owned(),
+            p8_workspace_binding: p8_target.workspace_binding().to_owned(),
+            location_id, workspace_id, workspace_ref, canonical_root,
+            workspace_revision: measured_workspace_revision,
+        })
+    }
+}
+
 impl RegisteredAgentProfileProofV1 {
     /// Converts a profile only after HostKernel's full strict schema decoder has
     /// authenticated and validated the Core definition. All digests and the
@@ -1470,14 +2197,21 @@ impl RegisteredAgentProfileProofV1 {
     pub(crate) fn from_validated_definition(
         profile: &crate::agent_profile::AgentProfileDefinitionV2,
         owner_binding: ProfileOwnerBindingV1,
-    ) -> Result<Self, messagepack::MessagePackError> {
+    ) -> Result<Self, ManagedError> {
+        let (provider_id, model_id) = profile.selected_provider_model()
+            .ok_or(ManagedError::Invalid("profile model selection missing"))?;
         Ok(Self {
             profile_id: profile.profile_id.clone(),
             profile_revision: profile.revision,
-            profile_digest: profile.definition_digest()?,
+            profile_digest: profile.definition_digest()
+                .map_err(|_| ManagedError::Invalid("profile definition digest failed"))?,
             profile_source: profile.source.clone(),
-            permission_ceiling_digest: profile.permission_ceiling_digest()?,
+            permission_ceiling_digest: profile.permission_ceiling_digest()
+                .map_err(|_| ManagedError::Invalid("profile permission digest failed"))?,
             capability_ceiling: profile.capability_ceiling.clone(),
+            provider_id,
+            model_id,
+            token_budget: profile.token_budget(),
             owner_binding,
         })
     }
@@ -1488,6 +2222,9 @@ impl RegisteredAgentProfileProofV1 {
     pub(crate) fn profile_source(&self) -> &str { &self.profile_source }
     pub(crate) fn permission_ceiling_digest(&self) -> &str { &self.permission_ceiling_digest }
     pub(crate) fn capability_ceiling(&self) -> &[String] { &self.capability_ceiling }
+    pub(crate) fn provider_id(&self) -> &str { &self.provider_id }
+    pub(crate) fn model_id(&self) -> &str { &self.model_id }
+    pub(crate) fn token_budget(&self) -> Option<u64> { self.token_budget }
     pub(crate) fn owner_binding(&self) -> &ProfileOwnerBindingV1 { &self.owner_binding }
 }
 
@@ -1557,8 +2294,11 @@ pub(crate) struct ManagedDelegationAdmissionFactsV1 {
     resource_leases: ResourceLeaseProofV1,
     durable_managed_lease: crate::worker_durable::DurableManagedLeaseProofV1,
     effective_capability_ceiling: crate::guard::EffectiveCapabilityCeilingProofV1,
+    effective_permission_scope_digest: String,
     parent_execution: ParentExecutionProofV1,
     child_execution_id: String,
+    worktree: ManagedWorktreeAdmissionProjectionV1,
+    managed_provider_route: crate::protocol::ManagedProviderRouteBindingV1,
 }
 
 /// Read-only, owner-derived accepted capability facts for P1 Guard proof minting.
@@ -1575,6 +2315,7 @@ pub(crate) struct AcceptedTaskCapabilityScopeFactsV1 {
     capability_scope: Vec<String>,
     required_capabilities: Vec<String>,
     profile_revision: Option<ProfileRevisionRefV1>,
+    profile_token_budget: Option<u64>,
     profile_owner_binding_digest: Option<String>,
 }
 
@@ -1602,6 +2343,7 @@ impl AcceptedTaskCapabilityScopeFactsV1 {
             ("managedRevision".into(), MpValue::String(self.managed_revision.to_string())),
             ("capabilityScope".into(), MpValue::Array(self.capability_scope.iter().cloned().map(MpValue::String).collect())),
             ("requiredCapabilities".into(), MpValue::Array(self.required_capabilities.iter().cloned().map(MpValue::String).collect())),
+            ("profileTokenBudget".into(), self.profile_token_budget.map(|value| MpValue::String(value.to_string())).unwrap_or(MpValue::Nil)),
         ]));
         let bytes = messagepack::encode(&value, FRAME_LIMITS)?;
         let mut preimage = b"horizoncode.accepted-task-capability-scope.v1\0".to_vec();
@@ -1619,14 +2361,16 @@ impl ManagedDelegationAdmissionFactsV1 {
         bounded_context: BoundedContextSelectionProofV1,
         durable_managed_lease: crate::worker_durable::DurableManagedLeaseProofV1,
         effective_capability_ceiling: crate::guard::EffectiveCapabilityCeilingProofV1,
+        effective_permission_scope_digest: String,
         parent_execution: ParentExecutionProofV1,
+        worktree: ManagedWorktreeAdmissionProjectionV1,
+        managed_provider_route: crate::protocol::ManagedProviderRouteBindingV1,
     ) -> Self {
-        // The lease IDs and source revision are copied only from the opaque P8
-        // proof. Keeping this cached projection makes existing downstream
-        // binding code explicit while equality checks below detect any drift.
+        // The lease identity comes from P8, while the revision belongs to the
+        // registered child worktree measured by HostKernel.
         let workspace_source_lease = WorkspaceSourceLeaseProofV1 {
             workspace_lease_id: durable_managed_lease.workspace_lease_id().to_owned(),
-            source_revision: durable_managed_lease.source_revision().to_owned(),
+            source_revision: worktree.workspace_revision.clone(),
         };
         let resource_leases = ResourceLeaseProofV1 {
             budget_lease_id: durable_managed_lease.budget_lease_id().to_owned(),
@@ -1641,8 +2385,11 @@ impl ManagedDelegationAdmissionFactsV1 {
             resource_leases,
             durable_managed_lease,
             effective_capability_ceiling,
+            effective_permission_scope_digest,
             parent_execution,
             child_execution_id,
+            worktree,
+            managed_provider_route,
         }
     }
 }
@@ -1678,17 +2425,18 @@ fn durable_lease_proof_matches_attempt(
         && pins.location_id() == facts.authenticated_attempt.location_id
         && pins.accepted_spec_digest() == lease.accepted_spec_digest()
         && pins.workspace_revision() == lease.source_revision()
+        && facts.worktree.root_location_id == facts.authenticated_attempt.location_id
+        && facts.worktree.p8_workspace_binding == facts.authenticated_attempt.workspace_binding
         && pins.profile_id() == facts.registered_profile.profile_id
         && pins.profile_revision() == facts.registered_profile.profile_revision
         && pins.profile_digest() == facts.registered_profile.profile_digest
-        && pins.permission_scope_digest() == facts.registered_profile.permission_ceiling_digest
+        && pins.profile_permission_ceiling_digest() == facts.registered_profile.permission_ceiling_digest
         && pins.context_selection_digest() == facts.bounded_context.context_selection_digest
         && pins.accepted_scope_digest() == facts.effective_capability_ceiling.accepted_scope_digest()
         && pins.capability_ceiling_digest() == facts.effective_capability_ceiling.effective_ceiling_digest()
         && pins.dimension() == crate::resource_budget::BudgetDimension::ActiveWorkers
         && pins.amount() == 1
         && lease.workspace_lease_id() == facts.workspace_source_lease.workspace_lease_id
-        && lease.source_revision() == facts.workspace_source_lease.source_revision
         && lease.budget_lease_id() == facts.resource_leases.budget_lease_id
         && lease.resource_lease_ids() == facts.resource_leases.resource_lease_ids
         && !lease.ticket_id().is_empty()
@@ -1713,6 +2461,11 @@ pub struct ManagedSnapshot {
     /// historical Run scheduler/admission eligible.
     session_links_pinned_at_start: BTreeSet<String>,
     pub attempts: BTreeMap<String, AttemptRecord>,
+    /// Durable provider usage accumulated by Rust from raw provenance events.
+    /// The source message/step identity and full per-field provenance remain in
+    /// OwnerLog events; this projection is only the current replay cursor/totals.
+    attempt_usage: BTreeMap<String, ManagedAttemptUsageLedgerV1>,
+    attempt_usage_receipts: BTreeMap<String, ManagedAttemptUsageReceiptV1>,
     deliveries: BTreeMap<String, String>,
     /// One durable model-dispatch consume marker per admitted managed Attempt.
     /// The delivery-keyed copy is retained to return the exact receipt on replay.
@@ -1725,12 +2478,19 @@ pub struct ManagedSnapshot {
     candidate_abandonments: BTreeMap<String, ManagedCandidateAbandonedReceiptV1>,
     /// Exact durable replies for atomic managed Attempt admissions.
     managed_admission_receipts: BTreeMap<String, ManagedAttemptAdmissionReceiptV1>,
+    /// Exact bounded request selections retained for Attempt replay/recovery.
+    /// Values are refs only; provider payload/transcript text is never persisted.
+    context_selections: BTreeMap<(String, u64), ManagedAttemptContextSelectionRecordV1>,
+    provider_requests: BTreeMap<(String, u64), ManagedProviderRequestRecordV1>,
 }
 
 /// Commands contain only control identifiers and digests, never conversation
 /// transcripts or mutable provider messages.
 #[derive(Clone, Debug)]
 pub enum ManagedCommand {
+    RecordAttemptUsage {
+        proof: ManagedAttemptUsageProofV1,
+    },
     CreateGoal {
         goal: GoalDraft,
     },
@@ -1798,6 +2558,7 @@ pub enum ManagedCommand {
         criterion_ids: Vec<String>,
         required_capabilities: Vec<String>,
         agent_profile_revision: ProfileRevisionRefV1,
+        profile_token_budget: u64,
         profile_owner_binding_digest: String,
     },
     MarkTaskReady {
@@ -1826,6 +2587,13 @@ pub enum ManagedCommand {
         location_id: String,
         session_id: String,
         binding: DelegationBindingV1,
+        context_selection: Option<ManagedAttemptContextSelectionRecordV1>,
+    },
+    AdvanceAttemptContextSelection {
+        record: ManagedAttemptContextSelectionRecordV1,
+    },
+    SetManagedProviderRequest {
+        record: ManagedProviderRequestRecordV1,
     },
     /// Stores the HostKernel-computed workspace revision for the just-admitted
     /// Attempt. Kept separate to preserve historical state-command compatibility.
@@ -1859,6 +2627,12 @@ pub enum ManagedCommand {
         effect_ids: Vec<String>,
         location_id: String,
         session_id: String,
+    },
+    /// New managed CodeMode/ToolBatch binding. Unlike the legacy event above,
+    /// this binds the exact ordered call intents and capability IDs, while
+    /// storing only digests and IDs (never arguments or secrets).
+    BindAttemptEffectWave {
+        wave: ManagedAttemptEffectWaveV1,
     },
     /// Appends an immutable verifier intent to an already bound EffectIntent edge.
     /// Only HostKernel constructs this command after deriving the live Attempt
@@ -1958,6 +2732,17 @@ pub enum ManagedCommand {
         run_id: String,
         final_revision: String,
         verifier_id: String,
+    },
+    /// Starts verification for one live Task without mutating shared Run-level
+    /// verifier/final-revision state. The HostKernel derives every pin and is the
+    /// only constructor; later Run verification remains a separate aggregate step.
+    BeginTaskVerification {
+        run_id: String,
+        task_id: String,
+        attempt_id: String,
+        source_revision: String,
+        verifier_id: String,
+        receipt_basis_digest: String,
     },
     /// Receipt-backed verification start used for all new OwnerLog events. The
     /// three-field `BeginVerification` form is retained for historical replay.
@@ -2060,17 +2845,39 @@ fn profile_revision_ref_value(profile: &ProfileRevisionRefV1) -> Value {
 }
 
 fn planned_task_set_digest(run: &Run) -> String {
-    let tasks = run.tasks.iter().map(|(task_id, task)| json!({
-        "taskId": task_id,
-        "title": task.title,
-        "purpose": task.purpose,
-        "dependencies": task.dependencies,
-        "criterionIds": task.criterion_ids,
-        "requiredCapabilities": task.required_capabilities,
-        "agentProfileRevision": task.agent_profile_revision.as_ref().map(profile_revision_ref_value),
-        "profileOwnerBindingDigest": task.profile_owner_binding_digest,
-    })).collect::<Vec<_>>();
-    format!("blake3:{}", blake3::hash(json!({"schemaVersion":1,"tasks":tasks}).to_string().as_bytes()).to_hex())
+    let has_delivery_text = run.tasks.values().all(|task| task.title.is_some() && task.purpose.is_some());
+    let tasks = run.tasks.iter().map(|(task_id, task)| {
+        let mut value = json!({
+            "taskId": task_id,
+            "dependencies": task.dependencies,
+            "criterionIds": task.criterion_ids,
+            "requiredCapabilities": task.required_capabilities,
+            "agentProfileRevision": task.agent_profile_revision.as_ref().map(profile_revision_ref_value),
+            "profileOwnerBindingDigest": task.profile_owner_binding_digest,
+        });
+        if let Some(profile_token_budget) = task.profile_token_budget {
+            value["profileTokenBudget"] = json!(profile_token_budget.to_string());
+        }
+        if has_delivery_text {
+            value["title"] = json!(task.title);
+            value["purpose"] = json!(task.purpose);
+        }
+        value
+    }).collect::<Vec<_>>();
+    let schema_version = if run.tasks.values().any(|task| task.profile_token_budget.is_some()) { 3 }
+        else if has_delivery_text { 2 } else { 1 };
+    format!("blake3:{}", blake3::hash(json!({"schemaVersion":schema_version,"tasks":tasks}).to_string().as_bytes()).to_hex())
+}
+
+fn validate_task_delivery_text(title: &str, purpose: &str) -> Result<(), ManagedError> {
+    if title.trim().is_empty() || title.len() > MAX_TASK_TITLE_BYTES
+        || title.chars().any(char::is_control)
+        || purpose.trim().is_empty() || purpose.len() > MAX_TASK_PURPOSE_BYTES
+        || purpose.chars().any(|character| character.is_control() && character != '\n' && character != '\t')
+    {
+        return Err(ManagedError::Invalid("managed Task title or purpose is empty, malformed, or over its byte limit"));
+    }
+    Ok(())
 }
 
 fn optional_profile_revision_ref(
@@ -2129,7 +2936,7 @@ fn session_link_value(link: &SessionLink) -> Value {
 }
 
 fn delegation_binding_json(binding: &DelegationBindingV1) -> Value {
-    json!({
+    let mut value = json!({
         "schemaVersion": 1,
         "runID": binding.run_id,
         "taskID": binding.task_id,
@@ -2140,16 +2947,30 @@ fn delegation_binding_json(binding: &DelegationBindingV1) -> Value {
         "profileID": binding.profile_id,
         "profileRevision": binding.profile_revision.to_string(),
         "profileDigest": binding.profile_digest,
+        "providerID": binding.provider_id,
+        "modelID": binding.model_id,
         "criteriaIDs": binding.criteria_ids,
         "workspaceLeaseID": binding.workspace_lease_id,
         "sourceRevision": binding.source_revision,
         "capabilityCeilingDigest": binding.capability_ceiling_digest,
+        "permissionScopeDigest": binding.permission_scope_digest,
         "contextSelectionDigest": binding.context_selection_digest,
         "budgetLeaseID": binding.budget_lease_id,
         "resourceLeaseIDs": binding.resource_lease_ids,
         "ownerEpoch": binding.owner_epoch.to_string(),
         "admittedManagedRevision": binding.admitted_managed_revision.to_string(),
-    })
+    });
+    if let Some(route) = &binding.managed_provider_route {
+        value["managedProviderRoute"] = json!({
+            "providerID": route.provider_id,
+            "modelID": route.model_id,
+            "harnessID": route.harness_id,
+            "routeID": route.route_id,
+            "endpointRevision": route.endpoint_revision,
+            "credentialLeaseRef": route.credential_lease_ref,
+        });
+    }
+    value
 }
 
 fn decode_delegation_binding(value: &Value) -> Result<DelegationBindingV1, ManagedError> {
@@ -2222,8 +3043,9 @@ fn mint_delegation_binding(
         || !durable_lease_proof_matches_attempt(facts)
         || facts.durable_managed_lease.goal_id() != facts.authenticated_attempt.goal_id
         || facts.durable_managed_lease.accepted_spec_digest() != spec.digest
+        || attempt.location_id != facts.worktree.location_id
         || attempt.workspace_revision.as_deref()
-            != Some(facts.workspace_source_lease.source_revision.as_str())
+            != Some(facts.worktree.workspace_revision.as_str())
         || task.criterion_ids.is_empty()
         || task.criterion_ids.len() > 32
         || task.agent_profile_revision.as_ref().is_none_or(|pin| {
@@ -2234,6 +3056,8 @@ fn mint_delegation_binding(
         })
         || task.profile_owner_binding_digest.as_deref()
             != Some(authenticated_owner_digest.as_str())
+        || task.profile_token_budget.is_none_or(|budget| budget == 0)
+        || task.profile_token_budget != facts.registered_profile.token_budget
         || facts.registered_profile.owner_binding() != &authenticated_owner
         || task.profile_owner_binding_digest.as_deref()
             != Some(facts.registered_profile.owner_binding().digest().as_str())
@@ -2241,6 +3065,11 @@ fn mint_delegation_binding(
         return Err(ManagedError::Conflict(
             "managed Attempt or owner facts are stale or outside accepted scope",
         ));
+    }
+    if facts.managed_provider_route.provider_id != facts.registered_profile.provider_id
+        || facts.managed_provider_route.model_id != facts.registered_profile.model_id
+    {
+        return Err(ManagedError::Conflict("managed provider route differs from the pinned AgentProfile selection"));
     }
     let mut criteria_ids = task.criterion_ids.clone();
     criteria_ids.sort();
@@ -2269,6 +3098,7 @@ fn mint_delegation_binding(
         capability_scope: spec.content.capability_scope.clone(),
         required_capabilities: task.required_capabilities.clone(),
         profile_revision: task.agent_profile_revision.clone(),
+        profile_token_budget: task.profile_token_budget,
         profile_owner_binding_digest: task.profile_owner_binding_digest.clone(),
     };
     let accepted_scope_digest = accepted_scope
@@ -2290,6 +3120,23 @@ fn mint_delegation_binding(
             "Guard effective capability proof does not match accepted Attempt scope",
         ));
     }
+    let expected_permission_scope_digest = crate::protocol::managed_effective_permission_scope_digest_v1(
+        attempt_id,
+        facts.authenticated_attempt.owner_epoch,
+        run_id,
+        task_id,
+        &accepted_scope_digest,
+        &facts.registered_profile.profile_id,
+        facts.registered_profile.profile_revision,
+        &facts.registered_profile.profile_digest,
+        &facts.registered_profile.owner_binding().digest(),
+        &facts.registered_profile.permission_ceiling_digest,
+        effective.guard_policy_revision(),
+        effective.capabilities(),
+    ).ok_or(ManagedError::Invalid("effective permission scope digest could not be derived"))?;
+    if facts.effective_permission_scope_digest != expected_permission_scope_digest {
+        return Err(ManagedError::Conflict("HostKernel effective permission scope digest differs from the Guard proof"));
+    }
     let binding = DelegationBindingV1 {
         run_id: run_id.to_owned(),
         task_id: task_id.to_owned(),
@@ -2300,10 +3147,15 @@ fn mint_delegation_binding(
         profile_id: facts.registered_profile.profile_id.clone(),
         profile_revision: facts.registered_profile.profile_revision,
         profile_digest: facts.registered_profile.profile_digest.clone(),
+        provider_id: facts.registered_profile.provider_id.clone(),
+        model_id: facts.registered_profile.model_id.clone(),
+        managed_provider_route: Some(facts.managed_provider_route.clone()),
+        profile_token_budget: facts.registered_profile.token_budget,
         criteria_ids,
         workspace_lease_id: facts.workspace_source_lease.workspace_lease_id.clone(),
-        source_revision: facts.workspace_source_lease.source_revision.clone(),
+        source_revision: facts.worktree.workspace_revision.clone(),
         capability_ceiling_digest: effective.effective_ceiling_digest().to_owned(),
+        permission_scope_digest: facts.effective_permission_scope_digest.clone(),
         context_selection_digest: facts.bounded_context.context_selection_digest.clone(),
         budget_lease_id: facts.resource_leases.budget_lease_id.clone(),
         resource_lease_ids: facts.resource_leases.resource_lease_ids.clone(),
@@ -2330,9 +3182,13 @@ fn delegation_binding_matches_owner_facts(
         && binding.profile_id == facts.registered_profile.profile_id
         && binding.profile_revision == facts.registered_profile.profile_revision
         && binding.profile_digest == facts.registered_profile.profile_digest
+        && binding.provider_id == facts.registered_profile.provider_id
+        && binding.model_id == facts.registered_profile.model_id
+        && binding.profile_token_budget == facts.registered_profile.token_budget
         && binding.workspace_lease_id == facts.workspace_source_lease.workspace_lease_id
-        && binding.source_revision == facts.workspace_source_lease.source_revision
+        && binding.source_revision == facts.worktree.workspace_revision
         && binding.capability_ceiling_digest == facts.effective_capability_ceiling.effective_ceiling_digest()
+        && binding.permission_scope_digest == facts.effective_permission_scope_digest
         && binding.context_selection_digest == facts.bounded_context.context_selection_digest
         && binding.budget_lease_id == facts.resource_leases.budget_lease_id
         && binding.resource_lease_ids == facts.resource_leases.resource_lease_ids
@@ -2446,6 +3302,302 @@ fn required_u64(value: &Value, name: &str) -> Result<u64, ManagedError> {
         .ok_or(ManagedError::Invalid(
             "managed event integer missing or invalid",
         ))
+}
+
+fn required_decimal_u64(value: &Value, name: &str) -> Result<u64, ManagedError> {
+    let text = required_string(value, name)?;
+    let parsed = text.parse::<u64>().map_err(|_| ManagedError::Invalid("managed decimal counter is invalid"))?;
+    if parsed.to_string() != text {
+        return Err(ManagedError::Invalid("managed decimal counter is non-canonical"));
+    }
+    Ok(parsed)
+}
+
+fn canonical_json(value: &Value) -> String {
+    match value {
+        Value::Object(fields) => {
+            let mut keys = fields.keys().collect::<Vec<_>>();
+            keys.sort();
+            format!("{{{}}}", keys.into_iter().map(|key| format!(
+                "{}:{}", serde_json::to_string(key).expect("JSON key serialization"),
+                canonical_json(&fields[key]),
+            )).collect::<Vec<_>>().join(","))
+        }
+        Value::Array(values) => format!("[{}]", values.iter().map(canonical_json).collect::<Vec<_>>().join(",")),
+        _ => serde_json::to_string(value).unwrap_or_else(|_| "null".to_owned()),
+    }
+}
+
+fn managed_usage_operation_key(attempt_id: &str, message_id: &str, index: u32) -> String {
+    let mut preimage = Vec::new();
+    preimage.extend_from_slice(attempt_id.as_bytes());
+    preimage.push(0);
+    preimage.extend_from_slice(message_id.as_bytes());
+    preimage.push(0);
+    preimage.extend_from_slice(index.to_string().as_bytes());
+    format!("managed_usage_{}", blake3::hash(&preimage).to_hex())
+}
+
+fn managed_usage_digest(proof: &ManagedAttemptUsageProofV1) -> String {
+    let content = json!({
+        "attemptID": proof.attempt_id,
+        "assistantMessageID": proof.assistant_message_id,
+        "stepFinishIndex": proof.step_finish_index,
+        "usageProvenance": proof.usage_provenance,
+    });
+    let mut preimage = MANAGED_USAGE_DOMAIN.to_vec();
+    preimage.extend_from_slice(canonical_json(&content).as_bytes());
+    format!("blake3:{}", blake3::hash(&preimage).to_hex())
+}
+
+fn decimal_cost_to_micros(value: &Value) -> Result<u64, ManagedError> {
+    let Value::Number(number) = value else { return Err(ManagedError::Invalid("usage cost must be a finite decimal")); };
+    let raw = number.to_string();
+    if raw.starts_with('-') { return Err(ManagedError::Invalid("usage cost cannot be negative")); }
+    let (mantissa_text, exponent) = match raw.find(|ch| ch == 'e' || ch == 'E') {
+        Some(index) => (&raw[..index], raw[index + 1..].parse::<i32>().map_err(|_| ManagedError::Invalid("usage cost exponent is invalid"))?),
+        None => (raw.as_str(), 0),
+    };
+    let (whole, fraction) = mantissa_text.split_once('.').unwrap_or((mantissa_text, ""));
+    let digits = format!("{whole}{fraction}");
+    if digits.is_empty() || digits.len() > 38 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(ManagedError::Invalid("usage cost precision exceeds bounds"));
+    }
+    let mantissa = digits.parse::<u128>().map_err(|_| ManagedError::Invalid("usage cost precision exceeds bounds"))?;
+    let fraction_scale = i32::try_from(fraction.len())
+        .map_err(|_| ManagedError::Invalid("usage cost precision exceeds bounds"))?;
+    let scale = fraction_scale.checked_sub(exponent).and_then(|n| n.checked_sub(6))
+        .ok_or(ManagedError::Invalid("usage cost exponent exceeds bounds"))?;
+    let micros = if scale <= 0 {
+        let power = scale.checked_neg().and_then(|n| u32::try_from(n).ok())
+            .ok_or(ManagedError::Invalid("usage cost exceeds bounds"))?;
+        mantissa.checked_mul(10u128.checked_pow(power).ok_or(ManagedError::Invalid("usage cost exceeds bounds"))?)
+            .ok_or(ManagedError::Invalid("usage cost exceeds bounds"))?
+    } else {
+        let divisor = 10u128.checked_pow(scale as u32).ok_or(ManagedError::Invalid("usage cost precision exceeds bounds"))?;
+        let quotient = mantissa / divisor;
+        quotient + u128::from(mantissa % divisor != 0)
+    };
+    u64::try_from(micros).map_err(|_| ManagedError::Invalid("usage cost exceeds u64 micros bounds"))
+}
+
+/// Convert a nonnegative JSON decimal to a bounded 18-place integer without
+/// passing through binary floating point. Estimated provider-catalog prices
+/// are charged in USD per million tokens, so their price × token count is
+/// already a micro-dollar amount.
+fn decimal_to_scaled_18(value: &Value) -> Result<u128, ManagedError> {
+    let Value::Number(number) = value else {
+        return Err(ManagedError::Invalid("estimated price must be a finite decimal"));
+    };
+    let raw = number.to_string();
+    if raw.starts_with('-') {
+        return Err(ManagedError::Invalid("estimated price cannot be negative"));
+    }
+    let (mantissa_text, exponent) = match raw.find(|ch| ch == 'e' || ch == 'E') {
+        Some(index) => (&raw[..index], raw[index + 1..].parse::<i32>().map_err(|_| ManagedError::Invalid("estimated price exponent is invalid"))?),
+        None => (raw.as_str(), 0),
+    };
+    let (whole, fraction) = mantissa_text.split_once('.').unwrap_or((mantissa_text, ""));
+    let digits = format!("{whole}{fraction}");
+    if digits.is_empty() || digits.len() > 38 || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(ManagedError::Invalid("estimated price precision exceeds bounds"));
+    }
+    let mantissa = digits.parse::<u128>().map_err(|_| ManagedError::Invalid("estimated price precision exceeds bounds"))?;
+    let scale = i32::try_from(fraction.len())
+        .map_err(|_| ManagedError::Invalid("estimated price precision exceeds bounds"))?
+        .checked_sub(exponent)
+        .ok_or(ManagedError::Invalid("estimated price exponent exceeds bounds"))?;
+    if scale > 18 {
+        return Err(ManagedError::Invalid("estimated price precision exceeds 18 decimal places"));
+    }
+    let adjusted = if scale < 0 {
+        mantissa.checked_mul(10u128.checked_pow(scale.checked_neg().and_then(|value| u32::try_from(value).ok()).ok_or(ManagedError::Invalid("estimated price exceeds bounds"))?)
+            .ok_or(ManagedError::Invalid("estimated price exceeds bounds"))?)
+    } else {
+        Some(mantissa)
+    }.ok_or(ManagedError::Invalid("estimated price exceeds bounds"))?;
+    let fractional_places = u32::try_from(18i32.saturating_sub(scale.max(0)))
+        .map_err(|_| ManagedError::Invalid("estimated price precision exceeds bounds"))?;
+    adjusted.checked_mul(10u128.checked_pow(fractional_places).ok_or(ManagedError::Invalid("estimated price exceeds bounds"))?)
+        .ok_or(ManagedError::Invalid("estimated price exceeds bounds"))
+}
+
+fn estimated_cost_micros(value: &Value) -> Result<u64, ManagedError> {
+    let pricing = value.get("pricing").and_then(Value::as_object)
+        .ok_or(ManagedError::Invalid("estimated cost pricing provenance is missing"))?;
+    let tokens = value.get("tokenInputs").and_then(Value::as_object)
+        .ok_or(ManagedError::Invalid("estimated cost token inputs are missing"))?;
+    let mut pricing_preimage = b"horizoncode.managed-pricing.v1\0".to_vec();
+    for key in ["input", "output", "cacheRead", "cacheWrite"] {
+        let scaled = decimal_to_scaled_18(pricing.get(key).ok_or(ManagedError::Invalid("estimated cost price is missing"))?)?;
+        pricing_preimage.extend_from_slice(scaled.to_string().as_bytes());
+        pricing_preimage.push(0);
+    }
+    let revision = ring::digest::digest(&ring::digest::SHA256, &pricing_preimage);
+    let mut revision_hex = String::with_capacity(64);
+    for byte in revision.as_ref() {
+        use std::fmt::Write as _;
+        let _ = write!(&mut revision_hex, "{byte:02x}");
+    }
+    let expected_revision = format!("sha256:{revision_hex}");
+    if value.get("pricingRevision").and_then(Value::as_str) != Some(expected_revision.as_str()) {
+        return Err(ManagedError::Invalid("estimated cost pricing digest does not match its exact price tuple"));
+    }
+    const SCALE: u128 = 1_000_000_000_000_000_000;
+    let mut total_scaled = 0u128;
+    for (price_key, token_key) in [("input", "input"), ("output", "output"), ("output", "reasoning"), ("cacheRead", "cacheRead"), ("cacheWrite", "cacheWrite")] {
+        let price = decimal_to_scaled_18(pricing.get(price_key).ok_or(ManagedError::Invalid("estimated cost price is missing"))?)?;
+        let token_count = tokens.get(token_key).and_then(Value::as_u64)
+            .ok_or(ManagedError::Invalid("estimated cost token input is invalid"))?;
+        total_scaled = total_scaled.checked_add(price.checked_mul(u128::from(token_count))
+            .ok_or(ManagedError::Invalid("estimated cost exceeds bounds"))?)
+            .ok_or(ManagedError::Invalid("estimated cost exceeds bounds"))?;
+    }
+    let rounded_up = total_scaled.checked_add(SCALE - 1)
+        .ok_or(ManagedError::Invalid("estimated cost exceeds bounds"))? / SCALE;
+    u64::try_from(rounded_up).map_err(|_| ManagedError::Invalid("estimated cost exceeds u64 micros bounds"))
+}
+
+fn usage_metric(value: &Value) -> Result<(String, Option<u64>), ManagedError> {
+    let object = value.as_object().ok_or(ManagedError::Invalid("usage metric must be an object"))?;
+    let status = value.get("status").and_then(Value::as_str)
+        .ok_or(ManagedError::Invalid("usage metric status is missing"))?;
+    match status {
+        "provider-reported" | "measured" | "estimated" => {
+            if object.len() != 2 { return Err(ManagedError::Invalid("valued usage metric shape is invalid")); }
+            let amount = value.get("value").and_then(Value::as_u64)
+                .ok_or(ManagedError::Invalid("usage metric must be a nonnegative integer"))?;
+            Ok((status.to_owned(), Some(amount)))
+        }
+        "unknown" => {
+            if object.len() != 1 || object.contains_key("value") {
+                return Err(ManagedError::Invalid("unknown usage metric must be valueless"));
+            }
+            Ok((status.to_owned(), None))
+        }
+        _ => Err(ManagedError::Invalid("usage metric provenance status is invalid")),
+    }
+}
+
+fn usage_cost(value: &Value) -> Result<(String, Option<u64>), ManagedError> {
+    let object = value.as_object().ok_or(ManagedError::Invalid("usage cost must be an object"))?;
+    let status = value.get("status").and_then(Value::as_str)
+        .ok_or(ManagedError::Invalid("usage cost status is missing"))?;
+    match status {
+        "provider-reported" => {
+            if object.len() != 2 { return Err(ManagedError::Invalid("provider-reported cost shape is invalid")); }
+            Ok((status.to_owned(), Some(decimal_cost_to_micros(value.get("value").ok_or(ManagedError::Invalid("usage cost value is missing"))?)?)))
+        }
+        "measured" => {
+            if object.len() != 4
+                || value.get("measurementSource").and_then(Value::as_str) != Some("provider-billing-receipt-v1")
+                || value.get("evidenceRef").and_then(Value::as_str).is_none_or(|s| s.is_empty() || s.len() > 512 || s.chars().any(char::is_control))
+            {
+                return Err(ManagedError::Invalid("measured cost lacks a valid provider billing receipt"));
+            }
+            Ok((status.to_owned(), Some(decimal_cost_to_micros(value.get("value").ok_or(ManagedError::Invalid("usage cost value is missing"))?)?)))
+        }
+        "estimated" => {
+            let pricing = value.get("pricing").and_then(Value::as_object)
+                .ok_or(ManagedError::Invalid("estimated cost pricing provenance is missing"))?;
+            let tokens = value.get("tokenInputs").and_then(Value::as_object)
+                .ok_or(ManagedError::Invalid("estimated cost token inputs are missing"))?;
+            if object.len() != 7 || pricing.len() != 4 || tokens.len() != 5
+                || value.get("priceSource").and_then(Value::as_str).is_none_or(|s| s.is_empty() || s.len() > 256)
+                || value.get("pricingRevision").and_then(Value::as_str).is_none_or(|s| !is_sha256_digest(s))
+                || value.get("algorithm").and_then(Value::as_str) != Some("per-million-linear-v1")
+            {
+                return Err(ManagedError::Invalid("estimated cost provenance shape is invalid"));
+            }
+            for key in ["input", "output", "cacheRead", "cacheWrite"] {
+                if pricing.get(key).and_then(Value::as_f64).is_none_or(|n| !n.is_finite() || n < 0.0) {
+                    return Err(ManagedError::Invalid("estimated cost price component is invalid"));
+                }
+            }
+            for key in ["input", "output", "reasoning", "cacheRead", "cacheWrite"] {
+                if tokens.get(key).and_then(Value::as_u64).is_none() {
+                    return Err(ManagedError::Invalid("estimated cost token input is invalid"));
+                }
+            }
+            let computed = estimated_cost_micros(value)?;
+            let reported = decimal_cost_to_micros(value.get("value").ok_or(ManagedError::Invalid("usage cost value is missing"))?)?;
+            // The display amount crossed one JavaScript Number boundary. Allow
+            // at most one micro-dollar of rounding, but persist the Rust-derived
+            // conservative value rather than the caller's estimate.
+            if reported.abs_diff(computed) > 1 {
+                return Err(ManagedError::Invalid("estimated cost does not match its pinned pricing and token inputs"));
+            }
+            Ok((status.to_owned(), Some(computed)))
+        }
+        "unknown" => {
+            if object.len() != 1 || object.contains_key("value") {
+                return Err(ManagedError::Invalid("unknown cost must be valueless"));
+            }
+            Ok((status.to_owned(), None))
+        }
+        _ => Err(ManagedError::Invalid("usage cost provenance status is invalid")),
+    }
+}
+
+fn validated_usage_provenance(
+    value: &Value,
+    binding: &DelegationBindingV1,
+) -> Result<(u64, Option<u64>, bool, bool, bool, bool, String, BTreeMap<String, String>), ManagedError> {
+    let object = value.as_object().ok_or(ManagedError::Invalid("usage provenance must be an object"))?;
+    if object.len() < 4 || object.len() > 6
+        || object.keys().any(|key| !["providerID", "modelID", "operationID", "requestID", "cost", "tokens"].contains(&key.as_str()))
+        || value.get("providerID").and_then(Value::as_str) != Some(binding.provider_id.as_str())
+        || value.get("modelID").and_then(Value::as_str) != Some(binding.model_id.as_str())
+    {
+        return Err(ManagedError::Conflict("usage provider/model differs from pinned profile"));
+    }
+    for key in ["operationID", "requestID"] {
+        if let Some(value) = value.get(key) {
+            if value.as_str().is_none_or(|s| s.is_empty() || s.len() > 256 || s.chars().any(char::is_control)) {
+                return Err(ManagedError::Invalid("usage provider request identity is invalid"));
+            }
+        }
+    }
+    let (cost_status, cost) = usage_cost(value.get("cost").ok_or(ManagedError::Invalid("usage cost is missing"))?)?;
+    if cost_status == "provider-reported"
+        && value.get("operationID").and_then(Value::as_str).is_none()
+        && value.get("requestID").and_then(Value::as_str).is_none()
+    {
+        return Err(ManagedError::Invalid("provider-reported cost must bind to a provider response or request identity"));
+    }
+    let tokens = value.get("tokens").and_then(Value::as_object)
+        .ok_or(ManagedError::Invalid("usage token metrics are missing"))?;
+    if tokens.len() != 5 || tokens.keys().any(|key| !["input", "output", "reasoning", "cache"].contains(&key.as_str())) {
+        return Err(ManagedError::Invalid("usage token metric shape is invalid"));
+    }
+    let cache = tokens.get("cache").and_then(Value::as_object)
+        .ok_or(ManagedError::Invalid("usage cache metrics are missing"))?;
+    if cache.len() != 2 || cache.keys().any(|key| !["read", "write"].contains(&key.as_str())) {
+        return Err(ManagedError::Invalid("usage cache metric shape is invalid"));
+    }
+    let mut metric_statuses = BTreeMap::new();
+    let mut total = 0u64;
+    let mut unknown_tokens = false;
+    let mut estimated_tokens = false;
+    for key in ["input", "output", "reasoning"] {
+        let (status, value) = usage_metric(tokens.get(key).expect("validated metric key"))?;
+        metric_statuses.insert(key.to_owned(), status.clone());
+        if key == "input" || key == "output" {
+            unknown_tokens |= status == "unknown";
+            estimated_tokens |= status == "estimated";
+        }
+        if (key == "input" || key == "output") && matches!(status.as_str(), "provider-reported" | "measured") {
+            total = total.checked_add(value.ok_or(ManagedError::Invalid("valued token metric has no value"))?)
+                .ok_or(ManagedError::Invalid("managed token total exceeds u64"))?;
+        }
+    }
+    for key in ["read", "write"] {
+        let (status, value) = usage_metric(cache.get(key).expect("validated cache key"))?;
+        metric_statuses.insert(format!("cache.{key}"), status.clone());
+        // Cache counts are subcomponents of input; retain their provenance but
+        // do not add them a second time to the provider's total input/output.
+    }
+    Ok((total, cost, unknown_tokens, estimated_tokens, cost_status == "unknown", cost_status == "estimated", cost_status, metric_statuses))
 }
 
 fn optional_u64(value: &Value, name: &str) -> Result<Option<u64>, ManagedError> {
@@ -2668,6 +3820,23 @@ fn decode_verification_evidence(value: &Value) -> Result<VerificationEvidenceV1,
 impl ManagedCommand {
     fn event(&self) -> (&'static str, Value) {
         match self {
+            Self::RecordAttemptUsage { proof } => (
+                "attempt_usage_recorded",
+                json!({
+                    "goalID": proof.goal_id,
+                    "runID": proof.run_id,
+                    "taskID": proof.task_id,
+                    "attemptID": proof.attempt_id,
+                    "ownerEpoch": proof.owner_epoch.to_string(),
+                    "expectedManagedRevision": proof.expected_managed_revision.to_string(),
+                    "assistantMessageID": proof.assistant_message_id,
+                    "stepFinishIndex": proof.step_finish_index,
+                    "delegationBindingDigest": proof.delegation_binding_digest,
+                    "operationKey": proof.operation_key,
+                    "usageDigest": proof.usage_digest,
+                    "usageProvenance": proof.usage_provenance,
+                }),
+            ),
             Self::CreateGoal { goal } => ("goal_created", json!({"goal": goal_draft_value(goal)})),
             Self::CreateGoalProposal {
                 goal,
@@ -2729,6 +3898,7 @@ impl ManagedCommand {
                         "criterionIds": task.criterion_ids,
                         "requiredCapabilities": task.required_capabilities,
                         "agentProfileRevision": profile_revision_ref_value(&task.agent_profile_revision),
+                        "profileTokenBudget": task.profile_token_budget.to_string(),
                         "profileOwnerBindingDigest": task.profile_owner_binding_digest,
                     })).collect::<Vec<_>>(),
                 }),
@@ -2762,10 +3932,11 @@ impl ManagedCommand {
                 criterion_ids,
                 required_capabilities,
                 agent_profile_revision,
+                profile_token_budget,
                 profile_owner_binding_digest,
             } => (
                 "task_proposed",
-                json!({"runId": run_id, "taskId": task_id, "dependencies": dependencies, "criterionIds": criterion_ids, "requiredCapabilities": required_capabilities, "agentProfileRevision": profile_revision_ref_value(agent_profile_revision), "profileOwnerBindingDigest": profile_owner_binding_digest}),
+                json!({"runId": run_id, "taskId": task_id, "dependencies": dependencies, "criterionIds": criterion_ids, "requiredCapabilities": required_capabilities, "agentProfileRevision": profile_revision_ref_value(agent_profile_revision), "profileTokenBudget": profile_token_budget.to_string(), "profileOwnerBindingDigest": profile_owner_binding_digest}),
             ),
             Self::MarkTaskReady { run_id, task_id } => {
                 ("task_ready", json!({"runId": run_id, "taskId": task_id}))
@@ -2791,9 +3962,9 @@ impl ManagedCommand {
                 location_id,
                 session_id,
                 binding,
-            } => (
-                "attempt_admitted_with_delegation",
-                json!({
+                context_selection,
+            } => {
+                let mut payload = json!({
                     "runId": run_id,
                     "taskId": task_id,
                     "attemptId": attempt_id,
@@ -2802,6 +3973,62 @@ impl ManagedCommand {
                     "locationId": location_id,
                     "sessionId": session_id,
                     "binding": delegation_binding_json(binding),
+                });
+                if let Some(context_selection) = context_selection {
+                    payload["contextSelection"] = context_selection.selection.clone();
+                    payload["contextSelectionDigest"] = json!(context_selection.selection_digest);
+                    payload["requestID"] = json!(context_selection.request_id);
+                    payload["requestSequence"] = json!(context_selection.request_sequence.to_string());
+                    payload["contextManagedRevision"] = json!(context_selection.managed_revision.to_string());
+                }
+                ("attempt_admitted_with_delegation", payload)
+            },
+            Self::AdvanceAttemptContextSelection { record } => (
+                "managed_context_advanced",
+                json!({
+                    "attemptId": record.attempt_id,
+                    "requestSequence": record.request_sequence.to_string(),
+                    "requestID": record.request_id,
+                    "contextSelection": record.selection,
+                    "contextSelectionDigest": record.selection_digest,
+                    "managedRevision": record.managed_revision.to_string(),
+                }),
+            ),
+            Self::SetManagedProviderRequest { record } => (
+                match record.state.as_str() {
+                    "PREPARED" => "managed_provider_request_prepared",
+                    "DISPATCHING" => "managed_provider_request_dispatching",
+                    "SETTLED" => "managed_provider_request_settled",
+                    _ => "managed_provider_request_unknown",
+                },
+                json!({
+                    "attemptId": record.attempt_id,
+                    "requestSequence": record.request_sequence.to_string(),
+                    "requestID": record.request_id,
+                    "contextSelectionDigest": record.context_selection_digest,
+                    "providerID": record.provider_id,
+                    "modelID": record.model_id,
+                    "harnessID": record.harness_id,
+                    "routeID": record.route_id,
+                    "endpointRevision": record.endpoint_revision,
+                    "credentialLeaseRef": record.credential_lease_ref,
+                    "guardChallengeID": record.guard_challenge_id,
+                    "guardEffectID": record.guard_effect_id,
+                    "preparedAttemptScopeDigest": record.prepared_attempt_scope_digest,
+                    "capabilityLeaseDigest": record.capability_lease_digest,
+                    "authorizationBindingDigest": record.authorization_binding_digest,
+                    "requestDigest": record.request_digest,
+                    "transportRequestDigest": record.transport_request_digest,
+                    "operationDigest": record.operation_digest,
+                    "providerRequestID": record.provider_request_id,
+                    "stepFinishIndex": record.step_finish_index,
+                    "prepareDigest": record.prepare_digest,
+                    "dispatchDigest": record.dispatch_digest,
+                    "assistantEntryID": record.assistant_entry_id,
+                    "responseDigest": record.response_digest,
+                    "usageDigest": record.usage_digest,
+                    "unknownReasonCode": record.unknown_reason_code,
+                    "managedRevision": record.managed_revision.to_string(),
                 }),
             ),
             Self::BindAttemptWorkspaceRevision {
@@ -2863,6 +4090,9 @@ impl ManagedCommand {
                     "childSessionSequence": proof.child_session_sequence.to_string(),
                     "childSessionEventDigest": proof.child_session_event_digest,
                     "childSessionStateDigest": proof.child_session_state_digest,
+                    "childSessionOutcomeKind": proof.child_session_outcome_kind,
+                    "childSessionOutputDigest": proof.child_session_output_digest,
+                    "childSessionOutputBytes": proof.child_session_output_bytes.to_string(),
                     "deliveryID": proof.delivery_id,
                 }),
             ),
@@ -2911,6 +4141,10 @@ impl ManagedCommand {
             } => (
                 "attempt_effects_bound",
                 json!({"runId": run_id, "taskId": task_id, "attemptId": attempt_id, "effectIds": effect_ids, "locationId": location_id, "sessionId": session_id}),
+            ),
+            Self::BindAttemptEffectWave { wave } => (
+                "attempt_effect_wave_bound",
+                managed_effect_wave_value(wave),
             ),
             Self::BindAttemptVerifierIntent { intent } => (
                 "attempt_verifier_intent_bound",
@@ -3000,6 +4234,12 @@ impl ManagedCommand {
             } => (
                 "run_verifying",
                 json!({"runId": run_id, "finalRevision": final_revision, "verifierId": verifier_id}),
+            ),
+            Self::BeginTaskVerification { run_id, task_id, attempt_id, source_revision, verifier_id, receipt_basis_digest } => (
+                "task_verification_started",
+                json!({"runId": run_id, "taskId": task_id, "attemptId": attempt_id,
+                    "sourceRevision": source_revision, "verifierId": verifier_id,
+                    "receiptBasisDigest": receipt_basis_digest}),
             ),
             Self::BeginVerificationWithReceiptBasis {
                 run_id,
@@ -3117,6 +4357,27 @@ impl ManagedCommand {
             ))?
             .len();
         let command = match kind {
+            "attempt_usage_recorded" if count == 12 => {
+                if payload.get("usageProvenance").is_none() { return Err(ManagedError::Invalid("usage provenance missing")); }
+                Self::RecordAttemptUsage {
+                    proof: ManagedAttemptUsageProofV1 {
+                        goal_id: field(payload, "goalID")?,
+                        run_id: field(payload, "runID")?,
+                        task_id: field(payload, "taskID")?,
+                        attempt_id: field(payload, "attemptID")?,
+                        owner_epoch: required_decimal_u64(payload, "ownerEpoch")?,
+                        expected_managed_revision: required_decimal_u64(payload, "expectedManagedRevision")?,
+                        assistant_message_id: field(payload, "assistantMessageID")?,
+                        step_finish_index: u32::try_from(required_u64(payload, "stepFinishIndex")?)
+                            .map_err(|_| ManagedError::Invalid("usage finish index is invalid"))?,
+                        delegation_binding_digest: field(payload, "delegationBindingDigest")?,
+                        operation_key: field(payload, "operationKey")?,
+                        usage_digest: field(payload, "usageDigest")?,
+                        usage_provenance: payload.get("usageProvenance").cloned()
+                            .ok_or(ManagedError::Invalid("usage provenance missing"))?,
+                    },
+                }
+            }
             "goal_created" if count == 1 => Self::CreateGoal {
                 goal: decode_goal_draft(
                     payload
@@ -3181,11 +4442,14 @@ impl ManagedCommand {
                     return Err(ManagedError::Invalid("planned Task list exceeds limit"));
                 }
                 let tasks = raw_tasks.iter().map(|raw| {
-                    exact_object(raw, 8)?;
+                    let field_count = raw.as_object().map(|object| object.len()).unwrap_or_default();
+                    if field_count != 6 && field_count != 8 && field_count != 9 {
+                        return Err(ManagedError::Invalid("planned Task fields mismatch"));
+                    }
                     Ok(PlannedTaskV1 {
                         task_id: required_string(raw, "taskId")?,
-                        title: required_string(raw, "title")?,
-                        purpose: required_string(raw, "purpose")?,
+                        title: raw.get("title").and_then(Value::as_str).map(str::to_owned),
+                        purpose: raw.get("purpose").and_then(Value::as_str).map(str::to_owned),
                         dependencies: raw.get("dependencies").and_then(Value::as_array)
                             .ok_or(ManagedError::Invalid("planned dependencies missing"))?.iter()
                             .map(|item| item.as_str().map(str::to_owned).ok_or(ManagedError::Invalid("planned dependency invalid")))
@@ -3200,6 +4464,11 @@ impl ManagedCommand {
                             .collect::<Result<Vec<_>, _>>()?,
                         agent_profile_revision: optional_profile_revision_ref(raw, "agentProfileRevision")?
                             .ok_or(ManagedError::Invalid("planned Task profile pin missing"))?,
+                        profile_token_budget: if field_count == 9 {
+                            required_string(raw, "profileTokenBudget")?.parse::<u64>().ok()
+                                .filter(|budget| *budget > 0)
+                                .ok_or(ManagedError::Invalid("planned Task token budget is invalid"))?
+                        } else { 0 },
                         profile_owner_binding_digest: required_blake3(raw, "profileOwnerBindingDigest")?,
                     })
                 }).collect::<Result<Vec<_>, ManagedError>>()?;
@@ -3228,7 +4497,7 @@ impl ManagedCommand {
                 criterion_ids: list(payload, "criterionIds")?,
                 required_capabilities: list(payload, "requiredCapabilities")?,
             },
-            "task_proposed" if count == 7 => Self::AddTaskPinnedProfile {
+            "task_proposed" if count == 7 || count == 8 => Self::AddTaskPinnedProfile {
                 run_id: field(payload, "runId")?,
                 task_id: field(payload, "taskId")?,
                 dependencies: list(payload, "dependencies")?,
@@ -3236,6 +4505,7 @@ impl ManagedCommand {
                 required_capabilities: list(payload, "requiredCapabilities")?,
                 agent_profile_revision: optional_profile_revision_ref(payload, "agentProfileRevision")?
                     .ok_or(ManagedError::Invalid("Task profile revision pin is required"))?,
+                profile_token_budget: if count == 8 { decimal_u64(payload, "profileTokenBudget")? } else { 0 },
                 profile_owner_binding_digest: required_blake3(payload, "profileOwnerBindingDigest")?,
             },
             "task_ready" if count == 2 => Self::MarkTaskReady {
@@ -3263,7 +4533,7 @@ impl ManagedCommand {
                 location_id: field(payload, "locationId")?,
                 session_id: field(payload, "sessionId")?,
             },
-            "attempt_admitted_with_delegation" if count == 8 => {
+            "attempt_admitted_with_delegation" if count == 8 || count == 13 => {
                 let owner_epoch_text = field(payload, "ownerEpoch")?;
                 let owner_epoch = owner_epoch_text
                     .parse::<u64>()
@@ -3272,6 +4542,17 @@ impl ManagedCommand {
                     .ok_or(ManagedError::Invalid(
                         "managed admission owner epoch is not canonical",
                     ))?;
+                let context_selection = if count == 13 {
+                    Some(ManagedAttemptContextSelectionRecordV1 {
+                        attempt_id: field(payload, "attemptId")?,
+                        request_sequence: decimal_u64(payload, "requestSequence")?,
+                        request_id: field(payload, "requestID")?,
+                        selection: payload.get("contextSelection").cloned()
+                            .ok_or(ManagedError::Invalid("admission ContextSelection missing"))?,
+                        selection_digest: required_blake3(payload, "contextSelectionDigest")?,
+                        managed_revision: decimal_u64(payload, "contextManagedRevision")?,
+                    })
+                } else { None };
                 Self::AdmitAttemptWithDelegation {
                     run_id: field(payload, "runId")?,
                     task_id: field(payload, "taskId")?,
@@ -3285,7 +4566,64 @@ impl ManagedCommand {
                             .get("binding")
                             .ok_or(ManagedError::Invalid("managed admission binding missing"))?,
                     )?,
+                    context_selection,
                 }
+            }
+            "managed_context_advanced" if count == 6 => Self::AdvanceAttemptContextSelection {
+                record: ManagedAttemptContextSelectionRecordV1 {
+                    attempt_id: field(payload, "attemptId")?,
+                    request_sequence: decimal_u64(payload, "requestSequence")?,
+                    request_id: field(payload, "requestID")?,
+                    selection: payload.get("contextSelection").cloned()
+                        .ok_or(ManagedError::Invalid("advanced ContextSelection missing"))?,
+                    selection_digest: required_blake3(payload, "contextSelectionDigest")?,
+                    managed_revision: decimal_u64(payload, "managedRevision")?,
+                },
+            },
+            "managed_provider_request_prepared" | "managed_provider_request_dispatching" | "managed_provider_request_settled" | "managed_provider_request_unknown" if count == 25 || count == 26 || count == 27 => {
+                let state = match kind {
+                    "managed_provider_request_prepared" => "PREPARED",
+                    "managed_provider_request_dispatching" => "DISPATCHING",
+                    "managed_provider_request_settled" => "SETTLED",
+                    _ => "UNKNOWN",
+                };
+                let optional = |key: &str| -> Result<Option<String>, ManagedError> {
+                    match payload.get(key) {
+                        None | Some(Value::Null) => Ok(None),
+                        Some(Value::String(value)) => Ok(Some(value.clone())),
+                    _ => Err(ManagedError::Invalid("provider request optional field is invalid")),
+                    }
+                };
+                Self::SetManagedProviderRequest { record: ManagedProviderRequestRecordV1 {
+                    attempt_id: field(payload, "attemptId")?,
+                    request_sequence: decimal_u64(payload, "requestSequence")?,
+                    request_id: field(payload, "requestID")?,
+                    context_selection_digest: required_blake3(payload, "contextSelectionDigest")?,
+                    provider_id: field(payload, "providerID")?, model_id: field(payload, "modelID")?,
+                    harness_id: field(payload, "harnessID")?, route_id: field(payload, "routeID")?,
+                    endpoint_revision: required_blake3(payload, "endpointRevision")?,
+                    credential_lease_ref: optional("credentialLeaseRef")?,
+                    guard_challenge_id: field(payload, "guardChallengeID")?,
+                    guard_effect_id: field(payload, "guardEffectID")?,
+                    prepared_attempt_scope_digest: optional_string(payload, "preparedAttemptScopeDigest")?,
+                    capability_lease_digest: optional_string(payload, "capabilityLeaseDigest")?,
+                    authorization_binding_digest: optional_string(payload, "authorizationBindingDigest")?,
+                    request_digest: required_blake3(payload, "requestDigest")?,
+                    transport_request_digest: required_blake3(payload, "transportRequestDigest")?,
+                    operation_digest: {
+                        let digest = field(payload, "operationDigest")?;
+                        if !crate::guard::is_sha256_digest(&digest) {
+                            return Err(ManagedError::Invalid("provider SecretBroker operation digest is not canonical SHA-256"));
+                        }
+                        digest
+                    },
+                    provider_request_id: field(payload, "providerRequestID")?,
+                    step_finish_index: optional_u64(payload, "stepFinishIndex")?,
+                    prepare_digest: required_blake3(payload, "prepareDigest")?, dispatch_digest: optional("dispatchDigest")?,
+                    assistant_entry_id: optional("assistantEntryID")?, response_digest: optional("responseDigest")?,
+                    usage_digest: optional("usageDigest")?, unknown_reason_code: optional("unknownReasonCode")?,
+                    state: state.to_owned(), managed_revision: decimal_u64(payload, "managedRevision")?,
+                }}
             }
             "attempt_workspace_bound" if count == 2 => Self::BindAttemptWorkspaceRevision {
                 attempt_id: field(payload, "attemptId")?,
@@ -3341,7 +4679,7 @@ impl ManagedCommand {
                     delivery_id: field(payload, "deliveryID")?,
                 },
             },
-            "managed_dispatch_quiesced" if count == 16 => Self::DispatchQuiesced {
+            "managed_dispatch_quiesced" if count == 19 => Self::DispatchQuiesced {
                 proof: ManagedDispatchQuiescenceProofV1 {
                     goal_id: field(payload, "goalId")?,
                     run_id: field(payload, "runId")?,
@@ -3358,6 +4696,19 @@ impl ManagedCommand {
                     child_session_sequence: decimal_u64(payload, "childSessionSequence")?,
                     child_session_event_digest: required_blake3(payload, "childSessionEventDigest")?,
                     child_session_state_digest: required_blake3(payload, "childSessionStateDigest")?,
+                    child_session_outcome_kind: {
+                        let outcome = field(payload, "childSessionOutcomeKind")?;
+                        if !matches!(outcome.as_str(), "assistant_completed" | "assistant_error" | "tool_error") {
+                            return Err(ManagedError::Invalid("dispatch quiescence outcome kind is invalid"));
+                        }
+                        outcome
+                    },
+                    child_session_output_digest: {
+                        let digest = required_string(payload, "childSessionOutputDigest")?;
+                        managed_digest(&digest)?;
+                        digest
+                    },
+                    child_session_output_bytes: decimal_u64(payload, "childSessionOutputBytes")?,
                     delivery_id: field(payload, "deliveryID")?,
                 },
             },
@@ -3410,7 +4761,10 @@ impl ManagedCommand {
                 location_id: field(payload, "locationId")?,
                 session_id: field(payload, "sessionId")?,
             },
-            "attempt_verifier_intent_bound" if count == 21 => Self::BindAttemptVerifierIntent {
+            "attempt_effect_wave_bound" if count == 11 => Self::BindAttemptEffectWave {
+                wave: managed_effect_wave_decode(payload)?,
+            },
+            "attempt_verifier_intent_bound" if count == 21 || count == 22 => Self::BindAttemptVerifierIntent {
                 intent: ManagedAttemptVerifierIntentV1 {
                     goal_id: field(payload, "goalId")?,
                     run_id: field(payload, "runId")?,
@@ -3430,6 +4784,7 @@ impl ManagedCommand {
                     criterion_id: field(payload, "criterionId")?,
                     test_identity: field(payload, "testIdentity")?,
                     arguments_digest: field(payload, "argumentsDigest")?,
+                    attempt_scope_digest: if count == 22 { Some(field(payload, "attemptScopeDigest")?) } else { None },
                     source_workspace_revision: field(payload, "sourceWorkspaceRevision")?,
                     max_duration_ms: decimal_u64(payload, "maxDurationMs")?,
                     max_output_bytes: decimal_u64(payload, "maxOutputBytes")?,
@@ -3508,6 +4863,14 @@ impl ManagedCommand {
                 verifier_id: field(payload, "verifierId")?,
                 receipt_basis_digest: field(payload, "receiptBasisDigest")?,
             },
+            "task_verification_started" if count == 6 => Self::BeginTaskVerification {
+                run_id: field(payload, "runId")?,
+                task_id: field(payload, "taskId")?,
+                attempt_id: field(payload, "attemptId")?,
+                source_revision: field(payload, "sourceRevision")?,
+                verifier_id: field(payload, "verifierId")?,
+                receipt_basis_digest: required_blake3(payload, "receiptBasisDigest")?,
+            },
             "session_link_attached" if count == 2 => Self::AttachSessionLink {
                 run_id: field(payload, "runId")?,
                 link: decode_session_link(
@@ -3573,7 +4936,7 @@ fn effect_outcome_name(outcome: AttemptEffectOutcomeV1) -> &'static str {
 }
 
 fn verifier_intent_value(intent: &ManagedAttemptVerifierIntentV1) -> Value {
-    json!({
+    let mut value = json!({
         "goalId": intent.goal_id,
         "runId": intent.run_id,
         "taskId": intent.task_id,
@@ -3595,7 +4958,9 @@ fn verifier_intent_value(intent: &ManagedAttemptVerifierIntentV1) -> Value {
         "sourceWorkspaceRevision": intent.source_workspace_revision,
         "maxDurationMs": intent.max_duration_ms.to_string(),
         "maxOutputBytes": intent.max_output_bytes.to_string(),
-    })
+    });
+    if let Some(scope) = &intent.attempt_scope_digest { value["attemptScopeDigest"] = json!(scope); }
+    value
 }
 
 fn effect_receipt_proof_value(proof: &ManagedAttemptEffectReceiptProofV1) -> Value {
@@ -3617,6 +4982,104 @@ fn effect_receipt_proof_value(proof: &ManagedAttemptEffectReceiptProofV1) -> Val
         "beforeWorkspaceRevision": proof.before_workspace_revision,
         "afterWorkspaceRevision": proof.after_workspace_revision,
     })
+}
+
+fn managed_effect_wave_preimage(wave: &ManagedAttemptEffectWaveV1) -> serde_json::Value {
+    let mut value = json!({
+        "schemaVersion": wave.schema_version,
+        "runID": wave.run_id,
+        "taskID": wave.task_id,
+        "attemptID": wave.attempt_id,
+        "batchID": wave.batch_id,
+        "waveIndex": wave.wave_index,
+        "locationID": wave.location_id,
+        "sessionID": wave.session_id,
+        "sourceScopeDigest": wave.source_scope_digest,
+        "edges": wave.edges.iter().map(|edge| {
+            let mut value = json!({
+                "callIndex": edge.call_index,
+                "callID": edge.call_id,
+                "effectID": edge.effect_id,
+                "capabilityID": edge.capability_id,
+                "argumentsDigest": edge.arguments_digest,
+                "intentDigest": edge.intent_digest,
+            });
+            if let Some(scope) = &edge.attempt_scope_digest { value["attemptScopeDigest"] = json!(scope); }
+            value
+        }).collect::<Vec<_>>(),
+    });
+    if wave.schema_version == 2 {
+        value["schemaVersion"] = json!(2);
+    }
+    value
+}
+
+pub(crate) fn managed_effect_wave_digest(wave: &ManagedAttemptEffectWaveV1) -> Result<String, ManagedError> {
+    let value = crate::protocol::Value::from_json_value(&managed_effect_wave_preimage(wave))
+        .ok_or(ManagedError::Invalid("managed effect wave preimage is invalid"))?;
+    let bytes = crate::messagepack::encode(&value, crate::messagepack::FRAME_LIMITS)
+        .map_err(|_| ManagedError::Invalid("managed effect wave preimage is oversized"))?;
+    let domain: &[u8] = match wave.schema_version {
+        1 => b"horizoncode.managed-attempt-effect-wave.v1\0",
+        2 => b"horizoncode.managed-attempt-effect-wave.v2\0",
+        _ => return Err(ManagedError::Invalid("managed effect wave schema version is unsupported")),
+    };
+    let mut preimage = domain.to_vec();
+    preimage.extend_from_slice(&bytes);
+    Ok(format!("blake3:{}", blake3::hash(&preimage).to_hex()))
+}
+
+fn managed_effect_wave_value(wave: &ManagedAttemptEffectWaveV1) -> Value {
+    let mut value = managed_effect_wave_preimage(wave);
+    value["waveDigest"] = serde_json::Value::String(wave.wave_digest.clone());
+    value
+}
+
+fn managed_effect_wave_decode(payload: &Value) -> Result<ManagedAttemptEffectWaveV1, ManagedError> {
+    let schema_version = required_u64(payload, "schemaVersion")?;
+    if !matches!(schema_version, 1 | 2) { return Err(ManagedError::Invalid("managed effect wave schema version is unsupported")); }
+    let wave_index = required_u64(payload, "waveIndex")?;
+    let edges = payload.get("edges").and_then(Value::as_array)
+        .ok_or(ManagedError::Invalid("managed effect wave edges are missing"))?
+        .iter().map(|value| {
+            let fields = value.as_object().ok_or(ManagedError::Invalid("managed effect wave edge is invalid"))?;
+            let expected_fields = if schema_version == 1 { 6 } else { 7 };
+            if fields.len() != expected_fields { return Err(ManagedError::Invalid("managed effect wave edge fields are invalid")); }
+            let call_index = fields.get("callIndex").and_then(Value::as_u64)
+                .ok_or(ManagedError::Invalid("managed effect wave call index is invalid"))?;
+            Ok(ManagedAttemptEffectWaveEdgeV1 {
+                call_index: u8::try_from(call_index).map_err(|_| ManagedError::Invalid("managed effect wave call index is invalid"))?,
+                call_id: required_string(value, "callID")?,
+                effect_id: required_string(value, "effectID")?,
+                capability_id: required_string(value, "capabilityID")?,
+                arguments_digest: required_string(value, "argumentsDigest")?,
+                intent_digest: required_string(value, "intentDigest")?,
+                attempt_scope_digest: if schema_version == 2 { Some(required_blake3(value, "attemptScopeDigest")?) } else { None },
+            })
+        }).collect::<Result<Vec<_>, ManagedError>>()?;
+    let mut wave = ManagedAttemptEffectWaveV1 {
+        schema_version: u8::try_from(schema_version).map_err(|_| ManagedError::Invalid("managed effect wave schema version is invalid"))?,
+        run_id: required_string(payload, "runID")?,
+        task_id: required_string(payload, "taskID")?,
+        attempt_id: required_string(payload, "attemptID")?,
+        batch_id: required_string(payload, "batchID")?,
+        wave_index: u8::try_from(wave_index).map_err(|_| ManagedError::Invalid("managed effect wave index is invalid"))?,
+        location_id: required_string(payload, "locationID")?,
+        session_id: required_string(payload, "sessionID")?,
+        source_scope_digest: required_blake3(payload, "sourceScopeDigest")?,
+        edges,
+        wave_digest: required_string(payload, "waveDigest")?,
+        // The append revision is supplied by the authenticated OwnerLog envelope,
+        // not by this event payload.
+        bound_revision: 0,
+    };
+    if managed_effect_wave_digest(&wave)? != wave.wave_digest {
+        return Err(ManagedError::Invalid("managed effect wave digest mismatch"));
+    }
+    // Keep the decoded object canonical: the digest function intentionally excludes
+    // storage revision, which is checked against the append cursor by the reducer.
+    wave.wave_digest = managed_effect_wave_digest(&wave)?;
+    Ok(wave)
 }
 
 /// Bounded Attempt-to-effect edges. The P2 single Attempt owns one bounded
@@ -3744,12 +5207,13 @@ fn restart_recoverable_live_verification(
     run: &Run,
     attempts: &BTreeMap<String, AttemptRecord>,
 ) -> bool {
-    if run.tasks.len() != 1 {
-        return false;
-    }
-    let Some((task_id, task)) = run.tasks.iter().next() else {
+    let mut active_tasks = run.tasks.iter().filter(|(_, task)| task.active_attempt.is_some());
+    let Some((task_id, task)) = active_tasks.next() else {
         return false;
     };
+    if active_tasks.next().is_some() || run.tasks.is_empty() {
+        return false;
+    }
     if task.unknown_effect
         || task.verified_revision.is_some()
         || task.verification_evidence.is_some()
@@ -3774,6 +5238,13 @@ fn restart_recoverable_live_verification(
         || run.verifier_id.is_none()
         || run.verification_evidence.is_some()
         || !run.criterion_evidence.is_empty()
+        || run.tasks.iter().any(|(other_task_id, other_task)| {
+            other_task_id != task_id
+                && (other_task.unknown_effect
+                    || other_task.active_attempt.is_some()
+                    || other_task.pending_verification_attempt.is_some()
+                    || other_task.verified_revision.is_some() != other_task.verification_evidence.is_some())
+        })
     {
         return false;
     }
@@ -3909,9 +5380,10 @@ pub fn final_revision_digest(
     format!("blake3:{}", blake3::hash(&preimage).to_hex())
 }
 
-/// Canonical receipt basis for the Attempt currently selected by each Task in a
-/// Run. V1 verifies while its single coding Attempt remains EXECUTING; historical
-/// settled-attempt runs remain readable for OwnerLog replay compatibility.
+/// Canonical receipt basis across a Run's DAG Tasks. During a Task-local verifier
+/// cycle it includes the current live/pending Attempt, exact earlier PASS proofs,
+/// and explicit not-started Task markers. Historical settled-attempt runs remain
+/// readable for OwnerLog replay compatibility.
 pub fn successful_task_receipt_basis_digest(
     run_id: &str,
     run: &Run,
@@ -3923,13 +5395,23 @@ pub fn successful_task_receipt_basis_digest(
         ));
     }
 
-    let has_live_attempt = run.tasks.values().any(|task| task.active_attempt.is_some());
-    if has_live_attempt && run.tasks.values().filter(|task| task.active_attempt.is_some()).count() != 1 {
-        return Err(ManagedError::Conflict(
-            "live verification requires exactly one active coding Attempt",
-        ));
+    let active_count = run.tasks.values().filter(|task| task.active_attempt.is_some()).count();
+    let has_live_attempt = active_count != 0;
+    let mut live_locations = BTreeSet::new();
+    for task in run.tasks.values().filter(|task| task.active_attempt.is_some()) {
+        let attempt_id = task.active_attempt.as_deref().expect("active Attempt checked");
+        let attempt = attempts.get(attempt_id).ok_or(ManagedError::Conflict(
+            "live verification Attempt is missing",
+        ))?;
+        if !live_locations.insert(attempt.location_id.as_str()) {
+            return Err(ManagedError::Conflict(
+                "concurrent managed Attempts cannot share a mutable Location",
+            ));
+        }
     }
-    let mut preimage = if has_live_attempt {
+    let mut preimage = if has_live_attempt && active_count > 1 {
+        b"horizoncode.managed-live-verification-receipt-basis.v2\0".to_vec()
+    } else if has_live_attempt {
         b"horizoncode.managed-live-verification-receipt-basis.v1\0".to_vec()
     } else {
         b"horizoncode.managed-verification-receipt-basis.v1\0".to_vec()
@@ -3946,10 +5428,8 @@ pub fn successful_task_receipt_basis_digest(
                 "verification receipt basis contains an UNKNOWN Task",
             ));
         }
-        if has_live_attempt {
-            let attempt_id = task.active_attempt.as_deref().ok_or(ManagedError::Conflict(
-                "live verification requires exactly one active Task Attempt",
-            ))?;
+        if task.active_attempt.is_some() {
+            let attempt_id = task.active_attempt.as_deref().expect("active Attempt checked");
             if task.pending_verification_attempt.as_deref().is_some_and(|pending| pending != attempt_id)
                 || task.verified_revision.is_some()
             {
@@ -3968,6 +5448,9 @@ pub fn successful_task_receipt_basis_digest(
             let head = live_coding_workspace_head(attempt)?;
             extend(task_id);
             extend(attempt_id);
+            if active_count > 1 {
+                extend(&attempt.location_id);
+            }
             extend(&head);
             for effect in &attempt.effects {
                 let receipt = attempt.effect_receipts.get(&effect.effect_id).expect("live coding chain validated");
@@ -3980,10 +5463,40 @@ pub fn successful_task_receipt_basis_digest(
             }
             continue;
         }
-        if task.active_attempt.is_some() {
-            return Err(ManagedError::Conflict(
-                "verification receipt basis mixes active and settled Tasks",
-            ));
+        if task.pending_verification_attempt.is_none()
+            && task.verification_evidence.is_none()
+            && task.verified_revision.is_none()
+        {
+            extend(task_id);
+            extend("not_started");
+            continue;
+        }
+        if has_live_attempt {
+            if task.unknown_effect || task.pending_verification_attempt.is_some() {
+                return Err(ManagedError::Conflict("live verification has an unresolved non-active Task"));
+            }
+            if let Some(proof) = task.verification_evidence.as_ref() {
+                let attempt = attempts.get(&proof.attempt_id).ok_or(ManagedError::Conflict(
+                    "prior verified Task Attempt is missing",
+                ))?;
+                if attempt.run_id != run_id || attempt.task_id != *task_id
+                    || attempt.phase != AttemptPhase::Succeeded || attempt.receipt_digest.is_none()
+                    || task.verified_revision.as_deref() != Some(proof.source_revision.as_str())
+                {
+                    return Err(ManagedError::Conflict("prior verified Task receipt is stale"));
+                }
+                extend(task_id);
+                extend(&proof.attempt_id);
+                extend(attempt.receipt_digest.as_deref().expect("checked receipt"));
+                extend(&proof.evidence_digest);
+            } else {
+                if task.verified_revision.is_some() {
+                    return Err(ManagedError::Conflict("Task verification evidence is incomplete"));
+                }
+                extend(task_id);
+                extend("not_started");
+            }
+            continue;
         }
         let evidence_attempt_id = task
             .verification_evidence
@@ -4633,6 +6146,7 @@ mod managed_verification_evidence_tests {
                 criterion_ids: vec!["tests-pass".into()],
                 required_capabilities: vec!["verifier.run".into()],
                 agent_profile_revision: None,
+                profile_token_budget: None,
                 profile_owner_binding_digest: None,
                 ready: false,
                 active_attempt: Some("attempt-verification".into()),
@@ -4669,6 +6183,7 @@ mod managed_verification_evidence_tests {
                 session_id: "session-verification".into(),
                 bound_revision: 1,
             }],
+            effect_waves: vec![],
             effect_receipts: BTreeMap::new(),
             verifier_intents: BTreeMap::from([("effect-verifier".into(), ManagedAttemptVerifierIntentV1 {
                 goal_id: "goal-verification".into(),
@@ -4689,6 +6204,7 @@ mod managed_verification_evidence_tests {
                 criterion_id: "tests-pass".into(),
                 test_identity: "suite-tests".into(),
                 arguments_digest: digest('e'),
+                attempt_scope_digest: None,
                 source_workspace_revision: workspace_revision,
                 max_duration_ms: 1_000,
                 max_output_bytes: 1_024,
@@ -4851,6 +6367,7 @@ mod managed_verification_evidence_tests {
                         criterion_ids: vec!["tests-pass".into()],
                         required_capabilities: Vec::new(),
                         agent_profile_revision: None,
+                        profile_token_budget: None,
                         profile_owner_binding_digest: None,
                         ready: false,
                         active_attempt: None,
@@ -4891,6 +6408,7 @@ mod managed_verification_evidence_tests {
                     session_id: session_id.into(),
                     bound_revision: 1,
                 }],
+                effect_waves: vec![],
                 effect_receipts: BTreeMap::new(),
                 verifier_intents: BTreeMap::new(),
                 verifier_evidence: None,
@@ -4990,6 +6508,9 @@ mod managed_verification_evidence_tests {
             profile_id: "profile-verification".into(),
             profile_revision: 1,
             profile_digest: digest('2'),
+            provider_id: "provider-test".into(),
+            model_id: "model-test".into(),
+            profile_token_budget: None,
             criteria_ids: vec!["tests-pass".into()],
             workspace_lease_id: "workspace-lease".into(),
             source_revision: digest('a'),
@@ -5062,6 +6583,7 @@ mod managed_verification_evidence_tests {
                     criterion_id: "tests-pass".into(),
                     test_identity: "tests".into(),
                     arguments_digest: digest('7'),
+                    attempt_scope_digest: None,
                     source_workspace_revision: digest('b'),
                     max_duration_ms: 1_000,
                     max_output_bytes: 1_024,
@@ -5291,6 +6813,7 @@ mod managed_verification_evidence_tests {
                         criterion_ids: vec!["tests-pass".into()],
                         required_capabilities: vec![],
                         agent_profile_revision: None,
+                        profile_token_budget: None,
                         profile_owner_binding_digest: None,
                         ready: true,
                         active_attempt: None,
@@ -5377,6 +6900,7 @@ mod managed_verification_evidence_tests {
                     criterion_ids: vec!["tests-pass".into()],
                     required_capabilities: vec![],
                     agent_profile_revision: None,
+                    profile_token_budget: None,
                     profile_owner_binding_digest: None,
                     ready: true,
                     active_attempt: None,
@@ -5585,6 +7109,7 @@ mod managed_delegation_admission_tests {
             capability_scope: snapshot.specs["spec-1"].content.capability_scope.clone(),
             required_capabilities: task.required_capabilities.clone(),
             profile_revision: task.agent_profile_revision.clone(),
+            profile_token_budget: task.profile_token_budget,
             profile_owner_binding_digest: task.profile_owner_binding_digest.clone(),
         };
         let profile = task.agent_profile_revision.as_ref().unwrap();
@@ -5615,12 +7140,35 @@ mod managed_delegation_admission_tests {
                 profile_source: "builtin".into(),
                 permission_ceiling_digest: digest('c'),
                 capability_ceiling: vec![],
+                provider_id: "provider-test".into(),
+                model_id: "model-test".into(),
+                token_budget: Some(64_000),
                 owner_binding,
             },
             bounded_context,
             durable_lease,
             proof,
             parent_execution,
+            ManagedWorktreeAdmissionProjectionV1 {
+                worktree_id: "worktree-1".into(),
+                base_revision: digest('d'),
+                pool_revision: 7,
+                root_location_id: "location-1".into(),
+                p8_workspace_binding: "workspace-1".into(),
+                location_id: "worktree-location-1".into(),
+                workspace_id: "worktree-workspace-1".into(),
+                workspace_ref: "workspace-1".into(),
+                canonical_root: "/tmp/horizoncode-test-worktree".into(),
+                workspace_revision: digest('d'),
+            },
+            crate::protocol::ManagedProviderRouteBindingV1 {
+                provider_id: "provider-test".into(),
+                model_id: "model-test".into(),
+                harness_id: "harness-test".into(),
+                route_id: "llm_test".into(),
+                endpoint_revision: digest('e'),
+                credential_lease_ref: Some("credential-ref-1".into()),
+            },
         )
     }
 
@@ -5699,6 +7247,7 @@ mod managed_delegation_admission_tests {
                             revision: 7,
                             definition_digest: digest('a'),
                         }),
+                        profile_token_budget: Some(64_000),
                         profile_owner_binding_digest: Some(ProfileOwnerBindingV1::Builtin.digest()),
                         ready: true,
                         active_attempt: Some("attempt-1".into()),
@@ -5734,6 +7283,7 @@ mod managed_delegation_admission_tests {
                 workspace_revision: Some(digest('b')),
                 delegation_binding: None,
                 effects: vec![],
+                effect_waves: vec![],
                 effect_receipts: BTreeMap::new(),
                 verifier_intents: BTreeMap::new(),
                 verifier_evidence: None,
@@ -6082,6 +7632,7 @@ mod managed_delegation_admission_tests {
             capability_scope: snapshot.specs["spec-1"].content.capability_scope.clone(),
             required_capabilities: snapshot.runs["run-1"].tasks["task-1"].required_capabilities.clone(),
             profile_revision: snapshot.runs["run-1"].tasks["task-1"].agent_profile_revision.clone(),
+            profile_token_budget: snapshot.runs["run-1"].tasks["task-1"].profile_token_budget,
             profile_owner_binding_digest: snapshot.runs["run-1"].tasks["task-1"].profile_owner_binding_digest.clone(),
         };
         let owner_digest = owner_a.digest();
@@ -6194,6 +7745,14 @@ fn canonical_capability_ids() -> &'static BTreeSet<String> {
     })
 }
 
+/// True only when `capability_id` is an exact canonical entry in the tracked
+/// HorizonCode capability registry. Runtime action adapters use this check in
+/// addition to their compile-time policy discriminator so a Rust capability
+/// cannot be activated before its public registry contract exists.
+pub(crate) fn canonical_capability_id_is_registered(capability_id: &str) -> bool {
+    canonical_capability_ids().contains(capability_id)
+}
+
 pub(crate) fn validate_canonical_capability_ids(values: &[String]) -> Result<(), ManagedError> {
     validate_capability_ids(values, "capability IDs must be sorted and unique")
 }
@@ -6249,32 +7808,189 @@ fn validate_session_link(link: &SessionLink) -> Result<(), ManagedError> {
 }
 
 impl ManagedSnapshot {
-    /// Returns the first deterministic, independently unblocked Task candidate.
-    ///
-    /// This read-only selection does not admit an Attempt, reserve resources, or
-    /// authorize dispatch. Callers must still submit `AdmitAttempt` against the
-    /// current durable revision; this P2 implementation intentionally exposes at
-    /// most one candidate and waits for independent verification before advancing.
+    fn apply_attempt_usage(&mut self, proof: &ManagedAttemptUsageProofV1) -> Result<(), ManagedError> {
+        if proof.goal_id != self.owner_goal_id || proof.expected_managed_revision != self.revision {
+            return Err(ManagedError::Conflict("usage proof owner or revision is stale"));
+        }
+        id(&proof.goal_id)?;
+        id(&proof.run_id)?;
+        id(&proof.task_id)?;
+        id(&proof.attempt_id)?;
+        id(&proof.assistant_message_id)?;
+        blake3_digest(&proof.delegation_binding_digest)?;
+        blake3_digest(&proof.usage_digest)?;
+        if proof.operation_key != managed_usage_operation_key(&proof.attempt_id, &proof.assistant_message_id, proof.step_finish_index)
+            || proof.usage_digest != managed_usage_digest(proof)
+            || canonical_json(&proof.usage_provenance).len() > MAX_MANAGED_USAGE_PROVENANCE_BYTES
+        {
+            return Err(ManagedError::Conflict("managed usage digest or operation key mismatch"));
+        }
+        let attempt = self.attempts.get(&proof.attempt_id)
+            .ok_or(ManagedError::Conflict("usage Attempt is missing"))?;
+        let binding = attempt.delegation_binding.as_ref()
+            .ok_or(ManagedError::Conflict("usage Attempt has no immutable delegation binding"))?;
+        let binding_digest = binding.digest().map_err(|_| ManagedError::Invalid("usage binding digest failed"))?;
+        let run = self.runs.get(&proof.run_id).ok_or(ManagedError::Conflict("usage Run is missing"))?;
+        let task = run.tasks.get(&proof.task_id).ok_or(ManagedError::Conflict("usage Task is missing"))?;
+        let spec = self.specs.get(&run.spec_id).ok_or(ManagedError::Conflict("usage accepted SpecVersion is missing"))?;
+        if attempt.run_id != proof.run_id || attempt.task_id != proof.task_id
+            || attempt.owner_epoch != proof.owner_epoch || attempt.phase != AttemptPhase::Executing
+            || binding.owner_epoch != proof.owner_epoch || binding.digest().ok().as_deref() != Some(proof.delegation_binding_digest.as_str())
+            || binding_digest != proof.delegation_binding_digest
+            || binding.run_id != proof.run_id || binding.task_id != proof.task_id || binding.attempt_id != proof.attempt_id
+            || task.active_attempt.as_deref() != Some(proof.attempt_id.as_str())
+            // Cancellation fences all new child dispatch/effects immediately,
+            // but an already in-flight provider response may still reach its
+            // finish callback. Preserve that authoritative usage receipt while
+            // the Run is reconciling; this path grants no execution authority.
+            || !matches!(run.phase, RunPhase::Running | RunPhase::Cancelling)
+            || !spec.accepted || spec.digest != binding.accepted_spec_digest
+        {
+            return Err(ManagedError::Conflict("usage proof differs from the live managed Attempt"));
+        }
+        if self.attempt_usage_receipts.contains_key(&proof.operation_key) {
+            return Err(ManagedError::Conflict("usage operation key was reused"));
+        }
+        let (token_increment, cost_increment, unknown_tokens, estimated_tokens, unknown_cost, estimated_cost, cost_status, metric_statuses) =
+            validated_usage_provenance(&proof.usage_provenance, binding)?;
+        let previous = self.attempt_usage.get(&proof.attempt_id).cloned().unwrap_or_default();
+        if previous.stopped { return Err(ManagedError::Conflict("managed Attempt is stopped at its usage ceiling")); }
+        let next_revision = self.revision.checked_add(1).ok_or(ManagedError::Invalid("managed revision overflow"))?;
+        let token_ceiling = match (spec.content.budget.max_tokens, binding.profile_token_budget) {
+            (Some(spec), Some(profile)) => Some(spec.min(profile)),
+            (Some(spec), None) => Some(spec),
+            (None, Some(profile)) => Some(profile),
+            (None, None) => None,
+        }.ok_or(ManagedError::Conflict("managed Attempt has no authoritative token ceiling"))?;
+        let cost_ceiling = spec.content.budget.max_cost_micros;
+        let ceiling = json!({
+            "attemptID": proof.attempt_id,
+            "specID": run.spec_id,
+            "specDigest": spec.digest,
+            "profileID": binding.profile_id,
+            "profileRevision": binding.profile_revision.to_string(),
+            "profileDigest": binding.profile_digest,
+            "specMaxTokens": spec.content.budget.max_tokens.map(|n| n.to_string()),
+            "profileTokenBudget": binding.profile_token_budget.map(|n| n.to_string()),
+            "effectiveMaxTokens": token_ceiling.to_string(),
+            "maxCostMicros": cost_ceiling.map(|n| n.to_string()),
+        });
+        let mut ceiling_preimage = b"horizoncode.managed-usage-ceiling.v1\0".to_vec();
+        ceiling_preimage.extend_from_slice(canonical_json(&ceiling).as_bytes());
+        let ceiling_digest = format!("blake3:{}", blake3::hash(&ceiling_preimage).to_hex());
+        let token_total = previous.token_total.checked_add(token_increment)
+            .ok_or(ManagedError::Invalid("managed token total exceeds u64"))?;
+        let cost_micros_total = previous.cost_micros_total.checked_add(cost_increment.unwrap_or(0))
+            .ok_or(ManagedError::Invalid("managed cost total exceeds u64 micros"))?;
+        let token_uncertain = unknown_tokens || estimated_tokens;
+        let cost_uncertain = cost_ceiling.is_some() && (unknown_cost || estimated_cost);
+        let stop_reason = if token_uncertain || cost_uncertain {
+            "USAGE_UNCERTAIN"
+        } else if token_total >= token_ceiling {
+            "TOKEN_CEILING"
+        } else if cost_ceiling.is_some_and(|ceiling| cost_micros_total >= ceiling) {
+            "COST_CEILING"
+        } else { "NONE" };
+        let any_unknown = unknown_tokens || unknown_cost || previous.unknown_tokens || previous.unknown_cost;
+        let any_estimated = estimated_tokens || estimated_cost || previous.estimated_tokens || previous.estimated_cost;
+        let usage_state = if any_unknown { "UNKNOWN" } else if any_estimated { "ESTIMATED" } else { "KNOWN" };
+        let remaining_tokens = if stop_reason != "NONE" || token_uncertain {
+            0
+        } else {
+            token_ceiling.saturating_sub(token_total)
+        };
+        let receipt_base = json!({
+            "goalID": proof.goal_id,
+            "attemptID": proof.attempt_id,
+            "operationKey": proof.operation_key,
+            "usageDigest": proof.usage_digest,
+            "managedRevision": next_revision.to_string(),
+            "accountingCursor": next_revision.to_string(),
+            "tokenTotal": token_total.to_string(),
+            "effectiveMaxTokens": token_ceiling.to_string(),
+            "remainingTokens": remaining_tokens.to_string(),
+            "costMicrosTotal": cost_micros_total.to_string(),
+            "providerID": binding.provider_id,
+            "modelID": binding.model_id,
+            "operationID": proof.usage_provenance.get("operationID"),
+            "requestID": proof.usage_provenance.get("requestID"),
+            "costStatus": cost_status,
+            "metricStatuses": metric_statuses,
+            "usageState": usage_state,
+            "stopReason": stop_reason,
+            "ceilingDigest": ceiling_digest,
+            "delegationBindingDigest": binding_digest,
+        });
+        let mut receipt_preimage = b"horizoncode.managed-usage-receipt.v1\0".to_vec();
+        receipt_preimage.extend_from_slice(canonical_json(&receipt_base).as_bytes());
+        let receipt_digest = format!("blake3:{}", blake3::hash(&receipt_preimage).to_hex());
+        let receipt = ManagedAttemptUsageReceiptV1 {
+            goal_id: proof.goal_id.clone(), attempt_id: proof.attempt_id.clone(),
+            operation_key: proof.operation_key.clone(), usage_digest: proof.usage_digest.clone(),
+            managed_revision: next_revision, accounting_cursor: next_revision, token_total, cost_micros_total,
+            effective_max_tokens: token_ceiling, remaining_tokens,
+            provider_id: binding.provider_id.clone(), model_id: binding.model_id.clone(),
+            operation_id: proof.usage_provenance.get("operationID").and_then(Value::as_str).map(str::to_owned),
+            request_id: proof.usage_provenance.get("requestID").and_then(Value::as_str).map(str::to_owned),
+            cost_status, metric_statuses, usage_state: usage_state.to_owned(),
+            stop_reason: stop_reason.to_owned(), ceiling_digest: ceiling_digest.clone(), receipt_digest,
+        };
+        self.attempt_usage.insert(proof.attempt_id.clone(), ManagedAttemptUsageLedgerV1 {
+            token_total, cost_micros_total,
+            unknown_tokens: unknown_tokens || previous.unknown_tokens,
+            estimated_tokens: estimated_tokens || previous.estimated_tokens,
+            unknown_cost: unknown_cost || previous.unknown_cost,
+            estimated_cost: estimated_cost || previous.estimated_cost,
+            stopped: stop_reason != "NONE", stop_reason: stop_reason.to_owned(),
+            ceiling_digest, cursor: next_revision,
+        });
+        self.attempt_usage_receipts.insert(proof.operation_key.clone(), receipt);
+        Ok(())
+    }
+
+    /// Returns the first deterministic, independently unblocked Task candidate
+    /// while respecting the accepted worker ceiling. HostKernel must still
+    /// reserve a distinct authenticated worktree target for every admitted Task;
+    /// this reducer selector alone never authorizes shared-workspace writers.
     pub fn next_schedulable_task(&self, run_id: &str) -> Option<String> {
         let run = self.runs.get(run_id)?;
         if run.phase != RunPhase::Running
             || !self.session_links_pinned_at_start.contains(run_id)
-            || run.tasks.values().any(|task| task.unknown_effect || task.pending_verification_attempt.is_some())
+            || run.tasks.values().any(|task| task.unknown_effect)
         {
             return None;
         }
         let spec = self.specs.get(&run.spec_id)?;
+        let active_attempts = run.tasks.values().filter(|task| task.active_attempt.is_some()
+            || task.pending_verification_attempt.is_some() || task.unknown_effect).count();
+        if active_attempts >= usize::from(spec.content.budget.max_workers) {
+            return None;
+        }
+        // A worker ceiling never authorizes two writers to one mutable tree.
+        // Missing/stale Attempt records and duplicate Locations fail closed.
+        let mut active_locations = BTreeSet::new();
+        for (task_id, task) in run.tasks.iter().filter(|(_, task)| task.active_attempt.is_some()
+            || task.pending_verification_attempt.is_some() || task.unknown_effect) {
+            let attempt_id = task.active_attempt.as_deref().or(task.pending_verification_attempt.as_deref())?;
+            let attempt = self.attempts.get(attempt_id)?;
+            if attempt.run_id != run_id || attempt.task_id != task_id.as_str()
+                || !active_locations.insert(attempt.location_id.as_str())
+            {
+                return None;
+            }
+        }
         run.tasks.iter().find_map(|(task_id, task)| {
             let prerequisites_passed = task.dependencies.iter().all(|dependency| {
                 run.tasks
                     .get(dependency)
                     .is_some_and(|prior| prior.verified_revision.is_some())
             });
-            (task.ready
+            ((task.ready || prerequisites_passed)
                 && task.active_attempt.is_none()
                 && task.pending_verification_attempt.is_none()
                 && !task.unknown_effect
                 && task.verified_revision.is_none()
+                && task.profile_token_budget.is_some_and(|budget| budget > 0)
                 && task.attempt_count < spec.content.budget.max_attempts_per_task
                 && prerequisites_passed)
                 .then(|| task_id.clone())
@@ -6283,6 +7999,146 @@ impl ManagedSnapshot {
 
     pub fn attempt_delegation_binding(&self, attempt_id: &str) -> Option<&DelegationBindingV1> {
         self.attempts.get(attempt_id)?.delegation_binding.as_ref()
+    }
+
+    pub(crate) fn attempt_usage_stopped(&self, attempt_id: &str) -> bool {
+        self.attempt_usage.get(attempt_id).is_some_and(|usage| usage.stopped)
+    }
+
+    pub(crate) fn attempt_usage_summary(
+        &self,
+        attempt_id: &str,
+    ) -> Result<Option<ManagedAttemptUsageSummaryV1>, ManagedError> {
+        let Some(ledger) = self.attempt_usage.get(attempt_id) else {
+            if self.attempt_usage_receipts.values().any(|receipt| receipt.attempt_id.as_str() == attempt_id) {
+                return Err(ManagedError::Conflict("managed usage receipts exist without their durable ledger"));
+            }
+            return Ok(None);
+        };
+        let binding = self.attempts.get(attempt_id)
+            .and_then(|attempt| attempt.delegation_binding.as_ref())
+            .ok_or(ManagedError::Conflict("managed usage summary has no immutable Attempt binding"))?;
+        let binding_digest = binding.digest()
+            .map_err(|_| ManagedError::Invalid("managed usage summary binding digest failed"))?;
+        let mut receipts = self.attempt_usage_receipts.values()
+            .filter(|receipt| receipt.attempt_id.as_str() == attempt_id)
+            .collect::<Vec<_>>();
+        receipts.sort_by_key(|receipt| receipt.accounting_cursor);
+        if receipts.is_empty() || receipts.len() > MAX_MANAGED_USAGE_RECEIPTS_PER_ATTEMPT
+            || receipts.last().is_none_or(|receipt| receipt.accounting_cursor != ledger.cursor)
+        {
+            return Err(ManagedError::Conflict("managed usage receipt chain is missing, unbounded, or stale"));
+        }
+        let mut previous_token_total = 0u64;
+        let mut previous_cost_total = 0u64;
+        let mut previous_cursor = 0u64;
+        let mut known_cost_subtotal = 0u64;
+        let mut cost_status: Option<String> = None;
+        let mut metric_statuses = BTreeMap::<String, String>::new();
+        let mut chain = Vec::with_capacity(receipts.len());
+        for receipt in &receipts {
+            if receipt.goal_id != self.owner_goal_id
+                || receipt.attempt_id.as_str() != attempt_id
+                || receipt.accounting_cursor <= previous_cursor
+                || receipt.token_total < previous_token_total
+                || receipt.cost_micros_total < previous_cost_total
+                || receipt.ceiling_digest != ledger.ceiling_digest
+                || receipt.managed_revision != receipt.accounting_cursor
+                || receipt.provider_id != binding.provider_id
+                || receipt.model_id != binding.model_id
+                || blake3_digest(&receipt.usage_digest).is_err()
+                || blake3_digest(&receipt.receipt_digest).is_err()
+                || blake3_digest(&receipt.ceiling_digest).is_err()
+            {
+                return Err(ManagedError::Conflict("managed usage receipt chain contains invalid accounting provenance"));
+            }
+            let receipt_base = json!({
+                "goalID": receipt.goal_id,
+                "attemptID": receipt.attempt_id,
+                "operationKey": receipt.operation_key,
+                "usageDigest": receipt.usage_digest,
+                "managedRevision": receipt.managed_revision.to_string(),
+                "accountingCursor": receipt.accounting_cursor.to_string(),
+                "tokenTotal": receipt.token_total.to_string(),
+                "effectiveMaxTokens": receipt.effective_max_tokens.to_string(),
+                "remainingTokens": receipt.remaining_tokens.to_string(),
+                "costMicrosTotal": receipt.cost_micros_total.to_string(),
+                "providerID": receipt.provider_id,
+                "modelID": receipt.model_id,
+                "operationID": receipt.operation_id,
+                "requestID": receipt.request_id,
+                "costStatus": receipt.cost_status,
+                "metricStatuses": receipt.metric_statuses,
+                "usageState": receipt.usage_state,
+                "stopReason": receipt.stop_reason,
+                "ceilingDigest": receipt.ceiling_digest,
+                "delegationBindingDigest": binding_digest,
+            });
+            let mut receipt_preimage = b"horizoncode.managed-usage-receipt.v1\0".to_vec();
+            receipt_preimage.extend_from_slice(canonical_json(&receipt_base).as_bytes());
+            let expected_receipt_digest = format!("blake3:{}", blake3::hash(&receipt_preimage).to_hex());
+            if receipt.receipt_digest != expected_receipt_digest {
+                return Err(ManagedError::Conflict("managed usage receipt digest does not match its accounting fields"));
+            }
+            let expected_remaining = if receipt.usage_state == "UNKNOWN" || receipt.usage_state == "ESTIMATED"
+                || receipt.stop_reason != "NONE" {
+                0
+            } else {
+                receipt.effective_max_tokens.saturating_sub(receipt.token_total)
+            };
+            if receipt.effective_max_tokens == 0 || receipt.remaining_tokens != expected_remaining {
+                return Err(ManagedError::Conflict("managed usage receipt token remainder is inconsistent"));
+            }
+            let cost_increment = receipt.cost_micros_total - previous_cost_total;
+            if matches!(receipt.cost_status.as_str(), "provider-reported" | "measured") {
+                known_cost_subtotal = known_cost_subtotal.checked_add(cost_increment)
+                    .ok_or(ManagedError::Invalid("managed known cost subtotal exceeds u64 micros"))?;
+            }
+            cost_status = Some(aggregate_usage_status(cost_status.as_deref(), &receipt.cost_status));
+            for (metric, status) in &receipt.metric_statuses {
+                let next = aggregate_usage_status(metric_statuses.get(metric).map(String::as_str), status);
+                metric_statuses.insert(metric.clone(), next);
+            }
+            chain.push(json!({
+                "accountingCursor": receipt.accounting_cursor.to_string(),
+                "usageDigest": receipt.usage_digest,
+                "receiptDigest": receipt.receipt_digest,
+            }));
+            previous_token_total = receipt.token_total;
+            previous_cost_total = receipt.cost_micros_total;
+            previous_cursor = receipt.accounting_cursor;
+        }
+        if previous_token_total != ledger.token_total || previous_cost_total != ledger.cost_micros_total {
+            return Err(ManagedError::Conflict("managed usage receipt totals differ from durable ledger"));
+        }
+        let token_remainder_status = if ledger.unknown_tokens { "UNKNOWN" }
+            else if ledger.estimated_tokens { "ESTIMATED" } else { "KNOWN" };
+        let cost_remainder_status = if ledger.unknown_cost { "UNKNOWN" }
+            else if ledger.estimated_cost { "ESTIMATED" } else { "KNOWN" };
+        let usage_state = if token_remainder_status == "UNKNOWN" || cost_remainder_status == "UNKNOWN"
+            || metric_statuses.values().any(|status| status == "unknown") { "UNKNOWN" }
+            else if token_remainder_status == "ESTIMATED" || cost_remainder_status == "ESTIMATED"
+                || metric_statuses.values().any(|status| status == "estimated") { "ESTIMATED" }
+            else { "KNOWN" };
+        let chain_digest = format!("blake3:{}", blake3::hash(canonical_json(&json!({
+            "domain": "horizoncode.managed-attempt-usage-receipt-chain.v1",
+            "attemptID": attempt_id,
+            "receipts": chain,
+        })).as_bytes()).to_hex());
+        Ok(Some(ManagedAttemptUsageSummaryV1 {
+            accounting_cursor: ledger.cursor,
+            token_known_subtotal: ledger.token_total,
+            cost_known_subtotal_micros: known_cost_subtotal,
+            token_remainder_status: token_remainder_status.to_owned(),
+            cost_remainder_status: cost_remainder_status.to_owned(),
+            usage_state: usage_state.to_owned(),
+            stop_reason: ledger.stop_reason.clone(),
+            ceiling_digest: ledger.ceiling_digest.clone(),
+            cost_status: cost_status.unwrap_or_else(|| "unknown".to_owned()),
+            metric_statuses,
+            receipt_count: receipts.len() as u64,
+            receipt_chain_digest: chain_digest,
+        }))
     }
 
     pub fn attempt_effect_bound_revision(
@@ -6321,8 +8177,10 @@ impl ManagedSnapshot {
                 .runs
                 .get(run_id)
                 .ok_or(ManagedError::Conflict("run missing"))?;
-            if matches!(run.phase, RunPhase::Running | RunPhase::Verifying) && run.tasks.len() == 1 {
-                let (task_id, task) = run.tasks.iter().next().expect("single Task checked");
+            if matches!(run.phase, RunPhase::Running | RunPhase::Verifying) {
+                let mut active = run.tasks.iter().filter(|(_, task)| task.active_attempt.is_some());
+                let selected = active.next();
+                if active.next().is_some() { None } else { selected.and_then(|(task_id, task)| {
                 let attempt_id = task.active_attempt.as_deref();
                 attempt_id.and_then(|attempt_id| {
                     self.attempts.get(attempt_id).and_then(|attempt| {
@@ -6336,16 +8194,17 @@ impl ManagedSnapshot {
                                     && run.final_revision.as_deref() == Some(final_revision)
                                     && run.verifier_id.as_deref() == Some(verifier_id))
                             && live_coding_workspace_head(attempt).ok().as_deref() == Some(final_revision))
-                            .then(|| attempt_id.to_owned())
+                            .then(|| (task_id.clone(), attempt_id.to_owned()))
                     })
                 })
+                }) }
             } else {
                 None
             }
         };
-        if let Some(attempt_id) = live_attempt.as_deref() {
+        if let Some((task_id, attempt_id)) = live_attempt.as_ref() {
             let task = self.runs.get(run_id)
-                .and_then(|run| run.tasks.values().next())
+                .and_then(|run| run.tasks.get(task_id))
                 .ok_or(ManagedError::Conflict("live verification Task is missing"))?;
             if task.unknown_effect
                 || task.pending_verification_attempt.as_deref().is_some_and(|pending| pending != attempt_id)
@@ -6385,28 +8244,27 @@ impl ManagedSnapshot {
         {
             return Err(ManagedError::Conflict("Run verifier assignment changed"));
         }
-        let has_prior_typed_result = run.verification_evidence.is_some()
-            || run
-                .verification_history
-                .iter()
-                .any(|history| history.typed_evidence.is_some());
-        let tasks_not_ready = if let Some(attempt_id) = live_attempt.as_deref() {
-            run.tasks.len() != 1 || run.tasks.iter().any(|(task_id, task)| {
-                task.unknown_effect
-                    || task.active_attempt.as_deref() != Some(attempt_id)
-                    || task.pending_verification_attempt.as_deref()
-                        .is_some_and(|pending| pending != attempt_id)
-                    || (run.phase == RunPhase::Running
-                        && task.pending_verification_attempt.is_some())
-                    || (run.phase == RunPhase::Verifying
-                        && (task.pending_verification_attempt.as_deref() != Some(attempt_id)
-                            || run.final_revision.as_deref() != Some(final_revision)
-                            || run.verifier_id.as_deref() != Some(verifier_id)))
-                    || !self.attempts.get(attempt_id).is_some_and(|attempt| {
-                        attempt.run_id == run_id
-                            && attempt.task_id == *task_id
-                            && attempt.phase == AttemptPhase::Executing
-                    })
+        let tasks_not_ready = if let Some((active_task_id, attempt_id)) = live_attempt.as_ref() {
+            run.tasks.iter().any(|(task_id, task)| {
+                if task.unknown_effect {
+                    return true;
+                }
+                if task_id == active_task_id {
+                    return task.active_attempt.as_deref() != Some(attempt_id)
+                        || task.pending_verification_attempt.as_deref().is_some_and(|pending| pending != attempt_id)
+                        || (run.phase == RunPhase::Running && task.pending_verification_attempt.is_some())
+                        || (run.phase == RunPhase::Verifying
+                            && (task.pending_verification_attempt.as_deref() != Some(attempt_id)
+                                || run.final_revision.as_deref() != Some(final_revision)
+                                || run.verifier_id.as_deref() != Some(verifier_id)))
+                        || !self.attempts.get(attempt_id).is_some_and(|attempt| {
+                            attempt.run_id == run_id && attempt.task_id == *task_id
+                                && attempt.phase == AttemptPhase::Executing
+                        });
+                }
+                task.active_attempt.is_some()
+                    || task.pending_verification_attempt.is_some()
+                    || task.verified_revision.is_some() != task.verification_evidence.is_some()
             })
         } else { run.tasks.iter().any(|(task_id, task)| {
             if task.unknown_effect || task.active_attempt.is_some() {
@@ -6420,11 +8278,12 @@ impl ManagedSnapshot {
                         && attempt.receipt_digest.is_some()
                 });
             }
-            // A previous typed verifier result may be rerun after the
-            // current workspace changes. A legacy per-Task digest is only
-            // replayable from historical OwnerLog events.
-            !(replaying_owner_log && task.verified_revision.is_some())
-                && (!has_prior_typed_result || task.verification_evidence.is_none())
+            // Completed Tasks retain their independent typed proof while the
+            // next DAG Task gets its own Attempt/verifier cycle. An unstarted
+            // Task with no pending Attempt cannot be skipped into aggregate
+            // finalization. Legacy digest-only proof is replay-only.
+            task.verified_revision.is_some() && task.verification_evidence.is_some()
+                || replaying_owner_log && task.verified_revision.is_some()
         }) };
         let live_verification_retry = live_attempt.is_some()
             && run.phase == RunPhase::Verifying
@@ -6460,8 +8319,8 @@ impl ManagedSnapshot {
         run.phase = RunPhase::Verifying;
         run.final_revision = Some(final_revision.to_owned());
         run.verifier_id = Some(verifier_id.to_owned());
-        if let Some(attempt_id) = live_attempt {
-            let task = run.tasks.values_mut().next().expect("single live Task checked");
+        if let Some((task_id, attempt_id)) = live_attempt {
+            let task = run.tasks.get_mut(&task_id).expect("live Task checked");
             task.pending_verification_attempt = Some(attempt_id);
         }
         // Only evidence for the currently frozen revision can finalize.
@@ -6477,6 +8336,7 @@ impl ManagedSnapshot {
         replaying_owner_log: bool,
     ) -> Result<(), ManagedError> {
         match command {
+            ManagedCommand::RecordAttemptUsage { proof } => self.apply_attempt_usage(proof)?,
             ManagedCommand::CreateGoal { goal } => {
                 validate_goal(goal)?;
                 if self.goal.is_some() {
@@ -6825,6 +8685,11 @@ impl ManagedSnapshot {
                 let mut planned = BTreeMap::new();
                 for task in tasks {
                     id(&task.task_id)?;
+                    match (&task.title, &task.purpose) {
+                        (Some(title), Some(purpose)) => validate_task_delivery_text(title, purpose)?,
+                        (None, None) if replay => (),
+                        _ => return Err(ManagedError::Invalid("planned Task delivery text must be complete")),
+                    }
                     if !task.agent_profile_revision.is_valid() || blake3_digest(&task.profile_owner_binding_digest).is_err() {
                         return Err(ManagedError::Invalid("planned Task AgentProfile pin is invalid"));
                     }
@@ -6875,6 +8740,7 @@ impl ManagedSnapshot {
                     criterion_ids: task.criterion_ids.clone(),
                     required_capabilities: task.required_capabilities.clone(),
                     agent_profile_revision: Some(task.agent_profile_revision.clone()),
+                    profile_token_budget: (task.profile_token_budget > 0).then_some(task.profile_token_budget),
                     profile_owner_binding_digest: Some(task.profile_owner_binding_digest.clone()),
                     ready: false,
                     active_attempt: None,
@@ -6885,8 +8751,8 @@ impl ManagedSnapshot {
                     failed_criterion_ids: Vec::new(),
                     attempt_count: 0,
                     candidate_generation: 0,
-                    title: Some(task.title.clone()),
-                    purpose: Some(task.purpose.clone()),
+                    title: task.title.clone(),
+                    purpose: task.purpose.clone(),
                 })).collect();
                 self.runs.insert(run_id.clone(), Run {
                     spec_id: spec_id.clone(),
@@ -6927,6 +8793,12 @@ impl ManagedSnapshot {
                 }
                 if run.tasks.values().any(|task| task.ready || task.agent_profile_revision.is_none() || task.profile_owner_binding_digest.is_none()) {
                     return Err(ManagedError::Conflict("planned Run contains an incomplete or previously started Task set"));
+                }
+                if run.tasks.values().any(|task| task.profile_token_budget.is_none_or(|budget| budget == 0)) {
+                    return Err(ManagedError::Conflict("planned Run lacks an immutable positive profile token budget"));
+                }
+                if !replay && run.tasks.values().any(|task| task.title.is_none() || task.purpose.is_none()) {
+                    return Err(ManagedError::Conflict("legacy Run plan lacks immutable Task delivery text and cannot be started"));
                 }
                 if planned_task_set_digest(run) != *plan_digest {
                     return Err(ManagedError::Conflict("Run start task-plan digest does not match the durable plan"));
@@ -7037,6 +8909,7 @@ impl ManagedSnapshot {
                         criterion_ids: criterion_ids.clone(),
                         required_capabilities: required_capabilities.clone(),
                         agent_profile_revision: None,
+                        profile_token_budget: None,
                         profile_owner_binding_digest: None,
                         ready: false,
                         active_attempt: None,
@@ -7059,9 +8932,10 @@ impl ManagedSnapshot {
                 criterion_ids,
                 required_capabilities,
                 agent_profile_revision,
+                profile_token_budget,
                 profile_owner_binding_digest,
             } => {
-                if !agent_profile_revision.is_valid() || blake3_digest(profile_owner_binding_digest).is_err() {
+                if !agent_profile_revision.is_valid() || *profile_token_budget == 0 || blake3_digest(profile_owner_binding_digest).is_err() {
                     return Err(ManagedError::Invalid("Task AgentProfile revision reference is invalid"));
                 }
                 self.apply(&ManagedCommand::AddTask {
@@ -7079,6 +8953,9 @@ impl ManagedSnapshot {
                 self.runs.get_mut(run_id).and_then(|run| run.tasks.get_mut(task_id))
                     .ok_or(ManagedError::Conflict("newly admitted Task missing"))?
                     .profile_owner_binding_digest = Some(profile_owner_binding_digest.clone());
+                self.runs.get_mut(run_id).and_then(|run| run.tasks.get_mut(task_id))
+                    .ok_or(ManagedError::Conflict("newly admitted Task missing"))?
+                    .profile_token_budget = Some(*profile_token_budget);
             }
             ManagedCommand::MarkTaskReady { run_id, task_id } => {
                 let run = self
@@ -7124,6 +9001,7 @@ impl ManagedSnapshot {
                 location_id,
                 session_id,
                 binding,
+                context_selection,
             } => {
                 if binding.admitted_managed_revision
                     != self
@@ -7164,6 +9042,146 @@ impl ManagedSnapshot {
                     binding: binding.clone(),
                 })?;
                 self.revision = base_revision;
+                if let Some(context_selection) = context_selection {
+                    validate_context_selection_record(context_selection, attempt_id, binding, base_revision + 1)?;
+                    if self.attempts.get(attempt_id).is_none_or(|attempt| attempt.session_id
+                        != crate::context_selection::ContextSelectionV1::decode_json(&context_selection.selection)
+                            .map(|selection| selection.session_id).unwrap_or_default()) {
+                        return Err(ManagedError::Conflict("admission ContextSelection Session differs from child Attempt"));
+                    }
+                    if self.context_selections.insert(
+                        (attempt_id.clone(), context_selection.request_sequence),
+                        context_selection.clone(),
+                    ).is_some() {
+                        return Err(ManagedError::Conflict("managed admission context sequence already exists"));
+                    }
+                }
+            }
+            ManagedCommand::AdvanceAttemptContextSelection { record } => {
+                let attempt = self.attempts.get(&record.attempt_id)
+                    .ok_or(ManagedError::Conflict("context selection Attempt missing"))?;
+                let binding = attempt.delegation_binding.as_ref()
+                    .ok_or(ManagedError::Conflict("context selection Attempt binding missing"))?;
+                validate_context_selection_record(record, &record.attempt_id, binding, self.revision + 1)?;
+                if record.request_sequence < 2 || record.request_sequence > 1024
+                    || attempt.phase != AttemptPhase::Executing
+                    || self.runs.get(&attempt.run_id).is_none_or(|run| run.phase != RunPhase::Running
+                        || run.tasks.get(&attempt.task_id).is_none_or(|task| task.active_attempt.as_deref() != Some(attempt.attempt_id.as_str())
+                            || task.unknown_effect || task.pending_verification_attempt.is_some()))
+                    || crate::context_selection::ContextSelectionV1::decode_json(&record.selection)
+                        .is_none_or(|selection| selection.session_id != attempt.session_id)
+                    || self.context_selections.contains_key(&(record.attempt_id.clone(), record.request_sequence))
+                {
+                    return Err(ManagedError::Conflict("managed context sequence is not admissible"));
+                }
+                let prior = self.context_selections.get(&(record.attempt_id.clone(), record.request_sequence - 1))
+                    .ok_or(ManagedError::Conflict("managed context sequence has a gap"))?;
+                if prior.managed_revision >= self.revision + 1
+                    || prior.request_sequence + 1 != record.request_sequence
+                {
+                    return Err(ManagedError::Conflict("managed context sequence is stale"));
+                }
+                let next_selection = crate::context_selection::ContextSelectionV1::decode_json(&record.selection)
+                    .ok_or(ManagedError::Invalid("advanced ContextSelectionV1 is malformed"))?;
+                let prior_selection = crate::context_selection::ContextSelectionV1::decode_json(&prior.selection)
+                    .ok_or(ManagedError::Invalid("prior ContextSelectionV1 is malformed"))?;
+                for kind in ["managed-task", "accepted-spec", "agent-profile"] {
+                    let old = prior_selection.sources.iter().find(|source| source.kind == kind)
+                        .ok_or(ManagedError::Conflict("initial managed ContextSelection source is missing"))?;
+                    let new = next_selection.sources.iter().find(|source| source.kind == kind)
+                        .ok_or(ManagedError::Conflict("advanced managed ContextSelection source is missing"))?;
+                    if old != new {
+                        return Err(ManagedError::Conflict("managed Task, Spec or profile ref changed during Attempt"));
+                    }
+                }
+                self.context_selections.insert(
+                    (record.attempt_id.clone(), record.request_sequence), record.clone(),
+                );
+            }
+            ManagedCommand::SetManagedProviderRequest { record } => {
+                id(&record.attempt_id)?; id(&record.request_id)?; id(&record.provider_request_id)?;
+                id(&record.provider_id)?; id(&record.model_id)?; id(&record.harness_id)?; id(&record.route_id)?;
+                if let Some(credential_lease_ref) = &record.credential_lease_ref { id(credential_lease_ref)?; }
+                id(&record.guard_challenge_id)?;
+                id(&record.guard_effect_id)?;
+                match (record.state.as_str(), record.unknown_reason_code.as_deref()) {
+                    ("UNKNOWN", Some(reason)) if !reason.is_empty() && reason.len() <= 64
+                        && reason.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_') => {}
+                    // Older provider OwnerLog rows predate reason pinning. They remain
+                    // readable but HostKernel cannot reconstruct an exact retry reason.
+                    ("UNKNOWN", None) => {},
+                    ("UNKNOWN", Some(_)) => return Err(ManagedError::Invalid("UNKNOWN provider request reason is malformed")),
+                    (_, None) => {}
+                    (_, Some(_)) => return Err(ManagedError::Invalid("non-UNKNOWN provider request carries an UNKNOWN reason")),
+                }
+                blake3_digest(&record.context_selection_digest)?; blake3_digest(&record.endpoint_revision)?;
+                if let Some(lease) = record.capability_lease_digest.as_deref() { blake3_digest(lease)?; }
+                if let Some(binding) = record.authorization_binding_digest.as_deref() { blake3_digest(binding)?; }
+                if (record.state == "PREPARED") != record.capability_lease_digest.is_none() {
+                    return Err(ManagedError::Invalid("provider Guard lease must appear only after approval at dispatch"));
+                }
+                if (record.state == "PREPARED") != record.authorization_binding_digest.is_none() {
+                    return Err(ManagedError::Invalid("provider authorization binding must appear only after approval at dispatch"));
+                }
+                blake3_digest(&record.request_digest)?;
+                blake3_digest(&record.transport_request_digest)?;
+                if !crate::guard::is_sha256_digest(&record.operation_digest) {
+                    return Err(ManagedError::Invalid("provider SecretBroker operation digest is not canonical SHA-256"));
+                }
+                if record.step_finish_index.is_some_and(|index| index > 1024) {
+                    return Err(ManagedError::Invalid("provider step-finish index exceeds its bound"));
+                }
+                blake3_digest(&record.prepare_digest)?;
+                if record.request_sequence == 0 || record.request_sequence > 1024
+                    || record.managed_revision != self.revision.checked_add(1).ok_or(ManagedError::Invalid("revision overflow"))?
+                    || record.dispatch_digest.as_ref().is_some_and(|value| blake3_digest(value).is_err())
+                    || record.response_digest.as_ref().is_some_and(|value| blake3_digest(value).is_err())
+                    || record.usage_digest.as_ref().is_some_and(|value| blake3_digest(value).is_err())
+                { return Err(ManagedError::Invalid("managed provider request pin is invalid")); }
+                let key = (record.attempt_id.clone(), record.request_sequence);
+                let attempt = self.attempts.get(&record.attempt_id).ok_or(ManagedError::Conflict("provider request Attempt missing"))?;
+                let binding = attempt.delegation_binding.as_ref().ok_or(ManagedError::Conflict("provider request Attempt binding missing"))?;
+                let selection = self.context_selections.get(&key).ok_or(ManagedError::Conflict("provider request ContextSelection missing"))?;
+                let run = self.runs.get(&attempt.run_id).ok_or(ManagedError::Conflict("provider request Run missing"))?;
+                let task = run.tasks.get(&attempt.task_id).ok_or(ManagedError::Conflict("provider request Task missing"))?;
+                if attempt.phase != AttemptPhase::Executing || attempt.owner_epoch != binding.owner_epoch
+                    || task.active_attempt.as_deref() != Some(record.attempt_id.as_str())
+                    || task.pending_verification_attempt.is_some() || task.unknown_effect
+                    || (run.phase != RunPhase::Running && !(matches!(record.state.as_str(), "SETTLED" | "UNKNOWN") && run.phase == RunPhase::Cancelling))
+                    || attempt.session_id != crate::context_selection::ContextSelectionV1::decode_json(&selection.selection).map(|value| value.session_id).unwrap_or_default()
+                    || selection.request_id != record.request_id || selection.selection_digest != record.context_selection_digest
+                    || binding.provider_id != record.provider_id || binding.model_id != record.model_id
+                    || self.latest_managed_context_sequence(&record.attempt_id) != record.request_sequence
+                { return Err(ManagedError::Conflict("provider request differs from live Attempt pins")); }
+                match (self.provider_requests.get(&key), record.state.as_str()) {
+                    (None, "PREPARED") if record.capability_lease_digest.is_none() && record.authorization_binding_digest.is_none() && record.dispatch_digest.is_none() && record.assistant_entry_id.is_none()
+                        && record.step_finish_index.is_none() && record.response_digest.is_none() && record.usage_digest.is_none()
+                        && record.prepared_attempt_scope_digest.as_ref().is_some_and(|digest| blake3_digest(digest).is_ok()) => {}
+                    (Some(prior), "DISPATCHING") if prior.state == "PREPARED"
+                        && same_managed_provider_request(prior, record)
+                        && prior.capability_lease_digest.is_none() && record.capability_lease_digest.is_some()
+                        && prior.authorization_binding_digest.is_none() && record.authorization_binding_digest.as_ref().is_some_and(|digest| blake3_digest(digest).is_ok())
+                        && record.dispatch_digest.as_ref().is_some_and(|digest| blake3_digest(digest).is_ok())
+                        && record.assistant_entry_id.is_none() && record.step_finish_index.is_none() && record.response_digest.is_none() && record.usage_digest.is_none() => {}
+                    (Some(prior), "SETTLED") if prior.state == "DISPATCHING"
+                        && same_managed_provider_request(prior, record)
+                        && record.capability_lease_digest == prior.capability_lease_digest
+                        && record.authorization_binding_digest == prior.authorization_binding_digest
+                        && record.dispatch_digest == prior.dispatch_digest
+                        && prior.step_finish_index.is_none()
+                        && record.assistant_entry_id.as_ref().is_some_and(|value| id(value).is_ok())
+                        && record.step_finish_index.is_some()
+                        && record.response_digest.as_ref().is_some_and(|value| blake3_digest(value).is_ok()) => {}
+                    (Some(prior), "UNKNOWN") if prior.state == "DISPATCHING"
+                        && same_managed_provider_request(prior, record)
+                        && record.capability_lease_digest == prior.capability_lease_digest
+                        && record.authorization_binding_digest == prior.authorization_binding_digest
+                        && record.dispatch_digest == prior.dispatch_digest
+                        && record.unknown_reason_code.is_some()
+                        && record.step_finish_index.is_none() => {}
+                    _ => return Err(ManagedError::Conflict("managed provider request transition is stale, conflicting or replayed")),
+                }
+                self.provider_requests.insert(key, record.clone());
             }
             ManagedCommand::AdmitAttempt {
                 run_id,
@@ -7200,35 +9218,53 @@ impl ManagedSnapshot {
                     .content
                     .budget;
                 let max_attempts = budget.max_attempts_per_task;
-                // P2's accepted runtime is deliberately single-Attempt. A larger
-                // reviewed budget is not permission to enable worker fan-out
-                // before the authenticated worker/lease and verifier gates pass.
-                let max_workers = usize::from(budget.max_workers.min(1));
-                let run = self
-                    .runs
-                    .get_mut(run_id)
+                let max_workers = usize::from(budget.max_workers);
+                let run_view = self.runs.get(run_id)
                     .ok_or(ManagedError::Conflict("run missing"))?;
-                if run.phase != RunPhase::Running {
+                if run_view.phase != RunPhase::Running {
                     return Err(ManagedError::Conflict("run fenced"));
                 }
-                // The accepted SpecVersion budget is an upper bound; this P2
-                // implementation supports one Attempt until worker/lease and
-                // independent-verifier gates pass. Active, UNKNOWN, and settled-
-                // but-unverified Attempts all retain that slot.
-                let active_attempts = run
+                // `maxWorkers` is the accepted SpecVersion ceiling, but every
+                // active/pending/UNKNOWN writer retains a distinct Location.
+                // Rust reducer admission enforces that invariant independently
+                // of HostKernel/P8 reservation so stale callers cannot bypass it.
+                let active_tasks = run_view
                     .tasks
-                    .values()
-                    .filter(|task| {
-                        task.active_attempt.is_some()
-                            || task.pending_verification_attempt.is_some()
-                            || task.unknown_effect
-                    })
-                    .count();
-                if active_attempts >= max_workers {
+                    .iter()
+                    .filter(|(_, task)| task.active_attempt.is_some()
+                        || task.pending_verification_attempt.is_some() || task.unknown_effect)
+                    .collect::<Vec<_>>();
+                if active_tasks.len() >= max_workers {
                     return Err(ManagedError::Conflict(
                         "accepted SpecVersion worker budget exhausted",
                     ));
                 }
+                let mut active_locations = BTreeSet::new();
+                for (active_task_id, active_task) in &active_tasks {
+                    let active_attempt_id = active_task.active_attempt.as_deref()
+                        .or(active_task.pending_verification_attempt.as_deref())
+                        .ok_or(ManagedError::Conflict("UNKNOWN or pending managed Task has no retained Attempt"))?;
+                    let active_attempt = self.attempts.get(active_attempt_id)
+                        .ok_or(ManagedError::Conflict("active managed Task has no retained Attempt record"))?;
+                    if active_attempt.run_id != run_id || active_attempt.task_id != active_task_id.as_str()
+                        || !active_locations.insert(active_attempt.location_id.as_str())
+                    {
+                        return Err(ManagedError::Conflict("active managed Tasks have conflicting or stale Location bindings"));
+                    }
+                }
+                if active_locations.contains(location_id.as_str()) {
+                    return Err(ManagedError::Conflict("managed sibling Attempts cannot share a mutable Location"));
+                }
+                let candidate = run_view.tasks.get(task_id)
+                    .ok_or(ManagedError::Conflict("task missing"))?;
+                let dependencies_verified = candidate.dependencies.iter().all(|dependency| {
+                    run_view.tasks.get(dependency).is_some_and(|task| task.verified_revision.is_some())
+                });
+                if !dependencies_verified {
+                    return Err(ManagedError::Conflict("Task dependencies require independent verified terminal state"));
+                }
+                let run = self.runs.get_mut(run_id)
+                    .ok_or(ManagedError::Conflict("run missing"))?;
                 let task = run
                     .tasks
                     .get_mut(task_id)
@@ -7260,6 +9296,7 @@ impl ManagedSnapshot {
                         workspace_revision: None,
                         delegation_binding: None,
                         effects: Vec::new(),
+                        effect_waves: Vec::new(),
                         effect_receipts: BTreeMap::new(),
                         verifier_intents: BTreeMap::new(),
                         verifier_evidence: None,
@@ -7449,8 +9486,10 @@ impl ManagedSnapshot {
                     &proof.child_session_event_digest, &proof.child_session_state_digest] {
                     managed_digest(digest)?;
                 }
+                managed_digest(&proof.child_session_output_digest)?;
                 if proof.goal_id != self.owner_goal_id || proof.owner_epoch == 0
                     || proof.child_session_sequence == 0 || proof.delivery_id.is_empty()
+                    || proof.child_session_output_bytes > MAX_MANAGED_CHILD_OUTPUT_BYTES
                 {
                     return Err(ManagedError::Conflict("managed prompt quiescence proof is malformed"));
                 }
@@ -7482,8 +9521,9 @@ impl ManagedSnapshot {
                     || run.session_link.as_ref().is_none_or(|link| link.session_id != proof.parent_session_id)
                     || binding.run_id != proof.run_id || binding.task_id != proof.task_id
                     || binding.attempt_id != proof.attempt_id || binding_digest != consumed.binding_digest
-                    || attempt.phase != AttemptPhase::Settling
-                    || task.active_attempt.as_deref().is_some_and(|active| active != proof.attempt_id)
+                    || attempt.phase != AttemptPhase::Executing
+                    || task.active_attempt.as_deref() != Some(proof.attempt_id.as_str())
+                    || task.pending_verification_attempt.as_deref() != Some(proof.attempt_id.as_str())
                     || attempt.effects.len() != attempt.effect_receipts.len()
                     || attempt.effects.iter().any(|effect| {
                         attempt.effect_receipts.get(&effect.effect_id).is_none_or(|receipt| {
@@ -7493,7 +9533,7 @@ impl ManagedSnapshot {
                         })
                     })
                 {
-                    return Err(ManagedError::Conflict("managed prompt quiescence differs from consumed child or settled effect state"));
+                    return Err(ManagedError::Conflict("managed prompt quiescence differs from consumed child, pending-verification Attempt, or settled effect state"));
                 }
                 self.dispatch_quiescence_proofs.insert(proof.attempt_id.clone(), proof.clone());
             }
@@ -7598,6 +9638,13 @@ impl ManagedSnapshot {
                 {
                     return Err(ManagedError::Conflict("effect intent cannot bind outside a live Attempt"));
                 }
+                // Usage is recorded at provider step-finish. Once Rust has
+                // reached a configured ceiling, or cannot account usage safely,
+                // a later coding effect must not be admitted under that Attempt.
+                // Verifier effects remain a separate authorized phase.
+                if run.phase == RunPhase::Running && self.attempt_usage_stopped(attempt_id) {
+                    return Err(ManagedError::Conflict("managed Attempt is stopped at its usage ceiling"));
+                }
                 let attempt = self
                     .attempts
                     .get_mut(attempt_id)
@@ -7664,6 +9711,12 @@ impl ManagedSnapshot {
                 {
                     return Err(ManagedError::Conflict("effect batch cannot bind outside a live Attempt"));
                 }
+                // Keep the single-effect and atomic ToolBatch paths aligned:
+                // after STOPPED, no new coding effect can be bound. Independent
+                // verifier effects are still admitted only in RunPhase::Verifying.
+                if run.phase == RunPhase::Running && self.attempt_usage_stopped(attempt_id) {
+                    return Err(ManagedError::Conflict("managed Attempt is stopped at its usage ceiling"));
+                }
                 let attempt = self
                     .attempts
                     .get(attempt_id)
@@ -7703,6 +9756,82 @@ impl ManagedSnapshot {
                     bound_revision,
                 }));
             }
+            ManagedCommand::BindAttemptEffectWave { wave } => {
+                for value in [&wave.run_id, &wave.task_id, &wave.attempt_id,
+                    &wave.batch_id, &wave.location_id, &wave.session_id] { id(value)?; }
+                let append_revision = self.revision.checked_add(1)
+                    .ok_or(ManagedError::Invalid("managed revision overflow"))?;
+                if !matches!(wave.schema_version, 1 | 2) || wave.wave_index > 63
+                    || wave.edges.is_empty() || wave.edges.len() > 32
+                    || (wave.bound_revision != 0 && wave.bound_revision != append_revision)
+                {
+                    return Err(ManagedError::Invalid("managed effect wave header is invalid"));
+                }
+                blake3_digest(&wave.source_scope_digest)?;
+                if managed_effect_wave_digest(wave)? != wave.wave_digest {
+                    return Err(ManagedError::Invalid("managed effect wave digest mismatch"));
+                }
+                let mut call_ids = BTreeSet::new();
+                let mut effect_ids = BTreeSet::new();
+                let prior_call_ids = self.attempts.get(&wave.attempt_id)
+                    .map(|attempt| attempt.effect_waves.iter()
+                        .flat_map(|existing| existing.edges.iter().map(|edge| edge.call_id.as_str()))
+                        .collect::<BTreeSet<_>>())
+                    .unwrap_or_default();
+                for (index, edge) in wave.edges.iter().enumerate() {
+                    id(&edge.call_id)?;
+                    id(&edge.effect_id)?;
+                    if usize::from(edge.call_index) != index
+                        || !call_ids.insert(edge.call_id.as_str())
+                        || prior_call_ids.contains(edge.call_id.as_str())
+                        || !effect_ids.insert(edge.effect_id.as_str())
+                        || !canonical_capability_id_is_registered(&edge.capability_id)
+                    {
+                        return Err(ManagedError::Invalid("managed effect wave edge is noncanonical"));
+                    }
+                    managed_digest(&edge.arguments_digest)?;
+                    managed_digest(&edge.intent_digest)?;
+                    match (wave.schema_version, edge.attempt_scope_digest.as_deref()) {
+                        (1, None) => {}
+                        (2, Some(scope_digest)) => { managed_digest(scope_digest)?; }
+                        _ => return Err(ManagedError::Invalid("managed effect wave refreshed Attempt scope pin is invalid")),
+                    }
+                }
+                let run = self.runs.get(&wave.run_id)
+                    .ok_or(ManagedError::Conflict("Run missing"))?;
+                let task = run.tasks.get(&wave.task_id)
+                    .ok_or(ManagedError::Conflict("Task missing"))?;
+                let attempt = self.attempts.get(&wave.attempt_id)
+                    .ok_or(ManagedError::Conflict("Attempt record missing"))?;
+                if self.goal.is_none() || run.phase != RunPhase::Running
+                    || task.active_attempt.as_deref() != Some(wave.attempt_id.as_str())
+                    || task.unknown_effect || task.pending_verification_attempt.is_some()
+                    || attempt.run_id != wave.run_id || attempt.task_id != wave.task_id
+                    || attempt.phase != AttemptPhase::Executing
+                    || attempt.owner_epoch == 0 || attempt.location_id != wave.location_id
+                    || attempt.session_id != wave.session_id
+                    || attempt.delegation_binding.is_none()
+                    || self.attempt_usage_stopped(&wave.attempt_id)
+                    || attempt.effect_waves.len() != usize::from(wave.wave_index)
+                    || (attempt.effect_waves.is_empty() && !attempt.effects.is_empty())
+                    || attempt.effects.len().saturating_add(wave.edges.len()) > MAX_BOUND_EFFECTS_PER_ATTEMPT
+                    || wave.edges.iter().any(|edge| attempt.effects.iter().any(|bound| bound.effect_id == edge.effect_id))
+                {
+                    return Err(ManagedError::Conflict("managed effect wave does not match a live Attempt"));
+                }
+                let bound_revision = append_revision;
+                let mut committed_wave = wave.clone();
+                committed_wave.bound_revision = bound_revision;
+                let attempt = self.attempts.get_mut(&wave.attempt_id)
+                    .ok_or(ManagedError::Conflict("Attempt record missing"))?;
+                attempt.effects.extend(wave.edges.iter().map(|edge| BoundEffect {
+                    effect_id: edge.effect_id.clone(),
+                    location_id: wave.location_id.clone(),
+                    session_id: wave.session_id.clone(),
+                    bound_revision,
+                }));
+                attempt.effect_waves.push(committed_wave);
+            }
             ManagedCommand::BindAttemptVerifierIntent { intent } => {
                 for value in [
                     intent.goal_id.as_str(), intent.run_id.as_str(), intent.task_id.as_str(),
@@ -7719,6 +9848,9 @@ impl ManagedSnapshot {
                     intent.source_workspace_revision.as_str(),
                 ] {
                     managed_digest(digest_value)?;
+                }
+                if let Some(scope_digest) = intent.attempt_scope_digest.as_deref() {
+                    managed_digest(scope_digest)?;
                 }
                 if intent.goal_id != self.owner_goal_id || intent.owner_epoch == 0 || intent.bound_revision == 0
                     || intent.max_duration_ms == 0 || intent.max_output_bytes == 0
@@ -7984,10 +10116,14 @@ impl ManagedSnapshot {
                 let run = self.runs.get(&attempt.run_id).ok_or(ManagedError::Conflict("verifier Run is missing"))?;
                 let task = run.tasks.get(&attempt.task_id).ok_or(ManagedError::Conflict("verifier Task is missing"))?;
                 let spec = self.specs.get(&run.spec_id).ok_or(ManagedError::Conflict("accepted SpecVersion is missing"))?;
-                if attempt.phase != AttemptPhase::Executing || run.phase != RunPhase::Verifying
+                let run_scoped_verification = run.phase == RunPhase::Verifying
+                    && run.final_revision.as_deref() == Some(evidence.source_revision.as_str());
+                let task_scoped_verification = run.phase == RunPhase::Running
+                    && task.pending_verification_attempt.as_deref() == Some(attempt_id.as_str());
+                if attempt.phase != AttemptPhase::Executing
+                    || !(run_scoped_verification || task_scoped_verification)
                     || task.active_attempt.as_deref() != Some(attempt_id.as_str())
                     || task.pending_verification_attempt.as_deref() != Some(attempt_id.as_str())
-                    || run.final_revision.as_deref() != Some(evidence.source_revision.as_str())
                     || attempt.verifier_evidence.is_some()
                     || evidence.verifier_id == attempt.executor_principal
                     || evidence.verifier_id == spec.content.proposed_by
@@ -8008,7 +10144,7 @@ impl ManagedSnapshot {
                 {
                     return Err(ManagedError::Conflict("verifier evidence requires every coding and verifier effect receipt to be durably settled"));
                 }
-                let accepted: BTreeSet<&str> = spec.content.criteria.iter().map(|criterion| criterion.id.as_str()).collect();
+                let accepted: BTreeSet<&str> = task.criterion_ids.iter().map(String::as_str).collect();
                 let supplied: BTreeSet<&str> = evidence.criteria.iter().map(|criterion| criterion.criterion_id.as_str()).collect();
                 if accepted.is_empty() || accepted != supplied {
                     return Err(ManagedError::Conflict("live Attempt verifier evidence must cover the exact accepted criteria"));
@@ -8144,9 +10280,6 @@ impl ManagedSnapshot {
                 }
                 if let Some(evidence) = &live_verifier_evidence {
                     let run = self.runs.get(run_id).ok_or(ManagedError::Conflict("run missing"))?;
-                    if run.tasks.len() != 1 {
-                        return Err(ManagedError::Conflict("live-Attempt verifier currently requires a single-Task Run"));
-                    }
                     let task = run.tasks.get(task_id).ok_or(ManagedError::Conflict("task missing"))?;
                     let task_criteria = task.criterion_ids.iter().map(String::as_str).collect::<BTreeSet<_>>();
                     let evidence_criteria = evidence.criteria.iter().map(|criterion| criterion.criterion_id.as_str()).collect::<BTreeSet<_>>();
@@ -8158,7 +10291,7 @@ impl ManagedSnapshot {
                                 != Some(evidence.source_revision.as_str())
                         })
                     {
-                        return Err(ManagedError::Conflict("live verifier result does not match the single Task criteria or final revision"));
+                        return Err(ManagedError::Conflict("live verifier result does not match this Task's criteria or final revision"));
                     }
                 }
                 let run = self
@@ -8182,6 +10315,8 @@ impl ManagedSnapshot {
                 {
                     return Err(ManagedError::Conflict("attempt is not settling"));
                 }
+                let task_local_verification = run.phase == RunPhase::Running
+                    && task.pending_verification_attempt.as_deref() == Some(attempt_id);
                 let attempt = self
                     .attempts
                     .get_mut(attempt_id)
@@ -8217,19 +10352,53 @@ impl ManagedSnapshot {
                     });
                     task.failed_criterion_ids = failed.clone();
                     task.pending_verification_attempt = None;
-                    for criterion in &evidence.criteria {
-                        run.criterion_evidence.insert(criterion.criterion_id.clone(), CriterionEvidence {
-                            source_revision: evidence.source_revision.clone(),
-                            evidence_digest: evidence.evidence_digest.clone(),
-                            verifier_id: evidence.verifier_id.clone(),
-                        });
+                    if !task_local_verification {
+                        for criterion in &evidence.criteria {
+                            run.criterion_evidence.insert(criterion.criterion_id.clone(), CriterionEvidence {
+                                source_revision: evidence.source_revision.clone(),
+                                evidence_digest: evidence.evidence_digest.clone(),
+                                verifier_id: evidence.verifier_id.clone(),
+                            });
+                        }
+                        run.final_revision = Some(evidence.source_revision.clone());
+                        run.verifier_id = Some(evidence.verifier_id.clone());
+                        run.verification_evidence = Some(evidence);
+                        if run.phase != RunPhase::Cancelling {
+                            run.phase = if !failed.is_empty() {
+                                RunPhase::Failed
+                            } else if run.tasks.values().all(|task| task.verified_revision.is_some()) {
+                                RunPhase::Verifying
+                            } else {
+                                // A single-Task legacy verification moves the Run-level
+                                // aggregate forward only after it has independently passed.
+                                RunPhase::Running
+                            };
+                            if !failed.is_empty() { run.failure_code = Some("independent_verification_failed".to_owned()); }
+                        }
+                    } else if !failed.is_empty() && run.phase != RunPhase::Cancelling {
+                        run.phase = RunPhase::Failed;
+                        run.failure_code = Some("independent_verification_failed".to_owned());
                     }
-                    run.final_revision = Some(evidence.source_revision.clone());
-                    run.verifier_id = Some(evidence.verifier_id.clone());
-                    run.verification_evidence = Some(evidence);
-                    if run.phase != RunPhase::Cancelling {
-                        run.phase = if failed.is_empty() { RunPhase::Verifying } else { RunPhase::Failed };
-                        if !failed.is_empty() { run.failure_code = Some("independent_verification_failed".to_owned()); }
+                    if failed.is_empty() && run.phase == RunPhase::Running {
+                        // Dependency readiness is a reducer fact derived only
+                        // from durable independent PASS evidence. Do not require
+                        // a separate Core-issued mark-ready command between DAG
+                        // Tasks; that would split scheduler authority.
+                        let newly_ready = run.tasks.iter().filter_map(|(candidate_id, candidate)| {
+                            let prerequisites_passed = candidate.dependencies.iter().all(|dependency| {
+                                run.tasks.get(dependency).is_some_and(|prior| prior.verified_revision.is_some())
+                            });
+                            (prerequisites_passed && candidate.verified_revision.is_none()
+                                && candidate.active_attempt.is_none()
+                                && candidate.pending_verification_attempt.is_none()
+                                && !candidate.unknown_effect && !candidate.ready)
+                                .then(|| candidate_id.clone())
+                        }).collect::<Vec<_>>();
+                        for candidate_id in newly_ready {
+                            if let Some(candidate) = run.tasks.get_mut(&candidate_id) {
+                                candidate.ready = true;
+                            }
+                        }
                     }
                 } else {
                     task.pending_verification_attempt = Some(attempt_id.clone());
@@ -8496,6 +10665,38 @@ impl ManagedSnapshot {
                     None,
                     replaying_owner_log,
                 )?;
+            }
+            ManagedCommand::BeginTaskVerification {
+                run_id, task_id, attempt_id, source_revision, verifier_id,
+                receipt_basis_digest,
+            } => {
+                managed_digest(source_revision)?;
+                principal(verifier_id)?;
+                blake3_digest(receipt_basis_digest)?;
+                let run = self.runs.get(run_id).ok_or(ManagedError::Conflict("verification Run is missing"))?;
+                let task = run.tasks.get(task_id).ok_or(ManagedError::Conflict("verification Task is missing"))?;
+                let attempt = self.attempts.get(attempt_id).ok_or(ManagedError::Conflict("verification Attempt is missing"))?;
+                let actual_basis = successful_task_receipt_basis_digest(run_id, run, &self.attempts)?;
+                let spec = self.specs.get(&run.spec_id).ok_or(ManagedError::Conflict("accepted SpecVersion is missing"))?;
+                if run.phase != RunPhase::Running
+                    || task.active_attempt.as_deref() != Some(attempt_id)
+                    || task.pending_verification_attempt.is_some()
+                    || task.unknown_effect || task.verified_revision.is_some()
+                    || attempt.run_id != *run_id || attempt.task_id != *task_id
+                    || attempt.phase != AttemptPhase::Executing || attempt.owner_epoch == 0
+                    || attempt.verifier_evidence.is_some() || attempt.verifier_intents.len() != 0
+                    || !live_coding_workspace_head(attempt).is_ok_and(|head| head == *source_revision)
+                    || actual_basis != *receipt_basis_digest
+                    || verifier_id == &attempt.executor_principal
+                    || verifier_id == &spec.content.proposed_by
+                    || spec.reviewer_id.as_deref() == Some(verifier_id.as_str())
+                    || spec.accepted_by.as_deref() == Some(verifier_id.as_str())
+                {
+                    return Err(ManagedError::Conflict("task verifier start is stale or outside the exact live Attempt"));
+                }
+                self.runs.get_mut(run_id).and_then(|run| run.tasks.get_mut(task_id))
+                    .ok_or(ManagedError::Conflict("verification Task disappeared"))?
+                    .pending_verification_attempt = Some(attempt_id.clone());
             }
             ManagedCommand::BeginVerificationWithReceiptBasis {
                 run_id,
@@ -8772,31 +10973,49 @@ impl ManagedSnapshot {
                     .specs
                     .get(&run.spec_id)
                     .ok_or(ManagedError::Conflict("spec missing"))?;
-                let Some(evidence) = run.verification_evidence.as_ref() else {
-                    return Err(ManagedError::Conflict(
-                        "typed independent verifier evidence is missing",
-                    ));
-                };
-                if evidence.source_revision != *final_revision
-                    || Some(evidence.verifier_id.as_str()) != run.verifier_id.as_deref()
-                    || evidence.evidence_digest != verification_evidence_digest(evidence)
-                    || validate_verification_evidence(evidence).is_err()
-                {
-                    return Err(ManagedError::Conflict(
-                        "typed independent verifier evidence is stale or invalid",
-                    ));
-                }
-                if spec.content.criteria.iter().any(|criterion| {
-                    run.criterion_evidence
-                        .get(&criterion.id)
-                        .is_none_or(|proof| {
-                            proof.source_revision != *final_revision
-                                || Some(proof.verifier_id.as_str()) != run.verifier_id.as_deref()
+                let mut criteria = BTreeSet::new();
+                for (task_id, task) in &run.tasks {
+                    let Some(task_evidence) = task.verification_evidence.as_ref() else {
+                        return Err(ManagedError::Conflict("required Task has no typed independent evidence"));
+                    };
+                    let attempt = self.attempts.get(&task_evidence.attempt_id)
+                        .ok_or(ManagedError::Conflict("verified Task Attempt is missing"))?;
+                    let Some(evidence) = attempt.verifier_evidence.as_ref() else {
+                        return Err(ManagedError::Conflict("verified Task Attempt has no trusted verifier evidence"));
+                    };
+                    let receipt_digest = attempt.receipt_digest.as_deref()
+                        .ok_or(ManagedError::Conflict("verified Task Attempt has no settled receipt"))?;
+                    let task_criteria = task.criterion_ids.iter().map(String::as_str).collect::<BTreeSet<_>>();
+                    let evidence_criteria = evidence.criteria.iter().map(|item| item.criterion_id.as_str()).collect::<BTreeSet<_>>();
+                    if task.unknown_effect || task.active_attempt.is_some() || task.pending_verification_attempt.is_some()
+                        || task.verified_revision.as_deref() != Some(task_evidence.source_revision.as_str())
+                        || task_evidence.evidence_digest != task_typed_verification_digest(
+                            task_id, &task_evidence.attempt_id, receipt_digest, &task.criterion_ids, evidence,
+                        )
+                        || attempt.run_id != *run_id || attempt.task_id != *task_id
+                        || attempt.phase != AttemptPhase::Succeeded
+                        || attempt.effects.is_empty() || attempt.effects.len() != attempt.effect_receipts.len()
+                        || attempt.effect_receipts.values().any(|receipt| {
+                            receipt.target_receipt_digest.is_none() || receipt.outcome == AttemptEffectOutcomeV1::Unknown
                         })
-                }) {
-                    return Err(ManagedError::Conflict(
-                        "missing or stale final-revision evidence",
-                    ));
+                        || evidence.source_revision != task_evidence.source_revision
+                        || evidence.verifier_id != task_evidence.verifier_id
+                        || evidence.profile.owner_epoch != attempt.owner_epoch
+                        || evidence.evidence_digest != verification_evidence_digest(evidence)
+                        || validate_verification_evidence(evidence).is_err()
+                        || task_criteria.is_empty() || task_criteria.len() != task.criterion_ids.len()
+                        || task_criteria != evidence_criteria
+                        || task.criterion_ids.iter().any(|criterion| !criteria.insert(criterion.as_str()))
+                        || task.dependencies.iter().any(|dependency| {
+                            run.tasks.get(dependency).is_none_or(|prior| prior.verified_revision.is_none())
+                        })
+                    {
+                        return Err(ManagedError::Conflict("Task aggregate evidence or settled receipt is stale or incomplete"));
+                    }
+                }
+                let accepted = spec.content.criteria.iter().map(|criterion| criterion.id.as_str()).collect::<BTreeSet<_>>();
+                if criteria != accepted {
+                    return Err(ManagedError::Conflict("aggregate Task evidence does not cover the accepted criteria exactly once"));
                 }
                 run.phase = RunPhase::Succeeded;
             }
@@ -8943,6 +11162,529 @@ pub struct ManagedControl {
     cursor: Option<CursorV1>,
 }
 
+/// Durable per-managed-Attempt child-message admission and receipt journal.
+/// It owns neither the managed Attempt nor the Core transcript; every operation
+/// is compare-only against the HostKernel-resolved authority pins.
+pub(crate) struct ManagedMessageJournalV1 {
+    log: OwnerLogV2,
+    attempt_id: String,
+    owner_epoch: u64,
+    entries: BTreeMap<String, ManagedMessageJournalEntryV1>,
+    completed_turns: BTreeMap<u64, ManagedProviderTurnCompletionV1>,
+    cursor: Option<CursorV1>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ManagedMessageJournalEntryV1 {
+    pub(crate) pins_digest: String,
+    pub(crate) challenge_id: String,
+    pub(crate) effect_id: String,
+    pub(crate) input_digest: String,
+    pub(crate) expires_at_unix_ms: u64,
+    pub(crate) capability_lease_digest: Option<String>,
+    pub(crate) inbox_receipt_digest: Option<String>,
+    pub(crate) receipt_digest: Option<String>,
+    /// A follow-up consumes exactly one completed provider-turn receipt. Queue
+    /// records keep these fields empty and can never wake the child.
+    pub(crate) completed_turn_receipt_digest: Option<String>,
+    pub(crate) wake_receipt_digest: Option<String>,
+    pub(crate) next_request_sequence: Option<u64>,
+    /// A follow-up wake is a one-use durable OwnerLog transition. The stable
+    /// request and current scope pins make a retry return the same receipt.
+    pub(crate) wake_claim_request_id: Option<String>,
+    pub(crate) wake_claim_digest: Option<String>,
+    pub(crate) wake_claim_scope_digest: Option<String>,
+    pub(crate) wake_claim_receipt_digest: Option<String>,
+    pub(crate) owner_epoch: u64,
+    pub(crate) sequence: u64,
+    pub(crate) mode: String,
+    pub(crate) status: String,
+}
+
+impl ManagedMessageJournalV1 {
+    pub(crate) fn open(root: &Path, attempt_id: &str, owner_epoch: u64) -> Result<Self, ManagedError> {
+        id(attempt_id)?;
+        let owner = OwnerIdentity::new("managed_attempt_message_mailbox".to_owned(), attempt_id.to_owned())?;
+        let log = OwnerLogV2::open(root, owner, DurabilityProfile::RunDurable)?;
+        let mut journal = Self { log, attempt_id: attempt_id.to_owned(), owner_epoch,
+            entries: BTreeMap::new(), completed_turns: BTreeMap::new(), cursor: None };
+        journal.replay()?;
+        let unresolved = journal.entries.iter().filter(|(_, entry)|
+            entry.owner_epoch != owner_epoch && matches!(entry.status.as_str(), "PREPARED" | "ADMITTED"))
+            .map(|(id, entry)| (id.clone(), entry.pins_digest.clone())).collect::<Vec<_>>();
+        for (message_id, pins_digest) in unresolved {
+            journal.append(&message_id, "managed_message_unknown", json!({
+                "messageID": message_id, "pinsDigest": pins_digest, "attemptID": journal.attempt_id,
+                "ownerEpoch": owner_epoch, "reason": "owner_epoch_recovery", "status": "UNKNOWN"
+            }))?;
+            journal.entries.get_mut(&message_id).expect("existing entry").status = "UNKNOWN".to_owned();
+        }
+        Ok(journal)
+    }
+
+    pub(crate) fn get(&self, message_id: &str) -> Option<&ManagedMessageJournalEntryV1> { self.entries.get(message_id) }
+
+    pub(crate) fn pending_count(&self) -> usize { self.entries.values().filter(|entry|
+        entry.status == "PREPARED" || entry.status == "ADMITTED").count() }
+
+    pub(crate) fn next_sequence(&self) -> u64 { self.entries.values().map(|entry| entry.sequence).max().unwrap_or(0).saturating_add(1) }
+
+    /// Persist a final-turn marker only from HostKernel-verified latest SETTLED
+    /// OwnerLog facts. Exact retries return the original receipt; changed pins
+    /// conflict, and a receipt from another owner epoch cannot authorize a wake.
+    pub(crate) fn complete_turn(&mut self, record: ManagedProviderTurnCompletionV1) -> Result<String, ManagedError> {
+        if record.attempt_id != self.attempt_id || record.owner_epoch != self.owner_epoch
+            || record.request_sequence == 0 || record.request_id.is_empty()
+            || record.provider_request_id.is_empty() || record.assistant_entry_id.is_empty()
+            || blake3_digest(&record.context_selection_digest).is_err()
+            || blake3_digest(&record.response_digest).is_err()
+            || blake3_digest(&record.usage_digest).is_err()
+            || blake3_digest(&record.dispatch_settlement_digest).is_err() {
+            return Err(ManagedError::Invalid("managed completed-turn pins are invalid"));
+        }
+        if let Some(existing) = self.completed_turns.get(&record.request_sequence) {
+            return if existing.attempt_id == record.attempt_id && existing.owner_epoch == record.owner_epoch
+                && existing.request_sequence == record.request_sequence && existing.request_id == record.request_id
+                && existing.context_selection_digest == record.context_selection_digest
+                && existing.provider_request_id == record.provider_request_id
+                && existing.assistant_entry_id == record.assistant_entry_id
+                && existing.response_digest == record.response_digest && existing.usage_digest == record.usage_digest
+                && existing.dispatch_settlement_digest == record.dispatch_settlement_digest {
+                Ok(existing.receipt_digest.clone())
+            }
+                else { Err(ManagedError::Conflict("managed completed-turn replay differs")) };
+        }
+        if self.completed_turns.keys().next_back().is_some_and(|sequence| *sequence >= record.request_sequence) {
+            return Err(ManagedError::Conflict("managed completed-turn sequence is stale"));
+        }
+        let event_key = record.provider_request_id.clone();
+        let receipt = self.append(&event_key, "managed_provider_turn_completed", json!({
+            "attemptID": record.attempt_id,
+            "ownerEpoch": record.owner_epoch,
+            "requestSequence": record.request_sequence,
+            "requestID": record.request_id,
+            "contextSelectionDigest": record.context_selection_digest,
+            "providerRequestID": record.provider_request_id,
+            "assistantEntryID": record.assistant_entry_id,
+            "responseDigest": record.response_digest,
+            "usageDigest": record.usage_digest,
+            "dispatchSettlementDigest": record.dispatch_settlement_digest,
+        }))?;
+        let mut persisted = record;
+        persisted.receipt_digest = receipt.clone();
+        self.completed_turns.insert(persisted.request_sequence, persisted);
+        Ok(receipt)
+    }
+
+    pub(crate) fn completed_turn(&self, sequence: u64) -> Option<&ManagedProviderTurnCompletionV1> {
+        self.completed_turns.get(&sequence)
+    }
+
+    pub(crate) fn latest_completed_turn_sequence(&self) -> u64 {
+        self.completed_turns.keys().next_back().copied().unwrap_or(0)
+    }
+
+    pub(crate) fn completed_turn_sequence_before(&self, sequence: u64) -> u64 {
+        self.completed_turns.range(..sequence).next_back().map(|(key, _)| *key).unwrap_or(0)
+    }
+
+    pub(crate) fn prepare(&mut self, pins: &ManagedMessageAuthorityPinsV1, challenge_id: &str,
+        effect_id: &str, input_digest: &str, expires_at_unix_ms: u64) -> Result<(), ManagedError> {
+        if pins.attempt_id != self.attempt_id || pins.owner_epoch != self.owner_epoch
+            || pins.message_id.is_empty() || pins.message_id.len() > 256
+            || pins.parent_session_id.is_empty() || pins.child_session_id.is_empty()
+            || pins.payload_bytes == 0 || pins.payload_bytes > 16_384
+            || pins.mailbox_capacity == 0 || pins.mailbox_capacity > 32
+            || pins.mailbox_sequence == 0 || pins.mailbox_sequence > 1024
+            || expires_at_unix_ms == 0
+        { return Err(ManagedError::Invalid("managed message prepare pins are invalid")); }
+        id(challenge_id)?; id(effect_id)?; blake3_digest(input_digest)?;
+        let pins_digest = pins.authority_digest().map_err(|_| ManagedError::Invalid("managed message pins digest failed"))?;
+        if let Some(existing) = self.entries.get(&pins.message_id) {
+            return if existing.pins_digest == pins_digest && existing.challenge_id == challenge_id
+                && existing.effect_id == effect_id && existing.input_digest == input_digest { Ok(()) }
+                else { Err(ManagedError::Conflict("managed message ID replay differs from its durable prepare")) };
+        }
+        if self.entries.len() >= 256 || self.pending_count() >= usize::from(pins.mailbox_capacity)
+            || pins.mailbox_sequence != self.next_sequence() {
+            return Err(ManagedError::Conflict("managed message mailbox is full or sequence is stale"));
+        }
+        self.append(&pins.message_id, "managed_message_prepared", json!({
+            "messageID": pins.message_id, "attemptID": self.attempt_id, "pinsDigest": pins_digest,
+            "challengeID": challenge_id, "effectID": effect_id, "inputDigest": input_digest,
+            "expiresAtUnixMs": expires_at_unix_ms, "ownerEpoch": self.owner_epoch,
+            "sequence": pins.mailbox_sequence, "mode": pins.delivery_mode.name(), "status": "PREPARED"
+        }))?;
+        self.entries.insert(pins.message_id.clone(), ManagedMessageJournalEntryV1 {
+            pins_digest, challenge_id: challenge_id.to_owned(), effect_id: effect_id.to_owned(),
+            input_digest: input_digest.to_owned(), expires_at_unix_ms, capability_lease_digest: None,
+            inbox_receipt_digest: None, receipt_digest: None, owner_epoch: self.owner_epoch,
+            completed_turn_receipt_digest: None, wake_receipt_digest: None, next_request_sequence: None,
+            wake_claim_request_id: None, wake_claim_digest: None, wake_claim_scope_digest: None,
+            wake_claim_receipt_digest: None,
+            sequence: pins.mailbox_sequence, mode: pins.delivery_mode.name().to_owned(), status: "PREPARED".to_owned(),
+        });
+        Ok(())
+    }
+
+    pub(crate) fn admit(&mut self, message_id: &str, pins_digest: &str, challenge_id: &str,
+        lease_digest: &str) -> Result<(), ManagedError> {
+        let entry = self.entries.get(message_id).ok_or(ManagedError::Conflict("managed message prepare is missing"))?;
+        if entry.pins_digest == pins_digest && entry.challenge_id == challenge_id
+            && entry.status == "ADMITTED"
+            && entry.capability_lease_digest.as_deref() == Some(lease_digest) {
+            return Ok(());
+        }
+        if entry.pins_digest != pins_digest || entry.challenge_id != challenge_id || entry.status != "PREPARED"
+            || !lease_digest.starts_with("blake3:") { return Err(ManagedError::Conflict("managed message admission conflicts")); }
+        self.append(message_id, "managed_message_admitted", json!({ "messageID": message_id,
+            "attemptID": self.attempt_id, "pinsDigest": pins_digest, "challengeID": challenge_id,
+            "capabilityLeaseDigest": lease_digest, "ownerEpoch": self.owner_epoch, "status": "ADMITTED" }))?;
+        let entry = self.entries.get_mut(message_id).expect("validated message");
+        entry.capability_lease_digest = Some(lease_digest.to_owned()); entry.status = "ADMITTED".to_owned();
+        Ok(())
+    }
+
+    /// Reconciles a possibly delivered child message without retrying it. The
+    /// receipt is intentionally terminal: after admission, a lost Core reply
+    /// cannot be converted back into permission to append or wake the child.
+    pub(crate) fn mark_unknown(&mut self, message_id: &str, pins_digest: &str,
+        reason: &str) -> Result<(), ManagedError> {
+        let entry = self.entries.get(message_id).ok_or(ManagedError::Conflict("managed message prepare is missing"))?;
+        if entry.pins_digest != pins_digest || !matches!(entry.status.as_str(), "PREPARED" | "ADMITTED" | "UNKNOWN")
+            || reason.is_empty() || reason.len() > 64
+            || !reason.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_') {
+            return Err(ManagedError::Conflict("managed message UNKNOWN transition conflicts"));
+        }
+        if entry.status == "UNKNOWN" { return Ok(()); }
+        self.append(message_id, "managed_message_unknown", json!({
+            "messageID": message_id, "attemptID": self.attempt_id,
+            "pinsDigest": pins_digest, "ownerEpoch": self.owner_epoch,
+            "reason": reason, "status": "UNKNOWN"
+        }))?;
+        self.entries.get_mut(message_id).expect("validated message").status = "UNKNOWN".to_owned();
+        Ok(())
+    }
+
+    pub(crate) fn commit(&mut self, message_id: &str, pins_digest: &str, lease_digest: &str,
+        inbox_digest: &str, completed_turn_receipt_digest: Option<&str>) -> Result<(String, Option<String>, Option<u64>), ManagedError> {
+        let entry = self.entries.get(message_id).ok_or(ManagedError::Conflict("managed message prepare is missing"))?;
+        if entry.status == "COMMITTED" && entry.pins_digest == pins_digest
+            && entry.capability_lease_digest.as_deref() == Some(lease_digest)
+            && entry.inbox_receipt_digest.as_deref() == Some(inbox_digest)
+            && entry.completed_turn_receipt_digest.as_deref() == completed_turn_receipt_digest {
+            return Ok((entry.receipt_digest.clone().ok_or(ManagedError::Conflict("managed message receipt is missing"))?,
+                entry.wake_receipt_digest.clone(), entry.next_request_sequence));
+        }
+        if entry.pins_digest != pins_digest || entry.status != "ADMITTED"
+            || entry.capability_lease_digest.as_deref() != Some(lease_digest)
+            || sha256_digest(inbox_digest).is_err() { return Err(ManagedError::Conflict("managed message commit conflicts")); }
+        let next_request_sequence = match (entry.mode.as_str(), completed_turn_receipt_digest) {
+            ("queue", None) => None,
+            ("queue", Some(_)) => return Err(ManagedError::Conflict("queued message cannot consume a completed turn")),
+            ("follow_up", Some(receipt)) => {
+                blake3_digest(receipt)?;
+                let completed = self.completed_turns.values().find(|turn| turn.receipt_digest == receipt)
+                    .ok_or(ManagedError::Conflict("follow-up completed-turn receipt is unavailable"))?;
+                if completed.owner_epoch != self.owner_epoch || completed.attempt_id != self.attempt_id
+                    || self.entries.values().any(|other| other.completed_turn_receipt_digest.as_deref() == Some(receipt)) {
+                    return Err(ManagedError::Conflict("completed-turn receipt is stale or already consumed"));
+                }
+                Some(completed.request_sequence.checked_add(1).ok_or(ManagedError::Invalid("provider request sequence overflow"))?)
+            }
+            ("follow_up", None) => return Err(ManagedError::Conflict("follow-up requires a completed-turn receipt")),
+            _ => return Err(ManagedError::Invalid("managed delivery mode is invalid")),
+        };
+        let wake_receipt = next_request_sequence.map(|sequence| format!("blake3:{}", blake3::hash(format!(
+            "horizoncode.managed-message-wake.v1\0{}\0{}\0{}\0{}\0{}\0{}",
+            self.attempt_id, self.owner_epoch, message_id, pins_digest,
+            completed_turn_receipt_digest.unwrap_or_default(), sequence
+        ).as_bytes()).to_hex()));
+        let receipt = self.append(message_id, "managed_message_committed", json!({
+            "messageID": message_id, "attemptID": self.attempt_id, "pinsDigest": pins_digest,
+            "capabilityLeaseDigest": lease_digest, "inboxReceiptDigest": inbox_digest,
+            "ownerEpoch": self.owner_epoch, "status": "COMMITTED",
+            "completedTurnReceiptDigest": completed_turn_receipt_digest,
+            "wakeReceiptDigest": wake_receipt,
+            "nextRequestSequence": next_request_sequence
+        }))?;
+        let entry = self.entries.get_mut(message_id).expect("validated message");
+        entry.inbox_receipt_digest = Some(inbox_digest.to_owned()); entry.receipt_digest = Some(receipt.clone());
+        entry.completed_turn_receipt_digest = completed_turn_receipt_digest.map(str::to_owned);
+        entry.wake_receipt_digest = wake_receipt.clone();
+        entry.next_request_sequence = next_request_sequence;
+        entry.status = "COMMITTED".to_owned(); Ok((receipt, wake_receipt, next_request_sequence))
+    }
+
+    /// Consume a committed follow-up wake exactly once before Core advances the
+    /// managed provider request. Same request/scope retries return the durable
+    /// claim receipt; any changed request or scope conflicts.
+    pub(crate) fn claim_wake(
+        &mut self,
+        request: &crate::protocol::ManagedMessageWakeClaimRequestV1,
+    ) -> Result<crate::protocol::ManagedMessageWakeClaimReceiptV1, ManagedError> {
+        let message_id = &request.pins.message_id;
+        let entry = self.entries.get(message_id).ok_or(ManagedError::Conflict("managed wake message is unavailable"))?;
+        let pins_digest = entry.pins_digest.clone();
+        let inbox_receipt_digest = entry.inbox_receipt_digest.clone();
+        let completed_turn_receipt_digest = entry.completed_turn_receipt_digest.clone();
+        let wake_receipt_digest = entry.wake_receipt_digest.clone();
+        let next_request_sequence = entry.next_request_sequence;
+        if entry.status != "COMMITTED" || entry.mode != "follow_up"
+            || entry.owner_epoch != self.owner_epoch
+            || pins_digest != request.pins.authority_digest().map_err(|_| ManagedError::Invalid("managed wake pins digest failed"))?
+            || inbox_receipt_digest.as_deref() != Some(request.inbox_receipt_digest.as_str())
+            || completed_turn_receipt_digest.as_deref() != Some(request.completed_turn_receipt_digest.as_str())
+            || wake_receipt_digest.as_deref() != Some(request.wake_receipt_digest.as_str())
+            || next_request_sequence != Some(request.next_request_sequence)
+        {
+            return Err(ManagedError::Conflict("managed wake claim differs from its committed one-use follow-up"));
+        }
+        let current_scope_digest = request.current_consumer.digest()
+            .map_err(|_| ManagedError::Invalid("managed wake consumer scope digest failed"))?;
+        let completion = self.completed_turns.values().find(|turn|
+            turn.receipt_digest == request.completed_turn_receipt_digest).ok_or(
+                ManagedError::Conflict("managed wake completed-turn receipt is unavailable"))?;
+        if completion.attempt_id != self.attempt_id || completion.owner_epoch != self.owner_epoch
+            || self.completed_turns.keys().next_back() != Some(&completion.request_sequence)
+            || request.current_consumer.request_sequence != Some(completion.request_sequence)
+            || request.current_consumer.request_id.as_deref() != Some(completion.request_id.as_str())
+            || request.current_consumer.context_selection_digest.as_deref() != Some(completion.context_selection_digest.as_str())
+            || request.next_request_sequence != completion.request_sequence.saturating_add(1) {
+            return Err(ManagedError::Conflict("managed wake is not for the latest completed provider turn"));
+        }
+        if let Some(existing) = self.entries.get(message_id).and_then(|entry| entry.wake_claim_receipt_digest.as_ref()) {
+            let claimed = self.entries.get(message_id).expect("checked managed message");
+            if claimed.wake_claim_request_id.as_deref() == Some(request.request_id.as_str())
+                && claimed.wake_claim_digest.as_deref() == Some(request.wake_claim_digest.as_str())
+                && claimed.wake_claim_scope_digest.as_deref() == Some(current_scope_digest.as_str()) {
+                return crate::protocol::ManagedMessageWakeClaimReceiptV1::new(request.clone(), "CLAIMED")
+                    .filter(|receipt| &receipt.wake_claim_receipt_digest == existing)
+                    .ok_or(ManagedError::Invalid("managed wake claim receipt could not be reconstructed"));
+            }
+            return Err(ManagedError::Conflict("managed follow-up wake was already claimed by another request or scope"));
+        }
+        let receipt = crate::protocol::ManagedMessageWakeClaimReceiptV1::new(request.clone(), "CLAIMED")
+            .ok_or(ManagedError::Invalid("managed wake claim receipt could not be created"))?;
+        let request_json = request.to_json_value()
+            .map_err(|_| ManagedError::Invalid("managed wake claim request projection failed"))?;
+        self.append(message_id, "managed_message_wake_claimed", json!({
+            "messageID": message_id,
+            "attemptID": self.attempt_id,
+            "pinsDigest": pins_digest,
+            "requestID": request.request_id,
+            "wakeClaimDigest": request.wake_claim_digest,
+            "currentScopeDigest": current_scope_digest,
+            "inboxReceiptDigest": request.inbox_receipt_digest,
+            "completedTurnReceiptDigest": request.completed_turn_receipt_digest,
+            "wakeReceiptDigest": request.wake_receipt_digest,
+            "nextRequestSequence": request.next_request_sequence,
+            "wakeClaimReceiptDigest": receipt.wake_claim_receipt_digest,
+            "request": request_json,
+        }))?;
+        let receipt_digest = receipt.wake_claim_receipt_digest.clone();
+        let entry = self.entries.get_mut(message_id).expect("validated message");
+        entry.wake_claim_request_id = Some(request.request_id.clone());
+        entry.wake_claim_digest = Some(request.wake_claim_digest.clone());
+        entry.wake_claim_scope_digest = Some(current_scope_digest);
+        entry.wake_claim_receipt_digest = Some(receipt_digest.clone());
+        Ok(receipt)
+    }
+
+    /// Require the exact durable wake claim when a completed provider turn is
+    /// being advanced into its next request. Ordinary tool-cycle context
+    /// advances have no completed-turn receipt and continue through the normal
+    /// path; a finished turn cannot be resumed by inventing a ContextSelection.
+    pub(crate) fn validate_context_advance_wake(
+        &self,
+        scope: &crate::protocol::ManagedAttemptScopeV1,
+        selection: &crate::context_selection::ContextSelectionV1,
+        receipt: Option<&crate::protocol::ManagedMessageWakeClaimReceiptV1>,
+    ) -> Result<(), ManagedError> {
+        let prior_sequence = scope.request_sequence
+            .ok_or(ManagedError::Conflict("managed context advance lacks its prior request sequence"))?;
+        let prior_request_id = scope.request_id.as_deref()
+            .ok_or(ManagedError::Conflict("managed context advance lacks its prior request ID"))?;
+        let latest = self.completed_turns.values().next_back();
+        let completed = latest.filter(|turn| turn.request_sequence == prior_sequence
+            && turn.request_id == prior_request_id
+            && Some(turn.context_selection_digest.as_str()) == scope.context_selection_digest.as_deref());
+        match (completed, receipt) {
+            (None, None) => Ok(()),
+            (None, Some(_)) => Err(ManagedError::Conflict("managed wake claim does not correspond to the current completed turn")),
+            (Some(_), None) => Err(ManagedError::Conflict("completed managed turn requires its one-use follow-up wake claim")),
+            (Some(turn), Some(receipt)) => {
+                let request = &receipt.request;
+                let sequence = selection.request_sequence
+                    .ok_or(ManagedError::Conflict("follow-up ContextSelection lacks its request sequence"))?;
+                let current_scope_digest = scope.digest()
+                    .map_err(|_| ManagedError::Invalid("managed wake scope digest failed"))?;
+                if receipt.status != "CLAIMED"
+                    || request.current_consumer != *scope
+                    || request.pins.attempt_id != self.attempt_id
+                    || request.current_consumer.request_id.as_deref() != Some(turn.request_id.as_str())
+                    || request.current_consumer.request_sequence != Some(turn.request_sequence)
+                    || request.current_consumer.context_selection_digest.as_deref() != Some(turn.context_selection_digest.as_str())
+                    || request.request_id != selection.request_id
+                    || request.next_request_sequence != sequence
+                    || sequence != prior_sequence.saturating_add(1)
+                    || receipt.wake_claim_receipt_digest != crate::protocol::ManagedMessageWakeClaimReceiptV1::new(
+                        request.clone(), "CLAIMED",
+                    ).ok().map(|expected| expected.wake_claim_receipt_digest).unwrap_or_default()
+                {
+                    return Err(ManagedError::Conflict("managed context advance differs from its exact wake claim"));
+                }
+                let entry = self.entries.get(&request.pins.message_id)
+                    .ok_or(ManagedError::Conflict("managed wake claim message is unavailable"))?;
+                if entry.status != "COMMITTED" || entry.mode != "follow_up"
+                    || entry.owner_epoch != self.owner_epoch
+                    || entry.wake_claim_request_id.as_deref() != Some(request.request_id.as_str())
+                    || entry.wake_claim_digest.as_deref() != Some(request.wake_claim_digest.as_str())
+                    || entry.wake_claim_scope_digest.as_deref() != Some(current_scope_digest.as_str())
+                    || entry.wake_claim_receipt_digest.as_deref() != Some(receipt.wake_claim_receipt_digest.as_str())
+                    || entry.completed_turn_receipt_digest.as_deref() != Some(request.completed_turn_receipt_digest.as_str())
+                    || entry.wake_receipt_digest.as_deref() != Some(request.wake_receipt_digest.as_str())
+                    || entry.next_request_sequence != Some(sequence)
+                {
+                    return Err(ManagedError::Conflict("managed context advance wake claim is not durably committed"));
+                }
+                Ok(())
+            }
+        }
+    }
+
+    pub(crate) fn abort(&mut self, message_id: &str, pins_digest: &str) -> Result<(), ManagedError> {
+        let entry = self.entries.get(message_id).ok_or(ManagedError::Conflict("managed message prepare is missing"))?;
+        if entry.pins_digest != pins_digest || entry.status != "PREPARED" || entry.owner_epoch != self.owner_epoch {
+            return Err(ManagedError::Conflict("managed message cannot be aborted in this state"));
+        }
+        self.append(message_id, "managed_message_aborted", json!({ "messageID": message_id,
+            "attemptID": self.attempt_id, "pinsDigest": pins_digest, "ownerEpoch": self.owner_epoch,
+            "status": "ABORTED" }))?;
+        self.entries.get_mut(message_id).expect("validated message").status = "ABORTED".to_owned();
+        Ok(())
+    }
+
+    fn append(&mut self, message_id: &str, kind: &str, data: Value) -> Result<String, ManagedError> {
+        let time_ms = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_| ManagedError::Invalid("system time unavailable"))?.as_millis() as u64;
+        let event = OwnerEventInput { schema_version: OWNER_EVENT_SCHEMA_VERSION_V1, time_ms,
+            kind: kind.to_owned(), data, delivery_id: None, command_digest: None };
+        let delivery_id = format!("{message_id}:{kind}");
+        let digest = OwnerLogV2::command_digest(&delivery_id, std::slice::from_ref(&event))?;
+        let mut event = event; event.delivery_id = Some(delivery_id.clone()); event.command_digest = Some(digest.clone());
+        let receipt = self.log.append_batch(&delivery_id, &digest, &[event], self.cursor.as_ref())?;
+        self.cursor = Some(receipt.owner_cursor.clone()); Ok(format!("blake3:{}", receipt.owner_cursor.event_digest.to_hex()))
+    }
+
+    fn replay(&mut self) -> Result<(), ManagedError> {
+        loop {
+            let batch = self.log.read_after(self.cursor.as_ref(), NonZeroUsize::new(128).unwrap())?;
+            for event in &batch.events {
+                let envelope = event.data.as_object().ok_or(ManagedError::Invalid("managed message log envelope invalid"))?;
+                let payload = envelope.get("payload").and_then(Value::as_object).ok_or(ManagedError::Invalid("managed message payload invalid"))?;
+                let text = |key: &str| payload.get(key).and_then(Value::as_str).ok_or(ManagedError::Invalid("managed message field missing"));
+                let number = |key: &str| payload.get(key).and_then(Value::as_u64).ok_or(ManagedError::Invalid("managed message number missing"));
+                if event.kind == "managed_provider_turn_completed" {
+                    let attempt_id = text("attemptID")?.to_owned();
+                    let request_sequence = number("requestSequence")?;
+                    let record = ManagedProviderTurnCompletionV1 {
+                        attempt_id: attempt_id.clone(), owner_epoch: number("ownerEpoch")?, request_sequence,
+                        request_id: text("requestID")?.to_owned(),
+                        context_selection_digest: text("contextSelectionDigest")?.to_owned(),
+                        provider_request_id: text("providerRequestID")?.to_owned(),
+                        assistant_entry_id: text("assistantEntryID")?.to_owned(),
+                        response_digest: text("responseDigest")?.to_owned(), usage_digest: text("usageDigest")?.to_owned(),
+                        dispatch_settlement_digest: text("dispatchSettlementDigest")?.to_owned(),
+                        receipt_digest: format!("blake3:{}", event.event_digest.to_hex()),
+                    };
+                    if attempt_id != self.attempt_id || request_sequence == 0
+                        || blake3_digest(&record.context_selection_digest).is_err()
+                        || blake3_digest(&record.response_digest).is_err()
+                        || blake3_digest(&record.usage_digest).is_err()
+                        || blake3_digest(&record.dispatch_settlement_digest).is_err()
+                        || self.completed_turns.insert(request_sequence, record).is_some() {
+                        return Err(ManagedError::Conflict("managed completed-turn log replay conflicts"));
+                    }
+                    continue;
+                }
+                if text("attemptID")? != self.attempt_id { return Err(ManagedError::Conflict("managed message owner mismatch")); }
+                let message_id = text("messageID")?.to_owned(); let pins_digest = text("pinsDigest")?.to_owned();
+                match event.kind.as_str() {
+                    "managed_message_prepared" => {
+                        if self.entries.len() >= 256 || self.entries.contains_key(&message_id) { return Err(ManagedError::Conflict("managed message replay conflict")); }
+                        self.entries.insert(message_id, ManagedMessageJournalEntryV1 { pins_digest,
+                            challenge_id: text("challengeID")?.to_owned(), effect_id: text("effectID")?.to_owned(),
+                            input_digest: text("inputDigest")?.to_owned(), expires_at_unix_ms: number("expiresAtUnixMs")?,
+                            capability_lease_digest: None, inbox_receipt_digest: None, receipt_digest: None,
+                            completed_turn_receipt_digest: None, wake_receipt_digest: None, next_request_sequence: None,
+                            wake_claim_request_id: None, wake_claim_digest: None, wake_claim_scope_digest: None,
+                            wake_claim_receipt_digest: None,
+                            owner_epoch: number("ownerEpoch")?, sequence: number("sequence")?, mode: text("mode")?.to_owned(), status: "PREPARED".to_owned() });
+                    }
+                    "managed_message_admitted" => { let entry = self.entries.get_mut(&message_id).ok_or(ManagedError::Conflict("managed admission lacks prepare"))?;
+                        if entry.pins_digest != pins_digest || entry.status != "PREPARED" || entry.owner_epoch != number("ownerEpoch")? { return Err(ManagedError::Conflict("managed admission replay conflict")); }
+                        entry.capability_lease_digest = Some(text("capabilityLeaseDigest")?.to_owned()); entry.status = "ADMITTED".to_owned(); }
+                    "managed_message_committed" => { let entry = self.entries.get_mut(&message_id).ok_or(ManagedError::Conflict("managed commit lacks admission"))?;
+                        if entry.pins_digest != pins_digest || entry.status != "ADMITTED" || entry.owner_epoch != number("ownerEpoch")? { return Err(ManagedError::Conflict("managed commit replay conflict")); }
+                        entry.inbox_receipt_digest = Some(text("inboxReceiptDigest")?.to_owned());
+                        entry.completed_turn_receipt_digest = payload.get("completedTurnReceiptDigest").and_then(Value::as_str).map(str::to_owned);
+                        entry.wake_receipt_digest = payload.get("wakeReceiptDigest").and_then(Value::as_str).map(str::to_owned);
+                        entry.next_request_sequence = payload.get("nextRequestSequence").and_then(Value::as_u64);
+                        if (entry.mode == "queue" && (entry.completed_turn_receipt_digest.is_some() || entry.wake_receipt_digest.is_some() || entry.next_request_sequence.is_some()))
+                            || (entry.mode == "follow_up" && (entry.completed_turn_receipt_digest.is_none() || entry.wake_receipt_digest.as_deref().is_none_or(|d| blake3_digest(d).is_err()) || entry.next_request_sequence.is_none())) {
+                            return Err(ManagedError::Conflict("managed message wake receipt replay conflicts"));
+                        }
+                        entry.receipt_digest = Some(format!("blake3:{}", event.event_digest.to_hex())); entry.status = "COMMITTED".to_owned(); }
+                    "managed_message_wake_claimed" => { let entry = self.entries.get_mut(&message_id).ok_or(ManagedError::Conflict("managed wake claim lacks committed message"))?;
+                        if entry.mode != "follow_up" || entry.status != "COMMITTED" || entry.pins_digest != pins_digest
+                            || entry.owner_epoch != self.owner_epoch || entry.wake_claim_receipt_digest.is_some()
+                            || entry.inbox_receipt_digest.as_deref() != Some(text("inboxReceiptDigest")?)
+                            || entry.completed_turn_receipt_digest.as_deref() != Some(text("completedTurnReceiptDigest")?)
+                            || entry.wake_receipt_digest.as_deref() != Some(text("wakeReceiptDigest")?)
+                            || entry.next_request_sequence != Some(number("nextRequestSequence")?) {
+                            return Err(ManagedError::Conflict("managed wake claim replay conflicts with committed message"));
+                        }
+                        let request = crate::protocol::ManagedMessageWakeClaimRequestV1::from_json_value(
+                            payload.get("request").ok_or(ManagedError::Invalid("managed wake request missing"))?
+                        ).ok_or(ManagedError::Invalid("managed wake request is malformed"))?;
+                        if request.pins.message_id != message_id
+                            || request.pins.authority_digest().map_err(|_| ManagedError::Invalid("managed wake pin digest failed"))? != pins_digest
+                            || request.request_id != text("requestID")?
+                            || request.wake_claim_digest != text("wakeClaimDigest")?
+                            || request.inbox_receipt_digest != text("inboxReceiptDigest")?
+                            || request.completed_turn_receipt_digest != text("completedTurnReceiptDigest")?
+                            || request.wake_receipt_digest != text("wakeReceiptDigest")?
+                            || request.next_request_sequence != number("nextRequestSequence")? {
+                            return Err(ManagedError::Conflict("managed wake request differs from its OwnerLog event"));
+                        }
+                        let expected_receipt = crate::protocol::ManagedMessageWakeClaimReceiptV1::new(request.clone(), "CLAIMED")
+                            .ok_or(ManagedError::Invalid("managed wake receipt replay failed"))?;
+                        let request_id = text("requestID")?;
+                        let wake_claim_digest = text("wakeClaimDigest")?;
+                        let current_scope_digest = text("currentScopeDigest")?;
+                        let wake_claim_receipt_digest = text("wakeClaimReceiptDigest")?;
+                        if blake3_digest(current_scope_digest).is_err() || blake3_digest(wake_claim_receipt_digest).is_err()
+                            || request.current_consumer.digest().ok().as_deref() != Some(current_scope_digest)
+                            || expected_receipt.wake_claim_receipt_digest != wake_claim_receipt_digest
+                            || entry.wake_claim_receipt_digest.is_some() {
+                            return Err(ManagedError::Conflict("managed wake claim event is duplicate or malformed"));
+                        }
+                        entry.wake_claim_request_id = Some(request_id.to_owned());
+                        entry.wake_claim_digest = Some(wake_claim_digest.to_owned());
+                        entry.wake_claim_scope_digest = Some(current_scope_digest.to_owned());
+                        entry.wake_claim_receipt_digest = Some(wake_claim_receipt_digest.to_owned());
+                    }
+                    "managed_message_unknown" => { let entry = self.entries.get_mut(&message_id).ok_or(ManagedError::Conflict("UNKNOWN lacks prepare"))?; if entry.pins_digest != pins_digest || !matches!(entry.status.as_str(), "PREPARED" | "ADMITTED") || number("ownerEpoch")? < entry.owner_epoch || number("ownerEpoch")? > self.owner_epoch { return Err(ManagedError::Conflict("UNKNOWN pins or owner epoch differ")); } entry.status = "UNKNOWN".to_owned(); }
+                    "managed_message_aborted" => { let entry = self.entries.get_mut(&message_id).ok_or(ManagedError::Conflict("abort lacks prepare"))?; if entry.pins_digest != pins_digest || entry.status != "PREPARED" || entry.owner_epoch != number("ownerEpoch")? { return Err(ManagedError::Conflict("abort replay conflict")); } entry.status = "ABORTED".to_owned(); }
+                    _ => return Err(ManagedError::Invalid("unknown managed message event")),
+                }
+            }
+            self.cursor = batch.cursor; if !batch.has_more { break; }
+        }
+        Ok(())
+    }
+}
+
 impl ManagedControl {
     pub fn open(root: &Path, goal_id: &str) -> Result<Self, ManagedError> {
         id(goal_id)?;
@@ -8998,6 +11740,12 @@ impl ManagedControl {
                         return Err(ManagedError::Invalid("dispatch quiescence delivery differs from OwnerLog envelope"));
                     }
                 }
+                if let ManagedCommand::SetManagedProviderRequest { record } = &command {
+                    let expected = format!("managed_provider_{}_{}_{}", record.state.to_lowercase(), record.attempt_id, record.request_sequence);
+                    if delivery != expected {
+                        return Err(ManagedError::Invalid("provider request delivery differs from its OwnerLog event"));
+                    }
+                }
                 snapshot.replay(&command)?;
                 if let ManagedCommand::DispatchQuiesced { proof } = &command {
                     let owner_cursor = batch.cursor.as_ref()
@@ -9045,6 +11793,21 @@ impl ManagedControl {
                 break;
             }
         }
+        let mut owner = Self { goal_id: goal_id.to_owned(), log, snapshot, cursor };
+        // A provider request persisted as DISPATCHING may have reached the
+        // provider before process death. Resolve it durably to UNKNOWN before
+        // recovery can observe the Attempt; never replay the request.
+        let unresolved = owner.snapshot.provider_requests.values()
+            .filter(|request| request.state == "DISPATCHING")
+            .cloned().collect::<Vec<_>>();
+        for mut request in unresolved {
+            request.state = "UNKNOWN".to_owned();
+            request.managed_revision = owner.snapshot.revision.checked_add(1)
+                .ok_or(ManagedError::Invalid("managed revision overflow"))?;
+            let revision = owner.snapshot.revision;
+            owner.set_managed_provider_request(revision, request)?;
+        }
+        let mut snapshot = owner.snapshot.clone();
         // After a host crash, ordinary active Attempts remain UNKNOWN. The one
         // exception is a coding Attempt whose complete successful effect chain
         // is already durable and has not entered verifier dispatch: its exact
@@ -9080,12 +11843,8 @@ impl ManagedControl {
                 // unsettled Attempt is not evidence that cancellation completed.
             }
         }
-        Ok(Self {
-            goal_id: goal_id.to_owned(),
-            log,
-            snapshot,
-            cursor,
-        })
+        owner.snapshot = snapshot;
+        Ok(owner)
     }
 
     pub fn snapshot(&self) -> &ManagedSnapshot {
@@ -9113,10 +11872,142 @@ impl ManagedControl {
         })
     }
 
+    /// Resolve the sole live child delivery for authenticated restart recovery.
+    /// This is a read-only projection: it cannot claim, consume, prompt, verify,
+    /// or advance an Attempt. A consumed dispatch without quiescence remains an
+    /// ambiguous delivery that Core must not replay.
+    pub(crate) fn managed_active_attempt_recovery_snapshot(
+        &self,
+        goal_id: &str,
+        run_id: &str,
+        root_session_id: &str,
+        location_id: &str,
+        expected_owner_epoch: u64,
+    ) -> Result<Option<ManagedActiveAttemptRecoverySnapshotV1>, ManagedError> {
+        if goal_id != self.goal_id || goal_id != self.snapshot.owner_goal_id {
+            return Err(ManagedError::Conflict("managed recovery Goal owner mismatch"));
+        }
+        id(run_id)?;
+        id(root_session_id)?;
+        id(location_id)?;
+        if expected_owner_epoch == 0 {
+            return Err(ManagedError::Conflict("managed recovery owner epoch is unavailable"));
+        }
+        let run = self.snapshot.runs.get(run_id)
+            .ok_or(ManagedError::Conflict("managed recovery Run is missing"))?;
+        let link = run.session_link.as_ref()
+            .ok_or(ManagedError::Conflict("managed recovery Run has no pinned root SessionLink"))?;
+        if link.session_id != root_session_id || link.owner_epoch != expected_owner_epoch {
+            return Err(ManagedError::Conflict("managed recovery root SessionLink or owner epoch is stale"));
+        }
+
+        let mut active = Vec::new();
+        for (task_id, task) in &run.tasks {
+            let mut attempt_ids = BTreeSet::new();
+            if let Some(attempt_id) = task.active_attempt.as_deref() { attempt_ids.insert(attempt_id); }
+            if let Some(attempt_id) = task.pending_verification_attempt.as_deref() { attempt_ids.insert(attempt_id); }
+            for attempt_id in attempt_ids {
+                active.push((task_id.as_str(), task, attempt_id));
+            }
+        }
+        if active.is_empty() { return Ok(None); }
+        if active.len() != 1 {
+            return Err(ManagedError::Conflict("managed recovery has multiple active Task Attempts"));
+        }
+        let (task_id, task, attempt_id) = active[0];
+        let attempt = self.snapshot.attempts.get(attempt_id)
+            .ok_or(ManagedError::Conflict("managed recovery active Attempt is missing"))?;
+        if task.active_attempt.as_deref() != Some(attempt_id)
+            || task_id != attempt.task_id
+            || attempt.run_id != run_id
+            || attempt.task_id != task_id
+            || attempt.location_id != location_id
+            || attempt.owner_epoch != expected_owner_epoch
+            || attempt.phase == AttemptPhase::Succeeded
+            || attempt.phase == AttemptPhase::Failed
+        {
+            return Err(ManagedError::Conflict("managed recovery Attempt, Task, Location or owner epoch differs"));
+        }
+        let expected_session_id = format!("ses_managed_{attempt_id}");
+        if attempt.session_id != expected_session_id {
+            return Err(ManagedError::Conflict("managed recovery child Session ID is not the canonical Attempt mapping"));
+        }
+        let title = task.title.as_deref()
+            .ok_or(ManagedError::Conflict("managed recovery Task title is missing"))?;
+        let purpose = task.purpose.as_deref()
+            .ok_or(ManagedError::Conflict("managed recovery Task purpose is missing"))?;
+        validate_task_delivery_text(title, purpose)?;
+        let profile = task.agent_profile_revision.clone()
+            .ok_or(ManagedError::Conflict("managed recovery Task AgentProfile pin is missing"))?;
+        let profile_owner_binding_digest = task.profile_owner_binding_digest.clone()
+            .ok_or(ManagedError::Conflict("managed recovery profile owner binding is missing"))?;
+        managed_digest(&profile_owner_binding_digest)?;
+        let binding = attempt.delegation_binding.as_ref()
+            .ok_or(ManagedError::Conflict("managed recovery DelegationBinding is missing"))?;
+        let binding_digest = binding.digest()
+            .map_err(|_| ManagedError::Invalid("managed recovery binding digest failed"))?;
+        if binding.run_id != run_id || binding.task_id != task_id || binding.attempt_id != attempt_id
+            || binding.owner_epoch != expected_owner_epoch
+            || binding.profile_id != profile.profile_id
+            || binding.profile_revision != profile.revision
+            || binding.profile_digest != profile.definition_digest
+        {
+            return Err(ManagedError::Conflict("managed recovery DelegationBinding differs from pinned Task/Profile"));
+        }
+        let consumed = self.snapshot.dispatch_consumptions.get(attempt_id).cloned();
+        let quiescence = self.snapshot.dispatch_quiescence.get(attempt_id).cloned();
+        if let Some(receipt) = consumed.as_ref() {
+            if receipt.goal_id != goal_id || receipt.run_id != run_id || receipt.task_id != task_id
+                || receipt.attempt_id != attempt_id || receipt.parent_session_id != root_session_id
+                || receipt.session_id != attempt.session_id || receipt.owner_epoch != expected_owner_epoch
+                || receipt.binding_digest != binding_digest
+            {
+                return Err(ManagedError::Conflict("managed recovery consume receipt differs from the active Attempt"));
+            }
+        }
+        if let Some(receipt) = quiescence.as_ref() {
+            if consumed.is_none() || receipt.proof.goal_id != goal_id || receipt.proof.run_id != run_id
+                || receipt.proof.task_id != task_id || receipt.proof.attempt_id != attempt_id
+                || receipt.proof.parent_session_id != root_session_id || receipt.proof.session_id != attempt.session_id
+                || receipt.proof.owner_epoch != expected_owner_epoch || receipt.proof.consume_receipt_digest
+                    != consumed.as_ref().map(|value| value.receipt_digest.as_str()).unwrap_or_default()
+            {
+                return Err(ManagedError::Conflict("managed recovery quiescence receipt differs from the consumed Attempt"));
+            }
+        }
+        let unknown_effect = task.unknown_effect || attempt.phase == AttemptPhase::Unknown
+            || attempt.effects.iter().any(|effect| {
+                attempt.effect_receipts.get(&effect.effect_id)
+                    .is_some_and(|receipt| receipt.outcome == AttemptEffectOutcomeV1::Unknown)
+            });
+        Ok(Some(ManagedActiveAttemptRecoverySnapshotV1 {
+            goal_id: goal_id.to_owned(),
+            run_id: run_id.to_owned(),
+            task_id: task_id.to_owned(),
+            attempt_id: attempt_id.to_owned(),
+            parent_session_id: root_session_id.to_owned(),
+            session_id: attempt.session_id.clone(),
+            task_title: title.to_owned(),
+            task_purpose: purpose.to_owned(),
+            attempt_phase: attempt.phase,
+            run_phase: run.phase,
+            managed_revision: self.snapshot.revision,
+            owner_epoch: expected_owner_epoch,
+            profile,
+            profile_owner_binding_digest,
+            binding_digest,
+            initial_context_selection: self.snapshot.context_selections.get(&(attempt_id.to_owned(), 1)).cloned(),
+            unknown_effect,
+            consumed,
+            quiescence,
+        }))
+    }
+
     /// Resolve the exact pre-terminal state P1 must inspect before recording that
     /// the logical child prompt callback has returned. This is intentionally
-    /// restricted to SETTLING and refuses UNKNOWN, incomplete or discontinuous
-    /// effect chains, so the prompt-quiescence marker cannot settle an Attempt.
+    /// restricted to EXECUTING + PENDING_VERIFICATION and refuses UNKNOWN,
+    /// incomplete or discontinuous effect chains. Terminal settlement uses a
+    /// separate snapshot after independent verification.
     pub(crate) fn managed_dispatch_completion_snapshot(
         &self,
         goal_id: &str,
@@ -9147,8 +12038,9 @@ impl ManagedControl {
             .map_err(|_| ManagedError::Invalid("dispatch completion binding digest failed"))?;
         let consumed = self.snapshot.dispatch_consumptions.get(attempt_id)
             .ok_or(ManagedError::Conflict("dispatch completion has no consumed handoff"))?;
-        if !spec.accepted || attempt.phase != AttemptPhase::Settling
+        if !spec.accepted || attempt.phase != AttemptPhase::Executing
             || task.active_attempt.as_deref() != Some(attempt_id)
+            || task.pending_verification_attempt.as_deref() != Some(attempt_id)
             || task.unknown_effect
             || attempt.run_id != run_id || attempt.task_id != task_id
             || binding.run_id != run_id || binding.task_id != task_id || binding.attempt_id != attempt_id
@@ -9161,13 +12053,12 @@ impl ManagedControl {
             || run.session_link.as_ref().is_none_or(|link| link.session_id != consumed.parent_session_id)
             || !matches!(run.phase, RunPhase::Running | RunPhase::Paused | RunPhase::Cancelling | RunPhase::Verifying)
         {
-            return Err(ManagedError::Conflict("dispatch completion is stale, non-SETTLING, or differs from exact consumed child"));
+            return Err(ManagedError::Conflict("dispatch prompt return is stale, not pending verification, or differs from exact consumed child"));
         }
         if task.pending_verification_attempt.as_deref().is_some_and(|pending| pending != attempt_id) {
             return Err(ManagedError::Conflict("dispatch completion conflicts with another verifier Attempt"));
         }
 
-        let mut effects = Vec::with_capacity(attempt.effects.len());
         let mut encoded_effects = Vec::with_capacity(attempt.effects.len());
         let mut workspace_head = attempt.workspace_revision.clone();
         let mut workspace_head_confident = workspace_head.is_some();
@@ -9229,7 +12120,7 @@ impl ManagedControl {
             .ok_or(ManagedError::Conflict("Attempt admission revision is invalid"))?;
         let attempt_state_digest = format!("blake3:{}", blake3::hash(json!({
             "goalID": goal_id, "runID": run_id, "taskID": task_id, "attemptID": attempt_id,
-            "runPhase": format!("{:?}", run.phase), "attemptPhase": "Settling",
+            "runPhase": format!("{:?}", run.phase), "attemptPhase": "Executing",
             "executorPrincipal": attempt.executor_principal, "ownerEpoch": attempt.owner_epoch.to_string(),
             "locationID": attempt.location_id, "childSessionID": attempt.session_id,
             "workspaceRevision": attempt.workspace_revision,
@@ -9417,6 +12308,7 @@ impl ManagedControl {
         }).unwrap_or_default();
         let evidence_digest = attempt.verifier_evidence.as_ref().map(|evidence| evidence.evidence_digest.clone())
             .or_else(|| task.verification_evidence.as_ref().map(|evidence| evidence.evidence_digest.clone()));
+        let usage_accounting = self.snapshot.attempt_usage_summary(attempt_id)?;
         let attempt_state_value = json!({
             "goalID": goal_id, "runID": run_id, "taskID": task_id, "attemptID": attempt_id,
             "runPhase": format!("{:?}", run.phase), "taskState": format!("{task_state:?}"),
@@ -9428,6 +12320,7 @@ impl ManagedControl {
             "failureCode": attempt.failure_code, "retryable": attempt.retryable,
             "effectChainDigest": effect_chain_digest, "evidenceDigest": evidence_digest,
             "quiescenceReceiptDigest": prompt_marker.map(|marker| marker.receipt_digest.as_str()),
+            "usageAccounting": usage_accounting.as_ref().map(ManagedAttemptUsageSummaryV1::to_wire_value),
         });
         let attempt_state_digest = format!("blake3:{}", blake3::hash(attempt_state_value.to_string().as_bytes()).to_hex());
         let owner_log_sequence = watermark.sequence.parse::<u64>()
@@ -9448,7 +12341,118 @@ impl ManagedControl {
             owner_log_event_digest: watermark.event_digest, attempt_state_digest,
             effect_chain_state: if chain_settled { ManagedAttemptEffectChainStateV1::AllSettled }
                 else { ManagedAttemptEffectChainStateV1::UnresolvedOrUnknown },
-            effect_chain_digest, effects, evidence_digest, evidence_refs,
+            effect_chain_digest, effects, usage_accounting, evidence_digest, evidence_refs,
+        })
+    }
+
+    /// Builds the P2 settlement candidate used only to authorize P8's final
+    /// Guarded Inspect. The Task remains pending verification and the Attempt
+    /// remains SETTLING; callers must not release worker capacity from this
+    /// projection. P2 creates a terminal snapshot only after the exact Inspect
+    /// receipt has been persisted and SettleAttempt has completed.
+    pub(crate) fn managed_attempt_settlement_candidate(
+        &self,
+        goal_id: &str,
+        run_id: &str,
+        task_id: &str,
+        attempt_id: &str,
+        expected_binding_digest: &str,
+        expected_final_revision: &str,
+    ) -> Result<ManagedAttemptSettlementCandidateV1, ManagedError> {
+        if goal_id != self.goal_id || goal_id != self.snapshot.owner_goal_id {
+            return Err(ManagedError::Conflict("settlement candidate Goal owner mismatch"));
+        }
+        for value in [run_id, task_id, attempt_id] { id(value)?; }
+        managed_digest(expected_binding_digest)?;
+        blake3_digest(expected_final_revision)?;
+        let run = self.snapshot.runs.get(run_id)
+            .ok_or(ManagedError::Conflict("settlement candidate Run is missing"))?;
+        let task = run.tasks.get(task_id)
+            .ok_or(ManagedError::Conflict("settlement candidate Task is missing"))?;
+        let attempt = self.snapshot.attempts.get(attempt_id)
+            .ok_or(ManagedError::Conflict("settlement candidate Attempt is missing"))?;
+        let spec = self.snapshot.specs.get(&run.spec_id)
+            .ok_or(ManagedError::Conflict("settlement candidate SpecVersion is missing"))?;
+        let binding = attempt.delegation_binding.as_ref()
+            .ok_or(ManagedError::Conflict("settlement candidate binding is missing"))?;
+        let binding_digest = binding.digest()
+            .map_err(|_| ManagedError::Invalid("settlement candidate binding digest failed"))?;
+        let evidence = attempt.verifier_evidence.as_ref()
+            .ok_or(ManagedError::Conflict("settlement candidate verifier evidence is missing"))?;
+        if !spec.accepted || run.phase != RunPhase::Verifying
+            || attempt.run_id != run_id || attempt.task_id != task_id
+            || attempt.phase != AttemptPhase::Settling
+            || task.active_attempt.as_deref() != Some(attempt_id)
+            || task.pending_verification_attempt.as_deref() != Some(attempt_id)
+            || task.unknown_effect || binding_digest != expected_binding_digest
+            || evidence.source_revision != expected_final_revision
+            || evidence.evidence_digest.is_empty()
+            || attempt.effects.is_empty()
+            || attempt.effects.len() != attempt.effect_receipts.len()
+        {
+            return Err(ManagedError::Conflict("Attempt is not the verified settlement candidate"));
+        }
+        let mut head = attempt.workspace_revision.as_deref()
+            .ok_or(ManagedError::Conflict("settlement candidate admission revision is missing"))?;
+        let mut effects = Vec::with_capacity(attempt.effects.len());
+        let mut encoded_effects = Vec::with_capacity(attempt.effects.len());
+        for edge in &attempt.effects {
+            let receipt = attempt.effect_receipts.get(&edge.effect_id)
+                .ok_or(ManagedError::Conflict("settlement candidate effect receipt is missing"))?;
+            if receipt.outcome == AttemptEffectOutcomeV1::Unknown
+                || receipt.target_receipt_digest.as_deref().is_none_or(|digest| blake3_digest(digest).is_err())
+                || receipt.before_workspace_revision != head
+                || receipt.after_workspace_revision.as_deref().is_none_or(|revision| blake3_digest(revision).is_err())
+            {
+                return Err(ManagedError::Conflict("settlement candidate effect chain is unresolved"));
+            }
+            let after = receipt.after_workspace_revision.as_deref().expect("checked above");
+            head = after;
+            encoded_effects.push(json!({
+                "effectID": edge.effect_id,
+                "boundRevision": edge.bound_revision.to_string(),
+                "outcome": effect_outcome_name(receipt.outcome),
+                "observationDigest": receipt.target_receipt_digest,
+                "beforeWorkspaceRevision": receipt.before_workspace_revision,
+                "afterWorkspaceRevision": receipt.after_workspace_revision,
+                "executorPrincipal": receipt.executor_principal,
+                "ownerEpoch": receipt.owner_epoch.to_string(),
+                "capabilityID": receipt.capability_id,
+                "leaseDigest": receipt.capability_lease_digest,
+            }));
+        }
+        if head != expected_final_revision {
+            return Err(ManagedError::Conflict("settlement candidate workspace head differs from verifier evidence"));
+        }
+        let watermark = self.owner_watermark()?;
+        let owner_log_sequence = watermark.sequence.parse::<u64>()
+            .map_err(|_| ManagedError::Invalid("OwnerLog sequence is invalid"))?;
+        let effect_chain_digest = format!("blake3:{}", blake3::hash(json!({
+            "domain": "horizoncode.managed-attempt-effect-chain.v1",
+            "goalID": goal_id, "runID": run_id, "taskID": task_id,
+            "attemptID": attempt_id, "bindingDigest": binding_digest,
+            "effects": encoded_effects,
+        }).to_string().as_bytes()).to_hex());
+        let usage_accounting = self.snapshot.attempt_usage_summary(attempt_id)?
+            .ok_or(ManagedError::Conflict("settlement candidate has no durable usage accounting"))?;
+        let attempt_state_digest = format!("blake3:{}", blake3::hash(json!({
+            "domain": "horizoncode.managed-settlement-candidate.v1",
+            "goalID": goal_id, "runID": run_id, "taskID": task_id,
+            "attemptID": attempt_id, "specID": run.spec_id,
+            "specDigest": spec.digest, "bindingDigest": binding_digest,
+            "evidenceDigest": evidence.evidence_digest,
+            "finalRevision": evidence.source_revision,
+            "effectChainDigest": effect_chain_digest,
+            "ownerEpoch": attempt.owner_epoch.to_string(),
+            "usageAccounting": usage_accounting.to_wire_value(),
+        }).to_string().as_bytes()).to_hex());
+        Ok(ManagedAttemptSettlementCandidateV1 {
+            goal_id: goal_id.to_owned(), run_id: run_id.to_owned(), task_id: task_id.to_owned(),
+            attempt_id: attempt_id.to_owned(), binding_digest, spec_id: run.spec_id.clone(),
+            spec_digest: spec.digest.clone(), evidence_digest: evidence.evidence_digest.clone(),
+            final_revision: evidence.source_revision.clone(), effect_chain_digest, attempt_state_digest, usage_accounting,
+            owner_log_id: watermark.owner_log_id, owner_log_sequence,
+            owner_log_event_digest: watermark.event_digest, managed_revision: watermark.revision,
         })
     }
 
@@ -9503,7 +12507,7 @@ impl ManagedControl {
             || proof.process_incarnation != consumed.process_incarnation
             || proof.delivery_id.is_empty()
         {
-            return Err(ManagedError::Conflict("HostKernel quiescence proof differs from the current SETTLING child and consumed handoff"));
+            return Err(ManagedError::Conflict("HostKernel quiescence proof differs from the current pending-verification child and consumed handoff"));
         }
         self.apply(expected_revision, &delivery_id, ManagedCommand::DispatchQuiesced { proof })?;
         self.snapshot.dispatch_quiescence.get(&attempt_id).cloned()
@@ -9526,6 +12530,79 @@ impl ManagedControl {
         delivery_id: &str,
     ) -> Option<ManagedAttemptAdmissionReceiptV1> {
         self.snapshot.managed_admission_receipts.get(delivery_id).cloned()
+    }
+
+    pub(crate) fn managed_context_selection(
+        &self,
+        attempt_id: &str,
+        request_sequence: u64,
+    ) -> Option<ManagedAttemptContextSelectionRecordV1> {
+        self.snapshot.context_selections.get(&(attempt_id.to_owned(), request_sequence)).cloned()
+    }
+
+    pub(crate) fn latest_managed_context_sequence(&self, attempt_id: &str) -> u64 {
+        self.snapshot.context_selections.keys()
+            .filter(|(owner, _)| owner == attempt_id)
+            .map(|(_, sequence)| *sequence)
+            .max().unwrap_or(0)
+    }
+
+    pub(crate) fn managed_provider_request(&self, attempt_id: &str, sequence: u64) -> Option<ManagedProviderRequestRecordV1> {
+        self.snapshot.provider_requests.get(&(attempt_id.to_owned(), sequence)).cloned()
+    }
+
+    pub(crate) fn managed_attempt_usage_receipt(&self, operation_key: &str) -> Option<ManagedAttemptUsageReceiptV1> {
+        self.snapshot.attempt_usage_receipts.get(operation_key).cloned()
+    }
+
+    pub(crate) fn latest_managed_provider_request(&self, attempt_id: &str) -> Option<ManagedProviderRequestRecordV1> {
+        self.snapshot.provider_requests.iter()
+            .filter(|((owner, _), _)| owner == attempt_id)
+            .max_by_key(|((_, sequence), _)| *sequence)
+            .map(|(_, record)| record.clone())
+    }
+
+    pub(crate) fn managed_provider_requests_settled(&self, attempt_id: &str) -> bool {
+        self.snapshot.provider_requests.iter()
+            .filter(|((owner, _), _)| owner == attempt_id)
+            .all(|(_, record)| record.state == "SETTLED")
+    }
+
+    pub(crate) fn managed_provider_requests_for_attempt(
+        &self,
+        attempt_id: &str,
+    ) -> Vec<ManagedProviderRequestRecordV1> {
+        self.snapshot.provider_requests.iter()
+            .filter(|((owner, _), _)| owner == attempt_id)
+            .map(|(_, record)| record.clone())
+            .collect()
+    }
+
+    pub(crate) fn set_managed_provider_request(
+        &mut self,
+        expected_revision: u64,
+        record: ManagedProviderRequestRecordV1,
+    ) -> Result<u64, ManagedError> {
+        let delivery_id = format!("managed_provider_{}_{}_{}", record.state.to_lowercase(), record.attempt_id, record.request_sequence);
+        id(&delivery_id)?;
+        self.apply(expected_revision, &delivery_id, ManagedCommand::SetManagedProviderRequest { record })?;
+        Ok(self.snapshot.revision)
+    }
+
+    pub(crate) fn advance_managed_context_selection(
+        &mut self,
+        expected_revision: u64,
+        record: ManagedAttemptContextSelectionRecordV1,
+    ) -> Result<u64, ManagedError> {
+        if record.managed_revision != expected_revision.checked_add(1)
+            .ok_or(ManagedError::Invalid("managed context revision overflow"))?
+        {
+            return Err(ManagedError::Conflict("managed context expected revision mismatch"));
+        }
+        let delivery_id = format!("managed_context_{}_{}", record.attempt_id, record.request_sequence);
+        id(&delivery_id)?;
+        self.apply(expected_revision, &delivery_id, ManagedCommand::AdvanceAttemptContextSelection { record })?;
+        Ok(self.snapshot.revision)
     }
 
     /// Exact replay lookup for a consumed managed prompt dispatch. A different
@@ -9660,6 +12737,24 @@ impl ManagedControl {
         Ok(self.snapshot.revision)
     }
 
+    /// Atomically appends authoritative provider usage, derives cumulative
+    /// accounting and fences the next managed provider turn when a ceiling is
+    /// reached or cannot be safely computed. The proof is constructed only by
+    /// HostKernel after authenticated scope and provider provenance checks.
+    pub(crate) fn record_attempt_usage(
+        &mut self,
+        expected_revision: u64,
+        delivery_id: &str,
+        proof: ManagedAttemptUsageProofV1,
+    ) -> Result<ManagedAttemptUsageReceiptV1, ManagedError> {
+        if proof.operation_key != delivery_id {
+            return Err(ManagedError::Conflict("usage operation key differs from delivery ID"));
+        }
+        self.apply(expected_revision, delivery_id, ManagedCommand::RecordAttemptUsage { proof: proof.clone() })?;
+        self.snapshot.attempt_usage_receipts.get(&proof.operation_key).cloned()
+            .ok_or(ManagedError::Invalid("managed usage receipt missing after durable append"))
+    }
+
     /// Persists one HostKernel-authenticated target receipt while the Attempt
     /// stays executing. UNKNOWN is a durable no-relaunch fence and is recovered
     /// as RECONCILING after process restart.
@@ -9745,6 +12840,58 @@ impl ManagedControl {
             capability_scope: spec.content.capability_scope.clone(),
             required_capabilities: task.required_capabilities.clone(),
             profile_revision: task.agent_profile_revision.clone(),
+            profile_token_budget: task.profile_token_budget,
+            profile_owner_binding_digest: task.profile_owner_binding_digest.clone(),
+        })
+    }
+
+    /// PLAN_ONLY projection of the same canonical Task/Spec facts used later by
+    /// Guard at Attempt admission. This is review/display provenance only: it
+    /// deliberately does not mint an Attempt-bound effective ceiling proof.
+    pub(crate) fn planned_task_capability_scope_facts(
+        &self,
+        run_id: &str,
+        task_id: &str,
+    ) -> Result<AcceptedTaskCapabilityScopeFactsV1, ManagedError> {
+        let goal = self.snapshot.goal.as_ref()
+            .ok_or(ManagedError::Conflict("managed Goal missing"))?;
+        let run = self.snapshot.runs.get(run_id)
+            .ok_or(ManagedError::Conflict("managed Run missing"))?;
+        let task = run.tasks.get(task_id)
+            .ok_or(ManagedError::Conflict("managed Task missing"))?;
+        let spec = self.snapshot.specs.get(&run.spec_id)
+            .ok_or(ManagedError::Conflict("accepted SpecVersion missing"))?;
+        if run.phase != RunPhase::Planned
+            || !spec.accepted
+            || goal.active_spec_version_id.as_deref() != Some(run.spec_id.as_str())
+            || spec.digest != spec.content.digest()
+            || task.agent_profile_revision.as_ref().is_none_or(|pin| !pin.is_valid())
+            || task.profile_token_budget.is_none_or(|budget| budget == 0)
+            || task.profile_owner_binding_digest.as_deref().is_none_or(|digest| blake3_digest(digest).is_err())
+            || task.required_capabilities.iter().any(|capability| !spec.content.capability_scope.contains(capability))
+        {
+            return Err(ManagedError::Conflict(
+                "planned Task capability scope is stale, incomplete, or outside accepted SpecVersion",
+            ));
+        }
+        validate_capability_ids(
+            &spec.content.capability_scope,
+            "accepted SpecVersion capability scope is not canonical",
+        )?;
+        validate_capability_ids(
+            &task.required_capabilities,
+            "planned Task required capabilities are not canonical",
+        )?;
+        Ok(AcceptedTaskCapabilityScopeFactsV1 {
+            run_id: run_id.to_owned(),
+            task_id: task_id.to_owned(),
+            spec_id: run.spec_id.clone(),
+            spec_digest: spec.digest.clone(),
+            managed_revision: self.snapshot.revision,
+            capability_scope: spec.content.capability_scope.clone(),
+            required_capabilities: task.required_capabilities.clone(),
+            profile_revision: task.agent_profile_revision.clone(),
+            profile_token_budget: task.profile_token_budget,
             profile_owner_binding_digest: task.profile_owner_binding_digest.clone(),
         })
     }
@@ -9911,7 +13058,7 @@ impl ManagedControl {
             NonZeroUsize,
         ) -> Result<ArtifactMetadataV1, ArtifactError>,
     {
-        if observed.goal_id() != self.owner_goal_id
+        if observed.goal_id() != self.goal_id || observed.goal_id() != self.snapshot.owner_goal_id
             || observed.owner_epoch() != current_owner_epoch
             || observed.live_workspace_revision() != current_workspace_revision
         {
@@ -9934,12 +13081,16 @@ impl ManagedControl {
             .ok_or(ManagedError::Conflict("verifier Attempt is missing"))?;
         let task = run.tasks.get(&attempt.task_id)
             .ok_or(ManagedError::Conflict("verifier Task is missing"))?;
+        let task_scoped_verification = run.phase == RunPhase::Running
+            && task.pending_verification_attempt.as_deref() == Some(attempt_id);
+        let run_scoped_verification = run.phase == RunPhase::Verifying
+            && run.final_revision.as_deref() == Some(observed.live_workspace_revision());
         if observed.spec_id() != run.spec_id
             || observed.spec_digest() != spec.digest
             || observed.verification_run_id().is_empty()
-            || run.phase != RunPhase::Verifying
-            || run.final_revision.as_deref() != Some(observed.live_workspace_revision())
+            || !(task_scoped_verification || run_scoped_verification)
             || attempt.phase != AttemptPhase::Executing
+            || task.active_attempt.as_deref() != Some(attempt_id)
             || task.active_attempt.as_deref() != Some(attempt_id)
             || task.pending_verification_attempt.as_deref() != Some(attempt_id)
             || attempt.run_id != observed.run_id()
@@ -9967,12 +13118,11 @@ impl ManagedControl {
             ));
         }
 
-        let accepted: BTreeSet<&str> = spec
-            .content
-            .criteria
-            .iter()
-            .map(|criterion| criterion.id.as_str())
-            .collect();
+        let accepted: BTreeSet<&str> = if task_scoped_verification {
+            task.criterion_ids.iter().map(String::as_str).collect()
+        } else {
+            spec.content.criteria.iter().map(|criterion| criterion.id.as_str()).collect()
+        };
         let supplied: BTreeSet<&str> = observed
             .criteria()
             .iter()
@@ -10240,7 +13390,7 @@ impl ManagedControl {
             return Err(ManagedError::Invalid("HostKernel clock produced an invalid Run start timestamp"));
         }
         let mut event = OwnerEventInput {
-            schema_version: 1,
+            schema_version: 2,
             time_ms: timestamp,
             kind: kind.to_owned(),
             data,
@@ -10367,6 +13517,46 @@ impl ManagedControl {
         Ok(self.snapshot.revision)
     }
 
+    /// Appends one complete managed Guarded effect wave. A wave binds the exact
+    /// call order and intent digests in one OwnerLog revision before HostKernel
+    /// can expose a refreshed managed scope or request any capability lease.
+    pub(crate) fn bind_attempt_effect_wave(
+        &mut self,
+        expected_revision: u64,
+        delivery_id: &str,
+        run_id: &str,
+        task_id: &str,
+        attempt_id: &str,
+        batch_id: &str,
+        wave_index: u8,
+        location_id: &str,
+        session_id: &str,
+        source_scope_digest: &str,
+        edges: Vec<ManagedAttemptEffectWaveEdgeV1>,
+    ) -> Result<ManagedAttemptEffectWaveV1, ManagedError> {
+        let mut wave = ManagedAttemptEffectWaveV1 {
+            schema_version: 2,
+            run_id: run_id.to_owned(),
+            task_id: task_id.to_owned(),
+            attempt_id: attempt_id.to_owned(),
+            batch_id: batch_id.to_owned(),
+            wave_index,
+            location_id: location_id.to_owned(),
+            session_id: session_id.to_owned(),
+            source_scope_digest: source_scope_digest.to_owned(),
+            edges,
+            wave_digest: String::new(),
+            bound_revision: expected_revision.checked_add(1)
+                .ok_or(ManagedError::Invalid("managed revision overflow"))?,
+        };
+        wave.wave_digest = managed_effect_wave_digest(&wave)?;
+        self.apply(expected_revision, delivery_id, ManagedCommand::BindAttemptEffectWave { wave })?;
+        self.snapshot.attempts.get(attempt_id)
+            .and_then(|attempt| attempt.effect_waves.iter().find(|wave| wave.batch_id == batch_id))
+            .cloned()
+            .ok_or(ManagedError::Invalid("managed effect wave missing after append"))
+    }
+
     /// Persist the one-use Core prompt-dispatch fence after HostKernel has
     /// authenticated the caller and validated the exact P8 claim proof. Exact
     /// delivery replay returns the original durable receipt even after later
@@ -10431,6 +13621,7 @@ impl ManagedControl {
                 "managed admission lease proof does not match this authenticated Goal Attempt",
             ));
         }
+        let request_selection = facts.bounded_context.selection.clone();
 
         // An exact delivery replay reuses the byte-identical immutable binding;
         // a delivery key cannot be used to rebase or replace its owner facts.
@@ -10448,16 +13639,19 @@ impl ManagedControl {
                 || attempt.task_id != task_id
                 || attempt.executor_principal != facts.authenticated_attempt.executor_principal
                 || attempt.owner_epoch != facts.authenticated_attempt.owner_epoch
-                || attempt.location_id != facts.authenticated_attempt.location_id
+                || attempt.location_id != facts.worktree.location_id
                 || attempt.session_id != facts.authenticated_attempt.session_id
                 || attempt.workspace_revision.as_deref()
-                    != Some(facts.workspace_source_lease.source_revision.as_str())
+                    != Some(facts.worktree.workspace_revision.as_str())
                 || !delegation_binding_matches_owner_facts(binding, &facts)
             {
                 return Err(ManagedError::Conflict(
                     "managed admission replay has changed owner facts",
                 ));
             }
+            let context_selection = make_context_selection_record(
+                attempt_id, &request_selection, binding.admitted_managed_revision,
+            )?;
             return self.apply(
                 self.snapshot.revision,
                 delivery_id,
@@ -10467,9 +13661,10 @@ impl ManagedControl {
                     attempt_id: attempt_id.to_owned(),
                     executor_principal: facts.authenticated_attempt.executor_principal,
                     owner_epoch: facts.authenticated_attempt.owner_epoch,
-                    location_id: facts.authenticated_attempt.location_id,
+                    location_id: facts.worktree.location_id,
                     session_id: facts.authenticated_attempt.session_id,
                     binding: binding.clone(),
+                    context_selection: Some(context_selection),
                 },
             );
         }
@@ -10481,7 +13676,7 @@ impl ManagedControl {
             attempt_id: attempt_id.to_owned(),
             executor_principal: facts.authenticated_attempt.executor_principal.clone(),
             owner_epoch: facts.authenticated_attempt.owner_epoch,
-            location_id: facts.authenticated_attempt.location_id.clone(),
+            location_id: facts.worktree.location_id.clone(),
             session_id: facts.authenticated_attempt.session_id.clone(),
         })?;
         candidate.apply(&ManagedCommand::StartAttempt {
@@ -10491,7 +13686,7 @@ impl ManagedControl {
         })?;
         candidate.apply(&ManagedCommand::BindAttemptWorkspaceRevision {
             attempt_id: attempt_id.to_owned(),
-            workspace_revision: facts.workspace_source_lease.source_revision.clone(),
+            workspace_revision: facts.worktree.workspace_revision.clone(),
         })?;
         // The candidate was projected through helper commands for validation;
         // persistence is still one composite OwnerLog event, so bind against
@@ -10510,6 +13705,9 @@ impl ManagedControl {
             &facts,
             admitted_managed_revision,
         )?;
+        let context_selection = make_context_selection_record(
+            attempt_id, &request_selection, admitted_managed_revision,
+        )?;
         self.apply(
             self.snapshot.revision,
             delivery_id,
@@ -10519,9 +13717,10 @@ impl ManagedControl {
                 attempt_id: attempt_id.to_owned(),
                 executor_principal: facts.authenticated_attempt.executor_principal,
                 owner_epoch: facts.authenticated_attempt.owner_epoch,
-                location_id: facts.authenticated_attempt.location_id,
+                location_id: facts.worktree.location_id,
                 session_id: facts.authenticated_attempt.session_id,
                 binding,
+                context_selection: Some(context_selection),
             },
         )
     }
@@ -11677,6 +14876,11 @@ pub struct DirectAttemptProfileAdmissionControl {
     deliveries: BTreeMap<String, String>,
 }
 
+/// Hard V1 ceiling across every profile selected by one direct parent Session.
+/// This is enforced by the shared durable admission OwnerLog, not by a Core
+/// count/list projection, so concurrent admissions cannot exceed the ceiling.
+const MAX_DIRECT_CHILD_SESSIONS_PER_PARENT: u64 = 64;
+
 impl DirectAttemptProfileAdmissionControl {
     pub fn open(root: &Path) -> Result<Self, ManagedError> {
         let owner = OwnerIdentity::new(
@@ -11816,17 +15020,38 @@ impl DirectAttemptProfileAdmissionControl {
                 ))
             };
         }
+        let same_child = self.reservations.values().filter(|entry| {
+            entry.counts_total
+                && entry.parent_session_id == reservation.parent_session_id
+                && entry.child_session_id == reservation.child_session_id
+        });
+        if same_child.clone().any(|entry| {
+            entry.profile_id != reservation.profile_id
+                || entry.profile_revision != reservation.profile_revision
+                || entry.profile_digest != reservation.profile_digest
+                || entry.executor_principal != reservation.executor_principal
+        }) || same_child.clone().any(|entry| entry.active) {
+            return Err(ManagedError::Conflict(
+                "direct child Session already has a different profile or active Attempt",
+            ));
+        }
         let matching = self.reservations.values().filter(|entry| {
             entry.counts_total
                 && entry.parent_session_id == reservation.parent_session_id
                 && entry.profile_id == reservation.profile_id
         });
-        let total = matching.clone().filter(|entry| entry.counts_total).count() as u64;
-        let active = matching.filter(|entry| entry.active).count() as u64;
+        let total = matching.clone()
+            .map(|entry| entry.child_session_id.as_str()).collect::<BTreeSet<_>>().len() as u64;
+        let active = matching.filter(|entry| entry.active)
+            .map(|entry| entry.child_session_id.as_str()).collect::<BTreeSet<_>>().len() as u64;
+        let parent_total = self.reservations.values().filter(|entry| {
+            entry.counts_total && entry.parent_session_id == reservation.parent_session_id
+        }).map(|entry| entry.child_session_id.as_str()).collect::<BTreeSet<_>>().len() as u64;
         let active_limit = max_active_children.min(max_parallel_children);
-        if total >= max_total_children || active >= active_limit {
+        if parent_total >= MAX_DIRECT_CHILD_SESSIONS_PER_PARENT
+            || total >= max_total_children || active >= active_limit {
             return Err(ManagedError::Conflict(
-                "AgentProfileV2 child admission limit is exhausted",
+                "direct parent or AgentProfileV2 child admission limit is exhausted",
             ));
         }
         self.append(
@@ -11930,20 +15155,39 @@ impl DirectAttemptProfileAdmissionControl {
             return Err(ManagedError::Invalid("duplicate direct profile reservation"));
         }
         if enforce_limits {
+            let same_child = self.reservations.values().filter(|entry| {
+                entry.counts_total
+                    && entry.parent_session_id == reservation.parent_session_id
+                    && entry.child_session_id == reservation.child_session_id
+            });
+            if same_child.clone().any(|entry| {
+                entry.profile_id != reservation.profile_id
+                    || entry.profile_revision != reservation.profile_revision
+                    || entry.profile_digest != reservation.profile_digest
+                    || entry.executor_principal != reservation.executor_principal
+            }) || same_child.clone().any(|entry| entry.active) {
+                return Err(ManagedError::Invalid(
+                    "persisted direct child Session changes profile or overlaps an active Attempt",
+                ));
+            }
             let total = self.reservations.values().filter(|entry| {
                 entry.counts_total
                     && entry.parent_session_id == reservation.parent_session_id
                     && entry.profile_id == reservation.profile_id
-            }).count() as u64;
+            }).map(|entry| entry.child_session_id.as_str()).collect::<BTreeSet<_>>().len() as u64;
+            let parent_total = self.reservations.values().filter(|entry| {
+                entry.counts_total && entry.parent_session_id == reservation.parent_session_id
+            }).map(|entry| entry.child_session_id.as_str()).collect::<BTreeSet<_>>().len() as u64;
             let active = self.reservations.values().filter(|entry| {
                 entry.active
                     && entry.parent_session_id == reservation.parent_session_id
                     && entry.profile_id == reservation.profile_id
-            }).count() as u64;
-            if total >= reservation.max_total_children
+            }).map(|entry| entry.child_session_id.as_str()).collect::<BTreeSet<_>>().len() as u64;
+            if parent_total >= MAX_DIRECT_CHILD_SESSIONS_PER_PARENT
+                || total >= reservation.max_total_children
                 || active >= reservation.max_active_children.min(reservation.max_parallel_children)
             {
-                return Err(ManagedError::Invalid("persisted direct profile admission exceeds its limits"));
+                return Err(ManagedError::Invalid("persisted direct child admission exceeds its limits"));
             }
         }
         self.reservations.insert(reservation.attempt_id.clone(), reservation);
@@ -12181,6 +15425,93 @@ mod direct_attempt_profile_admission_tests {
                 1,
             )
             .is_err());
+    }
+
+    #[test]
+    fn parent_child_cap_is_shared_across_profiles_and_survives_reopen() {
+        let directory = tempfile::tempdir().unwrap();
+        {
+            let mut control = DirectAttemptProfileAdmissionControl::open(directory.path()).unwrap();
+            control.reserve(
+                "attempt_0_first",
+                "ses_parent",
+                "ses_child_0",
+                "server_auth:owner",
+                "profile.variant_0",
+                1,
+                &format!("blake3:{}", "b".repeat(64)),
+                MAX_DIRECT_CHILD_SESSIONS_PER_PARENT,
+                MAX_DIRECT_CHILD_SESSIONS_PER_PARENT,
+                MAX_DIRECT_CHILD_SESSIONS_PER_PARENT,
+            ).unwrap();
+            assert!(control.reserve(
+                "attempt_0_overlap",
+                "ses_parent",
+                "ses_child_0",
+                "server_auth:owner",
+                "profile.variant_0",
+                1,
+                &format!("blake3:{}", "b".repeat(64)),
+                MAX_DIRECT_CHILD_SESSIONS_PER_PARENT,
+                MAX_DIRECT_CHILD_SESSIONS_PER_PARENT,
+                MAX_DIRECT_CHILD_SESSIONS_PER_PARENT,
+            ).is_err());
+            control.release_terminal("attempt_0_first").unwrap();
+            // A terminal child may receive another Attempt ID without consuming
+            // another parent Session slot or changing its immutable profile pin.
+            control.reserve(
+                "attempt_0_resumed",
+                "ses_parent",
+                "ses_child_0",
+                "server_auth:owner",
+                "profile.variant_0",
+                1,
+                &format!("blake3:{}", "b".repeat(64)),
+                MAX_DIRECT_CHILD_SESSIONS_PER_PARENT,
+                MAX_DIRECT_CHILD_SESSIONS_PER_PARENT,
+                MAX_DIRECT_CHILD_SESSIONS_PER_PARENT,
+            ).unwrap();
+            for index in 1..MAX_DIRECT_CHILD_SESSIONS_PER_PARENT {
+                control.reserve(
+                    &format!("attempt_{index}"),
+                    "ses_parent",
+                    &format!("ses_child_{index}"),
+                    "server_auth:owner",
+                    &format!("profile.variant_{index}"),
+                    1,
+                    &format!("blake3:{}", "b".repeat(64)),
+                    MAX_DIRECT_CHILD_SESSIONS_PER_PARENT,
+                    MAX_DIRECT_CHILD_SESSIONS_PER_PARENT,
+                    MAX_DIRECT_CHILD_SESSIONS_PER_PARENT,
+                ).unwrap();
+            }
+        }
+        let mut control = DirectAttemptProfileAdmissionControl::open(directory.path()).unwrap();
+        assert!(control.reserve(
+            "attempt_64",
+            "ses_parent",
+            "ses_child_64",
+            "server_auth:owner",
+            "profile.another_variant",
+            1,
+            &format!("blake3:{}", "b".repeat(64)),
+            MAX_DIRECT_CHILD_SESSIONS_PER_PARENT,
+            MAX_DIRECT_CHILD_SESSIONS_PER_PARENT,
+            MAX_DIRECT_CHILD_SESSIONS_PER_PARENT,
+        ).is_err());
+        // A different parent owns a separate aggregate budget.
+        assert!(control.reserve(
+            "attempt_other_parent",
+            "ses_other_parent",
+            "ses_other_child",
+            "server_auth:owner",
+            "profile.another_variant",
+            1,
+            &format!("blake3:{}", "b".repeat(64)),
+            MAX_DIRECT_CHILD_SESSIONS_PER_PARENT,
+            MAX_DIRECT_CHILD_SESSIONS_PER_PARENT,
+            MAX_DIRECT_CHILD_SESSIONS_PER_PARENT,
+        ).is_ok());
     }
 
     #[test]

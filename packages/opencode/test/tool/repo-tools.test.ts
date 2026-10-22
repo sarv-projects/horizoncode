@@ -1,5 +1,4 @@
 import { afterEach, describe, expect } from "bun:test"
-import fs from "node:fs/promises"
 import path from "path"
 import { Effect, Layer, Schema } from "effect"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -18,7 +17,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { InstanceState } from "@/effect/instance-state"
 import { SessionID, MessageID } from "../../src/session/schema"
 import { Truncate } from "@/tool/truncate"
-import { ReferencesFindTool, RepoTreeTool, SymbolsSearchTool } from "../../src/tool/repo-tools"
+import { DefinitionsFindTool, ReferencesFindTool, RepoDetectTool, RepoSearchParameters, RepoTreeTool, SymbolsSearchTool } from "../../src/tool/repo-tools"
 import { RepoIntel } from "../../src/tool/repo-intel"
 import { Git } from "@/git"
 import { disposeAllInstances, TestInstance } from "../fixture/fixture"
@@ -52,6 +51,8 @@ const observedStructureCalls: Array<{
 }> = []
 const structureGeneration = Schema.decodeUnknownSync(Digest)(`blake3:${"3".repeat(64)}`)
 const structureRevision = Schema.decodeUnknownSync(Digest)(`blake3:${"4".repeat(64)}`)
+const structureDocumentText = "export function entry(): void {}\n"
+const structureDocumentDigest = RepoIntelligenceSchema.repoDocumentContentDigest(structureDocumentText)
 const structurePage = Schema.decodeUnknownSync(RepoIntelligenceSchema.RepoStructurePageV1)({
   schemaVersion: 1,
   messageType: "page",
@@ -70,7 +71,7 @@ const structurePage = Schema.decodeUnknownSync(RepoIntelligenceSchema.RepoStruct
       sourceGeneration: structureGeneration,
       sourceRevision: structureRevision,
       pathRef: "src/a.ts",
-      fileDigest: Schema.decodeUnknownSync(Digest)(`blake3:${"5".repeat(64)}`),
+      fileDigest: Schema.decodeUnknownSync(Digest)(structureDocumentDigest),
       nodeId: "node-a",
       nodeKind: "function",
       symbol: "entry",
@@ -88,6 +89,15 @@ const repoStructureSupervisorNode = LayerNode.make({
         observedStructureCalls.push(input)
         return { ...structurePage, queryId: input.query.queryId }
       }),
+    readRepoDocument: (input) => Effect.succeed({
+      schemaVersion: 1 as const,
+      status: "OK" as const,
+      pathRef: input.request.pathRef,
+      revisionKind: input.request.revisionKind,
+      text: structureDocumentText,
+      contentDigest: RepoIntelligenceSchema.repoDocumentContentDigest(structureDocumentText),
+      observedWorkspaceRevision: input.request.expectedWorkspaceRevision,
+    }),
   }),
   deps: [],
 })
@@ -101,15 +111,15 @@ const largeStructureSupervisorNode = LayerNode.make({
         status: "PARTIAL",
         freshness: "current",
         completeness: "partial",
-        coverage: { files: 40, nodes: 40, bytes: 40_000 },
-        nodes: Array.from({ length: 40 }, (_, index) => ({
+        coverage: { files: 40, nodes: 100, bytes: 40_000 },
+        nodes: Array.from({ length: 100 }, (_, index) => ({
           ...structurePage.nodes[0]!,
           nodeId: `node-${index}`,
           pathRef: `src/${index}.ts`,
           symbol: "x".repeat(900),
         })),
         fallback: { reason: "parse_partial", sourceKind: "parser" },
-        nextCursor: "c".repeat(2_400),
+        nextCursor: "repo_cur_0123456789abcdef",
       }),
   }),
   deps: [],
@@ -151,6 +161,85 @@ const itLargeStructure = testEffect(
   ),
 )
 
+const discoveryGeneration = Schema.decodeUnknownSync(Digest)(`blake3:${"6".repeat(64)}`)
+const discoveryRevision = Schema.decodeUnknownSync(Digest)(`blake3:${"7".repeat(64)}`)
+const discoveryPage = Schema.decodeUnknownSync(RepoIntelligenceSchema.RepoDiscoveryPageV1)({
+  schemaVersion: 1,
+  messageType: "discovery",
+  requestId: "repo-discovery-test",
+  status: "CURRENT",
+  freshness: "current",
+  completeness: "complete",
+  authority: {
+    principalBinding: discoveryGeneration,
+    sessionID: "ses_test",
+    locationID: "loc_test",
+    ownerEpoch: "3",
+    workspaceBinding: discoveryGeneration,
+    sourceRevision: discoveryRevision,
+    readPolicyDigest: discoveryGeneration,
+    rootRef: ".",
+    mode: "tree",
+    maxEntries: 256,
+    maxBytes: 262144,
+    maxDepth: 8,
+  },
+  coverage: { entries: 2, bytes: 128, depth: 1 },
+  entries: [
+    { pathRef: "src", kind: "directory", depth: 1, sizeBytes: "0" },
+    { pathRef: "src/link", kind: "symlink", depth: 1, sizeBytes: "12" },
+  ],
+})
+const observedDiscoveryCalls: Array<{ mode: string; request: typeof RepoIntelligenceSchema.RepoDiscoveryRequestV1.Type }> = []
+const observedManifestReads: string[] = []
+const observedManifestRevisionKinds: string[] = []
+const discoverySupervisorNode = LayerNode.make({
+  service: SessionSupervisor.Service,
+  layer: Layer.mock(SessionSupervisor.Service, {
+    discoverRepo: (input) => Effect.sync(() => {
+      observedDiscoveryCalls.push({ mode: input.request.mode, request: input.request })
+      const partial = input.request.mode === "manifests" && input.request.rootRef === "partial"
+      return Schema.decodeUnknownSync(RepoIntelligenceSchema.RepoDiscoveryPageV1)({
+        ...discoveryPage,
+        requestId: input.request.requestId,
+        status: partial ? "PARTIAL" : "CURRENT",
+        completeness: partial ? "partial" : "complete",
+        ...(partial ? { partialReason: "entry_limit" as const } : {}),
+        authority: { ...discoveryPage.authority, rootRef: input.request.rootRef, mode: input.request.mode,
+          maxEntries: input.request.maxEntries, maxBytes: input.request.maxBytes, maxDepth: input.request.maxDepth },
+        entries: input.request.mode === "tree" ? discoveryPage.entries : [
+          {
+            pathRef: input.request.rootRef === "redact" ? "redact/api_key=fixture-secret/package.json" : "package.json",
+            kind: "file",
+            depth: input.request.rootRef === "redact" ? 2 : 1,
+            sizeBytes: "512",
+            manifestKind: "package_json",
+            languageHint: "javascript",
+          },
+        ],
+        coverage: {
+          entries: input.request.mode === "tree" ? discoveryPage.entries.length : 1,
+          bytes: 128,
+          depth: input.request.rootRef === "redact" ? 2 : 1,
+        },
+      })
+    }),
+    readRepoDocument: (input) => Effect.sync(() => {
+      observedManifestReads.push(input.request.pathRef)
+      observedManifestRevisionKinds.push(input.request.revisionKind)
+      return { schemaVersion: 1 as const, status: "OK" as const, pathRef: input.request.pathRef,
+        revisionKind: input.request.revisionKind,
+        text: '{"packageManager":"bun@1.3.14","dependencies":{"react":"^19"},"scripts":{"test":"bun test","build":"bun run build"}}', contentDigest: discoveryGeneration,
+        observedWorkspaceRevision: input.request.expectedWorkspaceRevision }
+    }),
+  }),
+  deps: [],
+})
+const itDiscovery = testEffect(LayerNode.compile(LayerNode.group([
+  FSUtil.node, RepoIntel.node, CrossSpawnSpawner.node, Truncate.node, Agent.node, Git.node,
+  discoverySupervisorNode, trustedPrincipalNode,
+])))
+
 const unavailableSupervisorNode = LayerNode.make({
   service: SessionSupervisor.Service,
   layer: Layer.mock(SessionSupervisor.Service, {
@@ -178,98 +267,115 @@ afterEach(async () => {
 })
 
 describe("tool.repo-tools", () => {
+  it("rejects over-limit or unsafe search inputs before any HostKernel dispatch", () => {
+    const decode = Schema.decodeUnknownSync(RepoSearchParameters)
+    expect(() => decode({ query: "é".repeat(513) })).toThrow()
+    expect(() => decode({ query: "needle\nsecond-line" })).toThrow()
+    expect(() => decode({ query: "needle", path: "../outside" })).toThrow()
+    expect(() => decode({ query: "needle", path: "x".repeat(4_097) })).toThrow()
+    expect(decode({ query: "needle", path: "src/nested" }).path).toBe("src/nested")
+  })
+
   itRegistry.instance("keeps RepoIntel tools hidden without the experimental flag", () =>
     Effect.gen(function* () {
       const registry = yield* ToolRegistry.Service
       const ids = yield* registry.ids()
       expect(ids).not.toContain("repo_tree")
+      expect(ids).not.toContain("repo_detect")
       expect(ids).not.toContain("symbols_search")
       expect(ids).not.toContain("references_find")
+      expect(ids).not.toContain("definitions_find")
     }),
   )
 
-  itRepoTools.instance("exposes RepoIntel tools behind the experimental flag", () =>
+  itRepoTools.instance("keeps RepoIntel tools hidden until integrated acceptance is enabled", () =>
     Effect.gen(function* () {
       const registry = yield* ToolRegistry.Service
       const ids = yield* registry.ids()
-      expect(ids).toContain("repo_tree")
-      expect(ids).toContain("symbols_search")
-      expect(ids).toContain("references_find")
+      expect(ids).not.toContain("repo_tree")
+      expect(ids).not.toContain("repo_detect")
+      expect(ids).not.toContain("symbols_search")
+      expect(ids).not.toContain("references_find")
+      expect(ids).not.toContain("definitions_find")
     }),
   )
 
-  itTool.instance("repo_tree lists a bounded structure and skips ignored directories", () =>
+  itRepoStructure.instance("returns source-pinned lexical declaration candidates without claiming parser certainty", () =>
     Effect.gen(function* () {
-      const test = yield* TestInstance
-      yield* Effect.promise(() => Bun.write(path.join(test.directory, "src/index.ts"), "export const a = 1\n"))
-      yield* Effect.promise(() => Bun.write(path.join(test.directory, ".git/config"), "[core]\n"))
-      const info = yield* RepoTreeTool
+      const info = yield* DefinitionsFindTool
       const tool = yield* info.init()
-      const result = yield* tool.execute({ path: test.directory, depth: 2 }, ctx)
-      expect(result.output).toContain("src/")
-      expect(result.output).toContain("index.ts")
-      expect(result.output).not.toContain(".git")
+      const result = yield* tool.execute({ query: "entry" }, ctx)
+      expect(result.metadata.status).toBe("PARTIAL")
+      expect(result.output).toContain("resultKind: lexical declaration candidates")
+      expect(result.output).toContain("src/a.ts:1 function entry")
+      expect(result.output).not.toContain("parser-confirmed")
     }),
   )
 
-  itTool.instance("repo_tree skips symlink entries instead of traversing outside the selected root", () =>
+  itTool.instance("repo_tree and repo_detect fail closed when HostKernel discovery is unavailable", () =>
     Effect.gen(function* () {
-      const test = yield* TestInstance
-      const outside = path.join(path.dirname(test.directory), `${path.basename(test.directory)}-outside`)
-      yield* Effect.promise(async () => {
-        await fs.mkdir(outside, { recursive: true })
-        await fs.writeFile(path.join(outside, "secret.txt"), "outside")
-        await fs.symlink(outside, path.join(test.directory, "escape"), "dir")
-      })
-      const info = yield* RepoTreeTool
-      const tool = yield* info.init()
-      const result = yield* tool.execute({ path: test.directory, depth: 4 }, ctx)
-      expect(result.output).not.toContain("escape")
-      expect(result.output).not.toContain("secret.txt")
-      yield* Effect.promise(() => fs.rm(outside, { recursive: true, force: true }))
+      const treeInfo = yield* RepoTreeTool
+      const tree = yield* treeInfo.init()
+      const treeResult = yield* tree.execute({ path: "src", depth: 2 }, ctx)
+      expect(treeResult.metadata.status).toBe("UNAVAILABLE")
+      expect(treeResult.output).toContain("UNAVAILABLE")
+
+      const detectInfo = yield* RepoDetectTool
+      const detect = yield* detectInfo.init()
+      const detectResult = yield* detect.execute({ path: "src" }, ctx)
+      expect(detectResult.metadata.status).toBe("UNAVAILABLE")
+      expect(detectResult.output).toContain("UNAVAILABLE")
     }),
   )
 
-  itTool.instance("repo_tree stops before reading an external directory when approval is denied", () =>
+  itDiscovery.instance("uses bounded HostKernel discovery and exact-revision manifest reads", () =>
     Effect.gen(function* () {
-      const test = yield* TestInstance
-      const outside = path.join(path.dirname(test.directory), `${path.basename(test.directory)}-outside`)
-      yield* Effect.promise(async () => {
-        await fs.mkdir(outside, { recursive: true })
-        await fs.writeFile(path.join(outside, "secret.txt"), "outside")
-      })
-      const permissions: string[] = []
-      let reads = 0
-      const fsutil = yield* FSUtil.Service
-      const info = yield* RepoTreeTool
-      const tool = yield* info.init()
-      const deniedContext: ToolContext = {
-        ...ctx,
-        ask: (input) => {
-          permissions.push(input.permission)
-          return input.permission === "external_directory"
-            ? Effect.fail(new Error("denied")).pipe(Effect.orDie)
-            : Effect.void
-        },
-      }
-      const result = yield* Effect.exit(
-        tool.execute({ path: outside, depth: 2 }, deniedContext).pipe(
-          Effect.provideService(
-            FSUtil.Service,
-            FSUtil.Service.of({
-              ...fsutil,
-              readDirectoryEntries: (directory) => {
-                reads++
-                return fsutil.readDirectoryEntries(directory)
-              },
-            }),
-          ),
-        ),
-      )
-      expect(permissions).toEqual(["glob", "external_directory"])
-      expect(reads).toBe(0)
-      expect(result._tag).toBe("Failure")
-      yield* Effect.promise(() => fs.rm(outside, { recursive: true, force: true }))
+      observedDiscoveryCalls.length = 0
+      observedManifestReads.length = 0
+      observedManifestRevisionKinds.length = 0
+      const treeInfo = yield* RepoTreeTool
+      const tree = yield* treeInfo.init()
+      const treeResult = yield* tree.execute({ path: ".", depth: 8, maxEntries: 256 }, ctx)
+      expect(treeResult.metadata.status).toBe("CURRENT")
+      expect(treeResult.output).toContain("src/link [symlink]")
+      expect(observedDiscoveryCalls[0]?.mode).toBe("tree")
+
+      const detectInfo = yield* RepoDetectTool
+      const detect = yield* detectInfo.init()
+      const detectResult = yield* detect.execute({ path: "." }, ctx)
+      expect(detectResult.metadata.status).toBe("CURRENT")
+      expect(detectResult.output).toContain("framework: react")
+      expect(detectResult.output).toContain("package manager: bun")
+      expect(detectResult.output).toContain("test script: declared")
+      expect(detectResult.output).toContain("build script: declared")
+      expect(observedManifestReads).toEqual(["package.json"])
+      expect(observedManifestRevisionKinds).toEqual(["discovery_observation"])
+      expect(observedDiscoveryCalls[1]?.mode).toBe("manifests")
+    }),
+  )
+
+  itDiscovery.instance("redacts credential-shaped path labels in manifest detection output", () =>
+    Effect.gen(function* () {
+      const detectInfo = yield* RepoDetectTool
+      const detect = yield* detectInfo.init()
+      const result = yield* detect.execute({ path: "redact" }, ctx)
+      expect(result.output).toContain("[REDACTED]/package.json")
+      expect(result.output).not.toContain("fixture-secret")
+      expect(observedManifestReads.at(-1)).toBe("redact/api_key=fixture-secret/package.json")
+    }),
+  )
+
+  itDiscovery.instance("uses current candidates from a partial manifest page without claiming complete detection", () =>
+    Effect.gen(function* () {
+      observedManifestReads.length = 0
+      observedManifestRevisionKinds.length = 0
+      const detectInfo = yield* RepoDetectTool
+      const detect = yield* detectInfo.init()
+      const result = yield* detect.execute({ path: "partial" }, ctx)
+      expect(result.metadata.status).toBe("PARTIAL")
+      expect(result.output).toContain("coveragePartialReason: entry_limit")
+      expect(result.output).toContain("framework: react")
+      expect(observedManifestRevisionKinds).toEqual(["discovery_observation"])
     }),
   )
 
@@ -309,7 +415,7 @@ describe("tool.repo-tools", () => {
       const tool = yield* info.init()
       const result = yield* tool.execute({ query: "entry", maxResults: 100 }, ctx)
       expect(new TextEncoder().encode(result.output).byteLength).toBeLessThanOrEqual(32 * 1024)
-      expect(result.output).toContain("source: parser; coverage: 40 files, 40 nodes, 40000 bytes")
+      expect(result.output).toContain("source: parser; coverage: 40 files, 100 nodes, 40000 bytes")
       expect(result.output).toContain("nextCursor:")
       expect(result.output).toContain("[output truncated at 32 KiB")
     }),

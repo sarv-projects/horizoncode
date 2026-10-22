@@ -2,7 +2,7 @@
 """Offline architecture/schema/registry/authority regression checks. No source mutation."""
 from pathlib import Path
 import json,re,subprocess,sys,stat
-from jsonschema import Draft202012Validator
+from jsonschema import Draft202012Validator, RefResolver
 
 def has_first_party_root_notice(root, tracked_paths):
     """Return true only for a tracked regular root notice distinct from vendor license."""
@@ -164,22 +164,42 @@ mandatory_read={'desktop.snapshot','web.search.providers','debug.variables','rep
 for cid in mandatory_read:
     check(cid in records and records[cid]['effectClass']=='read_only','unsafe/missing read classification '+cid)
 
+# Resolve horizon:// and cross-file $ref for contract fixtures.
+_contract_store = {}
+for path in schema_files:
+    data = load(path)
+    sid = data.get('$id')
+    if sid:
+        _contract_store[sid] = data
+
+def contract_validator(schema):
+    resolver = RefResolver.from_schema(schema, store=_contract_store)
+    return Draft202012Validator(schema, resolver=resolver)
+
 # Positive/negative fixtures for boundary schemas.
+_digest='blake3:'+'a'*64
+_sha='0'*64
 examples={
- 'session-link-v1':{'schemaVersion':1,'sessionId':'ses1','sourceStoreId':'store1','sourceEpoch':1,'sourceCursor':'c1','sourceDigest':'sha256:x','ownerEpoch':2},
- 'tool-batch-control-v1':{'schemaVersion':1,'batchId':'b1','sessionId':'s1','providerResponseRef':'r1','providerResponseDigest':'sha256:x','toolRegistryGeneration':'g1','policyEpoch':1,'status':'validated','calls':[{'callId':'c1','capabilityId':'files.patch','schemaDigest':'sha256:s','argumentsDigest':'sha256:a','effectClass':'guarded_effect'}],'effectRefs':[]},
- 'effect-boundary-v1':{'schemaVersion':1,'effectId':'e1','capabilityId':'files.patch','phase':'prepared','argumentsDigest':'sha256:a','targetRef':'file:x','scopeRef':'project:x','policyEpoch':1,'resultClass':'none'},
- 'desktop-action-v1':{'schemaVersion':1,'requestId':'r1','backend':'linux','targetRef':'window:1','expectedGeneration':1,'action':'click','arguments':{},'deadlineMs':5000},
- 'web-search-request-v1':{'schemaVersion':1,'requestId':'r1','query':'test','providerId':'p1','routeClass':'direct_search','costPolicy':'free_only','maxResults':5,'timeoutMs':5000,'domains':[]},
- 'web-search-result-v1':{'schemaVersion':1,'requestId':'r1','providerId':'p1','routeClass':'direct_search','retrievedAt':'2026-10-11T00:00:00Z','costClass':'free','results':[{'url':'https://example.com','title':'Example','snippet':'x'}]},
- 'debug-session-action-v1':{'schemaVersion':1,'requestId':'r1','sessionId':'d1','generation':1,'action':'stack','arguments':{},'deadlineMs':5000},
- 'repl-session-action-v1':{'schemaVersion':1,'requestId':'r1','sessionId':'rp1','generation':1,'language':'python','action':'status','resourceProfileRef':'resource:safe','callbackCapabilityIds':[],'deadlineMs':5000},
- 'source-artifact-v1':{'schemaVersion':1,'artifactId':'a1','ownerRef':'session:s1','sourceRevision':'rev1','sha256':'0'*64,'mime':'text/plain','byteCount':1,'fidelity':'full','droppedByteCount':0,'retentionClass':'session'},
- 'figure-block-v1':{'schemaVersion':1,'figureId':'f1','messagePartId':'p1','sourceRevision':1,'sourceDigest':'sha256:x','kind':'svg','status':'ready','rendererVersion':'1','themeEpoch':1,'geometryEpoch':1}
+ 'session-link-v1':{
+  'sessionId':'ses1','sourceStoreId':'store1','sourceInstanceId':'inst1',
+  'sourceCursor':{'ownerKind':'session','ownerId':'ses1','seq':'1','eventDigest':_digest},
+  'sourceEpoch':'1','latestObservedMessageId':None,'latestObservedPartId':None,
+  'sourceDigest':'sha256:'+_sha,'redactionProfile':'default','ownerEpoch':'2','protocolVersion':1,
+ },
+ 'tool-batch-control-v1':{'schemaVersion':1,'batchId':'b1','sessionId':'s1','providerResponseRef':'r1','providerResponseDigest':'sha256:'+_sha,'toolRegistryGeneration':'g1','policyEpoch':'1','status':'validated','calls':[{'callId':'c1','capabilityId':'files.patch','schemaDigest':'sha256:'+_sha,'argumentsDigest':'sha256:'+_sha,'effectClass':'guarded_effect'}],'effectRefs':[],'payloadBytes':0,'deadlineMs':30000,'cancellationId':'cancel1'},
+ 'effect-boundary-v1':{'schemaVersion':1,'effectId':'e1','capabilityId':'files.patch','phase':'prepared','argumentsDigest':'sha256:'+_sha,'targetRef':'file:x','scopeRef':'project:x','policyEpoch':'1','resultClass':'none'},
+ 'desktop-action-v1':{'schemaVersion':1,'requestId':'r1','backend':'linux','targetRef':'window:1','expectedGeneration':'1','action':'click','arguments':{},'deadlineMs':5000},
+ 'web-search-request-v1':{'schemaVersion':1,'requestId':'r1','query':'test','maxResults':5},
+ 'web-search-result-v1':{'schemaVersion':1,'requestId':'r1','providerId':'p1','routeClass':'direct_search','retrievedAt':'2026-10-11T00:00:00Z','costClass':'free','authSource':'none','freshness':'unknown','latencyMs':42,'truncated':False,'routePlanDigest':_digest,'routeAttempts':[],'results':[{'url':'https://example.com','title':'Example','snippet':'x'}]},
+ 'web-search-failure-v1':{'schemaVersion':1,'requestId':'r1','status':'exhausted','reason':'all enabled routes failed','routePlanDigest':_digest,'routeAttempts':[{'providerId':'p1','attempt':1,'status':'rate_limited','routeId':'route1','routeIndex':0,'costClass':'free','authSource':'none','statusCode':429,'retryAfterMs':1000,'receiptRef':'receipt1'}]},
+ 'debug-session-action-v1':{'schemaVersion':1,'requestId':'r1','sessionId':'d1','generation':'1','action':'stack','arguments':{},'deadlineMs':5000},
+ 'repl-session-action-v1':{'schemaVersion':1,'requestId':'r1','sessionId':'rp1','generation':'1','language':'python','action':'status','resourceProfileRef':'resource:safe','callbackCapabilityIds':[],'deadlineMs':5000},
+ 'source-artifact-v1':{'schemaVersion':1,'lane':'direct','artifactId':'a1','artifactGeneration':'1','ownerRef':'session:s1','sourceRevision':'rev1','sha256':_sha,'mime':'text/plain','byteCount':'1','fidelity':'full','droppedByteCount':'0','redactionState':'known_safe','retentionClass':'session','producerCapabilityId':'files.read','sessionId':'s1','producerRequestId':'req1','producerToolCallId':'call1','effectId':'eff1','effectReceiptRef':'rcpt1'},
+ 'figure-block-v1':{'schemaVersion':1,'figureId':'f1','messagePartId':'p1','sourceRevision':'1','sourceDigest':'sha256:'+_sha,'kind':'svg','status':'ready','rendererVersion':'1','themeEpoch':'1','geometryEpoch':'1'}
 }
 for stem,good in examples.items():
     schema=load(D/(stem+'.schema.json'))
-    validator=Draft202012Validator(schema)
+    validator=contract_validator(schema)
     errs=list(validator.iter_errors(good))
     check(not errs,'positive fixture '+stem+(': '+str(errs[0]) if errs else ''))
     required=schema.get('required',[])
@@ -191,12 +211,15 @@ for stem,good in examples.items():
 
 # FeatureExposureV1 is a derived Settings/UX contract, not proof of a wired feature.
 feature_schema=load(D/'feature-exposure-v1.schema.json')
-feature_validator=Draft202012Validator(feature_schema)
+feature_validator=contract_validator(feature_schema)
 feature_off={
  'schemaVersion':1,'featureId':'horizon.native-search','settingKey':'features.native_search',
+ 'owner':{'config':'Core.Config','runtime':'HostKernel.RepoIntel'},
  'title':'Native repository search','description':'Optional audited native search backend',
  'releaseClass':'experimental','optional':True,'audience':'developer','defaultEnabled':False,
- 'supportedScopes':['user','project'],'applyBoundary':'next_session','capabilityIds':['text.search'],
+ 'supportedScopes':['user','project'],'prerequisites':['hostkernel.guard'],
+ 'supportedPlatforms':['linux'],'supportedModelRefs':[],'supportedHarnessRefs':[],
+ 'applyBoundary':'next_session','capabilityIds':['text.search'],
  'state':{
   'implementationStatus':'designed','requestedEnabled':None,'effectiveEnabled':False,
   'effectiveState':'unavailable','valueSource':'default','policyLock':'unknown',
@@ -225,6 +248,9 @@ for label,bad in [
  ('experimental default enabled',{**feature_off,'defaultEnabled':True}),
  ('developer default enabled',{**feature_off,'defaultEnabled':True,'releaseClass':'stable'}),
  ('missing setting key',{k:v for k,v in feature_off.items() if k!='settingKey'}),
+ ('missing existing owner',{k:v for k,v in feature_off.items() if k!='owner'}),
+ ('empty platform support',{**feature_off,'supportedPlatforms':[]}),
+ ('duplicate prerequisite',{**feature_off,'prerequisites':['hostkernel.guard','hostkernel.guard']}),
  ('unknown top-level authority',{**feature_off,'privilegedOverride':True}),
  ('unknown nested authority',{**feature_off,'state':{**feature_off['state'],'guardBypass':True}}),
  ('designed feature effective on',{**feature_off,'state':{**feature_off['state'],'effectiveEnabled':True,'effectiveState':'on'}}),
@@ -474,7 +500,7 @@ effect_host=(R/'kernel/src/effect_host.rs').read_text()
 write_tests=(R/'packages/core/test/tool-write.test.ts').read_text()
 registry_tests=(R/'packages/core/test/session-runner-tool-registry.test.ts').read_text()
 check('isBuiltinWrite(registration.tool)' in core_registry
-      and 'localRegistration !== registration' in core_registry
+      and 'localRegistration === registration' in core_registry
       and 'Rust Guard admission required' in core_registry
       and 'markBuiltinWrite' in write_source
       and 'isBuiltinWrite' in write_provenance,

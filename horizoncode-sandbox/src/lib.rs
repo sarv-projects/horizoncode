@@ -1132,6 +1132,30 @@ impl PreparedExecution {
         &self.guarantees
     }
 
+    /// Whether the selected, validated mount plan hides the host cgroup
+    /// hierarchy from the child. This is an explicit cleanup-authority proof,
+    /// not an inference from process-tree containment alone.
+    pub fn proves_cgroup_hierarchy_hidden(&self) -> bool {
+        if self.plan.backend_name() != "bubblewrap" {
+            return false;
+        }
+        let SandboxProfile::Confined(profile) = &self.profile else {
+            return false;
+        };
+        let mount = Path::new("/sys/fs/cgroup");
+        if profile.scoped_roots.iter().any(|root| {
+            root.path.starts_with(mount) || mount.starts_with(&root.path)
+        }) {
+            return false;
+        }
+        profile.platform_default_reads
+            .then_some(["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/nix/store", "/run/current-system/sw"])
+            .is_none_or(|roots| roots.iter().all(|root| {
+                let root = Path::new(root);
+                !root.starts_with(mount) && !mount.starts_with(root)
+            }))
+    }
+
     /// The assessment of one dimension.
     pub fn guarantee(&self, dimension: GuaranteeDimension) -> Option<&GuaranteeAssessment> {
         self.guarantees
@@ -1191,7 +1215,105 @@ impl PreparedExecution {
     /// reads, process-tree kill and reconciliation; call
     /// [`RunningChild::wait`] to reap and clean up.
     pub fn spawn(&self, request: &SpawnRequest) -> Result<RunningChild, SandboxError> {
+        self.spawn_internal(request, None, None)
+    }
+
+    /// Start the confined launcher inside an already-created delegated cgroup-v2
+    /// before its first executable runs. The child writes its own PID to the
+    /// pinned `cgroup.procs` descriptor in `pre_exec`; failure aborts exec, so
+    /// neither bubblewrap nor the target command can start outside containment.
+    /// The caller must durably persist the cgroup identity before this call and
+    /// keep the descriptor open until the call returns.
+    pub fn spawn_in_cgroup(
+        &self,
+        request: &SpawnRequest,
+        cgroup_procs_fd: i32,
+        max_open_files: Option<u64>,
+    ) -> Result<RunningChild, SandboxError> {
+        if cgroup_procs_fd < 0 {
+            return Err(SandboxError::SpawnFailed { reason: "invalid cgroup.procs descriptor".to_owned(), errno: None });
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (request, cgroup_procs_fd, max_open_files);
+            return Err(SandboxError::Unsupported { reason: "cgroup-v2 process containment is Linux-only".to_owned(), dimension: None });
+        }
+        #[cfg(target_os = "linux")]
+        { self.spawn_internal(request, Some(cgroup_procs_fd), max_open_files) }
+    }
+
+    fn spawn_internal(&self, request: &SpawnRequest, cgroup_procs_fd: Option<i32>, max_open_files: Option<u64>) -> Result<RunningChild, SandboxError> {
         let (mut command, running_state) = self.plan.command(request)?;
+        // A confined command is owned by this host process. On Linux, make the
+        // kernel terminate the direct sandbox child if the ExecutionHost dies,
+        // including abrupt owner loss where Rust Drop/finalizers do not run.
+        // Bubblewrap additionally uses --die-with-parent inside a fresh PID
+        // namespace, which tears down its complete confined process tree.
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::process::CommandExt;
+            let expected_parent = std::process::id() as libc::pid_t;
+            // SAFETY: the child-side closure performs only `prctl` and `getppid`
+            // syscalls before exec; it does not allocate or access shared state.
+            unsafe {
+                command.pre_exec(move || {
+                    const PR_SET_PDEATHSIG: libc::c_int = 1;
+                    if libc::prctl(PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    // Close the race where the parent exits between fork and
+                    // arming the parent-death signal.
+                    if libc::getppid() != expected_parent {
+                        return Err(std::io::Error::from_raw_os_error(libc::ECHILD));
+                    }
+                    if let Some(maximum) = max_open_files {
+                        if maximum == 0 { return Err(std::io::Error::from_raw_os_error(libc::EINVAL)); }
+                        let mut current = std::mem::MaybeUninit::<libc::rlimit>::uninit();
+                        if libc::getrlimit(libc::RLIMIT_NOFILE, current.as_mut_ptr()) != 0 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                        let current = unsafe { current.assume_init() };
+                        let limit = maximum as libc::rlim_t;
+                        if current.rlim_max < limit {
+                            return Err(std::io::Error::from_raw_os_error(libc::EPERM));
+                        }
+                        let requested = libc::rlimit { rlim_cur: limit, rlim_max: limit };
+                        if libc::setrlimit(libc::RLIMIT_NOFILE, &requested) != 0 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                        let mut verified = std::mem::MaybeUninit::<libc::rlimit>::uninit();
+                        if libc::getrlimit(libc::RLIMIT_NOFILE, verified.as_mut_ptr()) != 0 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                        let verified = unsafe { verified.assume_init() };
+                        if verified.rlim_cur != limit || verified.rlim_max != limit {
+                            return Err(std::io::Error::from_raw_os_error(libc::EPERM));
+                        }
+                    }
+                    if let Some(fd) = cgroup_procs_fd {
+                        let mut digits = [0u8; 32];
+                        let mut value = libc::getpid() as u32;
+                        let mut cursor = digits.len();
+                        loop {
+                            cursor -= 1;
+                            digits[cursor] = b'0' + (value % 10) as u8;
+                            value /= 10;
+                            if value == 0 { break; }
+                        }
+                        cursor -= 1;
+                        digits[cursor] = b'\n';
+                        let mut written = 0usize;
+                        while written < digits.len() - cursor {
+                            let result = libc::write(fd, digits[cursor + written..].as_ptr().cast(), digits.len() - cursor - written);
+                            if result > 0 { written += result as usize; continue; }
+                            if result < 0 && *libc::__errno_location() == libc::EINTR { continue; }
+                            return Err(std::io::Error::last_os_error());
+                        }
+                    }
+                    Ok(())
+                });
+            }
+        }
         let child = command.spawn().map_err(|error| SandboxError::SpawnFailed {
             reason: format!("{}: {error}", request.program.display()),
             errno: error.raw_os_error(),

@@ -46,12 +46,13 @@ import {
   DialogGoalReview,
   type GoalReviewProjection,
 } from "./component/dialog-goal-review"
-import { DialogGoalVerification, type GoalVerificationResult } from "./component/dialog-goal-verification"
+import { DialogGoalVerification, type DispatchSettlementSummaryV1, type GoalVerificationResult, type VerifiedArtifactRefV1, type WorktreeDispositionSummaryV1 } from "./component/dialog-goal-verification"
 import { useConnected } from "./component/use-connected"
 import { DialogMcp } from "./component/dialog-mcp"
 import { DialogGuardApproval } from "./component/dialog-guard-approval"
 import { DialogProviderDoctor } from "./component/dialog-provider-doctor"
 import { DialogFeatures } from "./component/dialog-features"
+import { DialogRepoIntelligenceProfile } from "./component/dialog-repo-intelligence-profile"
 import { DialogWebSearchSettings } from "./component/dialog-websearch-settings"
 import { DialogStatus } from "./component/dialog-status"
 import { DialogDebug } from "./component/dialog-debug"
@@ -166,6 +167,10 @@ export type TuiInput = {
   events?: EventSource
   pluginHost: TuiPluginHost
 }
+
+type GoalReviewInboxOption =
+  | { readonly kind: "proposal"; readonly proposal: GoalReviewProjection }
+  | { readonly kind: "next_page"; readonly afterGoalID: string }
 
 function errorMessage(error: unknown) {
   if (
@@ -403,104 +408,137 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
   const attention = createTuiAttention({ renderer, config: tuiConfig, kv })
   const clipboard = useClipboard()
 
+  const [managedVerifierDialogOpen, setManagedVerifierDialogOpen] = createSignal(false)
   // Guard approvals are host-issued one-use challenges. Only open the earliest
   // unexpired request when no other dialog is using the shared modal surface.
+  // The verifier is the sole exception: its effectful request waits for Guard,
+  // so its host-issued approval must sit above that still-mounted verifier.
   // Escape/backdrop close answers deny; the active signal prevents a second
   // challenge from replacing the first while its reply is in flight.
   const [guardApprovalReplying, setGuardApprovalReplying] = createSignal(false)
+  const [guardApprovalShowing, setGuardApprovalShowing] = createSignal<string>()
+  const [guardApprovalCompleted, setGuardApprovalCompleted] = createSignal<string>()
   createEffect(() => {
     const request = sync.guardApproval.pending()[0]
-    if (!request || dialog.stack.length > 0 || guardApprovalReplying()) return
+    if (guardApprovalCompleted() && guardApprovalCompleted() !== request?.approvalID) setGuardApprovalCompleted(undefined)
+    if (!request || guardApprovalReplying() || guardApprovalShowing() === request.approvalID ||
+      guardApprovalCompleted() === request.approvalID) return
+    const overVerifier =
+      managedVerifierDialogOpen() &&
+      ((request.origin === "managed_run" && request.source === "host.managed_verifier") ||
+        (request.origin === "managed_root" && request.source === "host.managed_worktree" && request.capabilityID === "git.worktree.list"))
+    if (dialog.stack.length > 0 && !overVerifier) return
     let answered = false
-    const reply = async (decision: "allow_once" | "deny") => {
+    const reply = async (decision: "allow_once" | "deny" | "grant_session" | "grant_workspace") => {
       if (answered) return false
       answered = true
       setGuardApprovalReplying(true)
       try {
-        return await sync.guardApproval.reply(request.approvalID, decision)
+        const confirmed = await sync.guardApproval.reply(request.approvalID, decision)
+        if (confirmed) setGuardApprovalCompleted(request.approvalID)
+        return confirmed
       } finally {
         setGuardApprovalReplying(false)
       }
     }
-    dialog.replace(
-      () => <DialogGuardApproval request={request} onDecision={reply} />,
-      () => void reply("deny"),
-    )
+    setGuardApprovalShowing(request.approvalID)
+    const close = () => {
+      setGuardApprovalShowing(undefined)
+      void reply("deny")
+    }
+    const element = () => <DialogGuardApproval request={request} onDecision={reply} />
+    if (overVerifier) dialog.push(element, close, true)
+    else dialog.replace(element, close)
   })
 
   async function openGoalReviewInbox() {
-    try {
-      const response = await sdk.client.experimental.goalReview.goalReviews(
-        {
-          directory: sdk.directory,
-          workspace: project.workspace.current(),
-          limit: "64",
-        },
-        { throwOnError: true },
-      )
-      const proposals = response.data.goals.flatMap((goal) => goal.proposals).slice(0, 64)
-      if (proposals.length === 0) {
-        void DialogAlert.show(dialog, "Goal review", "No proposed SpecVersion is awaiting review in this workspace.")
-        return
+    async function showPage(afterGoalID?: string) {
+      try {
+        const response = await sdk.client.experimental.goalReview.goalReviews(
+          {
+            directory: sdk.directory,
+            workspace: project.workspace.current(),
+            limit: "64",
+            ...(afterGoalID === undefined ? {} : { afterGoalID }),
+          },
+          { throwOnError: true },
+        )
+        const proposals = response.data.goals.flatMap((goal) => goal.proposals)
+        if (proposals.length === 0 && response.data.nextAfterGoalID === null) {
+          void DialogAlert.show(dialog, "Goal review", "No proposed SpecVersion is awaiting review in this workspace.")
+          return
+        }
+        const options: DialogSelectOption<GoalReviewInboxOption>[] = proposals.map((proposal) => ({
+          title: `${proposal.goalId} · ${proposal.specVersionId}`,
+          value: { kind: "proposal", proposal },
+          description: proposal.objective,
+          details: [
+            `Revision ${proposal.goalRevision}`,
+            `Proposed by ${proposal.proposedBy}`,
+            `Digest ${proposal.specDigest}`,
+            proposal.reviewAvailability.available
+              ? "Authenticated reviewer available"
+              : `Decision unavailable: ${proposal.reviewAvailability.reason}`,
+          ],
+        }))
+        if (response.data.nextAfterGoalID !== null) {
+          options.push({
+            title: "Load next review page",
+            value: { kind: "next_page", afterGoalID: response.data.nextAfterGoalID },
+            description: "Load the next bounded page of pending Goals in this workspace.",
+          })
+        }
+        dialog.replace(() => (
+          <DialogSelect
+            title="Goal · Pending SpecVersion reviews"
+            options={options}
+            onSelect={(option) => {
+              if (option.value.kind === "next_page") {
+                void showPage(option.value.afterGoalID)
+                return
+              }
+              const proposal = option.value.proposal
+              dialog.replace(() => (
+                <DialogGoalReview
+                  proposal={proposal}
+                  onAccept={async (decision) => {
+                    await sdk.client.experimental.goalReview.goalReviewDecision(
+                      {
+                        directory: sdk.directory,
+                        workspace: project.workspace.current(),
+                        decision: "accept",
+                        goalID: decision.goalId,
+                        specID: decision.specVersionId,
+                        specDigest: decision.specDigest,
+                        expectedRevision: decision.expectedRevision,
+                      },
+                      { throwOnError: true },
+                    )
+                  }}
+                  onReject={async (decision) => {
+                    await sdk.client.experimental.goalReview.goalReviewDecision(
+                      {
+                        directory: sdk.directory,
+                        workspace: project.workspace.current(),
+                        decision: "reject",
+                        goalID: decision.goalId,
+                        specID: decision.specVersionId,
+                        specDigest: decision.specDigest,
+                        expectedRevision: decision.expectedRevision,
+                      },
+                      { throwOnError: true },
+                    )
+                  }}
+                />
+              ))
+            }}
+          />
+        ))
+      } catch (error) {
+        toast.error(error)
       }
-      const options: DialogSelectOption<GoalReviewProjection>[] = proposals.map((proposal) => ({
-        title: `${proposal.goalId} · ${proposal.specVersionId}`,
-        value: proposal,
-        description: proposal.objective,
-        details: [
-          `Revision ${proposal.goalRevision}`,
-          `Proposed by ${proposal.proposedBy}`,
-          `Digest ${proposal.specDigest}`,
-          proposal.reviewAvailability.available
-            ? "Authenticated reviewer available"
-            : `Decision unavailable: ${proposal.reviewAvailability.reason}`,
-        ],
-      }))
-      dialog.replace(() => (
-        <DialogSelect
-          title="Goal · Pending SpecVersion reviews"
-          options={options}
-          onSelect={(option) => {
-            const proposal = option.value
-            dialog.replace(() => (
-              <DialogGoalReview
-                proposal={proposal}
-                onAccept={async (decision) => {
-                  await sdk.client.experimental.goalReview.goalReviewDecision(
-                    {
-                      directory: sdk.directory,
-                      workspace: project.workspace.current(),
-                      decision: "accept",
-                      goalID: decision.goalId,
-                      specID: decision.specVersionId,
-                      specDigest: decision.specDigest,
-                      expectedRevision: decision.expectedRevision,
-                    },
-                    { throwOnError: true },
-                  )
-                }}
-                onReject={async (decision) => {
-                  await sdk.client.experimental.goalReview.goalReviewDecision(
-                    {
-                      directory: sdk.directory,
-                      workspace: project.workspace.current(),
-                      decision: "reject",
-                      goalID: decision.goalId,
-                      specID: decision.specVersionId,
-                      specDigest: decision.specDigest,
-                      expectedRevision: decision.expectedRevision,
-                    },
-                    { throwOnError: true },
-                  )
-                }}
-              />
-            ))
-          }}
-        />
-      ))
-    } catch (error) {
-      toast.error(error)
     }
+    await showPage()
   }
 
   async function openGoalProposal() {
@@ -591,6 +629,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
             return
           }
           const [goalID, runID] = parts
+          setManagedVerifierDialogOpen(true)
           dialog.replace(() => (
             <DialogGoalVerification
               goalID={goalID}
@@ -617,10 +656,151 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
                     revision: response.data.revision,
                   }
                 }
+                if (response.data.status === "SUCCEEDED") {
+                  const settlement = response.data.dispatchSettlement
+                  const usage = response.data.usageAccounting
+                  const artifactCount = response.data.artifactRefs?.reduce((count, item) => count + item.artifactRefs.length, 0) ??
+                    response.data.recoveredArtifactRefs?.length ?? 0
+                  if (!response.data.evidenceDigest || response.data.sourceRevision !== response.data.finalRevision ||
+                    artifactCount < 1 || !usage || usage.receiptCount === "0" ||
+                    BigInt(usage.accountingCursor) > BigInt(response.data.revision) ||
+                    settlement?.status !== "SETTLED" ||
+                    settlement.goalID !== goalID || settlement.runID !== runID ||
+                    settlement.taskID !== response.data.taskID || settlement.attemptID !== response.data.attemptID ||
+                    settlement.verificationRunID !== response.data.verificationRunID ||
+                    settlement.setIdentityDigest !== response.data.setIdentityDigest ||
+                    settlement.challengeSetDigest !== response.data.challengeSetDigest ||
+                    !settlement.worktreeDisposition ||
+                    settlement.worktreeDisposition.settlementReceiptDigest !== settlement.receiptDigest ||
+                    settlement.worktreeDisposition.observedWorkspaceRevision !== response.data.sourceRevision ||
+                    (settlement.disposition === "WORKTREE_QUARANTINED" && settlement.worktreeDisposition.disposition !== "QUARANTINED") ||
+                    (settlement.disposition === "RELEASED" && settlement.worktreeDisposition.disposition !== "REUSABLE")) {
+                    throw new Error("Successful verification is missing matching current-revision evidence, usage accounting, or P8 settlement")
+                  }
+                  return {
+                    status: response.data.status,
+                    revision: response.data.revision,
+                    evidenceDigest: response.data.evidenceDigest,
+                    artifactCount,
+                    sourceRevision: response.data.sourceRevision,
+                    usageAccounting: usage,
+                    settlementDisposition: settlement.disposition,
+                    worktreeDisposition: settlement.worktreeDisposition as WorktreeDispositionSummaryV1,
+                    artifactRefs: [
+                      ...(response.data.artifactRefs?.flatMap((item) => item.artifactRefs) ?? []),
+                      ...(response.data.recoveredArtifactRefs ?? []),
+                    ].map((item) => ({
+                      artifactID: item.artifactID,
+                      digest: item.digest,
+                      byteLength: item.byteLength,
+                      mediaType: item.mediaType,
+                      classification: item.classification,
+                    })),
+                    dispatchSettlement: { status: "SETTLED", receiptDigest: settlement.receiptDigest },
+                  }
+                }
+                if (response.data.status === "FAILED" || response.data.status === "CANCELLED") {
+                  const settlement = response.data.dispatchSettlement
+                  const expectedReason = response.data.status === "FAILED" ? "FAILED_ATTEMPT" : "CANCELLED_TASK"
+                  if (settlement?.status !== "QUARANTINED" ||
+                    settlement.reason !== expectedReason ||
+                    settlement.goalID !== goalID || settlement.runID !== runID ||
+                    settlement.taskID !== response.data.taskID || settlement.attemptID !== response.data.attemptID ||
+                    !/^blake3:[a-f0-9]{64}$/.test(settlement.receiptDigest) ||
+                    "verificationRunID" in settlement || "setIdentityDigest" in settlement || "challengeSetDigest" in settlement) {
+                    throw new Error("Failed or cancelled verification is missing the matching P8 quarantine receipt")
+                  }
+                  return {
+                    status: response.data.status,
+                    revision: response.data.revision,
+                    dispatchSettlement: {
+                      status: "QUARANTINED",
+                      reason: settlement.reason,
+                      receiptDigest: settlement.receiptDigest,
+                    } satisfies DispatchSettlementSummaryV1,
+                  }
+                }
+                if (response.data.status === "UNKNOWN") {
+                  return {
+                    status: response.data.status,
+                    revision: response.data.revision,
+                    ...(response.data.reason ? { reason: response.data.reason } : {}),
+                  }
+                }
                 return { status: response.data.status, revision: response.data.revision }
               }}
+              onReadArtifact={async (artifact: VerifiedArtifactRefV1) => {
+                const artifactRef = {
+                  artifactID: artifact.artifactID,
+                  digest: artifact.digest,
+                  byteLength: artifact.byteLength,
+                  mediaType: artifact.mediaType,
+                  classification: artifact.classification,
+                }
+                const scope = {
+                  directory: sdk.directory,
+                  workspace: project.workspace.current(),
+                  schemaVersion: 1 as const,
+                  sessionID: route.data.type === "session" ? route.data.sessionID : "",
+                  artifactRef,
+                }
+                if (!scope.sessionID) throw new Error("Artifact preview requires the current authenticated Session")
+                const inspected = await sdk.client.experimental.artifact.inspect(scope, { throwOnError: true })
+                const metadata = inspected.data as Record<string, unknown>
+                const fidelity = String(metadata.fidelity ?? "UNKNOWN")
+                const redaction = String(metadata.redaction ?? "UNKNOWN")
+                const previewableMedia = /^(text\/|application\/(?:json|xml|javascript|x-ndjson))/i.test(artifact.mediaType)
+                const heading = [
+                  `Artifact: ${artifact.artifactID}`,
+                  `Media type: ${artifact.mediaType}`,
+                  `Size: ${artifact.byteLength} bytes · ${fidelity}`,
+                  `Redaction: ${redaction}`,
+                ].join("\n")
+                if (!previewableMedia || !["FULL", "SAMPLE"].includes(fidelity) || !["APPLIED", "NOT_NEEDED"].includes(redaction)) {
+                  return `${heading}\n\nContent preview unavailable for this media type or redaction state.`
+                }
+                const range = await sdk.client.experimental.artifact.readRange({
+                  ...scope,
+                  offset: "0",
+                  maxBytes: 64 * 1024,
+                }, { throwOnError: true })
+                const result = range.data as Record<string, unknown>
+                const resultRef = result.artifactRef
+                const expectedKeys = ["artifactRef", "offset", "nextOffset", "complete", "bytesBase64"].sort().join("\0")
+                const refKeys = ["artifactID", "digest", "byteLength", "mediaType", "classification"].sort().join("\0")
+                if (Object.keys(result).toSorted().join("\0") !== expectedKeys ||
+                  typeof resultRef !== "object" || resultRef === null || Array.isArray(resultRef) ||
+                  Object.keys(resultRef).toSorted().join("\0") !== refKeys ||
+                  result.offset !== "0" || typeof result.nextOffset !== "string" ||
+                  !/^(0|[1-9][0-9]{0,19})$/.test(result.nextOffset) ||
+                  typeof result.complete !== "boolean" || typeof result.bytesBase64 !== "string") {
+                  throw new Error("Artifact range response is malformed")
+                }
+                const returnedRef = resultRef as Record<string, unknown>
+                if (returnedRef.artifactID !== artifact.artifactID || returnedRef.digest !== artifact.digest ||
+                  returnedRef.byteLength !== artifact.byteLength || returnedRef.mediaType !== artifact.mediaType ||
+                  returnedRef.classification !== artifact.classification) {
+                  throw new Error("Artifact range response refers to a different immutable artifact")
+                }
+                const encodedLimit = Math.ceil((64 * 1024) / 3) * 4
+                if (result.bytesBase64.length > encodedLimit ||
+                  !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(result.bytesBase64)) {
+                  throw new Error("Artifact preview exceeded its encoded byte bound")
+                }
+                const bytes = Buffer.from(result.bytesBase64, "base64")
+                const expectedBytes = Number(BigInt(artifact.byteLength) < 64n * 1024n ? BigInt(artifact.byteLength) : 64n * 1024n)
+                const expectedNext = String(BigInt(expectedBytes))
+                if (bytes.byteLength > 64 * 1024 || bytes.byteLength !== expectedBytes ||
+                  bytes.toString("base64") !== result.bytesBase64 || result.nextOffset !== expectedNext ||
+                  result.complete !== (BigInt(result.nextOffset) === BigInt(artifact.byteLength))) {
+                  throw new Error("Artifact range response has invalid bounds or completion state")
+                }
+                const text = boundToolOutput(new TextDecoder().decode(bytes), 64 * 1024).output
+                const previewState = result.complete === true ? "complete artifact" : "first 64 KiB only"
+                return `${heading}\nPreview (${previewState}):\n${text || "(empty)"}`
+              }}
             />
-          ))
+          ), () => setManagedVerifierDialogOpen(false))
         }}
       />
     ))
@@ -699,10 +879,10 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
     dialog.replace(() => (
       <DialogPrompt
         title="Plan tasks for an accepted Goal"
-        placeholder='{"schemaVersion":1,"goalID":"goal_…","specID":"spec_…","specDigest":"blake3:…","expectedGoalRevision":"12","runID":"run_…","tasks":[{"taskID":"task_1","dependencies":[],"criterionIDs":["criterion_1"],"requiredCapabilities":["files.read"],"profileSelection":{"profileId":"default","revision":"1"}}]}'
+        placeholder='{"schemaVersion":1,"goalID":"goal_…","specID":"spec_…","specDigest":"blake3:…","expectedGoalRevision":"12","runID":"run_…","tasks":[{"taskID":"task_1","title":"Implement criterion","purpose":"Make the behavior required by the accepted criterion","dependencies":[],"criterionIDs":["criterion_1"],"requiredCapabilities":["files.read"],"profileSelection":{"profileId":"default","revision":"1"}}]}'
         description={() => (
           <text>
-            Paste one bounded dependency plan JSON. The server checks the accepted SpecVersion, profile pins, and
+            Paste one bounded dependency plan JSON with exactly one coding Task. The server checks the accepted SpecVersion, profile pins, and
             current workspace. This records the exact DAG only: Tasks stay unready and no worker or effect is dispatched.
           </text>
         )}
@@ -720,6 +900,9 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
                 typeof plan.runID !== "string" || !Array.isArray(plan.tasks)) {
                 throw new Error("Run plan is missing a required schemaVersion 1 field")
               }
+              if (plan.tasks.length !== 1) {
+                throw new Error("V1 managed execution accepts exactly one coding Task per Run")
+              }
               const response = await sdk.client.experimental.goalReview.goalRunPlan({
                 directory: sdk.directory,
                 workspace: project.workspace.current(),
@@ -731,6 +914,8 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
                 runID: plan.runID,
                 tasks: plan.tasks as Array<{
                   taskID: string
+                  title: string
+                  purpose: string
                   dependencies: string[]
                   criterionIDs: string[]
                   requiredCapabilities: string[]
@@ -756,6 +941,14 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
   }
 
   function openGoalRunStart() {
+    if (route.data.type !== "session") {
+      toast.error("Starting a managed Run requires a top-level Session in the current workspace")
+      return
+    }
+    // Capture the selected durable root Session when the command is invoked.
+    // The route may change while the confirmation dialog is open; do not bind
+    // this start request to whichever Session happens to be current later.
+    const rootSessionID = route.data.sessionID
     dialog.replace(() => (
       <DialogPrompt
         title="Start a planned managed Run"
@@ -811,15 +1004,27 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
                         expectedGoalRevision: authority.expectedGoalRevision,
                         specID: authority.specID,
                         specDigest: authority.specDigest,
-                        sessionID: route.data.sessionID,
+                        sessionID: rootSessionID,
                         idempotencyKey: authority.idempotencyKey,
                       }, { throwOnError: true })
                       if (response.data.goalID !== authority.goalID || response.data.runID !== authority.runID ||
-                        response.data.sessionID !== route.data.sessionID) {
-                        throw new Error("Server returned a different managed Run")
+                        response.data.sessionID !== rootSessionID ||
+                        !["DISABLED", "NO_TASK", "PROMPT_RETURNED", "PROMPT_RETURNED_ERROR", "PROMPT_UNKNOWN", "UNAVAILABLE"].includes(response.data.dispatchStatus)) {
+                        throw new Error("Server returned a different managed Run or an invalid dispatch status")
                       }
                       dialog.clear()
-                      toast.show({ message: `Run ${response.data.runID} · ${response.data.runPhase} · revision ${response.data.revision}`, variant: "info" })
+                      const dispatchMessage = response.data.dispatchStatus === "PROMPT_RETURNED"
+                        ? " · first Task returned; use Goal actions → Verify accepted managed Run"
+                        : response.data.dispatchStatus === "PROMPT_RETURNED_ERROR"
+                          ? " · first Task returned with an error; use Goal actions → Verify accepted managed Run"
+                          : response.data.dispatchStatus === "PROMPT_UNKNOWN"
+                            ? " · Task dispatch is ambiguous; the same Attempt is fenced and its prompt will not be replayed"
+                            : response.data.dispatchStatus === "UNAVAILABLE"
+                              ? " · Task dispatch unavailable for the current Run state"
+                              : response.data.dispatchStatus === "DISABLED"
+                                ? " · Task dispatch is not enabled"
+                                : " · no Task is ready"
+                      toast.show({ message: `Run ${response.data.runID} · ${response.data.runPhase} · revision ${response.data.revision}${dispatchMessage}`, variant: "info" })
                     } catch (error) {
                       toast.error(error)
                     }
@@ -847,6 +1052,30 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
     return new TextDecoder().decode(bytes.slice(0, maxBytes)) + "…"
   }
 
+  function safeAutomationTime(value: unknown) {
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) return "unknown"
+    const date = new Date(value)
+    return Number.isNaN(date.getTime()) ? "unknown" : date.toISOString()
+  }
+
+  function automationOccurrence(value: unknown) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
+    return value as Record<string, unknown>
+  }
+
+  function automationWorkspaceLabel() {
+    const workspace = project.workspace.current()
+    return workspace ? safeAutomationText(workspace, 128) : "unresolved"
+  }
+
+  function editAutomationDefinition(automation?: Record<string, unknown>) {
+    void DialogAlert.show(
+      dialog,
+      "Automation definition unavailable",
+      "HorizonCode cannot yet verify an action schema against the authenticated capability registry. Creating or editing definitions is disabled before Guard approval; existing definitions can still be inspected or disabled.",
+    )
+  }
+
   async function openAutomationManager() {
     try {
       const sessionID = automationSessionID()
@@ -856,50 +1085,100 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
         sessionID,
       }, { throwOnError: true })
       const automations = response.data.automations
-      if (automations.length === 0) {
-        void DialogAlert.show(dialog, "Automation", "No durable automations are configured in this workspace.")
-        return
-      }
+      type AutomationOption = { kind: "create" } | { kind: "entry"; automation: Record<string, unknown> }
       dialog.replace(() => (
         <DialogSelect
           title="Automation · Rust journal"
-          options={automations.map((raw) => {
-            const automation = raw as Record<string, unknown>
-            const definition = automation.definition as Record<string, unknown>
-            const summary = automation.active ? "active" : automation.pending ? "pending" : automation.retryPending ? "retry pending" : "idle"
-            return {
-              title: `${safeAutomationText(automation.automationID)} · v${safeAutomationText(automation.version)} · ${summary}`,
-              value: automation,
-              description: `${safeAutomationText(definition.actionCapabilityID)} · ${safeAutomationText(definition.scheduleExpression)} · ${definition.enabled === true ? "enabled" : "disabled"}`,
-              details: ["Guarded invocation unavailable", `Occurrence history: ${String(automation.historyCount)}`],
-            }
-          })}
+          options={[
+            {
+              title: "Create automation",
+              value: { kind: "create" as const },
+              description: "Unavailable until the authenticated capability registry validates the action schema.",
+            },
+            ...automations.map((raw): DialogSelectOption<AutomationOption> => {
+              const automation = raw as Record<string, unknown>
+              const definition = automation.definition as Record<string, unknown>
+              const summary = automation.active ? "active" : automation.pending ? "pending" : automation.retryPending ? "retry pending" : "idle"
+              const next = automationOccurrence(automation.pending) ?? automationOccurrence(automation.retryPending)
+              return {
+                title: `${safeAutomationText(automation.automationID)} · v${safeAutomationText(automation.version)} · ${summary}`,
+                value: { kind: "entry", automation },
+                description: `${safeAutomationText(definition.actionCapabilityID)} · ${safeAutomationText(definition.scheduleExpression)} · ${definition.enabled === true ? "enabled" : "disabled"}`,
+                details: [
+                  `Action v${safeAutomationText(definition.actionVersion, 16)} · ${safeAutomationText(definition.actionDigest, 24)}`,
+                  `Timezone: ${safeAutomationText(definition.timezone, 64)} · overlap ${safeAutomationText(definition.overlapPolicy, 24)} · missed ${safeAutomationText(definition.missedRunPolicy, 24)}`,
+                  `Next recorded occurrence: ${next ? safeAutomationTime(next.retryAtMs ?? next.scheduledAtMs) : "none recorded"}`,
+                  "Guarded invocation unavailable",
+                  `Occurrence history: ${String(automation.historyCount)}`,
+                ],
+              }
+            }),
+          ]}
           onSelect={(option) => {
-            const automation = option.value
+            if (option.value.kind === "create") {
+              editAutomationDefinition()
+              return
+            }
+            const automation = option.value.automation
             const automationID = String(automation.automationID)
-            const version = String(automation.version)
+            const enabled = (automation.definition as Record<string, unknown>).enabled === true
             const actions: DialogSelectOption<string>[] = [
               { title: "Inspect current journal state", value: "inspect", description: "Refresh the committed definition and active occurrences from OwnerLog." },
               { title: "View latest occurrence history", value: "history", description: "Read the bounded latest-first OwnerLog projection." },
-              { title: automation.definition.enabled === true ? "Disable automation" : "Enable automation", value: "toggle", description: "Revision-fenced journal update; does not invoke the action." },
-              { title: "Edit definition", value: "edit", description: "Replace the versioned definition with validated JSON." },
+              { title: "Edit definition", value: "edit", description: "Unavailable until the authenticated capability registry validates the action schema." },
+              { title: `${enabled ? "Disable" : "Enable"} automation`, value: "toggle", description: "Request Guard approval for this exact compare-and-swap state change." },
             ]
             dialog.replace(() => <DialogSelect title={`Automation · ${automationID}`} options={actions} onSelect={(action) => {
               void (async () => {
                 try {
+                  if (action.value === "edit") {
+                    editAutomationDefinition(automation)
+                    return
+                  }
                   const sessionID = automationSessionID()
-                  const common = { directory: sdk.directory, workspace: project.workspace.current(), schemaVersion: 1 as const, sessionID, automationID, idempotencyKey: `automation_${randomUUID().replaceAll("-", "")}`, expectedVersion: version }
+                  if (action.value === "toggle") {
+                    const common = {
+                      directory: sdk.directory,
+                      workspace: project.workspace.current(),
+                      schemaVersion: 1 as const,
+                      sessionID,
+                      automationID,
+                      expectedVersion: String(automation.version),
+                      idempotencyKey: `automation_${randomUUID().replaceAll("-", "")}`,
+                    }
+                    await (enabled
+                      ? sdk.client.experimental.automation.disable(common, { throwOnError: true })
+                      : sdk.client.experimental.automation.enable(common, { throwOnError: true }))
+                    toast.show({ message: `Automation ${automationID} ${enabled ? "disabled" : "enabled"} after Guard approval. Invocation remains unavailable.`, variant: "info" })
+                    await openAutomationManager()
+                    return
+                  }
                   if (action.value === "inspect") {
                     const inspected = await sdk.client.experimental.automation.inspect({ directory: sdk.directory, workspace: project.workspace.current(), sessionID, automationID }, { throwOnError: true })
                     const value = inspected.data as Record<string, unknown>
                     const definition = value.definition as Record<string, unknown>
+                    const active = automationOccurrence(value.active)
+                    const pending = automationOccurrence(value.pending)
+                    const retryPending = automationOccurrence(value.retryPending)
+                    const history = await sdk.client.experimental.automation.history({ directory: sdk.directory, workspace: project.workspace.current(), sessionID, automationID, limit: "1" }, { throwOnError: true })
+                    const last = Array.isArray(history.data.history)
+                      ? automationOccurrence(history.data.history[0])
+                      : undefined
                     const lines = [
                       `Automation: ${safeAutomationText(value.automationID)}`,
                       `Version: ${safeAutomationText(value.version, 32)}`,
-                      `Action: ${safeAutomationText(definition.actionCapabilityID)}`,
+                      `Request scope: ServerAuth · ${safeAutomationText(sdk.directory, 256)} · workspace ${automationWorkspaceLabel()} · Session ${safeAutomationText(sessionID)}`,
+                  `Action: ${safeAutomationText(definition.actionCapabilityID)} · v${safeAutomationText(definition.actionVersion, 16)} · ${safeAutomationText(definition.actionDigest, 24)}`,
+                  `Action schema: ${safeAutomationText(definition.actionSchemaDigest ?? "legacy/unbound", 24)} · fixed input: ${definition.actionInputJSON ? "bound (contents hidden)" : "legacy/unbound"}`,
                       `Schedule: ${safeAutomationText(definition.scheduleExpression)}`,
                       `Timezone: ${safeAutomationText(definition.timezone, 128)}`,
                       `Enabled: ${String(definition.enabled)}`,
+                      `Overlap: ${safeAutomationText(definition.overlapPolicy, 24)} · missed: ${safeAutomationText(definition.missedRunPolicy, 24)}`,
+                      `Retry: ${safeAutomationText((definition.retry as Record<string, unknown> | undefined)?.maxAttempts, 16)} attempts · initial ${safeAutomationText((definition.retry as Record<string, unknown> | undefined)?.initialDelayMs, 24)} ms · max ${safeAutomationText((definition.retry as Record<string, unknown> | undefined)?.maxDelayMs, 24)} ms`,
+                      `Next recorded occurrence: ${pending ? safeAutomationTime(pending.scheduledAtMs) : retryPending ? safeAutomationTime(retryPending.retryAtMs ?? retryPending.scheduledAtMs) : "none recorded"}`,
+                      `Current occurrence: ${active ? `${safeAutomationText(active.status, 32)} · ${safeAutomationTime(active.scheduledAtMs)}` : "none"}`,
+                      `Last result: ${last ? `${safeAutomationText(last.status, 32)} · ${safeAutomationTime(last.scheduledAtMs)}${last.guardReceiptRef ? ` · receipt ${safeAutomationText(last.guardReceiptRef, 64)}` : ""}` : "none recorded"}`,
+                      `NeedsYou: ${last?.status === "needs_you" || active?.status === "needs_you" ? "required" : "not reported by current occurrence state"}`,
                       `Invocation: unavailable until Guarded action receipts are supported`,
                     ]
                     void DialogAlert.show(dialog, `Automation · ${automationID}`, lines.join("\n"))
@@ -915,32 +1194,6 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
                     void DialogAlert.show(dialog, `Automation history · ${automationID}`, text)
                     return
                   }
-                  if (action.value === "toggle") {
-                    const enabled = automation.definition.enabled !== true
-                    const response = enabled
-                      ? await sdk.client.experimental.automation.enable(common, { throwOnError: true })
-                      : await sdk.client.experimental.automation.disable(common, { throwOnError: true })
-                    const versionValue = ((response.data as Record<string, unknown>).automation as Record<string, unknown>).version
-                    toast.show({ message: `Automation ${automationID} ${enabled ? "enabled" : "disabled"} · revision ${String(versionValue ?? "committed")}`, variant: "info" })
-                    return
-                  }
-                  const definition = automation.definition as Record<string, unknown>
-                  dialog.replace(() => <DialogPrompt
-                    title={`Edit automation · ${automationID}`}
-                    placeholder={JSON.stringify(definition)}
-                    description={() => <text>Enter the complete versioned definition as JSON. Schedule remains opaque here; invocation stays disabled until Guarded action receipts are available.</text>}
-                    onConfirm={(value) => {
-                      void (async () => {
-                        try {
-                          const parsed = JSON.parse(value) as Record<string, unknown>
-                          const result = await sdk.client.experimental.automation.update({ ...common, definition: parsed }, { throwOnError: true })
-                          dialog.clear()
-                          const versionValue = ((result.data as Record<string, unknown>).automation as Record<string, unknown>).version
-                          toast.show({ message: `Automation ${automationID} updated · revision ${String(versionValue ?? "committed")}`, variant: "info" })
-                        } catch (error) { toast.error(error) }
-                      })()
-                    }}
-                  />)
                 } catch (error) { toast.error(error) }
               })()
             }} />)
@@ -950,25 +1203,60 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
     } catch (error) { toast.error(error) }
   }
 
-  function openAutomationCreate() {
-    dialog.replace(() => <DialogPrompt
-      title="Create durable automation"
-      placeholder='{"automationID":"automation_…","definition":{"actionCapabilityID":"...","actionVersion":1,"actionDigest":"blake3:…","scheduleExpression":"…","timezone":"UTC","enabled":false,"overlapPolicy":"SKIP","missedRunPolicy":"SKIP","retry":{"maxAttempts":1,"initialDelayMs":1000,"maxDelayMs":60000}}}'
-      description={() => <text>Enter a bounded automationID and complete definition JSON. Schedule resolution and execution are Rust-owned. Guarded invocation is unavailable in V1, so creating this record cannot run its action.</text>}
-      onConfirm={(value) => {
-        void (async () => {
-          try {
-            if (new TextEncoder().encode(value).byteLength > 8 * 1024) throw new Error("Automation definition exceeds the 8 KiB limit")
-            const parsed = JSON.parse(value) as Record<string, unknown>
-            if (typeof parsed.automationID !== "string" || typeof parsed.definition !== "object" || parsed.definition === null || Array.isArray(parsed.definition)) throw new Error("Provide automationID and definition")
-            const response = await sdk.client.experimental.automation.create({ directory: sdk.directory, workspace: project.workspace.current(), schemaVersion: 1, sessionID: automationSessionID(), automationID: parsed.automationID, idempotencyKey: `automation_${randomUUID().replaceAll("-", "")}`, definition: parsed.definition as Record<string, unknown> }, { throwOnError: true })
-            dialog.clear()
-            const versionValue = ((response.data as Record<string, unknown>).automation as Record<string, unknown>).version
-            toast.show({ message: `Automation ${parsed.automationID} created · revision ${String(versionValue ?? "committed")}`, variant: "info" })
-          } catch (error) { toast.error(error) }
-        })()
-      }}
-    />)
+  async function openCheckpointManager() {
+    try {
+      const sessionID = automationSessionID()
+      const response = await sdk.client.experimental.checkpoint.list({
+        directory: sdk.directory,
+        workspace: project.workspace.current(),
+        sessionID,
+      }, { throwOnError: true })
+      const checkpointIDs = response.data.checkpointIDs
+      if (checkpointIDs.length === 0) {
+        void DialogAlert.show(dialog, "Checkpoints · Rust journal", "No durable checkpoints are recorded for this Session. Capture and rewind remain unavailable.")
+        return
+      }
+      dialog.replace(() => <DialogSelect
+        title="Checkpoints · Rust journal"
+        options={checkpointIDs.map((checkpointID, index): DialogSelectOption<string> => ({
+          title: `${index + 1}. ${safeAutomationText(checkpointID)}`,
+          value: checkpointID,
+          description: "Request a read-only, revision-bound restore preview. This does not restore files.",
+        }))}
+        onSelect={(option) => {
+          void (async () => {
+            try {
+              const preview = await sdk.client.experimental.checkpoint.restorePreview({
+                directory: sdk.directory,
+                workspace: project.workspace.current(),
+                sessionID,
+                checkpointID: option.value,
+                mode: "FULL",
+                selectedPaths: [],
+              }, { throwOnError: true })
+              const value = preview.data as Record<string, unknown>
+              const conflicts = Array.isArray(value.conflicts) ? value.conflicts : []
+              const actions = Array.isArray(value.actions) ? value.actions : []
+              const conflictLines = conflicts.slice(0, 32).map((raw) => {
+                const conflict = raw as Record<string, unknown>
+                return `${safeAutomationText(conflict.kind, 48)}${typeof conflict.path === "string" ? ` · ${safeAutomationText(conflict.path, 180)}` : ""}`
+              })
+              const lines = [
+                `Checkpoint: ${safeAutomationText(value.checkpointID, 256)}`,
+                `Workspace revision: ${safeAutomationText(value.workspaceRevision, 80)}${value.workspaceRevisionChanged ? " · changed during preview" : ""}`,
+                `Preview digest: ${safeAutomationText(value.previewDigest, 80)}`,
+                `Planned actions: ${actions.length}`,
+                `Conflicts: ${conflicts.length}`,
+                ...conflictLines,
+                conflicts.length > conflictLines.length ? `… ${conflicts.length - conflictLines.length} more conflicts` : "",
+                "Restore and rewind are unavailable. This preview made no workspace changes.",
+              ].filter(Boolean)
+              void DialogAlert.show(dialog, `Checkpoint preview · ${safeAutomationText(option.value, 64)}`, lines.join("\n"))
+            } catch (error) { toast.error(error) }
+          })()
+        }}
+      />)
+    } catch (error) { toast.error(error) }
   }
 
   const api = createTuiApi(
@@ -1227,11 +1515,11 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
         run: openAutomationManager,
       },
       {
-        name: "automation.create",
-        title: "Create a durable automation definition",
+        name: "checkpoint.list",
+        title: "List durable checkpoints",
         category: "Session",
-        slashName: "automation-create",
-        run: openAutomationCreate,
+        slashName: "checkpoints",
+        run: openCheckpointManager,
       },
       {
         name: "workspace.copy_path",
@@ -1408,6 +1696,15 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
         slashName: "features",
         run: () => {
           dialog.replace(() => <DialogFeatures />)
+        },
+      },
+      {
+        name: "horizon.settings.repo-intelligence",
+        title: "Settings · RepoIntel analysis profile",
+        category: "System",
+        slashName: "repo-profile",
+        run: () => {
+          dialog.replace(() => <DialogRepoIntelligenceProfile />)
         },
       },
       {

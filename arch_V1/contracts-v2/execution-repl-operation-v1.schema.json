@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExecutionReplOperationRequestV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "executionID",
+    "hostProcessRef",
+    "sessionID",
+    "locationID",
+    "workspaceRevision",
+    "requestSequence",
+    "effectID",
+    "challengeID",
+    "capabilityID",
+    "capabilityLeaseDigest",
+    "operation"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "executionID": {
+      "$ref": "#/$defs/id"
+    },
+    "hostProcessRef": {
+      "allOf": [
+        {
+          "$ref": "execution-launch-profile-v1.schema.json#/$defs/HostProcessRefV1"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "interpreter"
+            }
+          }
+        }
+      ]
+    },
+    "sessionID": {
+      "$ref": "#/$defs/id"
+    },
+    "locationID": {
+      "$ref": "#/$defs/id"
+    },
+    "workspaceRevision": {
+      "$ref": "#/$defs/digest"
+    },
+    "requestSequence": {
+      "$ref": "#/$defs/positiveDecimalU64"
+    },
+    "effectID": {
+      "$ref": "#/$defs/id"
+    },
+    "challengeID": {
+      "$ref": "#/$defs/id"
+    },
+    "capabilityID": {
+      "enum": [
+        "repl.execute",
+        "repl.reset"
+      ]
+    },
+    "capabilityLeaseDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "managedAttempt": {
+      "type": "object"
+    },
+    "directAttempt": {
+      "type": "object"
+    },
+    "operation": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "code",
+            "deadlineMs",
+            "maxOutputBytes"
+          ],
+          "properties": {
+            "kind": {
+              "const": "execute"
+            },
+            "code": {
+              "type": "string",
+              "maxLength": 65536
+            },
+            "deadlineMs": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 30000
+            },
+            "maxOutputBytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65536
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "profileRef"
+          ],
+          "properties": {
+            "kind": {
+              "const": "reset"
+            },
+            "profileRef": {
+              "$ref": "execution-launch-profile-v1.schema.json#/$defs/ExecutionLaunchProfileRefV1"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "oneOf": [
+    {
+      "required": [
+        "managedAttempt"
+      ],
+      "not": {
+        "required": [
+          "directAttempt"
+        ]
+      }
+    },
+    {
+      "required": [
+        "directAttempt"
+      ],
+      "not": {
+        "required": [
+          "managedAttempt"
+        ]
+      }
+    }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^blake3:[0-9a-f]{64}$"
+    },
+    "positiveDecimalU64": {
+      "$ref": "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64"
+    }
+  },
+  "$comment": "Private HostKernel RPC contract only. Interpreter launch and invocation remain unavailable until OS-enforced resource limits and callback receipts are accepted."
+}

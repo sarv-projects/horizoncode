@@ -29,6 +29,9 @@ pub(super) struct VerifierInvocationSourceV1 {
     /// Canonical host bundle persisted by EffectHost as `content_digest`.
     pub(super) canonical_arguments_digest: String,
     pub(super) reviewer_principal: String,
+    /// Trusted identity of the registered verifier process. Unlike the reviewer,
+    /// this principal is resolved from the verifier profile and owns execution.
+    pub(super) execution_principal: String,
     pub(super) profile_id: String,
     pub(super) profile_revision: u64,
     pub(super) profile_digest: String,
@@ -52,6 +55,7 @@ pub(crate) struct VerifierInvocationV1 {
     challenge_set_digest: String,
     canonical_arguments_digest: String,
     reviewer_principal: String,
+    execution_principal: String,
     profile_id: String,
     profile_revision: u64,
     profile_digest: String,
@@ -82,6 +86,8 @@ impl VerifierInvocationV1 {
             || source.binding.challenge_id.is_empty()
             || source.binding.execution_id.is_empty()
             || source.binding.principal != source.reviewer_principal
+            || source.execution_principal.is_empty()
+            || source.binding.execution_principal != source.execution_principal
             || source.binding.location_id.is_empty()
             || source.binding.capability_id != crate::guard::BUILTIN_VERIFIER_ID
             || source.binding.workspace_revision != source.launch_spec.workspace_revision
@@ -130,6 +136,7 @@ impl VerifierInvocationV1 {
             challenge_set_digest: source.challenge_set_digest,
             canonical_arguments_digest: source.canonical_arguments_digest,
             reviewer_principal: source.reviewer_principal,
+            execution_principal: source.execution_principal,
             profile_id: source.profile_id,
             profile_revision: source.profile_revision,
             profile_digest: source.profile_digest,
@@ -187,6 +194,7 @@ impl VerifierInvocationV1 {
             challenge_set_digest,
             canonical_arguments_digest: String::new(),
             reviewer_principal,
+            execution_principal: binding.execution_principal.clone(),
             profile_id,
             profile_digest,
             sandbox_policy_digest,
@@ -252,6 +260,10 @@ impl VerifierInvocationV1 {
     }
     pub(crate) fn reviewer_principal(&self) -> &str {
         &self.reviewer_principal
+    }
+
+    pub(crate) fn execution_principal(&self) -> &str {
+        &self.execution_principal
     }
     pub(crate) fn owner_epoch(&self) -> u64 {
         self.binding.owner_epoch
@@ -415,6 +427,7 @@ impl ManagedVerifierObservedOutcomeV1 {
                 || receipt.profile_revision != invocation.profile_revision()
                 || receipt.profile_digest != invocation.profile_digest()
                 || receipt.executable_digest != invocation.executable_digest()
+                || receipt.execution_principal != invocation.execution_principal()
                 || receipt.receipt_digest.is_empty()
                 || receipt.stdout_digest != status.stdout_digest
                 || receipt.stderr_digest != status.stderr_digest
@@ -459,6 +472,7 @@ fn invocation_core_digest(source: &VerifierInvocationSourceV1) -> Result<String,
         || source.verification_run_id.is_empty()
         || source.criterion_id.is_empty()
         || source.reviewer_principal.is_empty()
+        || source.execution_principal.is_empty()
         || source.profile_id.is_empty()
         || source.profile_digest.is_empty()
         || source.sandbox_policy_digest.is_empty()
@@ -485,6 +499,7 @@ fn invocation_core_digest(source: &VerifierInvocationSourceV1) -> Result<String,
         &source.verification_run_id,
         &source.criterion_id,
         &source.reviewer_principal,
+        &source.execution_principal,
         &source.profile_id,
         &source.profile_revision.to_string(),
         &source.profile_digest,
@@ -492,6 +507,7 @@ fn invocation_core_digest(source: &VerifierInvocationSourceV1) -> Result<String,
         &source.sandbox_policy_digest,
         &source.test_identity,
         &binding.principal,
+        &binding.execution_principal,
         &binding.location_id,
         &binding.workspace_revision,
         &binding.profile_ref,
@@ -636,6 +652,7 @@ mod tests {
             challenge_set_digest: format!("blake3:{}", "e".repeat(64)),
             canonical_arguments_digest: String::new(),
             reviewer_principal: "reviewer-1".into(),
+            execution_principal: "server_auth:verifier-1".into(),
             profile_id: "profile-1".into(),
             profile_revision: 1,
             profile_digest: launch_spec.profile_digest.clone(),
@@ -648,7 +665,9 @@ mod tests {
                 effect_id: "effect-1".into(),
                 challenge_id: "challenge-1".into(),
                 principal: "reviewer-1".into(),
-                session_id: String::new(),
+                execution_principal: "server_auth:verifier-1".into(),
+                scope: crate::terminal_process::StdioExecutionScopeV1::Session { session_id: "session_verifier_fixture".to_owned() },
+                session_id: "session_verifier_fixture".to_owned(),
                 location_id: "location-1".into(),
                 capability_id: crate::guard::BUILTIN_VERIFIER_ID.into(),
                 capability_lease_digest: format!("blake3:{}", "1".repeat(64)),
@@ -772,6 +791,7 @@ mod tests {
             profile_revision: invocation.profile_revision(),
             profile_digest: invocation.profile_digest().to_owned(),
             executable_digest: invocation.executable_digest().to_owned(),
+            execution_principal: invocation.execution_principal().to_owned(),
             exit_code: status.exit_code,
             stdout_sequence: status.stdout_sequence,
             stderr_sequence: status.stderr_sequence,

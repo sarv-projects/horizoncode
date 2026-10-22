@@ -3,8 +3,7 @@
 
 The source checkout is never used as the build directory. Generated output is
 kept in the clone, the existing source ``dist`` trees are not copied, and the
-copied OpenCode build script is patched to restrict its cleanup commands to the
-clone's package output directory.
+first-party build script confines cleanup to a marked isolated package output.
 """
 
 from __future__ import annotations
@@ -14,6 +13,7 @@ import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
+import platform
 import shutil
 import stat
 import subprocess
@@ -31,7 +31,10 @@ from scripts.release.audit_distribution import (
     _source_paths,
     _source_tree_sha256,
 )
-from scripts.release.clean_install import APPROVED_TEMP_ROOT
+from scripts.release.clean_install import _ensure_approved_temp_root
+from scripts.release.clean_install import _reject_symlink_components
+from scripts.release.clean_install import _validated_output_path
+from scripts.release.clean_install import _write_new_artifact_file
 
 
 BUILD_SCRIPT = PurePosixPath("packages/opencode/script/build.ts")
@@ -59,9 +62,16 @@ def _git(root: Path, *args: str, input: bytes | None = None) -> subprocess.Compl
 
 
 def _validate_source(source: Path) -> Path:
+    requested = Path(os.path.abspath(source))
+    repository = Path(__file__).resolve().parents[2]
+    if not _inside(requested, repository):
+        raise ValueError(f"source checkout must be inside this repository: {source}")
+    _reject_symlink_components(requested, repository, "source checkout")
     if source.is_symlink() or not source.is_dir():
         raise ValueError(f"source must be a real directory, not a symlink: {source}")
     resolved = source.resolve(strict=True)
+    if not _inside(resolved, repository):
+        raise ValueError(f"resolved source checkout escapes this repository: {source}")
     top = _git(resolved, "rev-parse", "--show-toplevel").stdout.decode().strip()
     if Path(top).resolve() != resolved:
         raise ValueError(f"source must be the root of its Git checkout: {source}")
@@ -69,16 +79,12 @@ def _validate_source(source: Path) -> Path:
 
 
 def _validate_destination(destination: Path, source: Path) -> Path:
-    base = APPROVED_TEMP_ROOT
-    if base.is_symlink() or not base.is_dir() or base.resolve() != base:
-        raise ValueError(f"approved task temp root is missing or symlinked: {base}")
-    base_info = base.stat(follow_symlinks=False)
-    if base_info.st_uid != os.getuid() or base_info.st_mode & 0o022:
-        raise ValueError(f"approved task temp root must be owned by this user and private: {base}")
+    base = _ensure_approved_temp_root()
 
     requested = Path(os.path.abspath(destination))
     if requested == base or not _inside(requested, base):
         raise ValueError(f"build copy must be a new child of {base}: {requested}")
+    _reject_symlink_components(requested, base, "build destination")
     if requested.exists() or requested.is_symlink():
         raise ValueError(f"build destination already exists; refusing to reuse it: {requested}")
     if not requested.parent.is_dir():
@@ -95,8 +101,11 @@ def _validate_destination(destination: Path, source: Path) -> Path:
             break
         cursor = cursor.parent
 
-    if _inside(requested, source) or _inside(source, requested):
-        raise ValueError("source checkout and build destination must be separate, non-overlapping directories")
+    # The approved artifact root is ignored and excluded from source snapshots,
+    # so it can live under this repository while the copied checkout and its
+    # generated build outputs remain isolated beneath that root.
+    if requested == source or _inside(source, requested):
+        raise ValueError("build destination must not replace or contain the source checkout")
     return requested
 
 
@@ -147,61 +156,82 @@ def _copy_untracked(source: Path, destination: Path, paths: list[str]) -> None:
 
 
 def _guard_build_script(destination: Path) -> None:
+    """Require cleanup confinement in source instead of mutating the candidate."""
     script = destination.joinpath(*BUILD_SCRIPT.parts)
-    original = script.read_text(encoding="utf-8")
-    crypto_import = 'import { createHash } from "node:crypto"'
-    root_cleanup = "await $`rm -rf dist`"
-    nested_cleanup = "await $`rm -rf ./dist/${name}/bin/tui`"
-    if original.count(crypto_import) != 1 or original.count(root_cleanup) != 1 or original.count(nested_cleanup) != 1:
-        raise ValueError("pinned build script cleanup sites differ from the reviewed P9 source contract")
-
-    guarded_cleanup = '''
-const p9BuildRoot = process.env.HORIZONCODE_P9_BUILD_ROOT
-const p9BuildMarker = process.env.HORIZONCODE_P9_BUILD_MARKER
-const clearP9BuildOutput = async (relative: string) => {
-  if (!p9BuildRoot || !p9BuildMarker || !existsSync(p9BuildMarker)) {
-    throw new Error("P9 build output cleanup requires a task-owned isolated build copy")
-  }
-  const root = path.resolve(p9BuildRoot)
-  if (realpathSync(root) !== root || lstatSync(p9BuildMarker).isSymbolicLink()) {
-    throw new Error("P9 build root or marker is not a regular task-owned path")
-  }
-  const marker = JSON.parse(readFileSync(p9BuildMarker, "utf8")) as { buildRoot?: string }
-  if (marker.buildRoot !== root) throw new Error("P9 build marker does not match the isolated copy")
-  const outputRoot = path.resolve(root, "packages/opencode/dist")
-  const target = path.resolve(dir, relative)
-  if (target !== outputRoot && !target.startsWith(`${outputRoot}${path.sep}`)) {
-    throw new Error("P9 build cleanup target escaped the isolated package output directory")
-  }
-  let cursor = root
-  for (const part of path.relative(root, target).split(path.sep)) {
-    cursor = path.join(cursor, part)
-    if (existsSync(cursor) && lstatSync(cursor).isSymbolicLink()) {
-      throw new Error("P9 build cleanup target contains a symlink")
-    }
-  }
-  await $`rm -rf ${target}`
-}
-'''
-    patched = original.replace(
-        crypto_import,
-        crypto_import + '\nimport { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs"',
+    build_root = destination.resolve(strict=True)
+    if not _inside(script.parent, build_root):
+        raise ValueError("isolated build script parent escaped the candidate checkout")
+    _reject_symlink_components(script, build_root, "isolated build script")
+    if script.is_symlink() or not script.is_file():
+        raise ValueError("isolated build script must be a regular, non-symlink file")
+    descriptor = os.open(script, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(descriptor, "r", encoding="utf-8") as source_file:
+        if not stat.S_ISREG(os.fstat(source_file.fileno()).st_mode):
+            raise ValueError("isolated build script must be a regular, non-symlink file")
+        contents = source_file.read()
+    required = (
+        'const clearBuildOutput = async (relative: string) =>',
+        'process.env.HORIZONCODE_P9_BUILD_ROOT',
+        'process.env.HORIZONCODE_P9_BUILD_MARKER',
+        'await clearBuildOutput("dist")',
+        'await clearBuildOutput(`dist/${name}/bin/tui`)',
+        'await $`rm -rf ${target}`',
     )
-    dir_line = 'const dir = path.resolve(__dirname, "..")'
-    if patched.count(dir_line) != 1:
-        raise ValueError("pinned build script package-root declaration differs from the reviewed P9 source contract")
-    patched = patched.replace(dir_line, dir_line + "\n" + guarded_cleanup, 1)
-    patched = patched.replace(root_cleanup, 'await clearP9BuildOutput("dist")', 1)
-    patched = patched.replace(nested_cleanup, 'await clearP9BuildOutput(`dist/${name}/bin/tui`)', 1)
-    script.write_text(patched, encoding="utf-8")
+    if any(contents.count(fragment) != 1 for fragment in required):
+        raise ValueError("candidate build script lacks the exact P9 isolated-output cleanup guard")
 
 
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as file:
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(descriptor, "rb") as file:
+        if not stat.S_ISREG(os.fstat(file.fileno()).st_mode):
+            raise ValueError(f"artifact digest input must be a regular non-symlink file: {path}")
         for chunk in iter(lambda: file.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _artifact_inventory(directory: Path) -> list[dict]:
+    """Hash every generated candidate file without following links or escapes."""
+    root = directory.resolve(strict=True)
+    if directory.is_symlink() or not directory.is_dir():
+        raise ValueError("candidate artifact directory must be a real directory")
+    inventory: list[dict] = []
+    total_bytes = 0
+    for current, directories, files in os.walk(root, followlinks=False):
+        current_path = Path(current)
+        for name in list(directories):
+            path = current_path / name
+            if path.is_symlink():
+                raise ValueError(f"candidate artifact contains a symlink directory: {path.relative_to(root)}")
+        for name in files:
+            path = current_path / name
+            if path.is_symlink():
+                raise ValueError(f"candidate artifact contains a symlink file: {path.relative_to(root)}")
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(descriptor, "rb") as stream:
+                metadata = os.fstat(stream.fileno())
+                if not stat.S_ISREG(metadata.st_mode):
+                    raise ValueError(f"candidate artifact member is not a regular file: {path.relative_to(root)}")
+                total_bytes += metadata.st_size
+                if len(inventory) >= 10_000 or total_bytes > 4 * 1024 * 1024 * 1024:
+                    raise ValueError("candidate artifact inventory exceeds the configured file or byte bound")
+                digest = hashlib.sha256()
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            inventory.append({
+                "path": path.relative_to(root).as_posix(),
+                "sizeBytes": metadata.st_size,
+                "sha256": digest.hexdigest(),
+            })
+    return sorted(inventory, key=lambda item: item["path"])
+
+
+def _required_digest(path: Path) -> str:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"required release input is missing or is a symlink: {path}")
+    return _sha256(path)
 
 
 def prepare_isolated_build(source: Path, destination: Path) -> dict:
@@ -248,7 +278,8 @@ def prepare_isolated_build(source: Path, destination: Path) -> dict:
     marker = destination.parent / f".{destination.name}.p9-build-marker.json"
     if marker.exists() or marker.is_symlink():
         raise ValueError(f"P9 build marker already exists; refusing to reuse it: {marker}")
-    marker.write_text(
+    _write_new_artifact_file(
+        marker,
         json.dumps(
             {
                 "schemaVersion": 1,
@@ -261,9 +292,7 @@ def prepare_isolated_build(source: Path, destination: Path) -> dict:
             sort_keys=True,
         )
         + "\n",
-        encoding="utf-8",
     )
-    marker.chmod(0o600)
 
     return {
         "schema_version": 1,
@@ -301,22 +330,60 @@ def _run_checked(command: list[str], *, cwd: Path, env: dict[str, str], timeout:
 
 
 def build_candidate(report: dict) -> dict:
-    build_root = Path(report["build_copy"]["path"])
+    artifact_root = _ensure_approved_temp_root().resolve(strict=True)
+    requested_root = Path(os.path.abspath(report["build_copy"]["path"]))
+    if not _inside(requested_root, artifact_root):
+        raise ValueError(f"isolated build root must be inside the repository artifact root: {requested_root}")
+    _reject_symlink_components(requested_root, artifact_root, "isolated build root")
+    if requested_root.is_symlink() or not requested_root.is_dir():
+        raise ValueError(f"isolated build root must be a regular directory: {requested_root}")
+    build_root = requested_root.resolve(strict=True)
+    if not _inside(build_root, artifact_root):
+        raise ValueError(f"resolved isolated build root escapes the repository artifact root: {build_root}")
+
     marker = Path(report["build_copy"]["build_marker"])
-    models_fixture = Path(report["build_copy"]["models_dev_api_json"])
+    expected_marker = build_root.parent / f".{build_root.name}.p9-build-marker.json"
+    if marker != expected_marker or marker.is_symlink() or not marker.is_file():
+        raise ValueError("isolated build marker must be the regular task-owned marker beside the build copy")
+    marker_fd = os.open(marker, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(marker_fd, "r", encoding="utf-8") as marker_file:
+        marker_stat = os.fstat(marker_file.fileno())
+        if not stat.S_ISREG(marker_stat.st_mode) or marker_stat.st_uid != os.getuid() or marker_stat.st_mode & 0o077:
+            raise ValueError("isolated build marker must be a private, user-owned regular file")
+        marker_value = json.load(marker_file)
+    if (
+        not isinstance(marker_value, dict)
+        or marker_value.get("buildRoot") != str(build_root)
+        or marker_value.get("sourceRevision") != report["source"].get("revision")
+        or marker_value.get("sourceStateSha256") != report["source"].get("source_state_sha256")
+    ):
+        raise ValueError("isolated build marker does not bind this source revision, digest, and build root")
+
+    models_fixture = Path(os.path.abspath(report["build_copy"]["models_dev_api_json"]))
+    if not _inside(models_fixture, build_root):
+        raise ValueError("model fixture must be inside the isolated source copy")
+    _reject_symlink_components(models_fixture, build_root, "model fixture")
+    if models_fixture.is_symlink() or not models_fixture.is_file():
+        raise ValueError("isolated build requires a regular model fixture in its source copy")
+    models_fixture = models_fixture.resolve(strict=True)
     bun = shutil.which("bun")
     cargo = shutil.which("cargo")
-    if not bun or not cargo:
-        raise ValueError("the isolated Linux build requires bun and cargo on PATH")
+    rustup = shutil.which("rustup")
+    if not bun or not cargo or not rustup:
+        raise ValueError("the isolated Linux build requires bun, cargo, and rustup on PATH")
 
     private_home = build_root.parent / f".{build_root.name}.home"
-    if private_home.exists() or private_home.is_symlink():
-        raise ValueError(f"task-owned build home already exists; refusing to reuse it: {private_home}")
+    cargo_home = build_root.parent / f".{build_root.name}.cargo"
+    rustup_home = build_root.parent / f".{build_root.name}.rustup"
+    for label, path in (("build home", private_home), ("Cargo home", cargo_home), ("Rustup home", rustup_home)):
+        if path.exists() or path.is_symlink():
+            raise ValueError(f"task-owned {label} already exists; refusing to reuse it: {path}")
+
     private_home.mkdir(mode=0o700)
     (private_home / "tmp").mkdir(mode=0o700)
     (private_home / ".cache").mkdir(mode=0o700)
-    cargo_home = build_root / ".p9-cargo-home"
     cargo_home.mkdir(mode=0o700)
+    rustup_home.mkdir(mode=0o700)
 
     env = {
         "PATH": os.environ.get("PATH", ""),
@@ -324,7 +391,12 @@ def build_candidate(report: dict) -> dict:
         "TMPDIR": str(private_home / "tmp"),
         "XDG_CACHE_HOME": str(private_home / ".cache"),
         "CARGO_HOME": str(cargo_home),
-        "RUSTUP_HOME": os.environ.get("RUSTUP_HOME", str(Path.home() / ".rustup")),
+        # Keep toolchain metadata and installed components inside the ignored,
+        # task-owned release artifact subtree. Never inherit a host Rustup
+        # home: that would make the qualification build depend on and mutate
+        # state outside this repository.
+        "RUSTUP_HOME": str(rustup_home),
+        "RUSTUP_TOOLCHAIN": "stable",
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
         "MODELS_DEV_API_JSON": str(models_fixture),
@@ -333,8 +405,9 @@ def build_candidate(report: dict) -> dict:
         "HORIZONCODE_P9_BUILD_ROOT": str(build_root),
         "HORIZONCODE_P9_BUILD_MARKER": str(marker),
     }
+    _run_checked([rustup, "toolchain", "install", "stable", "--profile", "minimal"], cwd=build_root, env=env, timeout=900)
     kernel_manifest = build_root / "kernel" / "Cargo.toml"
-    _run_checked([cargo, "fetch", "--locked", "--manifest-path", str(kernel_manifest)], cwd=build_root, env=env, timeout=900)
+    _run_checked([cargo, "+stable", "fetch", "--locked", "--manifest-path", str(kernel_manifest)], cwd=build_root, env=env, timeout=900)
     _run_checked([bun, "install", "--frozen-lockfile"], cwd=build_root, env=env, timeout=1800)
     build_result = _run_checked(
         [bun, "run", "script/build.ts", "--single", "--skip-install", "--skip-embed-web-ui"],
@@ -348,12 +421,35 @@ def build_candidate(report: dict) -> dict:
         raise ValueError(f"expected exactly one regular Linux CLI candidate, found {len(candidates)}")
     binary = candidates[0]
     artifact_directory = binary.parent
+    _reject_symlink_components(artifact_directory, build_root, "candidate artifact directory")
     source_after_build = _git_source_facts(build_root)
     product = json.loads((build_root / "packages" / "opencode" / "package.json").read_text(encoding="utf-8"))
+    workspace = json.loads((build_root / "package.json").read_text(encoding="utf-8"))
+    migration_directory = build_root / "packages" / "core" / "src" / "database" / "migration"
+    migration_ids = sorted(path.name for path in migration_directory.glob("*.ts") if path.is_file() and not path.is_symlink())
+    schema_contracts = sorted((build_root / "arch_V1" / "contracts-v2").glob("*.json"))
+    schema_contract_digest = hashlib.sha256()
+    for contract in schema_contracts:
+        if contract.is_symlink() or not contract.is_file():
+            raise ValueError(f"schema contract must be a regular file: {contract}")
+        schema_contract_digest.update(contract.relative_to(build_root).as_posix().encode("utf-8"))
+        schema_contract_digest.update(b"\0")
+        schema_contract_digest.update(_required_digest(contract).encode("ascii"))
+        schema_contract_digest.update(b"\n")
+    lockfile_hashes = {
+        "bun.lock": _required_digest(build_root / "bun.lock"),
+        "kernel/Cargo.lock": _required_digest(build_root / "kernel" / "Cargo.lock"),
+    }
+    toolchain = {
+        "bun": _run_checked([bun, "--version"], cwd=build_root, env=env, timeout=30).stdout.strip(),
+        "cargo": _run_checked([cargo, "+stable", "--version"], cwd=build_root, env=env, timeout=30).stdout.strip(),
+        "rustc": _run_checked([rustup, "run", "stable", "rustc", "--version"], cwd=build_root, env=env, timeout=30).stdout.strip(),
+    }
     from scripts.release.audit_distribution import _product_target
 
+    artifact_inventory = _artifact_inventory(artifact_directory)
     manifest = {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "sourceRevision": report["source"]["revision"],
         "sourceStateSha256": report["source"]["source_state_sha256"],
         "sourceStatus": report["source"]["status"],
@@ -361,15 +457,28 @@ def build_candidate(report: dict) -> dict:
         "postBuildSourceStateSha256": _source_tree_sha256(build_root),
         "binaryPath": binary.name,
         "binarySha256": _sha256(binary),
+        "binarySizeBytes": binary.stat(follow_symlinks=False).st_size,
         "target": binary.parents[1].name,
+        "host": {"system": platform.system(), "release": platform.release(), "machine": platform.machine()},
+        "buildToolchain": toolchain,
+        "lockfileSha256": lockfile_hashes,
+        "configAndSchema": {
+            "workspaceVersion": workspace.get("version"),
+            "applicationPackageVersion": product.get("version"),
+            "configMigrationIDs": migration_ids,
+            "contractFileCount": len(schema_contracts),
+            "contractSetSha256": schema_contract_digest.hexdigest(),
+        },
+        "artifactFiles": artifact_inventory,
         "packageTarget": _product_target(
-            json.loads((build_root / "package.json").read_text(encoding="utf-8")), product
+            workspace, product
         ),
         "toolingMode": "isolated-read-only-qualification",
     }
-    (artifact_directory / "release-manifest.json").write_text(
+    _write_new_artifact_file(
+        artifact_directory / "release-manifest.json",
         json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+        mode=0o644,
     )
     report["build_copy"]["status"] = source_after_build["status"]
     report["build"]["status"] = "BUILT"
@@ -386,12 +495,13 @@ def build_candidate(report: dict) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", required=True, type=Path, help="root of the Git source checkout to snapshot")
-    parser.add_argument("--destination", required=True, type=Path, help="new child path under /tmp/opencode")
+    parser.add_argument("--destination", required=True, type=Path, help="new child path under kernel/target/horizoncode-release")
     parser.add_argument("--build", action="store_true", help="install locked dependencies and build the Linux CLI candidate")
     parser.add_argument("--output", type=Path, help="write the JSON report to this path instead of stdout")
     args = parser.parse_args()
 
     try:
+        output_path = _validated_output_path(args.output) if args.output else None
         report = prepare_isolated_build(args.source, args.destination)
         if args.build:
             report = build_candidate(report)
@@ -400,9 +510,9 @@ def main() -> int:
         return 3
 
     encoded = json.dumps(report, indent=2, sort_keys=True) + "\n"
-    if args.output:
-        args.output.write_text(encoded, encoding="utf-8")
-        print(f"isolated P9 build: {report['build']['status']}; report={args.output}")
+    if output_path:
+        _write_new_artifact_file(output_path, encoded)
+        print(f"isolated P9 build: {report['build']['status']}; report={output_path}")
     else:
         print(encoded, end="")
     return 0 if report["build"]["status"] in {"PREPARED", "BUILT"} else 1

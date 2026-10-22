@@ -10,6 +10,10 @@ const MAX_RENDER_SOURCE_LINES = 16_384
 const MAX_RENDERED_BLOCKS = 32
 const MAX_FRAME_CACHE_ENTRIES = 32
 const MAX_FRAME_CACHE_BYTES = 32 * 4_096
+// Keep renders in flight bounded independently from the completed-frame cache.
+// A transcript can expose many distinct artifact generations before workers
+// finish; request tracking must not grow with that history.
+const MAX_IN_FLIGHT_RENDER_REQUESTS = 8
 const MAX_FRAME_BYTES = 4_096
 const MAX_FRAME_CELLS = 1_800
 const MAX_FRAME_ROWS = 30
@@ -158,10 +162,14 @@ export function createSvgRasterPort(options: SvgRasterPortOptionsV1 = {}): SvgRa
   const cache = new Map<string, SvgRasterPortFrameV1>()
   let cacheBytes = 0
   const requested = new Set<string>()
+  // At most one current request generation per bounded in-flight key. An older
+  // geometry/theme render may settle after a newer one and must not replace it.
+  const currentRequestGeneration = new Map<string, string>()
   let requests = 0
   let completed = 0
   let failed = 0
   let nextGeneration = 0
+  let inFlight = 0
   let disposed = false
 
   function cachedBytes(view: SvgRasterPortFrameV1 | undefined) {
@@ -209,12 +217,31 @@ export function createSvgRasterPort(options: SvgRasterPortOptionsV1 = {}): SvgRa
       if (cached?.generation === block.generation) return
       const requestKey = `${block.blockID}@${block.generation}`
       if (requested.has(requestKey)) return
+      const previousGeneration = currentRequestGeneration.get(block.blockID)
+      // A newer generation cannot supersede an old request in accounting:
+      // the worker still consumes a slot until its promise settles. Let that
+      // request finish, then the completion update retries the current block.
+      if (previousGeneration !== undefined) return
+      if (inFlight >= MAX_IN_FLIGHT_RENDER_REQUESTS) {
+        // Leave this generation pending. A completion from one of the bounded
+        // workers triggers the next render pass, which can then admit it.
+        return
+      }
       requested.add(requestKey)
+      currentRequestGeneration.set(block.blockID, block.generation)
+      inFlight++
       requests++
       nextGeneration++
       const generation = nextGeneration
+      const release = () => {
+        if (!requested.delete(requestKey)) return false
+        inFlight--
+        return true
+      }
       const fail = () => {
-        requested.delete(requestKey)
+        release()
+        if (disposed || currentRequestGeneration.get(block.blockID) !== block.generation) return
+        currentRequestGeneration.delete(block.blockID)
         failed++
         touch(block.blockID, {
           status: "failed",
@@ -226,8 +253,15 @@ export function createSvgRasterPort(options: SvgRasterPortOptionsV1 = {}): SvgRa
       }
       try {
         void service.render({ source: block.source, generation, key: block.blockID }).then((result) => {
-          requested.delete(requestKey)
-          if (result.status === "rejected" && result.reason === "stale") return
+          release()
+          if (disposed || currentRequestGeneration.get(block.blockID) !== block.generation) return
+          currentRequestGeneration.delete(block.blockID)
+          if (result.status === "rejected" && result.reason === "stale") {
+            // The source generation changed while the worker was rendering.
+            // Re-render the caller so it can submit the current generation.
+            options.onUpdate?.()
+            return
+          }
           if (result.status === "ok") {
             if (!validFrame(result)) {
               failed++
@@ -296,6 +330,7 @@ export function createSvgRasterPort(options: SvgRasterPortOptionsV1 = {}): SvgRa
       cache.clear()
       cacheBytes = 0
       requested.clear()
+      currentRequestGeneration.clear()
       service.dispose()
     },
   }
@@ -717,6 +752,9 @@ export function renderTuiArtifacts(source: string, options: TuiArtifactRenderOpt
   return {
     content: renderedContent,
     diagnostics,
-    fidelity: previewFailed ? "FAILED" : previewPending ? "SAMPLE" : "FULL",
+    // `SAMPLE` describes an incomplete source. Once the source is complete,
+    // a derived preview that is still pending is unavailable for this render
+    // and must remain `FAILED` until a later render adopts the finished frame.
+    fidelity: previewFailed || previewPending ? "FAILED" : "FULL",
   }
 }

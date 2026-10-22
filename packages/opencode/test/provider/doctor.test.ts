@@ -21,6 +21,7 @@ describe("ProviderDoctor.inspectOffline", () => {
 
     expect(result.localReadiness).toBe("UNKNOWN")
     expect(result.selection.configurationStatus).toBe("UNKNOWN")
+    expect(result.catalogFreshness).toBe("UNKNOWN")
     expect(result.remoteChecks).toEqual({ entitlement: "UNCHECKED", quota: "UNCHECKED", service: "UNCHECKED" })
     expect(result.credentialAccess).toBe("NOT_READ")
     expect(result.networkRequestCount).toBe(0)
@@ -31,14 +32,20 @@ describe("ProviderDoctor.inspectOffline", () => {
     })
   })
 
-  test("reports a missing model as locally incomplete without checking remote state", () => {
+  test("reports a missing model as a local configuration failure without checking remote state", () => {
     const result = ProviderDoctor.inspectOffline({
       ...request,
       selection: { providerRef: "provider:opencode" },
     }, auth)
 
     expect(result.localReadiness).toBe("INCOMPLETE")
+    expect(result.selection.configurationStatus).toBe("INVALID")
+    expect(result.probes.find((probe) => probe.phase === "config")).toMatchObject({
+      outcome: "FAIL",
+      code: "selected_model_missing",
+    })
     expect(result.remoteChecks).toEqual({ entitlement: "UNCHECKED", quota: "UNCHECKED", service: "UNCHECKED" })
+    expect(result.networkRequestCount).toBe(0)
   })
 
   test("rejects contradictory local provider/model references without a provider lookup", () => {
@@ -152,6 +159,20 @@ describe("ProviderDoctor.inspectOffline", () => {
     }
   })
 
+  test("does not treat a local catalog row as effective-config proof", () => {
+    const result = ProviderDoctor.inspectOffline(request, auth, {
+      catalog: { opencode: { models: { "big-pickle": {} } } },
+      catalogFreshness: "fresh",
+    })
+    expect(result.localReadiness).toBe("UNKNOWN")
+    expect(result.selection.configurationStatus).toBe("UNKNOWN")
+    expect(result.catalogFreshness).toBe("FRESH")
+    expect(result.probes.find((probe) => probe.phase === "config")).toMatchObject({
+      outcome: "UNKNOWN",
+      code: "local_config_snapshot_unavailable",
+    })
+  })
+
   test("rejects credential-bearing or network-enabled input rather than inspecting it", () => {
     expect(() => ProviderDoctor.inspectOffline({ ...request, apiKey: "must-not-be-read" }, auth)).toThrow()
     expect(() => ProviderDoctor.inspectOffline({ ...request, maxNetworkRequests: 1 }, auth)).toThrow()
@@ -236,5 +257,37 @@ describe("ProviderDoctor.inspectOffline", () => {
       outcome: "SKIPPED",
       code: "catalog_pre_dispatch_guard_unavailable",
     })
+  })
+
+  test("keeps full-tier network and spend consent labels from authorizing provider traffic", () => {
+    const originalFetch = globalThis.fetch
+    let requests = 0
+    globalThis.fetch = (async () => {
+      requests++
+      throw new Error("full probe must remain unavailable")
+    }) as unknown as typeof fetch
+    try {
+      const result = ProviderDoctor.inspectFull({
+        ...request,
+        tier: "full",
+        maxNetworkRequests: 1,
+        networkGrantRef: "grant:caller-asserted",
+        spendConsentRef: "consent:caller-asserted",
+      }, auth)
+      expect(result).toMatchObject({
+        tier: "full",
+        networkRequestCount: 0,
+        credentialAccess: "NOT_READ",
+        costStatus: "NOT_INCURRED",
+      })
+      expect(result.remoteChecks).toEqual({ entitlement: "UNKNOWN", quota: "UNKNOWN", service: "UNKNOWN" })
+      expect(result.probes.find((probe) => probe.phase === "stream")).toMatchObject({
+        outcome: "SKIPPED",
+        code: "full_guarded_provider_probe_unavailable",
+      })
+      expect(requests).toBe(0)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
   })
 })

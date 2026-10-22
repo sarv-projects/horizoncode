@@ -75,8 +75,8 @@ type GuardApprovalRequest = {
   normalizedTargets: unknown[]
   expiresAtUnixMs: number
   policySummary: string
-  origin?: "session_batch" | "user_action" | "managed_run"
-  source?: "core.tool_batch" | "authenticated.user_action" | "host.managed_verifier"
+  origin?: "session_batch" | "user_action" | "managed_run" | "managed_root"
+  source?: "core.tool_batch" | "authenticated.user_action" | "host.managed_verifier" | "host.managed_provider" | "host.managed_worktree"
   policyID?: string
   policyDigest?: string
   normalizedAction?: string
@@ -95,7 +95,7 @@ type GuardApprovalRequest = {
   state?: GuardApprovalState
 }
 
-export type GuardApprovalDecision = "allow_once" | "deny"
+export type GuardApprovalDecision = "allow_once" | "deny" | "grant_session" | "grant_workspace"
 
 // A complete ToolBatch admits one challenge per effectful call, so several Guard
 // approvals can be pending at the same time. Keep the queue bounded and stable.
@@ -184,25 +184,37 @@ function parseGuardApprovalRequest(value: unknown, directory: string, workspace?
     new Set(item.requestedGuarantees).size === item.requestedGuarantees.length
       ? item.requestedGuarantees as string[]
       : undefined
-  const origin = item.origin === "session_batch" || item.origin === "user_action" || item.origin === "managed_run"
+  const origin = item.origin === "session_batch" || item.origin === "user_action" || item.origin === "managed_run" || item.origin === "managed_root"
     ? item.origin
     : undefined
-  const source = item.source === "core.tool_batch" || item.source === "authenticated.user_action" || item.source === "host.managed_verifier"
+  const source = item.source === "core.tool_batch" || item.source === "authenticated.user_action" || item.source === "host.managed_verifier" || item.source === "host.managed_provider" || item.source === "host.managed_worktree"
     ? item.source
     : undefined
   const consentFieldsValid =
     origin !== undefined && source !== undefined &&
-    (origin === "managed_run" ? source === "host.managed_verifier" : true) &&
+    ((origin === "managed_run" && source === "host.managed_verifier") ||
+      (origin === "managed_run" && source === "host.managed_provider" && item.capabilityID === "providers.infer" &&
+        item.policyID === "provider-inference.managed.v1" &&
+        requestedGuarantees?.join("\0") === ["live_managed_attempt", "selected_route_revision", "normalized_request_digest", "transport_request_digest", "secret_operation_digest", "explicit_route_consent", "budget_bound", "one_use", "no_fallback"].join("\0") &&
+        guaranteeAssessment?.status === "assessed" && guaranteeAssessment.residual.length === 0 && argumentSummary?.status === "available") ||
+      (origin === "managed_root" && source === "host.managed_worktree") ||
+      (origin !== "managed_run" && origin !== "managed_root" && source !== "host.managed_verifier" && source !== "host.managed_provider" && source !== "host.managed_worktree")) &&
     typeof item.policyID === "string" && /^[a-z][a-z0-9._-]{0,127}$/.test(item.policyID) &&
     typeof item.policyDigest === "string" && /^blake3:[0-9a-f]{64}$/.test(item.policyDigest) &&
     item.normalizedAction === item.capabilityID &&
     argumentSummary !== undefined && requestedGuarantees !== undefined &&
     guaranteeAssessment !== undefined && item.noResponse === "deny_and_expire" &&
-    ((guaranteeAssessment.status === "not_assessed") ||
+    (origin !== "managed_root" || (
+      item.capabilityID === "git.worktree.list" && item.policyID === "broker-process.local.v1" &&
+      requestedGuarantees?.join("\0") === ["configured_executable", "bounded_argv_env", "beneath_workspace_root", "one_use"].join("\0") &&
+      guaranteeAssessment?.status === "assessed" && guaranteeAssessment.residual.length === 0 &&
+      argumentSummary?.status === "available" && typeof item.runID === "string"
+    )) && (guaranteeAssessment.status === "not_assessed" ||
       (guaranteeAssessment.status === "assessed" &&
-        guaranteeAssessment.residual.every((id) => requestedGuarantees.includes(id))) )
+        guaranteeAssessment.residual.every((id) => requestedGuarantees.includes(id))))
   const allowEnabled = item.allowEnabled === true
-    ? consentFieldsValid && argumentSummary?.status === "available" && guaranteeAssessment?.status === "assessed"
+    ? consentFieldsValid && argumentSummary?.status === "available" && guaranteeAssessment?.status === "assessed" &&
+      (origin !== "managed_root" || (guaranteeAssessment.residual.length === 0 && item.capabilityID === "git.worktree.list"))
     : item.allowEnabled === false ? false : undefined
   return {
     approvalID: item.approvalID,
@@ -292,6 +304,9 @@ export const {
         all: [],
         default: {},
         connected: [],
+        catalogSnapshot: { source: "unavailable", freshness: "unknown" },
+        anonymousFreeProviders: [],
+        anonymousFreeModels: [],
       },
       console_state: emptyConsoleState,
       capabilities: {
@@ -451,6 +466,11 @@ export const {
         const sequence = item.properties.sequence
         const sourceGeneration = item.properties.sourceGeneration
         const partID = `${item.properties.messageID}:${item.properties.partID}:${item.properties.field}`
+        if (
+          typeof item.properties.sessionID !== "string" ||
+          item.properties.sessionID.length === 0 ||
+          item.properties.sessionID.length > 256
+        ) return
         const validSequence = Number.isSafeInteger(sequence) && sequence >= 0
         const validOffset = Number.isSafeInteger(item.properties.offset) && item.properties.offset >= 0
         const validGeneration =
@@ -493,6 +513,8 @@ export const {
           advance: 1,
         }
       },
+      requireCursor: true,
+      onInvalidCursor: (sessionID) => void resnapshotSession(sessionID),
       onResnapshotRequired: (cursor) => {
         replaySeeded.delete(replaySeedKey(cursor.sessionID, cursor.partID, cursor.sourceGeneration))
         void resnapshotSession(cursor.sessionID)

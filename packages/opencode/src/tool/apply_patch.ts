@@ -12,13 +12,19 @@ import { FSUtil } from "@opencode-ai/core/fs-util"
 import DESCRIPTION from "./apply_patch.txt"
 import { FileSystem } from "@opencode-ai/core/filesystem"
 import { SessionSupervisor } from "@opencode-ai/core/session/supervisor"
-import type { DirectAttemptScopeV1 } from "@opencode-ai/core/session/supervisor"
 import type { ManagedAttemptScopeV1 } from "@opencode-ai/core/session/supervisor"
 import type { ManagedAttemptAuthority } from "@/session/managed-control"
+import {
+  acceptDirectAttemptReceipt,
+  acceptDirectTurnBatchReceipt,
+  settleToolBatchLease,
+  type ToolBatchDirectAttemptAuthority,
+} from "@/session/tool-batch"
 import { Location } from "@opencode-ai/core/location"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import type { EffectLease } from "@opencode-ai/core/session/supervisor"
 import * as Bom from "@/util/bom"
+import * as RepoIntelligenceSchema from "@opencode-ai/schema/repo-intelligence-v1"
 
 function isEffectLease(value: unknown): value is EffectLease {
   if (typeof value !== "object" || value === null) return false
@@ -33,6 +39,9 @@ function isEffectLease(value: unknown): value is EffectLease {
 
 export const Parameters = Schema.Struct({
   patchText: Schema.String.annotate({ description: "The full patch text that describes all changes to be made" }),
+  repoIntelFence: Schema.optional(RepoIntelligenceSchema.RepoIntelPatchFenceV1).annotate({
+    description: "For edits based on RepoIntel, pass its queryID, sourceGeneration, sourceRevision, workspaceBinding, and exactly one ref per target: {pathRef,fileDigest} for existing content or {pathRef,expectedAbsent:true} for a new destination. HostKernel revalidates this read-only evidence before Guard admission; it grants no write authority. Omit only for edits not based on RepoIntel evidence.",
+  }),
 })
 export const preparePatchBatch = Effect.fn("ApplyPatchTool.prepareBatch")(function* (
   patchText: string,
@@ -345,6 +354,8 @@ export const ApplyPatchTool = Tool.define(
       }
       const managedAttempt = ctx.extra?.managedAttempt as ManagedAttemptAuthority | undefined
       const managedAttemptScope = managedAttempt?.currentScope()
+      const directAttempt = ctx.extra?.directAttempt as ToolBatchDirectAttemptAuthority | undefined
+      const directAttemptScope = directAttempt?.currentScope()
 
       const locationRef = Location.Ref.make({ directory: AbsolutePath.make(instance.directory) })
       const receipt = yield* Effect.uninterruptible(
@@ -354,14 +365,25 @@ export const ApplyPatchTool = Tool.define(
           lease,
           operations: guardedPatch as typeof operations,
           trustedPrincipal,
-          ...(ctx.extra?.directAttempt !== undefined
-            ? { directAttempt: ctx.extra.directAttempt as DirectAttemptScopeV1 }
+          ...(directAttemptScope !== undefined
+            ? { directAttempt: directAttemptScope }
             : {}),
+          ...(directAttempt?.directTurn ? { directTurnScope: directAttempt.directTurn.currentScope() } : {}),
           ...(managedAttemptScope !== undefined
             ? { managedAttempt: managedAttemptScope as ManagedAttemptScopeV1 }
             : {}),
         }),
       )
+      if (directAttemptScope) {
+        if (!receipt.directAttempt || receipt.attemptScopeTransition !== "effect_receipt") {
+          return yield* Effect.fail(new Error("Patch denied: HostKernel omitted direct Attempt receipt scope"))
+        }
+        acceptDirectAttemptReceipt(directAttempt, directAttemptScope, receipt)
+        if (directAttempt.directTurn && receipt.directTurnScope) {
+          yield* Effect.promise(() => acceptDirectTurnBatchReceipt(directAttempt, receipt))
+        }
+      }
+      yield* Effect.promise(() => settleToolBatchLease(lease, { effectID: receipt.effectID }))
       if (managedAttemptScope) {
         if (!receipt.managedAttempt || receipt.attemptScopeTransition !== "effect_receipt") {
           return yield* Effect.fail(new Error("Patch denied: HostKernel omitted managed receipt scope"))

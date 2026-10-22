@@ -45,6 +45,7 @@ export function DialogProviderDoctor() {
   const [serverResult, setServerResult] = createSignal<{
     localReadiness: string
     configuration: string
+    catalogFreshness: string
     credentials: string
     networkRequests: number
     remote: string
@@ -87,7 +88,8 @@ export function DialogProviderDoctor() {
       )
       setServerResult({
         localReadiness: response.data.localReadiness,
-        configuration: response.data.probes.find((probe) => probe.phase === "config")?.outcome ?? "UNKNOWN",
+        configuration: response.data.selection.configurationStatus,
+        catalogFreshness: response.data.catalogFreshness,
         credentials: response.data.credentialAccess,
         networkRequests: response.data.networkRequestCount,
         remote:
@@ -110,6 +112,7 @@ export function DialogProviderDoctor() {
       <text fg={theme.textMuted}>Selected: {selection().selection}</text>
       <text fg={theme.textMuted}>Local readiness: {serverResult()?.localReadiness ?? selection().localReadiness}</text>
       <text fg={theme.textMuted}>Configuration: {serverResult()?.configuration ?? selection().configuration}</text>
+      <text fg={theme.textMuted}>Local catalog snapshot: {serverResult()?.catalogFreshness ?? "UNKNOWN"}</text>
       <text fg={theme.textMuted}>Credentials: {serverResult()?.credentials ?? selection().credentials}</text>
       <text fg={theme.textMuted}>
         Remote entitlement, quota, and service: {serverResult()?.remote ?? selection().remote}
@@ -118,10 +121,16 @@ export function DialogProviderDoctor() {
         Provider requests: {serverResult()?.networkRequests ?? selection().networkRequests} · Cost: {serverResult()?.cost ?? selection().cost}
       </text>
       <text fg={theme.textMuted}>
-        Catalog and full probes are unavailable until guarded network and consent support is verified.
+        Offline tier: available · zero provider requests · credentials not read · no charge.
+      </text>
+      <text fg={theme.textMuted}>
+        Catalog tier: unavailable · requires an authenticated network grant and Guarded dispatch; no requests are sent.
+      </text>
+      <text fg={theme.textMuted}>
+        Full tier: unavailable · selected-model inference may incur cost; it requires a separate network grant, explicit spend consent, and Guarded dispatch. No provider fallback is used.
       </text>
       {error() && <text fg={theme.error}>Offline diagnostics could not be loaded from this local runtime.</text>}
-      <text fg={theme.textMuted}>This route never reads credentials or contacts a provider.</text>
+      <text fg={theme.textMuted}>Offline diagnostics never read credentials or contact a provider. Consent alone cannot enable a probe.</text>
     </box>
   )
 }

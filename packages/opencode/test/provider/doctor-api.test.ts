@@ -15,8 +15,8 @@ const request = {
   maxNetworkRequests: 0,
 } as const
 
-describe("Provider Doctor offline API contract", () => {
-  test("declares only the offline endpoint with the no-network request and result schemas", () => {
+describe("Provider Doctor API contracts", () => {
+  test("declares offline, explicit catalog, and spend-consented full request shapes", () => {
     const decoded = Schema.decodeUnknownSync(ProviderDoctorV1.OfflineRequestV1)(request, { onExcessProperty: "error" })
     expect(decoded.tier).toBe("offline")
     expect(ProviderDoctorApi).toBeDefined()
@@ -27,5 +27,32 @@ describe("Provider Doctor offline API contract", () => {
         { onExcessProperty: "error" },
       ),
     ).toThrow()
+    expect(Schema.decodeUnknownSync(ProviderDoctorV1.CatalogRequestV1)({
+      ...request,
+      tier: "catalog",
+      maxNetworkRequests: 2,
+      networkGrantRef: "grant:display-only",
+    }, { onExcessProperty: "error" }).tier).toBe("catalog")
+    expect(() => Schema.decodeUnknownSync(ProviderDoctorV1.CatalogRequestV1)({
+      ...request,
+      tier: "catalog",
+      maxNetworkRequests: 2,
+      networkGrantRef: "grant:display-only",
+      spendConsentRef: "must-not-be-accepted-for-catalog",
+    })).toThrow()
+    expect(Schema.decodeUnknownSync(ProviderDoctorV1.FullRequestV1)({
+      ...request,
+      tier: "full",
+      maxNetworkRequests: 2,
+      networkGrantRef: "grant:display-only",
+      spendConsentRef: "consent:display-only",
+    }, { onExcessProperty: "error" }).tier).toBe("full")
+    expect(() => Schema.decodeUnknownSync(ProviderDoctorV1.FullRequestV1)({
+      ...request,
+      tier: "full",
+      maxNetworkRequests: 2,
+      networkGrantRef: "grant:display-only",
+    })).toThrow()
+    expect(ProviderDoctorApi).toBeDefined()
   })
 })

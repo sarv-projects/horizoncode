@@ -5,7 +5,7 @@ import { MCP } from "@/mcp"
 import { Session } from "@/session/session"
 import { Tool } from "@/tool/tool"
 import { MessageID, SessionID } from "@/session/schema"
-import { Cause, Effect, Exit, Layer } from "effect"
+import { Effect, Layer } from "effect"
 
 const ctx: Tool.Context = {
   sessionID: SessionID.make("ses_code-mode-guard"),
@@ -18,7 +18,7 @@ const ctx: Tool.Context = {
   ask: () => Effect.void,
 }
 
-test("CodeMode refuses MCP dispatch before the client can observe a call", async () => {
+test("CodeMode does not evaluate source before the supervised helper is accepted", async () => {
   let dispatches = 0
   const layer = Layer.mergeAll(
     Layer.mock(Agent.Service, { get: () => Effect.succeed({ name: "build", permission: [] } as any) }),
@@ -40,13 +40,9 @@ test("CodeMode refuses MCP dispatch before the client can observe a call", async
     }),
   )
   const tool = await Effect.runPromise(CodeModeTool.pipe(Effect.flatMap(Tool.init), Effect.provide(layer)))
-  const exit = await Effect.runPromise(
-    tool.execute({ code: "return await tools.fixtures.echo({})" }, ctx).pipe(Effect.exit),
-  )
+  const result = await Effect.runPromise(tool.execute({ code: "return await tools.fixtures.echo({})" }, ctx))
 
-  expect(Exit.isFailure(exit)).toBe(true)
-  if (Exit.isFailure(exit)) {
-    expect((Cause.squash(exit.cause) as Error).message).toContain("canonical Rust Guard/ExecutionHost route")
-  }
+  expect(result.output).toContain("supervised helper")
+  expect(result.metadata).toMatchObject({ error: true, toolCalls: [] })
   expect(dispatches).toBe(0)
 })

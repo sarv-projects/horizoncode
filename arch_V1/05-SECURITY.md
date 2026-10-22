@@ -19,7 +19,13 @@ Ask:
 approval where policy class requires it.
 
 Safe Auto:
-pre-authorized bounded low-risk effects may proceed; risk escalation pauses.
+pre-authorized bounded low-risk effects may proceed; risk escalation pauses. In a
+user-selected sandbox profile, routine in-workspace coding and test actions within
+the active direct Session's bounded workspace/capability grant run without a
+per-effect approval prompt. Guard still validates each operation, issues its
+one-use lease, and records its receipt. A request outside that grant pauses for
+boundary approval; it cannot broaden the grant by chaining through CodeMode,
+subagents, plugins, or other origins.
 
 YOLO-in-sandbox:
 broad effects only inside an actually enforced sandbox profile.

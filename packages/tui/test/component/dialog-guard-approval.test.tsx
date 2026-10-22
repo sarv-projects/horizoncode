@@ -226,3 +226,74 @@ test("Guard approval allow choice is explicitly one-use", async () => {
     dispose()
   }
 })
+
+test("managed provider inference allows only the exact host-issued consent policy", async () => {
+  await using tmp = await tmpdir()
+  const state = path.join(tmp.path, "state")
+  await mkdir(state, { recursive: true })
+  await Bun.write(path.join(state, "kv.json"), "{}")
+  const decisions: string[] = []
+  const providerRequest: GuardApprovalRequestView = {
+    ...request,
+    capabilityID: "providers.infer",
+    origin: "managed_run",
+    source: "host.managed_provider",
+    runID: "run-1",
+    policyID: "provider-inference.managed.v1",
+    normalizedAction: "providers.infer",
+    argumentSummary: { status: "available", text: "Infer with the selected provider route and model; request details are hidden." },
+    requestedGuarantees: ["live_managed_attempt", "selected_route_revision", "normalized_request_digest", "transport_request_digest", "secret_operation_digest", "explicit_route_consent", "budget_bound", "one_use", "no_fallback"],
+    guaranteeAssessment: { status: "assessed", residual: [] },
+    allowEnabled: true,
+  }
+  const { app, dispose } = await mountApproval(tmp.path, state, async (decision) => {
+    decisions.push(decision)
+    return true
+  }, providerRequest)
+  try {
+    const frame = await waitForFrame(app, (value) => value.includes("Allow this effect once"))
+    expect(frame).toContain("provider-inference.managed.v1")
+    const lines = app.captureCharFrame().split("\n")
+    const row = lines.findIndex((line) => line.includes("Allow this effect once"))
+    expect(row).toBeGreaterThanOrEqual(0)
+    await app.mockMouse.click(lines[row].indexOf("Allow this effect once"), row)
+    await waitFor(() => decisions.length === 1)
+    expect(decisions).toEqual(["allow_once"])
+  } finally {
+    dispose()
+  }
+})
+
+test("managed provider inference denies incomplete consent guarantees", async () => {
+  await using tmp = await tmpdir()
+  const state = path.join(tmp.path, "state")
+  await mkdir(state, { recursive: true })
+  await Bun.write(path.join(state, "kv.json"), "{}")
+  const decisions: string[] = []
+  const providerRequest: GuardApprovalRequestView = {
+    ...request,
+    capabilityID: "providers.infer",
+    origin: "managed_run",
+    source: "host.managed_provider",
+    runID: "run-1",
+    policyID: "provider-inference.managed.v1",
+    normalizedAction: "providers.infer",
+    argumentSummary: { status: "available", text: "Selected provider route." },
+    requestedGuarantees: ["live_managed_attempt", "one_use"],
+    guaranteeAssessment: { status: "assessed", residual: [] },
+    allowEnabled: true,
+  }
+  const { app, dispose } = await mountApproval(tmp.path, state, async (decision) => {
+    decisions.push(decision)
+    return true
+  }, providerRequest)
+  try {
+    const frame = await waitForFrame(app, (value) => value.includes("Deny (default)"))
+    expect(frame).toContain("consent context incomplete")
+    app.mockInput.pressEnter()
+    await waitFor(() => decisions.length === 1)
+    expect(decisions).toEqual(["deny"])
+  } finally {
+    dispose()
+  }
+})

@@ -19,8 +19,8 @@
       "minLength": 1
     },
     "expectedGeneration": {
-      "type": "integer",
-      "minimum": 0
+      "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64",
+      "description": "Unsigned 64-bit JSON counter/budget; encoded as canonical decimal string."
     },
     "action": {
       "enum": [
@@ -48,7 +48,9 @@
     },
     "deadlineMs": {
       "type": "integer",
-      "minimum": 1
+      "minimum": 1,
+      "maximum": 600000,
+      "description": "Fixed V1 bound (600000) keeps this value exactly representable as a JSON number."
     }
   },
   "required": [

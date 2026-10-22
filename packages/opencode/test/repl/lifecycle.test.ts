@@ -3,6 +3,7 @@ import path from "node:path"
 import { Effect, Schema } from "effect"
 import {
   DEFAULT_IDLE_TTL_MS,
+  CallbackAdmissionError,
   CallbackCapabilityDeniedError,
   DeadlineLimitError,
   Operation as ReplOperationSchema,
@@ -12,11 +13,19 @@ import {
   UnavailableError,
   authorizeEffect,
   availability,
+  dispatchSupervisedReplOperationV1,
+  isDefinitiveReplOperationFailure,
   guardActionID,
   makeRegistry,
+  projectReplCallbackInvocationV1,
+  replCallbackIngressAvailable,
+  readSupervisedStatusV1,
   replEffectRouteAvailable,
   requireEffectAllowed,
   setReplEffectRoute,
+  validateExecutionReplOperationRequestV1,
+  validateExecutionReplOperationReceiptV1,
+  validateExecutionReplNextSequenceV1,
   type ReplEffectRequest,
   type Operation,
 } from "@/repl/lifecycle"
@@ -31,7 +40,9 @@ import {
 } from "@/repl/protocol"
 import { it } from "../lib/effect"
 
-const ALL_OPERATIONS: readonly Operation[] = ["repl.start", "repl.execute", "repl.callback", "repl.reset", "repl.stop"]
+const ALL_OPERATIONS: readonly Operation[] = [
+  "repl.start", "repl.execute", "repl.callback", "repl.reset", "repl.status", "repl.output_range", "repl.stop",
+]
 const resourceLimits = { maxMemoryBytes: 512 * 1024 * 1024, maxWallTimeMs: 30_000, maxOutputBytes: 1024 * 1024 }
 const resourceGuarantees = {
   cpuTimeEnforced: true,
@@ -59,6 +70,23 @@ const authority = {
   sandboxGeneration: 1,
   policyGeneration: "policy-1",
   capabilityCeilingDigest: "blake3:" + "a".repeat(64),
+  directAttemptScope: {
+    attemptID: "attempt-direct-1",
+    parentSessionID: "parent-session-1",
+    childSessionID: "repl-1",
+    ownerEpoch: "7",
+    expectedRevision: "1",
+    locationID: "location-1",
+    workspaceID: "ws-1",
+    workspaceRevision: "blake3:" + "1".repeat(64),
+    profileID: "profile-python",
+    profileRevision: "1",
+    profileDigest: "blake3:" + "f".repeat(64),
+    capabilityDigest: "blake3:" + "b".repeat(64),
+    permissionsDigest: "blake3:" + "c".repeat(64),
+    budgetDigest: "blake3:" + "d".repeat(64),
+    scopeDigest: "blake3:" + "e".repeat(64),
+  },
 }
 
 type CreateInput = Parameters<ReplLifecycle.Registry["create"]>[0]
@@ -66,9 +94,22 @@ function createSession(
   registry: ReplLifecycle.Registry,
   input: Omit<CreateInput, keyof typeof authority> & Partial<typeof authority>,
 ) {
+  const scope = input.managedAttemptScope
+    ? { directAttemptScope: undefined }
+    : {
+        directAttemptScope: input.directAttemptScope ?? {
+          ...authority.directAttemptScope,
+          childSessionID: input.sessionID ?? "repl-1",
+          ownerEpoch: input.ownerEpoch ?? authority.ownerEpoch,
+          locationID: input.locationID ?? authority.locationID,
+          workspaceID: input.workspaceId ?? authority.workspaceId,
+          workspaceRevision: input.workspaceRevision ?? authority.workspaceRevision,
+        },
+      }
   return registry.create({
     ...authority,
     launchProfileRef: { profileId: "repl-python", revision: "1", profileDigest: "blake3:" + "c".repeat(64) },
+    ...scope,
     ...input,
   })
 }
@@ -154,6 +195,64 @@ describe("repl.lifecycle generation lifecycle", () => {
     ).toBe("not_active")
   })
 
+  test("binds one HostKernel interpreter identity to its authenticated generation", () => {
+    const registry = makeRegistry()
+    const session = created(registry)
+    const ref = { sessionID: session.sessionID, generation: session.generation }
+    const bound = registry.bindProcessRefOwned(ref, authorityFor(session), interpreterProcessRef)
+    expect(bound.processRef).toEqual(interpreterProcessRef)
+    expect(Object.isFrozen(bound.processRef)).toBe(true)
+    expect(registry.bindProcessRefOwned(ref, authorityFor(session), interpreterProcessRef)).toBe(bound)
+    expect(() => registry.bindProcessRefOwned(ref, authorityFor(session), {
+      ...interpreterProcessRef,
+      executionID: "other-execution",
+    })).toThrow(ReplLifecycle.TransitionError)
+    expect(() => registry.bindProcessRefOwned(ref, { ...authorityFor(session), ownerId: "other-owner" }, interpreterProcessRef))
+      .toThrow(ReplLifecycle.StaleRefError)
+  })
+
+  test("reconciles only the process identity retained by the owned REPL generation", async () => {
+    const registry = makeRegistry()
+    const session = created(registry)
+    const ref = { sessionID: session.sessionID, generation: session.generation }
+    registry.bindProcessRefOwned(ref, authorityFor(session), interpreterProcessRef)
+    let request: Readonly<Record<string, unknown>> | undefined
+    const status = await readSupervisedStatusV1({
+      registry,
+      ref,
+      authority: authorityFor(session),
+      effectID: "effect-1",
+      challengeID: "challenge-1",
+      requestHostKernel: async (_service, operation, body) => {
+        expect(operation).toBe("status")
+        request = body
+        return {
+          executionID: interpreterProcessRef.executionID,
+          generation: interpreterProcessRef.generation,
+          state: "RUNNING",
+          stdoutSequence: "0",
+          stderrSequence: "0",
+          exitCode: null,
+          stdoutDigest: "blake3:" + "1".repeat(64),
+          stderrDigest: "blake3:" + "2".repeat(64),
+          outputBytes: "0",
+          truncated: false,
+          receiptDigest: null,
+          hostProcessRef: interpreterProcessRef,
+          resourceGuarantees,
+        }
+      },
+    })
+    expect(status.state).toBe("RUNNING")
+    expect(request).toMatchObject({
+      executionID: interpreterProcessRef.executionID,
+      effectID: "effect-1",
+      challengeID: "challenge-1",
+      directAttempt: session.directAttemptScope,
+    })
+    expect(request).not.toHaveProperty("processRef")
+  })
+
   test("retained managed Attempt scope is an immutable copy", () => {
     const managedAttemptScope = {
       goalID: "goal-1",
@@ -165,6 +264,8 @@ describe("repl.lifecycle generation lifecycle", () => {
       locationID: "location-1",
       sessionID: "repl-1",
       workspaceRevision: authority.workspaceRevision,
+      effectiveMaxTokens: "100000",
+      remainingTokens: "100000",
       delegationBindingDigest: "blake3:" + "e".repeat(64),
     }
     const session = createSession(makeRegistry(), {
@@ -951,6 +1052,36 @@ describe("repl.lifecycle fail-closed boundary", () => {
     ).toThrow(StaleRefError)
   })
 
+  test("callback admissions are generation scoped, bounded, and UNKNOWN quarantines the session", () => {
+    const registry = makeRegistry()
+    const session = created(registry)
+    const ref = { sessionID: session.sessionID, generation: session.generation }
+    registry.activate(ref, 2_000)
+    const request = {
+      generation: session.generation,
+      callbackID: "cb-1",
+      capabilityID: "files.read",
+      arguments: { path: "src/main.ts" },
+    }
+    expect(registry.admitCallback(ref, authority, request)).toMatchObject({ callbackID: "cb-1" })
+    expect(() => registry.admitCallback(ref, authority, request)).toThrow(CallbackAdmissionError)
+    for (let index = 2; index <= 16; index++) {
+      registry.admitCallback(ref, authority, { ...request, callbackID: `cb-${index}` })
+    }
+    const overflow = capture<CallbackAdmissionError>(() =>
+      registry.admitCallback(ref, authority, { ...request, callbackID: "cb-17" }),
+    )
+    expect(overflow.reason).toBe("too_many_in_flight")
+    registry.acceptCallbackResult(ref, authority, {
+      generation: session.generation,
+      callbackID: "cb-1",
+      status: "unknown",
+      message: "host outcome could not be reconciled",
+    })
+    expect(registry.statusOwned(ref, authority).state).toBe("unknown")
+    expect(() => registry.admitCallback(ref, authority, { ...request, callbackID: "cb-2" })).toThrow(StaleRefError)
+  })
+
   test("owned reset and stop reject a foreign principal before changing generation state", () => {
     const registry = makeRegistry()
     const session = created(registry)
@@ -1017,7 +1148,7 @@ describe("repl.lifecycle fail-closed boundary", () => {
 })
 
 describe("repl.lifecycle canonical Guard effect route", () => {
-  test("managed Attempt scope is validated and frozen before the host route receives it", async () => {
+  test("a managed Attempt cannot reach a registered route before the hard runtime gate passes", async () => {
     const managedAttemptScope = {
       goalID: "goal-1",
       runID: "run-1",
@@ -1028,6 +1159,8 @@ describe("repl.lifecycle canonical Guard effect route", () => {
       locationID: "location-1",
       sessionID: "repl-1",
       workspaceRevision: authority.workspaceRevision,
+      effectiveMaxTokens: "100000",
+      remainingTokens: "100000",
       delegationBindingDigest: "blake3:" + "e".repeat(64),
     }
     let received: ReplEffectRequest | undefined
@@ -1044,9 +1177,10 @@ describe("repl.lifecycle canonical Guard effect route", () => {
       },
     })
     try {
-      await authorizeEffect(effectRequest("repl.execute", { managedAttemptScope }))
-      expect(received?.managedAttemptScope).toEqual(managedAttemptScope)
-      expect(Object.isFrozen(received?.managedAttemptScope)).toBe(true)
+      expect(replEffectRouteAvailable()).toBe(false)
+      await expect(authorizeEffect(effectRequest("repl.execute", { managedAttemptScope, directAttemptScope: undefined })))
+        .rejects.toBeInstanceOf(UnavailableError)
+      expect(received).toBeUndefined()
     } finally {
       setReplEffectRoute(undefined)
     }
@@ -1094,7 +1228,7 @@ describe("repl.lifecycle canonical Guard effect route", () => {
     }
   })
 
-  test("a registered boundary is asked verbatim and a malformed answer is refused", async () => {
+  test("a registered boundary cannot dispatch before the hard runtime gate passes", async () => {
     const requests: Array<Record<string, unknown>> = []
     setReplEffectRoute({
       resourceGuarantees,
@@ -1104,21 +1238,9 @@ describe("repl.lifecycle canonical Guard effect route", () => {
       },
     })
     try {
-      expect(replEffectRouteAvailable()).toBe(true)
+      expect(replEffectRouteAvailable()).toBe(false)
       await expect(authorizeEffect(effectRequest("repl.execute", { generation: 3 }))).rejects.toThrow(UnavailableError)
-      expect(requests).toEqual([
-        {
-          operation: "repl.execute",
-          sessionID: "repl-1",
-          generation: 3,
-          language: "python",
-          scope: "workspace://ws-1",
-          resourceLimits,
-          callbackCapabilities: ["files.read"],
-          processRef: interpreterProcessRef,
-          ...authority,
-        },
-      ])
+      expect(requests).toEqual([])
     } finally {
       setReplEffectRoute(undefined)
     }
@@ -1201,29 +1323,58 @@ describe("repl.lifecycle canonical Guard effect route", () => {
     }
   })
 
-  test("an admitted authorization is returned unchanged to the caller", async () => {
-    const lease = "blake3:" + "b".repeat(64)
+  test("even a route claiming complete OS limits cannot unlock REPL effects", async () => {
+    let dispatched = false
     setReplEffectRoute({
       resourceGuarantees,
-      authorize: async () => ({
-        capabilityID: "repl.start",
-        challengeID: "ch_1",
-        effectID: "eff_1",
-        capabilityLeaseDigest: lease,
-      }),
+      authorize: async () => {
+        dispatched = true
+        return {
+          capabilityID: "repl.start",
+          challengeID: "ch_1",
+          effectID: "eff_1",
+          capabilityLeaseDigest: "blake3:" + "b".repeat(64),
+        }
+      },
     })
     try {
-      const authorization = await authorizeEffect(effectRequest("repl.start", { language: "python" }))
-      expect(authorization).toEqual({
-        capabilityID: "repl.start",
-        challengeID: "ch_1",
-        effectID: "eff_1",
-        capabilityLeaseDigest: lease,
-      })
-      expect(Object.isFrozen(authorization)).toBe(true)
+      expect(replEffectRouteAvailable()).toBe(false)
+      await expect(authorizeEffect(effectRequest("repl.start", { language: "python" })))
+        .rejects.toBeInstanceOf(UnavailableError)
+      expect(dispatched).toBe(false)
     } finally {
       setReplEffectRoute(undefined)
     }
+  })
+
+  test("per-call dispatcher remains closed before Guard or HostKernel invocation", async () => {
+    const registry = makeRegistry()
+    const session = created(registry)
+    const ref = { sessionID: session.sessionID, generation: session.generation }
+    registry.bindProcessRefOwned(ref, authorityFor(session), interpreterProcessRef)
+    registry.activateOwned(ref, authorityFor(session), Date.now())
+    let guardCalled = false
+    let hostCalled = false
+    await expect(dispatchSupervisedReplOperationV1({
+      registry,
+      ref,
+      authority: authorityFor(session),
+      operation: { kind: "execute", request: { generation: session.generation, code: "print(1)", deadlineMs: 1000 } },
+      locationRef: {} as never,
+      supervisor: {
+        authorizeReplOperation: (() => {
+          guardCalled = true
+          throw new Error("must remain gated")
+        }) as never,
+      },
+      runTrustedEffect: (effect) => Promise.resolve(effect as never),
+      requestHostKernel: async () => {
+        hostCalled = true
+        throw new Error("must remain gated")
+      },
+    })).rejects.toThrow()
+    expect(guardCalled).toBe(false)
+    expect(hostCalled).toBe(false)
   })
 
   test("canonical action IDs are the Rust Guard constants", async () => {
@@ -1236,5 +1387,138 @@ describe("repl.lifecycle canonical Guard effect route", () => {
     expect(guardActionID("repl.reset")).toBe("repl.reset")
     expect(guardActionID("repl.stop")).toBe("repl.stop")
     expect(guardActionID("repl.callback")).toBeUndefined()
+  })
+
+  test("validates per-call execute and reset dispatch envelopes against exact process scope", () => {
+    const base = {
+      schemaVersion: 1,
+      executionID: interpreterProcessRef.executionID,
+      hostProcessRef: interpreterProcessRef,
+      sessionID: "repl-1",
+      locationID: authority.locationID,
+      workspaceRevision: authority.workspaceRevision,
+      requestSequence: "1",
+      effectID: "effect-1",
+      challengeID: "challenge-1",
+      capabilityLeaseDigest: "blake3:" + "b".repeat(64),
+      directAttempt: authority.directAttemptScope,
+    }
+    const execute = validateExecutionReplOperationRequestV1({
+      ...base,
+      capabilityID: "repl.execute",
+      operation: { kind: "execute", code: "print(1)", deadlineMs: 10_000, maxOutputBytes: 4096 },
+    })
+    expect(execute.hostProcessRef.kind).toBe("interpreter")
+    expect(execute.requestSequence).toBe("1")
+    const receipt = validateExecutionReplOperationReceiptV1({
+      schemaVersion: 1,
+      status: "DISPATCHED",
+      hostProcessRef: interpreterProcessRef,
+      requestSequence: "1",
+      effectID: "effect-1",
+      challengeID: "challenge-1",
+      capabilityID: "repl.execute",
+      capabilityLeaseDigest: "blake3:" + "b".repeat(64),
+      operationDigest: "blake3:" + "c".repeat(64),
+      dispatchReceiptDigest: "blake3:" + "d".repeat(64),
+    }, execute)
+    expect(receipt.status).toBe("DISPATCHED")
+    expect(() => validateExecutionReplOperationReceiptV1({
+      schemaVersion: 1,
+      status: "DISPATCHED",
+      hostProcessRef: { ...interpreterProcessRef, generation: "2" },
+      requestSequence: "1",
+      effectID: "effect-1",
+      challengeID: "challenge-1",
+      capabilityID: "repl.execute",
+      capabilityLeaseDigest: "blake3:" + "b".repeat(64),
+      operationDigest: "blake3:" + "c".repeat(64),
+      dispatchReceiptDigest: "blake3:" + "d".repeat(64),
+    }, execute)).toThrow("different interpreter generation")
+    expect(() => validateExecutionReplOperationRequestV1({
+      ...base,
+      executionID: "other-process",
+      capabilityID: "repl.execute",
+      operation: { kind: "execute", code: "1", deadlineMs: 10_000, maxOutputBytes: 4096 },
+    })).toThrow("executionID differs from HostProcessRef")
+    expect(() => validateExecutionReplOperationRequestV1({
+      ...base,
+      requestSequence: "01",
+      capabilityID: "repl.execute",
+      operation: { kind: "execute", code: "1", deadlineMs: 10_000, maxOutputBytes: 4096 },
+    })).toThrow("canonical positive u64")
+    expect(() => validateExecutionReplOperationRequestV1({
+      ...base,
+      capabilityID: "repl.execute",
+      operation: { kind: "execute", code: "1", deadlineMs: 10_000, maxOutputBytes: MAX_OUTPUT_REFERENCES_PER_GENERATION },
+      pid: 1234,
+    })).toThrow("missing or unknown fields")
+    expect(() => validateExecutionReplOperationRequestV1({
+      ...base,
+      capabilityID: "repl.reset",
+      operation: {
+        kind: "reset",
+        profileRef: { profileId: "other-profile", revision: "1", profileDigest: "blake3:" + "c".repeat(64) },
+      },
+    })).toThrow("reset launch profile differs")
+    const reset = validateExecutionReplOperationRequestV1({
+      ...base,
+      capabilityID: "repl.reset",
+      operation: {
+        kind: "reset",
+        profileRef: { profileId: "repl-python", revision: "1", profileDigest: "blake3:" + "c".repeat(64) },
+      },
+    })
+    expect(reset.operation.kind).toBe("reset")
+  })
+
+  test("binds the next REPL operation sequence to the exact HostKernel process", () => {
+    expect(validateExecutionReplNextSequenceV1({
+      schemaVersion: 1,
+      hostProcessRef: interpreterProcessRef,
+      nextRequestSequence: "7",
+    }, interpreterProcessRef)).toBe("7")
+    expect(() => validateExecutionReplNextSequenceV1({
+      schemaVersion: 1,
+      hostProcessRef: { ...interpreterProcessRef, generation: "2" },
+      nextRequestSequence: "7",
+    }, interpreterProcessRef)).toThrow("differs from the retained interpreter")
+    expect(() => validateExecutionReplNextSequenceV1({
+      schemaVersion: 1,
+      hostProcessRef: interpreterProcessRef,
+      nextRequestSequence: "07",
+    }, interpreterProcessRef)).toThrow("canonical positive u64")
+  })
+
+  test("treats sequence conflicts as pre-dispatch and unknown receipts as ambiguous", () => {
+    expect(isDefinitiveReplOperationFailure({ hostCode: "effect_conflict" })).toBe(true)
+    expect(isDefinitiveReplOperationFailure({ hostCode: "capability_unavailable" })).toBe(true)
+    expect(isDefinitiveReplOperationFailure({ hostCode: "effect_outcome_unknown" })).toBe(false)
+    expect(isDefinitiveReplOperationFailure(new Error("transport disconnected"))).toBe(false)
+  })
+
+  test("keeps callback projection closed until HostKernel event and reply receipts exist", () => {
+    const registry = makeRegistry()
+    const created = createSession(registry, { sessionID: "repl-1" })
+    const ref = { sessionID: created.sessionID, generation: created.generation }
+    registry.bindProcessRefOwned(ref, authorityFor(created), interpreterProcessRef)
+    const active = registry.activateOwned(ref, authorityFor(created), Date.now())
+    expect(replCallbackIngressAvailable()).toBe(false)
+    expect(() => projectReplCallbackInvocationV1({
+      session: active,
+      event: {
+        eventSequence: "1",
+        hostProcessRef: interpreterProcessRef,
+        sessionID: active.sessionID,
+        locationID: active.locationID,
+        workspaceRevision: active.workspaceRevision,
+        callback: {
+          generation: active.generation,
+          callbackID: "callback-1",
+          capabilityID: "files.read",
+          arguments: { path: "src/main.ts" },
+        },
+      },
+    })).toThrow("callback ingress is unavailable")
   })
 })

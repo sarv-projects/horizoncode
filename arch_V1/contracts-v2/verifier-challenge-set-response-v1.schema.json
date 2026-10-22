@@ -1,0 +1,554 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "horizon://schemas/verifier-challenge-set-response-v1",
+  "title": "Managed verifier ChallengeSet response v1",
+  "description": "Authenticated HostKernel projection for initial verifier approval, exact retry/resume, SETTLING recovery, or UNKNOWN. All identity pins are HostKernel-derived; consumers compare them to durable Goal, Attempt, accepted SpecVersion and verifier profile authority.",
+  "$ref": "#/$defs/ResponseV1",
+  "$defs": {
+    "Identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+    },
+    "Digest": {
+      "type": "string",
+      "pattern": "^blake3:[0-9a-f]{64}$"
+    },
+    "PositiveDecimalU64": {
+      "$ref": "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64"
+    },
+    "DecimalU64": {
+      "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64"
+    },
+    "ApprovalLocationV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "locationID",
+        "workspaceID",
+        "canonicalRoot",
+        "workspaceRevision"
+      ],
+      "properties": {
+        "locationID": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "workspaceID": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "canonicalRoot": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "workspaceRevision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      }
+    },
+    "ChallengeV1": {
+      "type": "object",
+      "description": "Guard consent projection for one accepted verifier criterion.",
+      "additionalProperties": false,
+      "properties": {
+        "criterionID": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "challengeID": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "effectID": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "capabilityID": {
+          "const": "builtin.verifier"
+        },
+        "locationID": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "inputDigest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "normalizedTargets": {
+          "type": "array",
+          "maxItems": 64
+        },
+        "expiresAtUnixMs": {
+          "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64",
+          "description": "Unsigned 64-bit JSON counter/budget; encoded as canonical decimal string."
+        },
+        "policySummary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "origin": {
+          "const": "managed_run"
+        },
+        "source": {
+          "const": "host.managed_verifier"
+        },
+        "policyID": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "policyDigest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "normalizedAction": {
+          "const": "builtin.verifier"
+        },
+        "argumentSummary": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "status",
+                "text"
+              ],
+              "properties": {
+                "status": {
+                  "const": "available"
+                },
+                "text": {
+                  "type": "string",
+                  "maxLength": 512
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "status",
+                "reason"
+              ],
+              "properties": {
+                "status": {
+                  "const": "unavailable"
+                },
+                "reason": {
+                  "const": "safe_argument_summary_unavailable"
+                }
+              }
+            }
+          ]
+        },
+        "requestedGuarantees": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "guaranteeAssessment": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "residual"
+          ],
+          "properties": {
+            "status": {
+              "const": "not_assessed"
+            },
+            "residual": {
+              "type": "null"
+            }
+          }
+        },
+        "runID": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "noResponse": {
+          "const": "deny_and_expire"
+        },
+        "allowEnabled": {
+          "const": false
+        }
+      },
+      "required": [
+        "criterionID",
+        "challengeID",
+        "effectID",
+        "capabilityID",
+        "locationID",
+        "inputDigest",
+        "normalizedTargets",
+        "expiresAtUnixMs",
+        "policySummary",
+        "origin",
+        "source",
+        "policyID",
+        "policyDigest",
+        "normalizedAction",
+        "argumentSummary",
+        "requestedGuarantees",
+        "guaranteeAssessment",
+        "runID",
+        "noResponse",
+        "allowEnabled"
+      ]
+    },
+    "ResponseV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "status",
+        "goalID",
+        "runID",
+        "taskID",
+        "attemptID",
+        "ownerEpoch",
+        "specID",
+        "specDigest",
+        "profileID",
+        "profileRevision",
+        "profileDigest",
+        "finalRevision",
+        "evidencePlanDigest",
+        "verificationRunID",
+        "setIdentityDigest",
+        "challengeSetDigest"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "status": {
+          "enum": [
+            "NEEDS_APPROVAL",
+            "RESUME_EXECUTION",
+            "SETTLING",
+            "UNKNOWN",
+            "SETTLEMENT_PENDING"
+          ]
+        },
+        "goalID": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "runID": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "taskID": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "attemptID": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "ownerEpoch": {
+          "$ref": "#/$defs/PositiveDecimalU64"
+        },
+        "specID": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "specDigest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "profileID": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "profileRevision": {
+          "$ref": "#/$defs/PositiveDecimalU64"
+        },
+        "profileDigest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "finalRevision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "evidencePlanDigest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "verificationRunID": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "setIdentityDigest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "challengeSetDigest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "approvalLocation": {
+          "$ref": "#/$defs/ApprovalLocationV1"
+        },
+        "sourceRevision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "evidenceDigest": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "artifactRefs": {
+          "type": "array",
+          "maxItems": 256
+        },
+        "challenges": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "$ref": "#/$defs/ChallengeV1"
+          }
+        },
+        "settlementCandidate": {
+          "type": "object"
+        },
+        "terminalSnapshot": {
+          "type": "object"
+        },
+        "revision": {
+          "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64",
+          "description": "Unsigned 64-bit JSON counter/budget; encoded as canonical decimal string."
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 128
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "NEEDS_APPROVAL",
+                  "RESUME_EXECUTION"
+                ]
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "approvalLocation",
+              "evidenceDigest",
+              "artifactRefs",
+              "challenges",
+              "revision"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "sourceRevision"
+                  ]
+                },
+                {
+                  "required": [
+                    "settlementCandidate"
+                  ]
+                },
+                {
+                  "required": [
+                    "reason"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "NEEDS_APPROVAL"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "challenges": {
+                "minItems": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "RESUME_EXECUTION"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "challenges": {
+                "maxItems": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "SETTLING"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "approvalLocation",
+              "sourceRevision",
+              "evidenceDigest",
+              "artifactRefs",
+              "settlementCandidate",
+              "revision"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "challenges"
+                  ]
+                },
+                {
+                  "required": [
+                    "reason"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "SETTLEMENT_PENDING"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "terminalSnapshot"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "approvalLocation"
+                  ]
+                },
+                {
+                  "required": [
+                    "sourceRevision"
+                  ]
+                },
+                {
+                  "required": [
+                    "evidenceDigest"
+                  ]
+                },
+                {
+                  "required": [
+                    "artifactRefs"
+                  ]
+                },
+                {
+                  "required": [
+                    "challenges"
+                  ]
+                },
+                {
+                  "required": [
+                    "settlementCandidate"
+                  ]
+                },
+                {
+                  "required": [
+                    "reason"
+                  ]
+                },
+                {
+                  "required": [
+                    "revision"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "UNKNOWN"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "sourceRevision",
+              "reason",
+              "revision"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "approvalLocation"
+                  ]
+                },
+                {
+                  "required": [
+                    "challenges"
+                  ]
+                },
+                {
+                  "required": [
+                    "settlementCandidate"
+                  ]
+                },
+                {
+                  "required": [
+                    "evidenceDigest"
+                  ]
+                },
+                {
+                  "required": [
+                    "artifactRefs"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

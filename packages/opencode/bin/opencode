@@ -67,6 +67,12 @@ let platform = platformMap[os.platform()]
 if (!platform) {
   platform = os.platform()
 }
+if (platform === "windows") {
+  console.error(
+    "HorizonCode V1 is unavailable on native Windows. Use Linux; WSL2 remains a separate, unverified support lane.",
+  )
+  process.exit(1)
+}
 let arch = archMap[os.arch()]
 if (!arch) {
   arch = os.arch()
@@ -85,42 +91,9 @@ function supportsAvx2() {
     }
   }
 
-  if (platform === "darwin") {
-    try {
-      const result = childProcess.spawnSync("sysctl", ["-n", "hw.optional.avx2_0"], {
-        encoding: "utf8",
-        timeout: 1500,
-      })
-      if (result.status !== 0) return false
-      return (result.stdout || "").trim() === "1"
-    } catch {
-      return false
-    }
-  }
-
-  if (platform === "windows") {
-    const cmd =
-      '(Add-Type -MemberDefinition "[DllImport(""kernel32.dll"")] public static extern bool IsProcessorFeaturePresent(int ProcessorFeature);" -Name Kernel32 -Namespace Win32 -PassThru)::IsProcessorFeaturePresent(40)'
-
-    for (const exe of ["powershell.exe", "pwsh.exe", "pwsh", "powershell"]) {
-      try {
-        const result = childProcess.spawnSync(exe, ["-NoProfile", "-NonInteractive", "-Command", cmd], {
-          encoding: "utf8",
-          timeout: 3000,
-          windowsHide: true,
-        })
-        if (result.status !== 0) continue
-        const out = (result.stdout || "").trim().toLowerCase()
-        if (out === "true" || out === "1") return true
-        if (out === "false" || out === "0") return false
-      } catch {
-        continue
-      }
-    }
-
-    return false
-  }
-
+  // Never start a helper process from the pre-kernel launcher. Linux exposes
+  // processor flags directly; other platforms conservatively select the
+  // baseline binary until a native, non-process feature probe is available.
   return false
 }
 
@@ -131,20 +104,18 @@ const names = (() => {
   if (platform === "linux") {
     const musl = (() => {
       try {
-        if (fs.existsSync("/etc/alpine-release")) return true
+        // The launcher is already running on this libc. Node's process report
+        // distinguishes glibc without executing `ldd` from PATH.
+        const report = process.report?.getReport()
+        if (report?.header) return !report.header.glibcVersionRuntime
       } catch {
-        // ignore
+        // Fall back to the explicit distribution marker when reports are absent.
       }
-
       try {
-        const result = childProcess.spawnSync("ldd", ["--version"], { encoding: "utf8" })
-        const text = ((result.stdout || "") + (result.stderr || "")).toLowerCase()
-        if (text.includes("musl")) return true
+        return fs.existsSync("/etc/alpine-release")
       } catch {
-        // ignore
+        return false
       }
-
-      return false
     })()
 
     if (musl) {
@@ -190,7 +161,7 @@ function findBinary(startDir) {
 const resolved = envPath || (fs.existsSync(cached) ? cached : findBinary(scriptDir))
 if (!resolved) {
   console.error(
-    "It seems that your package manager failed to install the right version of the opencode CLI for your platform. You can try manually installing " +
+    "HorizonCode could not resolve a compatible Linux CLI binary for this platform. You can try manually installing " +
       names.map((n) => `\"${n}\"`).join(" or ") +
       " package",
   )

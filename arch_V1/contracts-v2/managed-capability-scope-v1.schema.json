@@ -3,21 +3,31 @@
   "title": "ManagedCapabilityScopeV1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "capabilityScope", "requiredCapabilities"],
+  "required": [
+    "schemaVersion",
+    "capabilityScope",
+    "requiredCapabilities"
+  ],
   "properties": {
-    "schemaVersion": { "const": 1 },
+    "schemaVersion": {
+      "const": 1
+    },
     "capabilityScope": {
       "type": "array",
       "maxItems": 64,
       "uniqueItems": true,
-      "items": { "$ref": "#/$defs/capabilityId" },
+      "items": {
+        "$ref": "#/$defs/capabilityId"
+      },
       "description": "Explicit canonical capability ceiling in an immutable accepted SpecVersion. Empty denies all effects. The Rust owner also enforces bytewise sorted order."
     },
     "requiredCapabilities": {
       "type": "array",
       "maxItems": 64,
       "uniqueItems": true,
-      "items": { "$ref": "#/$defs/capabilityId" },
+      "items": {
+        "$ref": "#/$defs/capabilityId"
+      },
       "description": "Task requirements; every item must be present in the accepted SpecVersion capabilityScope. Empty denies all effects. The Rust owner enforces sorted order and subset membership."
     }
   },

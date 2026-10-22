@@ -6,7 +6,6 @@ import { useDialog } from "../ui/dialog"
 import { DialogModel } from "./dialog-model"
 import { useToast } from "../ui/toast"
 import { isConsoleManagedProvider } from "../util/provider-origin"
-import { useConnected } from "./use-connected"
 
 const PROVIDER_PRIORITY: Record<string, number> = {
   opencode: 0,
@@ -18,7 +17,7 @@ const PROVIDER_PRIORITY: Record<string, number> = {
 }
 
 export function providerAuthFailureMessage(_error: unknown) {
-  return "Provider credential changes are unavailable until Guarded credential-write support is enabled. Use an environment credential source instead."
+  return "Guarded SecretBroker credential entry is unavailable. HorizonCode does not use raw environment, config, or legacy Auth credentials for provider dispatch."
 }
 
 /**
@@ -29,10 +28,17 @@ export function providerProvenance(input: {
   source: string
   env: readonly string[]
   connected: boolean
+  anonymousOffer?: boolean
 }): string | undefined {
   if (!input.connected) return undefined
-  if (input.source === "env" && input.env.length > 0) return `Environment: ${input.env.join(", ")}`
-  return undefined
+  if (input.anonymousOffer) return "Anonymous OpenCode offer · endpoint not probed"
+  if (input.source === "env") {
+    if (input.env.length === 0) return undefined
+    return `Legacy environment source detected · provider-declared variables: ${input.env.join(", ")} · not used for dispatch`
+  }
+  if (input.source === "api") return "Legacy Auth credential detected · not used for dispatch"
+  if (input.source === "config") return "Provider configuration present · credential status unknown; dispatch unavailable"
+  return "SecretBroker reference or provider configuration present · dispatch unavailable pending Guarded transport"
 }
 
 type ProviderOptionBase = {
@@ -67,9 +73,9 @@ export function providerOptions(list: { id: string; name: string }[]): ProviderO
         providerID: provider.id,
         description: {
           opencode: "(Recommended)",
-          anthropic: "(environment credential)",
-          openai: "(environment credential)",
-          "opencode-go": "(subscription; environment credential required)",
+          anthropic: "(SecretBroker transport unavailable)",
+          openai: "(SecretBroker transport unavailable)",
+          "opencode-go": "(credentialed route unavailable)",
         }[provider.id],
         category: provider.id in PROVIDER_PRIORITY ? "Popular" : "Providers",
       })),
@@ -88,7 +94,6 @@ export function createDialogProviderOptions() {
   const sync = useSync()
   const dialog = useDialog()
   const toast = useToast()
-  const onboarded = useConnected()
 
   return createMemo(() =>
     pipe(
@@ -111,13 +116,15 @@ export function createDialogProviderOptions() {
         const consoleManaged = isConsoleManagedProvider(sync.data.console_state.consoleManagedProviders, providerID)
         const connected = sync.data.provider_next.connected.includes(providerID)
         const info = sync.data.provider_next.all.find((item) => item.id === providerID)
-        const provenance = info ? providerProvenance({ source: info.source, env: info.env, connected }) : undefined
+        const anonymousOffer = sync.data.provider_next.anonymousFreeProviders?.includes(providerID)
+        const provenance = info
+          ? providerProvenance({ source: info.source, env: info.env, connected, anonymousOffer })
+          : undefined
 
         return {
           ...provider,
           description: [provider.description, provenance].filter(Boolean).join(" · ") || undefined,
           footer: consoleManaged ? sync.data.console_state.activeOrgName : undefined,
-          gutter: connected && onboarded() ? () => <text>✓</text> : undefined,
           async onSelect() {
             if (consoleManaged) {
               const org = sync.data.console_state.activeOrgName
@@ -134,7 +141,7 @@ export function createDialogProviderOptions() {
             }
 
             toast.show({
-              message: `${provider.title} is not connected. Add its credential through an environment variable; credential entry and OAuth are unavailable here.`,
+              message: `${provider.title} has no usable credential reference. Guarded SecretBroker credential entry and OAuth transport are unavailable.`,
               variant: "info",
             })
           },

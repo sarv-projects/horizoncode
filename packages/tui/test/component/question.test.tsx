@@ -10,6 +10,7 @@ import { createTuiResolvedConfig } from "../fixture/tui-runtime"
 import { TestTuiContexts } from "../fixture/tui-environment"
 import { createFetch, eventSource } from "../fixture/tui-sdk"
 import { QuestionPrompt } from "../../src/routes/session/question"
+import type { SessionQuestionRequest } from "../../src/context/data"
 import { OpencodeKeymapProvider, registerOpencodeKeymap } from "../../src/keymap"
 import { SDKProvider } from "../../src/context/sdk"
 import { ThemeProvider } from "../../src/context/theme"
@@ -45,7 +46,7 @@ async function waitForFrame(
   }
 }
 
-async function renderQuestion(request: QuestionV2Request, respond?: (call: Call) => Response) {
+async function renderQuestion(request: QuestionV2Request | SessionQuestionRequest, respond?: (call: Call) => Response) {
   const calls: Call[] = []
   const fallback = createFetch()
   const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -101,6 +102,52 @@ async function renderQuestion(request: QuestionV2Request, respond?: (call: Call)
     },
   }
 }
+
+test("legacy question callbacks use the legacy reply and reject routes", async () => {
+  const reply = await renderQuestion({
+    lane: "legacy",
+    request: {
+      id: "que_legacy_reply",
+      sessionID,
+      questions: [{ question: "Which route?", header: "Route", options: [{ label: "Local", description: "Local" }] }],
+    },
+  })
+  try {
+    await waitForFrame(reply.app, (frame) => frame.includes("Local"))
+    reply.app.mockInput.pressEnter()
+    await waitFor(() => reply.calls.length === 1)
+    expect(reply.calls).toEqual([{
+      method: "POST",
+      pathname: "/question/que_legacy_reply/reply",
+      body: JSON.stringify({ answers: [["Local"]] }),
+    }])
+  } finally {
+    reply.app.renderer.destroy()
+    await reply.dispose()
+  }
+
+  const reject = await renderQuestion({
+    lane: "legacy",
+    request: {
+      id: "que_legacy_reject",
+      sessionID,
+      questions: [{ question: "Continue?", header: "Continue", options: [] }],
+    },
+  })
+  try {
+    await waitForFrame(reject.app, (frame) => frame.includes("Continue?"))
+    reject.app.mockInput.pressEscape()
+    await waitFor(() => reject.calls.length === 1)
+    expect(reject.calls).toEqual([{
+      method: "POST",
+      pathname: "/question/que_legacy_reject/reject",
+      body: "",
+    }])
+  } finally {
+    reject.app.renderer.destroy()
+    await reject.dispose()
+  }
+})
 
 test("single choice replies to the V2 session/request route with one answer", async () => {
   const { app, calls, dispose } = await renderQuestion({

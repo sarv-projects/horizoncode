@@ -314,3 +314,55 @@ test("bounds aggregate activity nodes and bytes while retaining final text", asy
     app.renderer.destroy()
   }
 })
+
+test("bounds projection work to the live tail of very large part histories", async () => {
+  await using tmp = await tmpdir()
+  const state = path.join(tmp.path, "state")
+  await mkdir(state, { recursive: true })
+  await Bun.write(path.join(state, "kv.json"), "{}")
+  const parts = [
+    { type: "text", id: "old-text", text: "OLD HISTORY SHOULD BE OMITTED" },
+    ...Array.from({ length: 10_000 }, (_, index) => ({
+      type: "tool",
+      id: `large-tool-${index}`,
+      callID: `large-tool-${index}`,
+      name: "read",
+      tool: "read",
+      state: { status: "completed", input: { filePath: `src/${index}.ts` }, output: "ok", content: [] },
+    })),
+    { type: "text", id: "latest-text", text: "LATEST ANSWER RETAINED" },
+  ] as unknown as Part[]
+
+  function Harness() {
+    return (
+      <SDKProvider url="http://test" directory={tmp.path} events={eventSource()} fetch={createFetch().fetch}>
+        <TuiConfigProvider config={createTuiResolvedConfig()}>
+          <KVProvider>
+            <ThemeProvider mode="dark">
+              <ActivityStream parts={parts} complete={true} renderText={(part) => <text>{part.text}</text>} />
+            </ThemeProvider>
+          </KVProvider>
+        </TuiConfigProvider>
+      </SDKProvider>
+    )
+  }
+
+  const app = await testRender(
+    () => (
+      <TestTuiContexts directory={tmp.path} paths={{ home: tmp.path, state, worktree: tmp.path }}>
+        <Harness />
+      </TestTuiContexts>
+    ),
+    { width: 100, height: 500, kittyKeyboard: true },
+  )
+
+  try {
+    const frame = await waitForFrame(app, (value) => value.includes("LATEST ANSWER RETAINED"), 5_000)
+    expect(frame).toContain("Activity limited: remaining parts omitted")
+    expect(frame).not.toContain("OLD HISTORY SHOULD BE OMITTED")
+    expect(frame).toContain("LATEST ANSWER RETAINED")
+    expect(frame.match(/Succeeded read/g)?.length ?? 0).toBeLessThanOrEqual(32)
+  } finally {
+    app.renderer.destroy()
+  }
+})

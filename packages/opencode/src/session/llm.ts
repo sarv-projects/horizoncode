@@ -1,15 +1,19 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { createHash } from "node:crypto"
+import { blake3 } from "@noble/hashes/blake3.js"
+import { bytesToHex } from "@noble/hashes/utils.js"
 
 import { llmClient } from "@opencode-ai/core/effect/app-node-platform"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Provider } from "@/provider/provider"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { WorkspaceV2 } from "@opencode-ai/core/workspace"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import { Context, Effect, Layer } from "effect"
 import * as Stream from "effect/Stream"
 import { streamText, wrapLanguageModel, type ModelMessage, type Tool } from "ai"
 import type { LLMEvent } from "@opencode-ai/llm"
+import { Usage } from "@opencode-ai/llm"
 import { LLMClient } from "@opencode-ai/llm/route"
 import type { LLMClientService } from "@opencode-ai/llm/route"
 import { GitLabWorkflowLanguageModel } from "gitlab-ai-provider"
@@ -17,6 +21,13 @@ import { ProviderTransform } from "@/provider/transform"
 import { Config } from "@/config/config"
 import type { Agent } from "@/agent/agent"
 import type { MessageV2 } from "./message-v2"
+import * as SessionUsage from "./session"
+import type { SessionMessage as SessionMessageSchema } from "@opencode-ai/schema/session-message"
+import type { ContextSelectionV1 } from "@opencode-ai/schema/context-selection-v1"
+import { ContextSelectionV1 as ContextSelectionSchemaV1 } from "@opencode-ai/schema/context-selection-v1"
+import type { ContextLedgerEntryV2 } from "@opencode-ai/schema/context-ledger-v2"
+import { compileContextLedgerV2, type CompiledContextLedgerV2 } from "@opencode-ai/core/session"
+import { builtinHarnessProfileV1 } from "@opencode-ai/core/harness-profile"
 import { Plugin } from "@/plugin"
 import { Permission } from "@/permission"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -36,7 +47,8 @@ import * as OtelTracer from "@effect/opentelemetry/Tracer"
 import { LLMAISDK } from "./llm/ai-sdk"
 import { LLMNativeRuntime } from "./llm/native-runtime"
 import { LLMRequestPrep } from "./llm/request"
-import { SessionSupervisor, Service as SessionSupervisorService } from "@opencode-ai/core/session/supervisor"
+import { SessionSupervisor, SessionSupervisorError, Service as SessionSupervisorService } from "@opencode-ai/core/session/supervisor"
+import { SessionEvent } from "@opencode-ai/core/session/event"
 import { TrustedPrincipalContext } from "@opencode-ai/core/trusted-principal"
 import { requireMediatedWorkflowProvider } from "./hosted-tools"
 import {
@@ -45,21 +57,82 @@ import {
   requireToolExecution,
   toolBatchMiddleware,
   type ToolBatchDefinition,
+  type CodeModeToolBatchV1,
   type DirectAttemptAuthority,
 } from "./tool-batch"
-import type { ManagedAttemptAuthority } from "./managed-control"
+import type { DirectTurnAuthority, ManagedAttemptAuthority } from "./managed-control"
+import type { ToolsetSourceRefV1 } from "@/tool/discovery"
+import type { CodeModeToolV1 } from "@/tool/code-mode-protocol"
+import type { ManagedProviderRouteProjectionV1 } from "@/provider/provider"
+import type { ManagedProviderAuthorizationHandleV1, ManagedProviderSendPinsV1 } from "@/auth/provider-transport"
 
 
 export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
+
+/** Clamp one managed provider step to HostKernel's current decimal-u64 remainder. */
+export function managedStepOutputTokenLimit(remainingTokens: string, providerMaximum: number): number {
+  if (!/^(0|[1-9][0-9]{0,19})$/.test(remainingTokens) ||
+    !Number.isSafeInteger(providerMaximum) || providerMaximum < 1) {
+    throw new RangeError("managed provider token allowance is malformed")
+  }
+  const remaining = BigInt(remainingTokens)
+  if (remaining > 18_446_744_073_709_551_615n) throw new RangeError("managed provider token allowance is malformed")
+  if (remaining === 0n) throw new RangeError("managed provider token allowance is exhausted")
+  return Number(remaining < BigInt(providerMaximum) ? remaining : BigInt(providerMaximum))
+}
 
 export type StreamInput = {
   user: SessionV1.User
   sessionID: string
   parentSessionID?: string
+  /**
+   * Trusted direct-session provider authority resolved by Core Config and the
+   * authenticated session owner. This is never taken from model, request JSON,
+   * or the legacy primary Agent name. The request ID and payload digest are
+   * minted later, per normalized SDK provider call.
+   */
+  directProviderAuthority?: DirectProviderAuthorityV1
   /** Trusted direct child Attempt authority injected by TaskTool only. */
   directAttempt?: DirectAttemptAuthority
+  /** HostKernel-issued per-turn scope for a direct child; no model input can set it. */
+  directTurn?: DirectTurnAuthority
   /** Trusted managed Task Attempt authority injected by the managed scheduler only. */
   managedAttempt?: ManagedAttemptAuthority
+  /** Immutable managed context pins prepared by the Rust-selected Task adapter. */
+  managedContext?: ManagedProviderContextV1
+  /** Rust-selected remaining budget used while preparing sequence 1 before admission. */
+  managedRemainingTokens?: string
+  /** Effect-backed authorization fence called immediately before each provider request. */
+  authorizeManagedProviderRequest?: (selection: ContextSelectionV1) => Effect.Effect<void, unknown>
+  /** Called after HostKernel begin and before Auth send; never includes the one-use authorization. */
+  onManagedProviderDispatch?: (handoff: ManagedProviderDispatchHandoffV1) => Effect.Effect<void, unknown>
+  /** Core-owned prepare/Guard approval/begin bridge invoked after exact SDK transport serialization. */
+  authorizeManagedProviderTransport?: (input: {
+    readonly contextSelection: ContextSelectionV1
+    readonly routeProjection: ManagedProviderRouteProjectionV1
+    readonly requestPins: ManagedProviderDispatchHandoffV1["requestPins"]
+    readonly profileSelection: { readonly profileId: string; readonly revision: string }
+  }) => Effect.Effect<{
+    readonly authorization: ManagedProviderAuthorizationHandleV1
+    readonly expected: ManagedProviderSendPinsV1
+    readonly handoff: ManagedProviderDispatchHandoffV1
+  }, unknown>
+  /** Processor-owned usage receipt callback; invoked before a managed effect reaches Guard. */
+  beforeManagedEffects?: (input: {
+    readonly stepFinishIndex: number
+    readonly usageProvenance: SessionMessageSchema.UsageProvenance
+    readonly finishReason: SessionV1.Assistant["finish"]
+    readonly cost: number
+    readonly tokens: SessionV1.Assistant["tokens"]
+    readonly calls: readonly {
+      readonly toolCallID: string
+      readonly toolName: string
+      readonly capabilityID: string
+      readonly arguments: Record<string, unknown>
+    }[]
+  }) => Effect.Effect<"ACCOUNTED" | "STOPPED", unknown>
+  /** Receives the reference-only projection of the exact normalized provider call. */
+  onContextLedgerV2?: (projection: CompiledContextLedgerV2) => Effect.Effect<void, unknown>
   model: Provider.Model
   agent: Agent.Info
   permission?: PermissionV1.Ruleset
@@ -68,8 +141,380 @@ export type StreamInput = {
   small?: boolean
   tools: Record<string, Tool>
   toolDefinitions?: Readonly<Record<string, ToolBatchDefinition>>
+  toolDiscovery?: {
+    readonly harnessID: string
+    readonly harnessRevision: number
+    readonly generation: string
+    readonly sourceRefs: readonly ToolsetSourceRefV1[]
+    /** Exact authorized CodeMode catalog; deferred entries do not enter provider tools. */
+    readonly codeModeTools: readonly CodeModeToolV1[]
+    /** Exact post-transform wrappers from the same SessionTools.resolve pass. */
+    readonly codeModeExecutors: Readonly<Record<string, Tool>>
+    readonly prepareNextProviderRequest: () => {
+      readonly tools: Record<string, Tool>
+      readonly generation: string
+      readonly sourceRefs: readonly ToolsetSourceRefV1[]
+      readonly codeModeTools: readonly CodeModeToolV1[]
+      readonly codeModeExecutors: Readonly<Record<string, Tool>>
+    }
+  }
   retries?: number
   toolChoice?: "auto" | "required" | "none"
+}
+
+/** Immutable turn-level pins required before a direct request can be built. */
+export type DirectProviderAuthorityV1 = {
+  readonly profile: {
+    readonly profileID: string
+    readonly revision: string
+    readonly profileDigest: string
+    readonly trust: "system" | "user"
+  }
+  readonly permissionScopeDigest: string
+  readonly policyRevision: string
+  readonly policyDigest: string
+  readonly harnessID: string
+  readonly harnessRevision: string
+  readonly route: {
+    readonly providerID: string
+    readonly modelID: string
+    readonly accountRef?: string
+    readonly routeRevision: string
+    readonly endpointRevision: string
+  }
+}
+
+/** Reject stale/partial producer projections before any provider resolver runs. */
+export function validateDirectProviderAuthorityV1(
+  value: unknown,
+  expected: { readonly providerID: string; readonly modelID: string },
+): DirectProviderAuthorityV1 {
+  const exact = (item: unknown, keys: readonly string[]): item is Record<string, unknown> =>
+    typeof item === "object" && item !== null && !Array.isArray(item) &&
+    Object.keys(item).toSorted().join("\0") === [...keys].toSorted().join("\0")
+  const id = (item: unknown) => typeof item === "string" && /^[A-Za-z0-9._:-]{1,256}$/.test(item)
+  const revision = (item: unknown) => typeof item === "string" && /^[1-9][0-9]{0,19}$/.test(item) && BigInt(item) <= 18_446_744_073_709_551_615n
+  const digest = (item: unknown, schemes: readonly string[]) => typeof item === "string" && schemes.some((scheme) => new RegExp(`^${scheme}:[0-9a-f]{64}$`).test(item))
+  if (!exact(value, ["profile", "permissionScopeDigest", "policyRevision", "policyDigest", "harnessID", "harnessRevision", "route"])) {
+    throw new TypeError("direct provider authority is missing or has unexpected fields")
+  }
+  const profile = value.profile
+  const route = value.route
+  if (!exact(profile, ["profileID", "revision", "profileDigest", "trust"]) ||
+      !id(profile.profileID) || !revision(profile.revision) || !digest(profile.profileDigest, ["blake3"]) ||
+      (profile.trust !== "system" && profile.trust !== "user") ||
+      !digest(value.permissionScopeDigest, ["sha256", "blake3"]) || !revision(value.policyRevision) ||
+      !digest(value.policyDigest, ["sha256", "blake3"]) || !id(value.harnessID) || !revision(value.harnessRevision) ||
+      !exact(route, Object.hasOwn(route ?? {}, "accountRef")
+        ? ["providerID", "modelID", "accountRef", "routeRevision", "endpointRevision"]
+        : ["providerID", "modelID", "routeRevision", "endpointRevision"]) ||
+      !id(route.providerID) || !id(route.modelID) || !id(route.routeRevision) || !digest(route.endpointRevision, ["blake3"]) ||
+      (route.accountRef !== undefined && !id(route.accountRef)) ||
+      route.providerID !== expected.providerID || route.modelID !== expected.modelID) {
+    throw new TypeError("direct provider authority contains stale or malformed profile, scope, policy, harness, or route pins")
+  }
+  return value as unknown as DirectProviderAuthorityV1
+}
+
+export type ManagedProviderContextV1 = {
+  readonly attemptID: string
+  readonly taskID: string
+  readonly specID: string
+  readonly specDigest: string
+  readonly taskRevision: string
+  readonly taskContextDigest: string
+  readonly profileID: string
+  readonly profileRevision: string
+  readonly profileDigest: string
+  readonly harnessID: string
+  readonly selectionSessionID: string
+  readonly sourceRevision: string
+  /** Stable Core request identity, allocated before the corresponding HostKernel admission/advance. */
+  readonly requestID: string
+  readonly requestSequence: string
+  /** HostKernel receipt for the exact frozen sequence-1 selection. */
+  readonly contextSelectionDigest: string
+  /** The exact frozen selection for sequence 1; later requests are compiled at prepareStep. */
+  readonly initialSelection?: ContextSelectionV1
+  /** The exact SDK-normalized sequence-1 body captured before admission. */
+  readonly initialProviderInput?: ManagedProviderInputV1
+}
+
+export type ManagedProviderInputV1 = {
+  readonly system: readonly string[]
+  readonly messages: readonly ModelMessage[]
+  readonly tools: readonly {
+    readonly name: string
+    readonly description: string
+    readonly schema: unknown
+    readonly internal: boolean
+    readonly strict?: boolean
+  }[]
+  readonly toolChoice: string
+  readonly maxOutputTokens: number
+  /** Exact non-secret generation/provider parameters passed to the adapter. */
+  readonly temperature: number | undefined
+  readonly topP: number | undefined
+  readonly topK: number | undefined
+  readonly providerOptions: unknown
+}
+
+/** Non-secret exact dispatch facts handed to SessionProcessor for settlement. */
+export type ManagedProviderDispatchHandoffV1 = {
+  readonly status: "DISPATCHING"
+  /** Provider SDK stream step used to join this dispatch to its persisted step-finish. */
+  readonly stepFinishIndex: number
+  readonly contextSelection: ContextSelectionV1
+  readonly routeProjection: ManagedProviderRouteProjectionV1
+  readonly requestPins: {
+    readonly requestID: string
+    readonly requestSequence: string
+    readonly contextSelectionDigest: string
+    readonly requestDigest: string
+    readonly transportRequestDigest: string
+    readonly operationDigest: string
+  }
+  readonly providerRequestID: string
+  readonly prepareDigest: string
+  readonly dispatchDigest: string
+}
+
+/** Opaque coordinator handoff; it carries the compiled body and its exact refs together. */
+export type ManagedPreparedRequestV1 = {
+  readonly contextSelection: ContextSelectionV1
+  readonly providerInput: ManagedProviderInputV1
+  readonly toolSources: readonly ToolsetSourceRefV1[]
+  readonly context: Omit<ManagedProviderContextV1, "initialSelection" | "initialProviderInput" | "contextSelectionDigest">
+}
+
+const MAX_PROVIDER_INPUT_CANONICAL_BYTES = 16 * 1024 * 1024
+
+function contextLedgerEntries(selection: ContextSelectionV1): ContextLedgerEntryV2[] {
+  return selection.sources.map((source) => {
+    const sourceRef = `${source.kind}:${source.sourceID}`
+    const entryKind: ContextLedgerEntryV2["kind"] = source.kind === "managed-task" || source.kind === "accepted-spec"
+      ? "goal"
+      : source.kind === "agent-profile" || source.kind === "instruction"
+        ? "system"
+        : source.kind === "session-message"
+          ? "environment"
+          : source.kind === "tool"
+            ? "tool_call"
+            : source.kind === "skill"
+              ? "skill"
+              : source.kind === "artifact"
+                ? "artifact"
+                : "environment"
+    const cacheClass: ContextLedgerEntryV2["cacheClass"] = source.kind === "session-message"
+      ? "history"
+      : source.kind === "provider-input"
+        ? "turn"
+        : source.kind === "artifact"
+          ? "attachment"
+          : source.kind === "tool" || source.kind === "agent-profile" || source.kind === "instruction"
+            ? "static"
+            : "none"
+    return {
+      entryID: `context:${sourceRef}`,
+      kind: entryKind,
+      sourceRef,
+      sourceRevision: source.sourceRevision,
+      trust: source.trust,
+      bytesKind: "unknown",
+      tokens: { kind: "unknown" },
+      included: true,
+      inclusionReason: source.inclusionReason,
+      protected: source.kind !== "tool" && source.kind !== "skill",
+      cacheClass,
+      digest: `blake3:${bytesToHex(blake3(Buffer.from(`${sourceRef}\0${source.contentDigest}`, "utf8")))}`,
+    }
+  })
+}
+
+/** Canonical JSON form for hashing only the normalized provider-visible request fields. */
+function canonicalProviderInput(value: unknown): string {
+  let nodes = 0
+  const visit = (item: unknown, depth: number): unknown => {
+    nodes += 1
+    if (nodes > 200_000 || depth > 48) throw new RangeError("provider input exceeds the context-selection bound")
+    if (item === null || typeof item === "string" || typeof item === "boolean") return item
+    if (typeof item === "number") {
+      if (!Number.isFinite(item)) throw new TypeError("provider input contains a non-finite number")
+      return item
+    }
+    if (item instanceof Uint8Array) {
+      return { "$bytesBLAKE3": bytesToHex(blake3(item)), "$byteLength": item.byteLength }
+    }
+    if (Array.isArray(item)) return item.map((entry) => visit(entry, depth + 1))
+    if (typeof item === "object") {
+      const record = item as Record<string, unknown>
+      const output: Record<string, unknown> = Object.create(null)
+      for (const key of Object.keys(record).toSorted()) {
+        const entry = record[key]
+        if (entry === undefined) continue
+        if (typeof entry === "function" || typeof entry === "symbol" || typeof entry === "bigint") {
+          throw new TypeError("provider input contains a non-serializable value")
+        }
+        output[key] = visit(entry, depth + 1)
+      }
+      return output
+    }
+    throw new TypeError("provider input contains a non-serializable value")
+  }
+  const encoded = JSON.stringify(visit(value, 0))
+  if (Buffer.byteLength(encoded, "utf8") > MAX_PROVIDER_INPUT_CANONICAL_BYTES) {
+    throw new RangeError("provider input exceeds the context-selection byte bound")
+  }
+  return encoded
+}
+
+function freezeProviderValue<T>(value: T, seen = new WeakSet<object>()): T {
+  if (value === null || typeof value !== "object" || value instanceof Uint8Array) return value
+  if (seen.has(value)) return value
+  seen.add(value)
+  for (const item of Object.values(value as Record<string, unknown>)) freezeProviderValue(item, seen)
+  return Object.freeze(value)
+}
+
+/** Hashes the exact normalized inputs supplied to the provider adapter; never a legacy/session scalar. */
+export function providerInputDigest(input: {
+  readonly system: readonly string[]
+  readonly messages: readonly unknown[]
+  readonly tools: Readonly<Record<string, unknown>> | readonly unknown[]
+  readonly toolChoice?: string
+  readonly maxOutputTokens?: number
+  readonly temperature?: number
+  readonly topP?: number
+  readonly topK?: number
+  readonly providerOptions?: unknown
+}): string {
+  const canonical = canonicalProviderInput({
+    system: input.system,
+    messages: input.messages,
+    tools: input.tools,
+    toolChoice: input.toolChoice ?? null,
+    maxOutputTokens: input.maxOutputTokens ?? null,
+    temperature: input.temperature ?? null,
+    topP: input.topP ?? null,
+    topK: input.topK ?? null,
+    providerOptions: input.providerOptions ?? null,
+  })
+  return `blake3:${bytesToHex(blake3(Buffer.from(canonical, "utf8")))}`
+}
+
+/**
+ * Produce the exact message array handed to the provider adapter. The provider
+ * transform is deliberately applied during managed preflight/step preparation,
+ * before ContextSelection is authorized, and its result is then reused at
+ * dispatch. Clone first because several existing provider transforms normalize
+ * message parts in place.
+ */
+function managedProviderMessages(
+  messages: readonly ModelMessage[],
+  model: Provider.Model,
+  options: Record<string, unknown>,
+): readonly ModelMessage[] {
+  const copy = structuredClone(messages) as ModelMessage[]
+  return freezeProviderValue(ProviderTransform.message(copy, model, options))
+}
+
+/**
+ * Build the HostKernel-verifiable reference envelope for one exact managed
+ * provider request. The request payload itself is never copied into the DTO;
+ * its aggregate digest is carried by the required provider-input reference.
+ * Callers must freeze and dispatch the same normalized payload they hash here.
+ */
+export function compileManagedContextSelection(input: {
+  readonly sessionID: string
+  readonly requestID: string
+  readonly requestSequence: string
+  readonly sourceRevision: string
+  readonly attemptID: string
+  readonly taskID: string
+  readonly taskRevision: string
+  readonly taskContextDigest: string
+  readonly specID: string
+  readonly specDigest: string
+  readonly profileID: string
+  readonly profileRevision: string
+  readonly profileDigest: string
+  readonly toolSources: readonly ToolsetSourceRefV1[]
+  readonly providerInput: {
+    readonly system: readonly string[]
+    readonly messages: readonly unknown[]
+    readonly tools: readonly unknown[]
+    readonly toolChoice?: string
+    readonly maxOutputTokens?: number
+    readonly temperature?: number
+    readonly topP?: number
+    readonly topK?: number
+    readonly providerOptions?: unknown
+  }
+}): ContextSelectionV1 {
+  const selection = {
+    schemaVersion: 1 as const,
+    lane: "managed" as const,
+    sessionID: input.sessionID,
+    requestID: input.requestID,
+    attemptID: input.attemptID,
+    requestSequence: input.requestSequence,
+    mode: "fresh" as const,
+    sourceRevision: input.sourceRevision,
+    sources: [
+      {
+        kind: "managed-task" as const,
+        sourceID: input.taskID,
+        sourceRevision: input.taskRevision,
+        contentDigest: input.taskContextDigest,
+        sourceAuthority: "managed-control" as const,
+        trust: "system" as const,
+        included: true as const,
+        inclusionReason: "required" as const,
+      },
+      {
+        kind: "accepted-spec" as const,
+        sourceID: input.specID,
+        sourceRevision: input.specID,
+        contentDigest: input.specDigest,
+        sourceAuthority: "managed-control" as const,
+        trust: "system" as const,
+        included: true as const,
+        inclusionReason: "required" as const,
+      },
+      {
+        kind: "agent-profile" as const,
+        sourceID: input.profileID,
+        sourceRevision: input.profileRevision,
+        contentDigest: input.profileDigest,
+        sourceAuthority: "core-config" as const,
+        trust: "system" as const,
+        included: true as const,
+        inclusionReason: "profile" as const,
+      },
+      {
+        kind: "provider-input" as const,
+        sourceID: input.requestID,
+        sourceRevision: input.requestSequence,
+        contentDigest: providerInputDigest(input.providerInput),
+        sourceAuthority: "core-prompt-compiler" as const,
+        trust: "mixed" as const,
+        included: true as const,
+        inclusionReason: "current_request" as const,
+      },
+      ...input.toolSources,
+    ],
+  }
+  return Schema.decodeUnknownSync(ContextSelectionSchemaV1, { onExcessProperty: "error" })(selection)
+}
+
+/** Compare persisted/reprepared selections without weakening their order or source pins. */
+export function sameManagedContextSelectionV1(left: ContextSelectionV1, right: ContextSelectionV1): boolean {
+  try {
+    const decode = Schema.decodeUnknownSync(ContextSelectionSchemaV1, { onExcessProperty: "error" })
+    return canonicalProviderInput(decode(left)) === canonicalProviderInput(decode(right))
+  } catch {
+    return false
+  }
 }
 
 export type StreamRequest = StreamInput & {
@@ -78,6 +523,7 @@ export type StreamRequest = StreamInput & {
 
 export interface Interface {
   readonly stream: (input: StreamInput) => Stream.Stream<LLMEvent, unknown>
+  readonly prepareManagedRequest: (input: StreamInput) => Effect.Effect<ManagedProviderInputV1, unknown>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/LLM") {}
@@ -111,9 +557,50 @@ const live: Layer.Layer<
     const locations = yield* Effect.serviceOption(LocationServiceMap.Service)
 
     const run = Effect.fn("LLM.run")(function* (input: StreamRequest) {
+      // Managed provider transport remains gated until HostKernel has durably
+      // prepared the exact request, routed its host-created Guard challenge
+      // through authenticated approval, issued and consumed the one-use send
+      // authorization, and exposed settlement/UNKNOWN recovery end to end.
+      if (input.managedAttempt) {
+        return yield* Effect.fail(new SessionSupervisorError({
+          stage: "managed_provider_transport",
+          reason: "managed provider requests remain unavailable until Guard approval, one-use HostKernel authorization, bounded SecretBroker transport, and settlement recovery are integrated",
+        }))
+      }
+      let directProviderAuthority: DirectProviderAuthorityV1
+      try {
+        directProviderAuthority = validateDirectProviderAuthorityV1(input.directProviderAuthority, {
+          providerID: input.model.providerID,
+          modelID: input.model.id,
+        })
+      } catch {
+        return yield* Effect.fail(new SessionSupervisorError({
+          stage: "direct_provider_authority",
+          reason: "direct provider request is unavailable without the authenticated AgentProfileV2, effective permission scope, policy, harness, and selected route pins",
+        }))
+      }
       const trustedPrincipal = yield* Effect.serviceOption(TrustedPrincipalContext)
       const instance = yield* InstanceState.context
-      const locationRef = Location.Ref.make({ directory: AbsolutePath.make(instance.directory) })
+      const managedScope = input.managedAttempt?.currentScope()
+      const managedTarget = managedScope?.worktreeTarget
+      if (managedTarget && AbsolutePath.make(instance.directory) !== AbsolutePath.make(managedTarget.canonicalRoot)) {
+        return yield* Effect.fail(new SessionSupervisorError({ stage: "managed_worktree", reason: "managed prompt Instance directory differs from its authenticated P8 worktree target" }))
+      }
+      const workspaceID = managedTarget
+        ? WorkspaceV2.ID.make(managedTarget.workspaceID)
+        : yield* InstanceState.workspaceID
+      const locationRef = Location.Ref.make({ directory: AbsolutePath.make(instance.directory), workspaceID })
+      if (managedTarget) {
+        if (Option.isNone(trustedPrincipal)) {
+          return yield* Effect.fail(new SessionSupervisorError({ stage: "managed_worktree", reason: "managed prompt has no authenticated Core principal" }))
+        }
+        const registeredLocationID = yield* supervisor.registerHostLocation(locationRef).pipe(
+          Effect.provideService(TrustedPrincipalContext, trustedPrincipal.value),
+        )
+        if (registeredLocationID !== managedTarget.locationID) {
+          return yield* Effect.fail(new SessionSupervisorError({ stage: "managed_worktree", reason: "managed prompt Location differs from HostKernel's authenticated P8 worktree target" }))
+        }
+      }
       yield* Effect.logInfo("stream", {
         providerID: input.model.providerID,
         modelID: input.model.id,
@@ -194,6 +681,7 @@ const live: Layer.Layer<
         plugin,
         flags,
         isWorkflow,
+        managedRequest: input.managedAttempt !== undefined,
       })
       if (prepared.tools["_noop"] && !definitions["_noop"]) {
         definitions["_noop"] = {
@@ -205,12 +693,19 @@ const live: Layer.Layer<
       }
       const runtimeTools = filterTools(prepared.tools, definitions, !isWorkflow)
 
+      const managedRequestCursor = input.managedContext
+        ? { sequence: BigInt(input.managedContext.requestSequence), requestID: input.managedContext.requestID }
+        : undefined
+      let activeManagedSelection = input.managedContext?.initialSelection
+      let activeManagedSelectionDigest = input.managedContext?.contextSelectionDigest
+
       // Wire up toolExecutor for DWS workflow models so that tool calls
       // from the workflow service are executed via opencode's tool system
       // and results sent back over the WebSocket.
       const bridge = yield* EffectBridge.make()
       const batchContext = createToolBatchContext()
       const permissionRules = Permission.merge(input.agent.permission ?? [], input.permission ?? [])
+      const adapterState = LLMAISDK.adapterState()
       const definitionsSnapshot = Object.entries(definitions)
         .filter(([name]) => runtimeTools[name])
         .toSorted(([left], [right]) => left.localeCompare(right))
@@ -220,6 +715,62 @@ const live: Layer.Layer<
           schema: definition.schema,
           internal: definition.internal === true,
         }))
+      const providerTools = Object.entries(runtimeTools)
+        .toSorted(([left], [right]) => left.localeCompare(right))
+        .map(([name, definition]) => ({
+          name,
+          description: typeof definition.description === "string" ? definition.description : "",
+          schema: definitions[name]?.schema ?? null,
+          internal: definitions[name]?.internal === true,
+          strict: definition.strict,
+        }))
+      const providerToolList = (tools: Readonly<Record<string, Tool>>) => Object.entries(tools)
+        .toSorted(([left], [right]) => left.localeCompare(right))
+        .map(([name, definition]) => ({
+          name,
+          description: typeof definition.description === "string" ? definition.description : "",
+          schema: definitions[name]?.schema ?? null,
+          internal: definitions[name]?.internal === true,
+          strict: definition.strict,
+        }))
+      // The exact SessionTools.resolve catalog and wrappers are bound to the
+      // ordinary ToolBatch middleware below. A caller-provided dispatcher must
+      // never become an alternate route around this request's Guarded path.
+      if (input.managedAttempt) {
+        if (!input.managedContext || !input.authorizeManagedProviderRequest) {
+          return yield* Effect.fail(new SessionSupervisorError({
+            stage: "managed_context",
+            reason: "managed provider dispatch has no authenticated request authority",
+          }))
+        }
+        const initial = input.managedContext?.initialProviderInput
+        if (!initial) {
+          return yield* Effect.fail(new SessionSupervisorError({
+            stage: "managed_context",
+            reason: "managed Attempt has no frozen pre-admission provider request",
+          }))
+        }
+        const preparedProviderInput: ManagedProviderInputV1 = {
+          system: prepared.system,
+          messages: managedProviderMessages(prepared.messages, input.model, prepared.messageTransformOptions),
+          tools: providerTools,
+          toolChoice: input.toolChoice ?? "auto",
+          maxOutputTokens: managedStepOutputTokenLimit(
+            input.managedAttempt.remainingTokens(),
+            prepared.params.maxOutputTokens ?? OUTPUT_TOKEN_MAX,
+          ),
+          temperature: prepared.params.temperature,
+          topP: prepared.params.topP,
+          topK: prepared.params.topK,
+          providerOptions: ProviderTransform.providerOptions(input.model, prepared.params.options),
+        }
+        if (providerInputDigest(preparedProviderInput) !== providerInputDigest(initial)) {
+          return yield* Effect.fail(new SessionSupervisorError({
+            stage: "managed_context",
+            reason: "post-admission LLM preparation differs from the frozen sequence-1 provider request",
+          }))
+        }
+      }
       const turnContextDigest = `sha256:${createHash("sha256")
         .update(
           JSON.stringify({
@@ -240,12 +791,105 @@ const live: Layer.Layer<
         sessionID: input.sessionID,
         parentSessionID: input.parentSessionID,
         directAttempt: input.directAttempt,
+        directTurn: input.directTurn,
         managedAttempt: input.managedAttempt,
+        onProviderRawChunk: (rawValue) => {
+          const billed = LLMAISDK.copilotTotalNanoAiu(rawValue)
+          if (billed !== undefined) adapterState.copilotTotalNanoAiu = billed
+        },
+        nextStepFinishIndex: () => adapterState.step,
+        beforeManagedEffects:
+          input.managedAttempt && input.beforeManagedEffects
+            ? async ({ finish, stepFinishIndex, calls }) => {
+                const normalized = LLMAISDK.providerStepFinish({
+                  usage: finish.usage,
+                  providerMetadata: finish.providerMetadata,
+                  copilotTotalNanoAiu: adapterState.copilotTotalNanoAiu,
+                })
+                const usage = SessionUsage.getUsage({
+                  model: input.model,
+                  usage: new Usage(normalized.usage ?? {}),
+                  metadata: normalized.providerMetadata,
+                })
+                const reason = LLMAISDK.finishReason(finish.finishReason)
+                return bridge.promise(
+                  input.beforeManagedEffects!({
+                    stepFinishIndex,
+                    usageProvenance: usage.usageProvenance,
+                    finishReason: reason,
+                    cost: usage.cost,
+                    tokens: usage.tokens,
+                    calls,
+                  }),
+                  { signal: input.abort },
+                )
+              }
+            : undefined,
         locationRef,
         turnContextDigest,
         signal: input.abort,
         definitions,
         context: batchContext,
+        ...(input.toolDiscovery ? {
+          codeMode: {
+            tools: input.toolDiscovery.codeModeTools,
+            executors: input.toolDiscovery.codeModeExecutors,
+            lane: input.managedAttempt ? "managed_attempt" as const : "direct_session" as const,
+            prepare: ({ callID, requestID, frame, calls }) => {
+              if (Option.isNone(trustedPrincipal)) return Promise.reject(new Error("Authenticated principal is unavailable for CodeMode admission"))
+              return bridge.promise(supervisor.prepareCodeModeToolBatch({
+                sessionID: input.sessionID,
+                locationRef,
+                callID,
+                lane: input.managedAttempt ? "managed_attempt" : "direct_session",
+                ...(input.managedAttempt ? { managedAttempt: input.managedAttempt.currentScope() } : {}),
+                requestID,
+                waveFrame: frame,
+                calls,
+              }).pipe(Effect.provideService(TrustedPrincipalContext, trustedPrincipal.value)))
+            },
+            receipts: ({ callID, requestID, waveIndex }) => {
+              if (Option.isNone(trustedPrincipal)) return Promise.reject(new Error("Authenticated principal is unavailable for CodeMode receipt lookup"))
+              return bridge.promise(supervisor.codeModeWaveReceipts({
+                sessionID: input.sessionID,
+                locationRef,
+                callID,
+                lane: input.managedAttempt ? "managed_attempt" : "direct_session",
+                ...(input.managedAttempt ? { managedAttempt: input.managedAttempt.currentScope() } : {}),
+                requestID,
+                waveIndex,
+              }).pipe(Effect.provideService(TrustedPrincipalContext, trustedPrincipal.value)), { signal: input.abort })
+            },
+            settleResults: ({ callID, requestID, waveIndex, results }) => {
+              if (Option.isNone(trustedPrincipal)) return Promise.reject(new Error("Authenticated principal is unavailable for CodeMode callback settlement"))
+              return bridge.promise(supervisor.settleCodeModeToolResults({
+                sessionID: input.sessionID,
+                locationRef,
+                callID,
+                lane: input.managedAttempt ? "managed_attempt" : "direct_session",
+                ...(input.managedAttempt ? { managedAttempt: input.managedAttempt.currentScope() } : {}),
+                requestID,
+                waveIndex,
+                results,
+              }).pipe(Effect.provideService(TrustedPrincipalContext, trustedPrincipal.value)), { signal: input.abort })
+            },
+            cancel: ({ callID, requestID, waveIndex, reason }) => {
+              if (Option.isNone(trustedPrincipal) || !supervisor.cancelCodeModeWave) {
+                return Promise.reject(new Error("Correlated CodeMode wave cancellation is unavailable"))
+              }
+              return bridge.promise(supervisor.cancelCodeModeWave({
+                sessionID: input.sessionID,
+                locationRef,
+                callID,
+                lane: input.managedAttempt ? "managed_attempt" : "direct_session",
+                ...(input.managedAttempt ? { managedAttempt: input.managedAttempt.currentScope() } : {}),
+                requestID,
+                waveIndex,
+                reason,
+              }).pipe(Effect.provideService(TrustedPrincipalContext, trustedPrincipal.value)), { signal: input.abort })
+            },
+          } satisfies CodeModeToolBatchV1,
+        } : {}),
         prepareToolBatch: (request) => {
           if (Option.isNone(trustedPrincipal)) {
             return Promise.resolve({ status: "denied" as const, reason: "Authenticated principal is unavailable" })
@@ -396,7 +1040,15 @@ const live: Layer.Layer<
 
       // Runtime seam: native is an opt-in adapter over @opencode-ai/llm. It
       // either returns a ready LLMEvent stream or a concrete fallback reason.
-      if (flags.experimentalNativeLlm) {
+      const managedOutputLimit = input.managedAttempt
+        ? managedStepOutputTokenLimit(
+            input.managedAttempt.remainingTokens(),
+            prepared.params.maxOutputTokens ?? OUTPUT_TOKEN_MAX,
+          )
+        : prepared.params.maxOutputTokens
+      // Native transport has no durable HostKernel request-intent adapter yet.
+      // Managed requests stay on the AI SDK boundary, where dispatch can be fenced.
+      if (flags.experimentalNativeLlm && !input.managedAttempt) {
         const native = LLMNativeRuntime.stream({
           model: input.model,
           provider: item,
@@ -408,7 +1060,7 @@ const live: Layer.Layer<
           temperature: prepared.params.temperature,
           topP: prepared.params.topP,
           topK: prepared.params.topK,
-          maxOutputTokens: prepared.params.maxOutputTokens,
+          maxOutputTokens: managedOutputLimit,
           providerOptions: prepared.params.options,
           headers: prepared.headers,
           abort: input.abort,
@@ -448,8 +1100,10 @@ const live: Layer.Layer<
       })
       // Default runtime path: AI SDK owns provider execution and tool dispatch;
       // LLMAISDK.toLLMEvents below normalizes fullStream parts for the processor.
+      const managedInitial = input.managedContext?.initialProviderInput
       return {
         type: "ai-sdk" as const,
+        state: adapterState,
         result: streamText({
           onError(error) {
             bridge.fork(
@@ -483,18 +1137,140 @@ const live: Layer.Layer<
               toolName: "invalid",
             }
           },
-          temperature: prepared.params.temperature,
-          topP: prepared.params.topP,
-          topK: prepared.params.topK,
-          providerOptions: ProviderTransform.providerOptions(input.model, prepared.params.options),
+          temperature: managedInitial?.temperature ?? prepared.params.temperature,
+          topP: managedInitial?.topP ?? prepared.params.topP,
+          topK: managedInitial?.topK ?? prepared.params.topK,
+          providerOptions: managedInitial?.providerOptions ?? ProviderTransform.providerOptions(input.model, prepared.params.options),
           activeTools: Object.keys(runtimeTools).filter((x) => x !== "invalid"),
           tools: runtimeTools,
           experimental_context: batchContext,
-          maxOutputTokens: prepared.params.maxOutputTokens,
+          maxOutputTokens: managedInitial?.maxOutputTokens ?? prepared.params.maxOutputTokens,
+          toolChoice: managedInitial?.toolChoice as "auto" | "required" | "none" | undefined ?? input.toolChoice,
+          ...(!input.managedAttempt && input.toolDiscovery
+            ? { prepareStep: (() => {
+                  let firstStep = true
+                  return async () => {
+                    if (firstStep) {
+                      firstStep = false
+                      return {}
+                    }
+                    const next = input.toolDiscovery!.prepareNextProviderRequest()
+                    const nextTools = filterTools(next.tools, definitions, !isWorkflow)
+                    return {
+                      tools: nextTools,
+                      activeTools: Object.keys(nextTools).filter((name) => name !== "invalid"),
+                    }
+                  }
+                })() }
+            : {}),
+          ...(input.managedAttempt ? {
+                prepareStep: async (step) => {
+                  const context = input.managedContext!
+                  const nextSequence = managedRequestCursor!.sequence
+                  const maxOutputTokens = managedStepOutputTokenLimit(
+                    input.managedAttempt!.remainingTokens(),
+                    prepared.params.maxOutputTokens ?? OUTPUT_TOKEN_MAX,
+                  )
+                  const isInitialRequest = nextSequence === BigInt(context.requestSequence)
+                  const nextToolProjection = isInitialRequest
+                    ? undefined
+                    : input.toolDiscovery?.prepareNextProviderRequest()
+                  const nextRuntimeTools = nextToolProjection
+                    ? filterTools(nextToolProjection.tools, definitions, !isWorkflow)
+                    : runtimeTools
+                  const nextProviderTools = nextToolProjection ? providerToolList(nextRuntimeTools) : providerTools
+                  const toolSources = isInitialRequest
+                    ? (input.toolDiscovery?.sourceRefs ?? [])
+                    : (nextToolProjection?.sourceRefs ?? input.toolDiscovery?.sourceRefs ?? [])
+                  const messages = isInitialRequest
+                    ? context.initialProviderInput!.messages
+                    : managedProviderMessages(step.messages, input.model, prepared.messageTransformOptions)
+                  const providerInput = freezeProviderValue({
+                    system: nextSequence === BigInt(context.requestSequence)
+                      ? context.initialProviderInput!.system
+                      : prepared.system,
+                    messages,
+                    tools: nextSequence === BigInt(context.requestSequence)
+                      ? context.initialProviderInput!.tools
+                      : nextProviderTools,
+                    toolChoice: nextSequence === BigInt(context.requestSequence)
+                      ? context.initialProviderInput!.toolChoice
+                      : input.toolChoice ?? "auto",
+                    maxOutputTokens: nextSequence === BigInt(context.requestSequence)
+                      ? context.initialProviderInput!.maxOutputTokens
+                      : maxOutputTokens,
+                    temperature: nextSequence === BigInt(context.requestSequence)
+                      ? context.initialProviderInput!.temperature
+                      : prepared.params.temperature,
+                    topP: nextSequence === BigInt(context.requestSequence)
+                      ? context.initialProviderInput!.topP
+                      : prepared.params.topP,
+                    topK: nextSequence === BigInt(context.requestSequence)
+                      ? context.initialProviderInput!.topK
+                      : prepared.params.topK,
+                    providerOptions: nextSequence === BigInt(context.requestSequence)
+                      ? context.initialProviderInput!.providerOptions
+                      : ProviderTransform.providerOptions(input.model, prepared.params.options),
+                  })
+                  const requestID = nextSequence === BigInt(context.requestSequence)
+                    ? context.requestID
+                    : `req_managed_${context.attemptID}_${nextSequence}`
+                  let sourceRevision = context.sourceRevision
+                  if (nextSequence !== BigInt(context.requestSequence)) {
+                    const cursor = await bridge.promise(supervisor.sessionProjectionCursor(context.selectionSessionID), { signal: input.abort })
+                    if (cursor.ownerKind !== "session" || cursor.ownerId !== context.selectionSessionID ||
+                      !/^(0|[1-9][0-9]{0,19})$/.test(cursor.seq) ||
+                      !/^blake3:[0-9a-f]{64}$/.test(cursor.eventDigest)) {
+                      throw new SessionSupervisorError({
+                        stage: "managed_context",
+                        reason: "child Session projection cursor is unavailable or malformed",
+                      })
+                    }
+                    sourceRevision = cursor.seq
+                  }
+                  const selection = compileManagedContextSelection({
+                    sessionID: context.selectionSessionID,
+                    requestID,
+                    requestSequence: nextSequence.toString(),
+                    sourceRevision,
+                    attemptID: context.attemptID,
+                    taskID: context.taskID,
+                    taskRevision: context.taskRevision,
+                    taskContextDigest: context.taskContextDigest,
+                    specID: context.specID,
+                    specDigest: context.specDigest,
+                    profileID: context.profileID,
+                    profileRevision: context.profileRevision,
+                    profileDigest: context.profileDigest,
+                    toolSources,
+                    providerInput,
+                  })
+                  await bridge.promise(input.authorizeManagedProviderRequest!(selection), { signal: input.abort })
+                  activeManagedSelection = selection
+                  activeManagedSelectionDigest = input.managedAttempt!.contextSelectionPin().contextSelectionDigest
+                  managedRequestCursor!.sequence = nextSequence + 1n
+                  return {
+                    messages: structuredClone(providerInput.messages) as ModelMessage[],
+                    tools: nextRuntimeTools,
+                    toolChoice: providerInput.toolChoice as "auto" | "required" | "none",
+                    maxOutputTokens: providerInput.maxOutputTokens,
+                    temperature: providerInput.temperature,
+                    topP: providerInput.topP,
+                    topK: providerInput.topK,
+                    providerOptions: providerInput.providerOptions,
+                  }
+                },
+              } : {}),
           abortSignal: input.abort,
           headers: prepared.headers,
           maxRetries: input.retries ?? 0,
-          messages: prepared.messages,
+          // Keep the SDK's internal transcript source untransformed so every
+          // prepareStep sees the same canonical history. The first managed
+          // step supplies the frozen preflight transform result explicitly;
+          // subsequent steps transform their raw accumulated history once.
+          messages: input.managedAttempt
+            ? structuredClone(prepared.messages)
+            : prepared.messages,
           model: wrapLanguageModel({
             model: language,
             middleware: [
@@ -503,12 +1279,73 @@ const live: Layer.Layer<
                 specificationVersion: "v3" as const,
                 async transformParams(args) {
                   if (args.type === "stream") {
-                    // @ts-expect-error
-                    args.params.prompt = ProviderTransform.message(
-                      args.params.prompt,
-                      input.model,
-                      prepared.messageTransformOptions,
-                    )
+                    // Managed requests already use the transform result that
+                    // was bound into ContextSelection by prepareStep. Running
+                    // this again could change the bytes after authorization.
+                    if (!input.managedAttempt) {
+                      // @ts-expect-error
+                      args.params.prompt = ProviderTransform.message(
+                        args.params.prompt,
+                        input.model,
+                        prepared.messageTransformOptions,
+                      )
+                    }
+                    // Capture only the normalized provider-call digest and
+                    // bounded metadata. The raw prompt, schemas and options
+                    // remain in the SDK request and are never copied into the
+                    // ContextLedger projection.
+                    if (input.managedAttempt) {
+                      const selection = activeManagedSelection
+                      const contextSelectionDigest = activeManagedSelectionDigest
+                      // The ledger is a best-effort, ephemeral UI projection.
+                      // Its absence or publication failure must never authorize
+                      // or prevent the provider request.
+                      try {
+                        if (!selection || !contextSelectionDigest) throw new TypeError("authorized ContextSelection pin is unavailable")
+                        const canonical = canonicalProviderInput(args.params)
+                        const profile = builtinHarnessProfileV1(input.managedContext!.harnessID)
+                        if (!profile) throw new TypeError("resolved HarnessProfileV1 is unavailable")
+                        const projection = compileContextLedgerV2({
+                          lane: "managed",
+                          sessionID: input.managedContext!.selectionSessionID,
+                          requestID: selection.requestID,
+                          sourceRevision: selection.sourceRevision,
+                          providerID: input.model.providerID,
+                          modelID: input.model.id,
+                          harnessID: profile.harnessId,
+                          harnessRevision: profile.revision,
+                          requestPayloadDigest: `blake3:${bytesToHex(blake3(Buffer.from(canonical, "utf8")))}`,
+                          requestBytes: Buffer.byteLength(canonical, "utf8"),
+                          contextSelection: selection,
+                          contextSelectionDigest,
+                          entries: contextLedgerEntries(selection),
+                        })
+                        const ledgerEvent = {
+                          timestamp: Date.now(),
+                          sessionID: input.sessionID,
+                          requestID: selection.requestID,
+                          sourceRevision: selection.sourceRevision,
+                          // The Core prompt admission owns the source generation.
+                          // This lets reconnecting clients reject a late projection
+                          // from an earlier turn even if it was published recently.
+                          sourceGeneration: input.user.id,
+                          ledger: projection.ledger,
+                          ledgerDigest: projection.ledgerDigest,
+                        } satisfies SessionEvent.ContextLedger["data"]
+                        const ledgerEventBytes = Buffer.byteLength(JSON.stringify(ledgerEvent), "utf8")
+                        if (ledgerEventBytes > 48 * 1024) throw new RangeError("ContextLedger UI event exceeds 48 KiB")
+                        // UI projection is best effort. Never delay or gate the
+                        // provider request on event storage or client listeners.
+                        void bridge.promise(events.publish(SessionEvent.ContextLedger, ledgerEvent, { location: locationRef }), { signal: input.abort })
+                          .catch((error) => console.warn("ContextLedger UI event unavailable", error))
+                        if (input.onContextLedgerV2) {
+                          void bridge.promise(input.onContextLedgerV2(projection), { signal: input.abort })
+                            .catch((error) => console.warn("ContextLedger observer unavailable", error))
+                        }
+                      } catch (error) {
+                        console.warn("ContextLedger UI projection unavailable", error)
+                      }
+                    }
                   }
                   return args.params
                 },
@@ -528,6 +1365,101 @@ const live: Layer.Layer<
       }
     })
 
+    const prepareManagedRequest: Interface["prepareManagedRequest"] = Effect.fn("LLM.prepareManagedRequest")(function* (input) {
+      if (input.directAttempt || input.directTurn || !input.managedRemainingTokens ||
+        !/^(0|[1-9][0-9]{0,19})$/.test(input.managedRemainingTokens) || BigInt(input.managedRemainingTokens) < 1n) {
+        return yield* new SessionSupervisorError({
+          stage: "managed_context",
+          reason: "managed request preparation requires a valid Rust-selected token remainder and cannot prepare direct turns",
+        })
+      }
+      const [cfg, authInfo] = yield* Effect.all(
+        [config.get(), auth.get(input.model.providerID)],
+        { concurrency: "unbounded" },
+      )
+      const configured = cfg.provider?.[input.model.providerID]
+      const hasCredentialValue = (value: unknown) =>
+        value !== undefined && value !== null && (typeof value !== "string" || value.length > 0)
+      const sensitiveHeaders = (value: unknown) =>
+        typeof value === "object" && value !== null
+          ? Object.entries(value).some(([name, item]) =>
+              /auth|api[-_]?key|access[-_]?token|refresh[-_]?token|secret|credential/i.test(name) &&
+              item !== undefined && item !== null && (typeof item !== "string" || item.length > 0))
+          : false
+      if (hasCredentialValue(input.model.options.apiKey) || sensitiveHeaders(input.model.options.headers) ||
+        sensitiveHeaders(input.model.headers) || hasCredentialValue(configured?.options?.apiKey) ||
+        sensitiveHeaders(configured?.options?.headers) || hasCredentialValue(authInfo?.key)) {
+        return yield* new SessionSupervisorError({
+          stage: "managed_context",
+          reason: "managed provider preflight cannot resolve credentials outside the guarded request transport",
+        })
+      }
+      const item = yield* provider.getProvider(input.model.providerID)
+      const hasResolvedCredential = hasCredentialValue(item.options.apiKey) || hasCredentialValue(item.key) ||
+        item.env.some((name) => typeof process.env[name] === "string" && process.env[name]!.length > 0) ||
+        sensitiveHeaders(item.options.headers)
+      if (hasResolvedCredential) {
+        return yield* new SessionSupervisorError({
+          stage: "managed_context",
+          reason: "managed provider preflight cannot resolve environment or provider credentials outside the guarded request transport",
+        })
+      }
+      const language = yield* provider.getLanguage(input.model)
+      if (language instanceof GitLabWorkflowLanguageModel) {
+        return yield* new SessionSupervisorError({
+          stage: "managed_context",
+          reason: "server-side workflow providers are unavailable for managed context preflight",
+        })
+      }
+      const definitions: Record<string, ToolBatchDefinition> = { ...(input.toolDefinitions ?? {}) }
+      const prepared = yield* LLMRequestPrep.prepare({
+        ...input,
+        tools: filterTools(input.tools, definitions, true),
+        provider: item,
+        auth: authInfo,
+        plugin,
+        flags,
+        isWorkflow: false,
+        managedRequest: true,
+      })
+      const runtimeTools = filterTools(prepared.tools, definitions, true)
+      const remaining = input.managedRemainingTokens!
+      const outputLimit = managedStepOutputTokenLimit(remaining, prepared.params.maxOutputTokens ?? OUTPUT_TOKEN_MAX)
+      const tools = Object.entries(runtimeTools).toSorted(([left], [right]) => left.localeCompare(right)).map(([name, definition]) => ({
+        name,
+        description: typeof definition.description === "string" ? definition.description : "",
+        schema: definitions[name]?.schema ?? null,
+        internal: definitions[name]?.internal === true,
+        strict: definition.strict,
+      }))
+      const providerOptions = ProviderTransform.providerOptions(input.model, prepared.params.options)
+      const containsCredentialField = (value: unknown, depth = 0): boolean => {
+        if (depth > 32) return true
+        if (Array.isArray(value)) return value.some((item) => containsCredentialField(item, depth + 1))
+        if (typeof value !== "object" || value === null) return false
+        return Object.entries(value).some(([key, item]) =>
+          /auth|api[-_]?key|access[-_]?token|refresh[-_]?token|secret|credential/i.test(key) ||
+          containsCredentialField(item, depth + 1))
+      }
+      if (containsCredentialField(providerOptions)) {
+        return yield* new SessionSupervisorError({
+          stage: "managed_context",
+          reason: "provider parameters contain credential-like fields and cannot enter the managed request digest",
+        })
+      }
+      return Object.freeze({
+        system: freezeProviderValue([...prepared.system]),
+        messages: managedProviderMessages(prepared.messages, input.model, prepared.messageTransformOptions),
+        tools: freezeProviderValue(tools),
+        toolChoice: input.toolChoice ?? "auto",
+        maxOutputTokens: outputLimit,
+        temperature: prepared.params.temperature,
+        topP: prepared.params.topP,
+        topK: prepared.params.topK,
+        providerOptions: freezeProviderValue(structuredClone(providerOptions)),
+      })
+    })
+
     const stream: Interface["stream"] = (input) =>
       Stream.scoped(
         Stream.unwrap(
@@ -543,18 +1475,17 @@ const live: Layer.Layer<
 
             // Adapter seam: both runtimes expose the same LLMEvent stream. Native
             // already returns one; AI SDK streams are converted here.
-            const state = LLMAISDK.adapterState()
             return Stream.fromAsyncIterable(result.result.fullStream, (e) =>
               e instanceof Error ? e : new Error(String(e)),
             ).pipe(
-              Stream.mapEffect((event) => LLMAISDK.toLLMEvents(state, event)),
+              Stream.mapEffect((event) => LLMAISDK.toLLMEvents(result.state, event)),
               Stream.flatMap((events) => Stream.fromIterable(events)),
             )
           }),
         ),
       )
 
-    return Service.of({ stream })
+    return Service.of({ stream, prepareManagedRequest })
   }),
 )
 

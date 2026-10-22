@@ -1,23 +1,34 @@
-import { afterAll, afterEach, describe, expect } from "bun:test"
+import { afterAll, afterEach, describe, expect, test } from "bun:test"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Database } from "@opencode-ai/core/database/database"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { SessionSupervisor, SessionSupervisorError } from "@opencode-ai/core/session/supervisor"
-import { Cause, Effect, Exit, Layer, Stream } from "effect"
+import { Cause, Effect, Exit, Layer, LayerMap, Stream } from "effect"
 import { Agent } from "../../src/agent/agent"
 import { BackgroundJob } from "@/background/job"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Config } from "@/config/config"
+import { Provider } from "@/provider/provider"
+import { AgentProfileService } from "@opencode-ai/core/config"
+import { Location } from "@opencode-ai/core/location"
+import { LocationServiceMap } from "@opencode-ai/core/location-service-map"
+import {
+  locationServiceMapNode,
+  type LocationError,
+  type LocationServices,
+} from "@opencode-ai/core/location-services"
+import type * as AgentProfileV2 from "@opencode-ai/schema/agent-profile-v2"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { Session } from "@/session/session"
+import { ManagedControl } from "@/session/managed-control"
 import type { SessionPrompt } from "../../src/session/prompt"
 import { MessageID, SessionID } from "../../src/session/schema"
 import { SessionRunState } from "@/session/run-state"
 import { SessionStatus } from "@/session/status"
 import { Permission } from "@/permission"
-import { TaskTool, type TaskPromptOps } from "../../src/tool/task"
+import { managedTaskSelectionPinsMatch, managedTaskTokenBudget, TaskTool, type TaskPromptOps } from "../../src/tool/task"
 import { Truncate } from "@/tool/truncate"
 import { ToolRegistry } from "@/tool/registry"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -45,6 +56,34 @@ const UNAVAILABLE = [
 ].join(" ")
 const RECEIPT = `blake3:${"a".repeat(64)}`
 const PROFILE_CONFIG_DIR = path.join(Global.Path.tmp, `task-profile-test-${process.pid}`)
+
+describe("managed Task token authority", () => {
+  test("accepts Rust remainder only under the pinned AgentProfileV2 ceiling", () => {
+    expect(managedTaskTokenBudget({ effectiveMaxTokens: "1000", remainingTokens: "400", profileTokenBudget: 1200 }))
+      .toEqual({ effectiveMaxTokens: "1000", remainingTokens: "400" })
+    expect(managedTaskTokenBudget({ effectiveMaxTokens: "1000", remainingTokens: "400" }))
+      .toEqual({ effectiveMaxTokens: "1000", remainingTokens: "400" })
+  })
+
+  test("rejects exhaustion, forged increase, stale profile ceiling, and noncanonical values", () => {
+    expect(() => managedTaskTokenBudget({ effectiveMaxTokens: "1000", remainingTokens: "0" })).toThrow()
+    expect(() => managedTaskTokenBudget({ effectiveMaxTokens: "1000", remainingTokens: "1001" })).toThrow()
+    expect(() => managedTaskTokenBudget({ effectiveMaxTokens: "1000", remainingTokens: "500", profileTokenBudget: 999 })).toThrow()
+    expect(() => managedTaskTokenBudget({ effectiveMaxTokens: "01", remainingTokens: "1" })).toThrow()
+  })
+
+  test("rejects recovery when the accepted Spec or immutable AgentProfileV2 pin changed", () => {
+    const task = { taskID: "task-a", profile: { profileID: "agent-a", revision: "3", definitionDigest: RECEIPT, ownerBindingDigest: RECEIPT } }
+    const profileDefinition = { profileId: "agent-a", revision: 3 } as AgentProfileV2.AgentProfileDefinitionV2
+    const handoff = { goalID: "goal-a", runID: "run-a", taskID: "task-a", acceptedSpecDigest: RECEIPT,
+      profileID: "agent-a", profileRevision: "3", profileDigest: RECEIPT, profileDefinition }
+    const input = { selection: { goalID: "goal-a", runID: "run-a", specDigest: RECEIPT }, task, handoff }
+    expect(managedTaskSelectionPinsMatch(input as Parameters<typeof managedTaskSelectionPinsMatch>[0])).toBe(true)
+    expect(managedTaskSelectionPinsMatch({ ...input, selection: { ...input.selection, specDigest: `blake3:${"b".repeat(64)}` } } as Parameters<typeof managedTaskSelectionPinsMatch>[0])).toBe(false)
+    expect(managedTaskSelectionPinsMatch({ ...input, task: { ...task, profile: { ...task.profile, revision: "4" } } } as Parameters<typeof managedTaskSelectionPinsMatch>[0])).toBe(false)
+  })
+})
+
 const profile = {
   schemaVersion: 2,
   profileId: "user.general",
@@ -365,6 +404,34 @@ const testSupervisorNode = LayerNode.make({
   tag: SessionSupervisor.node.tag,
 })
 
+const testAgentProfiles = Layer.succeed(
+  AgentProfileService,
+  AgentProfileService.of({
+    agentProfiles: () =>
+      Effect.succeed([profile as unknown as AgentProfileV2.AgentProfileDefinitionV2]),
+    agentProfileSelectors: () =>
+      Effect.succeed([
+        {
+          selector: "general",
+          profile: profile as unknown as AgentProfileV2.AgentProfileDefinitionV2,
+        },
+      ]),
+    agentProfile: () => Effect.succeed(profile as unknown as AgentProfileV2.AgentProfileDefinitionV2),
+    agentProfileSelector: () => Effect.succeed(profile as unknown as AgentProfileV2.AgentProfileDefinitionV2),
+  }),
+)
+
+const testLocationServiceMapNode = LayerNode.make({
+  service: LocationServiceMap.Service,
+  layer: Layer.succeed(
+    LocationServiceMap.Service,
+    {
+      get: () => testAgentProfiles,
+    } as unknown as LayerMap.LayerMap<Location.Ref, LocationServices, LocationError>,
+  ),
+  deps: [],
+})
+
 const failedBackgroundNode = (failure: "extend" | "start") => {
   const error = new Error(`injected background ${failure} failure`)
   return LayerNode.make({
@@ -426,6 +493,8 @@ const layer = (flags: Partial<RuntimeFlags.Info> = {}, background?: LayerNode.No
       background ?? BackgroundJob.node,
       EventV2Bridge.node,
       Config.node,
+      Provider.node,
+      locationServiceMapNode,
       CrossSpawnSpawner.node,
       Session.node,
       SessionProjector.node,
@@ -442,6 +511,13 @@ const layer = (flags: Partial<RuntimeFlags.Info> = {}, background?: LayerNode.No
       [RuntimeFlags.node, RuntimeFlags.layer(flags)],
       [SessionSupervisor.node, testSupervisorNode],
       [Global.node, Global.layerWith({ config: PROFILE_CONFIG_DIR })],
+      [locationServiceMapNode, testLocationServiceMapNode],
+      [
+        Provider.node,
+        Layer.mock(Provider.Service, {
+          getModel: () => Effect.succeed(model),
+        }),
+      ],
     ] as const
     if (!background) return LayerNode.compile(root, replacements)
     return LayerNode.compile(root, [...replacements, [BackgroundJob.node, background] as const])
@@ -503,6 +579,7 @@ function promptOps(input: Partial<TaskPromptOps> = {}): TaskPromptOps {
 function expectFailure(exit: Exit.Exit<unknown, unknown>): Error {
   expect(Exit.isFailure(exit)).toBe(true)
   if (Exit.isSuccess(exit)) throw new Error("expected Task/subagent dispatch to fail")
+  console.error(Cause.pretty(exit.cause))
   const error = Cause.squash(exit.cause)
   expect(error).toBeInstanceOf(Error)
   if (!(error instanceof Error)) throw new Error("expected an Error")
@@ -514,6 +591,7 @@ const baseContext = (chat: { id: SessionID }, assistant: { id: MessageID }, abor
   messageID: assistant.id,
   agent: "build",
   abort,
+  trustedPrincipal: { kind: "server_auth" as const, subject: "task-test" },
   messages: [],
   metadata: () => Effect.void,
   ask: () => Effect.void,
@@ -784,27 +862,38 @@ describe("tool.task authenticated dispatch", () => {
             extra: {
               bypassAgentCheck: true,
               promptOps: promptOps({
-                prompt: (input, directAttempt) => {
-                  prompted = input
-                  return Effect.tryPromise({
-                    try: async () => {
-                      expect(directAttempt).toBeDefined()
-                      const scope = directAttempt!.currentScope()
-                      expect(scope.childSessionID).toBe(input.sessionID)
-                      const refreshed = await directAttempt!.bindBatch({
-                        scope,
-                        effectIDs: ["effect_child_write", "effect_child_shell"],
-                      })
-                      expect(refreshed.expectedRevision).toBe("2")
-                      return outputText({ info: assistant, text: "child output" })
-                    },
-                    catch: (error) =>
-                      new SessionSupervisorError({
-                        stage: "host-kernel",
-                        reason: error instanceof Error ? error.message : "direct Attempt bind failed",
-                      }),
-                  })
-                },
+                prompt: (input, directAttempt) =>
+                  Effect.gen(function* () {
+                    prompted = input
+                    expect(directAttempt).toBeDefined()
+                    const scope = directAttempt!.currentScope()
+                    expect(scope.childSessionID).toBe(input.sessionID)
+                    const bound = yield* ManagedControl.bindDirectAttemptEffects({
+                      scope,
+                      effectIDs: ["effect_child_write", "effect_child_shell"],
+                    }).pipe(
+                      Effect.catchTag("ManagedControlError", (error) =>
+                        Effect.fail(
+                          new SessionSupervisorError({ stage: "host-kernel", reason: error.message }),
+                        ),
+                      ),
+                    )
+                    yield* Effect.try({
+                      try: () =>
+                        directAttempt!.acceptRefreshedScope({
+                          previous: scope,
+                          refreshed: bound.directAttempt,
+                          transition: "batch_bind",
+                        }),
+                      catch: (error) =>
+                        new SessionSupervisorError({
+                          stage: "host-kernel",
+                          reason: error instanceof Error ? error.message : "direct Attempt bind failed",
+                        }),
+                    })
+                    expect(directAttempt!.currentScope().expectedRevision).toBe("2")
+                    return outputText({ info: assistant, text: "child output" })
+                  }),
               }),
             },
             metadata: (input) => Effect.sync(() => void metadata.push(input.metadata ?? {})),

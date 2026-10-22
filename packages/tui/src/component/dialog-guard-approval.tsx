@@ -38,10 +38,10 @@ export interface GuardApprovalRequestView {
 export interface DialogGuardApprovalProps {
   readonly request: GuardApprovalRequestView
   /** Callbacks receive only the selected decision; host fields and IDs stay untouched. */
-  readonly onDecision: (decision: "allow_once" | "deny") => unknown | Promise<unknown>
+  readonly onDecision: (decision: "allow_once" | "deny" | "grant_session" | "grant_workspace") => unknown | Promise<unknown>
 }
 
-type Action = "allow_once" | "deny"
+type Action = "allow_once" | "deny" | "grant_session" | "grant_workspace"
 type MenuAction = Action | "details" | "previous" | "next"
 
 const MAX_DETAIL_CHARS = 240
@@ -67,10 +67,25 @@ function allowEligible(request: GuardApprovalRequestView): boolean {
   const assessment = request.guaranteeAssessment
   const requestedSet = new Set(requested ?? [])
   const residual = assessment?.status === "assessed" ? assessment.residual : undefined
+  // Workspace-owner automation changes are authenticated ServerAuth actions
+  // scoped to a HostKernel Location. They intentionally have no Session ID;
+  // the capability and source pair must stay exact so this does not loosen
+  // session or managed-run approvals.
+  const authenticatedAutomationOwnerAction =
+    request.origin === "user_action" &&
+    request.source === "authenticated.user_action" &&
+    /^automations\.(create|update|enable|disable)$/.test(request.capabilityID) &&
+    /^loc_[0-9a-f]{64}$/.test(request.locationID)
   return (
     request.allowEnabled === true &&
-    ["session_batch", "user_action", "managed_run"].includes(request.origin ?? "") &&
-    ["core.tool_batch", "authenticated.user_action", "host.managed_verifier"].includes(request.source ?? "") &&
+    (["session_batch", "user_action"].includes(request.origin ?? "") &&
+      ["core.tool_batch", "authenticated.user_action"].includes(request.source ?? "") ||
+      request.origin === "managed_run" && request.source === "host.managed_verifier" ||
+      request.origin === "managed_run" && request.source === "host.managed_provider" && request.capabilityID === "providers.infer" &&
+        request.policyID === "provider-inference.managed.v1" &&
+        requested?.join("\0") === ["live_managed_attempt", "selected_route_revision", "normalized_request_digest", "transport_request_digest", "secret_operation_digest", "explicit_route_consent", "budget_bound", "one_use", "no_fallback"].join("\0") &&
+        assessment?.status === "assessed" && assessment.residual.length === 0 ||
+      request.origin === "managed_root" && request.source === "host.managed_worktree" && request.capabilityID === "git.worktree.list") &&
     !!request.policyID && /^[a-z][a-z0-9._-]{0,127}$/.test(request.policyID) &&
     !!request.policyDigest && /^blake3:[0-9a-f]{64}$/.test(request.policyDigest) &&
     request.normalizedAction === request.capabilityID &&
@@ -81,10 +96,23 @@ function allowEligible(request: GuardApprovalRequestView): boolean {
     residual !== undefined &&
     residual.length <= 16 && new Set(residual).size === residual.length &&
     residual.every((id) => requestedSet.has(id)) &&
+    (request.origin !== "managed_root" ||
+      request.policyID === "broker-process.local.v1" &&
+      requested?.join("\0") === ["configured_executable", "bounded_argv_env", "beneath_workspace_root", "one_use"].join("\0") &&
+      assessment?.status === "assessed" && assessment.residual.length === 0) &&
     request.normalizedTargets.length > 0 && request.normalizedTargets.length <= 32 &&
-    (request.runID !== undefined || request.sessionID !== undefined) &&
+    (request.runID !== undefined || request.sessionID !== undefined || authenticatedAutomationOwnerAction) &&
     request.noResponse === "deny_and_expire"
   )
+}
+
+function grantEligible(request: GuardApprovalRequestView): boolean {
+  return request.origin === "session_batch" && request.source === "core.tool_batch" &&
+    request.sessionID !== undefined && request.runID === undefined &&
+    ["files.write", "files.patch"].includes(request.capabilityID) &&
+    /^[A-Za-z0-9._-]{1,256}$/.test(request.challengeID) &&
+    /^[A-Za-z0-9._-]{1,256}$/.test(request.effectID) &&
+    /^loc_[0-9a-f]{64}$/.test(request.locationID)
 }
 
 function detailLines(request: GuardApprovalRequestView): string[] {
@@ -108,6 +136,7 @@ function detailLines(request: GuardApprovalRequestView): string[] {
     ["Effect", request.effectID],
     ["Run", request.runID ?? "unavailable"],
     ["Session", request.sessionID ?? "unavailable"],
+    ["Scope", request.capabilityID.startsWith("automations.") ? "authenticated workspace-owner action" : request.runID ? "managed run" : "session"],
     ["Location", request.locationID],
     ...targets.map((target) => ["", target]),
     ["Origin", request.origin ?? "unavailable"],
@@ -139,6 +168,7 @@ export function DialogGuardApproval(props: DialogGuardApprovalProps) {
   const [page, setPage] = createSignal(0)
   const request = () => props.request
   const canAllow = createMemo(() => allowEligible(request()))
+  const canGrant = createMemo(() => grantEligible(request()))
   const pages = createMemo(() => {
     const lines = detailLines(request())
     return Math.max(1, Math.ceil(lines.length / DETAIL_PAGE_SIZE))
@@ -179,10 +209,23 @@ export function DialogGuardApproval(props: DialogGuardApprovalProps) {
       disabled: busy(),
       description: error() || "Deny this exact request. No response before expiry also denies and expires it.",
     },
+    {
+      title: canGrant() ? "Allow supported edits in this Session" : "Session grant unavailable",
+      value: "grant_session",
+      disabled: busy() || !canGrant(),
+      description: "Save explicit consent for supported workspace edits in this Session. This current effect is denied and must be prepared again.",
+    },
+    {
+      title: canGrant() ? "Remember supported edits for this workspace" : "Workspace grant unavailable",
+      value: "grant_workspace",
+      disabled: busy() || !canGrant(),
+      description: "Save explicit consent for supported workspace edits for up to 30 days. This current effect is denied and must be prepared again.",
+    },
   ])
 
   async function decide(decision: Action) {
-    if (busy() || (decision === "allow_once" && !canAllow())) return
+    if (busy() || (decision === "allow_once" && !canAllow()) ||
+      ((decision === "grant_session" || decision === "grant_workspace") && !canGrant())) return
     setBusy(true)
     setError("")
     try {

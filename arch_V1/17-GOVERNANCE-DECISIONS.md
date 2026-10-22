@@ -32,6 +32,7 @@ Status: normative and frozen for V1 implementation. This file resolves product/o
 | A-V2-24 | External source reuse is immutable-pin/provenance/license/test gated | Source inspection is not integration |
 | A-V2-25 | DAP debugging and bounded persistent REPL are V1 coding-agent capability families; desktop/computer control is post-V1; built-in web search was promoted into V1 on 2026-10-18 (`DEC-V1-26`) | V1 DAP/REPL/web-search reuse Guard/ExecutionHost and canonical capability/provider owners; remaining deferred desktop/browser paths stay unavailable |
 | A-V2-26 | Active architecture has one topic owner; research/audit/history are non-normative | Compatibility stubs may point to the owner but must not restate contracts |
+| A-V2-34 | V1 coding productivity requires an explicit bounded direct-session workspace grant and CodeMode orchestration through the existing authorized tool tree | Routine in-sandbox workspace work is prompt-free after explicit grant; CodeMode composes existing tools but creates no authority |
 
 ## 17.2 Canonical ownership
 
@@ -52,7 +53,7 @@ Status: normative and frozen for V1 implementation. This file resolves product/o
 
 1. Direct Session use is lightweight and does not require Goal/Task ceremony.
 2. Managed work is additive: Goal -> accepted SpecVersion -> Run -> Task/Attempt -> Evidence/Verification.
-3. The full provider response is collected and validated before any local effectful tool in that response executes.
+3. The full provider response is collected and validated before any **mutation-class** local tool in that response executes. **Read-class** tools in **direct** Sessions may use the §14.3.1 read fast path after per-call validation (`DEC-V1-36`). Managed mutating Attempt chains remain strict.
 4. Mutations require Guard admission and a one-use execution lease. Unknown outcomes are reconciled, not blindly retried.
 5. Hosted/provider-executed effects that cannot be pre-authorized are unavailable in governed mode.
 6. LSP code actions/rename, DAP attach/evaluate, browser/desktop actions, REPL host/tool callbacks, MCP/plugin calls and settings writes obey the same effect model.
@@ -85,14 +86,31 @@ These gate only the named capability or release claim.
 | DEC-V1-17 | Durable Windows event-store synchronization | Durable managed Windows Runs unavailable |
 | DEC-V1-18 | SessionLink/ToolBatchControl exact interop and failure evidence | Ownership is resolved; deny effects until P1.3 is verified |
 | DEC-V1-19 | Desktop-control OS backend capability matrix | Expose only tested OS actions; no unsafe Eval escape |
-| DEC-V1-20 | Web-search provider cost/auth/reliability matrix (V1; initial provider set and full matrix maintained with §37.5) | No hidden paid fallback; unavailable provider reports reason; cost/auth class never changes silently; enabling a route records consent; anonymous no-key routes and authenticated BYO routes are distinct |
+| DEC-V1-20 | Web-search provider cost/auth/reliability matrix (V1; initial provider set and full matrix maintained with §37.5) | After one first-use query-sharing disclosure, use only the anonymous/free built-in cascade by default; BYO/authenticated/paid routes and grounded-model search require separate explicit enablement/consent; no hidden paid fallback; trusted HostKernel selects routes and records per-route provenance |
 | DEC-V1-21 | DAP adapter/language/OS support matrix | Read-only debugger features only where verified; Eval/attach guarded |
 | DEC-V1-22 | Persistent REPL runtime isolation/tool-callback policy | REPL unavailable until worker isolation and callback mediation pass |
 | DEC-V1-23 | HorizonCode-as-MCP-server exposure to third-party MCP clients | Server mode unavailable in V1; MCP remains client-side (consume servers, confine spawned server processes) |
-| DEC-V1-24 | Editor/IDE integration breadth beyond CLI/TUI (VS Code/JetBrains-class extensions; external ACP client) | No editor-integration claim in V1; ACP adapter §37.20–21 design stays post-V1 per A-V2-31 |
+| DEC-V1-24 | Editor/IDE integration breadth beyond CLI/TUI (VS Code/JetBrains-class extensions; external ACP client) | No editor-integration claim in V1; ACP adapter §37.20–21 design stays post-V1 per A-V2-31. User-configured external editor launch from the CLI/TUI for prompt editing or an explicitly selected workspace file is in V1 under DEC-V1-33; this is not an editor extension or ACP integration |
 | DEC-V1-25 | Checkpoint/rewind restore evidence (snapshot bounds, preview/refusal semantics, partial-restore UNKNOWN) | Rewind not claimed available until §14.19/§16.18/§31.18 are wired and CP-001/CP-002 pass on the exact revision |
-| DEC-V1-26 | Built-in web search promoted into V1 + provider cascade model (user directive 2026-10-18; auth-failure behavior clarified 2026-10-19) | V1: built-in default route + optional BYO-key providers (e.g. Brave, Exa); every enabled route joins one ordered cascade; auth 4xx (401/403/407) is recorded per route and falls through to the next explicitly enabled route; other non-rate-limit 4xx stops; transient failures follow bounded retry policy; no route used unless enabled (enable = consent); no hidden paid fallback |
+| DEC-V1-26 | Built-in web search promoted into V1 + provider cascade model (user directive 2026-10-18; default/consent clarified 2026-10-21; retry boundary clarified 2026-10-22) | V1: the anonymous/free built-in cascade is enabled after one explicit first-use query-sharing disclosure; BYO/authenticated/paid routes and grounded-model search require separate explicit enablement/consent; auth 4xx (401/403/407) is recorded per route and falls through only to a separately enabled route; other non-rate-limit 4xx stops; HTTP 408/425/5xx may retry once after a durable response receipt; network retry is allowed only for a durable `NOT_DISPATCHED` proof that no request bytes left the process, at most once per enabled route; possible-send ambiguity remains UNKNOWN and is never retried; HostKernel owns route choice and per-route provenance; no hidden paid fallback |
 | DEC-V1-27 | OS resource-limit guarantees | CPU/memory/process-count/FD guarantees remain unavailable until OS-enforced by the selected backend; profiles requiring them fail closed. Bounded admission/monitoring may be used only for dimensions it actually bounds/observes and never represents hard OS quotas |
+| DEC-V1-28 | Direct-session permission modes and routine workspace grants | Direct Sessions expose independent sandbox and approval controls through `DirectSessionPermissionModeV1`: Ask for approval (`workspace-write` + `on-request`) is the default; Full access (`danger-full-access` + `never`) is an explicit user-selected mode that permits local file, network and process actions without routine confirmation; Custom selects both dimensions independently. `always` asks before every effect; `on-request` allows actions inside the selected sandbox and asks at its boundary; `never` does not prompt and acts within the selected sandbox. A mode never bypasses the common Guard, authenticated owner/scope checks, budgets, one-use leases, receipts, cancellation or UNKNOWN recovery. Full access does not claim OS confinement and carries a clear risk notice. Technical invalidity, stale authority, unsupported platform paths and unavailable required execution backends remain unavailable; approval choice does not fabricate OS guarantees. `DirectSessionGrantV1` remains the optional narrow reusable grant for workspace-code scope, when users prefer bounded grants. `WorkspaceCommandProfileV1` remains available for users who want named build/test limits; it is not required by Full access. Legacy `PermissionV1` never authorizes Guard. Adapted from Codex's orthogonal sandbox/approval model and explicit Ask/Full access modes; HorizonCode retains its own Guard and evidence lifecycle |
+| DEC-V1-29 | CodeMode is bounded orchestration over canonical tools | Reuse the existing interpreter and model-facing `execute` function; canonical capability ID is `codemode.execute`. A bounded pure-computation script may complete with zero nested tool calls; it has no nested-effect receipt or aggregate nested receipt digest, while the outer helper process still uses its normal Guarded process-effect receipt. If nested calls occur, every wave must settle with per-call receipts and the result carries the ordered aggregate nested receipt digest. Run the existing interpreter in a short-lived helper process launched and supervised only by the existing Rust ExecutionHost. Select only the trusted packaged runtime selector `horizoncode:codemode:bun`; V1 has no Node fallback, Worker-thread runtime or second supervisor. Progressive discovery uses the existing CodeMode `$codemode.search` API over the current authorized tool tree. Existing MCP adapters may participate only through Core's normal dispatcher; there is no raw MCP client in the helper. The helper has no ambient filesystem, process, network, credential or registry APIs. Its bounded versioned stdio RPC carries code, tool-call requests/results, cancellation and terminal outcome; Core routes every complete wave through the authenticated SessionSupervisor ToolBatch path. One script has a 30s total deadline, <=64 KiB source/output, <=64 calls across at most 64 sequential waves of <=32, <=256 KiB arguments per call, <=512 KiB serialized arguments per wave and <=1 MiB serialized arguments across the script. HostKernel applies fixed `CodeModeResourceProfileV1` before first instruction: cgroup-v2 memory 536870912 bytes, CPU `100000 100000`, PIDs 64, and nofile 256. Every listed limit is mandatory and verified before the first instruction; if any limit or the packaged runtime cannot be verified, CodeMode stays unavailable on that backend. A versioned BLAKE3 digest binds the exact profile values. Expose only after protocol, dispatcher, cancellation/reap and Guarded receipt recovery are wired; §32.41 CM-001..CM-012 is integrated release acceptance |
+| DEC-V1-30 | Managed effect waves bind before one-use lease issuance | Preserve legacy `attempt_effects_bound` for replay, but new ToolBatch waves append `attempt_effect_wave_bound` after approval and before any lease becomes consumable. One OwnerLog revision binds the exact Attempt, HostKernel batch/wave IDs, authenticated source-scope digest and ordered call/effect/capability/arguments/EffectIntent digests. Arguments and secrets are never stored. Refresh the managed scope and revalidate after the append, then issue per-effect one-use leases. Direct Sessions continue to use DirectTurnJournal. |
+| DEC-V1-31 | Bounded managed DAG is part of V1 after the single-Task vertical is accepted | V1 includes bounded, concurrent Rust-owned managed Task DAGs. The one-Task Run is the prerequisite proving admission, guarded effects, independent verification and receipt settlement; it is not the final DAG ceiling. Expand only after that vertical passes final-revision acceptance. Each Task requires independent verifier evidence, exact workspace revision and settled receipts; Run success is an aggregate Rust decision over all required Tasks. Dependencies, disjoint write scopes or serialized workspace leases, limits, cancellation, UNKNOWN reconciliation and late-result fencing are mandatory. Until aggregate settlement passes acceptance, multi-Task dispatch remains unavailable. Direct Core child Sessions remain a separate lane and cannot satisfy managed Task evidence. |
+| DEC-V1-32 | Direct request authorization and context pinning | An authenticated user prompt/continue authorizes the selected provider/model/account/endpoint/harness within configured policy; pin the exact normalized provider input and route before send, without a per-request HostKernel context bind. Drift, exceeded or unknown required limits stops before dispatch, with no hidden fallback. Direct Core owns its Session/request/context state; managed requests stay live-Attempt-bound. See §17.26 and §§12–15/30/32/37. |
+| DEC-V1-33 | User-selected external editors in CLI/TUI | V1 supports user-owned editor profiles for prompt scratch and workspace files, including foreground terminal editors (`nano`, `vi`, `vim`, `nvim`) and GUI command-line launchers configured with a wait-for-close option (`subl`, `code`, `zed`). The normal interface remains a single-pane coding session with no Explorer, editor pane, or persistent side panel. These surfaces are opt-in through `/editor`: it opens the workspace Explorer as an overlay; selecting a file and choosing Open launches the saved editor profile. `/editor --side` is an explicit alternate layout that opens the Explorer/editor in a right-side pane; closing it returns to the single-pane session. Settings → Editors (reachable through `/settings`) selects the profile. The user selects the target; the model cannot choose an executable, arguments, environment, or target path. HostKernel resolves the exact profile revision and executable and starts it through the existing ExecutionHost. No shell parsing or raw Core process spawn. Terminal editors borrow the TUI terminal in a foreground PTY; GUI launchers must retain a wait handle until the edit is closed. The current DirectSession sandbox and approval mode governs the action. `workspace-write` requires verified OS containment of the editor process tree; if the backend cannot provide it, the route is unavailable there and the UI offers the already-defined explicit Full access mode with its warning. No editor extension protocol or ACP client is claimed in V1. Workspace writes settle as the `editor.launch` guarded effect with changed-path/revision receipt metadata; an exclusive workspace write fence prevents concurrent agent edits until close. See §§4.17, 12.22, 14.29, 16.20, 32.44 and 37.28. |
+| DEC-V1-34 | Primary product objective: competitive software engineering capability | HorizonCode's highest product objective is to deliver strong end-to-end software engineering: task success and correctness, useful capability breadth, fast iteration, and reliable SWE workflows. UI defaults and permission friction should support that outcome without hiding useful capabilities behind always-visible surfaces. V1 evaluation must include real coding tasks and report correctness/pass rate, time/latency, tool/context usage, failures and recovery. Harness uplift comparisons must hold model/version, task set, tools, permissions, budgets and environment constant between baseline and HorizonCode arms. Competitor comparisons require reproducible matched evidence; public estimates or a favorable single task are not a claim that HorizonCode surpasses Claude Code, Codex, OpenCode or another agent. See P8 and §32.40 HUP-001..006. |
+| DEC-V1-35 | V1 competitive adaptation inside existing owners | External products (mgrep, code-review-graph, Windsurf/Devin Desktop IDE, default cloud codebase indexes, LanceDB episodic memory, Wasm plugin runtimes) may inform algorithms and UX only. V1 release-critical work is the ordered adaptation list in §10.18.1: finish P1–P9 wiring and acceptance using pinned OpenCode/OMP/Codex patterns. Do not add a second repository index/graph authority, default remote embedding sync, or competitor MCP as canonical RepoIntel. Optional third-party MCPs remain client-side, routed, and non-authoritative per §29 and `docs/agent-tool-routing.md`. Post-V1 surfaces stay unavailable per §10.12 and A-V2-31. Traceability: §32.47, §30.25, §42.21, derived §45.29. |
+| DEC-V1-36 | Direct-mode migration parity (OpenCode / Cursor / Claude Code / Codex-class UX) | Pair programming stays the default: **no Goal**, provider send never blocked on kernel READY for non-effect turns, **session-warm** kernel IPC, **read fast path** (§14.3.1) so read-class tools may run while the provider response is still streaming after per-call schema validation; **mutations, shell, MCP writes, and hosted effects** still require closed-batch admission, Guard, PREPARED, lease and receipt. Default UX preset **Coding (recommended)** (§16.19.1) matches competitor norms: Workspace write + ask on boundary, with one-time session grant for routine reads/edits and pinned workspace command profiles for tests. Acceptance: §32.49 `PERF-DIRECT-*`, §31.24, migration matrix §46-V1-MIGRATION-PARITY.md. Managed Attempts keep stricter batch ordering for mutating chains. |
+| DEC-V1-37 | Horizon Coding Profile (speed + accuracy + reliability bundle) | One composed default for direct Sessions: §16.19.1 permissions, §30.28 speed compiler, §30.29 accuracy contracts, §30.30 reliability/long-horizon defaults, §33.33. Measured via §32.49–52 and HUP-001 arm labeled `horizon-coding-profile`. |
+| DEC-V1-38 | Tool and skill exposure tiers | Three tiers §33.32; **skills always catalog-visible** (metadata); `skill` + `skills.search` in **Core** tier; **`builtin.horizoncode`** documents full product integration. MCP third-party only via routed client choice (`DEC-V1-35`). Acceptance §32.51. |
+
+**DEC-V1-33 UX clarification (2026-10-22):** Explorer/editor UI is opt-in, not a default
+coding surface. The session starts and returns to a single-pane layout. `/editor` opens
+Explorer as an overlay; `/editor --side` explicitly opens it in a right-side pane. The
+selected editor profile is configured in `/settings` → Editors. No default button,
+persistent sidebar, or model tool may launch an editor or expose the Explorer UI.
 
 ## 17.5 Evidence law
 
@@ -157,7 +175,7 @@ The owning config retains requested/effective/source/lock/precedence/apply-bound
 This user-approved scope decision supersedes the prior 2026-10-16 plan entry that deferred LSP/DAP/REPL, settings/UI, workers, resource features and related capabilities. It changes delivery scope, not implementation status or Guard policy.
 
 - **V1 surface/platform:** ship the Linux/WSL-first CLI/TUI. Web, desktop, browser automation/attached-browser and desktop/computer control are post-V1 and unavailable in V1. Keep native Windows unavailable until native tests pass. Safe artifact/Mermaid rendering remains a CLI/TUI capability.
-- **Amendment (2026-10-18):** built-in web search (`web.search.*`, §37.5 `WebSearchBrokerV1`) is promoted into V1 per `DEC-V1-26` — built-in default route + optional BYO-key providers (initial set Brave, Exa; matrix `DEC-V1-20`) forming one ordered cascade with fail-through; Settings control (§16.7) and explicit cost/auth provenance. No paid fallback; enabling a route is the recorded consent.
+- **Amendment (2026-10-18; historical wording superseded by DEC-V1-20/26):** built-in web search (`web.search.*`, §37.5 `WebSearchBrokerV1`) is promoted into V1 — built-in default route + optional BYO-key providers (initial set Brave, Exa; matrix `DEC-V1-20`) forming one ordered cascade with fail-through; Settings control (§16.7) and explicit cost/auth provenance. The later decision requires first-use query-sharing consent for the anonymous cascade and separate per-route auth/cost consent for authenticated routes; route enablement alone is not consent.
 - **V1 feature scope:** LSP, DAP, bounded REPL, settings/provider/model UX, streaming/rendering, artifacts/analytics/automations, bounded worktree/resource pools, quotas, cross-model suites, subagents/workers/DAG, file-conflict signals, Provider Doctor, session import, bounded caches/local recall, and TUI performance are V1 goals. The order remains P1.3 Guard → P2 single managed vertical → bounded worker fan-out and remaining feature modules; no effectful origin becomes available before Guard proof.
 - **Source preference:** adapt compatible non-OpenCode providers and CLI/TUI settings/visual patterns from the immutable Oh My Pi reference; use the official version-appropriate OpenCode API/SDK path for explicitly selected OpenCode-owned sessions. SDK/API use does not promise every provider model, subscription or free-tier entitlement and does not override the one-session-owner law. Verify supported entitlements through documented user auth and actual acceptance tests.
 - **Naming and provenance:** new adapted first-party Horizon modules, packages, folders and configuration identifiers use HorizonCode identity as they are introduced. Preserve third-party authorship, licenses and genuine upstream dependency names. This does not authorize replacing the pinned `opencode/` snapshot or a global package migration.
@@ -196,7 +214,7 @@ The user supplied `extra_some_Stuff.md` for critical review. The full note was c
 - **P2 — managed vertical:** bind dispatched work to accepted SpecVersion, Task, live Attempt, profile/capability ceiling, workspace/source revision and budget; return typed bounded artifacts/evidence; independently verify the actual final workspace revision. Deterministic checks may block settlement only when named by accepted criteria and budgeted; they cannot grant authority or change criteria. No model-authored PASS or caller-supplied identity/evidence.
 - **P3 — RepoIntel:** provide bounded source-grounded navigation with generation/revision-bound references, explicit coverage/fallback provenance and stale rejection. Mutations continue through `files.patch` plus Guard. Broader parser coverage requires measured completeness and resource evidence.
 - **P6 — provider/settings/skills:** report cache and cost as provider-reported, measured, estimated or unknown, bound to the selected provider/model/request. A proposed skill/profile remains inert until existing registry, permission and activation rules accept it.
-- **P7 — artifacts/events/rendering:** child summaries are compact projections backed by immutable evidence refs; preserve FULL/SAMPLE/FAILED fidelity. Durable owner transitions replay from their source cursor; progress/paint events are bounded, redacted and coalescible. Analytics cannot change task or verification truth.
+- **P7 — artifacts/events/rendering:** child summaries are compact projections backed by immutable evidence refs; preserve `full`/`head_tail_sample`/`failed` wire fidelity (`FULL`/`SAMPLE`/`FAILED` are UI labels only). Durable owner transitions replay from their source cursor; progress/paint events are bounded, redacted and coalescible. Analytics cannot change task or verification truth.
 - **P8 — resources:** account for child, test, index, artifact and verifier work within existing reservations and per-owner attribution. Resource/cache pressure cannot silently change provider/model, drop unsettled receipts or kill a foreign process.
 
 The operative phase ledger maps these refinements to P1/P2/P3/P6/P7/P8 acceptance; P4/P5/P9 retain their existing V1 scope. VEO-F1..F8 are optional post-V1 extensions only, not additional V1 release phases. HLD/LLD flows, fields, event projections and acceptance are in §§1.14, 3.21, 4.13, 12.18, 29.20, 30.23, 31.19, 32.38 and 37.22. Those topic owners are authoritative; no runtime wire shape is enabled until its machine schema and cross-language fixtures are updated.
@@ -251,8 +269,9 @@ post-bind scope. Even an ALLOW path defers lease issuance; ASK requires its exac
 remain current. No issued lease is mutated, no caller-provided rebase is accepted, and any
 intervening owner/workspace change denies and requires reconciliation/new authorization. This
 avoids allowing the batch's own OwnerLog append to invalidate a lease digest while preserving
-the current-revision fence at approval and dispatch. P1 owns HostKernel/EffectHost sequencing;
-P2 owns the managed Attempt batch contract; P1 also closes the direct Attempt path. See
+the current-revision fence at approval and dispatch. P2 owns HostKernel sequencing and ordering;
+P1 owns Guard/EffectHost and supplies the authenticated one-use authorization interfaces. P2 owns
+the managed Attempt batch contract; P1 also closes the direct Attempt path. See
 §§12.19, 14.3, 32.38 and 37.22.
 
 `workspaceRevision` remains the current receipt-chain head, not an immutable identity field.
@@ -294,8 +313,9 @@ the current approval, authenticated Attempt, exact edges, workspace head, policy
 and then issues one-use leases. An unchallenged ALLOW follows the same bind/refresh/recheck
 sequence without a human approval step. This removes wording in §§12.19–12.20 and §14.3 that
 could be read as mutating the Attempt before its reviewer decision. The candidate intent is
-review material only; it never grants authority or permits dispatch. P1 owns HostKernel and
-EffectHost ordering; P2 owns durable Attempt events. VEO-022 covers approval denial/staleness,
+review material only; it never grants authority or permits dispatch. P2 owns HostKernel sequencing
+and durable Attempt-event ordering; P1 owns Guard/EffectHost authorization and supplies the
+interfaces HostKernel invokes. VEO-022 covers approval denial/staleness,
 pre-approval no-mutation, retries, cancellation, crash and lease fencing.
 
 
@@ -315,6 +335,14 @@ approval where required, and per-effect one-use leases remain separate mandatory
 owns the Rust transition plus authenticated Core/API/SDK/TUI path; acceptance covers stale
 revision, wrong actor, exact retry, key conflict, duplicate start and no dispatch before
 downstream admission.
+
+The initial V1 verifier vertical accepts exactly one coding Task per Run, and that Task covers
+the accepted criteria set. Core plan creation and the canonical Rust reducer keep new
+multi-Task plans unavailable until per-Task verification, conflict-safe leases/recovery and
+aggregate Run settlement are implemented. Under DEC-V1-31 these are prerequisites to the
+required bounded managed DAG capability in final V1, not a post-V1 deferral. Historical
+multi-Task records remain replayable; they cannot dispatch while the aggregate contract is
+incomplete (see §12.19 and DEC-V1-31).
 
 Legacy public HostKernel operations that could create a RUNNING Run or append Task inputs
 outside this plan/start sequence are unavailable; historical OwnerLog events remain replayable
@@ -445,7 +473,13 @@ operation/idempotency key. HostKernel resolves all paths and process arguments f
 state, evaluates the canonical Guard action (`git.worktree.acquire`, `git.worktree.list` for
 inspection, or `git.worktree.release`), and routes admitted work through the existing one-use
 EffectIntent/lease/receipt and confined ExecutionHost supervisor. Guard approval follows the
-existing managed approval path. Release requires P8's clean pre-delete and post-delete MISSING
+existing managed approval path. Since this approval is an interactive boundary, prepare and
+execute are separate private operations: prepare persists the exact P8 intent/pin and returns a
+Guard challenge; after explicit approval, execute consumes the one-use lease, persists the
+possible-dispatch fence and invokes the fixed operation. A P8 intent append invalidates the
+previous root proof, so HostKernel must derive a fresh root proof from current durable P8 state
+before evaluating or executing Guard. No synchronous auto-approval or replay after UNKNOWN.
+Release requires P8's clean pre-delete and post-delete MISSING
 proof; uncertain outcomes remain UNKNOWN/quarantined. The private control request does not create
 a second public capability or execution boundary. Core's direct worktree create/remove stays
 unavailable.
@@ -456,8 +490,137 @@ P8 may append `worker_settled` / `worker_reconciled` only from opaque crate-priv
 
 V1 managed `WorkerExecution` represents a logical Task child Session/Attempt in the existing Core process (`LOGICAL_CORE_SESSION`); it does not own a second worker PID and must never claim that the Core process exited. `WorkerSettlementProofV1` binds the exact P8 OwnerLog cursor, pool revision, worker state and reservation/worktree lease identity; the managed Goal/Run/Task/Attempt and DelegationBinding digest; P8 claim nonce; current authenticated root/Core owner epoch, process incarnation and peer identity; exact P2 OwnerLog terminal Attempt and complete effect-receipt evidence; and a typed settlement verdict. HostKernel additionally proves that the child prompt/callback scope is quiescent and that no Attempt-scoped Guard lease or owned command process remains active. Worktree reuse facts require current guarded workspace inspection. P8 rechecks its worker, lease, claim, cursor and revision before deriving internal transition fields and appending. SETTLED may release the logical ActiveWorkers reservation only after exact terminal Attempt and effect settlement plus the required quiescence proof; UNKNOWN or incomplete proof quarantines and retains conservative capacity. A future process-backed worker kind must separately bind and prove exit of its exact supervised process generation.
 
+The coding Attempt remains live/EXECUTING through independent verification. Child prompt return records only `managed_dispatch_quiesced` while Task is PENDING_VERIFICATION; a separately guarded verifier intent/lease then runs under that same Attempt. After typed evidence is durable, P2 advances the Attempt to SETTLING and Task to Verified. P2 exposes a distinct typed settlement-candidate projection for this exact live SETTLING state; P8 uses it to pin the final guarded Inspect at the evidence revision. After Inspect has a durable Guard receipt, P2 settles the Attempt to Succeeded and exposes the terminal snapshot. P8 then settles the worker from that terminal snapshot plus the exact final Inspect receipt. The candidate and terminal projections are separate to avoid requiring a terminal Attempt before the Inspect needed for worker settlement. Worker capacity is never released before verifier evidence and final Inspect are durable. See §12.19.
+
 Because the logical child shares Core's PID, process exit cannot establish prompt completion. After the exact managed `promptManaged` call returns, Core durably records its terminal outcome, then calls a private authenticated HostKernel completion operation for the consumed handoff. HostKernel checks the live authenticated Core peer, exact child Session/Attempt/handoff, absence of active Attempt callbacks, Guard leases and owned command processes, and mints a one-use `ManagedDispatchQuiescedProofV1`. ManagedControl appends the proof as `managed_dispatch_quiesced`; the terminal snapshot exposes its exact event cursor/digest. Only this persisted marker proves the managed prompt callback has returned. A crash or lost proof response after possible provider dispatch leaves the Attempt UNKNOWN and P8 capacity retained; exact completion retry may record/read the same marker but can never invoke the prompt again.
 
 `WorkerReconciliationProofV1` binds the exact quarantined P8 logical worker/child Session, current owner epoch and authenticated Core peer, current P8 cursor/revision, managed Attempt/DelegationBinding and exact independent no-effect/terminal reconciliation evidence. P8 rechecks that the worker is still quarantined and all required terminal facts match before `worker_reconciled`; any stale, changed or ambiguous effect/workspace/callback fact remains quarantined. It cannot infer absence from timeout, process sampling, a closed Session, or a model's report. If a distinct process-backed worker is introduced later, reconciliation must also bind its exact process identity and verified exit.
 
-Both producer APIs are internal to the existing HostKernel→P8 path; this decision adds no public RPC or alternate scheduler. One-use proof digest plus exact delivery identity provides stable replay; a changed proof under the same delivery conflicts. A lost response is resolved from the durable P8 receipt before mutable cursor checks, while current authentication and the exact request/proof binding are still revalidated. This contract preserves §11.20's quarantine and release rules and does not claim unsupported OS resource quotas. Source implementation is pending P1/P8; no acceptance evidence is implied.
+The authenticated child Attempt Session and the root Run `SessionLink` are distinct identity domains. P8 admission/Attempt owner pins and the current managed owner use the child Session ID; root-coordinator registration pins use the root Session ID. Reconciliation must independently prove that the durable child prompt-quiescence record names that root Session as its parent. It must never compare or substitute the child and root Session IDs.
+
+Both producer APIs are internal to the existing HostKernel→P8 path; this decision adds no public RPC or alternate scheduler. One-use proof digest plus exact delivery identity provides stable replay; a changed proof under the same delivery conflicts. A lost response is resolved from the durable P8 receipt before mutable cursor checks, while current authentication and the exact request/proof binding are still revalidated. This contract preserves §11.20's quarantine and release rules and does not claim unsupported OS resource quotas.
+
+**Source status (2026-10-20):** P8 source now has a typed final-Inspect pin from the P2 `ManagedAttemptSettlementCandidateV1` (exact durable claim/binding, admission pins and verified Create registration). Its canonical idempotency key is `managed-final-inspect-{attemptID}`. The read-only restart accessor checks that key against the operation ID recomputed from the historical root owner, then revalidates same-lineage current root proof, claim receipt/pins/binding, worker/worktree state, candidate revision and exact clean/owned/no-follow receipt from replayed OwnerLog. It can return committed receipt evidence from a quarantined worker after restart but grants no settlement authority; cancellation, a process binding, UNKNOWN intent, stale lineage/revision or mismatched receipt remains unavailable. P8's opaque settlement consumer still requires the terminal P2 snapshot and exact Inspect receipt together; it persists final Inspect refs, final revision, bounded verifier artifact refs and settlement OwnerLog watermark, then derives `HostRunReceiptRefV1` only from committed receipt. Reconciliation rechecks the persisted Inspect operation/receipt against durable registration lineage and terminal revision. Source-level replay coverage was added but not run. P1 HostKernel prepare/execute and restart integration, P2 terminal-verifier/accounting integration, and P8 acceptance remain unverified; authenticated RC0 projection remains absent and RC0 is `NOT_ATTESTED`.
+
+P8 source now also contains a distinct quarantine-only root reauthorization event/proof, exact retained-worktree target resolution, a fresh current-revision Guarded Inspect intent/dispatch/receipt path, and an idempotent resolver for an exact durable completed receipt after a lost execute response. P8 keeps root SessionLink identity separate from child Attempt Session identity and rejects nested ClaimedWorker lineage until its proof carries the Run root Session. P1 HostKernel integration is in progress; the receipt resolver cannot release leases, and failed/cancelled capacity remains quarantined pending a fresh full reconciliation proof. These source changes are unverified.
+
+After P2 settles the Attempt, P8 also exposes a read-only terminal-snapshot resolver requiring Succeeded/Verified/AllSettled/Quiesced. A new typed P8 OwnerLog event binds the final Inspect operation to the canonical full SETTLING-candidate digest while retaining the candidate Attempt, SpecVersion, binding, evidence digest and final revision for exact terminal cross-check. Legacy Inspect records without this pin do not qualify for managed settlement. This source path is not yet tested or verified.
+
+**Integrated sequencing contract (2026-10-20):** verifier evidence is committed before the P8 worker-settlement proof. The coding Attempt remains live through its separately Guarded verifier intent/lease; P2 records typed current-revision evidence, then HostKernel/P8 performs final guarded Inspect and settles from the exact terminal Attempt snapshot plus Inspect receipt. Final Inspect uses distinct prepare/challenge and execute/receipt operations so explicit TUI approval can occur between them. Every P8 append invalidates prior root proof; HostKernel refreshes it from the durable P8 state before continuing. Source wiring remains in progress and unverified.
+
+**Workspace revision separation (2026-10-20):** managed admission keeps the authenticated parent-root workspace revision for root Session/Goal lineage and independently measures the selected child worktree workspace revision for `Attempt.workspaceRevision` and `DelegationBinding.sourceRevision`. P8's base-revision locator is a third independent value. No equality or substitution is valid among these facts. P8 source now persists the HostKernel-minted child Location/workspace/root/revision projection in the same durable DelegationBound transition, retains the original parent-root revision for registered worktree lease validation, and restores the child revision to the worker lease on replay. Historical attachment events without the child projection remain readable but cannot authorize modern managed dispatch or settlement. This source remains untested; final P1/P2 call-path integration and acceptance are still required before managed worktree admission/dispatch becomes available.
+
+## 17.25 Managed provider request dual-digest binding (2026-10-21)
+
+Before a managed provider request can dispatch, HostKernel authorization and durable settlement must bind both (1) the canonical normalized Horizon request digest, covering the selected provider/model and normalized prompt/tool payload in the live managed Attempt/owner epoch, and (2) the exact non-secret SDK transport request digest, covering the resolved destination/method and exact serialized request body/format emitted by the existing Core Provider adapter. Both pins are required on the same one-use authorization and settlement record; neither substitutes for the other. SecretBroker injects credentials only inside its trusted use callback; raw credentials and secret-bearing header values are never included in persisted digests. The provider adapter validates the concrete SDK destination against HostKernel's selected route revision before sending. Request rewrite, route/model revision drift, digest mismatch, stale Attempt/epoch, or lost/ambiguous post-dispatch result fails closed or becomes UNKNOWN; it never triggers hidden route fallback or replay. This prevents intent substitution and transport mutation while retaining the existing Core ProviderTransport and Rust Guard/ExecutionHost owners. No live dispatch is enabled by this decision; P1/P2/P6 wiring and later acceptance remain required.
+
+The canonical Guard name is the sealed internal action `providers.infer`, recorded in the existing machine capability inventory as `kind: action`. It is not a model tool, ActionDescriptor, ToolRegistry entry, ToolBatch member, MCP method, plugin hook or alternative provider route. HostKernel alone mints it from a live authenticated ManagedRun Attempt and the selected route facts. It carries no arbitrary destination, credentials or fallback authority; the existing Core Provider/SecretBroker callback consumes the exact one-use permit before sending.
+
+## 17.26 Direct provider authorization and context pinning (2026-10-22)
+
+An authenticated user `prompt` or `continue` authorizes the requested direct model turn
+under the provider, model, account, endpoint, and harness already selected in Core for that
+Session, subject to the active privacy, network, token, and cost policy. Routine continuation
+requests in that same turn do not require a new permission prompt. A route or policy change,
+unknown required cost/privacy state, or a request that exceeds a configured limit stops before
+dispatch and uses the owning settings/approval flow. A direct request never falls back to a
+different provider, model, account, endpoint, or harness. This direct authorization is distinct
+from managed `providers.infer`, which remains bound to a live managed Attempt and is never
+reused as direct-session authority.
+
+For every direct model request, Core `ContextService` compiles one bounded normalized provider
+input. Core persists an immutable request pin and its digest before transport, and sends that
+same in-memory normalized value; it must not recompile, mutate, or substitute a different body
+after the pin. The pin binds the authenticated Session/request identity, current canonical
+Session cursor, selected route tuple/revision, context source refs and revisions, provider-visible
+tool projection, exact normalized provider-input digest, and applicable privacy/budget policy
+digest. SessionStore/Core owns direct request identity, context and transcript persistence;
+HostKernel/OwnerLog owns managed Attempt bindings. A post-dispatch crash or lost response is
+UNKNOWN unless the provider offers an exact idempotency key and a trusted result can be
+reconciled; it is never silently resent. The exact request, direct context, and provider policy
+contracts and acceptance cases are owned by §§12–15, 30, 32 and 37.
+
+The direct route projection is derived only by Core's existing selected-model/catalog resolver
+from the exact selected ProviderV2/ModelV2 configuration, including the fixed adapter package,
+adapter model ID, and normalized endpoint. Core gives the projection to the protected transport;
+the transport independently resolves its concrete target from that same selected catalog entry
+and must prove exact provider/model/harness/route/revision/endpoint-revision equality before
+dispatch. `model.route.id`, request fields, environment credentials, caller metadata, and a
+second OpenCode-only provider lookup are not route authority. The route revision covers the
+non-secret adapter and selected catalog configuration; endpoint revision covers the normalized
+fixed endpoint. If Core cannot produce the projection, or the transport cannot match it, the
+direct request remains unavailable before bytes are sent. The HostKernel-authenticated
+`DirectSessionPermissionModeV1.digest` is carried as `permissionScopeDigest`; Core's
+privacy/budget-policy digest remains a separate `policyDigest`. Neither digest is a managed
+Attempt scope or a per-effect grant, and neither bypasses Guard for tool effects.
+
+## 17.27 CodeMode fixed-helper consent (2026-10-22)
+
+The user explicitly enables `codemode.execute` for the current direct Session (or an exact
+accepted managed profile) before it becomes model-visible. That choice may authorize the fixed
+packaged `horizoncode:codemode:bun` helper launch on the current accepted backend, bound to the
+exact `CodeModeResourceProfileV1` digest and Session/Attempt scope. This is a narrow capability
+grant for one trusted packaged helper, not an arbitrary process or shell grant. Each invocation
+still receives fresh Guard validation, durable intent, one-use lease, helper-process receipt and
+settlement, but unchanged enablement does not trigger a repeated user prompt; nested tool effects continue through complete ToolBatch admission and their ordinary
+Guard/lease/receipt path. Exact enablement is revoked or invalidated when the Session, profile,
+runtime package, resource profile, owner epoch, policy or required containment changes. No
+per-invocation dialog is needed inside that unchanged explicit scope. The UI must identify the
+helper, limits and nested capabilities before enabling it. Without enablement, helper integrity,
+or verified OS containment, the tool remains unavailable. This does not alter DEC-V1-28's
+prohibition on arbitrary child-process grants. Owners and acceptance: §§12.21, 14.27, 16.10,
+32.41, 33.21 and 37.24.
+
+## 17.28 Default tool-surface policy (2026-10-22)
+
+The default native-call harness uses `harness.native-rich` with a curated common coding surface
+and filters every tool by current authorization, provider/model compatibility and availability.
+It does not send the full capability catalog on every request. Long-tail capabilities use
+progressive search/describe and become model-visible only at a safe request boundary. Users may
+explicitly choose `harness.native-minimal` for small-context or lower-capability models; the
+selected harness never changes provider/model or broadens authority. CodeMode follows
+DEC-V1-29/17.27. Core preserves direct calls for simple operations. Catalog defaults and tool
+discovery semantics are specified by §§16, 30, 32 and 33.
+
+## 17.29 Direct-session artifact retrieval (2026-10-22)
+
+V1 supports bounded search and range retrieval for artifacts produced by a direct Session's
+Guarded tool/effect calls. The existing ArtifactStore remains the only canonical artifact-byte
+owner; each direct artifact is bound to its Core Session, originating request/tool call, direct
+effect receipt, content digest and immutable generation. Authenticated direct artifact reads are
+limited to that Session and do not confer managed Evidence/Verification authority or access to
+managed Attempt artifacts. A managed Attempt cannot resolve, read or cite direct refs/content;
+equivalent bytes require an independently produced managed artifact with new owner-issued evidence
+refs, and no cross-lane promotion/capture is allowed. Redaction, byte/node/range limits,
+`full`/`head_tail_sample`/`failed` wire fidelity (shown as FULL/SAMPLE/FAILED in the UI), stale
+generation rejection and restart-safe identity are required. No artifact is inferred from model
+self-report or an unreceipted effect. The service, catalog, UI and acceptance contracts are owned
+by §§12, 14, 16, 31–33, 37 and 45.
+
+## 17.30 Web-search domain filters are query intent (2026-10-22)
+
+`WebSearchRequestV1.domains` is a bounded query filter supplied as user/model intent. It does not
+authorize destinations, change provider routing, or establish a domain security policy. HostKernel
+validates canonical syntax/count/byte limits and exact equality with the authenticated Guard-approved
+arguments. The fixed provider route and consent policy remain authoritative. V1 defines no separate
+domain allowlist setting; adding one requires a future explicit policy owner and contract.
+
+## 17.31 Direct-session Git inspection uses workspace read authority (2026-10-22)
+
+The catalogued read-only Git operations are bounded workspace reads under the existing
+`files.read` grant and Guard path, with authenticated principal, registered Location and
+current workspace-revision pins. An exact pre-authorized workspace grant keeps ordinary
+inspection prompt-free; when Guard returns ASK, use the normal UserAction approval flow.
+The service accepts only finite structured operations (`git.status`, `git.diff`, `git.log`,
+`git.show`, `git.branch.list`) with fixed argv templates, bounded output/time, validated
+object IDs and repository-relative literal paths. It accepts no executable, cwd, environment,
+raw argv, arbitrary subcommand, network operation or write operation from a caller/model.
+Settled output is durably replayable under the exact same operation binding, either as bounded
+receipt bytes or an immutable content-addressed artifact reference. Missing or conflicting
+post-dispatch evidence remains UNKNOWN and is never relaunched. `repo.tree` stays under
+RepoIntel and is not implemented as `git ls-tree`. This reuses the canonical capability and
+Guard; it adds no second authority. See §§14.28, 20.15, 32.46 and 37.29.
+
+## 17.32 Competitive research vs V1 adaptation law (2026-10-22)
+
+Research comparing Windsurf, Cursor, OpenCode/mgrep, Aider, code-review-graph, Devin-style browser workers, and related MCP marketing is **non-normative evidence** unless distilled into §17, §10.18, §30.25, or §42.21 and backed by §32 acceptance. `DEC-V1-35` is the governing decision; `DEC-V1-34` defines how matched competitor benchmarks may be claimed. Implementation agents must not treat a research document, MCP README, or vendor “99% token reduction” figure as a scope expansion.

@@ -2,148 +2,100 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "horizon://schemas/context-ledger-v2",
   "title": "ContextLedgerV2",
+  "description": "Read-only projection of one exact provider request and the pinned context sources represented in it. This is not canonical conversation storage or effect authority.",
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "threadId",
-    "epochId",
-    "modelContextLimit",
-    "reservedOutputTokens",
+    "schemaVersion",
+    "lane",
+    "sessionID",
+    "requestID",
+    "sourceRevision",
+    "providerID",
+    "modelID",
+    "harnessID",
+    "harnessRevision",
+    "requestPayloadDigest",
+    "requestBytes",
+    "contextSelection",
     "entries",
-    "tokenTotal",
-    "generation"
+    "completeness"
   ],
   "properties": {
-    "threadId": {
-      "type": "string"
+    "schemaVersion": { "const": 2 },
+    "lane": { "enum": ["direct", "managed"] },
+    "sessionID": { "type": "string", "pattern": "^ses_[A-Za-z0-9_-]{1,128}$" },
+    "requestID": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "sourceRevision": {
+      "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64",
+      "description": "Canonical decimal-string Session cursor in direct lane; managed request revision in managed lane."
     },
-    "epochId": {
-      "type": "string"
-    },
-    "modelContextLimit": {
-      "type": "integer",
-      "minimum": 1
-    },
-    "reservedOutputTokens": {
-      "type": "integer",
-      "minimum": 0
-    },
-    "tokenTotal": {
-      "type": "integer",
-      "minimum": 0
-    },
-    "generation": {
-      "type": "integer",
-      "minimum": 0
-    },
+    "providerID": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "modelID": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "harnessID": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "harnessRevision": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "requestPayloadDigest": { "type": "string", "pattern": "^blake3:[0-9a-f]{64}$" },
+    "requestBytes": { "type": "integer", "minimum": 0, "maximum": 16777216 },
+    "contextSelection": { "$ref": "horizon://schemas/context-selection-v1" },
+    "contextSelectionDigest": { "type": "string", "pattern": "^blake3:[0-9a-f]{64}$" },
     "entries": {
       "type": "array",
+      "maxItems": 512,
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": [
-          "entryId",
-          "kind",
-          "sourceRef",
-          "trust",
-          "protection",
-          "cacheClass",
-          "inclusionReason",
-          "tokenCount"
-        ],
+        "required": ["entryID", "kind", "sourceRef", "trust", "bytesKind", "tokens", "included", "protected", "digest"],
         "properties": {
-          "entryId": {
-            "type": "string"
-          },
+          "entryID": { "type": "string", "minLength": 1, "maxLength": 512 },
           "kind": {
-            "enum": [
-              "system",
-              "developer",
-              "user",
-              "assistant",
-              "thinking",
-              "tool",
-              "subagent",
-              "artifact",
-              "file",
-              "image",
-              "document",
-              "memory",
-              "summary",
-              "marker"
-            ]
+            "enum": ["system", "goal", "user", "assistant", "thinking", "tool_call", "tool_result", "file", "symbol", "artifact", "image", "document", "skill", "memory", "subagent_result", "environment"]
           },
-          "sourceRef": {
-            "type": "string"
+          "sourceRef": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "sourceRevision": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "trust": { "enum": ["system", "user", "workspace", "external", "mixed"] },
+          "bytes": { "type": "integer", "minimum": 0, "maximum": 16777216 },
+          "bytesKind": { "enum": ["exact", "estimated", "unknown"] },
+          "tokens": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind"],
+            "properties": {
+              "kind": { "enum": ["exact", "estimated", "unknown"] },
+              "value": { "type": "integer", "minimum": 0, "maximum": 16777216 },
+              "tokenizerID": { "type": "string", "minLength": 1, "maxLength": 512 }
+            }
           },
-          "trust": {
-            "enum": [
-              "system",
-              "user",
-              "project",
-              "external",
-              "derived"
-            ]
-          },
-          "protection": {
-            "enum": [
-              "required",
-              "protected",
-              "prunable",
-              "rebuildable"
-            ]
-          },
-          "cacheClass": {
-            "enum": [
-              "static",
-              "history",
-              "attachment",
-              "turn",
-              "none"
-            ]
-          },
-          "inclusionReason": {
-            "type": "string"
-          },
-          "tokenCount": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "contentDigest": {
-            "type": "string"
-          }
-        }
+          "included": { "type": "boolean" },
+          "inclusionReason": { "type": "string", "maxLength": 256 },
+          "protected": { "type": "boolean" },
+          "cacheClass": { "enum": ["static", "history", "turn", "attachment", "none"] },
+          "freshness": { "type": "string", "maxLength": 128 },
+          "digest": { "type": "string", "pattern": "^blake3:[0-9a-f]{64}$" }
+        },
+        "allOf": [
+          { "if": { "properties": { "bytesKind": { "const": "unknown" } } }, "then": { "not": { "required": ["bytes"] } } },
+          { "if": { "properties": { "bytesKind": { "enum": ["exact", "estimated"] } } }, "then": { "required": ["bytes"] } },
+          { "if": { "properties": { "tokens": { "properties": { "kind": { "const": "unknown" } } } } }, "then": { "properties": { "tokens": { "not": { "required": ["value"] } } } } },
+          { "if": { "properties": { "tokens": { "properties": { "kind": { "enum": ["exact", "estimated"] } } } } }, "then": { "properties": { "tokens": { "required": ["value"] } } } },
+          { "if": { "properties": { "tokens": { "properties": { "kind": { "const": "exact" } } } } }, "then": { "properties": { "tokens": { "required": ["tokenizerID"] } } } },
+          { "if": { "properties": { "included": { "const": true } } }, "then": { "required": ["inclusionReason"] } }
+        ]
       }
     },
-    "lastMarker": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "previousEpochId",
-        "newEpochId",
-        "action",
-        "at"
-      ],
-      "properties": {
-        "previousEpochId": {
-          "type": "string"
-        },
-        "newEpochId": {
-          "type": "string"
-        },
-        "action": {
-          "enum": [
-            "clear",
-            "compact",
-            "resume",
-            "manual"
-          ]
-        },
-        "at": {
-          "type": "string",
-          "format": "date-time"
-        }
-      }
-    }
-  }
+    "completeness": { "enum": ["complete", "partial"] },
+    "partialReason": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "compilePolicy": { "$ref": "horizon://schemas/context-compile-policy-v1" }
+  },
+  "x-horizon-validation": [
+    "sessionID/requestID/sourceRevision match the embedded ContextSelectionV1",
+    "lane matches the ContextSelectionV1 lane; managed lane includes its HostKernel-issued ContextSelection digest",
+    "entryID values are unique",
+    "every included entry sourceRef is a kind:sourceID reference in ContextSelectionV1",
+    "every ContextSelectionV1 source is represented by at least one included entry",
+    "raw provider payload and credentials are never included"
+  ],
+  "allOf": [
+    { "if": { "properties": { "lane": { "const": "managed" } } }, "then": { "required": ["contextSelectionDigest"] } },
+    { "if": { "properties": { "completeness": { "const": "partial" } } }, "then": { "required": ["partialReason"] }, "else": { "not": { "required": ["partialReason"] } } }
+  ]
 }

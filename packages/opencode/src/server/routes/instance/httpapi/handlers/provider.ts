@@ -10,27 +10,8 @@ import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
 import { ProviderAuthApiError } from "../groups/provider"
+import { ServiceUnavailableError } from "../errors"
 import { ProviderV2 } from "@opencode-ai/core/provider"
-
-function mapProviderAuthError<A, R>(self: Effect.Effect<A, ProviderAuth.Error, R>) {
-  return self.pipe(
-    Effect.mapError((error) => {
-      if (error instanceof ProviderAuth.OauthMissing) {
-        return new ProviderAuthApiError({ name: error._tag, data: { providerID: error.providerID } })
-      }
-      if (error instanceof ProviderAuth.OauthCodeMissing) {
-        return new ProviderAuthApiError({ name: error._tag, data: { providerID: error.providerID } })
-      }
-      if (error instanceof ProviderAuth.OauthCallbackFailed) {
-        return new ProviderAuthApiError({ name: error._tag, data: {} })
-      }
-      if (error instanceof ProviderAuth.ValidationFailed) {
-        return new ProviderAuthApiError({ name: error._tag, data: { field: error.field, message: error.message } })
-      }
-      return new ProviderAuthApiError({ name: "BadRequest", data: {} })
-    }),
-  )
-}
 
 export const providerHandlers = HttpApiBuilder.group(InstanceHttpApi, "provider", (handlers) =>
   Effect.gen(function* () {
@@ -41,7 +22,8 @@ export const providerHandlers = HttpApiBuilder.group(InstanceHttpApi, "provider"
 
     const list = Effect.fn("ProviderHttpApi.list")(function* () {
       const config = yield* cfg.get()
-      const all = yield* ModelsDev.Service.use((s) => s.get())
+      const catalogSnapshot = yield* ModelsDev.Service.use((s) => s.getSnapshot())
+      const all = catalogSnapshot.providers
       const disabled = new Set(config.disabled_providers ?? [])
       const enabled = config.enabled_providers ? new Set(config.enabled_providers) : undefined
       const filtered: Record<string, (typeof all)[string]> = {}
@@ -49,16 +31,37 @@ export const providerHandlers = HttpApiBuilder.group(InstanceHttpApi, "provider"
         if ((enabled ? enabled.has(key) : true) && !disabled.has(key)) filtered[key] = value
       }
       const configuredProviders = yield* provider.list()
-      const credentials = yield* authStore.all().pipe(Effect.orDie)
       const providers = Object.assign(
         mapValues(filtered, (item) => Provider.fromModelsDevProvider(item)),
         configuredProviders,
       )
+      // Only metadata references for IDs resolved by the canonical provider
+      // registry count as a configured credential source. This remains a UI
+      // projection; SecretBroker presence does not authorize provider dispatch.
+      const credentialRefs = yield* authStore.credentialRefsForProviders(Object.keys(providers)).pipe(Effect.orDie)
+      // If a test or alternate provider layer lacks the policy projection, fail
+      // closed and expose no anonymous model selection.
+      let anonymousFreeModels: string[] = []
+      if (provider.anonymousFreeModelRefs) anonymousFreeModels = yield* provider.anonymousFreeModelRefs()
+      const anonymousFreeProviders = anonymousFreeModels.length > 0 ? [ProviderV2.ID.opencode] : []
+      const defaults = Provider.defaultModelIDs(providers)
+      const anonymousModelIDs = anonymousFreeModels
+        .filter((ref) => ref.startsWith(`${ProviderV2.ID.opencode}/`))
+        .map((ref) => ref.slice(`${ProviderV2.ID.opencode}/`.length))
+      if (anonymousModelIDs.length === 0) delete defaults.opencode
+      else if (!anonymousModelIDs.includes(defaults.opencode)) defaults.opencode = anonymousModelIDs[0]
       return {
         all: Object.values(providers).map(Provider.toPublicInfo),
-        default: Provider.defaultModelIDs(providers),
+        default: defaults,
+        anonymousFreeProviders,
+        anonymousFreeModels,
+        catalogSnapshot: {
+          source: catalogSnapshot.source,
+          freshness: catalogSnapshot.freshness,
+          ...(catalogSnapshot.updatedAt === undefined ? {} : { updatedAt: catalogSnapshot.updatedAt }),
+        },
         connected: Object.values(providers)
-          .filter((item) => item.source !== "custom" || credentials[item.id])
+          .filter((item) => item.source !== "custom" || credentialRefs[item.id] || anonymousFreeProviders.includes(item.id))
           .map((item) => item.id),
       }
     })
@@ -67,17 +70,18 @@ export const providerHandlers = HttpApiBuilder.group(InstanceHttpApi, "provider"
       return yield* svc.methods()
     })
 
-    const authorize = Effect.fn("ProviderHttpApi.authorize")(function* (ctx: {
+    const authorize = Effect.fn("ProviderHttpApi.authorize")(function* (_ctx: {
       params: { providerID: ProviderV2.ID }
       payload: ProviderAuth.AuthorizeInput
     }) {
-      return yield* mapProviderAuthError(
-        svc.authorize({
-          providerID: ctx.params.providerID,
-          method: ctx.payload.method,
-          inputs: ctx.payload.inputs,
-        }),
-      )
+      // The upstream OAuth flow persists credentials through legacy Auth and
+      // has no protected native input/Guarded SecretBroker write authority.
+      // Reject before constructing a provider authorization URL or mutating
+      // auth state; the V1 UI reports this capability as unavailable.
+      return yield* Effect.fail(new ServiceUnavailableError({
+        message: "Provider credential entry is unavailable until Guarded SecretBroker input is integrated",
+        service: "provider-credential-write",
+      }))
     })
 
     const authorizeRaw = Effect.fn("ProviderHttpApi.authorizeRaw")(function* (ctx: {
@@ -95,18 +99,17 @@ export const providerHandlers = HttpApiBuilder.group(InstanceHttpApi, "provider"
       return HttpServerResponse.jsonUnsafe(result ?? null)
     })
 
-    const callback = Effect.fn("ProviderHttpApi.callback")(function* (ctx: {
+    const callback = Effect.fn("ProviderHttpApi.callback")(function* (_ctx: {
       params: { providerID: ProviderV2.ID }
       payload: ProviderAuth.CallbackInput
     }) {
-      yield* mapProviderAuthError(
-        svc.callback({
-          providerID: ctx.params.providerID,
-          method: ctx.payload.method,
-          code: ctx.payload.code,
-        }),
-      )
-      return true
+      // OAuth callbacks can persist caller-supplied authorization material.
+      // Keep the entire legacy mutation route disabled at its authenticated
+      // boundary until a trusted protected-input exchange exists.
+      return yield* Effect.fail(new ServiceUnavailableError({
+        message: "Provider credential callbacks are unavailable until Guarded SecretBroker input is integrated",
+        service: "provider-credential-write",
+      }))
     })
 
     return handlers

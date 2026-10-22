@@ -8,7 +8,10 @@
     },
     "lane": {
       "type": "string",
-      "enum": ["direct_session", "managed_attempt"]
+      "enum": [
+        "direct_session",
+        "managed_attempt"
+      ]
     },
     "deliveryId": {
       "type": "string",
@@ -103,26 +106,84 @@
         {
           "type": "object",
           "properties": {
-            "parentSessionId": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$" },
-            "childSessionId": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$" },
-            "profileId": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$" },
-            "profileRevision": { "type": "string", "maxLength": 20, "pattern": "^(0|[1-9][0-9]{0,19})$" },
-            "profileDigest": { "$ref": "#/$defs/digest" },
-            "permissionScopeDigest": { "$ref": "#/$defs/digest" }
+            "parentSessionId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+            },
+            "childSessionId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+            },
+            "profileId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+            },
+            "profileRevision": {
+              "type": "string",
+              "maxLength": 20,
+              "pattern": "^(0|[1-9][0-9]{0,19})$"
+            },
+            "profileDigest": {
+              "$ref": "#/$defs/digest"
+            },
+            "permissionScopeDigest": {
+              "$ref": "#/$defs/digest"
+            }
           },
-          "required": ["parentSessionId", "childSessionId", "profileId", "profileRevision", "profileDigest", "permissionScopeDigest"],
+          "required": [
+            "parentSessionId",
+            "childSessionId",
+            "profileId",
+            "profileRevision",
+            "profileDigest",
+            "permissionScopeDigest"
+          ],
           "additionalProperties": false
         },
         {
           "type": "object",
           "properties": {
-            "delegationBindingDigest": { "$ref": "#/$defs/digest" },
-            "goalId": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$" },
-            "runId": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$" },
-            "taskId": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$" },
-            "attemptId": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$" }
+            "delegationBindingDigest": {
+              "$ref": "#/$defs/digest"
+            },
+            "goalId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+            },
+            "runId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+            },
+            "taskId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+            },
+            "attemptId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+            }
           },
-          "required": ["delegationBindingDigest", "goalId", "runId", "taskId", "attemptId"],
+          "required": [
+            "delegationBindingDigest",
+            "goalId",
+            "runId",
+            "taskId",
+            "attemptId"
+          ],
           "additionalProperties": false
         }
       ]
@@ -154,12 +215,55 @@
   ],
   "allOf": [
     {
-      "if": { "properties": { "lane": { "const": "direct_session" } }, "required": ["lane"] },
-      "then": { "properties": { "authority": { "required": ["parentSessionId", "childSessionId", "profileId", "profileRevision", "profileDigest", "permissionScopeDigest"] } } }
+      "if": {
+        "properties": {
+          "lane": {
+            "const": "direct_session"
+          }
+        },
+        "required": [
+          "lane"
+        ]
+      },
+      "then": {
+        "properties": {
+          "authority": {
+            "required": [
+              "parentSessionId",
+              "childSessionId",
+              "profileId",
+              "profileRevision",
+              "profileDigest",
+              "permissionScopeDigest"
+            ]
+          }
+        }
+      }
     },
     {
-      "if": { "properties": { "lane": { "const": "managed_attempt" } }, "required": ["lane"] },
-      "then": { "properties": { "authority": { "required": ["delegationBindingDigest", "goalId", "runId", "taskId", "attemptId"] } } }
+      "if": {
+        "properties": {
+          "lane": {
+            "const": "managed_attempt"
+          }
+        },
+        "required": [
+          "lane"
+        ]
+      },
+      "then": {
+        "properties": {
+          "authority": {
+            "required": [
+              "delegationBindingDigest",
+              "goalId",
+              "runId",
+              "taskId",
+              "attemptId"
+            ]
+          }
+        }
+      }
     }
   ],
   "additionalProperties": false

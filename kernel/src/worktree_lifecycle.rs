@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 
 use crate::resource_sampler::ProcessIdentity;
-use crate::worker_durable::RootCoordinatorExecutionProofV1;
+use crate::worker_durable::{ReadOnlyReconciliationRootProofV1, RootCoordinatorExecutionProofV1};
 
 pub const MAX_WORKTREE_OPERATIONS: usize = 256;
 pub const MAX_WORKTREE_PATH_BYTES: usize = 1024;
@@ -60,6 +60,25 @@ impl WorktreeRootOwnerV1 {
             process_incarnation: proof.process_incarnation().to_owned(),
             process_identity: proof.process_identity().clone(),
             accepted_spec_digest: proof.accepted_spec_digest().to_owned(),
+            root_digest: String::new(),
+        };
+        owner.validate()?;
+        owner.root_digest = owner.compute_digest();
+        Ok(owner)
+    }
+
+    /// Derive lineage for the single P8 read-only reconciliation Inspect.
+    /// This value cannot be used to create, release, or select ordinary work.
+    pub(crate) fn from_read_only_reconciliation_proof(
+        proof: &ReadOnlyReconciliationRootProofV1,
+    ) -> Result<Self, WorktreeLifecycleErrorV1> {
+        let mut owner = Self {
+            coordinator_id: proof.worker_execution_id().to_owned(),
+            goal_id: proof.goal_id().to_owned(), run_id: proof.run_id().to_owned(),
+            principal_ref: proof.principal_ref().to_owned(), workspace_binding: proof.workspace_binding().to_owned(),
+            session_id: proof.session_id().to_owned(), location_id: proof.location_id().to_owned(),
+            owner_epoch: proof.owner_epoch(), process_incarnation: proof.process_incarnation().to_owned(),
+            process_identity: proof.process_identity().clone(), accepted_spec_digest: proof.accepted_spec_digest().to_owned(),
             root_digest: String::new(),
         };
         owner.validate()?;
@@ -847,8 +866,15 @@ impl WorktreeOperationJournalV1 {
             record.receipt = Some(receipt);
             return Ok(());
         }
+        // An Inspect can complete with an unattributed dirty snapshot: it is
+        // read-only evidence of the exact observed revision, while the
+        // settlement consumer separately keeps the worktree quarantined and
+        // never treats it as reusable. Unknown observations remain
+        // quarantined, as do unattributed states from Create/Release where
+        // ownership is required to establish safe lifecycle completion.
         if receipt.status == WorktreeObservedStatusV1::Unknown
-            || receipt.status == WorktreeObservedStatusV1::DirtyUnattributed
+            || (record.intent.kind != WorktreeOperationKindV1::Inspect
+                && receipt.status == WorktreeObservedStatusV1::DirtyUnattributed)
         {
             record.state = WorktreeOperationStateV1::Quarantined;
         } else {
@@ -1030,6 +1056,33 @@ mod tests {
         assert!(journal.dispatchable_intent("operation-a").is_none());
         assert_eq!(journal.get("operation-a").unwrap().state(), WorktreeOperationStateV1::Unknown);
         assert_eq!(journal.record_dispatch_started("operation-a"), Err(WorktreeLifecycleErrorV1::InvalidTransition));
+    }
+
+    #[test]
+    fn exact_dirty_inspect_is_terminal_evidence_but_unknown_stays_quarantined() {
+        let mut journal = WorktreeOperationJournalV1::default();
+        let inspect = intent(WorktreeOperationKindV1::Inspect);
+        journal.record_intent(inspect.clone()).expect("record Inspect intent");
+        journal.record_dispatch_started("operation-a").expect("mark dispatch");
+        let dirty = GuardedWorktreeReceiptV1::from_guarded_host(
+            "operation-a".into(), "host-receipt-dirty".into(), &root(),
+            "workspace-rev-a".into(), WorktreeObservedStatusV1::DirtyUnattributed, 1,
+            format!("blake3:{}", "d".repeat(64)), true, None, true, true,
+        ).expect("valid exact dirty Inspect receipt");
+        journal.record_receipt(dirty.clone()).expect("record exact Inspect evidence");
+        assert_eq!(journal.get("operation-a").unwrap().state(), WorktreeOperationStateV1::Completed);
+        assert_eq!(journal.get("operation-a").unwrap().receipt(), Some(&dirty));
+
+        let mut unknown_journal = WorktreeOperationJournalV1::default();
+        unknown_journal.record_intent(inspect).expect("record second Inspect intent");
+        unknown_journal.record_dispatch_started("operation-a").expect("mark second dispatch");
+        let unknown = GuardedWorktreeReceiptV1::from_guarded_host(
+            "operation-a".into(), "host-receipt-unknown".into(), &root(),
+            "workspace-rev-a".into(), WorktreeObservedStatusV1::Unknown, 0,
+            String::new(), false, None, true, true,
+        ).expect("valid unknown Inspect receipt");
+        unknown_journal.record_receipt(unknown).expect("record unknown Inspect outcome");
+        assert_eq!(unknown_journal.get("operation-a").unwrap().state(), WorktreeOperationStateV1::Quarantined);
     }
 
     #[test]

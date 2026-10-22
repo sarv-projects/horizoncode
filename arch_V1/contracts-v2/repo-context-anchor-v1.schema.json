@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "horizon://schemas/repo-context-anchor-v1",
+  "title": "RepoContextAnchorV1",
+  "description": "Bounded workspace repo map generated once per session anchor epoch. Same artifact bytes are reused across turns when workspace sourceRevision is unchanged; query-specific retrieval stays in the mutable compile tail.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "sessionID",
+    "workspaceBindingDigest",
+    "sourceRevision",
+    "repoGenerationDigest",
+    "contentDigest",
+    "byteLength",
+    "projectionFullDigest",
+    "projectionCompressedDigest",
+    "completeness"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "sessionID": { "type": "string", "pattern": "^ses_[A-Za-z0-9_-]{1,128}$" },
+    "workspaceBindingDigest": { "type": "string", "pattern": "^blake3:[0-9a-f]{64}$" },
+    "sourceRevision": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "repoGenerationDigest": { "type": "string", "pattern": "^blake3:[0-9a-f]{64}$" },
+    "contentDigest": {
+      "type": "string",
+      "pattern": "^blake3:[0-9a-f]{64}$",
+      "description": "Digest of canonical full anchor text stored in ArtifactStore."
+    },
+    "byteLength": { "type": "integer", "minimum": 0, "maximum": 8388608 },
+    "projectionFullDigest": { "type": "string", "pattern": "^blake3:[0-9a-f]{64}$" },
+    "projectionCompressedDigest": { "type": "string", "pattern": "^blake3:[0-9a-f]{64}$" },
+    "fileCount": { "type": "integer", "minimum": 0, "maximum": 4096 },
+    "completeness": { "enum": ["complete", "partial"] },
+    "partialReason": { "type": "string", "maxLength": 256 }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "completeness": { "const": "partial" } } },
+      "then": { "required": ["partialReason"] }
+    }
+  ]
+}

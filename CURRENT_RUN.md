@@ -1,5 +1,675 @@
 # CURRENT_RUN — HorizonCode engineering activity and evidence log
 
+## 2026-10-22 — current implementation checkpoint
+
+Active whole-phase owners: P1 Guard/ExecutionHost, P2 managed lifecycle/HostKernel, and P7 streams/context/artifacts/analytics/automation/rewind. P8 has handed off SOURCE-COMPLETE FOR CURRENTLY UNBLOCKED WORK (NOT PHASE-ACCEPTED) after adding a bounded repository-local task-catalog resolver and paired HostRun evaluator seam. P2 was immediately refilled and owns the whole unfinished managed phase, including distinct-Location DAG/per-Task verifier, authenticated HostKernel CodeMode lifecycle and root artifact inspect/range, with shared-file changes coordinated around P1/P7. P1 source now strictly projects trusted workspace command-profile rows Core→HostKernel, wraps shell-mode calls with the required discriminator, and binds terminal arguments to a v2 digest; the fixed-argv profile Guard/EffectHost/ExecutionHost chain and exact profile-grant admission remain incomplete and gated. The cgroup janitor is wired at startup recovery and terminal settlement: it reaps only hidden-hierarchy groups with persisted quiescence and exact owner/device/inode/path proof under exclusive locking. The 256 count is a bounded quarantine ceiling for UNKNOWN, Full Access, legacy, or unproven groups; eligible groups are reclaimed so it is not a lifetime launch cap.
+
+P7 source now routes the selected provider through EventV2 atomic usage settlement and recovers ambiguous dispatch as UNKNOWN without replay. It admits terminal effects through `Pty.prepareToolBatch`/`Pty.runTool` with the exact lease; the first-party Bash leaf stays hidden until P1 readiness. The OpenCode-derived SessionPrompt CodeMode adapter uses the authorized SessionTools-resolved catalog and typed HostKernel prepare/settle/receipts; direct Core V2 still has a fail-closed nested-dispatch placeholder until P5 supplies the helper context/current catalog through Core's registry. Deterministic pre-dispatch terminal decisions skip callbacks. P7 also fixed artifact scope promotion: direct and managed requests must match their exact live Attempt authority, and ambiguous dual authority fails closed. Root direct artifact search is being bound to authenticated HostKernel list/inspect/range authority; inspect/range and wave-correlated cancellation still depend on P2. Existing stream/replay/redaction/analytics/context-ledger source remains unverified; guarded automation invocation and checkpoint capture/restore remain gated on P1/P2. P8 confirms durable OwnerLog worker/worktree leases and truthful unsupported OS quota reporting exist; its remaining work includes the reproducible local baseline-vs-HorizonCode evaluation source. Pressure-driven admission/cache retirement stays unavailable until trusted policy and authenticated ingress provide explicit recovery settings.
+
+P6 is a partial source handoff and must be refilled as slots open; P3/P4/P5/P9 and final integration remain unfinished. No tests, builds, typechecks, audits, provider calls, benchmarks, or release checks have run under the implementation-first hold. Git has zero staged changes and a large mixed unstaged/untracked tree; preserve it. Repository-local disk check: 841 GB free and `kernel/target` 627 MB. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+P2 CodeMode receipt checkpoint (2026-10-22): the authenticated dispatcher names
+`codemode_settle_tool_results` and `codemode_wave_receipts`, but HostKernel
+handlers remain absent, so CodeMode stays unavailable. P2 added durable HostKernel
+receipt-table support for receiptless UNKNOWN and extended the private worker
+result DTO with `effect_receipt`, `host_decision`, and `tool_result` provenance;
+the runtime LLD records ordered receipt tuples and singleton interactive-control
+waves. P7 is adapting Core ToolBatch consumption to explicit `effect` versus
+`host_callback` members. P2 still owes the HostKernel admission/settlement/receipt
+handlers and full managed lifecycle completion. No tests/build/typechecks were
+run, per the implementation-first instruction.
+
+## 2026-10-22 — latest continuation checkpoint
+
+Active whole-phase owners: P1 Guard/ExecutionHost, P7 streams/context/artifacts/analytics/automation/rewind, and P8 worktrees/resources. P2 returned a partial source handoff: CodeMode receipt contracts/helpers were updated, but HostKernel wave prepare/settlement/recovery handlers and managed Task verifier/scheduler integration remain unfinished; refill P2 when a slot opens. P6 also remains a partial source handoff: the direct Core→Auth provider transport/journal, offline Doctor, feature settings and S1 paths are Git-visible; credentialed routes/live Doctor remain gated on P1, while direct runner selection and EventV2 settlement/recovery are P7-owned. P3/P4/P5/P6/P9 and final integration remain open/partial and must be refilled as slots free.
+
+P2 partial source handoff: scheduler/admission targets accepted `maxWorkers`, distinct child Locations and location-bound receipt basis; task-scoped verifier source exists but complete admission/settlement remains. Preserve Run-level final-revision verification and add authenticated per-Task verifier evidence per §11/DEC-V1-31. P1's local Codex/OpenCode comparison found only process-group/request-scope cleanup, no durable cgroup janitor; P1 is implementing conservative cleanup only after persisted quiescence, exact owner/path/device/inode revalidation, and exclusive namespace locking. If proof fails, retain/quarantine and fail closed. These contracts remain source-only until phase acceptance.
+
+No tests, builds, typechecks, audits, provider calls, benchmarks, or release gates have run. Mixed Git state remains unstaged. Disk check inside the repository: 842 GB free; `kernel/target` 627 MB. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED; a same-day release cannot be promised while multiple phases and all final verification gates remain.
+
+**P1 cleanup safety refinement (2026-10-22):** P1 found that a same-UID child may be able to reach and mutate the delegated cgroup hierarchy, so a cooperative lock alone cannot justify deletion. The janitor may remove only when every launched profile prevents child access/write to that hierarchy in addition to durable empty-state, exact device/inode/path and owner checks under the exclusive lock. Otherwise it must retain/quarantine and fail closed; P1 is auditing the existing profile isolation before implementation. This supersedes any unconditional-cleanup wording above.
+
+P1 source update: sandbox roots overlapping `/sys/fs/cgroup` are rejected; persisted cgroup identity is being extended with host-derived owner UID and `cgroupHierarchyHidden`, with legacy/missing proof treated as retain-only. P1 must prove the actual mount namespace hides writable cgroup controls for each eligible profile, not infer it from a bwrap handle alone. P2/P7 CodeMode interface refinement: HostKernel performs the nested CodeMode wave binding inside ordinary ToolBatch admission before returning any leases. A post-prepare bind is forbidden because it would expose leases first. Receipts are derived by HostKernel from exact terminal rows; caller IDs are correlation only.
+
+Command-profile shape resolved from §§33.7/37.27 and existing source: keep canonical `terminal.run` and its single capability ID, with a strict discriminated profile mode carrying action, exact immutable profile ref/digest and bounded configured arguments. Trusted Config/HostKernel resolve and validate it and build fixed argv; never encode it as shell text. Keep ordinary shell mode separately gated through the same Guard/ExecutionHost. Earlier tracker entries saying this choice awaits user input are superseded.
+
+P1's concrete `terminal.run` DTO is now settled: `mode:"shell"` preserves existing `command/cwd/timeoutMs` plus host-resolved shell profile/environment; `mode:"workspace_profile"` carries only action/profile revision/digest and bounded configured arguments. HostKernel resolves fixed argv. For CodeMode, P7 must schema-validate and normalize nested calls through `SessionTools.resolve`, then send exact prepared calls plus retained helper wave frame into the ordinary HostKernel ToolBatch admission internals; Rust cross-checks the calls and frame, binds before lease projection, and derives receipts. Raw-frame-only or post-prepare binding is rejected.
+
+P7 source progress: the runner now resolves trusted catalog selectedRoute and commits provider settlement with assistant EventV2; unresolved DISPATCHING requests are recovered as UNKNOWN and never replayed, with a fresh request ID required for later user input. Context-ledger publication is attempted before provider dispatch. The CodeMode ToolBatch adapter is underway; integration depends on P2's final wave-receipt DTO. No validation ran.
+
+**Shared CodeMode result contract (2026-10-22):** mixed read/control/effect waves remain supported. Rust derives `effect_receipt` only from the exact settled EffectHost receipt, `host_decision` for durable pre-dispatch denial/cancellation (including effect-class calls never dispatched), and `tool_result` for terminal Core-reported ordinary read/control callbacks. The latter binds a BLAKE3 digest of the exact bounded redacted `{output: text}` projection sent to the helper (canonical MessagePack domain `horizoncode.codemode-tool-result.v1\0`; outputBytes is UTF-8 bytes). Rust receives digest/bytes/status, never raw output. `tool_result` records Core-reported output, not a Guard effect receipt or independent verification evidence. UNKNOWN has no receipt, fences the wave, and halts later waves. P1 owns immutable retained call identity; P2 owns Rust DTO/storage/operation/schema/LLD; P7 owns TypeScript protocol consumer and ordinary ToolBatch adapter. Keep runtime exposure gated until integrated.
+
+**Command profile authority refinement (2026-10-22):** the private Core→HostKernel prepare projection carries the selected immutable Core Config `WorkspaceCommandProfileV1` definition plus exact `{profileID,revision,profileDigest,action}` reference outside model arguments. No global Config counter is required by §37.27; HostKernel recomputes the profile digest and matches the exact grant ref, then revalidates executable/workspace/policy/backend/guarantees immediately before fixed-argv spawn. P1 owns the seam; P2 does not edit it.
+
+**Direct shell integration gap (2026-10-22):** P1 source inspection found V2 `packages/core/src/tool/bash.ts` is a fail-closed stub, and V2 `session/runner/llm.ts` admits only the existing `files.write` lease shape; it does not dispatch `terminal.run`. Legacy OpenCode ShellTool→Pty does not prove the V2 product path. P7 owns the runner caller integration; P1 owns the Guard/HostKernel/EffectHost/ExecutionHost terminal dispatch API. Keep shell unavailable until this seam and terminal receipt/recovery are integrated.
+
+**P2 current-source correction (2026-10-22):** CodeMode has only the HostKernel `codemode_inspect` handler today. The dispatcher references result settlement/receipt operations that do not yet exist, and there is no HostKernel wave-prepare handler; P2 is implementing the missing methods. Earlier CodeMode adapter/protocol source does not mean nested waves are wired. The managed multi-Task scheduler and Task verifier source also still need full admission/settlement integration; no phase acceptance evidence exists.
+
+Run-level CodeMode digest is not wired yet: P2 must persist public per-wave receipt rows in HostKernel, recompute wave/run v2 digests from retained rows, and force UNKNOWN/omit run digest if any wave remains ambiguous. EffectHost's private wave digest alone is insufficient.
+
+**CodeMode aggregate digest conflict resolved (2026-10-22):** replace the old v1 public tuple contract consistently in §§12.21/37.24 and schema with separate v2 wave/run digests. Both use ordered canonical MessagePack tuples `[waveIndex,callIndex,callId,status,receiptKind,receiptRef,receiptDigest]`; wave domain is `horizoncode.codemode-wave-receipts.v2\0`, run domain is `horizoncode.codemode-receipts.v2\0`. UNKNOWN forbids the corresponding digest. The private EffectHost settlement digest remains separate and is never public authority.
+
+Deterministic pre-dispatch CodeMode denial/cancellation is settled by HostKernel through EffectHost `reject_code_mode_wave_before_dispatch`, producing ordered `host_decision` receipts without invoking Core callbacks. Core must not call result settlement for denied calls. Possible-dispatch ambiguity remains UNKNOWN.
+
+## 2026-10-22 — active P1/P2/P6 source wave
+
+Current whole-phase owners are P1 Guard/ExecutionHost, P2 managed lifecycle,
+and P6 providers/settings/Doctor/S1 (the platform currently permits three
+child agents). P1's audit found trusted `commandProfiles` are validated and
+pinned, but no `EffectHost` execution consumer exists; P1 owns that consumer
+and the effect-bound workspace revision in direct terminal artifact receipts.
+P1 has now added the latter to `DirectSessionTerminalArtifactReceiptV1`, deriving
+it only from consumed `terminal_consent_preflights` matched by challenge/effect
+and authenticated owner epoch; missing provenance returns UNKNOWN. P2 is
+consuming that field in the root artifact projection.
+P1 also added durable CodeMode enablement issue/inspect/revoke authority in
+EffectHost with owner/session/principal pins, digest checks, expiry/revocation,
+and exact-idempotent replay; P2 owns its authenticated lifecycle routing. P2
+corrected DirectTurnJournal replay to validate historical events against each
+cycle/authorization's original epoch so stale active work can recover as UNKNOWN
+instead of making journal open fail. Both changes remain source-only.
+P2 owns authenticated HostKernel session/profile selection and the root batch
+journal replay fix, plus the read-only direct artifact projection. P2 has now
+source-wired `execution.v1/direct_session_artifacts` from the HostKernel-owned
+batch index through EffectHost terminal receipts and ArtifactStore validation,
+with a strict authenticated `SessionSupervisor.listDirectSessionArtifacts`
+projection. This API remains unverified and caller/UI integration is outstanding.
+P6 found the
+canonical Core/Effect HTTP route bypasses the injectable OpenCode Auth fetch;
+P6 will reuse Auth's existing pinned direct fetch and journal boundary, with
+Core sending only frozen request data and Auth resolving/injecting credentials.
+A command-profile request-shape gap is under user review: §37.27 requires
+profile-built fixed argv while §33 already defines `terminal.run` and prohibits
+duplicating terminal IDs. Recommendation is to extend `terminal.run` with
+trusted action/profile refs; dependent wiring is paused pending that answer.
+P7 is queued for the next freed child slot.
+P6 has source for the direct-provider service seam: Core passes the pinned
+selected route, frozen request and SessionStore journal callback to Auth's
+existing one-shot protected fetch; Core does not receive credentials or secret
+references. The route package's newly added implementation files were ignored
+by the blanket Git rule when discovered; P6 is adding exact source exceptions
+before this work is Git-visible. Credentialed provider routes remain unavailable.
+Managed scheduling source already derives root readiness at accepted Run start
+and dependency readiness from independently verified PASS. However,
+`ManagedSnapshot::next_schedulable_task` currently caps a Run at one active
+Attempt because it protects a shared mutable workspace. DEC-V1-31 makes bounded
+multi-Task DAG execution and aggregate settlement part of V1 after the single-
+Task vertical; P2 is checking integration with P8's registered, distinct
+worktree leases. Parent source audit confirms P8 already provides per-candidate
+`reserve_managed_pre_admission_target` / `resolve_reserved_managed_pre_admission_target`,
+and HostKernel registers the exact leased target as a child Location; there is
+no sibling batch API, so P2 must compose durable reservations across eligible
+Tasks. The reducer's one-active-Attempt and one-candidate verification
+assumptions also need implementation. The present single-writer behavior is
+not final fan-out acceptance, and the old tracker note that root/dependency
+readiness was absent is stale.
+Source implementation only: no builds, tests, typechecks, audits, provider
+probes, benchmarks, or release gates have run. Six phases plus integration and
+verification remain; same-day V1 completion is not currently supportable as a
+promise. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-22 — direct CodeMode recovery update
+
+P1 has now added source for direct-root CodeMode terminal receipt recovery in
+EffectHost. It validates trusted direct-session authority, the exact committed
+wave frame/digest, direct scope and ordered calls against durable
+`session_batch` rows, then projects immutable per-call receipt references,
+kinds and digests. This closes the previously reported missing EffectHost
+query. P1 has also added the DB-derived wave-pin resolver, so P2 can recover
+committed authority and wave pins without accepting request-supplied pins.
+CodeMode remains unavailable until P2 wires the authenticated HostKernel
+start/resume/cancel/inspect lifecycle and typed Core Supervisor projection;
+P7 will consume only that projection through ordinary ToolBatch.
+The §37.24 start contract already settles the caller-authority question:
+HostKernel derives current location/lane and prepares the outer
+`codemode.execute` effect/lease internally from authenticated session state;
+Core supplies trusted lane binding, request ID, enablement ref and bounded
+start frame, never a caller-provided lease. P2 is implementing this route.
+P7 resolved the caller correlation seam: the existing `codemode.execute`
+Tool.Def receives trusted `Tool.Context` with sessionID/callID/lane/abort;
+callID travels only through typed private Supervisor context. HostKernel
+matches that active Guarded call, derives its challenge/lease, and binds a fresh
+host requestID to callID+lane+enablement before spawn. No new public RPC fields.
+P1 also added the ExternalEditor cgroup identity to the durable process
+binding; P2 must pass the typed identity and require verified quiescence during
+reconciliation. Owners remain P1/P2/P7. Implementation-first hold remains;
+no tests/builds/typechecks/provider probes ran. V1 remains PARTIAL / NOT
+VERIFIED / NOT RELEASED.
+
+P1 has added persisted terminal cgroup binding and startup UNKNOWN/quiescence
+reconciliation APIs for interactive `terminal.run`/`terminal.start`; P2 has
+source-wired the HostKernel caller with exact Guard lease, principal,
+Attempt/profile/owner-epoch pins and kill-and-empty proof before settlement.
+The path remains gated by `GUARDED_PTY_RUNTIME_READY=false` pending acceptance.
+P1 also added strict six-key CodeMode execution inspect
+from durable outer challenge/process receipts. P2 still owes authenticated
+CodeMode start/resume/wave/cancel routes and typed Core lifecycle; inspect alone
+does not enable execution. P1 removed the stale anonymous Tavily fixed-search
+route; four keyless fixed routes remain and BYO Tavily is separately enabled.
+P1's origin audit confirms current plugin/MCP/hook/legacy process bypass paths
+are disabled before effects: AppProcess permits only pinned HostKernel/session
+supervisor launches, plugin hooks are inert, MCP connections/tools/prompts/
+resources are unavailable, and project tools are absent from the first-party
+registry. P2/P4 own remaining typed host routes and integrated acceptance.
+
+P7's source audit also confirms ActivityStream event-to-TUI projection,
+sequence/generation fencing and resnapshot logic, ContextLedger projection, and
+usage/cost provenance analytics are present. P1 confirms ArtifactStore already
+binds terminal `ArtifactRefV1` plus receipt digest and owner refs. P2 has now
+source-wired `execution.v1/direct_attempt_artifacts`, Core list/inspect/range
+APIs, and EffectHost + ArtifactStore receipt checks. P7 integrated this route
+for direct child Attempts: `SessionTools` propagates authenticated scope,
+artifact search uses it, and shell returns an opaque ref hint only for
+non-sensitive FULL/SAMPLE captures. Root sessions have no DirectAttempt scope,
+so root artifact search remains unavailable. Source only and unverified; all
+reads revalidate terminal receipt/owner metadata. Caller paths/refs are never
+authority.
+
+P7's remaining source blockers are P1/P2 HostKernel routes: guarded durable
+automation invocation and checkpoint capture/restore (fixed-Git observation
+plus Guarded apply). Those remain unavailable. Stream rendering/replay/
+resnapshot bounds, usage provenance, direct ContextSelection/ContextLedger,
+and direct-child artifact search are source-present but unverified. Root direct
+artifact search remains unavailable without a DirectAttempt scope. P1 reports
+P2 must also wire authenticated REPL callback read/reply and CodeMode inspect.
+
+P7 also now writes the canonical Core `providerRequestID` into
+`SessionEvent.Step.Ended.usageProvenance.requestID`, matching the ID used for
+ContextSelection and the future P6 durable provider journal. P6 still needs to
+carry it as non-wire RequestExecutor metadata; provider dispatch remains
+closed.
+
+P7 direct ContextLedger entries now include exact byte counts and
+`bytesKind: exact` where source encodings are available (Session messages and
+AgentProfileV2 definition). The aggregate provider-input source leaves bytes
+unknown because `ledger.requestBytes` already reports that total; this avoids
+double counting. Token counts remain unknown without tokenizer-based estimates.
+The ledger now uses `sourceRevision` captured at frozen request construction,
+so its provenance cannot include Session events that arrived later. A failed
+ledger cursor lookup suppresses only the UI projection, never the provider call.
+P7's TUI summary now labels exact `requestBytes` as request-payload bytes beside
+token totals, which remain unknown without a tokenizer; it also shows ref and
+protection counts and cache classes.
+P7 also corrected a source-level unbound `sourceRevision` in the observer to
+consistently use `input.sourceRevision`; this was caught during source review,
+not by running typecheck, which remains deferred.
+
+**Artifact lookup decision (2026-10-22):** P2 uses P1's trusted terminal
+receipt enumerator and may derive the existing
+`terminal_<blake3(effectID)>` key only after deriving `effectID` from the
+authenticated current direct Session → committed ToolBatch → exact settled
+receipt chain. It must verify ArtifactStore owner refs, workspace revision,
+DirectAttempt/effect IDs and terminal receipt digest before returning the ref.
+This reuses ArtifactStore rather than adding a second index/database; no
+caller-supplied artifact ID or path is authority.
+
+## 2026-10-22 — CodeMode receipt and provider identity continuation
+
+P2 has source for authenticated managed `effect_wave_receipts` through
+HostKernel/Core over P1's durable EffectHost query. Known terminal rows use the
+exact persisted `challengeID` as `receiptRef` plus its terminal digest; pending
+rows are rejected, and UNKNOWN exposes neither public receipt field. Direct-root
+CodeMode still needs P1's EffectHost DirectSession receipt query and P2's
+authenticated HostKernel caller, bound to Session/owner epoch/policy/workspace
+and the exact committed ToolBatch. P7 is wiring the shared Core ToolBatch
+consumer; neither lane is enabled.
+
+P7 found the direct ContextLedger used a different observer ID from the future
+durable provider journal. P7 now sets the shared ID on canonical `LLMRequest.id`
+at request construction for both projections; P6 must consume that same ID at
+the protected RequestExecutor edge before provider dispatch can open. Current
+`LLMRequest.id` survives compile/prepare/stream but `HttpTransport` drops it
+when calling `RequestExecutor.execute(HttpClientRequest)`; carry it as
+non-wire executor metadata, never as a provider header. The
+assistant result, usage and journal settlement must remain atomic. Current
+owners are P1/P2/P7; no tests/builds/typechecks/audits/provider probes ran. V1
+remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-22 — P7 Core nested-wave dispatcher source
+
+P7 added the typed `Tool.Context.dispatchPreparedToolBatch` seam and supplies it
+from the active Core `SessionRunner` materialization. It validates a complete
+wave (maximum 32 calls and 512 KiB aggregate JSON arguments) before dispatch,
+checks the exact capability IDs against the frozen registry materialization,
+uses one ordinary `SessionSupervisor.prepareToolBatch` admission for an
+effect-only wave, validates the returned leases, and settles each member through
+the same `materialization.settle` path. Unknown, duplicate, malformed, mixed
+effect/read, denied, or post-dispatch ambiguous outcomes fail closed. Nested
+calls do not receive a recursive dispatcher. This is a Core callback seam only:
+the OpenCode-derived CodeMode tool is still not registered in Core, and the
+callback cannot fabricate the per-call receipt refs/digests required by §37.24.
+P5 must bridge the authorized CodeMode adapter into Core; P2/P1 must provide an
+authenticated receipt projection before successful wave results can be emitted.
+Keep CodeMode disabled. No tests/builds/typechecks/audits/provider calls ran.
+
+## 2026-10-22 — P7 direct context projection and transport boundary
+
+P7 wired best-effort direct ContextSelection/ContextLedger production in the canonical Core
+`SessionRunner` from the exact request object plus `LLMClient.prepare`'s provider-native body.
+It resolves only the explicit matching Core primary AgentProfileV2 and built-in HarnessProfile;
+missing/mismatched profile data suppresses the UI projection without blocking a turn. Ledger
+events are ephemeral, bounded to 48 KiB, source-generation fenced to the latest user message,
+and dispatched asynchronously. The TUI reducer now permits later direct request projections at
+the same source revision when they have a new request ID and non-decreasing timestamp; managed
+requests continue to require increasing request sequence. Message source digests now use BLAKE3
+for ContextLedger compatibility. No tests/builds/typechecks/audits/provider calls ran.
+
+Provider dispatch remains open work: P7 has not wired the Core `SessionStore` journal or exposed
+its complete authority pins to the `RequestExecutor` layer. P6 owns the selected-route/
+SecretBroker adapter at the existing `RequestExecutor.Service.execute(HttpClientRequest)` seam;
+P2 owns any exact trusted profile/effective-scope authority needed by Core. Sends must remain
+closed until the frozen request, route, profile/context/scope pins and atomic assistant/usage
+settlement are connected. Artifact direct-lane search, guarded automation invocation, and
+checkpoint capture/restore remain open or dependency-gated. Overall V1 remains PARTIAL / NOT
+VERIFIED / NOT RELEASED.
+
+**CodeMode lane handoff:** P7 owns the Core nested ToolBatch admission/settlement
+callback. The existing OpenCode-derived CodeMode adapter is not registered in
+Core's direct `ToolRegistry`; P5 must add the Core adapter that consumes P7's
+callback when its whole-phase slot opens. CodeMode remains disabled.
+P7's callback can reuse ordinary validation/admission/settlement, but Core has no
+authenticated nested-wave receipt projection yet; P2 must project exact durable
+per-call receipt refs/digests from P1/Rust before the adapter can emit success.
+
+## 2026-10-22 — resumed source implementation checkpoint
+
+Current live owners are P1 Guard/ExecutionHost, P2 managed lifecycle/HostKernel,
+and P7 streams/context/artifacts/automation/rewind. P4 returned PARTIAL and freed
+its slot; its Editor callback now carries exact preview `contentDigest`. P6,
+P8 and P9 remain open and are queued behind the actual child-thread limit. Parent
+reconciled §§12.22/37.28 and the editor schema: workspace editing uses private
+host scratch and a separate Guarded `files.patch`; P2 keeps launch closed until
+P1 supplies the strict durable binding. P1 is adding that binding and a durable
+Attempt-scoped EffectHost process-recovery query has landed, including exact
+per-effect receipt recovery pins. P7 is wiring the canonical Core
+`SessionRunner → LLMClient.stream` caller; P6's Core RequestExecutor transport is
+still a dependency. No tests/builds/typechecks/audits/provider probes run before
+source completion. P2 owns the producer seam for P8 cross-epoch recovery: fresh
+current-epoch child-session/provider-task and effect/process quiescence proof,
+preserving the original verified workspace head; P8 consumes it when assigned.
+P2 has added a distinct current-epoch recovery-quiescence type in ManagedControl;
+HostKernel issuance still waits on live child-session re-observation. P1 now
+provides `recover_managed_attempt_effect_receipts` with ordered exact batch/call/
+effect/attempt-scope pins and immutable lease/status/receipt rows. P2 is wiring
+that query to fresh quiescence proof and the nested-wave HostKernel projection;
+each OwnerLog wave edge must persist its post-bind attempt-scope digest.
+V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-22 — direct-provider caller correction
+
+P7 traced the canonical direct coding path to Core `SessionRunner` → `LLMClient.stream`; the OpenCode-derived `session/llm.ts` is not the normal direct caller. SessionStore's direct provider journal and P6's selected-route transport have no production caller. P7 now owns wiring the Core path with P2 profile/context pins and P6 transport; dispatch stays gated until exact pins are consumed and settlement is atomic.
+
+## 2026-10-22 — active whole-phase owner checkpoint
+
+P2 managed lifecycle/HostKernel, P4 LSP/DAP/REPL/external editor, and P7 streaming/context/artifacts/analytics/automation/rewind are active. P1 returned PARTIAL after its unblocked source pass and remains responsible for integration/acceptance. P3 and P5 handed off their unblocked Explorer and search/CodeMode source; search and CodeMode stay gated pending P1/P2/P7. P6, P8, P9 and final V1 acceptance remain open. No tests/builds/typechecks/audits/provider probes before implementation closes, per user direction. Mixed Git state preserved. V1 PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-22 — current live roster correction
+
+P1 Guard/ExecutionHost, P2 managed lifecycle/HostKernel, and P4 LSP/DAP/REPL/external editor are the active whole-phase owners. P3 handed off unblocked authenticated Explorer/discovery and exact-revision preview source. P5 handed off its unblocked search cascade receipt/retry projection and authorized CodeMode catalog/strict adapter; CodeMode and live search remain unavailable pending P1/P2/P7. P7 is next to resume when a slot opens. No verification or provider call runs before implementation closes, per user direction. Mixed unstaged/untracked work is preserved. V1 PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-22 — live source-only owner correction
+
+Actual active whole-phase owners: P1 Guard/ExecutionHost (resumed), P4 LSP/DAP/REPL/external editor, and P5 web search/CodeMode. P3 handed off its currently unblocked source: authenticated bounded HostKernel discovery/read routes, SDK projections and revision-bound `/editor` tree/file previews; exact ignore exceptions expose the new files to Git. P4 removed ambient LSP filesystem marker probing and added strict editor-profile schema/config; it is wiring global-only profile CAS/settings and the gated launch adapter. P5 fixed explicit-null zero-send receipt parsing, added the bounded authorized CodeMode catalog (including deferred candidates) to `SessionTools.resolve` and typed it through `LLM.StreamInput`, and added a strict Core adapter over the existing authenticated HostKernel RPC callback. HostKernel CodeMode handlers and P7's ordinary ToolBatch dispatcher are absent, so CodeMode and search remain unavailable. P2/P7 remain next whole-phase owners when slots open. No checks/provider probes run, per user instruction. Preserve mixed unstaged/untracked state. V1 PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-22 — resumed after phase-owner quota exhaustion
+
+The prior P1/P2/P7 agents terminated on their usage limit, so their reports are source checkpoints, not phase completion. Current whole-phase owners are P3 RepoIntel/Explorer, P4 LSP/DAP/REPL/editor, and P5 web search/CodeMode. P3 owns the bounded authenticated read-only Explorer endpoint/SDK/TUI overlay; P4 owns external-editor configuration/launch plus supervised language/debugger/interpreter gaps; P5 owns cascade parser/runtime wiring and CodeMode exposure only after its HostKernel/ToolBatch prerequisites. Parent found EventV2 `PublishOptions.commit` runs after projectors inside the same DB transaction and added an optional commit callback to `Session.updateMessage` for atomic direct-provider settlement. P2's partial source added global primary AgentProfileV2 selection, but root Session authority/pins are incomplete; provider settlement remains incomplete until that pin is carried and final assistant projection + usage + request journal settle atomically. P1 added exact FILES_READ/HTTP response persistence and replay APIs; P2 HostKernel/Core callers still need wiring. P5 fixed explicit-null `NOT_DISPATCHED` retry receipt parsing. No tests/builds/typechecks/provider probes/audits/release actions ran, per user direction. Git is mixed, unstaged and preserved. V1 PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-22 — current source-only continuation after context reload
+
+Re-read the required HorizonCode instructions, trackers, architecture README/governance and operative plan. The actual active whole-phase owners are P1 Guard/ExecutionHost, P2 managed lifecycle/HostKernel and P7 streams/context/artifacts/analytics/automation/rewind; the three child slots are occupied. Current tree is mixed and unstaged; no unrelated changes are staged or published. Parent’s CodeMode helper/build packaging and P6 secure asset installation remain preparatory source only. The `/editor` overlay remains explicit and single-pane by default, while Explorer has no tree rows and editor launch remains gated.
+
+**Owner refresh:** P6 has handed off PARTIAL after completing currently unblocked source work; its direct provider sender still needs P7's frozen payload/ContextSelection caller, P2's managed dispatch/settlement, and P1's protected SecretBroker effects. The freed slot is now assigned to whole-phase P7 stream/context/artifact/automation/rewind work. Active owners are P1/P2/P7. P7 owns `session/llm.ts` and `session/tool-batch.ts`; it must connect P6's fail-closed provider sender and P5 CodeMode's strict dispatch adapter through existing canonical boundaries. No validation/provider/release commands ran.
+
+Resolved the P1/P2 Git-read recovery question: implement the bounded read route using the existing workspace `files.read` grant path, with the ordinary UserAction challenge when Guard says ASK. P1 owns the canonical EffectHost authority and same-transaction durable bounded output/result receipt (or content-addressed result reference), exact-binding replay and UNKNOWN semantics; P2 owns the authenticated HostKernel RPC/Core call edge consuming that exact API. Never relaunch an ambiguous read. Both owners were asked to coordinate the exact request/result fields. No tests, builds, typechecks, audits, benchmarks, provider calls or release operations ran. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-22 — continuation after V1 source restart
+
+Refreshed the mandatory repo guidance, current run/handoff, architecture README and governance, operative implementation plan, Git/worktree state, process list and repository disk state. The tree remains mixed and unstaged; preserve it. One worktree is present, `kernel/target` is 627 MB, and the repository filesystem has ample free space. No product checks have run under the user's implementation-first instruction.
+
+Current active whole-phase owners: P1 Guard/ExecutionHost, P2 managed lifecycle/HostKernel, and P6 providers/settings/Doctor/S1. The agent limit is four total including the parent, so P3/P4/P5/P7/P8/P9 must be assigned as real slots free; parent is handling a bounded P9 CodeMode packaging source seam meanwhile. P1 added the typed `ProjectRead { workspace_id }` process scope for Guarded project Git reads; P1 owns its managed-verifier Session binding and P2 owns HostKernel constructors/callers. P2 is wiring the project VCS route through a HostKernel-authenticated project principal and `workspace-code/read` grant, with no synthetic Session. P6 has added a pinned direct-provider request/one-use fetch adapter for the explicitly selected anonymous-free OpenCode route; P7 must consume it with the exact frozen provider payload and profile-pinned ContextSelection.
+
+Parent added a stdio-only CodeMode helper entrypoint and Linux GNU build packaging output with a digest manifest. P6's Core adapter now securely installs the embedded asset and manifest to the owner-only `Global.Path.bin/codemode-helper`, publishes the manifest last, and passes only `--codemode-helper-root=<root>` at HostKernel startup; P2 is adding its trusted startup parser/selector resolution. The manifest pins `codemode-helper.js`, fixed selector `horizoncode:codemode:bun`, native Linux GNU target, and SHA-256. This is preparatory source: it does not expose `execute`, and the authenticated nested ToolBatch/receipt/cancel path and P1 verified cgroup limits remain required. `/editor` is explicit and single-pane by default, but currently opens an empty unavailable Explorer; P3's authenticated tree projection and P4's editor profile/launch path remain open. No tests/builds/typechecks/audits/provider probes/benchmarks/release checks ran. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-22 — live V1 source integration update
+
+P1 has source for the proof-aware whole-MCP-handshake executor and no-response aggregate terminal settlement; P1's terminal API now supports CANCELLED/FAILED/EXHAUSTED with exact ordered receipt history and no fabricated HTTP response, including the terminal 4xx classifier. P2 added typed `notDispatchedFailure` normal/restart projections but still must wire production HostKernel callsites and map recovered terminal outcomes. P5 source validates retry reason plus receipt/zero response metadata, permits one retry only for `timed_out`/`transport_failure`, handles aggregate `CANCELLED`, and reserves top-level `NOT_DISPATCHED` for pre-plan rejection. Parent/P2 ruling: aggregate `FAILED` represents a known terminal 4xx outside {401,403,407,408,425,429}, with plan digest and exact settled history; `EXHAUSTED` means all approved routes/retries consumed; `CANCELLED` covers user cancellation after plan admission. P5 removed arbitrary CodeMode callback construction from the ToolBatch seam; CodeMode remains unavailable until a private ordinary ToolBatch binding is connected to authenticated Rust/P2 settlement. Active whole-phase owners: P1, P2 and P5. P3/P7 partial source work and P4/P6/P8/P9 remain open; refill as a slot frees. No tests/builds/typechecks/audits/provider calls/release operations ran. Mixed Git state is preserved. V1 PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-22 — live source checkpoint after phase refill
+
+Current implementation owners: P1 Guard/ExecutionHost, P2 managed lifecycle/HostKernel, P5 web search/CodeMode. A separate P2 UI worker completed its non-overlapping source review and returned; P3 and P7 completed their currently unblocked source work and remain open for dependency integration. P1 added durable managed-verifier launch assessment binding and an HTTP `NOT_DISPATCHED` proof/receipt path: one same-route retry is allowed only after a host-minted pre-send proof; cancellation and post-send ambiguity do not retry. P2 owns all managed prompt/recovery profile and lane pins; P7 updated the current managed ContextSelection producer with `lane: managed`. P3 added a bounded SQL history range projection that size-checks stored Parts before JSON extraction and rechecks before returning. P7 completed bounded/redacted stream rendering, replay/resnapshot fences, artifact/analytics source and the ephemeral context-ledger TUI event/bar; its remaining source integration depends on P1/P2. P2 UI review confirms proposal/review/start/control routes are already wired; an unrun cancel fixture was added and the pause fixture corrected. P5 has resumed whole-phase source work, including the exported CodeMode callback-binding API and search integration. No tests/builds/typechecks/audits/provider calls/release operations ran. Git remains mixed and preserved. V1 PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-22 — P1 Guard source update
+
+P1 tightened verifier preflight so verifier bindings require a nonempty Session, a live Attempt scope digest, and a verifier execution principal distinct from the authenticated reviewer. Existing HostKernel invocation construction supplies Attempt/session scope; fixture bindings were updated to represent that contract. This is source only; checks remain deferred. P1 is continuing full-phase work.
+
+## 2026-10-22 — ContextSelection AgentProfileV2 pin
+
+P3's strict ContextSelection now includes explicit lane plus exactly one direct Core Config AgentProfileV2 ref, with profile ID/revision/digest/trust; both Core ContextSelection compile and Session.contextSelection require the trusted ref, with no display-name/model inference. Managed selections require the same explicit lane and exact Task-pinned profile reference. P2 must update all direct Session callers and packages/opencode/src/session/prompt.ts plus managed-control persisted/recovery literals; direct/managed ContextLedger stays unavailable until exact trusted pins are present. Fixture source was rewritten but is unrun. No tests/builds/typechecks ran.
+
+## 2026-10-22 — phase owner refill and ContextLedger alignment
+
+Actual active whole-phase owners: P1 Guard/ExecutionHost, P3 RepoIntel, P7 streaming/context/artifacts. P5 returned PARTIAL after its unblocked source work; remaining NOT_DISPATCHED transport/receipt, direct-root BYO scope and CodeMode bridge depend on P1/P2/P6/P7. P2 is next critical-path refill when a child slot opens. P3 has aligned the ContextLedger TypeScript/JSON Schema/§30.2 contract and added explicit ContextSelection.lane; direct Core compilation emits direct. P2 must add lane=managed to its managed prompt producer and recovery literals. Parent added the ephemeral session.context_ledger event contract and CTX-001..005 acceptance in §§04/31/45/32.45; P7 owns event bridge and TUI context bar, with no second ledger store. P1 reports the Rust CodeMode protocol already accepts zero-tool pure-compute starts, so no source change was needed. No tests/builds/typechecks/providers/release checks ran; preserve mixed Git state. V1 PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-22 — whole-phase continuation roster
+
+Resumed the full V1 implementation after reloading required guidance, plan, architecture index/governance, Engram context and Git/worktree status. Current active whole-phase owners are P1 Guard/ExecutionHost, P3 RepoIntel, and P7 streaming/context/artifacts. P2 managed lifecycle/HostKernel is the next critical-path owner to refill as a slot opens; P4/P6/P8/P9 remain open. P5 returned PARTIAL after its unblocked search/CodeMode source work; exact remaining P1/P2/P6 integration blockers are recorded below and in the handoff. P3 is addressing bounded history reads and ContextLedger with P7 owning provider-payload integration. P1 now resumes the full Guard/ExecutionHost closure, including Guard-side receipt semantics. Direct-root anonymous search is already supported; direct-root BYO search still lacks trusted profile-scope source. P7 keeps nested dispatch bound to the normal ToolBatch path and requires P2 durable settlement before exposure. User's retry decision: max one same-route retry only when trusted transport proves zero request bytes left the process; ambiguous sends remain UNKNOWN. No tests/builds/typechecks/providers/release checks ran. Git remains mixed and unstaged; main is 13 commits ahead of origin/main; one worktree. V1 PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+P3 has now landed the pure `compileContextLedgerV2` API, requiring exact ContextSelection in both lanes and an authenticated HostKernel selection digest in managed scope; P7 owns capture at the frozen provider `transformParams` boundary and uses explicit unknown token evidence without persisting raw payload. A consistency gap remains: the TypeScript schema/API is newer than §30.2 and the JSON Schema mirror, and P3 has been asked to reconcile them before source handoff. P5's closure audit found its remaining retry/BYO/CodeMode wiring depends on P1/P2/P6 APIs; P5 is preparing a partial source handoff to free a slot for the critical path. P7 removed arbitrary callback injection and added actual SVG/Mermaid in-flight admission and stale-generation retry source. All changes remain unverified under the implementation-first hold.
+
+## 2026-10-22 08:18 UTC — direct-session grant correlation integration
+
+P2 source now includes HostKernel's candidate-only protocol grant preflight and optional `grantPreflightDigest` on `resolve_approval`; P1 added the EffectHost read-only candidate lookup. Parent P4 updated `packages/core/src/session/supervisor.ts` to carry the exact singleton `challengeSetDigest` only when the strict preflight response matches, and to retry through the normal approval dialog without the marker if HostKernel returns `effect_conflict`. P2 is confirming typed conflict behavior and challenge usability. This is source integration only; tests/builds/typechecks remain deferred by the user. P1, P2 and P5 are active whole-phase owners; P4 remains parent-owned pending a free child slot. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED. Repository filesystem last showed 813 GB available; `kernel/target` 627 MB.
+
+## 2026-10-22 08:13 UTC — implementation continuation checkpoint
+
+Active whole-phase implementation owners are P1 (`/root/p1_guardv1`), P2 (`/root/p2_managedv1`) and P5 (`/root/p5_search_codemode`); all three available child slots are occupied. P1 reports source for the typed root DirectSession read-only LSP/DAP protocol grant helper and durable `EMPTY` search settlement; P2 reports HostKernel `EMPTY` handling and explicit-empty-domain `NOT_DISPATCHED`; P5 now exits CodeMode before catalog/interpreter work while its helper gate is false. These are source reports only. P1/P2 must finish HostKernel live scope/process/workspace refresh, lease/receipt and recovery integration before P4/search/CodeMode gates can open.
+
+Parent P4 source continuation allows root-session LSP/DAP/REPL adapter shapes to omit synthetic Attempt authority, while comparing the current HostKernel owner epoch for root protocol operations. REPL Core now follows the same root-session structural rule. The production prompt callsite still creates editor scopes only for managed/direct child Attempts and has no trusted root workspace-revision/grant projection, so root LSP/DAP/REPL remain unavailable until P2 defines that HostKernel projection and P1's grant/lease path is integrated. No tests/builds/typechecks/audits/provider calls were run; the implementation-first hold remains. Git tree remains mixed, unstaged and preserved (369 changed/untracked paths observed); one main worktree; repository filesystem reports 814 GB free and `kernel/target` 627 MB. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-22 07:50 UTC — implementation continuation after compaction
+
+Reloaded the mandatory repo guidance, current handoff/plan, normative architecture index and §17, plus Engram context/search. Git MCP reports a mixed unstaged/untracked tree, no staged paths, `main` 13 commits ahead of `origin/main`, no conflicts, and one primary worktree; preserve all existing changes. Repository disk check: 813 GB free; shared `kernel/target` 627 MB. No tests, builds, typechecks, provider calls or cleanup were run under the implementation-first hold.
+
+P1/P2/P5 are now the three active whole-phase owners. P3 completed its currently unblocked RepoIntel source work: Core DTO/callers require and preserve the `workspace` vs `discovery_observation` revision domain; RepoDetect uses discovery observation, while LSP/structure reads use workspace, and lexical definition candidates remain bounded and honestly PARTIAL. RepoIntel tools remain gated; production acceptance and parser-backed navigation/overlays/cache/resource work remain dependent. P3 identified the missing direct ContextSelection-to-provider-payload callsite; that is queued to P7's LLM/processor owner and must consume the exact frozen provider payload. P1/P2 aligned CodeMode wave ownership: P1 owns private authority/effect-host wave tracking, P2 mints/revalidates HostKernel authority and advances the managed OwnerLog/direct-turn journal before lease use. P2 is tracing the fixed supervised helper launch/stdio path; no CodeMode dispatch is enabled.
+
+Parent read-only P4 source review found strict LSP/DAP/REPL protocol/lifecycle adapters already present, but LSP startup/protocol gates remain false, DAP has no production integration callsite, and REPL invocation/callback gates remain false pending Rust routing and unsupported hard OS quotas. P4 is queued behind P6/P7; effectful editor routes stay unavailable. Next phase slots: P6 providers/settings/Doctor/S1, P7 stream/context-payload/artifact/analytics/automation/rewind, P4, P8, then P9. Source implementation is the only active work; all phases and release status remain PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-22 07:44 UTC — architecture freeze and full V1 implementation restarted
+
+Completed line-by-line review of every `arch_V1/*.md` file, including compatibility stubs and the changed sections after integration. Official web research from Cloudflare Code Mode, OpenCode V2 permissions, and OpenAI Codex/multi-agent guidance informed the existing architecture decisions: CodeMode is tool orchestration over the authorized tree, not a new authority; scoped allow/ask/deny UX should avoid repeated routine prompts while Guard stays authoritative. Reconciled consent challenge choices, unsupported OS profile behavior, Linux/WSL scope, artifact wire fidelity/UI labels, direct/managed artifact isolation and retrieval, event envelope cursor versus replay, CodeMode lane enablement and exact receipt semantics. CodeMode schemas now require ordered 1:1 call/result correlation and receipts, explicit UNKNOWN, fixed 2 MiB frame / 1 MiB tool-definition and argument bounds, and the Rust frame codec as sole pre-launch byte/depth/node validator. Source does not yet implement these final schema fields/bounds.
+
+Whole-phase implementation owners now active: P1 Guard/ExecutionHost (`p1_guardv1`), P2 managed vertical and bounded managed DAG (`p2_managedv1`), P3 coding path/RepoIntel (`p3_codingrepo`). P4–P9 remain in the release scope and will be dispatched as slots free. Write scopes are disjoint; P1 owns generic Rust Guard/ExecutionHost except `host_kernel.rs`, P2 owns managed lifecycle/HostKernel coordination, and P3 owns RepoIntel/context/discovery. User deferred all testing until source implementation closes; no tests/builds/typechecks/providers/benchmarks were run. Git remains mixed and preserved: no staging, commit, push or cleanup. Disk at last check: 813 GB free, `kernel/target` 627 MB; one in-repo worktree.
+
+## 2026-10-22 — architecture implementation gate and phase continuation
+
+Reloaded the required bootstrap files and Engram context. Re-reviewed the current normative CodeMode, grant and flow sections against current official Cloudflare Code Mode and OpenCode V2 permission documentation. Existing decisions still fit: CodeMode is orchestration over the already-authorized tool tree; each nested effect keeps its own admission. Source tracing exposed one missing sequencing detail for the low-friction grant design: Core asked for dialogs before consulting persisted grants. Added the explicit non-consuming exact-challenge-set preflight to §§3.23, 12.21 and 37.25 plus `direct-session-grant-preflight-v1.schema.json`; it is candidate-only, hashes ordered challenge IDs with the documented canonical MessagePack domain, and atomic Guard resolution revalidates before any lease or dispatch. P1's Core caller now computes/compares the digest and suppresses prompts only for eligible direct-turn batches whose challenges allow approval; P2 is adding the HostKernel operation.
+
+Current whole-phase owners: P2 managed lifecycle/DAG and HostKernel; P5 built-in search/CodeMode; P7 streaming/rendering/artifacts/analytics/automation/rewind. P1's direct-grant source pass completed, but P1 as a whole remains PARTIAL and needs a slot refill. P1 now computes/compares the non-consuming grant-preflight digest and skips only eligible direct-turn edit prompts whose members allow approval; P2's HostKernel advisory operation now matches that DTO. Atomic resolution remains authoritative. P2 also confirms generic `terminal.run` is not bound to immutable build/test command profiles; quiet build/test stays unavailable until exact profile identity reaches Guard intent and confined launch. P7 repaired the isolated ContextSelection compiler; P2 wired the Core service API, but the actual prompt path has no callsite yet. P7 owns the LLM/tool-batch integration and exact frozen provider payload. P5 resumed whole-phase implementation; search and CodeMode remain hidden pending trusted runtime prerequisites. P6's unblocked source pass is complete; dependent acceptance remains. User still prohibits all tests/builds/typechecks/audits until source implementation closes. No validation run. Preserve mixed tree; no Git mutation.
+
+Official web research confirms Code Mode's purpose is to keep dependent tool orchestration, loops, filtering and result shaping inside one sandboxed execution, while direct calls fit small fixed tool sets. OpenCode V2 uses scoped allow/ask/deny plus hard deny and checks nested tools. HorizonCode adapts the orchestration and clear scope controls but keeps Rust Guard/ExecutionHost as authority. Recorded provenance already exists in §42.15. Repo-local disk status at this checkpoint: 813 GB free, `kernel/target` 627 MB; one main worktree.
+
+## 2026-10-22 — prior post-compaction architecture correction
+
+Re-read the mandatory root guidance, current run log, handoff, architecture README/governance, and operative V1 plan. The direct-session grant schema still admitted generic `confined_child_process`; removed that action so all routine build/test process authority must name an immutable user-owned `WorkspaceCommandProfileV1`. P1, P2 and P5 remain the active whole-phase owners. P1/P2 HostKernel overlap is resolved: P2 owns HostKernel; P1 owns Guard/EffectHost/ExecutionHost outside that file and must coordinate required APIs with P2. CodeMode execution stays unavailable until the authenticated nested ToolBatch bridge exists. No tests/builds/typechecks run per the user's implementation-first instruction. Git MCP reports unstaged and untracked mixed state, no staged changes, `main` ahead 13 of `origin/main`, one worktree; preserve unrelated work.
+
+The full-scope stale-phrase scan found one misleading source checkpoint in §37.22 claiming the one-Task TUI gate matched the V1 contract. Reworded it as a dated historical implementation gate that P2 must remove; the other one-Task references explicitly define the initial vertical or acceptance gate and agree with DEC-V1-31.
+
+**Phase refill:** P5 completed its currently unblocked source work and returned partial: strict Core CodeMode protocol mirror and authored tests are present, but CodeMode execute/nested dispatch stay unavailable until authenticated P1 ToolBatch bridge; WebSearch route readiness remains closed pending P1/P6 transport and SecretBroker acceptance. Its slot is now P6 (Providers/Settings/Doctor/S1), with exclusive TypeScript provider/auth/TUI write scope; P2 owns `core/config.ts` and P1 owns kernel/Guard/ExecutionHost. No checks were run.
+
+Parent source trace refined the CodeMode dependency: the interpreter's nested tool callback currently hard-fails, while `SessionSupervisor.prepareToolBatch` and `tool-batch.ts` admit only provider-emitted calls. The final bridge must expose a session-scoped authenticated nested dispatcher through the existing ToolBatch path, with the P7 `tool-batch.ts`/LLM callsite; a protocol mirror alone is preparatory. Keep P5 CodeMode hidden until that P1/P7/Core path and receipt recovery are integrated.
+
+## 2026-10-22 06:42 UTC — full architecture reconciliation and implementation owners dispatched
+
+The user required a complete line-by-line `arch_V1` read, source audit, web research and architecture/contract updates before implementation. Three audit agents covered §§01–18, §§20–33 and §§34–45; §37 was read in all 3,099 lines. The compatibility stubs were included. Primary references reviewed: official Cloudflare Code Mode, OpenCode V2 permission rules, and OpenAI multi-agent guidance. Updated normative owners and schemas to clarify: exact durable direct-session grants with immutable user-owned command profiles for build/test; CodeMode as orchestration over the existing authorized Core tool tree with Rust Guarded waves and no second MCP/runtime authority; bounded managed DAG as V1 after acceptance of the one-Task vertical (not a post-V1 deferral); honest source status for CodeMode, search/provider dispatch, context compiler, analytics and process origins. Added `WorkspaceCommandProfileV1` schema and GRANT-011..016. Found Core ripgrep source route is false-gated before argv/resolution/spawn; it must remain so until authenticated Guarded HostKernel read support exists. Three whole-phase owners now active: P1 Guard/ExecutionHost, P2 managed vertical plus V1 DAG, P5 Web Search and CodeMode. They have disjoint scopes and are coordinating shared HostKernel/CodeMode seams. User deferred tests; none were run. No build/typecheck/audit, staging, commit, push or cleanup. Git remains mixed (356 changed paths at start); only main worktree. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-21 16:11 UTC — full-scope continuation and artifact gap
+
+Read the complete 3,069-byte user attachment. It reiterates the full V1 scope, local OpenCode/Codex source comparison, whole-architecture/event-flow audit, implementation-first hold, careful Git preservation, C: monitoring, and product naming. C: reports 20 GB free (96% used); repository is 5.4 GB and its shared `kernel/target` is retained. Git remains heavily mixed/unstaged; one in-repo worktree; no cleanup, tests, builds, typechecks or publication.
+
+Active owners: P1 Guard/ExecutionHost (including managed-message Guard mediation and terminal ArtifactStore source integration; no HostKernel edits), P2 managed/direct lifecycle (managed inbox/wake plus HostKernel and prompt/coordinator paths), and P3 RepoIntel/Discovery. P7 completed its safe source pass and is PARTIAL: transformed managed provider payload now hashes and dispatches identically; activity/redaction/usage projections are source-present, while terminal artifacts still use a synthetic reference/SQLite BLOB instead of Rust ArtifactStore and remain assigned across P1/P2. Automation invocation and checkpoint restore remain fail-closed behind Guard/evidence prerequisites. P8 staged reservation is source-present; other P8 paths are dependency-blocked. No phase is verified; V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+The prior Pi/Codex note maps supplied Pi Durable contracts and selected local snapshot paths; it is not an exhaustive every-file repository audit or latest-upstream review. Full architecture re-audit continues against the 47 `arch_V1` Markdown sources and owned phase contracts. The current root boundary was specifically superseded only for reading the named attachment and checking C: metadata; no other external paths/services/remotes were accessed.
+
+## 2026-10-21 16:05 UTC — P1/P2/P8 staged-admission integration checkpoint
+
+P1's latest source update separates stable Stage-A candidate `proofDigest`, stable Stage-B `receiptDigest`, and the fresh cursor/pool-bound `leaseProofDigest`; bound Stage-A replay now projects the saved ContextSelection and both stages return the strict DTO specified in §37. P2 aligned its decoder and now checks the returned Stage-A identity against the original reservation; managed admission consumes only the Stage-B receipt and HostKernel independently resolves the current lease. Parent review caught and P2 fixed a retry mismatch where `ManagedPreparedRequest.context.sourceRevision` used the post-metadata cursor instead of the persisted ContextSelection revision. P8's staged durable reservation/resolve/bind source pass is complete; P8's remaining resource, HUP and RC0 paths are dependency-blocked and kept unavailable. P1 resumed its whole phase in a non-overlapping ExecutionHost/transport scope while P2 owns managed HostKernel inbox/wake files. P7 owns stream/rendering/artifact/analytics/automation/rewind and is implementing the transformed-payload freeze in the LLM seam. These are source changes only: no tests/builds/typechecks/audits/provider calls/benchmarks/release gates ran. Repo-only boundary and mixed unstaged Git state remain; no stage/commit/push/cleanup. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+P7 has now changed the managed LLM seam so `ProviderTransform.message` output is frozen and included in ContextSelection before dispatch; later sequence advancement transforms a clone before authorization, dispatch consumes that exact clone, and the managed path skips its second middleware transform. P2 confirmed the initial prepared request is passed through unchanged. This source integration still needs acceptance against the actual SDK/provider adapter; no checks were run.
+
+P2's whole-phase review also found the managed `agents.message` Rust authority/RPC/reducer missing (direct message APIs do not satisfy managed delivery). P2 has taken exclusive ownership of the now-free managed Rust source files to implement the §29.5/37/45 cursor, queue-vs-follow_up, wake, replay, bounds and receipt contract; effectful wake remains unavailable until acceptance.
+
+## 2026-10-21 15:59 UTC — staged managed admission integration and source-only continuation
+
+Live owners are P1 Guard/ExecutionHost, P2 managed/direct lifecycle, and P8 worker/resource/recovery; all three child slots are occupied. P1 has source-present HostKernel Stage-A `managed.pre_admission_target.reserve` and is integrating Stage-B `bind_context` with Attempt admission. P8 has source-present staged pins, durable `PreAdmissionContextBound`, Stage-A/Stage-B proof resolvers and recovery APIs. P2 has source-present Core Stage-A → no-dispatch prompt compile → Stage-B bind → admission flow and passes the exact prepared request through later dispatch. The original-expiry/root/resource/worktree replay path is now source-present in P1. A further proof distinction is being integrated: the immutable Stage-B bind receipt digest identifies the exact ContextSelection across retries, while a fresh cursor/pool-bound lease proof authorizes current admission; attaching the Attempt advances the cursor and must not invalidate replay identity. Stage-A replay must also accurately project whether Stage B already committed. P1/P8/P2 own this seam. P7 is next whole-phase owner when a slot is released.
+
+The Pi/Codex analysis requested earlier is recorded in `docs/research/2026-10-21-pi-codex-harness-decisions.md`, including supplied Pi Durable HLD/LLD/flow/event mapping, local CodeMode boundary, Codex delegation lifecycle, adopt/adapt/defer decisions, and evaluation plan. Local source review only: available Pi-like tree is OMP, not Earendil Pi; Codex snapshot is dirty. No external page/repository was fetched, so this is not a latest-upstream audit. No tests/builds/typechecks/audits/provider calls/benchmarks/release checks or Git publication have run in this continuation. Repository-only restriction remains in force; mixed user/task Git state is preserved. V1 is PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-21 12:56 UTC — P1 source handoff; P3 phase owner dispatched
+
+P1 reports no further unblocked Guard/ExecutionHost source gap in the reviewed areas: cgroup-v2 identity/restart UNKNOWN, ToolBatch atomic admission/receipts/cancel, origin gates, and the verifier-pin receipt integration are source-present. Both synthetic session-runner fixture setups are corrected but not run. P1 remains NOT ACCEPTED pending the later integrated runner/terminal, Guard-origin adversarial, cgroup restart/quiescence and platform evidence. Its slot now owns whole-phase P3 RepoIntel/Discovery source work. Active whole-phase implementation owners are P2, P3 and P7. P2 is finishing strict verifier settlement/TUI Goal review/profile lifecycle source; P3 owns RepoIntel and discovery; P7 owns stream/render/artifact/analytics/automation/rewind. P6/P8/P5 source is complete for currently unblocked work but acceptance/runtime gates remain. No tests/builds/typechecks/audits/provider/release/Git operations; implementation-first hold remains.
+
+## 2026-10-21 12:54 UTC — P6 source pass and P7 owner refill
+
+P6 completed its unblocked source review with no safe new runtime edits: offline Doctor, exact zero-priced anonymous OpenCode eligibility, provider/settings projections, and both owner-scoped question lanes are source-present. Credential mutation/credentialed provider dispatch/live Doctor remain unavailable pending P1 Guarded SecretBroker, protected-input and network-grant contracts; FEAT-001..014 and S1 acceptance remain unrun. Active whole-phase owners are P1, P2 and P7 (stream/render/artifact/analytics/automation/rewind). P7 now owns the durable event SSE replay/source-generation gap and all other unblocked P7 source work; P1 owns HostKernel event/runtime boundaries. P6 is PARTIAL pending P1 and integrated acceptance. No checks/provider calls ran.
+
+## 2026-10-21 12:52 UTC — P1 direct-turn source status clarification
+
+P1 confirms the direct child-turn journal, strict Rust DTOs, HostKernel begin/complete/fresh-authorization path, effect-scope binding and Core caller are source-present; runtime gates remain false. Historical six-file runner evidence of 143/0 supersedes the old 91/2 fixture note, but neither is final integrated-revision evidence, and no checks were rerun under the current implementation-first hold. Continue P1 whole-phase work on cgroup recovery, remaining effect origins, ToolBatch/receipt/crash/cancel closure and source documentation. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-21 12:51 UTC — verifier receipt integration source update
+
+P1 has now added the HostKernel-private `SettledVerifierChallengeSetPinsV1` token, constructs it only after exact SETTLED challenge/evidence validation, supplies it to P8 for Verified outcomes, rejects client pins on FAILED/CANCELLED, and compares the three verifier identity fields on receipt replay. P8's worker durable proof/OwnerLog v4 receipt now requires and retains the token's pins for Verified settlement; this source path remains unverified. P2 is aligning strict Core DTOs to the corrected canonical `builtin.verifier` capability/action and separate no-pin QUARANTINED response. Active whole-phase owners: P1, P2, P6. P1 still owns the remaining Guard/cgroup/origin/ToolBatch source phase; P2 owns the remaining managed/direct lifecycle source phase; P6 owns providers/settings/Doctor/S1. P8 source is complete for currently unblocked items, with documented missing hysteresis authority, safe cache retirement, OS quotas, RC0 attestation and live HUP. P5 source projection is complete, runtime disabled. No tests/builds/typechecks/audits/provider/release/Git commands; preserve mixed Git state and repo-only boundary. V1 PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-21 — P5 typed projection closure (source only)
+
+Aligned the successful and failure web-search projections with their bounded
+contracts. Successful rendering now uses the same schema-validated result rows
+as metadata and requires measured aggregate latency plus a parser-derived
+truncation boolean; route-attempt metadata is bounded and categorically sanitized, and
+aggregate provider/runtime exception text is not exposed. Generic runtime errors
+remain UNKNOWN because dispatch state is not provably pre-dispatch; empty cascade
+admission is not-dispatched. TypeScript ProviderId constraints now match the
+JSON contract. `WEB_SEARCH_RUNTIME_READY` remains false pending P1 Guard/receipt
+acceptance; BYO routes remain unavailable pending P6 SecretBroker acceptance.
+No checks or provider calls ran; V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-21 12:49 UTC — P8 receipt source pass and next owner refill
+
+P8 completed currently unblocked source work: `WorkerSettlementProofV1` requires the HostKernel-only verifier pin token for Verified settlement, checks Attempt/evidence binding, and persists verifier identity pins in OwnerLog settlement schema v4 and receipt digest. P1 still owns token minting and strict receipt comparison; P2 owns strict Core consumption. Remaining P8 constraints: authenticated hysteresis inputs are not in the trusted projection, cache retirement lacks a safe wired callback, OS CPU/memory/process/FD quotas are unsupported; RC0 lacks P1/P2 attestation and HUP evaluation is fake-only. Those paths remain gated. Active whole-phase owners are P1, P2 and P6 providers/settings/Doctor/S1; P6 was assigned to unlock P5 SecretBroker integration. P5's unblocked schema/runtime source is complete but runtime remains disabled pending P1/P6. P7 stream replay gap remains queued. No checks/builds/typechecks/audits/provider/release/Git actions; preserve mixed Git. Repo-only boundary. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-21 12:43 UTC — source owner refill
+
+Active whole-phase owners are P1 Guard/ExecutionHost, P2 managed/direct child lifecycle, and P8 resources/workers/evaluation. P5's unblocked schema/runtime provenance source is complete; its route remains disabled pending P1 Guard/receipt acceptance and P6 SecretBroker acceptance. P1 owns ChallengeSet typed-pin/recovery and settlement receipt projection; P2 strictly consumes those pins; P8 aligns worker/evidence settlement to them. User selected the existing optional Linux cgroup-v2 backend as restart-proof direction. P7 remains unowned and open: SSE currently lacks durable Last-Event-ID replay and sequence/generation fencing; next owner must implement the source or consistently narrow V1 to resnapshot-only. No tests/builds/typechecks/audits/provider/release/Git operations; implementation-first hold remains. Preserve unstaged and untracked changes. Repo-only boundary; V1 PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-21 12:38 UTC — active source implementation wave
+
+The user approved optional Linux cgroup-v2 containment as the P1 restart-proof direction. Source inventory confirms the backend is already represented in `kernel/src/cgroup_v2.rs` and the existing ExecutionHost path; P1 owns lifecycle/reconciliation closure and the strict verifier ChallengeSet response pins. Active whole-phase implementation owners: P1 Guard/ExecutionHost, P2 managed/direct child lifecycle, and P5 built-in web search. P2 must consume P1's full trusted tuple; P1's durable settlement receipt must echo and validate `verificationRunID`, `setIdentityDigest`, and `challengeSetDigest`; P5 must reconcile its result schema with runtime route provenance. P7 source audit also found the current SSE route has neither durable Last-Event-ID replay nor source-sequence/generation fields; next P7 owner must implement the approved durable replay source or document the exact V1 resnapshot boundary consistently across schema, LLD and route. Other phases remain open and will be refilled as slots free. These are source-only assignments: no tests/builds/typechecks/audits/provider calls/release commands or Git publication until implementation is complete. Preserve mixed Git state. Root AGENTS.md's repo-only boundary controls; no external paths/services/remotes. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-21 11:02 UTC — V1 owner restart and local-source audit
+
+
+
+
+
+
+
+
+## 2026-10-21 11:15 UTC — P1 contract bounds; P2 checkpoint; P7 started
+
+P1 added strict ToolBatch schema count/identifier bounds (32 calls/effectRefs, 256-byte protocol IDs) and HostProcessRef identifier parity. Its source audit found production effect origins either Guarded or denied before dispatch; no missing first-party production process origin was identified in packages/core/opencode source. It did not add a crash janitor: existing bwrap PID namespace/PDEATHSIG lacks durable exact containment identity, so PID/starttime/boot ID alone cannot safely authorize tree kill or prove quiescence; UNKNOWN remains. P1 is continuing the whole phase source audit and contract work. P2's direct follow-up runner source is in place, with its gate still false; P2 returned partial/unverified. Reassigned its freed slot to P7 streaming/rendering/artifacts/analytics/automation/rewind source implementation; P6 continues. P3/P4/P8/P9 remain partial source checkpoints; P5 remains dependency-gated. No tests/builds/typechecks/audits/benchmarks/provider/release/Git operations ran. No files were staged. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-21 11:13 UTC — P2/P6 direct-source updates; release decisions pending
+
+P2's server-callable serialized follow_up runner and authenticated HTTP delivery path are now source-present. It uses exact request/profile/live Attempt/completed-turn pins, prepare/commit receipts, HostKernel fresh-turn proof, exact message claim, persisted completion and idempotent consume ACK; ambiguity remains UNKNOWN and no duplicate prompt is injected. Runtime remains false-gated pending integrated P1/P8 acceptance. P6 source now narrows anonymous OpenCode eligibility to exact active, zero-priced, supported model refs shared by backend/default/picker; custom model loaders stay unavailable. TUI hydration and lane-specific reply/reject now cover both authenticated legacy and QuestionV2 streams. P6 is doing final source-only boundary review and local upstream comparison. No checks ran.
+
+P9 release implementation remains partial. Two user decisions were requested asynchronously: distribution grant/notice review status, and whether V1 keeps remote install/update disabled until signing policy exists. Continue source work that does not depend on those answers. Active implementation owners remain P1/P2/P6; P1's restart containment source blocker remains unresolved. P5/P7 wait for agent capacity. No tests/builds/typechecks/audits/benchmarks/provider/release/Git operations ran. V1 is PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-21 11:13 UTC — P2 direct follow-up runner source added
+
+P2 added the public follow_up HTTP delivery path using a live child Attempt/profile/completed-turn pin, bounded durable inbox reservation, HostKernel fresh-turn authorization, Guard prepare/commit, and a serialized internal SessionPrompt runner. It claims only the committed message, persists turn/completion receipts, and ACKs consumption; ambiguous delivering/UNKNOWN rows remain inspection-only and exact ACK replay is idempotent. `DIRECT_CHILD_TURN_RPC_ENABLED` remains false pending P1/P8 acceptance. No checks ran; P2 remains active for whole-phase managed lifecycle and integration. P1 resumed source implementation on the restart janitor and remaining protocol/origin closure; P6 continues providers/settings/Doctor/S1 and local-source comparison. No tests/builds/typechecks/audits/provider/release/Git operations ran.
+
+## 2026-10-21 11:11 UTC — HostKernel restart boundary and child wake implementation
+
+P1 source review found that unfinished stdio attempts recover to UNKNOWN, while live supervisor handles are process-local and cannot prove tree quiescence after HostKernel restart. Sandbox paths currently use bwrap PID namespaces, `--die-with-parent`, and PDEATHSIG; P1 is evaluating durable containment identity and restart reconciliation. Parent required identity-safe signaling and proof of the actual whole process tree; PID/starttime alone is insufficient, and any unclosed crash window stays UNKNOWN. No validation ran. P2 confirmed Goal proposal→accepted SpecVersion→review→`goal.start`, distinct HostKernel-assigned reviewer, final live workspace revision, and TUI decisions are source-wired; its remaining direct child `follow_up` HTTP edge lacks a reusable server-callable Core runner. P2 is implementing the runner and keeping the gate false. P6 confirmed distinct legacy and Core Question owners; QA-006 requires both event lanes to project only to their authenticated owner. P6 is handling the narrow source projection while provider/settings work continues. Active owners: P1/P2/P6. P3/P4/P8/P9 returned partial; P5/P7 await a free agent slot. No tests/builds/typechecks/audits/benchmarks/provider/release/Git operations ran. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-21 11:09 UTC — P9 source checkpoint; P1/P2/P6 active
+
+P9 returned PARTIAL after source-only release changes: clean-install scenarios now verify candidate/previous executable digests around each run and after the matrix; installer activation keeps recovery copies for both command names; release evidence fingerprints include `prepare_build.py`. Only installer/release-owned files changed. No release or validation commands ran. P9 is still blocked on distribution grant/notices, signing/update and rollback policy, final candidate and Linux/WSL acceptance. P1 has resumed full Guard/ExecutionHost source work; P2 continues managed/direct child and follow_up runner; P6 continues provider/settings/Doctor/S1. P3/P4 source checkpoints returned PARTIAL, P8 source checkpoint returned PARTIAL. P5/P7 remain queued, P0 integration parent-owned. No tests/builds/typechecks/audits/benchmarks/provider/release/Git operations ran. Mixed unstaged/untracked Git state is preserved. Overall V1 PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-21 11:08 UTC — P3/P4 source handoffs; P6/P9 owners refilled
+
+P3 returned PARTIAL after source-only fixes for bounded directory enumeration, combined RepoIntel selector-count parity (100), profile provenance and fail-closed discovery adapters; parser provenance, trusted buffer snapshots, HostKernel read/cache contracts and P4 readiness remain dependencies. P4 returned PARTIAL after REPL's constant-false authorization gate, LSP/DAP cleanup/quarantine and authenticated P3 document reader wiring; production ingress, P1 Guard/confinement, DAP policy, OS-enforced REPL limits and real-project acceptance remain blocked. Both ran no checks. Reassigned the newly freed slots to whole-phase P6 Providers/Settings/Doctor/S1 and P9 Linux/WSL release source work; P2 remains active, P1/P8 returned source-only partial, P0 integration parent-owned. No tests/builds/typechecks/audits/benchmarks/provider/release/Git operations ran. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-21 11:05 UTC — phase-owner refill and implementation-only checkpoint
+
+P1 returned source-only/partial: HostKernel direct-turn completion and fresh authorization now call the full live Attempt-scope validator against the current revision. P1 acceptance remains open for durable process-tree quiescence, Guard/receipt recovery, origin closure, protocol integration, and adversarial recovery. P8 returned source-only/partial: fixed the evaluation artifact journal digest defect and added descriptor pinning, nonblocking exclusive lock, path/inode checks, and pre-dispatch size/identity fences; RC0/fan-out remain gated on P1/P2 and trusted OS resource limits. Neither phase ran checks.
+
+P2 remains active and found/fixed same-Attempt/same-epoch inbox recovery: an idle child Session's persisted `delivering` row is now UNKNOWN, never reinjected; pending direct-turn completion replay is keyed by exact cycle/result digest and persists only the HostKernel receipt. P3 RepoIntel and P4 LSP/DAP/REPL whole-phase owners have now been dispatched in the newly available slots; P5/P6/P7/P9 remain queued for slots. P0 cross-phase integration remains parent-owned. All agents have the repo-only boundary and implementation-first hold; no tests/builds/typechecks/audits/benchmarks/provider/release/Git operations ran. Git remains mixed and unstaged; preserve all changes. V1 is PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+Read the user-authorized single attachment at `/home/sarvesh/.codex/attachments/54d18db8-65b6-4096-bf59-15e64b9f5a35/pasted-text-1.txt`. It reiterates full V1 scope, actual local OpenCode/Codex source review across completed and unfinished modules, whole subagent lifecycle analysis, architecture/LLD/HLD/event re-audit, implementation before tests, truthful tracker updates, and prompt listed escalation of material decisions. The attachment introduces no new architecture choice.
+
+The current repo-only boundary remains in force except for that one explicitly named attachment. Reference source remains inside `opencode/`, `repos/codex/`, and `repo_take/`. The earlier user example is parent-orchestrated phase work, not CodeMode; local OMP MetaHarness is a benchmark run/trace/resume manager. JCode's separate QuickJS runtime and swarm authority are not adopted. Existing §32.40/41 and §42.13/14 already specify the evaluation and reuse contracts; no new architecture change was needed from this review.
+
+Reconciled actual worker state: prior P2/P6/P7 workers were terminal at quota; new whole-phase owners are now P1 Guard/ExecutionHost, P2 managed/direct child lifecycle, and P8 resources/workers/worktrees/RC0/evaluation. Their write scopes are disjoint; parent owns shared trackers and integration. P2 received the exact current (source-present, unverified) HostKernel `direct.message.v1` turn begin/complete/fresh-authorization and `managed.v1/direct_attempt_snapshot` contract. P3/P4/P5/P6/P7/P9 are queued for slot refill; P0 final integration remains parent-owned.
+
+Implementation-only hold remains: no tests, builds, typechecks, audits, benchmarks, provider calls, release commands or Git publication. Current Git is mixed and unstaged (184 modified, 63 untracked, zero staged); one worktree; repository filesystem has 817 GB available and `kernel/target` is 627 MB. Do not access C: or any other external path under the repo-only boundary. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-21 06:29 UTC — P1 contract handoff; active P2/P8/P9 wave
+
+P1 returned PARTIAL: manifest-pinned executable identity hardening and an unrun fake-path/symlink-replacement fixture are source-present. §37.9 now defines HostKernel-owned turn_begin/turn_complete, DirectTurnScope and one-use FreshTurnAuthorization, but the durable Rust journal, issuer, effect-scope integration and exact machine schema are not implemented. Abrupt owner-loss janitor completion remains UNKNOWN. P2 resumed to build only the Core caller after P1 publishes strict wire types; it will not invent fields or enable follow_up. P8 owns the offline fake-provider evaluation runner and remaining resources/workers/RC0 source; P9 owns safe Linux/WSL release-source work. P4/P7/P6 returned PARTIAL; no safe unblocked P7 work remains. SA-021 is added; benchmark HUP and CodeMode CM items remain acceptance specifications. No checks/provider/benchmark/release commands ran. V1 is PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-21 06:27 UTC — phase ownership and source continuation
+
+The requested OpenCode-style interrupted-owner scenario maps to existing SA-006/007/018/019/020 coverage; added SA-021 for parent-visible dependency/ownership state, bounded concurrent starts, source/build/schema conflict reservation, partial-write inspection, and completion accounting across multi-phase recovery. The benchmark catalog already has paired minimal/full arms, ablations, provenance, fake-provider runner self-check and parity/contamination cases; this is acceptance specification, not an implemented HorizonCode benchmark runner or measured uplift. No benchmark or model call ran.
+
+P1's trusted executable identity closure and manifest-backed supervisor fixture source are present but untested; it is implementing the missing durable one-use fresh-turn authority. P2 keeps `follow_up` unavailable until a valid token exists, added bounded pending-mailbox status, and reports managed usage-before-effect source present but unverified, then returned PARTIAL. P6 added strict AssistantMessage UsageProvenance schema/SDK projection and fixtures, then returned PARTIAL. P7 found no further independently safe code gap and returned PARTIAL. P4 resumed full-phase LSP/DAP/REPL source work; P8 resumed resource/worker/RC0 and HUP runner source work, with the paired benchmark runner not yet present. CodeMode remains hidden and nested MCP dispatch is denied before transport; construction still lacks finite limits. No tests/builds/typechecks/audits/benchmarks/provider/release operations ran. All work remains repo-only; V1 is PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-21 06:14 UTC — P1/P2/P6 owners; P7 source handoff
+
+P1 resumed on durable janitor completion proof and origin closure: Core process/PTY dispatch is denied before unsupported spawn; Linux terminal exit requires a complete bounded descendant sweep. Fresh-HostKernel authentication after abrupt owner loss remains blocked. Parent review found the Core control-launch allowlist checks executable basename and absolute `--source` path rather than trusted resolved executable identity; P1 is fixing this pre-dispatch trust issue. P2 resumed to complete managed usage ordering and safe-boundary follow-up or retain fail-closed, without a second scheduler. P6 resumed to add the missing generated SDK `AssistantMessage.usageProvenance` projection and re-audit safe source gaps. P5 returned SOURCE-COMPLETE for unblocked work after correcting read-only Settings inspection of disabled saved BYO routes; dispatch remains gated on P1/P6. P7 returned PARTIAL after fixing stream recovery for throwing delta consumers and adding a bounded current-session usage view (latest 256 messages; 16 rows max, 8 default). Its usage data remains unknown when generated SDK provenance is missing; automation invocation lacks a canonical timezone scheduler, checkpoint restore/artifact settlement remain gated, and terminal graphics stay text-only. P8 returned PARTIAL after hardening RC0 worker identity validation; attestation/fan-out remain gated on P1/P2 and trusted OS limits. P3/P4 remain PARTIAL. New process/PTY and AI SDK files are Git-visible by exact ignore exceptions.
+
+Evaluation review: §32.40 already specifies fixed-model paired baseline/full-harness runs, ablations, benchmark provenance, fake-provider runner checks and contamination checks. Added HUP-007 evidence-based failure-stage attribution, optional HUP-008 parity-matched OpenCode/Codex comparison, and a staged test order: fake-provider self-check, explicitly selected free OpenCode-provider smoke, FeatureBench V1.1 fast split, then small disjoint SWE-bench Lite/Terminal-Bench 2.1 samples and only later a frozen paired holdout. PS-015 adds a trusted executable-identity spoof/replacement denial case. CodeMode is an existing OpenCode-derived interpreter, hidden by ToolRegistry and currently denies nested MCP dispatch before transport. Its package has no default timeout, tool-call, output or memory limits, and HorizonCode's construction supplies none; CM-008/009 now require finite timeout/call/output bounds and reject unsupported hard-memory claims. JCode's in-repo QuickJS sandbox informs test patterns, not a second interpreter to add. No HorizonCode evaluation runner or uplift result exists.
+
+Implementation-first hold remains active: no tests, builds, typechecks, audits, benchmarks, provider calls or release commands. Git is mixed unstaged/untracked, with no staged changes; preserve ownership boundaries. All work remains inside agentx. V1 is PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-21 06:08 UTC — P4 handoff; P8 owner started
+
+P4 returned PARTIAL after source-safe work: DAP now has a constant-false runtime gate that rejects before the registered effect route; DAP and REPL fixtures assert route registration cannot unlock actions and REPL self-asserted resource limits do not count as OS enforcement. §37.7 records the contract. Remaining P4 work requires P1 Guard/receipt/confinement acceptance, P3 document/overlay producer, trusted ingress, DAP target/inspection policy, HostKernel-enforced REPL quotas/recovery, and real-project journeys. The freed whole-phase slot is now assigned to P8 resources/workers/worktrees/RC0; P1 and P2 remain active. No checks or provider/release operations ran.
+
+## 2026-10-21 06:03 UTC — P1/P2/P4 active; P3 source handoff (source only)
+
+Active accountable owners: P1 Guard/ExecutionHost, P2 managed vertical, and P3 RepoIntel. P1 changed the Linux terminal supervisor so `FRAME_EXIT` is emitted only after a complete bounded `/proc` sweep proves no descendants remain; incomplete snapshots yield no exit evidence. It added an unrun escaped-descendant fixture. A durable supervisor completion receipt that a fresh HostKernel can verify after abrupt owner loss remains a concrete P1 blocker. P2 found that local tool effects can be admitted before the current managed provider step's usage receipt updates token/cost authority; P2 now exclusively owns `packages/core/src/session/runner/llm.ts` and `packages/opencode/src/session/processor.ts` for usage-before-effect staging and regression fixtures. P3 added a separate 4 MiB repeated-selector scan-work bound, typed partial/resource-refused behavior, and unrun continuation/forgery/work-limit fixtures. P3 still has no approved parser provenance or trusted unsaved-buffer producer; guarded query and cache acceptance depend on P1/P4/P8.
+
+P1's source audit also found direct Core process/PTY abstractions in `packages/core/src/process.ts`, `pty/pty.bun.ts`, `pty.node.ts`, and process/PTY sections of `session/supervisor.ts`; P1 now owns their Rust mediation or pre-spawn disablement, preserving P3's document-digest work in the shared supervisor. P3 returned PARTIAL after source-safe work: it added the 4 MiB repeated-selector scan-work limit and typed partial results, unrun continuation/forgery/work-limit fixtures, exact UTF-8 HostKernel document digest verification in Core, and clarified stale RepoIntel docs. Parser provenance, trusted editor-buffer producer, guarded query/cursor acceptance and P1/P8 cache lifecycle remain gated. Implementation-only hold remains active: no tests, builds, typechecks, audits, benchmarks, provider calls, or release commands. P2's actual managed path is the HorizonCode processor/LLM/ToolBatch middleware, not the separate Core SessionRunner; P2 owns `packages/opencode/src/session/{processor.ts,llm.ts,tool-batch.ts,llm/ai-sdk.ts}` for charging step usage before admitting managed effects. Active whole-phase owners are P1/P2/P4. The latest root AGENTS.md makes repository-only access absolute; the external pasted-text attachment and all outside paths/services/remotes were not accessed. Local in-repo reference source remains available (`opencode`, `repos/codex`, `repo_take/jcode`); its patterns are adapted into the canonical HorizonCode Core/Rust owners, not copied as a second runtime. Git remains mixed/unstaged, one worktree, 13 commits ahead, with no conflict; no staging/publication/cleanup. Repo filesystem has 820 GB available; `kernel/target` is 627 MB. HorizonCode V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-20 — P5 whole-phase source reconciliation (implementation only)
+
+Re-read the cascade owners (§§16.7, 33.4, 37.5), source provenance (§42.12), current
+handoff and operative plan, then traced Config, Settings, ToolRegistry/ToolBatch, Core
+WebSearchRuntime, Auth ProviderTransport and HostKernel's fixed routes and durable cascade.
+The approved five-route keyless default order and six explicitly enabled BYO routes are
+represented. Auth 401/403/407 failures fall through only to the next explicitly enabled
+route; retry count is bounded, 429 cooldown/retry-after and per-route receipts are retained,
+cost/auth class comes from fixed route identity, and query/route plan is admitted as one
+aggregate effect. Core composes P6's Auth-owned fixed sender with P1's one-use attempt and
+resume/cancel/recovery protocol. The legacy `mcp-websearch.ts` is parser-only; no direct HTTP
+search effect is registered. Runtime remains constant-false, which is necessary until P1's
+Guard/ExecutionHost and P6 SecretBroker acceptance is complete. Inspection reports local
+sanitized status and never claims remote provider health; no native grounded-model adapter
+exists.
+
+Corrected stale status text in `arch_V1/16-UX-SETTINGS-ECOSYSTEM.md` and
+`arch_V1/37-RUNTIME-SERVICE-LLD.md`, and added the current P5 source/acceptance boundary to
+`HANDOFF.md`. No tests, builds, typechecks, audits, provider calls or Git operations were
+run. P5 is CODE_PRESENT/WIRED at source level, remains NOT TESTED / NOT VERIFIED, and is
+disabled pending integrated acceptance. No independent safe P5 source gap was found in this
+pass; the remaining work is upstream P1/P6 acceptance followed by integrated P5 acceptance.
+
+## 2026-10-20 — P1 BYO cascade continuation and recovery source (implementation only)
+
+P1 now has `execution.v1/resume_search_cascade` behind the same false-by-default
+web-search feature gate. It requires the exact cascade/route-plan/Attempt/lease pins, the
+durable SETTLED attempt receipt, and a MsgPack binary response body whose size and digest
+match that receipt. Rust derives fixed-provider result counts/status, journals the route
+subreceipt with explicit `secret-broker-fixed-route` provenance (no fabricated socket
+peer), continues keyless routes through the existing fixed HostKernel route executor,
+and either prepares the next ordered BYO route or settles the aggregate and managed/direct
+receipt. Route history is retained in the bounded cursor; successful/exhausted aggregate
+receipts are durable, while provider bodies remain transient.
+
+The existing `inspect_search_cascade` now joins a lost initial WAITING_SECRET reply by
+deterministic HostKernel effect-derived cursor plus authenticated session/location/lease,
+approved-argument, route-plan, scope and owner-epoch pins. New read-only
+`inspect_search_cascade_continuation` returns a committed PREPARED projection or honest
+terminal/UNKNOWN status without resending a provider request or reading stored body bytes.
+`cancel_search_cascade` aborts an exact PREPARED attempt and fences its cursor UNKNOWN;
+an in-flight dispatch record is never rewritten as settled. Core's cancellation allowlist
+includes resume. Direct Attempt receipts are accepted only with a valid profile and exact
+scope, with read-only web search allowing an unchanged workspace revision.
+
+These are source changes only. No tests/builds/typechecks/audits/provider probes/Git
+operations were run. Search, protocol IO, worker/process origins and verifier dispatch
+remain gated pending integrated acceptance. P1 still owes fresh-process verifier
+quiescence/no-live-command proof and final-revision Guard origin/recovery acceptance;
+V1 is not verified or released.
+
+## 2026-10-20 — P1 integrated Rust HostKernel source checkpoint (implementation only)
+
+P1 added `artifact.v1/artifacts.resolve_scope` for transcript continuation. Its
+out-of-body authenticated context contains only Session, registered Location and exact
+ArtifactRef; HostKernel performs a bounded existing OwnerLog head scan (without creating
+owners), resolves a unique current-epoch Succeeded managed Attempt, validates exact task verification/source revision and
+ArtifactStore verification-run ownership, then returns only the HostKernel-minted managed
+scope. Missing/ambiguous evidence remains unavailable. Core/TUI wiring is owned by P7;
+this path was not tested or enabled for external callers.
+
+P1 added bounded Content-Length JSON framing with duplicate-key rejection and a private,
+atomic HostKernel protocol IO journal for PREPARED/dispatch receipts, event retention, cursor
+replay, and restart UNKNOWN fencing. `protocol_op/read/reply` now have an explicit constant-false
+runtime gate before process resolution or IO pending supervised lifecycle and OS confinement
+acceptance. LSP callback reply is a distinct `LspReply(LanguageProtocolReplyV1)` typed dispatch
+subject sharing the receipt sequence/digest domain; HostKernel validates it against the exact
+retained server-request row and journals one-use correlation. Updated receipt schema and §37.5.
+P4 has the exact RPC fields; it must keep the client side unavailable until acceptance.
+
+P1 also added durable BYO search route state: the metadata-only authorization now persists a
+PREPARED attempt and returns opaque `attemptRef`/`attemptDigest`; `begin_search_secret_dispatch`
+durably fences dispatch, `settle_search_secret_attempt` records bounded response metadata and a
+receipt, and `mark_search_secret_attempt_unknown` quarantines uncertainty. Restart converts
+PREPARED to ABORTED and DISPATCHING to UNKNOWN. Exact authenticated Attempt/profile scope is
+revalidated on each transition; no credentials, leases, or response bodies cross RPC. P6 has the
+strict DTOs and is composing the fixed in-process sender. Production BYO remains gated.
+
+Successful RepoIntel generation admission now mints an authenticated source-only cache
+observation from the exact HostKernel lease and retained Arc, applies it to a HostKernel-owned
+CacheRegistry, and exposes crate-private planning/snapshot/retirement composition to P8. Physical
+allocation and per-key entry count remain unknown; source bytes are not reclaimed RAM. Cache
+retirement rechecks per-Arc live pins and aligns key family/buildVersion with the source generation.
+The final-Inspect preparation now resolves exact Pending OR Completed candidate-bound intent;
+dispatch remains Pending-only. Two new Rust modules were added to `.gitignore` allowlists so
+they are Git-visible. No tests/builds/typechecks/audits/provider probes/Git operations were run.
+Verifier fresh-process quiescence and final integrated acceptance remain open; V1 is not released.
+
+## 2026-10-20 15:29 UTC — P1 BYO authorization source checkpoint
+
+P1 added the Rust `execution.v1/authorize_search_secret_use` HostKernel projection in
+`kernel/src/host_kernel.rs`, with fixed request construction in `kernel/src/http_execution.rs`.
+It requires the active `web.search` challenge and exact Guard lease digest, verifies the
+approved route/opaque SecretRef and current direct or managed Attempt scope, and derives
+provider request/digest plus authenticated requester, Run, and pinned AgentProfileV2
+references from trusted HostKernel state. The projection has a 15-second expiry and
+per-route ordered attempt counters; no SecretBroker lease or raw bytes cross RPC. P6 has
+the exact DTO to wire its in-process `ProviderTransport` path. Durable per-route
+PREPARED/dispatch/receipt and recovery integration is still missing, so BYO search remains
+unavailable and `WEB_SEARCH_RUNTIME_READY` stays false. P1/P4 protocol audit also confirms
+that HostKernel `protocol_op/read/reply` remain `capability_unavailable` before protocol
+bytes because durable journal/ACK/event retention is absent; P4 owns Core DTO/journaling,
+P1 owns this HostKernel gate and service journal. P8's new private authenticated-cache
+observation envelope can bind the current HostKernel owner epoch and retained RepoIntel Arc
+generation, but no authenticated Core cache-observation ingress exists yet. No tests, builds,
+typechecks, audits, or provider probes were run, per the implementation-first hold.
+
+P1 source follow-up: dynamic BYO response fields now use the vector map serializer and the
+fixed request projection helper. Rust also rejects any RepoIntel continuation cursor before
+workspace snapshot collection because no HostKernel owner-bound cursor lease exists yet. P3
+delivers lexical candidates without `nextCursor`; pagination remains unavailable. P6 was
+notified that its current ProviderTransport types do not accept Rust's fixed Brave profile
+(`GET` with `x-subscription-token`); it must add that exact provider/header/method pairing to
+the closed allowlist before wiring, and BYO remains gated. Managed verifier journal recovery
+still marks unfinished entries UNKNOWN and cannot prove old-process quiescence after restart;
+the verifier adapter remains disabled. HostKernel LSP/DAP operations remain unavailable pending
+durable IO intent/ACK/event retention and framed event parsing.
+
+P1/P2 cancellation-race source update (2026-10-20): `managed.record_usage` now uses a
+dedicated HostKernel scope validator that permits `RunPhase::Cancelling` only when the
+Attempt remains active and `Executing`, and the scope revision is exactly one behind the
+current Rust snapshot (the single RequestCancel fence). HostKernel derives that current revision
+for both the authenticated usage proof and append CAS; caller-supplied stale revision is never
+used to write. It preserves authenticated ServerAuth, owner epoch, workspace, DelegationBinding,
+and P8 worktree/reservation checks. The shared managed scope validator and all Guard/effect
+admission paths remain RUNNING-only. No tests or builds were run.
+
 ## 2026-10-19 19:01 UTC — full V1 implementation resumed (superseded by 19:09)
 
 Initial whole-phase owners were dispatched after the prior stop-all checkpoint. Those child
@@ -2809,3 +3479,2690 @@ P2 source review found Rust-selected planned Tasks have no title/purpose, so Cor
 ### 2026-10-20 04:42 UTC — P8 source audit and P5 owner resumed
 
 P8's whole-phase source audit found its durable reservations, logical-child settlement/reconciliation proof checks, guarded worktree intent/receipt/recovery, bounded monitoring, UNKNOWN capacity denial and provisional-only RC0 source present; no P8-owned source mismatch was found. P8 is PARTIAL/NOT VERIFIED and queued for integration after P1 HostKernel worktree/sampler/final-inspect ingress and P2 live child/verified terminal evidence. It is not accepted: integrated RC0 authenticated evidence and 1/5/10/20 session captures remain required after the implementation hold ends. The freed slot now runs P5 whole-phase implementation. Active owners: P1, P2, P5. No checks run.
+
+### 2026-10-20 04:44 UTC — proof-state split and root-scoped lifecycle ruling
+
+P2/P1 identified that prompt completion cannot use a terminal-only SETTLING snapshot: per §12.19 the coding Attempt remains EXECUTING while Task is PENDING_VERIFICATION until independent verifier evidence is durable. Required sequence is a nonterminal prompt-return/quiescence proof and `managed_dispatch_quiesced` marker first; later, only after verifier evidence for the current workspace head, a distinct terminal settlement projection may authorize P8 settlement. No prompt replay after uncertain dispatch. For scheduler-triggered worktree lifecycle, do not forge UserAction or create an Attempt: P1 is adding a private root-coordinator-scoped lifecycle origin/proof tied to exact P8 operation pin and the existing Guard/approval/lease/receipt path, with only acquire/list/release actions. If the current approval store cannot represent it safely, keep unavailable. P1/P2 implementation continues; no validation.
+
+### 2026-10-20 04:45 UTC — Git snapshot changed during implementation
+
+Git MCP observed HEAD move from `6c8c5ab9ad127853e45abadd8a88aed79b7a710f` to `14830654c8e6f68b6450707b17b17b29d59fc649` (13 commits ahead of origin/main); the new commit reports 469 changed paths. The parent did not create or push that commit. Current worktree again has staged/unstaged/untracked ownership to preserve. Do not stage, amend, reset or push until exact task ownership and final verification are established. This commit report is provenance only, not acceptance evidence.
+
+### 2026-10-20 04:50 UTC — route identity and current owner boundary
+
+Parent reconfirmed the P1/P5 HostKernel route mapping against `packages/core/src/v1/config/config.ts`: each exact configured route key (including auth mode, e.g. `exa_keyless` versus `exa`) is the `provider_id`, and fixed `route_id` is `web.search.<provider-key>`. Core may send only that selected route plus bounded query/limit; endpoints, headers, and credentials remain HostKernel/SecretBroker-owned. P5 has exclusive ownership of only the web-search inspect import/registration delta in `packages/opencode/src/tool/registry.ts`; P2 was told to avoid that file. Inspect must be local/read-only and cannot claim network health. Search stays unavailable until P1 Guarded transport/lease/receipt and P6 SecretBroker gates are wired. Active phase owners remain P1, P2, P5. No tests/builds/typechecks/audits/provider probes. Git MCP: `main`, 13 ahead, no staged or untracked files, 31 modified paths; one primary worktree. C: 57 GB free via `/mnt/c`; no build/test process. V1 remains PARTIAL / NOT RELEASED.
+
+### 2026-10-20 04:54 UTC — managed/direct permission digest distinction
+
+Cross-phase source review found HostKernel's current managed `permissionScopeDigest` is the pinned AgentProfile permission-ceiling digest, while Core's TaskTool builds runtime Session permissions by intersecting profile and parent restrictions. Re-read §§12.11, 29.2/29.20: the effective permission-scope digest belongs to `direct_session`; `managed_attempt` authority is the Rust `DelegationBindingV1` digest plus exact Goal/Run/Task/Attempt lineage. P1/P2 were instructed to keep these field meanings distinct, derive managed child Session rules without widening applicable restrictions, and not compare the actual Core rule digest to the Rust profile-ceiling digest. Child prompt creation remains blocked until the P1/P2 interface is aligned. No tests or builds.
+
+### 2026-10-20 05:00 UTC — search route coverage gap found
+
+Source review of P1 `fixed_web_search_route` found its Rust allowlist currently has only five BYO POST routes; it explicitly omits the five approved built-in keyless MCP routes and Brave GET. §37.5/§42 identify the keyless MCP chain as the built-in default. P1/P5 are coordinating exact fixed transport methods/endpoints/protocol bounds; routes remain unavailable until the existing Guarded Rust supervisor supports them. Do not present an incomplete default cascade as operational. No network probes or tests.
+
+### 2026-10-20 05:04 UTC — P5 dormant MCP origin and source visibility
+
+P5 found `packages/opencode/src/tool/mcp-websearch.ts` exports a dormant direct HttpClient MCP search helper (including query-embedded `EXA_API_KEY` and configurable `PARALLEL_URL`); it is not currently registered, but exported code could bypass Guard if called. P5 now owns removing its network dispatch while preserving pure parsers; P1 includes it in the origin audit. A newly created P5 inspect tool was hidden by root overlay `*`; parent added exact `.gitignore` exceptions for the source and its anticipated focused test path. Git MCP now reports that source as untracked/Git-visible; no stage. Overlay audit remains for final source pass; no tests/builds run.
+
+### 2026-10-20 05:10 UTC — stable managed child Session identity
+
+Resolved P1/P2 interface: Core derives `ses_managed_${candidateAttemptID}` from Rust's authenticated `READY_TASK.candidateAttemptID` (`attempt_<lowercase BLAKE3 hex>` today). The model/request cannot choose the child ID; HostKernel validates and pins the exact deterministic value through admission, handoff, DelegationBinding and replay. I corrected my earlier mistaken example prefix (`att_`); the current Rust prefix is `attempt_`. P1/P2 are implementing this exact rule and documenting it.
+
+### 2026-10-20 05:12 UTC — keyless route transport requirement
+
+P1/P5 confirm all five approved built-in keyless providers require fixed remote MCP initialize/session/tools-call lifecycle; Brave also needs GET. The current Rust ExecutionHost HTTP path is POST-only and has no MCP session semantics. I instructed P1 to extend that same single Guarded supervisor with bounded fixed MCP lifecycle, per-call lease/receipt/cancel/UNKNOWN fencing and no arbitrary MCP destination. Default routes stay unavailable until this transport exists; omitting them is a P5 blocker, not phase acceptance. No tests/probes.
+
+### 2026-10-20 05:16 UTC — managed child idempotency and definite failures
+
+Parent review of P2 TaskTool found completion/quiescence uses a random delivery ID, which cannot replay after response loss. P2 is changing it to a stable identity derived from exact Attempt + handoff/consume receipt and persisted before dispatch. Also, definite `prompt()` returns with assistant/provider or tool errors currently exit without durable returned-outcome/quiescence state; P2 was asked to record definite returned failures as nonterminal failure outcomes (never PASS), while preserving UNKNOWN for ambiguous in-flight dispatch. Digest/state schema must bind outcome kind; no tests.
+
+### 2026-10-20 05:20 UTC — P1 fixed MCP transport source added
+
+P1 has now added source for exact five keyless MCP route definitions and a three-frame initialize/notification/tools-call lifecycle in the existing HTTP supervisor, with fixed host/path/tool parameters, public DNS pinning, response/frame/timeout/concurrency limits, cancellation as UNKNOWN after possible dispatch and no client-directed SSE endpoint. This addresses the transport-format source gap. It is NOT wired to HostKernel Guard admission/one-use lease/durable aggregate receipt/restart reconciliation; each route remains unavailable. BYO POST policy source is also present, but SecretBroker/Guard integration remains open. Source-only; no checks.
+
+### 2026-10-20 05:23 UTC — managed coordinator visibility and caller gap
+
+P2 added `packages/opencode/src/session/managed-run-coordinator.ts`, with a Rust-selected Task→admit→claim→consume→child prompt flow and canonical `ses_managed_${candidateAttemptID}`. It was hidden by root ignore-all; parent exposed it and the anticipated focused test path with narrow `.gitignore` exceptions. Source search currently finds only the coordinator declaration/calls from itself and no real control/TUI/accepted-Run caller, so the vertical is not wired end-to-end yet. P2 was instructed to connect it to the actual managed control path. No tests/builds.
+
+### 2026-10-20 05:26 UTC — P2 verification gap / P5 adapter composition
+
+P2 source now has a coordinator and exact consumed prompt/quiescence contract, but the coordinator currently returns after PROMPT_RETURNED/ERROR: source search found no connection from that path to actual revision capture, artifact/evidence, distinct verifier `verifyTask`, criterion evidence and terminal Attempt settlement. P2 was assigned that whole-v1 vertical continuation. P5 added the product invocation composition (`websearch-runtime.ts`) with default-deny and HostKernel/P6 capability seam; its referenced `websearch-adapters.ts` factory is still pending and will remain gated until Guard receipts and SecretBroker are connected. Parent exposed all P2/P5 new files in `.gitignore`. No tests/builds.
+
+### 2026-10-20 05:30 UTC — HTTP route source expanded
+
+P1's shared Rust HTTP supervisor now has source for fixed MCP and BYO POST adapters plus canonical Brave GET request construction/validation. Provider request bodies are built internally from bounded `{query,limit}`; callers cannot supply endpoints or headers. P1 reports P2 outcome-kind/output-receipt fields are now recomputed in HostKernel quiescence. These remain source-only: HostKernel Guard admission, auth SecretBroker path, durable aggregate receipt and restart/UNKNOWN dispatch integration are not yet complete; no route is enabled or tested.
+
+### 2026-10-20 05:32 UTC — P5 concrete adapters/runtime seam
+
+P5 has added source for fixed provider parsers/adapters (`websearch-adapters.ts`), the default-deny injectable Guarded runtime (`websearch-runtime.ts`), per-attempt protected Attempt scope, HostKernel-advertised route filtering, local inspect projection, sanitized exhaustion metadata and invocation through the product tool. Parent exposed the new adapter file in root `.gitignore`. P1/P5 were told that every sequential cascade/retry HTTP call needs its own atomic pre-admitted one-use lease/receipt (or a precisely bounded aggregate HostKernel intent), never reusing the tool call's lease; ambiguity prohibits retry. The production gate remains false and supported route set empty until P1 RPC/receipt + P6 SecretBroker composition is complete. Source only.
+
+### Current continuation — aggregate Guard contract and managed caller
+
+P1 initially proposed a two-RPC search approval set, then reconciled it with Core's single-challenge ToolBatch: final design is one `execute_search_cascade` RPC after canonical ToolBatch admits and approves the exact full trusted route plan. This is one aggregate Guard effect/lease/intent/receipt consumed once; HostKernel records bounded per-route attempt/subreceipt provenance beneath it. Definite outcomes may fail over only within the approved route order; UNKNOWN stops. P5 is adapting its caller. P2 has wired accepted `goal.start` to `executeNextManagedTask` under a false-by-default flag, but current status is only PROMPT_RETURNED/ERROR. P2 was assigned the remaining current-revision evidence, independent TUI-approved verifier, terminal settlement, and P8 settle integration. No tests/builds/typechecks/audits/probes; source implementation continues.
+
+P1 and P2 have since aligned terminal verifier decoding: every terminal outcome, including UNKNOWN, echoes only the HostKernel-pinned `sourceRevision`; `evidenceDigest` and typed `artifactRefs` are success-only. This prevents UNKNOWN from being treated as evidence or releasing P8 capacity. P2's remaining write scope is TS/control/session, `kernel/src/managed_control.rs`, and goal-verification TUI; P1 owns other HostKernel/Guard files.
+
+P2 corrected the quiescence wire contract: `childSessionOutputBytes` is canonical decimal text on the HostKernel wire, strictly bounded to 8 MiB before Core converts it to a safe number. P1 also found the search aggregate must be included in the pre-admission challenge digest; P1 owns a trusted capability projection in canonical ToolBatch, with P5 supplying enabled route order/retry settings and opaque SecretBroker refs. Rust rejects a query-only challenge. Web search remains unavailable.
+
+P2 source review found a crash/retry gap: after Rust consumes a candidate, `next_schedulable_task` returns NO_TASK, so Core cannot reconcile the consumed Task through the old READY_TASK branch. P1 now owns an authenticated read-only active-delivery recovery projection (exact Task/Attempt/profile and persisted handoff/consume/quiescence state; no new authority), and P2 is implementing no-replay reconciliation against the stable managed child Session.
+
+P5's trusted `prepareSearchEffectArguments` projection binds query/limit, enabled route order, retry bound, and opaque BYO refs before Guard admission. Keyless routes need no SecretBroker and can proceed independently; a BYO route without a trusted ref is ineligible. P6 still owns the Core provider-route→SecretBroker reference mapping. P2 confirmed reviewer identity is middleware-authenticated, proposal reviewer is distinct, TUI invokes the verification route without supplying identity, and HostKernel rejects a verifier/reviewer identity collision.
+
+P1 has wired that trusted projection into the existing `ToolBatchDefinition.prepare`/`SessionTools.resolve` hook: Rust admission now receives the transformed full `web.search` aggregate arguments, not only model query args. The exact prepared execution object is carried to the tool callback; P5 is adapting the consumer. This is still not a Guarded HTTP dispatch or acceptance result.
+
+P1 has also registered `managed.active_attempt_recovery`: a bounded authenticated read-only projection scoped to exact Goal/Run/root Session/Location/owner epoch/revision, returning immutable Task/profile/binding pins, phase/UNKNOWN flags and existing consume/quiescence receipts without fresh dispatch authority. P2 is now wiring Core restart reconciliation against this projection; no child prompt replay on an ambiguous consumed delivery.
+
+P1 has extended the same projection to return the Rust-minted existing Attempt scope only while that Attempt is ADMITTED/EXECUTING, unconsumed and non-UNKNOWN. It cannot mint a new Attempt. P2 is instructed to resume only that exact delivery stage and never re-admit/re-claim on recovery.
+
+P2 confirms the recovery implementation uses that scope only after strict Goal/Run/Task/Attempt/Session/Location/epoch/revision/binding comparisons, then claims and consumes the same Attempt with stable delivery IDs. Consumed-without-quiescence remains PROMPT_UNKNOWN with no provider replay; the API/TUI now has an explicit PROMPT_UNKNOWN result.
+
+P5 completed its independently executable source and is PARTIAL pending P1 aggregate dispatch and P6 SecretBroker refs; it will resume as the same phase owner when those land. The freed child slot is now assigned to a whole-phase P8 owner for worker/resource/worktree/recovery integration. Active phase owners: P1, P2, P8 (three child slots). P3/P4/P6/P7/P9 remain in the runnable queue; P8 fan-out and effectful workers remain disabled pending P1/P2. C: has 57 GB free at `/mnt/c`; no build/test processes; one worktree. No tests/builds/typechecks/audits/benchmarks/provider probes run.
+
+P8 source audit corrected an old tracker gap: authenticated `resource.sample` exists in HostKernel, binds ServerAuth/live Core peer/managed Attempt+Run+Goal+Location, validates OwnerLog watermark and samples only Linux. Its product attestation intentionally remains `NOT_ATTESTED`; no eligible 1/5/10/20 product baseline exists. P8 owner is auditing remaining P8-local source and will not edit P1 shared HostKernel files.
+
+P1 added Rust ingress validation for `web.search`: exact fixed route IDs, bounded UTF-8 query/limit, unique ordered routes, retry budget 2, and BYO-only opaque SecretRef placement; query-only or model-selected policy is rejected before EffectHost. Remaining P1 search blocker is the EffectHost planned/persisted aggregate consume and HostKernel dispatcher; current HTTP primitives remain unreachable.
+
+### 2026-10-20 05:17 UTC — active phase checkpoint (implementation only)
+
+P8 source now hard-disables `WorkerPoolControl::dispatch_bound_managed_worker` before any `IsolatedWorkerLauncher` interaction because V1 WorkerExecution is a logical Core child Session/Attempt with no worker PID. Future process-backed pool primitives remain separate. P8 also added Rust-to-Python per-worker RC0 metric projection and strict bounded UNKNOWN reason parsing, with source fixtures; these changes are recorded in the operative plan and §37.22. P8 still owns authenticated HostKernel proof integration, trusted RC0 attestation/wiring, and remaining lifecycle gaps.
+
+P1 has added the single aggregate `web.search` Guard challenge to EffectHost planning and the approval projection omits SecretRefs. The production `execute_search_cascade` dispatcher, aggregate receipt/recovery transaction, and HostKernel handler do not yet exist; web search remains fail-closed. P2 continues the managed child caller/recovery/verifier path. Active whole-phase owners remain P1/P2/P8; P6 is next queued, then other runnable phases as slots free. No tests/builds/typechecks/audits/provider probes/benchmarks were run. Mixed Git state remains untouched and unstaged; C: has 56 GB free via `/mnt/c`; one worktree.
+
+### 2026-10-20 05:16 UTC — OpenCode fleet resumed after restart; re-synced against HEAD 14830654c
+
+- OpenCode server restarted 05:07 UTC. The three OpenCode phase owners (P1.3 Guard, P2 managed, P1-TERM terminal/shell) auto-resumed and were frozen immediately: the parallel Codex orchestration had committed HEAD `14830654c` (469 files, +198k/−15k) at 04:42 UTC and was still editing kernel/websearch files. No pre-restart work was re-applied blind.
+- Delta re-sync: P1-TERM confirms `terminal.rs` (+617), `terminal_process.rs`, `pty.ts` and the shell/PTY tests are present at HEAD. Genuine remaining gap: interactive `terminal.v1 start/status/input/resize/cancel` omit `trustedPrincipal` in `packages/core/src/pty.ts` (kernel binds `terminal.principal` at `host_kernel.rs:13979,14056,14118,14244`), so start would fail lease binding once start-consent permits approval. Approved a surgical fix in `pty.ts` + C13 Permission negative coverage + scratch-file cleanup, with focused bun tests only. P1.3/P2 deltas pending.
+- Lane map: OpenCode owns `packages/core/src/pty.ts` + its tests (P1-TERM, active); P1.3/P2 stay read-only until their deltas land. Codex owns `kernel/src/{managed_control,host_kernel,effect_host,http_execution}.rs` + websearch/TUI/provider surfaces (active writers, 05:10–05:15). No OpenCode writes into Codex lanes; no new heavy builds.
+- No staging/commits/pushes by the parent; 39 modified + 4 untracked preserved; 849 GB free.
+
+### 2026-10-20 05:19 UTC — phase queue and proof boundary
+
+P2's recovery sub-deliverable is source-wired: it resumes only the exact Rust-authorized unconsumed Attempt with stable claim/consume IDs; consumed/ambiguous delivery returns `PROMPT_UNKNOWN` without replay. This is a checkpoint, not P2 completion: current-revision evidence, full independent verifier/settlement flow and integrated Guarded-action journey still require cross-phase P1/P8 acceptance and source review. P2 awaits a slot for its remaining whole-phase work.
+
+P6 now owns the full provider/settings/Doctor/S1 phase in the freed slot. Active owners are P1, P6 and P8. P5 remains queued for the same owner to resume when P1's aggregate search dispatcher and P6 SecretBroker mapping land; P3/P4/P7/P9 and remaining P2 integration follow actual free slots. P8 must keep RC0 NOT_ATTESTED: no caller-constructed JSON attestation; the source path requires current final workspace revision, HostRun receipt, independent verifier evidence, exact Goal/Run/Session/Attempt and OwnerLog cursor from authenticated HostKernel/P2/P8 proofs. V1 remains PARTIAL / NOT RELEASED. No checks run.
+
+### 2026-10-20 05:20 UTC — P1/P8 proof API aligned
+
+P1 and P8 agreed an exclusive file boundary for settlement evidence: P8 owns the durable proof/journal API in `worker_durable.rs` and worker-pool internals; P1 owns authenticated HostKernel ingress and call sites. P8 will add a final-inspect pin builder and typed settlement getters for exact Inspect operation, HostRun, verifier evidence and current revision; P1 will wire the HostKernel call site. Until the complete guarded Inspect receipt exists, failed/ambiguous settlement remains quarantined and RC0 remains NOT_ATTESTED. P1 continues broader origin closure, shell/process and launch supervision. Active owners remain P1/P6/P8; P2 is queued for remaining P2 work. Latest C: free space is 55 GB via `/mnt/c`; no HorizonCode validation builds/tests are running. Mixed tree remains unstaged.
+
+2026-10-20 05:21 UTC — P1 source audit confirms root-scoped worktree approval checks exist but no HostKernel operation currently mints the private root scope/challenge; all CapabilityBinding constructors still set `managed_root_scope=None`. P1 owns creating that scope from live RootCoordinatorExecutionProof plus P8 operation pin, and wiring create/inspect/release through Guard, approval, lease, supervisor, durable receipt and recovery. Keep it unavailable until complete. This is separate from the now-aligned P8 final-inspect proof API. No source acceptance claim or tests.
+
+2026-10-20 05:22 UTC — P1/P4 launch-profile ownership ruling: P1 owns HostKernel's trusted selector and exact immutable `ExecutionLaunchProfileDefinitionV1` validation, Guard lease binding and dispatch through the single existing supervisor. P1 must expose the authenticated RPC/DTO contract and accept no caller executable path. P4 owns Core's trusted Config profile resolver/adapter and LSP/DAP/REPL lifecycles. This follows the user's approved existing-Core-config→HostKernel projection. All launch effects remain unavailable until both sides and confinement are wired; P1 continues independently.
+
+2026-10-20 05:23 UTC — P2 source review found the remaining delivery-contract gap: current package sources use AgentProfileV2 pins/metadata and managed handoff separately, but no lane-tagged `SubagentDeliveryV1` runtime envelope exists. P2 has been tasked to include it in the remaining whole-phase work: direct lane binds Core parent/child/profile revision+digest/effective permission-scope digest; managed lane binds Rust DelegationBinding and exact lineage; owner recomputes domain-separated canonical authorityDigest. P2 remains queued for reactivation.
+
+2026-10-20 05:25 UTC — P1 added authenticated `execution.resolve_launch_profile`: it accepts only trusted Core ServerAuth + immutable profile definition/Location, resolves against an installation-owned selector map, and returns profileRef+executable digest/status without returning path/argv/env or spawning. This is profile projection only; Guard capability/lease binding and same-supervisor launch dispatch remain missing, so LSP/DAP/REPL launch stays unavailable. P4 adapter contract is exact Session/Location/Attempt + profile definition/ref + canonical capability + approved challenge/one-use lease; HostKernel rechecks digest/private mapping before preflight and derives cwd/env. P1 continues integration; no checks run.
+
+2026-10-20 05:26 UTC — Launch request contract reconciled to §§12.20/37: immutable `ExecutionLaunchProfileDefinitionV1` appears only in authenticated `execution.resolve_launch_profile`; HostKernel validates the selector/digest and pins the immutable result into the exact PreparedEffect/Guard challenge. Later prepare/launch carries only `ExecutionLaunchProfileRefV1` plus authenticated Session/Location/Attempt and challenge/one-use lease. No caller path/argv and no second mutable profile registry; persist and revalidate the exact profile/executable pins before spawn.
+
+2026-10-20 05:27 UTC — P8 now derives a final guarded Inspect pin only from the active exact P8 claim, verified registration/Create provenance, terminal observed revision and root proof. Settlement requires the exact durable Inspect receipt for Verified Tasks and persists final revision, Inspect/Host receipt refs, verifier evidence/artifact refs and settlement watermark in typed OwnerLog receipt fields. Exact legacy settlement replay remains supported; a source fixture covers the new wire and legacy digest. P8 changes are unrun. P1 HostKernel final-Inspect invocation/authenticated RC0 projection and P2 terminal-verification evidence remain required before reuse/attestation. RC0 remains NOT_ATTESTED; no product baseline is eligible.
+
+2026-10-20 05:28 UTC — C: free space is 49 GB (90% used) via `/mnt/c`, down from 55 GB at the previous check; `kernel/target` remains 520 MB. Process scan shows a separate Windows PowerShell/Cargo validation in another project using C:. It is not a HorizonCode task process; do not terminate it or clean its outputs. HorizonCode has no active builds/tests.
+
+2026-10-20 05:30 UTC — P6 clarified S1 ownership: V2 question list/reply/reject handlers must authorize the authenticated middleware principal against the Core-owned Session owner chain; request fields never supply identity. P6 owns only the question handler block; P7 owns shared `/event` principal filtering and must apply the same bounded owner-chain predicate to question.v2.* events. P8 confirms logical V1 children have no worker PID tree; RC0 metrics must not synthesize per-worker process data. Token/cost charging is a P2/provider-provenance dependency, not a second P8 runtime. No validation has been run by instruction. C: remains 49 GB free via `/mnt/c`; one primary worktree; no HorizonCode build/test processes.
+
+2026-10-20 05:32 UTC — Parent source review of P1 launch wiring found `launch_execution` consumed every stdio lease as `terminal.run`, although launch-profile challenges are `language.server.start` or `debug.start`; after durable dispatch intent this would falsely fence the launch UNKNOWN. P1 owns the correction and LSP/DAP coverage. No test or build run.
+
+2026-10-20 05:34 UTC — P1 fixed the reviewed launch lease mismatch: stdio launch consumes using the pinned capability ID, and the per-backend resource projection advertises no unsupported hard CPU/memory/process/FD quotas. The P1→P4 DTO is fixed: authenticated Core resolves trusted profileDefinition into Guard challenge + profileRef; after approval Core sends only profileRef and exact execution/session/location/Attempt/one-use lease pins to existing `execution.prepare`/`execution.launch`. REPL remains unavailable.
+
+2026-10-20 05:36 UTC — P6 added the trusted-principal/Core owner-chain helper for V2 S1 question routes and pure fixtures. Parent repaired the blanket-ignore boundary with exact allowlist entries; Git MCP now sees the new first-party helper and fixture. P8 implemented the previously missing reconciliation Inspect receipt validator, bound to durable registration/provenance and terminal revision, and sent P1 the typed final settlement/HostRun receipt API. P1 still owns authenticated Guarded Inspect invocation/projection; P2 still owns terminal verifier evidence and durable token/cost stop-before-next-dispatch accounting. RC0 stays NOT_ATTESTED. No tests/builds/typechecks/audits/probes run.
+
+2026-10-20 05:38 UTC — A new P5 phase owner could not be launched because the collaboration service reported its agent thread limit, despite the P8 slot freeing. To keep implementation moving, parent is covering only the independent P5 TypeScript source/docs surface while P1 owns HostKernel transport and P6 owns Auth/SecretBroker (no overlapping writes). P1's exact aggregate request is `execution.execute_search_cascade` with route order/retry/query/limit/opaque refs equal to the admitted arguments; reply carries bounded per-route attempt receipt refs and UNKNOWN halts. Parent updated P5 attempt projection to preserve UNKNOWN distinctly and attach truthful configured cost/auth provenance per route. Production remains fail-closed until P1 durable aggregate dispatcher and P6 composition land. No checks run.
+
+2026-10-20 05:42 UTC — Settled P1/P2/P8 ordering from normative §§12.11/12.19/12.20/17.20/17.24 and §37.22/managed verifier flow: the coding Attempt stays EXECUTING through independent verification. Child prompt return appends only quiescence while Task is PENDING_VERIFICATION. The verifier then runs as a separate Guarded EffectIntent/one-use lease under that same Attempt; P1 captures supervised output/receipt/artifacts and proves unchanged final head; P2 durably appends typed verifier evidence and moves Task to Verified/Attempt to SETTLING. Only after that does P1/P8 perform final Guarded Inspect at the evidence revision and P8 settle worker capacity using both exact terminal P2 snapshot and final Inspect receipt. No pre-verifier worker settlement; BeginVerification must not require a settled Attempt. P1/P2 notified to adapt source. No tests run.
+
+2026-10-20 05:44 UTC — Parent P5 runtime now preserves aggregate `UNKNOWN` rather than projecting it as ordinary failure, adds configured cost/auth provenance to each route attempt (`FREE/none` for fixed keyless IDs; `UNKNOWN/secret_broker` for BYO), and records attempts sequentially so the latest retry cannot be overwritten nondeterministically. §37.5 implementation status and the operative plan now reflect this source delta. User-visible route enablement already explicitly records BYO consent; P1 must carry its cost/auth class in Guard approval without exposing the SecretRef. No checks run.
+
+2026-10-20 05:47 UTC — P6 source audit found multiple provider adapters still inject API keys directly from legacy Config/Auth/environment into SDK options (OpenAI-like, Bedrock, GitLab, Cloudflare, Snowflake and generic provider paths). P6 is closing these credentialed paths fail-closed at the provider runtime seam until one-request Guard/SecretBroker lease, revocation, zeroization and no-leak proof is complete; catalog/anonymous-free routes remain visible, with honest unavailability and no fallback. P1/P2/P8 verification order is fixed as recorded at 05:42. No checks run.
+
+### 2026-10-20 05:45 UTC — HEAD was load-broken; shared unblockers applied; P2 independent review findings
+
+- Load verification of HEAD `14830654c` (committed 04:42 without load/type checks) found hard build errors in committed files:
+  - `packages/opencode/src/tool/task.ts`: duplicate `const locationRef` in one scope (HEAD count = 2) — Bun: `"locationRef" has already been declared`. Fixed by renaming the profile-service binding to `profileLocationRef` (declaration + its single use). Parent unblocker, no semantic change.
+  - `packages/opencode/src/session/managed-control.ts`: duplicate `const response` inside `createRunPlan` (goal-snapshot call vs run-plan call). Fixed by renaming the first to `snapshotResponse` (declaration + decode). Parent unblocker.
+  - `packages/core/src/tool/websearch.ts` (ignored, rewritten 04:43): missing sibling namespace export `export * as WebSearchTool from "./websearch"`, breaking `packages/core/src/tool/builtins.ts` and therefore the whole core tool layer. Added the one-line export.
+  - Remaining in-flight breakage (P5 writer active): `packages/opencode/src/tool/websearch-runtime.ts` lacks `export * as WebSearchRuntime from "./websearch-runtime"` required by `registry.ts`, `websearch.ts`, `websearch-inspect.ts`, `session/tools.ts`; file written 05:38 by the active P5 owner — left for its owner, not raced.
+- P2 independent read-only review of the uncommitted quiescence/verifier diff found five contract risks to relay to the kernel owners: (1) circular quiescence prerequisite — `task.ts:1156–1186` records quiescence while `managed_control.rs:9396–9400,7599–7602` require EXECUTING + `pending_verification_attempt`, only set in `apply_begin_verification` after the disabled-adapter gate (`host_kernel.rs:5895–5897`); (2) digest scheme mismatch — Core SHA-256 `childSessionOutputDigest` (`managed-control.ts:4302`) vs receipt decoder BLAKE3 (`:3443–3445`); (3) Rust `verifier_unknown_response` includes `reason` but the TS exact-key allowlist omits it (`:2356–2359`); (4) UNKNOWN `sourceRevision` is not checked against the pin (`:2370–2373`, caller `:3906–3910`); (5) returned `assistant_error`/`tool_error` outcomes do not fence verifier evidence (`managed_control.rs:8093–8124`). Verifier dispatch remains fail-closed, so none are live yet; fix before enabling.
+- Fleet: P1-TERM pty.ts principal fix + C13 negative complete (core pty 11 pass/0 fail; shell suite was load-blocked by task.ts, now retrying); P1.3 TS-side C15 closure in progress (tool-batch/supervisor/write/apply_patch); P2 read-only. Codex fleet active on P5/P6/P2 kernel waves (rollouts 04:38/05:13/05:17).
+- No staging/commits/pushes; only the shared unblockers above changed.
+
+2026-10-20 05:49 UTC — P1 Guard approval now includes per-route cost/auth provenance (keyless `FREE`/`none`; BYO `UNKNOWN`/`secret_broker`) in bounded normalized targets/summary without exposing SecretRefs; explicit BYO enable consent and per-query approval are preserved. Parent P5 additionally ensures an aggregate HostKernel `UNKNOWN` is rendered as `unknown` in tool activity instead of falsely reported as route exhaustion. No tests run.
+
+2026-10-20 05:52 UTC — P2 added new SubagentDeliveryV1 source/schema, initially hidden by blanket ignore; parent added exact `.gitignore` exceptions for both files. P2 asked whether provider operation identity is already canonical; source inspection found persisted `LLMEvent.step-finish.index` plus assistant `sourceMessageID`, so derive a stable operation ID from that pair and bind provider/model from the event, not request input. P2 will implement durable deduplicated usage/cost accounting and stop before the next dispatch when usage is UNKNOWN/exhausted. No checks run.
+
+2026-10-20 05:54 UTC — P1 accepted the explicit final Inspect two-step approval boundary: prepare exact P8 pin/Guard challenge; TUI approval; execute with one-use lease, durable possible-dispatch fence, existing supervised fixed Git Inspect and durable receipt; then P8 settle. Root proof is refreshed after each P8 append. Updated §17.23–17.24 and the operative plan. Verification remains before worker settlement, while the Attempt stays live through its Guarded verifier. No checks run.
+Continuation update (after the 05:54 UTC checkpoint): the live whole-phase owners remain P1 Guard/ExecutionHost, P2 managed vertical, and P6 providers/settings; the three available child slots are occupied. P1 identified a P8-owned restart-recovery gap for final Inspect: the durable worktree journal can resolve a completed pin but does not return its completed Guarded receipt, so settlement cannot safely recover after restart. P1 will not edit P8-owned files concurrently. P2 is implementing SubagentDeliveryV1 runtime binding and durable usage accounting; parent ruled that `ownerEpoch` must use Rust's canonical decimal-string MessagePack form, charges must come from actual `UsageProvenance`, and unknown/estimated cost cannot be treated as zero under a monetary ceiling. P6 supplied the fixed Auth `searchCredentialRefs()` projection for P5.
+
+Parent fixed the missing `WebSearchRuntime` namespace export required by the registry. The runtime remains default-deny; no HostKernel aggregate dispatcher or production capability composition exists yet, so P5 search stays unavailable. No tests/builds/typechecks/audits/probes were run per the implementation-first instruction. Git remains mixed/unstaged; C: last measured 49 GB free via `/mnt/c`; one primary worktree. P1/P2/P6 and remaining phases are PARTIAL; V1 is PARTIAL / NOT RELEASED.
+
+Integration ruling: a cycle existed because P8 final-Inspect pinning consumed a P2 terminal Attempt snapshot, while the approved order requires Inspect before worker settlement. §§12.19, 17.24 and 37.22 now require a separate verified `SETTLING` candidate projection for P8 to pin Inspect; after the receipt, P2 settles the Attempt and emits the terminal snapshot that P8 consumes with the Inspect receipt. P1 and P2 were notified. P8's durable accessor for completed Inspect receipts remains a P8-owned restart-recovery dependency. Source-only; no validation.
+
+2026-10-20 06:02 UTC — User clarified that architecture/HLD/LLDs are finalized and implementation should adapt proven OpenCode/Codex patterns rather than redesign. Read the supplied attachment and inspected local source: OpenCode Task creates linked Core child Sessions, intersects permission rules, resumes by task/session ID and supports bounded background jobs; Codex uses a root-owned agent tree, spawn cleanup guard, explicit delivery modes, queue-only mailbox and resume/residency ownership. HorizonCode's §29 already specifies those applicable lifecycle properties plus stronger Rust Attempt/Guard/evidence authority; implementation is the gap. The three P1/P2/P6 agents hit usage limits and terminated. New active whole-phase owners: P4, P7, P8. P8 now source-defines final Inspect preparation and durable exact-receipt recovery against P2's `ManagedAttemptSettlementCandidateV1`; source status in §17.24 updated. P1 HostKernel route integration and P2 route/orchestration/accounting need re-dispatch when a slot frees. No tests/builds/typechecks/audits/probes. Git remains mixed/unstaged; C: 48 GB free via `/mnt/c`; one primary worktree; V1 PARTIAL / NOT RELEASED.
+
+2026-10-20 06:08 UTC — Re-read the bootstrap docs and supplied task attachment. P4 completed its source pass and released the slot PARTIAL: added strict `packages/opencode/src/lsp/launch-profile.ts` Core→HostKernel resolution and explicit-global-LSP profile projection; LSP/DAP/REPL runtime work remains gated on P1 dispatch/confinement, trusted DAP config and OS-enforced REPL limits. Added exact `.gitignore` exceptions for the P4 adapter and P7 event handler after both were found hidden. Active owners: P1 Guard/HostKernel, P7 stream/artifacts/automation/rewind, P8 worker/resource/recovery. P4 remains owner and queued to resume after P1. P1 owns HostKernel; P7 owns `automation.rs`/`checkpoint.rs`; P8 owns `worker_durable.rs`. P8 additionally requires the fixed idempotency key `managed-final-inspect-{attemptID}` across prepare/recovery/settlement; P1 has been notified. No tests/builds/typechecks/audits/probes. Git mixed and preserved; C: 47 GB free via `/mnt/c`, `kernel/target` 520 MB; V1 PARTIAL / NOT RELEASED.
+
+### 2026-10-20 05:52 UTC — P5 namespace landed; P1.3 quota-blocked; C15 TS closure reassigned
+
+- P5 finished `export * as WebSearchRuntime from "./websearch-runtime"` at 05:45:12; `bun -e import('./src/tool/registry.ts')` now returns REGISTRY_OK. Earlier parent load unblockers (`task.ts` `profileLocationRef`, `managed-control.ts` `snapshotResponse`, core `websearch.ts` namespace export) remain in the working tree.
+- P1.3 hit the provider usage limit at 05:47:21 (same `AI.Error: The usage limit has been reached` as 2026-10-19 15:03). Its test contract landed (`tool-batch.test.ts` +310 lines: serial lease handoff, fail-closed without continuation, batch_bind scope, direct receipt scope) but its source patch failed; none of `resolveToolBatchLease`, `settleToolBatchLease`, or the `EffectReceipt` direct-scope type exist, and `supervisor.ts` / `write.ts` / `apply_patch.ts` were never touched.
+- A fresh OpenCode owner (`ses_ea822e93…`) now owns the remaining C15 TS closure under the same boundaries (tool-batch.ts, tools.ts, llm.ts/prompt.ts resolution, write.ts/apply_patch.ts receipt handling, supervisor.ts receipt type only; focused bun tests; no kernel/websearch edits, no staging).
+- P1-TERM's shell suite was re-dispatched now that the registry loads; core PTY suite was already 11 pass / 13 skip / 0 fail.
+- Codex fleet continues active P5/P6/P2 waves; tree count 80 modified/untracked at 05:41.
+
+### 2026-10-20 05:55 UTC — shell suite green; P2 findings re-checked at current revision
+
+- `packages/opencode/test/tool/shell.test.ts`: **2 pass, 2 skip, 0 fail** after correcting the stale forged-lease assertion (the tool now correctly fails with `Shell denied: missing authenticated principal` before location services). Skips are the two live journeys gated on the kernel binary.
+- Re-check of P2's review against the current tree (kernel edited again 05:46/05:47): findings **2, 3, 4 still present** — `outputDigest = sha256(...)` (`managed-control.ts:4302`) vs the quiescence receipt decoder requiring BLAKE3 (`:3443`); the verifier UNKNOWN allowlist still omits `reason` while Rust `verifier_unknown_response` emits it (`host_kernel.rs:20855-20858`); UNKNOWN `sourceRevision` still returns before the pin comparison and the caller checks only on `SUCCEEDED` (`managed-control.ts:2372`, `:3908`). Findings 1 (circular quiescence prerequisite) and 5 (error-outcome fencing) target kernel regions changed at 05:46/05:47 and need the kernel owner's re-check.
+- No new parent edits this checkpoint.
+Current integration finding: source review shows the managed child receives the Goal Location/workspace in Core (`runManagedTaskPrompt` checks the root Session workspace; generic execution uses `InstanceState.directory`/`instance.worktree`), while P8 separately leases a worktree. No P8 worktree path is currently projected into the child Session or its authenticated EffectAttemptScope. P1 will not claim final Inspect/worktree settlement until the exact child workspace binding is implemented; P2/Core must wire the task Session and effects to the same P8 worktree. P2 is now active as whole-phase owner and has the finding; P1/P8 have it too. This is a source gap against the existing contract, not a new design proposal. P7's new `AutomationRegistryV1` is a single scope OwnerLog with CAS/replay/UNKNOWN handling; HostKernel integration must treat receipt replay as read-only and never reinvoke. P7's source pass is complete PARTIAL; HostKernel routes and guarded checkpoint capture/restore remain. No tests/builds/typechecks run.
+
+### 2026-10-20 — resumed implementation and exact worktree binding contract
+
+After context reload, confirmed documentation owns the design; the remaining delay is integration into inherited Core/HostKernel call paths. The active P1/P2/P8 owners are implementing a specific mismatch: P8's leased managed worktree is not yet the workspace used by Core's child Session/effect scope. P2 requested the typed read-only HostKernel projection of worktree ID/base+pool revision, registered Location/workspace ref, and current observed workspace revision, all derived from live P8 state without caller paths. Core must use that same ref for child Session and effects. P8 added a durable Inspect candidate pin binding the operation to the canonical full SETTLING candidate digest and exact candidate fields, plus the `managed_final_inspect_root` recovery seam. No validation commands run. Git mixed/unstaged and preserved; C: 45 GB free via `/mnt/c`, `kernel/target` 520 MB. Unrelated LiteCowork build processes remain untouched. V1 PARTIAL / NOT RELEASED.
+
+2026-10-20 — P1/P2 aligned `ManagedWorktreeTargetV1` DTO shape. P1 then caught that a claimed-worker/settlement-only P8 resolver is too late: the target must appear in pre-prompt admission/handoff. P8 is adding a read-only resolver for the authenticated live RESERVED/attached worker plus verified worktree registration, with current-revision refresh at subsequent lifecycle projections. No request path authority. This is the existing reserve/register-before-dispatch contract, not a design change. No tests/builds/typechecks/audits/probes run.
+
+2026-10-20 — P2 source progress: TaskTool now constructs the lane-tagged managed `SubagentDeliveryV1` from HostKernel handoff pins and strictly decodes `ManagedWorktreeTargetV1` through admission/handoff/consume. P2 is extending the trusted WorkspaceRef through `session/llm.ts` and `session/prompt.ts`, which are now its exclusive scope. P1 owns matching Rust projections/enforcement; P8 owns the pre-prompt reserved-worker target resolver. No checks run; effects remain gated.
+
+2026-10-20 — P8 added the pre-dispatch resolver for attached RESERVED/CLAIMED worktree leases, bound to P8 pins, durable DelegationBinding and verified registration/Create provenance. It returns typed target facts without a caller path; P1 derives the child Location/current revision, P2 uses the DTO. Final Inspect remains candidate-based and separate. Source only; no checks.
+
+2026-10-20 — P1 source review found a managed-worktree admission cycle: P2 needs child Location/revision in the Attempt, but a resolver requiring the attached DelegationBinding is only available after Attempt append. The existing §37.22 sequence resolves this via P8's opaque `ReservedWorkerLeaseProofV1` returned by `reserve_pre_admission`: P1 resolves the authenticated registered worktree/current child revision before Attempt append; then P8 attaches the binding. Parent Root SessionLink/Location stays separate. P1/P8 are updating the resolver boundary. No checks.
+
+2026-10-20 — P8 implemented `resolve_reserved_managed_worktree_target(root_proof, now_ms, pins, reservation)` to resolve the exact child worktree before P2 admission. It validates the ReadyTask pins, opaque reserved proof, RESERVED/no-dispatch lease, and verified registration/Create lineage; returns derived child target/admission revision/pool revision. Existing attached resolver remains for later currentness. P1 notified. Source only; no checks.
+
+2026-10-20 — Integration review: P1 now resolves/registers the child worktree before Attempt admission, but must also persist child Location/current revision into P2 Attempt/DelegationBinding and reconstruct authenticated effect scope from that child. Parent Root SessionLink/Location and parent source revision remain separate. P8 attach checks must preserve the documented separation between parent workspace content revision and worktree base/child revision, without implicit equality/substitution. P1/P2/P8 coordinating. No checks run.
+
+2026-10-20 — P8 owner returned PARTIAL after completing this wave's independent source work. RC0 schema v2 binds sample owner IDs through Attempt; pre-admission target resolver and durable final-Inspect candidate pin/recovery are present. Remaining P8 child-revision pin/replay depends on P1's authenticated child-workspace attachment shape; keep parent-root revision, child measured revision, and worktree base distinct. RC0 remains NOT_ATTESTED. No checks run.
+
+### 2026-10-20 — P6 offline Doctor config projection (source only)
+The P6 parent fallback added `Config.getOfflineProviderDoctorConfig`, which reads only an already-populated per-instance config cache via `InstanceState.has`; it never initializes config loading (which can fetch remote well-known config). The projection contains only enabled/disabled provider IDs, model IDs and allow/deny lists; it omits API keys, headers, options, URLs and auth. Offline/catalog/full Doctor handlers pass this projection when available; absent cache remains UNKNOWN. ModelsDev `getSnapshot` is also cache/bundled-only; explicit `refresh` remains separate. This closes the source gap called out in the Doctor facts comment. No tests/builds/typechecks were run. P6 remains partial pending Guarded credential/dispatch paths, integrated settings acceptance and user-consented provider journeys.
+
+### 2026-10-20 05:58 UTC — C15 TS closure landed; follow-up gaps dispatched
+
+- Fresh OpenCode owner implemented the C15 TS-side closure (6 files, +444/−86, `git diff --check` clean): `tool-batch.ts` serial lease handles (`resolveToolBatchLease`/`settleToolBatchLease`, eager-prefix/lazy-suffix `admitPreparedBatch`, duplicate-lease rejection, fail-closed `serial lease continuation`), live direct-Attempt authority + receipt acceptance, `tools.ts` resolution before tool ctx, and direct receipt scope handling in `write.ts` / `apply_patch.ts` / `shell.ts`. `EffectReceipt` type extended only.
+- Evidence: `tool-batch.test.ts` **59 pass / 0 fail** (262 expects); `write+apply_patch` **10 pass / 0 fail**; `shell.test.ts` **2 pass / 2 skip / 0 fail**.
+- Follow-ups dispatched to the same owner: (1) `executePatch` must return the refreshed direct Attempt receipt scope (currently direct apply_patch is fail-closed in production; Rust `execute_patch` expected to emit it — verify read-only first); (2) managed-Attempt validation in `validateSerialLease` + test; (3) abort pending serial successors when a member fails (no hung promises) + test; (4) update stale `test/tool/task.test.ts` `bindBatch` fixture (15 pre-existing failures).
+- Still cross-fleet: serial `web.search` member settlement is not wired — `packages/opencode/src/tool/websearch.ts` is P5-owned and untouched; the P5 owner must add the settle call after the search receipt.
+- No staging/commits/pushes; no kernel edits by OpenCode owners.
+
+### 2026-10-20 — P1/P2/P8 integration actions
+P1 asked for the final Inspect execution wire shape. Parent directed it to the existing approved §37.22 `managed.execute_final_inspect` contract and exact P8 source APIs: persist the possible-dispatch fence only after one-use Guard lease, execute the fixed Inspect through the existing supervisor, persist the exact guarded receipt, and refresh root proof after every P8 append. No new contract is needed. P8 resumed and owns child Location/revision persistence/replay; P1 is to pass the typed `ManagedWorktreeAdmissionProjectionV1` to P8 attach, keeping parent-root source revision, measured child revision, and worktree base distinct. P2 was granted exclusive `session/processor.ts` and `session/session.ts` ownership for durable per-finish usage accounting, before next provider dispatch; no active P6/P7 writer owns those files. Source implementation only; no tests/builds/typechecks.
+
+2026-10-20 integration update: P1 has now changed `attach_managed_ready_task_binding` to pass the typed `worktree_projection` (`kernel/src/host_kernel.rs:4290`), releasing P8's exact journal/replay implementation seam. P8 was notified to implement against that DTO immediately. The `managed.execute_final_inspect` HostKernel route is still absent in source and remains P1-owned; existing §37.22 and P8 append/recovery APIs are the contract.
+
+2026-10-20 source integration refresh: P1 added the HostKernel `managed.execute_final_inspect` dispatch and method; source review returned three required fixes: narrow child-worktree confinement (current parent root is too broad), only allow genuine first-use NotFound to reach dispatch (not arbitrary receipt-resolution errors), and verify the final child revision before persisting a clean P8 receipt. P8 has now durably encoded/replayed the typed worktree admission pin, and admission/handoff/terminal projection compare the child revision separately. P1 also added `managed.record_usage`; P2 wired the TypeScript LLM step-finish to durable receipt accounting and stop-before-next-step, with Rust ceilings using min(Spec.maxTokens, profile.tokenBudget) and Spec.maxCostMicros only. These are source observations only; no tests/builds/typechecks.
+
+2026-10-20 — P8 child-workspace attachment source implementation: P8 now accepts the typed HostKernel `ManagedWorktreeAdmissionProjectionV1` on `attach_managed_ready_task_binding`, writes child LocationID/WorkspaceID/ref/canonical root/measured revision plus P8 worktree/base/root Location/workspace binding/pool revision in `worker_delegation_bound`, and replays the child revision separately while retaining the parent-root revision for P8's registered worktree lease. Historical attachment events without the projection still replay but fail closed on modern managed dispatch/settlement. P8 target resolvers return the persisted child projection after binding; final Inspect and terminal settlement checks now use the child admission revision while P8 worktree registration checks retain root revision and base locator separately. No validation commands run; HostKernel/managed-control integration and RC0 remain unverified, and RC0 remains `NOT_ATTESTED`.
+
+2026-10-20 — P2 source continuation: immutable DelegationBindingV1 now pins providerID/modelID and optional AgentProfileV2 tokenBudget. Effective tokens are min(SpecVersion.maxTokens, profile.limits.tokenBudget) over present values; cost ceiling remains SpecVersion.maxCostMicros. `managed.record_usage` charges every actual `step-finish` using assistant message ID plus LLM finish index, strict per-metric UsageProvenance, canonical Rust-derived operation/digest, replay-idempotent OwnerLog receipt, cumulative totals and STOPPED/ACCOUNTED result. Core persists provenance/receipt, advances the authenticated managed scope and stops the current LLM stream before a subsequent provider step when Rust says STOPPED. Token totals count input+output once; reasoning/cache remain submetric provenance. Provider-reported cost requires response/request identity; P1 must authenticate measured billing evidence. Schema/golden fixture and §12.18 updated. Implementation-only hold: no tests/builds/typechecks/audits run; P2 acceptance still requires full managed restart/cancel/conflict/verifier/final-Inspect journey and P1/P7/P8 integrations.
+
+### 2026-10-20 — managed budget authority decision
+The user selected the existing schema: effective managed token ceiling is `min(SpecVersion.maxTokens, AgentProfileV2.limits.tokenBudget)`; monetary cost ceiling is `SpecVersion.maxCostMicros` alone. Do not extend AgentProfileV2 for cost. P2 owner notified to apply this across admission, streaming stop, durable usage receipt/replay and docs. Source-only until implementation completion; no verification run.
+
+P8 resource source audit found the RC0 aggregate had omitted the authenticated Core Session process even though its per-process metrics were serialized, yielding a false measured zero with no worker trees and an undercount otherwise. `resource_sampler.rs` now merges that Session sample into the aggregate; any process-tree overlap remains UNKNOWN. The result is still ephemeral telemetry, never an OS quota or capacity debit. No tests/builds/typechecks/audits were run; P8 remains PARTIAL pending integrated P1/P2 wiring and final acceptance.
+
+2026-10-20 P2 delivery continuation: direct TaskTool now creates and persists lane-tagged SubagentDeliveryV1 with the exact admitted DirectAttempt profile revision/digest, current owner epoch and effective permission-scope digest, payload digest/ref, monotonic child delivery sequence and bounded profile expiry before invoking SessionPrompt. Existing direct child sessions must present a strict matching prior delivery to advance sequence; stale or malformed lineage fails closed and cancels the new Attempt. Managed lane continues to be constructed from HostKernel handoff/consume pins. Source only; no tests.
+
+### 2026-10-20 — phase-owner reallocation and P8 source handoff
+P8 has exhausted its independently runnable implementation work and returned PARTIAL (no tests/builds/typechecks/audits run). Source now has child-workspace pin/replay separate from parent and base revisions, pre-admission/post-attach target resolution, candidate/terminal final-Inspect receipt recovery, and bounded RC0 aggregate attribution including authenticated Core sampling; RC0 remains NOT_ATTESTED. P8 acceptance still depends on P1/P2 integrated managed flow and later real-work/platform verification. Freed slot assigned to whole-phase P7 owner `p7_stream_artifact_automation_full`. Active owners now P1 Guard/ExecutionHost/HostKernel, P2 managed vertical, P7 streaming/artifacts/automation/rewind; all three child slots are occupied. P3/P4/P5/P6/P8/P9 and final integration/release remain open or partial. Implementation-first hold remains: do not run tests/builds/typechecks/audits/provider probes until implementation closes. Mixed Git state preserved, no staging. C: 46 GB free via `/mnt/c`; `kernel/target` 520 MB; unrelated LiteCowork build continues untouched.
+
+### 2026-10-20 06:30 UTC — C15 follow-ups complete; remaining gaps are test-layer/websearch
+
+- Same owner closed all four gaps: `executePatch` decodes/validates/returns the refreshed direct Attempt receipt (Rust `execute_patch` verified to emit it); `validateSerialLease` validates + advances managed Attempt scope; exported `failToolBatchLease` aborts pending serial successors and is wired via `Effect.onError` in `tools.ts`; stale `task.test.ts` `bindBatch` fixture replaced with `ManagedControl.bindDirectAttemptEffects` + `acceptRefreshedScope`.
+- Evidence: tool-batch **62 pass / 0 fail** (277 expects), write+apply_patch **10/0**, shell **2 pass / 2 skip / 0 fail**, `git diff --check` clean on all 8 changed files.
+- Remaining: (1) serial `web.search` settlement missing in `tool/websearch.ts` (P5-owned, last write 05:40); (2) `test/session/tools.test.ts` cannot resolve `@opencode/WebSearchRuntime` (test layer needs the new service node); (3) `test/tool/task.test.ts` still 0/15 from `Service not found: @opencode/Provider` (fixture bind path fixed; layer failure unrelated); (4) core `test/tool-write.test.ts` 3 pass / 2 pre-existing permission-assertion failures.
+- Dispatching the same owner for (1) and (2) with strict freshness guards (stop if `websearch.ts` changes); (3)/(4) recorded as test-layer debt.
+- No staging/commits/pushes; no kernel edits by OpenCode owners.
+
+### 2026-10-20 — P7/P1 integration dependency
+P7 source audit confirms TUI source-cursor reconnect/replay, bounded artifact FULL/SAMPLE/FAILED storage/rendering, Rust automation OwnerLog registry/journal, and checkpoint preview/receipt structures are present. Remaining P7-owned source work continues. Production blockers are P1 HostKernel integration: no automation registry dispatch routes, no guarded checkpoint capture/preview/restore route, and same-boundary trusted dirty/untracked VCS observation is missing, so restore preview remains blocked; Core SessionRevert stays unavailable. P7 will not edit P1-owned `host_kernel.rs`; P1 was assigned these adapters under existing §37/§14.19 contracts. `run_now` and restore remain unavailable until Guard, exact workspace facts, durable receipts/recovery pass. No verification run.
+
+
+### 2026-10-20 — P1 aggregate search and P2 verifier Location findings
+P1 has begun HostKernel/EffectHost `execution.execute_search_cascade`: one aggregate durable HTTP execution consumes the Guard lease, stores bounded ordered per-route attempt rows, returns recovery subreceipts, and returns UNKNOWN without replaying response bodies. Initial implementation admits fixed keyless routes only; BYO remains denied until Rust has trusted SecretBroker one-use consumption. This is source in progress, not a usable production route or acceptance. P7's `AutomationRegistryV1`/`CheckpointJournalV1` APIs were relayed to P1; non-effectful control/preview routes can be wired under existing contracts, while invocation and restore stay fail-closed pending Guard/receipt/VCS facts. P2 found verifier approval currently projects the Goal root Location from `InstanceState.directory` although the managed Attempt is on P8's child worktree and request lacks SessionID. P1 was tasked with a trusted exact child LocationRef projection or authoritative proof that the approval router ignores caller LocationRef. P2 keeps verifier dispatch disabled until resolved. No tests/builds/typechecks run.
+
+### 2026-10-20 — P7 implementation continuation (source only)
+P7 tightened two recovery boundaries without enabling effects: the TUI stream envelope guard now clears an old durable end-seal when a canonical seed installs a different source generation for the same Session/part; checkpoint receipt reconciliation now requires an opaque fresh HostKernel no-follow workspace observation and verifies every planned target's digest, size, executable bit and single-link regular-file kind before marking restore Succeeded. Missing/mismatched final observation leaves durable UNKNOWN. `record_restore_receipts` now accepts `Option<&TrustedWorkspaceObservationV1>` instead of a caller boolean; P1 must pass the observation minted after the guarded restore. No tests/builds/typechecks/audits run. P7 remains PARTIAL pending HostKernel automation/checkpoint routes, same-boundary VCS status for preview, and final integration.
+
+
+### 2026-10-20 06:34 UTC — active phase and source integration checkpoint
+
+Current child owners: P1 Guard/ExecutionHost/HostKernel, P2 managed vertical, and P3 RepoIntel. P7 returned PARTIAL and released its slot after the source-generation replay repair and checkpoint restore settlement change. P3 has resumed as whole-phase owner; P4/P5/P6/P7 integration/P8 integrated acceptance/P9 and final release remain queued or partial. No tests, builds, typechecks, audits, or provider probes have been run during the implementation-first hold.
+
+Parent source review confirms P1's aggregate search path falls through after configured authentication failures (401/403/407), retries 408/425 or 5xx once per route, then tries the next explicitly approved route; transport uncertainty remains UNKNOWN. `managed.begin_verification` now returns `approvalLocation` from the live Attempt's registered child Location and frozen final revision, and P2 decodes and uses it in the verifier flow. HostKernel still has only the `automation.v1` declaration plus disabled `run_now`; production automation registry and checkpoint routes are not yet present in the dispatcher. P1 owns those integrations; restore and invocation remain unavailable until Guard, same-boundary workspace/VCS facts, durable receipts, and recovery are wired.
+
+Git remains mixed, unstaged and uncommitted; preserve ambiguous ownership. C: has 46 GB free via `/mnt/c`; `kernel/target` was 520 MB at the previous measurement. No worktrees were created or pruned. V1 remains PARTIAL / NOT RELEASED.
+
+2026-10-20 06:35 UTC — Managed worktree revision domains were rechecked against §37.22/§17. The immutable `worktreeTarget.workspaceRevision` is the HostKernel-measured admission revision; the Attempt scope's top-level `workspaceRevision` is the live child head and may change only through Rust-validated receipt transitions. P2 removed the invalid equality assumption and now includes the complete immutable worktree target in refreshed-scope identity. P1 must preserve the admission pin and source live-head advancement only from the authenticated receipt chain. Source only; no checks run.
+
+### 2026-10-20 06:36 UTC — tools test layer fixed; web.search settle wiring approved
+
+- `test/session/tools.test.ts`: test-layer-only fix (added `LayerNode.compile(WebSearchRuntime.node)` to the suite merge) → **2 pass / 0 fail**. Production untouched.
+- Serial `web.search` settlement: approved the lease-based settle (`settleToolBatchLease(lease, { effectID: lease.effectID })`, matching `shell.ts`; resolved lease is registered in `serialLeaseStates` at `tool-batch.ts:1443`, and kernel `leaseNext` re-verifies the prior receipt, so an unsettled search fails closed). Also wiring `failToolBatchLease` into the four `unavailable` branches and the `Left` failure branch so successors cannot hang on a normal unavailable result.
+- `WEB_SEARCH_RUNTIME_READY = false` (`websearch-broker.ts:10`), so the gap is latent until P5 flips the flag; no flag/broker edits authorized.
+- Freshness guard: only edit `tool/websearch.ts` if still at mtime 05:40:32 UTC.
+
+2026-10-20 06:36 UTC — P2 source review found the managed verifier modal can deadlock: the Goal verification dialog waits on HTTP Guard approval, while the UI only mounts a Guard dialog with an empty stack, and Guard approval currently clears the entire dialog stack. P2 now has exclusive temporary ownership of `packages/tui/src/app.tsx` and `packages/tui/src/ui/dialog.tsx` to stack only `host.managed_verifier` Guard approvals above the active verifier and pop after the decision. No P7 writer is active on these files. Source change and later UI acceptance remain pending.
+
+P3 source continuation: registered `repo_detect`, wired `references_find` and `definitions_find` through authenticated RepoIntel structure query while preserving honest UNAVAILABLE from the parserless backend, and added workspace/source-generation/source-revision/node/file/parser provenance to model-visible symbol output. P3 has extended its profile seam for requested/effective `lightweight|adaptive|full` plus source and typed narrowing reason; P6 owns trusted settings resolution and P8 owns bounded resource-pressure telemetry. Approved structural parsing, immutable editor-buffer production, and atomic query-ref→files.patch fencing remain dependencies of the owning phases. No tests/builds/typechecks run.
+
+### 2026-10-20 06:42 UTC — web.search serial settle wired; test-layer debt being closed
+
+- `tool/websearch.ts`: lease-based `settleToolBatchLease(lease, { effectID: lease.effectID })` on success, `failToolBatchLease` on the four unavailable branches and the failure branch. No broker/runtime/flag changes. `tool-batch.test.ts` still **62 pass / 0 fail**; `websearch.test.ts` **22 pass / 7 fail** (6 P5 broker/adapter tests + 1 direct-dispatch test missing the `Config` service layer).
+- Next: test-layer-only fixes for `task.test.ts` (`Service not found: @opencode/Provider`, 15 fails before fixtures) and the websearch direct-dispatch `Config` layer. The six P5 broker failures stay P5-owned.
+
+### 2026-10-20 06:44 UTC — implementation wave continuation (unverified)
+
+Source-backed status superseding older queue notes: P1 is active in HostKernel/Guard; P2 resumed as whole managed-vertical owner; P4 resumed as whole LSP/DAP/REPL owner; P3 returned PARTIAL after its independent RepoIntel source pass. A new P5 child could not be started because the agent service returned its thread-limit error, so the parent is handling P5's independent Core web-search seam while P1 retains Rust ownership. P6/P7/P8/P9 and final integration/release remain open.
+
+P1 added HostKernel automation registry and checkpoint list/preview routes. Parent source review found persisted automation create/update/enable/disable bypassed Guard, so P1 has now made those mutators fail closed; list/inspect/history remain read-only. `run_now`, checkpoint capture and restore remain unavailable. Checkpoint preview remains blocked without trusted same-boundary VCS dirty/untracked facts. P1 also changed `execution.execute_search_cascade` to resolve a live Guard challenge/Location from its authenticated effect ID and one-use lease; ordinary direct Core session search without Goal/Attempt scope is supported, direct Task Attempt remains denied until its external-effect receipt transition exists. Crash recovery needs original challenge/Location pins.
+
+P2 is wiring Core/TUI orchestration for the existing final-Inspect prepare → authenticated managed-root approval → execute → receipt/recovery → terminal settlement contract. P2 owns the managed-root approval projection files; P1 owns HostKernel and is coordinating the exact event/lease interface. P4 is adding trusted global DAP profiles to existing Config and implementing the existing supervisor bridge; P1 is responsible for the bounded durable protocol journal/event-buffer boundary. P3 added bounded manifest-only `repo.detect`, authenticated references/definitions through RepoIntel, truthful parser `UNAVAILABLE`, and workspace/source-generation/node/file/parser provenance plus requested/effective profile projection; P3/Core profile resolution, P8 pressure and P1 stale-write fence remain dependencies.
+
+Parent changed `packages/opencode/src/tool/websearch.ts` to allow an ordinary authenticated direct session with no Attempt scope, while preserving direct/managed Attempt scopes when present and relying on HostKernel to reject the unsupported direct-Task receipt lane. Tool registration/runtime remain gated by `WEB_SEARCH_RUNTIME_READY=false`; no outbound dispatch has been enabled. No tests/builds/typechecks/audits/provider probes run per user implementation-first instruction. C: has 46 GB free via `/mnt/c`; `kernel/target` is 520 MB; unrelated LiteCowork builds remain untouched; Git remains mixed/unstaged and preserved. V1 remains PARTIAL / NOT RELEASED.
+
+### 2026-10-20 06:51 UTC — implementation checkpoint, no verification
+
+P1 added state-aware managed verification recovery: an exact SETTLING Attempt with durable evidence resumes its existing settlement candidate; an approved-but-undispatched challenge set returns RESUME_EXECUTION only with matching reviewer/owner/spec/final-revision/profile pins and its original saved lease digests. It does not issue a new challenge or reissue a consumed lease. P2 is integrating these responses into its final-Inspect and settlement coordinator. P2 also received the user's managed budget ruling: token ceiling is min(SpecVersion.maxTokens, pinned AgentProfileV2.limits.tokenBudget); cost ceiling is SpecVersion.maxCostMicros only.
+
+P4 continues typed protocol/config work with launch and REPL effects unavailable. The Core `cancelOnInterrupt` allowlist for `execution.v1/execute_search_cascade` is P2-owned and being added; until then P5's runtime-ready gate remains false. No tests/builds/typechecks/audits/provider probes run by request. Git remains mixed and unstaged; C: 46 GB free via `/mnt/c`; `kernel/target` 520 MB at the last check. V1 remains PARTIAL / NOT RELEASED.
+
+2026-10-20 06:52 UTC follow-up: P1 adds exact registered child-worktree `approvalLocation` at frozen `finalRevision` to NEEDS_APPROVAL, RESUME_EXECUTION and SETTLING evidence-recovery responses. Approved-set replay preserves original IDs/pins and saved lease digests without reissuing a challenge/lease; the P2 owner is integrating these DTOs. P1 has been asked to update the owning §37 contract. Still source-only, unverified.
+
+2026-10-20 06:53 UTC: P1 documented state-aware verifier restart recovery and exact child approvalLocation in `arch_V1/12-DOMAIN-SCHEMAS.md` §12.19 and `arch_V1/37-RUNTIME-SERVICE-LLD.md`, including the SETTLING-vs-SUCCEEDED distinction. These are normative source changes only; P2 integration and verification remain outstanding.
+
+2026-10-20 06:54 UTC resource check: C: 45 GB free via `/mnt/c`; `kernel/target` 520 MB; only the primary HorizonCode worktree exists. Active Cargo tests observed are in `/home/sarvesh/business_Dev/litecowork` and were left untouched. HorizonCode verification remains deferred by user instruction.
+
+### 2026-10-20 06:55 UTC — P5 route receipt fencing / P2 settlement source
+P5 now cross-checks every HostKernel route receipt and selected provider against the exact Core-approved ordered route set; it rejects out-of-order routes, retries without a preceding RETRYABLE_FAILURE, and selection without an approved successful receipt. Acceptance cases were added but not run. P2 source now wires Guarded final Inspect → CLEAN receipt → authenticated managed settle → P8 release and consumes the exact approvalLocation across recovery states. P2 is holding final recovery closed pending P1's exact completed-Inspect receipt lookup after lease consumption and terminal-settlement recovery/idempotency after SUCCEEDED. No tests/builds/typechecks/audits run. V1 remains PARTIAL / NOT RELEASED.
+
+2026-10-20 06:55 UTC follow-up: P4 source adds strict bounded LSP code-action/rename WorkspaceEdit proposals, DAP commands bound to canonical Guard actions (generic attach rejected), and REPL callback request/result validation with generation-scoped duplicate/in-flight/UNKNOWN quarantine. No Core-only REPL wire was invented: HostKernel has no REPL RPC and OS resource limits are unsupported, so actual interpreter execution remains unavailable per §37/DEC-V1-22. P4 adds test source only; tests remain deferred.
+
+2026-10-20 07:00 UTC — managed verifier recovery boundary refined from source review: a full Core retry reuses P8's deterministic Inspect pin, obtains a fresh Guard challenge and explicit approval, then resolves the exact completed P8 receipt without redispatch. The remaining Inspect gap is same-request transport replay after the original challenge was consumed; HostKernel must resolve the exact completed receipt before rejecting on stale challenge state. A second gap is idempotent P8 `settle_dispatch` recovery if Attempt SUCCEEDED was durable before a crash/lost response. P1 owns both Rust recovery seams; P2 owns their Core consumer. No effect replay is authorized. No tests/builds/typechecks run; V1 remains PARTIAL / NOT RELEASED.
+
+2026-10-20 07:01 UTC — P4 source implementation returned PHASE_PARTIAL: LSP/DAP DTOs are bounded, deep-frozen snapshots; LSP codeAction/rename are proposal-only; DAP operations are command- and capability-bounded; REPL callback bookkeeping is generation-scoped and quarantines UNKNOWN. P4 effect paths remain unavailable. Its exact remaining interfaces are P1's typed HostKernel methods/capability mapping, durable protocol journal/reply/cancellation and confined launch; P3's authenticated `repo-intel.v1/read_document`; and P8/OS-enforced worker limits plus an existing REPL Guard boundary. Freed child slot is assigned to whole-phase P8 integration/RC0. Active children: P1, P2, P8. No tests/builds/typechecks run.
+
+2026-10-20 07:02 UTC — full lifecycle source audit against pinned Codex + Horizon §§29.5/29.13 and §37.9 found an explicit but unimplemented V1 direct-session child control plane. `TaskTool` currently creates/runs one profile-pinned child prompt, but there is no durable child runner/mailbox for queue-only message vs follow-up, activity/result/list/inspect/graph, wait-without-cancel, or cancellation/UNKNOWN projection. This is P6-owned Core Session work; Rust P2 managed scheduling remains separate, P8 supplies capacity facts, and all child effects stay on Guard. Gate 7 now names the existing acceptance surface; no new authority or event bus. P6 is queued behind the current three active owners and will take the next slot. No validation run.
+
+2026-10-20 07:03 UTC — P1/P2/P8 managed recovery integration advanced: P8 now exposes a typed pending-operation resolver that returns `None` only for authenticated absence and distinct errors for stale/UNKNOWN/quarantined/completed state; P1 uses it so completed-receipt fallback cannot swallow resolver failures. Same-epoch execute-request replay returns only the exact cached receipt; after a HostKernel restart Core must get a fresh Guard challenge for the same deterministic P8 operation and recover the exact receipt before any redispatch. P1 added read-only `managed.settlement_recovery`; P2 strictly decodes the unique terminal snapshot plus exact durable verificationRunID/challengeSetDigest and calls only existing settle_dispatch. No release comes from recovery read alone. No tests/builds/typechecks run.
+
+2026-10-20 07:03 UTC — user selected direct child message API: keep canonical `agents.message` and add explicit `deliveryMode: "queued" | "follow_up"`; no new `agents.followup` capability. Existing §29/§37 and Gate 7 were updated. P6 must own the strict TS/Rust machine contract, bounded queue/control implementation and TUI projection after a child slot opens. No validation run.
+
+### 2026-10-20 07:08 UTC — implementation owner ledger (source only)
+
+- **Active whole-phase owners:** P4 LSP/DAP/REPL; P6 providers/settings/Doctor/S1 plus direct-session child lifecycle; P8 workers/resources/worktrees/RC0. Active child capacity is three.
+- **P1 — PARTIAL, next queued continuation:** completed managed recovery and LSP query mappings, but bounded protocol operation/reply journal and event buffer, shell/process Guard mediation, origin matrix, atomic ToolBatch/recovery, and guarded automation/checkpoint effect routes remain open. Keep dependent effects unavailable.
+- **P2 — source integration complete for this pass; acceptance deferred:** terminal settlement recovery decoder requires exact verifier IDs, final revision and evidence refs, then invokes existing `settle_dispatch`; success is reported only after P8 RELEASED. Real-socket/crash/cancel/conflict/reviewer/budget acceptance remains for the later verification wave.
+- **P3 — PARTIAL, queued:** RepoIntel ingress/parser/editor-buffer and stale query-to-patch seams remain.
+- **P5 — PARTIAL, parent-owned source follow-through:** route sequence/failure provenance source exists, but production Core↔HostKernel transport, SecretBroker lease lookup, recovery and gated settings acceptance remain; no search dispatch is enabled.
+- **P7 — PARTIAL, queued:** P1 HostKernel checkpoint/automation integration and P2 TUI/session-control seams remain. **P9/A1–A4 — OPEN:** reconcile all phases against source after implementation, then run HorizonCode typecheck/build/tests, adversarial/recovery journeys and final push gate.
+
+P1/P2 source handoff is reviewed at the contract level: exact settlement recovery includes durable `verificationRunID`, `challengeSetDigest`, `finalRevision`, and bounded evidence refs; P1's P8 resolver permits completed-receipt fallback only on typed absence. P2 preserves those pins and reports success only after RELEASED. P1 maps LSP codeAction→`language.diagnostics` and rename→`references.find`; both remain proposals requiring `files.patch`. No verification command has run. Git remains mixed/unstaged. C: has 45 GB free via `/mnt/c`; `kernel/target` is 520 MB; `node_modules` is 2.5 GB. One primary worktree; unrelated LiteCowork Cargo jobs remain untouched.
+
+2026-10-20 07:10 UTC — P4 now has Core codeAction/rename proposal methods that use an injected authenticated `read_document` bridge, enforce source freshness and still require `files.patch`; the bridge is not production-ready until P3/P1 complete their real ingress and Guard boundary. P8 source review found RC0 was double-counting shared Core in per-session aggregates; it now sums worker rows and adds each authenticated Core identity once, retaining latest sample sequence and treating same-sequence conflicts as UNKNOWN. No checks run. P6 found and is reusing the durable Core `SessionInput` inbox/safe-boundary promotion. Parent ruling: direct `agents.message` is a guarded mutation (not the `question.ask` bypass); §29/§37 now specify prepare/commit/inspect with exact parent/child/profile/scope/epoch/message/payload/sequence/capacity pins, a one-use lease and durable idempotent receipt; `follow_up` needs distinct fresh-turn proof, `queued` never starts a turn. P6 owns strict schema and Core/TUI implementation; P1 owns Rust admission/recovery. Keep dispatch unavailable until both exist.
+
+2026-10-20 07:12 UTC — P8 returned PHASE_PARTIAL after source implementation: RC0 shared-Core double counting/latest-sample conflict handling and typed P8 Inspect absence-vs-error resolver are present; real attested baselines, OS quota enforcement and integrated P1/P2 recovery acceptance remain. P1 resumed into the freed child slot as whole-phase owner; active children are P1/P4/P6. P1 has the direct.message Guard contract and owns its HostKernel implementation; P4/P6 continue on their independent Core/source work. No tests/builds/typechecks/audits run.
+
+2026-10-20 07:13 UTC — corrected P5 source status against current runtime and HostKernel: `WebSearchRuntime.node` is composed in ToolRegistry and its single aggregate `execute_search_cascade` RPC/HostKernel durable dispatcher+receipt+UNKNOWN recovery are source-present for the five fixed keyless routes. `WEB_SEARCH_RUNTIME_READY` remains false; there is no verified live route. BYO stays omitted until P6 SecretBroker refs and P1 one-use credential consumption compose. §37.2 now reflects this. P4 raised a callback reply challenge/lease vs eventSequence mismatch against P1's latest note; parent asked P1 to settle the exact lease issuance and event pin, and P4 is holding only that wire edit. No tests or builds.
+
+2026-10-20 07:14 UTC — P1 clarified no LSP reply wire change: `protocol_read` exposes internal contiguous eventSequence; Core then obtains a fresh callback-specific Guard challenge/one-use lease. `protocol_reply` uses its own monotonic outbound requestSequence, own effect/challenge/capability/lease envelope, and nested serverRequestID+method+result. HostKernel matches the retained event row; eventSequence is not sent as a reply field. Exact retry returns its receipt without a second write; ambiguity fences UNKNOWN. P4 resumes other work with the existing DTO; callback remains unavailable pending P1 dispatcher.
+
+
+2026-10-20 07:15 UTC — P6 direct-message API decision and runtime blocker: user selected public `agents.message` `deliveryMode: "queued" | "follow_up"`. Core may translate public `queued` to private HostKernel `queue`; queued only persists, while follow_up requests one serialized fresh child turn at a safe boundary and cannot alter an active request/token stream. P6 confirmed TaskTool's direct child still uses the V1 SessionPrompt transcript while Core's durable SessionInput inbox belongs to the V2 runner; writing to SessionInput directly would split history. P6 will continue independent whole-phase work; message dispatch remains unavailable until the correct durable inbox-to-child-runtime adapter and P1 Guard prepare/commit/inspect boundary are wired. Active child owners remain P1/P4/P6. No tests/builds/typechecks/audits/provider probes run under the implementation-first hold. Preserve the mixed unstaged tree; C: has 45 GB free via `/mnt/c`; one primary worktree; no cleanup/pruning.
+
+
+2026-10-20 07:17 UTC — owner handoff correction: P4 returned PHASE_PARTIAL after independent source work (LSP exact Guard method mapping and bounded callback validation, DAP unsupported-command denial, source-only regression coverage, §37.6 status); runtime acceptance still depends on P1 process/protocol/confinement, P3 authenticated document ingress, and P8 enforced REPL quotas. P4 is queued for resumption after those dependencies. The freed platform slot is assigned to whole-phase P3 RepoIntel; active owners are P1/P3/P6. P1's direct-message private DTO now fixes service `direct.message.v1`, prepare/commit/inspect, private `queue|follow_up`, nested authority pins, payload 1–16 KiB, capacity 1–32, and SHA-256 payload digest; P6 is aligning its adapter while preserving public `queued|follow_up`. No tests/builds/typechecks/audits/provider probes run under the implementation-first hold. Overall V1 remains PARTIAL / NOT RELEASED.
+
+
+2026-10-20 07:18 UTC — P3 bridge ownership: P3 resumed as whole-phase owner and may add only the authenticated `repo-intel.v1/read_document` service/adapter seam in `packages/core/src/session/supervisor.ts` plus new P3 bridge modules. Existing managed-control P2/parent edits in the shared supervisor file are protected; P1 has been asked to avoid that Core file during this lease and retains HostKernel/Rust ownership. P4 LSP files remain P4-owned; P3 must expose an adapter module or coordinate before touching them. No validation run.
+
+
+2026-10-20 07:19 UTC — P5 Core credential-reference composition: parent wired `Auth.Service.searchCredentialRefs()` into the production `WebSearchRuntime.node` and exposed only the fixed BYO route IDs in its trusted supported-route projection. The existing Auth method returns only a unique AVAILABLE opaque SecretRef per fixed provider ID; broker errors/ambiguity omit routes, and no key bytes enter Core. `WEB_SEARCH_RUNTIME_READY` remains false; HostKernel presently admits keyless routes only, and P1's fixed BYO transport/one-use consumption plus integrated acceptance are still required. §37.2 updated. Source-only; no tests/builds/typechecks/audits/provider calls. Active phase owners P1/P3/P6; P4 PARTIAL/queued; V1 PARTIAL / NOT RELEASED.
+
+
+2026-10-20 07:20 UTC — P1 security seam continuation: P1 added strict private `direct.message.v1` prepare/commit/inspect DTOs and the canonical `agents.message` Guard policy, but RPC routing/OwnerLog durability remain fail-closed. Automation dispatch was tightened so only list/inspect/history reach `automation_rpc`; create/update/enable/disable and run_now remain unavailable before effects without Guard/receipt paths. LSP protocol dispatcher/reply and direct message operations remain unavailable pending HostKernel journaling/recovery. Source only; no checks run.
+
+
+2026-10-20 07:21 UTC — P3/P6 integration: P6 is adding the trusted Config repo-intelligence requested/effective profile projection as a P6-owned seam; P3 will consume it without editing Config ownership. P3 requested HostKernel stale RepoIntel node proof validation before `files.patch`; P1 asked for exact schema-derived ref/digest fields before changing the shared HostKernel DTO. P1 also found the search cascade recorded 429 `Retry-After` but advanced immediately despite §37.5 requiring bounded cancellation-aware cooldown; P1 is correcting the Rust route behavior. All remain source-only and fail-closed.
+
+
+2026-10-20 07:22 UTC — RepoIntel stale-write evidence shape: P3 requested a stale node proof before `files.patch`. The canonical `RepoNodeRefV1` contains workspaceBinding, sourceGeneration, sourceRevision, optional overlayDigest, pathRef, fileDigest, nodeId/nodeKind/symbol, byteRange, and parserId/parserVersion; there is no separate opaque node digest. P1 will keep HostKernel DTO work owner-scoped and derive any binding digest from the fully validated schema plus authenticated live generation/revision. No patch request field can authorize a stale write.
+
+
+2026-10-20 07:23 UTC — P6 RepoIntel settings seam: `FeatureExposure` is a boolean compaction toggle and cannot represent RepoIntel's requested/effective `lightweight|adaptive|full` modes. P6 is adding a dedicated Config/API setting with optimistic concurrency and a typed requested/effective/source/locked/unavailable projection for P3; changing the setting alone must not launch work or network activity. P6 owns §16; P3 consumes the projection and P8 supplies pressure narrowing. Source only; no validation.
+
+
+2026-10-20 07:25 UTC — P1/P3/P6 source integration advances: P1 added `prepare_tool_batch.repoIntelFence` validation over query ID, generation/revision/workspace binding and exact path/file-digest refs, including authenticated live scope, bounded resnapshot and unique target matching; only root selector `.` is supported pending safe path rebasing. P3 added the authenticated Core `readRepoDocument` bridge and an LSP callback bridge for P4, and consumes P6's new Config profile projection. P6 source now has the Config-owned optimistic-concurrency three-mode setting, TUI selector and question owner-chain workspace ancestry denial. P1 also changed web-search 429 handling to cancellation-aware bounded cooldown and records effective retryAfter; cancellation during cooldown leaves aggregate UNKNOWN. Source-only, no tests run. Identified a transport-bound issue: document read max was set to 6 MiB, equal to RPC frame maximum; JSON string escaping/envelope could overflow, so P1/P3 are coordinating a smaller shared bound.
+
+
+2026-10-20 07:27 UTC — parent integration rulings and source checkpoint (implementation only)
+
+- **P6 `agents.message` ruling:** the user reconfirmed public `deliveryMode: queued | follow_up`; Core maps `queued` to private HostKernel `queue`. Parent source review requires private `directAttemptID` in authority pins for both modes because HostKernel has no child→Attempt index. HostKernel must re-resolve the exact durable admitted DirectAttempt and match parent/child/profile/effective scope/epoch/workspace. `queued` has no fresh-turn proof; `follow_up` additionally requires a fresh-turn DirectAttempt proof. P6 owns schema/Core/TUI and P1 owns the private DTO/HostKernel side. Both modes stay unavailable until the V1 child transcript has a durable safe-boundary append/ack API and the Guard journal/lease/receipt/UNKNOWN path is wired.
+- **P3/P1 patch-fence integration:** P3 found that existing `apply_patch` prepares absolute operation paths, while P1's `repoIntelFence` compares normalized RepoIntel-relative paths. P1 is changing only the fence comparison to derive a canonical path relative to the authenticated registered root, rejecting escapes and ambiguity while preserving Guard operation paths.
+- **RepoDocumentRead bound:** P3 schema/Core and P1 HostKernel now agree on a 1,000,000-byte body cap, leaving RPC frame headroom.
+- **Active whole-phase owners:** P1 Guard/ExecutionHost/HostKernel, P3 RepoIntel and P6 settings/providers/Doctor/S1/direct child lifecycle. P4 remains PARTIAL and queued; P2/P5/P7/P8/P9 and final integrated release gates remain open. The three actual child slots are occupied; no extra concurrency is claimed.
+- **Implementation-first hold:** no tests, builds, typechecks, audits, provider calls or probes were run. These source changes have not been accepted or verified. Git remains mixed and unstaged; C: has 45 GB free via `/mnt/c`, `kernel/target` is 520 MB, and only the primary worktree exists. V1 remains PARTIAL / NOT RELEASED.
+
+
+2026-10-20 07:29 UTC — P1/P3 patch-fence interface resolved in source: HostKernel now derives a normalized RepoIntel-relative comparison path from each existing absolute `files.patch` operation under the authenticated canonical registered root. The Guard operation path remains unchanged; root escapes, non-normal components and ambiguous targets are rejected before admission. This closes the source-level adapter mismatch, not acceptance evidence. P1 confirmed it will add P6's required exact `directAttemptID` pin and durable owner re-resolution. No tests/builds/typechecks/audits run.
+
+
+2026-10-20 07:32 UTC — P3/P1/P6 interface updates (source only): RepoDocumentRead is now capped at **131,072 bytes** in the P3 schema/Core; P1 is aligning HostKernel. Worst-case JSON escaping is about 786 KiB, leaving frame headroom under the 1 MiB LSP bound. The P3 LSP document-reader adapter was hidden by the root `*` overlay rule; parent added its exact `.gitignore` exception, and Git now reports the source as untracked/visible (not staged). P1 now requires and resolves exact `directAttemptID` for both message modes, includes it in authority digest, validates the persisted OwnerLog's principal/session/epoch/profile/scope/workspace/head, and denies non-EXECUTING child Attempts. Message RPCs still return unavailable until Guarded mailbox durability, Core V1 transcript append/ack, and follow_up safe-idle proof are implemented. No tests/builds/typechecks/audits run.
+
+
+2026-10-20 07:35 UTC — follow-up integration requirements: the P3 schema now models RepoIntel patch targets as exactly one existing-file digest or `expectedAbsent: true` destination proof. P1 must accept only those strict shapes and revalidate absent destinations under authenticated root/revision (the current HostKernel parser still requires `{pathRef,fileDigest}`). Parent approved this source contract for adds/moves. The P4 LSP client currently requests 6 MiB while RepoDocumentRead allows 131,072 bytes; P3 is clamping within its new Core→LSP bridge so the authenticated request remains within the shared cap. `apply_patch` UI/schema description must name both forms. No tests/builds/typechecks run.
+
+
+2026-10-20 07:37 UTC — P1/P3 RepoIntel fence now agrees on source: HostKernel accepts only the strict XOR source-ref forms `{pathRef,fileDigest}` or `{pathRef,expectedAbsent:true}`. It validates existing digests against the authenticated live generation; expected-absent targets are checked under the registered root with component-wise no-symlink/real-directory validation and a final workspace-revision recheck. Absolute Guard patch paths are retained and only mapped for RepoIntel comparison. P3 updated schema/UI description and clamps LSP document reads to 131,072 bytes. No validation run.
+
+
+2026-10-20 07:39 UTC — source checkpoint and phase-slot update: P1 has now set HostKernel RepoDocumentRead to 131,072 bytes, matching P3 schema/Core. P1 also added operation coherence: expected-absent refs must match `write` operations with null expected-before; digest refs must match writes/deletes with a prior digest. This supersedes the 07:35 note that Rust still required only file digests. P3 returned **PHASE_PARTIAL** after exhausting independent source work; remaining P3 dependencies are P4 LSP composition, P8 resource-pressure narrowing, a trusted unsaved-buffer producer and approved structural parser/index. One child slot opened and is assigned to the whole P8 phase; active owners are P1/P6/P8. P6 found a missing Config-owned RepoIntel profile compare/write implementation used by its own routes/UI and is restoring it before resuming child status projection. No tests/builds/typechecks/audits run; C: remains 45 GB free via `/mnt/c`, kernel/target 520 MB.
+
+Source integration update (2026-10-20): P1 now gates `execution.v1/execute_search_cascade` behind optional handshake feature `execution.v1.web-search-cascade`, offered only with Guard backend readiness and requiring `effects.v2`. P5 Core now requests that feature and checks both negotiated features immediately before dispatch; `WEB_SEARCH_RUNTIME_READY` remains false until integrated acceptance. This covers fixed no-key routes only; BYO transport remains P1-blocked. Rust managed accounting already follows the settled budget rule: `min(SpecVersion.maxTokens, AgentProfileV2.limits.tokenBudget)` where present, with cost ceiling from SpecVersion alone. No verification was run.
+
+Implementation follow-through (2026-10-20): P5 now preserves the exact admitted opaque `credentialRefsByRoute` in its aggregate HostKernel request and gates the request on both negotiated `execution.v1.web-search-cascade` and `effects.v2`; the global search switch remains false. P8 added a typed pressure-narrowed RepoIntel profile projection and updated its owned §18.18/§37.22 status, but it still lacks a live authenticated pressure producer and Core/P3 consumption. P8 continues independent work; P2 now owns the freed phase slot. No verification was run.
+
+Phase allocation update (2026-10-20): active child owners are P2 managed vertical, P6 providers/settings/Doctor/S1/direct children, and P8 resources/worker/worktree. P1 returned PHASE_PARTIAL and is next to resume when a slot opens; P3/P4/P7/P9 remain queued or partial pending slots/dependencies. P5 remains parent-owned for Core runtime and docs. Final typecheck, test, architecture/overlay audits, adversarial matrix, push gate, and release evidence remain deferred until source implementation closes. Three child slots are in use; C: 45 GB free via `/mnt/c`; `kernel/target` 520 MB; only primary worktree. Foreign LiteCowork cargo test is running and untouched. Git remains mixed, unstaged, and preserved.
+
+Reference-source follow-up (2026-10-20): inspected the actual local pinned Codex multi-agent `spawn`, `message_tool`, `send_message`, `followup_task`, `wait`, `interrupt`, `completion`, `mailbox`, `resume`, and `spawn_guard` modules alongside OpenCode `tool/task.ts`. Confirmed the adaptation boundary in §42.12: share OpenCode's linked Core Session/permission/cancellation flow and Codex's queue-vs-trigger, root lineage, spawn reservation/cleanup and activity projection patterns; do not reuse Codex's process-local mailbox/watch or execution policy as Horizon authority. Added the precise source observation and partial-start cleanup candidate to §42.12. P6 is checking matching direct-lifecycle gaps; P1/P6/P8 active. No tests/builds run.
+
+Source audit update (2026-10-20): P2 corrected the plan-only response reason to state that dispatch requires explicit `goal.start`; it remains PARTIAL on the P1 independent-verifier/Guard path and P8 settlement handoff. P8 found and tightened a real capacity-release gap: terminal FAILED/CANCELLED proof had previously been allowed to release ActiveWorkers; the durable settlement event now accepts only SUCCEEDED + VERIFIED. Non-success paths remain quarantined for explicit typed reconciliation; no tests were run. P1 resumed into the newly freed child slot; active child owners are P1/P6/P8. V1 source and all integrated proof remain incomplete.
+
+2026-10-20 07:42 UTC — continuation checkpoint: active whole-phase owners are P1 Guard/ExecutionHost, P6 providers/settings/Doctor/S1/direct lifecycle, and P8 resources; all three actual child slots are occupied. P2 remains PHASE_PARTIAL pending P1/P8 integration. P3/P4/P7/P9 and final integrated implementation/release work remain open or queued; P5 is parent-owned and fail-closed. P6 changed direct delivery outcomes to start QUEUED, become EXPIRED only before prompt invocation, and become UNKNOWN after prompt invocation or acknowledgement-persistence ambiguity; child history is retained and no unsafe lineage detach/delete is attempted. P1 hardened terminal.start so post-admission persistence failures are UNKNOWN and never reported as RUNNING. P8 is implementing a bounded pinned-cache eviction planner; success settlement remains SUCCEEDED+VERIFIED-only, while a separate failure release must follow §11.20/§18.18 owned-process termination and settled-effect reconciliation; V1 logical children share Core and cannot claim per-child PID termination. Public child messaging is `agents.message` with `deliveryMode: queued|follow_up`; bounded named-child wait is read-only and timeout never cancels. No tests/builds/typechecks/audits run. Git remains mixed, unstaged and ownership-sensitive; only the primary worktree exists; C: 45 GB free via `/mnt/c`, `kernel/target` 520 MB; the unrelated LiteCowork Cargo test remains untouched. HorizonCode V1 remains PARTIAL / NOT RELEASED.
+
+2026-10-20 07:49 UTC — user reconfirmed the canonical `agents.message` contract as `deliveryMode: queued|follow_up`; P6 owns direct-child lifecycle. P6 now reauthorizes the parent/workspace chain on every wait poll and validates the scope pin against the exact HostKernel DirectAttempt; delivery remains fail-closed pending durable V1 transcript append/ack, Guard journal/lease and safe-turn proof. P1 source now rejects unsupported capability IDs before preflight (zero effect for plugin/MCP/hook/hosted/legacy origins) and keeps non-success managed settlement behind explicit reconciliation; P8 is defining that quarantine-only proof. P5 parent removed fabricated `latencyMs: 0`; no runtime claims zero latency without measurement. Active owners P1/P6/P8; P2 partial; P3/P4/P7/P9 and final integration/release open; P5 parent-owned. No tests/builds/typechecks/audits run under the implementation-first hold. Preserve mixed unstaged Git; only primary worktree; C: 45 GB free via `/mnt/c`, `kernel/target` 520 MB; leave foreign LiteCowork process untouched. V1 PARTIAL / NOT RELEASED.
+
+2026-10-20 07:51 UTC — additional integration checkpoint: after comparing §29.13, AgentProfileV2 limits and actual TaskTool/Core behavior, P1 added durable aggregate direct-child admission limit `MAX_DIRECT_CHILD_SESSIONS_PER_PARENT = 64`, counted across profile revisions for an authenticated parent Session under the shared admission OwnerLog lock and replay validation. Terminal children still count; exact retries dedupe; abandoned never-created Attempts do not count. Per-profile total/active limits remain independently stricter. P6 is aligning Core admission UX and §29.13. P1 also integrated P8 quarantine admission for exact FAILED+FAILED and FAILED+CANCELLED terminal snapshots; capacity/worktree remain retained and no process-tree exit is claimed. P8 is extending fresh reconciliation proof before any release. P5 parent corrected stale §16.7/§42 provider status text and removed a fabricated zero-latency field; the runtime gate remains false. No tests/builds/typechecks/audits run. V1 PARTIAL / NOT RELEASED.
+
+2026-10-20 07:53 UTC — phase handoff: P6 returned PHASE_PARTIAL after its independent whole-phase source pass. Source now includes exact-parent-linked `/subagents` status and bounded wait with per-poll owner/workspace reauthorization and DirectAttempt pins; aggregate 64-child UX count; offline-only Provider Doctor projection; provider capability reporting; RepoIntel settings; and S1 owner checks. Message dispatch, live Doctor/BYO, question filtering and remaining accepted journeys stay blocked on P1/P7. P1 refined the durable 64-child aggregate to count distinct `(parentSessionID, childSessionID)` pairs, so reused terminal child Sessions do not consume another slot; separate concurrent Attempts/profile changes deny. P8 quarantine-only failure path is integrated in P1, while fresh settlement/release proof remains in P8. Freed slot assigned to whole P7 phase; active owners P1/P7/P8. No checks run.
+
+2026-10-20 07:55 UTC — P1/P8/P7 handoff: P8 added the separate fresh managed release proof requiring historical settlement proof, durable quarantine receipt, current owner/root and terminal snapshot, HostKernel quiescence digest, and mandatory current Guarded Inspect receipt matching the active registered worktree/root; dirty observation may free ActiveWorkers only while worktree remains quarantined, and MISSING/UNKNOWN cannot release. P1's previous owner returned PARTIAL before wiring this new API, so P1 is resumed as whole-phase owner for integration and remaining direct-message/SecretUseLease/protocol journal/Guard adapters. P7 started as whole-phase owner with exclusive writers `kernel/src/artifact_store.rs`, `automation.rs`, `checkpoint.rs`; P1 retains Guard/HostKernel/effect_host/protocol, P8 retains resource/worktree/worker accounting. Active owners P1/P7/P8. No checks run; source remains fail-closed.
+
+2026-10-20 07:58 UTC — P5 follow-up: Core now labels a transport/interrupt failure after invoking the aggregate HostKernel search RPC as UNKNOWN, stops later serial effects and never retries a route; typed HostKernel refusal is UNAVAILABLE. Successful `latencyMs` is a measured monotonic aggregate Core→HostKernel round trip, including bounded retries/transport overhead, not provider-server time. This is source-only. Exact durable receipt inspection/replay after a lost reply remains a P1 seam, so search stays unavailable. A real §37.5 mismatch is pending user choice: per-URL content caching is specified, but V1 search only returns links and has no page-content fetch or cache-bypass contract; I asked whether to defer that cache or define a separate V1 result cache and continue independent implementation.
+
+
+2026-10-20 08:04 UTC — P5 V1 scope ruling: `web.search`/`WebSearchRequestV1` return bounded links/snippets and define no page fetch or cache-bypass input, so §37.5 page-content cache is post-V1; V1 must not fetch/cache implicitly. Normative text now records the boundary. P1 proposed a read-only `inspect_search_cascade` for exact durable receipt reconciliation without re-execution, including `RECONCILED_RESULT_UNAVAILABLE` when success is settled but the body was lost; **the RPC is not implemented**. Parent has added Core-side response/error handling for this terminal result, awaiting the P1 RPC. P7's automation CRUD request was reviewed: mutations remain unavailable without Guarded durable writes; only authenticated read-only list/inspect/preview may be exposed if source supports it. P7 source fixes include truthful pending artifact render and live raster-cache gauge aggregation; effectful artifact/automation/checkpoint routes remain Guard-gated. The three phase agents hit their usage limit and terminated; no phase is currently active. Parent continues inline; P1/P7/P8 remain incomplete. No tests/builds/typechecks/audits/provider probes run; user deferred these until implementation is finished. Git remains mixed/unstaged (13 commits ahead); C: has 45 GB free via `/mnt/c`, `kernel/target` 520 MB, one primary worktree. HorizonCode V1 remains PARTIAL / NOT RELEASED.
+### 2026-10-20 08:16 UTC — repo-only boundary and P5 receipt recovery source
+
+The user set a hard boundary that all work remain inside `/home/sarvesh/business_Dev/agentx`; root `AGENTS.md` now binds all parent/phase agents, keeps task artifacts repo-local, and forbids external filesystem paths and external-service operations (including Git remotes) while active. The previous `/mnt/c` free-space check is superseded by this boundary. Current whole-phase owners are P1 Guard/ExecutionHost, P7 stream/artifacts, and P8 resource/worktree lifecycle; those are the three live child slots. P1 is adding read-only `execution.v1/inspect_search_cascade` and P8's fresh reconciliation Inspect boundary. P5 Core now preserves HostKernel's `routePlanDigest` only for `web.search` approval projections (strict BLAKE3 format, rejected on other capabilities), and on lost dispatch reply attempts exact-pin read-only receipt inspection; it never redispatches. `WEB_SEARCH_RUNTIME_READY` remains false. No tests/builds/typechecks/audits/provider probes were run. The referenced attachment is outside the allowed tree, so this continuation does not reopen it. Git state remains mixed and unstaged; no remote push or cleanup was performed. V1 remains PARTIAL / NOT RELEASED.
+### 2026-10-20 08:20 UTC — P7 visibility and P1/P8 integration source
+
+P7 added a read-only checkpoint Core bridge and HTTP list route; parent added exactly three `.gitignore` exceptions for those owned files after P7 found them hidden by the root catch-all. Checkpoint preview remains internal/unexposed pending trustworthy same-boundary dirty/untracked evidence. P8 reports durable root-coordinator reauthorization and Guarded fresh reconciliation Inspect intent/receipt source, integrated with P1's authenticated DTO work; eviction freed-byte accounting now remains unknown when any candidate size or overflow makes the estimate unreliable. P1 reports `execution.v1/inspect_search_cascade` source is present and matches the P5 adapter contract. One earlier P1 `cargo check --lib` attempt found 139 diagnostics across the already dirty shared Rust crate; it is not acceptance evidence and does not establish that P5/P1 changes compile. Further validation is deferred until the implementation wave is complete. No tests/provider probes/audits were run. Repo-only boundary remains active; no outside paths/remotes touched. Active owners P1/P7/P8. V1 remains PARTIAL / NOT RELEASED.
+### 2026-10-20 08:21 UTC — P5 typed-error recovery safety
+
+Source review found the Core search adapter treated every typed HostKernel error as definitely pre-dispatch. That is false: Rust can return typed `effect_outcome_unknown` after the durable intent/possible-dispatch fence, and receipt or response-processing failures can also be post-dispatch. P5 now classifies only `feature_not_negotiated` as definitely pre-dispatch; every other typed failure follows exact-pin read-only reconciliation or remains UNKNOWN, never retrying. Source-only; no tests/checks run.
+
+2026-10-20 08:24 UTC — Attachment review and reconciliation identity ruling: read the user-provided pasted text (the sole explicit outside-repo read); it reiterates full V1 completion, local OpenCode/Codex source reuse, all-architecture re-audit and implementation-before-testing. Repo-only operations remain in force. Source review resolved P1/P8 managed reconciliation identities: current Attempt owner/admission pins use the child Session ID; root coordinator pins use the Run SessionLink root Session ID; child prompt-quiescence proof must bind its parent to that root. Updated §17.24 and sent P1/P8 the exact comparison rule. Added the exact Git-visible exception for P7's `checkpoint-control.test.ts`. P7 has removed unsupported automation mutation UI/command and updated §31.20; checkpoint preview remains closed pending atomic same-boundary VCS/workspace evidence. No tests/builds/typechecks/audits run. Active whole-phase owners P1/P7/P8; V1 PARTIAL / NOT RELEASED.
+
+2026-10-20 08:24 UTC — phase-slot correction: P7 returned PHASE_PARTIAL after its independent source work (checkpoint list bridge/tests, preview fail-closed contract, removal of unsupported automation mutation controls). Its effects and final acceptance still depend on P1 Guard/receipt readiness and trusted atomic VCS/workspace observation. The freed slot is assigned to whole-phase P2 managed vertical; active owners are now P1/P2/P8. P3/P4/P6/P7/P9 remain partial or queued as dependencies/slots permit. No tests/builds/typechecks/audits were run. V1 remains PARTIAL / NOT RELEASED.
+
+2026-10-20 08:24 UTC — P5 upstream-source cross-check: re-read the pinned local OpenCode `websearch.ts` and `mcp-websearch.ts`. They select one Exa/Parallel route by flags/override/session checksum, obtain websearch permission, and send a fixed bounded JSON-RPC MCP call with JSON/SSE parsing; that selection/authority model is incompatible with Horizon's approved ordered consented cascade. The provenance register now records the concrete adaptation boundary: retain fixed schemas/bounded parsing/provenance UX, while routing all effects through the existing Rust Guard/ExecutionHost and SecretBroker. No upstream executor copied; no tests/probes run. P5 remains parent-owned and PARTIAL pending P1/P6 integration. V1 PARTIAL / NOT RELEASED.
+
+2026-10-20 08:26 UTC — P1/P2/P8 source integration: P1 added HostKernel guarded quarantine reconciliation Inspect prepare/execute with child-root Git confinement, exact lease/receipt replay through P8, stable-workspace remeasurement and explicit root/child Session split. P8 aligned `current_owner` to the child Attempt pin and root proof to the root Run SessionLink. P1 is still closing fresh-process restart proof for absence of live callbacks/commands; UNKNOWN stays quarantined. P2's owner reports source present for distinct authenticated review, explicit goal.start, pinned profiles/worktree revision, spend accounting, TUI delivery and strict verifier/final Inspect adapters, and is auditing remaining crash/stale-review/artifact gaps. Active owners P1/P2/P8. Source only, uncompiled/unverified; no tests/builds/typechecks/audits. V1 PARTIAL / NOT RELEASED.
+
+2026-10-20 08:27 UTC — P2 full source audit: reviewed §12.19/§17.24/§37.22/§32.38 through Rust, Core, HTTP and TUI. Source paths are present for authenticated distinct review, inert `goal.plan` + explicit accepted-plan `goal.start`, AgentProfileV2/Attempt/worktree revision pins, durable per-provider-step usage charging, callback quiescence, typed verifier evidence/artifact projection and P8 candidate→final Inspect→terminal settlement. Existing fixtures cover reviewer spoof/staleness, crash/restart UNKNOWN, workspace changes and verifier artifact binding; not executed or accepted on this revision. Added `PROMPT_UNKNOWN` semantics to §37.22 to match API/TUI. P1 confirms verifier remains disabled until Guard/confinement/restart acceptance and still owes fresh-process no-live-callback/command proof; P8 confirms no P2 sequence mismatch and depends on HostKernel proof. P7 owns broader artifact lifecycle. No tests/builds/typechecks/audits; V1 PARTIAL / NOT RELEASED.
+
+2026-10-20 08:30 UTC — P2 managed vertical source correction and handoff: `packages/opencode/src/session/managed-control.ts` now exposes a BLAKE3 managed-child output digest while retaining SHA-256 for direct Attempt result payloads; `packages/opencode/src/tool/task.ts` uses BLAKE3 only for managed child metadata/quiescence. This resolves the Core digest vs HostKernel receipt decoder mismatch. The same Core decoder now accepts HostKernel's bounded `reason` only for UNKNOWN verifier results and validates `sourceRevision == finalRevision` for every returned verifier status, preventing stale UNKNOWN evidence and malformed recovery shape. Added a source assertion in `packages/opencode/test/session/managed-control.test.ts`; no tests/builds/typechecks were run. §29.5 comparison found direct spawn lineage, pre-prompt Attempt cleanup, cancellation propagation, bounded background ownership, exact-profile resume and managed no-replay `PROMPT_UNKNOWN` edges already source-present. No independent P2 source task remains in this checkpoint. P2 is PHASE_PARTIAL, not accepted: P1 still owns guarded verifier dispatch/quiescence and fresh-process UNKNOWN reconciliation proof; P8 owns exact durable final-Inspect receipt recovery and capacity settlement. Do not enable verifier/finalization until their acceptance evidence lands. V1 remains PARTIAL / NOT RELEASED.
+
+
+2026-10-20 08:31 UTC — source-only continuation: reread the requested attachment and authoritative repo instructions/plan. It requires full V1 scope, source-backed OpenCode/Codex reuse, architecture re-audit and no validation execution until implementation closes. Rechecked local OpenCode `tool/task.ts`, Codex `codex_delegate.rs`/`thread_manager.rs`, and Horizon §§03.5/29.5/42.12. The concrete Codex lifecycle pattern is reservation before session spawn, cleanup guard on failed/cancelled start, bounded event/op forwarding, parent cancellation propagation and explicit one-shot shutdown; P2 reports the corresponding Horizon lineage/admission/cancel/no-replay edges are source-present. P2 returned PHASE_PARTIAL after fixing managed-child digest to BLAKE3 while preserving SHA-256 for direct Attempt results, and tightening UNKNOWN verifier reason/final-revision validation. P1 has returned PHASE_PARTIAL; it is resumed for full P1 implementation, including durable fresh-process liveness proof and remaining effect-origin/receipt/message gaps. P6 owns the freed whole-phase slot for provider/auth/settings/Doctor/S1. P8 continues resources/worktrees. No tests/builds/typechecks/audits/live probes run. Repo-only boundary remains active; no external paths/services/remotes. Git remains mixed/unstaged (13 commits ahead), preserve existing state. V1 PARTIAL / NOT RELEASED.
+
+2026-10-20 08:37 UTC — P1/P8 handoff and phase-slot refill: P1 fixed the two guarded Inspect launch paths to durably persist RUNNING after supervisor launch; a failure to persist cancels and leaves the operation UNKNOWN. P1 confirmed the durable OwnerLog already enforces the 64 distinct child-session admission cap. No existing stdio-supervisor mechanism can prove whole process-tree exit after HostKernel restart; UNKNOWN/quarantine remains the only truthful behavior until an authenticated tree-exit receipt exists. Direct-message/protocol delivery is still unavailable without transcript ACK and durable protocol journal/event replay boundaries. P8 completed its unblocked source work: root/child identity correction, bounded root reauthorization replay mappings, pressure hysteresis RECOVERING transitions, and §18.18 status. P3 and P4 whole-phase owners have resumed in newly free slots; P2/P6 remains active. Next queued work includes P1 remaining Guard/ExecutionHost items, P7, P9 and P2 integration. No tests/builds/typechecks/audits/provider probes run. Repo-only boundary and mixed Git state remain; V1 PARTIAL / NOT RELEASED.
+
+2026-10-20 08:38 UTC — parent P5 source correction: Core's cascade-receipt validator previously allowed HostKernel to report a later route after an earlier `UNKNOWN` attempt. It now treats both SUCCEEDED and UNKNOWN as terminal route outcomes and rejects subsequent attempts; a focused regression case was added but not run. This is source-only and does not open the search gate. Active whole-phase owners: P2/P6, P3, P4. P1's remaining Guard scope is next in the queue; P7/P9 and cross-phase acceptance remain open. No checks/builds/typechecks/audits/provider probes run; repo-only boundary active; V1 PARTIAL / NOT RELEASED.
+
+2026-10-20 08:39 UTC — P5 receipt consistency: in addition to stopping after `UNKNOWN`, Core now rejects an aggregate `UNKNOWN` that coexists with a successful route and requires a final successful route receipt for `RECONCILED_RESULT_UNAVAILABLE`. Added focused regression shapes; not executed. §37.5 records these receipt invariants. Search remains disabled.
+
+2026-10-20 08:40 UTC — P6/P8 resource interface alignment: P6 now preserves canonical `ResourcePolicyV1 = { limits: ResourceLimitV1[] }` with the §18.18 source/enforcement fields. Its richer Config/API presentation is separately named `ResourcePolicyProjectionV1` and carries requested values, optional exact effective limits, settings `configurationSource`, policyLock and reason. Effective entries are omitted today; P8 must treat missing + UNSUPPORTED as no enforceable cap. P6 continues the whole phase; no checks run.
+
+2026-10-20 08:41 UTC — P4 source handoff and P1 slot refill: P4 aligned LSP document reads to 128 KiB, corrected DAP payload/exception validation, and matched TypeScript launch identifiers/operation/event/process-ref DTOs to current Rust contracts. Its paths remain unavailable: P1 protocol journal/event buffer, Guarded supervisor, OS confinement, and P3 authenticated document reader are not accepted; REPL stays disabled without resource enforcement. P4 returned PARTIAL. Its slot is assigned back to full-phase P1 continuation, now alongside P2/P6 and P3. P1 also owns tightening HostKernel RepoIntel patch-fence sourceRefs to the same 64-item bound as the TS schema and patch operation. No checks run; repo-only boundary; V1 PARTIAL / NOT RELEASED.
+
+2026-10-20 08:42 UTC — P3/P6 source progress: P3 added lazy 5-minute default idle cache TTL (max 24 hours), pin-deferred generation release, owner-only generation eviction and bounded owner events with source snapshot accounting and `reclaimedBytes:null`; this is not physical RAM reclamation or P8 registry integration. P3 will document the P1/P8 authenticated bridge blocker and continue its full phase. P6 now restricts automatic OpenCode default model selection to active models with fully explicit zero input/output/cache/tier prices; unknown/paid/non-OpenCode/inactive credentialed models are unavailable in the UI, and no eligible model yields no default/paid fallback. P6 continues; no validation run.
+
+2026-10-20 08:43 UTC — P1 C20/C21 source hardening: EffectHost stdio and HTTP capacity admission now count UNKNOWN operations alongside PREPARED/RUNNING/CANCELLING, so unresolved possible dispatches retain capacity until authenticated reconciliation. P1 aligned the HostKernel RepoIntel `sourceRefs` decoder maximum to 64, matching schema and files.patch operation bounds. Source-only; no checks. P1 continues whole-phase work.
+
+2026-10-20 08:44 UTC — P6/P8 slot transition: P6 completed its source audit and returned PHASE_PARTIAL. It added canonical resource policy/config projections, metadata-only bounded SecretBroker provider refs, offline zero-network Doctor, guarded compaction setting writes, S1 owner-chain checks, and explicit OpenCode default eligibility requiring active status and complete explicit zero pricing; no free eligible model yields no default or paid fallback. Provider credential mutation/live auth remains typed unavailable pending prerequisites; S1 stream filtering is P7-owned. P6 acceptance (FEAT-001..014, Doctor/S1/model switching and free-model run) is still outstanding and must wait for implementation completion. P8 resumed its full phase to integrate with P6/P3; active owners are now P1/P3/P8. No checks or probes run.
+
+2026-10-20 08:49 UTC — continuation from the user-provided architecture/source review note: the user explicitly authorized one exact read of the named pasted-text attachment; that read is complete, recorded in root AGENTS.md, and grants no further outside-repository access. It reinforces full V1 scope, review/adaptation of actual local OpenCode/Codex implementations, full architecture/event/flow audit, and implementation before tests. The read surfaced no ambiguous design decision requiring user input. Current whole-phase owners are P1 Guard/ExecutionHost (resumed), P2 managed vertical, and P7 streaming/artifacts/automation/rewind; P3/P8 have returned partial and P3 remains queued on the P8 authenticated cache bridge and P1 retained-generation acceptance. P1 has source for HostKernel-owned bounded RepoIntel generation retention (64 entries / 64 MiB observed source-byte bound; not heap measurement), but P8 CacheRegistry callback and P3 integration remain outstanding. Parent continues P5 and cross-phase architecture/source audit. No checks/builds/typechecks/audits/provider probes run. Repo-only boundary remains active; preserve mixed Git state; V1 PARTIAL / NOT RELEASED.
+
+## 2026-10-20 08:50 UTC — P7 generation-fence implementation
+
+P7 found and fixed an asynchronous SVG-render race: an older worker completion for a source
+block could replace the cache after a newer geometry/theme generation had been requested.
+The renderer now accepts completion/failure only for the currently active block generation;
+the fixture covering reversed completion order is source-only and unrun. Automation registry
+and checkpoint journals remain Rust-owned source, but HostKernel CRUD/invocation and checkpoint
+capture/preview/restore still require P1's Guard/receipt and atomic filesystem+VCS observation
+contracts. No tests/builds/typechecks/audits ran. Repo-only boundary active; V1 PARTIAL / NOT
+RELEASED.
+
+2026-10-20 08:52 UTC — P7 analytics formatter now renders only fixed metric/source/unit tuples and projects malformed, negative, non-safe, or unknown metric observations as `unknown`; a fixture covers injected labels and NaN values. This is source-only and unrun. P7 still depends on P1 Guard/HostKernel routes for effectful automation and checkpoint capture/restore, plus a complete same-revision VCS observation for preview. No validation commands ran; V1 remains PARTIAL / NOT RELEASED.
+
+2026-10-20 08:53 UTC — source crosswalk and Guarded automation ownership: reread the local OpenCode `tool/task.ts` and Codex `core/src/agent/control/{spawn,runtime,mailbox,completion,delivery}.rs` lifecycle paths. The reusable pattern is reservation → child creation → durable lineage → initial input acceptance → slot commit/client notification, with startup rollback ordered around the durable edge; Codex mailboxes and completion delivery are process-local/best-effort and are not Horizon authority. §42.12 now records the exact source recheck. P7 identified the existing automation CRUD authority in §33.16 plus §14.2/§14.3 (`prepare_user_effect`, Guard approval): P1 owns HostKernel Guard/one-use lease/Rust CAS mutation/receipt; P7 owns Core/TUI orchestration; P2 owns managed goal/review/run coordinator. No second effect authority. CRUD remains gated until that path lands; runNow and checkpoint effects remain unavailable pending supervised evidence. P2 found and fixed a managed cancel gap (fence then cancel only the exact recovered child) and is repairing VERIFYING settlement recovery. No checks/builds/typechecks/audits/probes run. Repo-only boundary active; V1 PARTIAL / NOT RELEASED.
+
+2026-10-20 08:56 UTC — P2 managed settlement source correction: `runVerification` now finalizes the Rust Run after typed verification and final Guarded Inspect settle the exact Attempt, before P8 capacity release. If Core restarts after terminal Attempt settlement but before Run finalization, authenticated recovery accepts only the matching verified/quiesced/all-settled terminal snapshot, replays `finalize_run` only while Run remains VERIFYING, and then performs the exact existing P8 settlement; verifier and coding effects are never replayed. Authenticated Run cancellation now fences Rust first, re-resolves the exact active Attempt against the pinned root Session/Location/revision, and interrupts only that child Core Session; the Run remains CANCELLING pending receipt reconciliation. Added source regression coverage for VERIFYING recovery ordering. P1 reports the trusted verifier adapter remains disabled and fresh-process UNKNOWN liveness acceptance is incomplete; P8 owns exact final-Inspect receipt restart acceptance. No tests/builds/typechecks/audits run; verifier/finalization and dispatch remain effectfully unavailable; V1 PARTIAL / NOT RELEASED.
+
+
+## 2026-10-20 09:00 UTC — repo-only implementation continuation
+
+**HorizonCode V1: PARTIAL / NOT RELEASED.** The latest user boundary is absolute: operate only inside this repository; no outside paths, host-wide process inspection, /mnt/c, external services, or remote Git. The persistent request to read the external attachment cannot be followed under that newer boundary; its earlier one-time read is historical only. Active whole-phase owners are P1 Guard/ExecutionHost, P6 providers/settings/Doctor/S1, and P7 stream/artifacts/automation/rewind. P2 returned PARTIAL after source additions for exact child cancellation after durable cancel fencing and recovery of a terminal Attempt with a VERIFYING Run through finalization before P8 settlement; P1 verifier/UNKNOWN proof and P8 receipt recovery still block acceptance. P7 added a read-only checkpoint list SDK/TUI route; effectful checkpoint/automation work remains P1-gated. Root owns a narrow Core prepareUserEffect projection for generated userActionID, capabilityID, challengeID and Guard inputDigest; automation requests require ServerAuth and no Session. P1 owns Rust mutation/reconcile; P7 owns Core/TUI orchestration. P5 remains disabled; its 11-route Core plan currently exceeds HostKernel's five keyless fixed routes, so P1/P6 are closing the SecretBroker-backed boundary before any route is enabled. No tests/builds/typechecks/audits/probes were run. Mixed Git changes remain preserved.
+
+
+### 2026-10-20 09:01 UTC — automation Guard receipt contract refined
+
+P1 found and fixed Guard policy admission for the four canonical automation definition actions; Rust now retains the Core-generated action identity in its HostKernel binding. Root extended Core prepareUserEffect to return that generated identity, capability, and optional host challenge/input digest, and to require ServerAuth with no Session for automation CRUD. P7 added guarded AutomationRegistry CRUD entrypoints and a durable proof tuple; the mutation receipt digest is computed over the receipt core (excluding attached proof) and persisted atomically with the proof to avoid circular hashing. P1 owns HostKernel binding/lease consumption and EffectHost durable prepare/settle; P7 owns registry API and Core/TUI. The approved input digest is the semantic request digest; TypeScript must not reimplement Rust MessagePack canonicalization. P1/P7 are wiring read-only exact-idempotency reconciliation. No validation run.
+# 2026-10-20 09:03 UTC — source-only owner refresh
+
+P3 RepoIntel is resumed as a whole-phase owner alongside P1 Guard/ExecutionHost and P7 stream/artifacts/automation/rewind; the parent owns P5 and cross-phase integration. P6 returned PHASE_PARTIAL after removing the TUI rule that excluded HorizonCode's explicitly free OpenCode `-nano` model. No live provider call was made. P5 remains disabled pending integrated P1 Guarded dispatch acceptance; current Rust/Core source records auth 4xx per route and falls through only to another explicitly enabled route (never retrying the rejected route), with bounded cascade/recovery source. P2 remains partial pending P1 verifier/quiescence and P8 final settlement recovery. No tests/builds/typechecks/audits/probes were run under the implementation-first instruction. All work remains inside `agentx`; mixed Git state is preserved with no stage/commit/push/cleanup.
+
+P3/P8 cache ownership is frozen: P1 HostKernel owns the actual retained RepoIntel generation, authenticated query pins, and safe retirement callback; P8's existing CacheRegistry stays metadata/planning only. P3 may emit typed host-fact observations only behind a disabled sink. Actual eviction requires an exact P8 candidate revalidated by HostKernel after query pins drain, followed by a fresh observation; there is no physical-reclamation claim without measurement.
+
+P3 implemented `packages/core/src/session/repo-intel-cache-owner.ts` as an unconsumed pure projection from trusted ServerAuth and strict HostKernel generation-pin facts. It bounds lease TTL and source coverage, leaves allocated bytes/index entries/reclaimed bytes unknown, omits a registry key without trusted build identity, and reports the bridge unavailable. A regression test source was added but not run; shared supervisor and P1/P8 files were not touched.
+
+The user explicitly renewed one single-file exception for `/home/sarvesh/.codex/attachments/54d18db8-65b6-4096-bf59-15e64b9f5a35/pasted-text-1.txt`; the requested note was read in this turn. The repo-only boundary otherwise remains active.
+
+P3 returned PARTIAL after completing its current independent source work. P8 now owns the full remaining resources/workers/worktrees/RC0 phase alongside P1 and P7; P5 remains parent-owned. Do not describe P3's unconsumed projection as connected. P3 remaining: authenticated P1/P8 cache owner bridge, trusted unsaved-buffer source, parser support, and P4 document-reader composition.
+
+### 2026-10-20 09:11 UTC — repo-only boundary reaffirmed and integrations routed
+
+The user's repo-only rule is absolute and has no exceptions. No outside path, `/mnt/c`, home-directory memory, external service, or remote Git access is needed; OpenCode/Codex references are already in this repository. Active whole-phase owners: P1, P7, P8. P1 source-integrated guarded automation CRUD/reconcile and exact Summary DTOs; invocation remains disabled. P7 is adding create/edit/enable/disable TUI affordances that explicitly report unavailable without sending a mutation request. P7 found no HostKernel/Core/TUI artifact read path despite bounded Rust ArtifactStore permits; P1 owns authenticated HostKernel handlers, P7 owns Core/HTTP/SDK/TUI projection, all unavailable pending owner/scope/Guard acceptance. P8 added source-only resource-limit status (`ENFORCED`/`MONITORING_ONLY`/`UNSUPPORTED`), RC0 ingestion validation, and an in-memory pressure controller; durable/live ingress remains closed pending an authenticated policy pin from the existing owners. Repo Git state is mixed, `main` 13 commits ahead, one worktree; `kernel/target` 627 MB. No tests/builds/typechecks/audits/probes run; implementation-first hold remains. V1 PARTIAL / NOT RELEASED.
+
+### 2026-10-20 09:19 UTC — absolute repository boundary and artifact read adapter
+
+The latest user instruction makes the repository-only boundary absolute. Root `AGENTS.md` now
+prohibits every outside path, C: metadata check, external service and remote operation for the
+parent and phase owners. Nothing outside `agentx` is required; pinned OpenCode/Codex source is
+already inside the repository. Active whole-phase owners remain P1 Guard/ExecutionHost, P7
+stream/artifacts/automation/rewind, and P8 resources/worktrees/RC0; all three available child
+slots are occupied.
+
+Parent-owned Core integration in `packages/core/src/session/supervisor.ts` adds the negotiated
+`artifact.read-context-v1` feature, strict `artifact.v1` inspect/read_range admission, repeated
+exact ArtifactRef binding in the private authenticated context, a 768-KiB maximum range, and
+ServerAuth plus matching managed Attempt Session/Location checks. New supervisor methods expose
+inspect/range reads to trusted Core callers. Direct Attempt artifact reads remain unavailable;
+HTTP/UI callers must resolve scope from authenticated managed verification state and must not
+submit their own Attempt scope. P1 confirmed the Rust wire field names and is adding the
+HostKernel handlers; P7 owns route/UI projection. Source only: no tests, builds, typechecks,
+audits, provider probes, Git staging, remote operations or cleanup were performed. Git remains
+mixed and preserved; `kernel/target` was last observed at 627 MB before this source-only work.
+HorizonCode V1 remains PARTIAL / NOT RELEASED.
+
+09:20 UTC phase update: P7 has added `packages/opencode/src/session/artifact-control.ts` on top
+of the Core supervisor API, using a server-side source adapter rather than a caller-supplied
+Attempt scope. It also fixed independent range reads in ArtifactStore so each range repeats
+no-follow, digest, and ref authorization; its regression fixture remains unrun. P7 did not
+expose HTTP/SDK/TUI routes because no trusted server-side resolver yet supplies the current
+managed Attempt scope for a transcript ref. Exact dependency is managed-verification scope
+resolution; direct refs remain unavailable. P1 confirms the Core camelCase private envelope
+matches Rust's parser. No checks were run.
+
+### 2026-10-20 09:21 UTC — P7 handoff and P3 slot refill
+
+P7 returned PHASE_PARTIAL after its source-only handoff: Core's `session/artifact-control.ts`
+strictly decodes managed verifier artifact metadata/ranges, and ArtifactStore `read_at` now
+repeats permit authorization, no-follow checks, and digest/ref validation for each independent
+range read. A regression fixture was added but not run. HTTP/SDK/TUI artifact routes remain
+unavailable because no authenticated server-side resolver currently supplies the exact managed
+Attempt scope for a transcript artifact ref; caller-supplied scope is forbidden. One exact
+`.gitignore` allowlist entry was added for the new first-party Core module so it is Git-visible.
+P7's remaining phase acceptance includes checkpoint preview/capture/restore, automation
+invocation, and real TUI/replay journeys behind their Guard and trusted-workspace prerequisites.
+The freed child slot is assigned to whole-phase P3 RepoIntel/cache; active owners are P1, P3 and
+P8. P8 reports CacheRegistry integration still needs P1's HostKernel Arc generation pin-count
+plus candidate revalidation/retirement API. No tests/builds/typechecks/audits/probes were run.
+V1 remains PARTIAL / NOT RELEASED.
+
+### 2026-10-20 09:23 UTC — next whole-phase allocation
+
+P3 source audit found no safe independent gap: bounded RepoIntel cache/query lifecycle and
+fail-closed overlay behavior are present, but authenticated CacheRegistry integration requires
+P1's stable HostKernel generation identity, current owner/workspace/source/policy dimensions,
+pin count, and candidate revalidation/retirement API. P3 is recorded PARTIAL and queued to
+resume when that seam lands. P8 narrowed the still-unwired pressure-controller entrypoints to
+crate-private pending authenticated ingress; no production ingress is enabled. The freed child
+slot is assigned to whole-phase P2 managed vertical, which is rechecking all remaining source
+gaps and dependencies. Active whole-phase owners: P1/P2/P8. No tests/builds/typechecks/audits/
+probes were run. Repo-only boundary, mixed Git state and PARTIAL / NOT RELEASED status remain.
+
+09:24 UTC P5 correction: if HostKernel has a settled successful route receipt but Core cannot
+decode any safe result rows (including an absent response body), Core now reports
+`RESULT_UNAVAILABLE` with the durable receipt reference instead of falsely labeling the outcome
+as cascade exhaustion. The tool path will settle this known terminal receipt and will not retry
+or fall through after HostKernel already selected success. Added an unrun source regression for
+absent, empty and malformed result bodies. No test or build was executed.
+
+### 2026-10-20 09:32 UTC — P2 terminal accounting projection source update
+
+The managed-control terminal and Inspect-candidate projections now bind a typed summary derived
+from the durable per-Attempt usage receipts. It carries accounting cursor, known token/cost
+subtotals, explicit KNOWN/ESTIMATED/UNKNOWN remainder statuses, aggregate cost/metric provenance,
+ceiling digest, stop reason, receipt count and a BLAKE3 receipt-chain digest. Summary data is
+included in the terminal/candidate state digest; missing usage remains absent rather than
+fabricated zero, and candidate generation fails closed without a durable ledger. Core's strict
+candidate and successful-recovery decoders require the schema and retain the usage projection in
+the result. P1 owns HostKernel serialization from the typed P2 getters; P8 consumes only the
+HostKernel-authenticated terminal proof. No checks/builds/typechecks were run; verifier and
+effectful settlement stay disabled pending P1/P8 acceptance. V1 remains PARTIAL / NOT RELEASED.
+
+### 2026-10-20 09:27 UTC — managed accounting and resource-policy integration
+
+P2's whole-phase source crosswalk found that Rust already records per-Attempt usage, but its
+managed candidate/terminal projections omit token/cost totals, provenance and UNKNOWN remainder,
+accounting cursor, and ceiling digest required by §37.22. P2 is adding a strict typed summary to
+the candidate and terminal snapshots; P1 will consume that exact proof in settlement, and P8
+will release only from the immutable terminal summary. P1/P2 agreed P2 owns the specific
+`kernel/src/managed_control.rs` summary edit to avoid concurrent Rust writers.
+
+P1 also settled the resource-policy request sequence before admission: Rust selects the
+deterministic candidate Attempt, authenticates `resource.v1/project_policy`, pins an immutable
+projection revision/digest to that candidate, and `managed.admit_attempt` must present those
+pins. P8 receives the effective per-Run ActiveWorkers cap and proof; it must not apply a Run's
+cap to global worker capacity. Old durable entries replay without policy authority. The path
+remains fail-closed until the source seam lands and later acceptance passes. Active owners
+remain P1/P2/P8; P3 is queued on the generation pin/retirement seam. No checks/builds/tests were
+run; repo-only boundary and PARTIAL / NOT RELEASED remain.
+
+
+### 2026-10-20 09:31 UTC — source reuse review and active implementation wave
+
+The user-requested in-repository source review rechecked OpenCode's `tool/task.ts` and Codex's
+`codex-rs/core/src/agent/control/{spawn,runtime,mailbox,delivery,completion}.rs`. The adapted
+patterns are reservation before child creation, durable parent/child lineage before input
+acceptance, rollback around partial startup, explicit queue versus follow-up turn, bounded
+status/wait/result projections, cancellation fencing, and safe shutdown cleanup. Codex's
+process-local mailbox/completion behavior is not HorizonCode authority or recovery evidence;
+HorizonCode keeps Core Session ownership for direct children and Rust Attempt authority for
+managed children. The existing §29/§37 contracts and §42 provenance mapping remain normative.
+
+Active whole-phase owners are P1 Guard/ExecutionHost, P2 managed vertical, and P8 resources/
+worktrees/RC0 (all three available child slots). P2 has source for a durable receipt-derived
+usage summary bound into candidate and terminal digests; P1 is serializing it in HostKernel.
+P8 has source for authenticated pre-admission ResourcePolicy pins and a per-Run ActiveWorkers
+cap, without changing global capacity. P1 is also reconciling HostKernel generation retirement
+with P8 and continuing Guard/ExecutionHost work. No tests, builds, typechecks, audits, probes,
+staging, commits, pushes, or cleanup were performed.
+
+P5 remains parent-owned and unavailable pending P1's Guarded aggregate dispatch and P6's
+SecretBroker composition. Source review found the existing `auth/provider-transport.ts`
+one-request adapter and `Auth.makeService` authorizer seam; production Auth leaves the
+authorizer undefined. P1 has been directed to adapt this documented in-process transport seam,
+not introduce raw-secret RPC or caller-controlled endpoints. No search route was enabled.
+Repo-only filesystem boundary remains in force. HorizonCode V1 is PARTIAL / NOT RELEASED.
+
+2026-10-20 09:32 UTC P8 cache-retirement follow-up: eviction candidates now carry `plan_id`; the
+P8 callback can complete only from a typed `CacheRetirementAckV1` proving exact HostKernel
+source-generation retirement. The raw boolean completion helper is private. No memory-reclaim
+claim is made, and the cache sink/registry production caller remains absent. P1 owns the exact
+HostKernel Arc+lease retirement path; P3 still needs authenticated Core cache ingress. No checks
+were run.
+
+2026-10-20 09:33 UTC P5 source hardening: provider response normalization now caps nested
+MCP `structuredContent`/text wrappers at four levels before recursion, preventing deeply nested
+untrusted response payloads from expanding decoder work. A regression fixture with six nested
+wrappers was added and remains unrun under the implementation-first instruction. The HostKernel
+aggregate readiness gate remains false; no route was enabled.
+
+2026-10-20 09:34 UTC P1/P8 generation and artifact integration: HostKernel now authorizes
+managed artifact reads from durable `TaskVerificationEvidence.attempt_id/source_revision`, since
+successful settlement clears `task.active_attempt`. P1's RepoIntel retirement path now emits
+P8's opaque `CacheRetirementAckV1` only after exact candidate principal/workspace checks, expired
+leases, and Arc reference-count checks; it does not mutate P8 metadata or claim reclaimed bytes.
+No tests/builds were run. P3's production authenticated cache sink remains absent.
+
+2026-10-20 09:35 UTC P2/P1 usage-summary integration: HostKernel now serializes the exact
+P2 `ManagedAttemptUsageSummaryV1` for settlement candidates and terminal recovery. Successful
+Core candidate/recovery decoding requires the strict projection; failed/pre-provider terminal
+summaries remain null and are never coerced to zero. The Rust summary binds receipt chain,
+accounting cursor, known subtotals/remainder status, provenance and ceiling digest into the
+Attempt state digest. P8 consumes the same immutable terminal proof. No validation was run;
+verifier and final-Inspect/restart acceptance remain gated.
+
+2026-10-20 09:36 UTC P2 review and TUI source audit: authenticated distinct review, accepted
+SpecVersion `goal.start`, pinned profile Task delivery, pause/resume/cancel, and current-revision
+verification source paths are present. The remaining response projection gap is closed: the
+GoalVerification HTTP schema now carries terminal usage accounting and the TUI requires it for
+SUCCEEDED, showing known token/cost subtotals with remainder/provenance. Core rejects inconsistent
+usage state, zero receipt count/cursor, or cursor beyond managed revision. No checks run. P1's
+trusted verifier/restart evidence and P8's exact final-Inspect recovery acceptance remain open.
+
+2026-10-20 09:35 UTC P1/P2 managed accounting handoff: HostKernel candidate and terminal
+serialization now emits P2's exact `usageAccounting` DTO; absent terminal usage stays null, and
+P2's existing attempt state digest already binds the summary. P2 source-reviewed the camelCase
+wire fields against its strict Core decoder. P8 will consume the same terminal digest without
+recomputing the accounting. Source only; no validation or acceptance promotion.
+
+### 2026-10-20 15:12 UTC — resumed full-phase ownership and P5 parser bounds
+
+After reloading the repo bootstrap sources, P1/P2/P8 phase owners from the prior wave were
+confirmed terminal due to the agent usage limit. Fresh whole-phase owners are now active for
+P1 Guard/ExecutionHost, P2 managed vertical, and P8 resources/worktrees/recovery; P1 owns
+HostKernel/Guard files, P2 owns managed-control files, and P8 owns resource/worker/worktree
+modules. The repo-only boundary is binding: no reads or writes outside `agentx`, including C:
+checks or remote Git. The user-directed implementation-first hold remains; no tests/builds/
+typechecks/audits/provider calls/benchmarks were run. Parent-owned P5 now additionally caps
+MCP content blocks to 32 and skips text wrappers over 128 Ki characters before JSON decoding;
+search remains disabled pending P1/P6 guarded transport integration. P3/P4/P6/P7 implementation
+owners remain queued until a child slot opens. HorizonCode V1 is PARTIAL / NOT RELEASED.
+
+15:13 UTC P5 correction: the production search runtime now maps a HostKernel `NEEDS_APPROVAL`
+response to typed `NOT_DISPATCHED` rather than incorrectly reporting provider cascade exhaustion.
+The route remains unavailable behind the release gate. No validation or provider request ran.
+
+### 2026-10-20 — P2 managed usage stop is now enforced at both loop and effect admission
+
+P2 source audit found `ManagedSnapshot::attempt_usage_stopped` had no call sites. A usage
+receipt that crossed an accepted token/cost ceiling or became uncertain was durably marked
+STOPPED, but the Rust single-effect and atomic ToolBatch reducers still admitted later coding
+EffectIntents. Both reducers now reject new coding effect bindings while the Run is RUNNING;
+verification-phase intents remain separately authorized. Core's processor now also returns
+`stop` after a STOPPED receipt instead of re-entering the provider loop. These source changes
+have not been tested or built by explicit user instruction. P2 remains PARTIAL pending P1's
+trusted verifier/fresh-process recovery proof, P8's final-Inspect receipt recovery and the later
+integrated managed vertical acceptance. Effects remain fail-closed. Repo-only boundary and
+mixed Git state remain in force; V1 PARTIAL / NOT RELEASED.
+
+15:14 UTC P2 source correction: managed Rust effect-intent reducers now reject new coding
+single effects and ToolBatch effects after the durable usage ledger marks the Attempt STOPPED,
+while still allowing verifier effects in VERIFYING. Core processor records per-step usage
+provenance/receipts and stops the current stream and prompt loop immediately on STOPPED, avoiding
+another provider step under a stopped Attempt. No tests/builds/typechecks were run.
+
+### 2026-10-20 15:17 UTC — P4 slot and P8 pressure consumer
+
+P2 completed its unblocked source fix and returned PARTIAL; the opened slot now has whole-phase
+P4 LSP/DAP/REPL ownership. P4 owns the TypeScript lifecycle/protocol modules while P1 owns the
+shared Rust Guard/HostKernel transport, so P4 effects stay unavailable pending that seam. P8
+confirmed authenticated HostKernel ResourcePolicy pins already flow into per-Run admission and
+added a fail-closed PSS-only pressure consumer that requires explicit lower-watermark/sample
+count, matching policy pin, and fresh same-owner OwnerLog sample/cursor. It emits advisory
+provenance only; no admission/eviction consumes it, no pressure config fields are currently
+available, and no persistence/OS quota guarantee is claimed. P1 is continuing trusted verifier
+recovery and will add only metadata authorization for BYO search SecretBroker use under the
+existing one-request in-process ProviderTransport contract. No tests/builds/typechecks/audits/
+provider probes/benchmarks ran; repo-only boundary and mixed Git preservation remain active.
+
+15:18 UTC DEC-V1-06 scope binding: normative `arch_V1/12-DOMAIN-SCHEMAS.md` now specifies
+opaque stable `requesterRef` derivation from authenticated HostKernel principal, exact managed
+Run binding, and `profileRef` from the pinned AgentProfileV2 tuple; absent trusted profile means
+BYO authorization unavailable. P1 is implementing the metadata projection; P6 will consume it
+through the existing in-process one-request ProviderTransport. No raw bytes/leases cross RPC.
+
+15:19 UTC P8 continuation: the pressure consumer now retains bounded process-local hysteresis
+trackers per owner, invalidating on policy/threshold change and starting empty after restart.
+This is not durable pressure history or an admission signal; authenticated HostKernel producer,
+P6 config thresholds, P3 consumer/cache wiring and OwnerLog retention contract remain missing.
+P4 has source for a trusted global Core Config → HostKernel launch-profile resolver, strict
+Attempt-envelope validation and unrun resolution fixtures. Launch still returns approval only;
+LSP/DAP/REPL processes remain unavailable until P1 Guard/confinement and P4 lifecycle acceptance.
+
+15:25 UTC P8 added an inert HostKernel-authenticated cache observation receiver in its
+resource-sampler module. The private non-Clone proof binds freshness and monotonic owner
+epoch/sequence; accounted source bytes cannot be represented as measured physical allocation.
+P1 HostKernel mint/RPC and P3 cache caller/eviction callback remain missing, so it has no
+production effect. P6 added typed `NoModelsError` when the configured OpenCode provider or an
+eligible free model is missing, preventing arbitrary provider fallback. P6 returned PARTIAL;
+credentialed search transport awaits P1's confirmed metadata projection. P7 now owns the full
+stream/artifact/analytics/automation/checkpoint phase. No tests/builds/typechecks ran.
+
+15:28 UTC P8 corrected RC0 unsupported-platform reporting so a non-Linux host is no longer
+misidentified as native Windows; an unrun regression fixture was added. Cache ingress remains
+blocked on P1 authenticated mint/transport and P3/Core event plus generation-release composition.
+P8 remains active on independent recovery/resource source work. P1 is preparing the stable
+SecretBroker projection needed for P6 continuation.
+
+15:30 UTC P8 also closed a settlement-proof integrity gap: `VERIFIED` terminal proof now
+requires a bounded nonempty durable `usage_accounting` chain; failed/quarantine summaries are
+validated when present; and all summary fields are bound into a versioned P8 proof digest. The P2
+owner must consume this exact summary contract before managed completion can rely on it. Source
+only; no checks ran.
+
+15:32 UTC P8 returned `PHASE_PARTIAL` after its independent source gaps closed. Cache observation
+integration awaits P1 authenticated mint/RPC plus P3 Core event/generation-release composition;
+settlement awaits P1/P2 verifier/quiescence/final-Inspect integration; OS quotas and RC0 attestation
+remain unavailable. The freed slot is assigned to whole-phase P3 RepoIntel (producer/parser,
+document reads, bounded pagination and stale-write recovery), which owns Core/tool/TUI callers and
+coordinates with P1 HostKernel and P8 receiver owners. Active owners are P1/P3/P7; P2/P6/P8
+continuation remain queued. No validation ran.
+
+15:34 UTC P1 added HostKernel's metadata-only
+`execution.v1/authorize_search_secret_use` projection. It binds the retained `web.search`
+challenge, exact Guard lease digest, authenticated principal/peer, route and opaque SecretBroker
+reference; derives stable requester and pinned AgentProfileV2 identities, binds the managed Run
+when present, and expires in 15 seconds. It returns no secret bytes or SecretBroker lease.
+Credentialed search remains unavailable pending durable per-route PREPARED/dispatch/receipt
+integration. P1 confirmed this projection to P6; resume P6 when a child slot opens.
+
+P3 source audit found that Core query/read APIs exist but structure query returns only page one,
+overlay access remains fail-closed, and there is no trusted unsaved-buffer producer. P3 is working
+on bounded pagination, profile-shape compatibility, patch-fence evidence and existing document
+snapshot sources; it will not fabricate editor authority. No validation ran.
+
+15:36 UTC P7 returned `PHASE_PARTIAL` after completing its safe TUI automation contract
+projection: the manager now displays authenticated request scope, action version/digest,
+timezone, overlap/missed-run policy, retry bounds, occurrence/result status and `needs_you`, while
+keeping mutations and invocation unavailable. Checkpoint preview/capture/restore still need P1
+trusted workspace/VCS observation and Guarded HostKernel operations; artifact reads need P1
+authenticated handlers and trusted managed Attempt resolution. The released slot resumed whole-phase
+P2 for managed Run/Task/verifier integration, including P8's durable usage proof. Active owners:
+P1/P2/P3. No validation ran.
+### 2026-10-20 — P4 handoff; P6 whole-phase owner started
+
+P4 returned `PHASE_PARTIAL` after completing its source-only Core launch-profile resolver,
+Attempt-envelope validation, and LSP/DAP protocol input hardening. Its LSP/DAP/REPL process
+paths remain unavailable pending P1 Guarded protocol/ExecutionHost transport and OS enforcement;
+authenticated RepoIntel document ingress remains a P3 dependency. The released child slot is now
+assigned to whole-phase P6 (providers, settings, Doctor and S1), with source ownership limited
+to P6's Auth/provider/config/TUI surfaces. P1 continues Guard/ExecutionHost and the one-use
+metadata authorization boundary; P8 continues resource/worker/cache source seams. P2/P3/P7 remain
+queued for child capacity. Parent continues the P5 fixed-route cascade implementation, still
+disabled behind P1/P6 acceptance. No tests, builds, typechecks, audits, provider calls or Git
+publication ran. The repository-only boundary in `AGENTS.md` is binding; V1 remains PARTIAL /
+NOT RELEASED.
+
+
+15:27 UTC P7 source update: the HorizonCode TUI automation manager now displays its authenticated
+request scope, action version/digest, timezone, overlap/missed-run policy, retry bounds,
+next/current occurrence, latest recorded result, and explicit `needs_you` status when present.
+Missing occurrence data is labeled unreported; no schedule or result is inferred. Definition
+mutations and invocation remain unavailable pending integrated P1 Guard/lease/receipt evidence.
+This is source-only; no tests/builds/typechecks/audits ran. P7 remains active on the full phase;
+checkpoint capture/restore and artifact HTTP/TUI reads still have P1/trusted-scope dependencies.
+
+15:38 UTC P1 corrected source-level dynamic request field construction in the new search-secret
+authorization handler and directly sent P6 the stable exact projection API. It still returns only
+metadata, binds at most two ordered attempts to exact live Guard/Attempt/profile scope, and keeps
+BYO gated pending durable per-route dispatch/receipt plus P6 ProviderTransport composition. P1
+continues HostKernel protocol journal and recovery source work; no tests/builds ran.
+
+15:39 UTC P2 closed the cross-phase usage-proof projection seam in managed completion,
+candidate and recovery decoders. It now validates bounded metric summaries, nonzero receipt/cursor
+counts, receipt_count ≤ cursor ≤ managed revision, and complete lowercase BLAKE3 ceiling/chain
+digests before accepting the P8 summary. Finalization remains gated pending P1 verifier/quiescence
+and P8 settlement recovery evidence. P2 continues its whole-phase source pass; no validation ran.
+
+15:41 UTC P1 independently hardened `query_repo_structure` to reject any supplied continuation
+cursor as `capability_unavailable` before Location lookup or workspace snapshot collection; P3's
+lexical partial results now carry no cursor. This keeps unauthenticated cursor reuse from reaching
+source reads. P1 also identified a P6 provider tuple mismatch: fixed Brave is GET with
+`x-subscription-token`, while ProviderTransport currently allows POST/header variants; P6 must
+allow only that fixed tuple while continuing to reject arbitrary methods/headers. P1 fresh verifier
+recovery still records unfinished journal entries UNKNOWN without proving prior-process quiescence,
+so the verifier adapter remains disabled. No checks ran.
+
+P2 confirms Core's decoder consumes P8's canonical terminal usage proof (not a duplicate wire
+shape); the known HTTP metric names remain the five currently emitted by Rust. P3 continues lexical
+query/pagination and trusted document-read source work.
+
+15:44 UTC P2/P1 found a cancellation race: a provider step may finish after `RequestCancel` moves
+a Run to CANCELLING, but Rust currently rejects the final authenticated usage receipt because it
+requires RUNNING. P2 is implementing the narrow receipt-append reducer allowance while keeping
+coding-effect admission denied. P1 owns the corresponding HostKernel operation-specific
+`record_usage` scope exception; it must not widen general effect authority. P1 also confirms P4
+protocol IO, trusted verifier quiescence, durable BYO receipts and authenticated cache mint remain
+unimplemented and gated. No tests/builds ran.
+
+P3 added bounded lexical candidates from immutable HostKernel generations with exact UTF-8 byte
+ranges, file digests and deterministic node IDs; unsupported parser results stay explicitly
+PARTIAL. Overlay mode remains unavailable without trusted editor snapshots, and semantic definition
+queries are unavailable rather than inferred from lexical matches. Core and HostKernel reject
+unauthenticated continuation cursors before source collection. Pagination remains gated until P1
+provides an authenticated owner-bound cursor lease. No validation ran.
+
+15:47 UTC P1/P2 completed the cancellation-race source seam. The usage-only path may accept
+exactly one revision advance only when the live Run is CANCELLING and
+`capturedRevision + 1 == currentRevision`, matching the single RequestCancel append. HostKernel
+derives the current Rust revision for usage proof/CAS; caller revision is not trusted. P2's
+reducer permits only the usage append, while generic effect checks remain exact and RUNNING-only.
+Source integrated across owners, not yet verified; no tests/builds ran.
+
+15:49 UTC P1 tightened the usage/cancel exception: exact revision equality is valid only while
+RUNNING; CANCELLING accepts a caller scope exactly one revision behind current Rust state, the one
+RequestCancel append. A post-cancel scope cannot be relabeled as an in-flight scope. P2 additionally
+caps the decoded receipt chain at 4,096 entries. No tests/builds ran.
+
+15:51 UTC P2 returned `PHASE_PARTIAL` after source integration of bounded P8 usage proofs and the
+strict cancellation-time usage receipt path. P3 returned `PHASE_PARTIAL` after immutable-generation
+lexical candidates, honest parser/overlay semantics and pre-source cursor denial; pagination,
+trusted buffers and semantic parser support remain dependent/deferred. P7 returned PARTIAL after
+its read-only TUI automation contract update; checkpoint/artifact paths wait on P1. P1 has resumed
+for durable protocol IO journaling, verifier/quiescence recovery, BYO route receipts and cache
+mint. P6 resumed to compose the confirmed metadata-only SecretBroker path; P8 resumed to integrate
+cache and settlement recovery. Active whole-phase owners: P1/P6/P8. P2/P3/P7 await dependent
+interfaces and later acceptance. No validation ran.
+
+15:55 UTC P5 now exposes a production HostKernel `authorize_search_secret_use` seam from its
+Guarded capability, returning an untrusted metadata record only after HostKernel feature and
+release-gate checks. It is not called by aggregate dispatch and does not enable network effects.
+P6 added an in-process SecretBroker/ProviderTransport adapter with strict route-profile checking,
+including Brave's fixed GET + `x-subscription-token` tuple; it remains inert until P1's durable
+per-route intent/dispatch/receipt and Guarded send path land. P8 now excludes owner-reported
+positive cache pin counts during planning and reports physical allocation UNKNOWN when no
+authenticated process sample exists; live Arc revalidation is still P1-owned. Active owners remain
+P1/P6/P8. No tests/builds/typechecks/provider calls ran.
+
+15:58 UTC P6 returned `PHASE_PARTIAL` after adding a strict decoder for P1's metadata-only
+authorization projection and local one-request SecretBroker/ProviderTransport lease consumption.
+Brave is fixed to GET + `x-subscription-token`; the adapter has no caller-supplied sender and is not
+connected to search dispatch. P1 durable per-route intent/dispatch/receipt plus a Guarded sender
+remain prerequisites. The freed slot resumed P4 for Core LSP/DAP lifecycle integration against
+P1's in-progress protocol journal; REPL remains disabled without OS quotas. P8 additionally binds
+worker resource samples to durable child source revision, excludes positive cache pins from
+planning, and reports unmeasured allocation as UNKNOWN. Active owners: P1/P4/P8. P5 remains
+parent-owned and disabled. No validation ran.
+
+
+## 2026-10-20 15:50 UTC — P1–P8 implementation continuation
+
+The user resumed the full P1–P8 source implementation and asked to defer tests/builds/typechecks/audits until implementation is complete. Active whole-phase owners are P1 Guard/ExecutionHost, P6 providers/settings/Doctor/S1, and P7 streaming/artifacts/automation/checkpoint. P1–P8 remain the full requested delivery target. P2 and P4 returned source-only partial; P3 is queued for a slot; P5 remains parent-owned. P8 returned source-only partial after P1/P8 integrated more source seams.
+
+Current source deltas: P1 added a durable typed protocol IO/event journal and typed LSP reply subject/receipt, all still release-gated; BYO search route attempts now persist PREPARED/DISPATCHING/settled or UNKNOWN, with restart recovery, and P1 is defining the resumable Rust-owned aggregate step needed to retain one cascade state machine. P1 also mints authenticated RepoIntel cache observations and exposes exact HostKernel retirement composition. P2 fixed `goal.start` so it captures the intended root Session before confirmation, and source review confirms immutable AgentProfileV2 child pins plus authenticated Goal/review/start/control TUI paths. P4 binds protocol requests to direct/managed Attempt scope and composes the authenticated RepoIntel reader without filesystem fallback; process effects remain disabled. P8 binds the full five-key usage summary into final-Inspect candidate v2, adds exact Pending/Completed Inspect receipt recovery, keeps source bytes separate from physical allocation, and binds worker source revision into RC0 schema v3. P6 is composing its fixed SecretBroker sender with P1's durable per-route transitions; P7 is continuing full source work.
+
+Remaining source/dependency items: P1 Guard/ExecutionHost and Linux confinement integration, managed verifier quiescence, final protocol replay/recovery and aggregate BYO pause/resume; P2/P8 managed Inspect/settlement wiring; P3 authenticated pagination/cursor and cache lifecycle, plus parser-backed semantics; P4 P1 protocol/launch gates and OS-enforced REPL quotas; P5/P6 one Rust-owned search cascade with SecretBroker route callback, provider/settings/Doctor/S1 source completion; P7 guarded automation/checkpoint/artifact operations; P8 trusted cache pressure trigger/consumer, RC0 HostRun and independent attestation. Effectful paths remain unavailable wherever Guard, receipt, or OS enforcement is not yet accepted.
+
+No tests, builds, typechecks, audits, provider calls or benchmarks were run. This is source status only; no phase is VERIFIED or RELEASED. The shared mixed Git state is preserved; no staging, commit, push or cleanup was performed.
+
+
+## 2026-10-20 16:00 UTC — P5 bounded response projection and P1/P6 search handoff
+
+Parent added a Core-side structural/UTF-8 size bound for HostKernel web-search response bodies before parsing or retaining provider data (20,000 nodes, depth 24, individual strings 2 MiB, aggregate accounted body 4 MiB); malformed cycles, non-finite values and unsupported values are rejected. This is source-only and web search remains gated. P1 is wiring the durable aggregate cursor to BYO attempt authorization/settlement. P6 is composing the fixed SecretBroker sender through HostKernel begin/settle/UNKNOWN transitions, using a strict DISPATCHING permit and a durable SETTLED receipt. P6 confirmed `resultCount:null` is accepted for HTTP success, leaving semantic parsing in Core. P1 has not yet published the aggregate pause/resume DTO. No checks/builds/typechecks/audits/provider probes ran. P1/P6/P7 remain active whole-phase owners; P2/P3/P4/P8 work is queued for available slots. V1 remains PARTIAL / NOT RELEASED; mixed Git state preserved.
+
+
+## 2026-10-20 16:05 UTC — P6 source handoff; P2 slot refill
+
+P6 returned PARTIAL after its currently independent source work: provider/model availability and truthful free-route selection, requested/effective settings, offline Provider Doctor/API/TUI, S1 owner-chain projection/filter/callback/mixed-effect denial, provider/model switching, and Auth-owned HostKernel begin → fixed SecretBroker request → settle/UNKNOWN with strict permit/receipt matching. It remains integration-blocked on P1's Rust aggregate pause/resume plus parent P5 wiring; network execution stays unavailable. P2 has resumed as whole-phase owner for managed Task/Attempt, authenticated review/verifier, workspace revision, TUI delivery and lifecycle recovery; P1 and P7 continue. P3/P4/P8 remain queued for slots. Parent P5 added bounded HostKernel response projection and awaits P1's exact cascade DTO before Core resume wiring. No verification ran; source only, V1 PARTIAL / NOT RELEASED.
+
+
+## 2026-10-20 16:10 UTC — P1/P5 cascade continuation boundary; P2 inbox pagination
+
+P1 has now source-wired the initial Rust aggregate pause: after any earlier keyless routes, it durably links the exact one-use BYO authorization attempt to a HostKernel-owned ordered cursor and returns `WAITING_SECRET` with cascadeRef/Digest, route-plan digest/index, next-route authorization, and prior route receipts. P1 is implementing `resume_search_cascade`; Core must validate/forward P6's exact bounded provider response and durable settled receipt, while Rust retains route/retry/fallback authority. Parent P5 now strictly decodes the bounded continuation envelope and rejects orphaned fields, invalid index/digests, terminal prior attempts, and scope transitions; it currently remains gated and does not yet dispatch/resume the secret route. P2 added bounded on-demand Goal-review inbox pagination via the authenticated cursor, keeping each request capped at 64. No checks/builds/typechecks/audits/provider calls ran. P1/P2/P7 active; P6 source handoff partial; P3/P4/P8 queued. V1 remains PARTIAL / NOT RELEASED.
+
+
+## 2026-10-20 16:15 UTC — P2/P7 partial handoffs; P4 resumed; P3 queued
+
+P2 returned PARTIAL after on-demand authenticated Goal-review pagination and the prior root-Session-capture fix; its remaining acceptance is blocked on P1 verifier/effect receipts and P8 final Inspect/settlement. P7 returned PARTIAL after artifact HTTP/SDK/TUI reads, renderer/transcript redaction and bounds, stream fences, artifact fidelity and analytics provenance; automation invocation and checkpoint mutation remain unavailable pending P1-owned Guarded operations/observation DTOs. The freed slot resumed whole P4 to integrate LSP/DAP/REPL clients against P1's protocol journal and finish all independently executable source; process/evaluate/REPL effects remain gated by P1 and OS proof. P1 is implementing `resume_search_cascade` using the agreed Core binary body + P6 durable receipt; it is resolving honest EffectHost transport provenance for non-socket SecretBroker sends. P8 resumed cache/worker source; P3 remains queued because the agent thread limit prevented starting another owner. P5 Core now sends only validated WAITING_SECRET routes to Auth, then exact receipt/body to Rust resume; final integration depends on P1 handler and transport-provenance representation. No tests/builds/typechecks/audits/provider probes ran. V1 PARTIAL / NOT RELEASED; shared Git state preserved.
+
+
+## 2026-10-20 16:20 UTC — P8 cache seam handoff; P3 resumed
+
+P8 returned PARTIAL after adding exact final-Inspect/usage binding and RC0 child-revision source; P8 reports its HostKernel-retained generation observation/retirement composer is present but unconnected at four HostKernel generation-removal callsites. It also added P8 registry invalidation, but no trusted pressure-policy ingress exists, so no cache eviction trigger is enabled. RC0 remains NOT_ATTESTED until P1 live-peer/workspace evidence and P2 independent verifier evidence; OS resource quotas and fan-out remain unavailable. P3 is now resumed as whole-phase RepoIntel owner to connect authenticated generation pagination/cursor and the P1/P8 cache sink using exact current signatures. P4 is active against P1's protocol journal; P1 continues Guard/ExecutionHost and BYO aggregate resume. P5 Core handles the strict WAITING_SECRET→Auth fixed send→Rust resume loop; it is fail-closed and not yet verified. P2/P6/P7 remain PARTIAL/queued for slots. No tests/builds/typechecks/audits/probes ran. V1 remains PARTIAL / NOT RELEASED.
+
+
+## 2026-10-20 16:25 UTC — P5 authenticated BYO continuation wired in Core source
+
+Parent P5 now validates every Rust `WAITING_SECRET` continuation against the exact next approved route before any secret send, calls P6 Auth with the response authorization plus Rust-minted cascadeRef/Digest and authenticated Attempt scope, checks the returned one-use SETTLED receipt against the bounded response, then calls `execution.v1/resume_search_cascade` with the exact receipt metadata and MsgPack binary body. Continuations are bounded by approved route count; Core never retries provider dispatch and reports UNKNOWN when a continuation cannot be reconciled. Strict response parsing rejects malformed/orphaned cursor fields and terminal prior attempts; source regressions were added but not run. P1 has confirmed `secret-broker-fixed-route` is the existing honest EffectHost receipt provenance for this non-socket transport and is implementing the resume RPC plus cancellation support. P3, P4, P1 active; P8 returned PARTIAL; P2/P6/P7 source handoffs remain PARTIAL/queued pending dependencies and slots. No tests/builds/typechecks/audits/probes ran. Search remains gated and V1 PARTIAL / NOT RELEASED.
+
+
+## 2026-10-20 16:30 UTC — P3 source seam triage; P1 continuation recovery
+
+P3 reports generation pin/query source exists, but Core currently rejects continuation cursors before Location/source read and HostKernel passes no cursor to indexd. No authenticated opaque cursor lease or Core cache notice/retirement RPC projection is published yet; P3 is continuing all independent Core pagination/cancellation/recovery and cache-consumer interface work without inventing production authority, while P1 owns supervisor/HostKernel seams. P1's BYO resume path cannot yet guarantee same-request replay after a lost nonterminal response; parent requested an authenticated read-only continuation resolver that returns the exact next prepared cursor only after a known settled failure, terminal result-unavailable after successful body loss, and UNKNOWN on ambiguity. Secret bodies will not be persisted/replayed. The existing feature remains gated. No checks/builds/typechecks/audits/probes ran.
+
+
+## 2026-10-20 — P1–P8 phase-owner refill and P5 continuation recovery
+
+The whole-phase owner wave is now P1, P2 and P4; P3 returned `PHASE_PARTIAL` after its independent RepoIntel implementation pass. P3's exact remaining dependencies are P1's authenticated owner-bound cursor lease and P8 cache-row invalidation at all HostKernel generation-removal sites. P8, P6 and P7 remain in the runnable queue for the next child slots; P5 remains parent-owned. No tests/builds/typechecks/audits/provider calls ran.
+
+P3 source changes in this pass: bounded UTF-8 cursor input and rejection of repeated/no-progress or invalid-page cursors; `repo_tree` now reads through descriptor-rooted no-follow RepoIntel access and reports partial descendant coverage; `repo.detect` strict-decodes text manifests and treats `bun.lockb` as presence-only. Semantic AST definitions and unsaved-buffer overlays remain unavailable without trusted implementations.
+
+P1 added gated `inspect_search_cascade_continuation` recovery for a lost response after a settled BYO route. Parent P5 now asks this authenticated read-only resolver after `resume_search_cascade` transport loss, carrying exact cascade/route/receipt/Attempt pins; it never resends the provider request. Source review identified a P1 receipt-history defect (the journal append selects the first attempt instead of the just-settled receipt) and mixed BYO→keyless continuation remains unresolved; P1 owns both fixes. Search remains disabled until complete P1/P6 integration and later acceptance.
+
+Shared-tree status remains mixed/dirty with no staged changes; no Git publication or cleanup. Work is confined to `agentx`; V1 remains PARTIAL / NOT RELEASED.
+
+
+16:35 UTC P5 continuation recovery update: Core now calls `inspect_search_cascade_continuation` after a lost `resume_search_cascade` response, carrying the exact settled receipt and authenticated HostKernel Attempt scope. It accepts only the resolver's Rust-owned next prepared route or receipt-only terminal/UNKNOWN result; it never repeats the provider request. This is source-only and remains behind the release gate. Parent assigned P1 three source-review fixes: append the current settled route (not the first history item), safely handle/reject mixed BYO→keyless order before any post-dispatch uncertainty, and support the documented direct Core Attempt receipt owner.
+
+16:36 UTC P4 reports source for shared execution.v1 LSP/DAP clients with authenticated Attempt pins, bounded replay/correlation, serialized dispatch, Guard lease per outbound operation, quarantine on uncertainty, and strict callback validation. DAP attach/evaluate and all process effects remain unavailable pending Guard/confinement proof; REPL remains unavailable pending P8 OS quotas. P4 continues its whole phase. No checks ran.
+
+P2 whole-phase source audit found a plan/verifier mismatch: Core and Rust accepted up to 64 Tasks,
+but the current managed verifier cannot verify any Run with more than one Task. Core planning and
+the canonical reducer now constrain new V1 Runs to exactly one coding Task; Rust also refuses to
+start, schedule or admit an Attempt for historical multi-Task plans, while OwnerLog replay stays
+compatible. Added normative §12.19/§17.18 text and VEO-025. Remaining P2 is blocked on P1's
+guarded verifier/output receipt, quiescence/fresh-process UNKNOWN path and P8's final-Inspect
+receipt/settlement recovery, followed by integrated pause/cancel/restart/stale/conflict acceptance.
+No tests/builds/typechecks/audits/provider calls ran; P2 remains PHASE_PARTIAL.
+
+16:40 UTC P4 source checkpoint: Core LSP/DAP protocol client adapters, lifecycle/profile pins, LSP code-action/rename proposal handling, P3 authenticated document-reader composition, and bounded REPL callback parsing/recovery state are present. Product composition remains deliberately gated: P1 HostKernel still returns `capability_unavailable` while `TYPED_PROCESS_PROTOCOL_RUNTIME_READY` is false (and can report durable-journal unavailability), launch authority is not accepted, and P8 OS quotas are not enforced. DAP attach/evaluate and REPL execution therefore stay unavailable. Remaining P4 acceptance depends on P1 Guarded launch/protocol IO and confinement plus P8 quotas, followed by integrated lifecycle/replay/recovery journeys. No tests/builds/typechecks/audits ran by user direction; no acceptance claim.
+
+
+## 2026-10-20 — P1/P6/P8 continuation; P7 refill; P5 response-loss correction
+
+The requested P1–P8 implementation remains source-only and incomplete. Active owners are P1 Guard/ExecutionHost, P8 resource/worker/cache, and P7 streaming/artifacts/analytics/automation/checkpoint (the completed P6 source pass released its slot to P7); P5 remains parent-owned. P2/P3/P4 have source-only partials and remain in the refill queue for integration after their prerequisites land.
+
+Parent review found and corrected a P5 initial-response recovery defect in `packages/opencode/src/tool/websearch-runtime.ts`: successful exact-pin `inspect_search_cascade` recovery now feeds the existing continuation loop; failed/missing reconciliation still returns UNKNOWN without redispatch. P8 is implementing an independently durable post-settlement worktree disposition transition; Core/P2 settlement projection remains a follow-up. P6 removed the unsafe byte-to-secure-handle export and documented credential put/revoke/live Doctor as unavailable pending protected native input and a Guarded authenticated write contract.
+
+No tests, builds, typechecks, audits, provider calls, benchmarks, or Git publication ran. Feature gates remain closed where Guard, receipts, independent verification, or OS enforcement are incomplete. The shared Git state remains dirty with no staged changes; only the repository tree was inspected. V1 remains PARTIAL / NOT RELEASED.
+
+
+## 2026-10-20 — P1 terminal admission correction; P7 resumed
+
+P1 fixed a source-level shell interpolation denial: user-action and ToolBatch consent projection had assessed residual `no_symlink/no_hardlink`, which are outside Guard's broker-process guarantee set. Those checks now use the exact configured executable/profile, bounded argv/environment, workspace-root confinement, sandbox and one-use dispatch preflight before projecting an empty residual. Denied/no-spawn behavior is unchanged; no test was run.
+
+The released P6 slot is active on whole-phase P7. P7 is closing independent Core/TUI source gaps and recording the remaining Guarded automation and checkpoint operations that depend on absent authenticated HostKernel contracts. P1 and P8 continue their entire phase source work. No tests, builds, typechecks, audits, provider calls, benchmarks, staging, commit, or push were performed.
+
+
+## 2026-10-20 — P7 analytics correction; P2 phase resumed
+
+P7's independent source review found that the SVG raster port emitted `ui.artifact.raster_cache_entries`, but TUI analytics discarded the entry-count gauge while retaining cache bytes. The aggregation now includes per-renderer entry counts with stale-sample rejection and disposal cleanup; the source fixture and §31.17 status were updated. P7 reports stream replay/fencing, bounded redacted rendering, artifact truth/reads, question event filtering, and analytics allowlisting source-present. Automation invocation and checkpoint/rewind mutations remain unavailable pending P1 Guarded effects and trusted same-revision filesystem/VCS observations. No checks ran.
+
+The freed P7 slot is assigned to resumed whole-phase P2 managed lifecycle/verifier integration; it is continuing Core/TUI source work while P1/P8 dependencies land. P1/P8 remain active. P3/P4 are still queued. All phases are source-only; V1 remains PARTIAL / NOT RELEASED.
+
+
+## 2026-10-20 — P2 exact dirty-revision settlement projection
+
+P2 now accepts verifier-pinned final Inspect at the exact frozen revision when the observed worktree is `CLEAN` or `DIRTY_OWNED`, while still requiring an owned, no-follow snapshot with no user-owned changes. It rejects contradictory dirty-count/status facts. `DIRTY_OWNED` completion requires P8's durable `WORKTREE_QUARANTINED` disposition; Core's normal settlement and terminal recovery projections preserve that disposition for the TUI. P2 updated §37.22. P8 is implementing the Rust durable disposition receipt and transition; P2 remains PARTIAL pending P1 Guarded verifier/recovery and P8 integration. No validation ran.
+
+
+## 2026-10-20 — P2 managed source integration audit
+
+P2's resumed source audit confirms the current Core/TUI path derives distinct reviewers from ServerAuth, rejects proposer self-review, fences decisions by exact Spec digest/revision, exposes authenticated Goal proposal/review/plan/start/control actions, and binds the root Session to principal/workspace. Managed Task dispatch carries Rust-projected AgentProfileV2 pins and ManagedAttemptScope into ToolBatch; only one direct or managed Attempt authority is accepted per effect, with refresh limited to HostKernel revision transitions. Restart recovery does not retry ambiguously consumed prompts; cancellation persists the Rust fence before interrupting the exact child. P2 added the DIRTY_OWNED exact-revision settlement/quarantine rule to §12.19/JC-RES-021. These are source facts, not acceptance. Remaining P2 source integration depends on P1 Guarded coding/verifier/final Inspect and durable verifier receipts/replay plus P8 Inspect/settlement and terminal recovery. No validation ran.
+
+
+## 2026-10-20 — P1 generation invalidation; P2 recovery source reconciled
+
+P1 added cache invalidation before known HostKernel RepoIntel lease/generation drops, using the exact retained cache key/parser-set identity; expiration cleanup uses the same helper. A registry pin/invalidation failure now aborts before dropping the generation. Trusted pressure-trigger wiring remains unresolved and stays unavailable unless the P8 consumer can accept an authenticated sample without claiming unsupported OS limits.
+
+P2 found that §37.22 still listed same-challenge replay and terminal settlement projection as gaps although current source has exact `managed_final_inspect_replays`, fresh-challenge/full-Core-restart receipt resolution, and authenticated `managed.settlement_recovery` from terminal OwnerLog. It documented those source paths as present and superseded the stale gap statement. These remain unverified. P2 continues source integration against P1/P8; no validation ran.
+
+
+## 2026-10-20 — P8 authenticated pressure and settlement contracts
+
+P8 supplied P1 the exact pressure consumer contract: a HostKernel-minted owner-matched `AuthenticatedResourcePolicyPinV1`, a `sample_owned_resources` snapshot bound to authenticated owner/Core identity, sample sequence/time, OwnerLog cursor and WorkerPool revision, and authenticated owner context. Only measured PSS can produce the bounded hysteresis signal. The signal is advisory only; it does not enforce OS limits, authorize eviction, terminate processes, or release leases. P1 is evaluating/wiring this at authenticated ingress. Cache eviction remains disabled until a trusted trigger and generation-safe callback exist.
+
+P8 says its new durable settlement receipt is exposed through Core/P2 with exact Goal/Run/Task/Attempt/worker IDs, disposition, proof digest, OwnerLog ID/sequence/event digest, worker-pool revision and receipt digest; P2's strict decoder binds those fields. Exact DIRTY_OWNED final Inspect requires `WORKTREE_QUARANTINED`; CLEAN reusability follows P8's full predicate. This is source integration only, not tested.
+
+
+## 2026-10-20 — P2 phase handoff; P3 RepoIntel resumed
+
+P2's independent source pass is exhausted and returned PHASE_PARTIAL. It also changed the TUI to reject Run plans containing anything other than one coding Task before the API call; Rust remains authoritative. P2 source notes now reconcile the exact `DIRTY_OWNED` final-revision evidence/quarantine rule, P8 receipt fields, and existing replay/terminal settlement recovery paths. No checks ran.
+
+The released slot is assigned to whole-phase P3 RepoIntel (Core/indexd/Tool/TUI), to connect authenticated generation pagination and P8 cache lifecycle where exact contracts exist, and finish all independent tree/detect/document-read/fencing work. P1/P8 remain active; no validation or Git publication was performed.
+
+
+## 2026-10-20 — P1 raw grep/glob process origin fenced
+
+P1 found that `packages/core/src/ripgrep.ts` executed configured `rg` via raw `AppProcess.spawn`; HorizonCode and OpenCode-derived grep/glob tools reached it without HostKernel Guard/ExecutionHost leases. A false-by-default gate now fails before binary resolution/command construction/spawn until a HostKernel-backed read service is wired. This closes the raw process effect path with honest unavailability; P3 can provide a guarded indexed/read implementation later. No tests ran.
+
+
+## 2026-10-20 — P8 separate disposition durability and truthful metadata
+
+P8 added source for a disposition OwnerLog round-trip/required-epoch regression (not run) and corrected worktree `has_untracked` projection: nonreusable due to dirty tracked or user-owned content no longer implies untracked files. Quarantined disposition now leaves untracked status unknown; only verified clean reuse records `false`. §21.13 documents independently replayable reservation settlement and worktree disposition, with crash-pending lease ownership retained. P1 owns HostKernel settle/recovery call-site wiring; P8 continues the phase. No validation ran.
+
+
+## 2026-10-20 — P8 source handoff; P4 resumed
+
+P8 returned PHASE_PARTIAL after implementing its separate durable reservation-settlement/worktree-disposition transitions, exact disposition and pending-state projections, crash-pending quarantine/lease retention, dirty-worktree truthfulness, bounded advisory pressure tracking, and an unrun OwnerLog replay regression. OS-enforced worker limits remain unsupported; RC0 remains release-ineligible without trusted attestations. P1 owns the HostKernel settle/recovery projection wiring; changed-epoch recovery needs fresh authenticated root/Inspect plus P2 terminal proof.
+
+The freed slot is assigned to whole-phase P4 LSP/DAP/REPL continuation, finishing independent Core lifecycle/protocol/profile work while P1 Guard and P8 OS enforcement remain prerequisites for effectful paths. Current active whole-phase owners: P1/P3/P4; P2/P6/P7/P8 are partial and will resume when dependencies/slots permit. No tests, builds, typechecks, audits or Git publication ran.
+
+
+## 2026-10-20 — RepoIntel cursor and deferred disposition recovery boundaries
+
+P3 identified that authenticated continuation cursors still lack a HostKernel lease DTO/service. P3 is implementing Core client/schema plumbing while keeping page continuation fail-closed; it must not infer or accept a model-supplied generation. P1 now owns the HostKernel lease: mint from authenticated first-page scope and bind principal/Session/Location/epoch/workspace root/generation/revision/canonical query digest/expiry/cancellation; resolve and remeasure read policy before continuation source reads.
+
+P8's separate disposition receipt currently lacks an immutable original owner-epoch accessor. P8 is adding that P8-owned pin/API. P1 will attempt same-epoch `settle_dispatch` recovery only from HostKernel's exact pre-admission epoch; after disposition completion it returns the full settlement receipt. Any epoch/proof mismatch stays pending/conflict; Core never supplies epoch authority or treats it as terminal success. Cross-epoch release requires fresh authenticated Inspect and quiescence proofs. No validation ran.
+
+
+## 2026-10-20 — P1/P3 recovery and cursor integration source seams
+
+P1 wired same-epoch `settle_dispatch` recovery to query P8's pending disposition, compare P8's immutable settlement owner epoch to the current HostKernel FrameFence epoch, complete only the exact pending disposition, require a durable receipt, then pass through the ordinary strict resolver for `SETTLED`. Missing epoch, mismatch, or unresolved receipt remains UNCERTAIN. It depends on P8 landing the `managed_settlement_owner_epoch_for_attempt` wrapper; no cross-epoch recovery is enabled.
+
+P3 added capability-gated Core cursor lease plumbing: strict token bound, first-page generation pin vs continuation token, no `sourceGeneration` on continuation, and authenticated RepoRead plus interrupt cancellation. Runtime remains unavailable until P1 HostKernel mints/resolves the authenticated lease. P3 is checking existing parser/index integrations for remaining semantic source work. No validation ran.
+
+
+## 2026-10-20 — P8 immutable settlement epoch pin landed
+
+P8 added `managed_settlement_owner_epoch_for_attempt(attempt_id)` derived from immutable `TrustedPreAdmissionPinsV1.owner_epoch()`. The disposition receipt now carries and digest-binds `owner_epoch`; OwnerLog requires a positive value and replay validates it against exact admission pins. Same-epoch completion also checks `self.resumed_epoch == pinned admission epoch` internally. P1's `settle_dispatch` uses this exact getter before it can complete pending disposition and project SETTLED. No validation ran.
+
+
+## 2026-10-20 — P4 typed read errors; P2 settlement-receipt consumer resumed
+
+P4 fixed LSP document-open/change to preserve typed RepoIntel stale-revision, oversized and out-of-scope errors instead of collapsing them into generic reader failure; no document text is sent after a read failure. LSP/DAP/REPL process and protocol routes remain hard-disabled until P1 Guarded process IO/confinement and OS acceptance; editor ingress and P3 read-document acceptance remain open. P4 returned PHASE_PARTIAL.
+
+P1 approved adding an exact nested P8 `worktreeDisposition` receipt to ordinary `SETTLED`, with immutable owner epoch, final worktree operation/host receipt, observed revision, Inspect receipt, OwnerLog cursor, pool revision, settlement receipt digest and final receipt digest. The P2 whole-phase owner is resumed to update the strict decoder/TUI projection when P1 lands the Rust shape and continue any remaining source integration. P3 is implementing indexd page advancement (`RepoStructurePositionV1` as a non-authority anchor); P1 is reviewing its exact DTO before HostKernel lease integration. No validation ran.
+
+
+## 2026-10-20 — P1 approved P3 indexd paging anchor
+
+P1 approved P3's internal RepoIntel paging adapter with an exclusive last-emitted position `{path_ref, symbol_index, byte_offset}`, ordered by BTreeMap path and selector order; `byte_offset` is a UTF-8 byte offset. `next_position` exists only while more matches remain and carries no authority token. HostKernel must resolve the opaque cursor before source reads, remeasure workspace and current Guard read grant, and mint the next opaque lease bound to exact generation/revision/query. P3 is implementing the indexd/Core side; P1 owns HostKernel lease wiring. Feature stays unavailable until both are integrated. No validation ran.
+
+
+## 2026-10-20 — P1 final P8 disposition receipt wire shape landed
+
+P1's Rust source now includes an exact nested `worktreeDisposition` object in the ordinary top-level `status=SETTLED` response. Fields are `ownerEpoch`, `disposition` (`REUSABLE`/`QUARANTINED`), settlement receipt digest, final worktree operation/host receipt, observed revision, Inspect receipt digest, OwnerLog ID/sequence/event digest, worker-pool revision and final receipt digest; all are string projections from the durable P8 receipt. P2's resumed owner is wiring the strict Core decoder/TUI projection. No tests ran.
+
+
+## 2026-10-20 — P1 authenticated RepoIntel cursor; P2 disposition consumer; P4 resumed (source only)
+
+P1 added a HostKernel-owned opaque `repo_cur_<64hex>` one-use continuation lease. Its stored
+pins bind authenticated principal/Session/Location, FrameFence owner epoch, the original
+RepoGeneration lease key, workspace root/revision, source generation, canonical selectors and
+limits, P3's internal page position, and expiry. HostKernel resolves the lease before obtaining
+a Location snapshot, then rechecks current Guard `files.read`, workspace/revision and query
+policy. Consume, cancellation, stale policy/revision, generation retirement and process restart
+fence the token. The protocol feature remains false and `hz-kernel` does not advertise it; this
+is not enabled or verified. P3 owns Core/indexd pagination, P1 owns the Rust lease.
+
+P2 completed its source-only consumer for P8's nested `worktreeDisposition` receipt: strict
+Core decoding, control-plane/SDK shape, TUI preservation/display, and recovery fixture now bind
+all exact receipt fields and the outer settlement. P2's remaining managed lifecycle depends on
+P1's Guarded verifier/output/quiescence and fresh-process UNKNOWN interface; phase acceptance
+was not claimed. Its slot is assigned to whole-phase P4 LSP/DAP/REPL source integration.
+
+Current active whole-phase owners: P1 Guard/ExecutionHost, P3 RepoIntel, P4 LSP/DAP/REPL. P5
+remains parent-owned; P2/P6/P7/P8 are in the refill queue. Implementation-first hold remains:
+no tests, builds, typechecks, audits, live provider calls, or benchmarks ran. Existing mixed Git
+state is preserved. HorizonCode V1 remains PARTIAL / NOT RELEASED.
+
+
+## 2026-10-20 — P2 P8 receipt digest binding corrected; P4 implementation continues
+
+Parent's source-only integration review found that the Core P2 decoder equated the P8
+worktree-disposition receipt's own domain-separated `receiptDigest` with the logical settlement's
+`settlementReceiptDigest`. Rust intentionally computes these as distinct digests. P2 fixed the
+decoder and recovery fixture: both digests retain independent BLAKE3 validation, while only
+`worktreeDisposition.settlementReceiptDigest` is bound to the outer logical `receiptDigest`.
+This correction and its fixture have not been run. The same owner has shifted to whole-phase P4
+source work after finishing independent P2 integration. P1/P3/P4 are active; P2 acceptance
+remains gated on P1 Guarded verifier/quiescence and final integration. No validation ran.
+
+
+## 2026-10-20 — P3 bounded-page progress; P4 dependency queue; P6 resumed
+
+P3 found and corrected a pagination liveness defect within the approved exclusive-last-emitted
+position contract. When a file suffix exceeds the remaining page byte budget, indexd now records
+partial/truncated coverage and continues to later files instead of stopping the page; it mints
+`next_position` only after a real extra matching occurrence proves continuation progress. This can
+omit occurrences in an over-budget suffix and therefore remains explicitly PARTIAL; it does not
+loop or claim complete coverage. RepoIntel remains feature-disabled pending integration acceptance.
+
+P4 reports its independent source pass exhausted: typed LSP/DAP protocol clients and authenticated
+RepoIntel document reads are present, but production process lifecycle lacks the P1 Guarded
+ExecutionHost prepare/launch/IO/cancel/status API and Core one-use approval adapter. Process, DAP
+attach/evaluate and REPL remain unavailable; REPL also lacks supported OS CPU/memory/process/FD
+limits. P4 is queued for immediate resume when P1 lands its interface. The released slot is now
+assigned to whole-phase P6 Provider/Settings/Doctor/S1 source implementation.
+
+Active whole-phase owners: P1 Guard/ExecutionHost, P3 RepoIntel, P6 Provider/Settings/Doctor/S1.
+P4 is PARTIALLY_BLOCKED on P1; P2 is PARTIALLY_BLOCKED on P1 Guarded verifier/quiescence and
+P8 final Inspect/settlement integration; P5 remains parent-owned; P7/P8 await slots/dependencies.
+No tests/builds/typechecks/audits/provider calls/benchmarks ran. HorizonCode V1 remains PARTIAL /
+NOT RELEASED.
+
+
+## 2026-10-20 — P3 cursor/tree source wired; semantic/cache gaps retained
+
+P3's source now wires Core cursor schema/call DTO to P1's opaque HostKernel lease, generation
+retirement/cancellation removes cursors, and indexd consumes the approved internal position.
+The per-page byte-budget overflow path skips over-budget suffixes with truthful partial status
+and keeps scanning later files; focused regression source was added but not run. `repo_tree`
+has bounded no-follow listing/cancellation and truthful coverage metadata; `repo.detect` and
+authenticated `read_document` are source-present. Cursor capability remains disabled pending
+acceptance. P3 still lacks parser-backed definition/reference semantics and a trusted immutable
+editor-overlay producer; these must remain unavailable unless compatible existing pinned source
+and canonical ownership can be established. Cache lifecycle depends on P1/P8 generation hooks.
+No checks ran.
+
+
+## 2026-10-20 — P6 source audit complete; P7 resumed
+
+P6's fresh source audit found no additional safe standalone source change: OpenCode is filtered to
+active/free models at default selection, runtime rejects credential-bearing/custom-loader models
+before SDK construction, and offline Doctor is authenticated, sanitized and zero-network. P6 remains
+PARTIAL / NOT VERIFIED because no acceptance was run; credential put/revoke needs protected native
+input plus a Guarded capability, live/full Doctor and catalog action await P1, and search cascade
+acceptance depends on P1/P5. No provider calls or validation ran. The freed slot is assigned to
+whole-phase P7 streaming/rendering/artifact/analytics/automation/checkpoint source work.
+
+
+## 2026-10-20 — P1 process lifecycle gate and post-launch cleanup source
+
+P1's source audit confirmed the existing LSP/DAP process path uses HostKernel profile resolution,
+Guard challenge/one-use lease, EffectHost durable dispatch/receipt, exact executable/workspace
+pins, one StdioExecutionSupervisor, and `horizoncode-sandbox` prepared confinement. P1 added a
+false-by-default LSP/DAP lifecycle gate at profile approval, prepare and launch, and attempts
+HostProcessRef cancellation if process start succeeds but protocol-journal registration fails.
+The Core approval adapter is not yet composed; protocol effect gate remains false and no runtime
+acceptance has been run. P4 received the exact launch/protocol DTOs and will resume integration
+when its current P7 continuation releases the slot. No checks ran.
+
+
+## 2026-10-20 — P7 artifact-reference bound; P4 resumed against P1 DTOs
+
+P7 fixed a source-level artifact decoder gap: `ArtifactRef.byteLength` now rejects decimal values
+above `u64::MAX`, and §31.18 records the bound. P7 otherwise reports source present for stream
+sequence/source-generation fencing, activity route, bounded redacted rendering, analytics,
+artifact reads/verified-scope plumbing, Rust automation journal and read-only checkpoint view.
+P7 remains PARTIAL because Guarded automation invocation, checkpoint capture/restore and managed
+verifier artifact settlement need P1/P2 trusted effects/evidence; integrated UI/reconnect/render/
+artifact recovery journeys are deferred to the later verification stage. No checks ran.
+
+P1 has now published the exact HostKernel LSP/DAP launch/protocol DTOs and an off-by-default
+editor process lifecycle gate, with post-spawn cancellation on failed journal registration. The
+freed P7 slot is assigned to resume P4's Core supervisor/approval adapter and typed lifecycle
+integration in P4-owned files. P4's effects remain disabled until acceptance.
+
+
+## 2026-10-20 — P3 source handoff; P8 resumed on freed slot
+
+P3 returned PARTIAL after source wiring Core/indexd cursor pagination to P1's opaque HostKernel
+lease, authenticated tree/detect/document paths, generation invalidation, and partial-over-budget
+page progress. Its in-repo pinned-source gap check found no compatible semantic index: OpenCode's
+Tree-sitter use is shell parsing/highlighting, and OMP parser dependencies are excluded by §42.11.
+Semantic definitions/references and authenticated immutable editor overlays remain unavailable;
+cursor feature remains disabled pending acceptance; authenticated pressure-triggered cache
+eviction remains unavailable. A focused indexd regression was added but not run.
+
+The released slot is assigned to a fresh whole-phase P8 resource/worker/cache owner to finish the
+remaining independent Rust source integration. It must preserve unsupported CPU/memory/process/FD
+OS limits as unavailable and keep pressure advisory-only. Active owners: P1, P4 and P8. P6/P7/P3
+source passes are PARTIAL; P2/P4/P7 acceptance remains dependent on P1/P8. No checks ran.
+
+
+## 2026-10-20 — P8 identified shared RepoIntel generation invalidation defect
+
+P8's source review found that P1's HostKernel cache invalidation helper currently retires a
+`(principal, workspace, source_generation, build_version)` key on each per-request lease removal,
+even when sibling leases still retain that generation. `ensure_repo_generation` can also replace
+an identical lease key without explicit old-generation retirement. P1 owns the HostKernel fix: retire
+only when the final authenticated lease and Arc owner are gone, and prevent overwrite leaks; P8
+provides the retention invariant/API and does not edit P1 files. Cache eviction stays disabled
+without trusted pressure policy/callback. This is source review only; no checks ran.
+
+
+## 2026-10-20 — P1 shared-generation cache retirement race fixed in source
+
+P1 changed HostKernel RepoGeneration lease handling to pin parser-set/build version and file
+count; exact-key retry reuses its Arc and refreshes expiry, conflicting replacement fails, and
+new leases for the same owner/workspace/source-generation/build-version reuse the shared Arc only
+when source revision, Guard policy digest and owner epoch agree. Removing a lease preserves the
+shared cache observation while sibling leases exist; final removal requires no active external
+Arc owner and successful P8 invalidation, otherwise the lease/Arc remains. Cache observation also
+checks current owner epoch and exact parser set. Source-only, not tested.
+
+
+## 2026-10-20 — P1 extension-origin subworker; P4 lifecycle adapter progress
+
+A bounded P1 subworker is now implementing the plugin/MCP/hook effect-origin closure in its
+exclusive Core extension files, while the P1 phase owner remains accountable for Guard and
+HostKernel. Existing contracts are used where exact; otherwise effectful dispatch must be gated
+false before action. No overlapping Rust/Auth/search/supervisor/TUI edits or validation are allowed.
+
+P4 now exact-decodes Rust launch-profile identity plus consent fields (`inputDigest`, expiry,
+targets, normalized targets, policy summary and full approval/residual guarantee assessment),
+checks bounded shapes and target equality, and has added a shared-supervisor adapter using the
+existing ServerAuth approval Deferred and one-use `resolve_approval` for `language.start` /
+`debug.start`. P4 is wiring typed lifecycle RPC calls behind existing false gates. No checks ran.
+
+
+## 2026-10-20 — Whole-phase source continuation (P1/P2/P4/P7; implementation only)
+
+P1's current source pass confirmed HostKernel terminal/stdio launch is mediated by the retained confined process, Guard one-use lease and durable intent. It is now closing further subprocess origins discovered in Core Git, configured formatters, legacy snapshots, and CLI utility probes; those paths stay unavailable unless exact HostKernel mediation exists. Guarded verifier dispatch remains false because verdict/output recovery is not safely durable after a possible crash.
+
+P2's source pass confirms the authenticated managed review/start, AgentProfileV2-pinned Task scope, per-step usage accounting, cancel fencing, evidence/final Inspect, TUI command mounting and P8 disposition decoder. Its independent source work is exhausted; integrated P2 remains gated on P1 verifier/quiescence/UNKNOWN recovery, P8 final Inspect settlement, and later acceptance. P2 recorded the exact adapted OpenCode/Codex child-lifecycle patterns in the provenance register.
+
+P4 added a Core approval → prepare → launch adapter, typed bounded protocol read/cancel/status decoders, and reconciled the exact P1 consent DTO. It continues with LSP/DAP service installation and policy integration; all effectful process/protocol paths remain disabled pending Guard/confinement and platform proof.
+
+A whole-phase P7 owner is now active on streaming, rendering, artifacts, analytics, automation and checkpoint/rewind source work. Existing P7 effectful automation/checkpoint/artifact settlement paths remain unavailable where authenticated P1/P2 contracts are absent.
+
+P5 source already contains the approved ordered built-in/free and user-enabled route cascade, route controls, auth-failure fallthrough, bounded retry/cooldown provenance, SecretBroker handoff, and HostKernel aggregate/recovery continuation. P5 remains runtime-disabled pending P1/P6 Guarded transport and reconciliation integration. P3/P6/P8 source work is partial; remaining items are the documented semantic-index/editor producer, protected credential workflows/live probes, and trusted pressure/OS enforcement/attestation dependencies.
+
+No tests, builds, typechecks, audits, benchmarks, provider calls, staging, commits, or pushes ran. The implementation-first hold remains. Existing mixed Git state is preserved. HorizonCode V1 P1–P8 remains PARTIAL / NOT VERIFIED / NOT RELEASED. Next: continue P1/P4/P7 source work, refill newly free whole-phase slots for remaining P3/P6/P8 integration, then complete all implementation before the requested verification phase.
+
+
+## 2026-10-20 — P1 subprocess closure and P4 lost-launch recovery seam
+
+P1's source sweep hard-disabled unmediated Core Git, configured formatter and legacy Snapshot effects; removed pre-kernel spawnSync probes (sysctl, PowerShell, ldd) from the CLI launcher, leaving only the bootstrap process spawn with fixed argv/stdio. No checks ran. Guarded verifier and unsupported process routes remain unavailable.
+
+P4 identified that an accepted editor-process launch whose reply is lost cannot currently recover the HostProcessRef from execution.v1/status; a RUNNING status alone is insufficient to bind protocol IO. P1 owns the Rust status/recovery projection. It must either return the exact original reference with same-epoch and full execution/effect/challenge/location/profile binding, or return typed unavailable and cancel/quarantine. P4 keeps the protocol route disabled and will not fabricate or retry a reference.
+
+P1/P4/P7 are the active whole-phase owners. P2 source pass is PARTIAL and waiting on P1/P8 gates; P3/P6/P8 have source-partial work waiting for phase-owner slots and/or exact dependencies. No tests/builds/typechecks/audits/provider calls/benchmarks/Git publication occurred.
+
+
+P7 found that HostKernel and authenticated Core HTTP already provide Guarded automation create/update/enable/disable, but the TUI automation manager block still labels those controls unavailable and emits no request. P7 now has exclusive writer ownership of only that `packages/tui/src/app.tsx` block and is wiring CRUD through existing Guard approval. Run invocation remains disabled. Checkpoint preview/capture/restore remain blocked because the exact same-boundary filesystem/VCS observation and Guarded effect contract are absent. Source-only; no tests.
+
+
+## 2026-10-20 — P1/P4 lost-launch recovery source integrated; P3 resumed
+
+P1 implemented P4's lost-launch-ACK recovery seam in HostKernel. Same-epoch authenticated status now returns only the exact HostProcessRef retained for the running process after matching Attempt scope, principal, frame epoch, Location and effect; it includes pinned profile/executable/generation/kind/epoch and resource guarantees. If protocol/ref recovery fails, HostKernel cancels, marks UNKNOWN, durably quarantines and returns typed recovery-unavailable. Restarted/lost bindings are never reconstructed. Source-only, not tested.
+
+P4's source owner returned PARTIAL after adding approval→prepare→launch, bounded status/read/cancel decoders and protocol binding to existing LSP/DAP clients behind caller Guard authorization. Runtime effects remain disabled pending production installation, P1 Guard/confinement, P3 document-read acceptance, DAP policy and REPL OS limits. P3 is resumed as whole-phase owner for RepoIntel Core/indexd/tool/TUI source integration; semantic parser/editor overlay features remain unavailable absent compatible pinned parser and authenticated immutable producer. Active owners: P1, P3, P7. P2/P4/P6/P8 remain PARTIAL awaiting dependencies and later acceptance. No tests/builds/typechecks/audits/provider calls/benchmarks/Git operations ran.
+
+
+P1 also removed the unused `CrossSpawnSpawner`/`ChildProcessSpawner` imports and dependency from ToolRegistry after confirming no first-party Core/OpenCode consumer remained. This removes an ambient raw Node child-process implementation from the production tool layer; source-only, not tested.
+
+
+P1 returned a source-only handoff after HostKernel status recovery, launch-kind alignment, and raw-spawner removal. P1 remains PARTIAL because final integrated source coverage/adversarial acceptance has not run and some effect pathways remain disabled pending acceptance; P1 must be resumed for any new safe source gaps after current phase slots free. Its code is present, not verified. P4 has resumed against the new status DTO; P4 status calls must carry the original direct/managed Attempt scope to recover a retained process reference.
+
+
+## 2026-10-20 — P3 bounded response fixes; P2 resumed
+
+P3 tightened Core continuation validation: a `nextCursor` is accepted only on a current partial page with exactly the requested maximum count and nonempty nodes, matching Rust's extra-occurrence contract. `repo_tree` now enforces a 32 KiB aggregate UTF-8 output limit while reserving room for truncation/partial notices; source regressions were added but not run. §30 is updated. Semantic definitions/references and editor overlays remain unavailable under §42.11 provenance and missing authenticated buffer producer; cursor runtime remains disabled pending integrated acceptance. P3 returned PARTIAL / NOT VERIFIED.
+
+P2 is resumed as whole-phase owner for managed Goal/SpecVersion/Run/Task/Attempt/review/verifier/TUI lifecycle, using the landed P1 same-epoch process status recovery and exact P8 disposition receipt. It must continue independent source work while Guarded verifier/quiescence and P8 final Inspect recovery remain gated. Active owners: P2/P4/P7; P1 requires source follow-up, and P3/P6/P8 remain partial. No tests/builds/typechecks/audits/provider calls/benchmarks/Git publication ran.
+
+
+P4 now integrates lost-launch status recovery in Core: after a lost launch reply it requests only exact scoped status and accepts a retained same-epoch HostProcessRef; it never retries spawn. New blocker: per-operation LSP/DAP protocol clients require their own Guard authorize callback, but Core `prepareUserEffect` currently admits terminal capabilities only and Rust rejects editor protocol capabilities. P4 will define the Core-side typed adapter and request the exact capability/lease/receipt contract from P1 while leaving protocol activation disabled. No authorization bypass or invented endpoint is permitted; acceptance must cover approve/deny, stale/replay, cancellation and receipts.
+
+
+## 2026-10-20 — P7 unblocked source complete; P1 resumed
+
+P7 wired the TUI automation manager to the existing authenticated Guarded create/edit/enable/disable and receipt path, plus a bounded exact-field definition editor. The shared approval dialog now offers `allow_once` for only the exact sessionless ServerAuth workspace-owner lane (`user_action` / `authenticated.user_action`, exact CRUD capability, valid HostKernel Location and full assessed consent); it fabricates no Session/Run identity and preserves all existing binding rules. §37.10/§45.15 and §31.20 status were updated. Invocation remains disabled. P7 also fixed stream seal/cursor eviction and source-generation scope, activity byte accounting, raster-generation fencing/fidelity, and analytics allowlists/live cache gauges; unrun regression fixtures were added. Checkpoint capture/restore and managed artifact settlement remain gated by P1/P2 contracts. P7 returned PARTIAL / NOT VERIFIED; no checks ran.
+
+P1 has resumed on the freed slot for the exact P4 per-operation Guard/lease contract, verifier durable output/quiescence, P8 settlement/Inspect wiring, and remaining effect-origin closure. P2 and P4 continue whole-phase source work. No tests/builds/typechecks/audits/provider calls/benchmarks/staging/commit/push occurred.
+
+
+P4 supplied the exact per-operation protocol Guard contract to P1: HostProcessRef + Session/Location/workspace revision + exact direct/managed Attempt, protocol sequence/method/payload digest and LSP callback correlation; Guard resolves canonical capabilities and returns a one-use lease, with durable pre-write intent and receipt. Exact replay returns the original receipt without another write; conflicts/stale authority reject; cancellation/crash/receipt loss reconcile to receipt or UNKNOWN/quarantine. DAP attach/evaluate remain denied. P4 owns Core consumers and keeps them false-gated; P1 owns Rust Guard/HostKernel admission. This is the source interface request, not yet implemented or verified.
+
+
+## 2026-10-20 — P4 operation authorization contract; P8 resumed
+
+P4 added the Core-side `EditorProtocolAuthorizationRequestV1` / lease DTO and ServerAuth-only `authorizeEditorProtocolOperation` adapter. It pins exact HostProcessRef, Session/Location/workspace revision, direct/managed Attempt, protocol sequence, method/command and operation/request digest plus LSP callback correlation; it remains fail-closed until Rust publishes matching per-operation Guard admission and durable receipts. P1 is extending the existing prepare_user_effect/Guard path with canonical method-capability binding, lease consumption and receipt journaling. Production LSP/DAP clients remain uninstalled; no operation is enabled. P4's source owner returned PARTIAL / NOT VERIFIED; further source activation depends on P1/P3/OS gates.
+
+The freed slot is assigned to whole-phase P8 resource/worker/cache source continuation, with exact P1 ownership coordination. P8 may not invent pressure thresholds, enable eviction/fan-out, or claim unsupported OS hard limits. P1/P2/P8 source work continues; P2/P6/P7/P4/P3 remain PARTIAL awaiting dependency and acceptance. No tests/builds/typechecks/audits/provider calls/benchmarks/Git operations ran.
+
+
+## 2026-10-20 — P2/P6 source recheck
+
+P2 rechecked current Core and HostKernel recovery code: final-Inspect receipt resolution, terminal-snapshot binding, same-epoch pending-disposition recovery and changed-epoch quarantine are source-present; no safe independent P2 code gap remained. Updated the operative P2 status; P2 is PARTIAL awaiting P1 verifier/output/quiescence/fresh-process UNKNOWN integration and final acceptance.
+
+P6 rechecked the existing provider/config/Doctor implementations against pinned OpenCode provider/auth/config patterns. The Auth fixed sender already passes HostKernel's exact cascade reference/digest and direct/managed Attempt scope, validates the one-use dispatch permit, sends one fixed route through SecretBroker, and returns the exact durable receipt used by P5's Rust-owned cascade resume. Provider/model projection, explicit-zero-price anonymous OpenCode selection, Config-owned requested/effective settings, offline Doctor, and owner-scoped S1 source paths are present. No safe standalone source gap was found. Search, catalog/full Doctor, protected credential writes, FEAT-001..014, and real provider/model journeys remain gated or unaccepted; no checks or provider calls ran.
+
+
+P8 source review found no safe pressure-triggered eviction change: `ResourcePolicyProjection` has no approved lower watermark/calm-window policy, and no authenticated ingress/consumer exists. No values are inferred from soft/hard thresholds. RC0 remains unattested without live P1 HostRun and P2 verifier evidence; OS CPU/memory/process/FD enforcement remains unsupported. P8 hardened its sample timeline so pressure timestamps strictly increase with sequence, added an unrun fixture, and corrected §18.18/cache status. P1 retains exclusive `kernel/src/host_kernel.rs` ownership during its Guard/protocol integration; P8 will not race that shared file. P8 returns PARTIAL pending P1 HostKernel integration, approved pressure policy, OS limits and independent attestation. No checks ran.
+
+
+## 2026-10-20 — P6 source handoff; active implementation owners P1/P4
+
+P6 returned PARTIAL after confirming current provider/model provenance, free-only model availability, Config controls, offline Provider Doctor, S1 owner-scoped flows and the fixed SecretBroker sender→P1 durable attempt→P5 cascade-resume composition are source-present. No standalone P6 code gap was safe to open without Guard/native consent; live Doctor and credential mutation remain gated, and no checks ran. §16, plan, HANDOFF and CURRENT_RUN are updated.
+
+P8 also returned PARTIAL after strict pressure timestamp ordering; no trusted lower-watermark/calm-window policy exists, so no pressure eviction/fan-out is enabled. P3 and P6 source passes are exhausted. P7 source is complete but awaits P1/P2 gates. P1 is active on protocol-operation Guard/receipts and remaining P1 integration; P4 is active on matching Core lifecycle/protocol consumers; P2 remains queued pending P1 verifier, quiescence and UNKNOWN recovery. P5 remains parent-owned and disabled pending P1/P6 acceptance. No tests/builds/typechecks/audits/provider calls/benchmarks/Git publication ran. Implementable source dependencies remain; HorizonCode V1 P1–P8 is PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+
+## 2026-10-20 — P1/P2/P4 integration wave active
+
+P1 is implementing the P4 per-operation protocol Guard/lease/durable-receipt path in the existing effects.v2/ExecutionHost boundary, including canonical method→capability checks and same-digest dispatch; no new approval runtime is being introduced. P4 owns the typed Core authorizer/consumer and keeps all protocol routes false-gated. P2 has resumed to consume P1's forthcoming verifier output/quiescence/UNKNOWN DTO and continue managed final-revision verification. Active whole-phase owners: P1/P2/P4. P3/P6/P7/P8 source passes are partial and source-exhausted pending integrated acceptance/dependencies; P5 remains parent-owned and gated. The current runnable dependency chain is P1 Guarded protocol/verifier → P4 LSP/DAP safe wiring and P2 managed verifier; P3 RepoIntel acceptance → P4 document sync; P1/P2 → P7 automation/checkpoint/artifact recovery and P8 RC0. No tests/builds/typechecks/audits/provider probes or Git publication ran.
+
+
+P1 interface checkpoint (source in progress, 2026-10-20): protocol-operation authorization is being added inside the existing `effects.v2/prepare_user_effect` flow, with strict `ExecutionProtocolAuthorizationV1` arguments, not a new approval endpoint. Guard binds one authenticated direct/managed Attempt, process ref, Session/Location/workspace revision, protocol sequence, typed method/command and operation digest, plus exact retained callback sequence for LSP replies. The ordinary HostKernel challenge → TUI allow/deny → one-use lease is consumed by the existing durable `protocol_op`/`protocol_reply` dispatch journal; replay returns its receipt, ambiguity is UNKNOWN/quarantine. P4 Core is adapting to the proposed DTO. P1 has also begun hardening managed verifier output/evidence recovery; existing managed verifier RPCs remain disabled. These are implementation checkpoints only, not settled wire contracts or acceptance evidence.
+
+
+Implementation update: P1 will make Rust the sole canonical MessagePack+BLAKE3 producer for `ExecutionProtocolAuthorizationV1.operationDigest`; Core may omit it, and any supplied value must match. HostKernel retains the digest in the Guard challenge and recomputes it at dispatch. P4 is aligning its request/lease DTO and will not hash JSON independently. P2 also added shared strict BLAKE3 validation for managed `challengeSetDigest` across settlement recovery, start/SETTLING, approval resolution and execute result decoding; source-only, not tested.
+
+
+P1 source clarification: P8's managed final-Inspect path is already present in HostKernel, including exact current revision, candidate-bound approval, guarded git.worktree.list, durable lease/receipt, reconciliation and nested worktree-disposition projection; P2's decoder/settlement consumer is source-present. P2 must not invoke changed-epoch pending-disposition reconciliation as a successful terminal shortcut. Remaining managed verifier gap is process-tree quiescence after abrupt HostKernel death: RunningChild Drop does not kill, stdio handles and process identity are only in memory, so UNKNOWN does not prove descendants are stopped. P1 is investigating the existing sandbox OS process-tree contract; verifier stays disabled unless an OS-owned lifetime/quiescence proof is implemented and later accepted.
+
+
+## 2026-10-20 — Guarded editor protocol admission source landed
+
+P1 source-landed per-operation LSP/DAP authorization inside existing `effects.v2/prepare_user_effect`. HostKernel strictly decodes `ExecutionProtocolAuthorizationV1`, requires exactly one authenticated direct/managed Attempt, exact same-epoch HostProcessRef/current workspace revision/next journal sequence, derives canonical MessagePack+BLAKE3 operation digest, validates the LSP callback against the exact retained event/request/method, and stores the full canonical DTO in the approved CapabilityBinding. `protocol_op`/`protocol_reply` dispatch now match that retained DTO before durable PREPARED → one-use lease consumption → DISPATCHED receipt; conflicting or stale replay rejects and ambiguous writes fence UNKNOWN. Runtime protocol gate remains false. P4's Core authorizer now sends this exact typed subject and verifies the complete challenge/lease pins before granting the frame lease; P4 is integrating consumers behind false gates. Source-only; no checks ran.
+
+P1's managed verifier remains disabled pending a process-tree quiescence proof and durable typed output/evidence recovery across crash/restart. Plain child kill or UNKNOWN is not sufficient. P1 is evaluating the existing bubblewrap `--die-with-parent` process-tree confinement plus the sandbox guarantee; P2 is preparing the managed verifier consumer against the existing route names while awaiting P1's settled evidence DTO. No tests/builds/typechecks/audits/provider calls/benchmarks/Git publication.
+
+
+P1 source hardening: `horizoncode-sandbox::PreparedExecution::spawn` now arms Linux direct children with `PR_SET_PDEATHSIG(SIGKILL)` and checks the captured HostKernel parent PID immediately after spawn to close the pre-exec race. The confined stdio path already requires ProcessTree=ENFORCED; only bubblewrap currently satisfies that contract, with `--unshare-all`, `--new-session`, and `--die-with-parent` in a fresh PID namespace. P1 updated the guarantee notes, sandbox README and §42 local-source comparison. This is source, not acceptance: verifier/runtime gates remain false until crash/restart quiescence is proven; durable verifier output/evidence is still not recoverable after restart and must remain honest UNKNOWN.
+
+
+P2 source update: managed verifier artifact-reference decoding now enforces the existing Rust ArtifactStore bounds (≤64 KiB per ref, ≤4 MiB aggregate manifest refs, ≤32 criteria ×64 refs) and preserves BLAKE3 digest validation. Core route callsites already match `begin_verification` → `resolve_verification_approvals` → `execute_verification`, with terminal `settlement_recovery`; no safe adapter can consume the verifier output until P1's durable typed evidence/quiescence DTO lands. P2 remains PARTIAL and is releasing its implementation slot until that DTO is available. No tests ran.
+
+
+## 2026-10-20 — Managed verifier durable evidence source confirmed; P2 resumed
+
+P1's current source review confirms the verifier already commits exact typed `ObservedVerifierRunV1` plus bounded ArtifactStore refs to managed OwnerLog before returning `SETTLING`. `settle_durable_verifier_evidence` revalidates evidence, current workspace revision, Attempt/profile and receipts; restart recovers the same SETTLING result and refs without rerunning children. Raw output bytes are not durable; a crash before OwnerLog evidence commit remains UNKNOWN/recovery-required, and orphan artifact manifests do not constitute evidence. Exact response binds Goal/Run/Task/Attempt/verificationRun/challengeSetDigest/final+source revision/settlement candidate/evidence digest/artifact refs. P2 is resumed to wire strict Core/TUI decoding and recovery. Verifier stays disabled pending Linux process-tree acceptance and later integration tests.
+
+This supersedes the earlier tracker note that durable verifier output/evidence references were absent: typed verdict/evidence refs are source-present and restart-recoverable after OwnerLog commit; only pre-commit uncertainty remains UNKNOWN. The outstanding security gap is proven OS process-tree quiescence across abrupt kernel death. No tests/builds/typechecks/audits/provider calls/benchmarks/Git publication ran.
+
+
+P4 source update: Core's editor-protocol authorization lease now retains the exact direct/managed Attempt projection; the LSP/DAP composition comparator normalizes wire BigInt epoch/revision values to canonical decimal strings before exact comparison. §37.6–37.7 now describe composed `prepare_user_effect` → authenticated approval/one-use lease → typed per-operation dispatch and current false gates. Production paths remain unavailable pending P1 Guard/receipt/OS acceptance, P3 authenticated document-read acceptance and production editor ingress; DAP attach/evaluate/variables and REPL remain gated. No checks ran.
+
+
+P2 continuation: updated the Core managed verifier response schema and TUI to carry the bounded HostKernel UNKNOWN reason; bind fresh success evidence to the exact approved criterion set; pass HostKernel's canonical root/workspace ID through the existing verifier approval modal; and validate BLAKE3 final/source revisions plus decimal-u64 OwnerLog revisions at the HTTP boundary. Artifact reference counts/bytes and all challenge-set digests are strictly bounded. Managed proposal/review/start/cancel/restart/Inspect flows were source-rechecked; no additional independent gaps were found. P2 remains PARTIAL pending P1 process-tree crash quiescence acceptance and integrated managed lifecycle acceptance. No tests or checks ran.
+
+## 2026-10-20 17:55 UTC — direct child inbox and paired evaluation source checkpoint
+
+P1 is implementing `direct.message.v1` within the existing HostKernel/EffectHost authority: a durable PREPARED → ADMITTED → COMMITTED journal, approval-bound one-use lease, ordered Core receipt digest, exact committed receipt inspection, and UNKNOWN reconciliation. Its new journal source is now Git-visible through a narrow `.gitignore` exception. The direct-message runtime gate remains false pending integrated acceptance.
+
+P6 is implementing the Core Session-owned durable inbox and safe-boundary consumer: authenticated queue-only message delivery, idempotent prepare/approval/commit/inspect, stable request identity through UNKNOWN, and bounded FIFO injection only before the next child prompt. Follow-up remains unavailable until the child prompt owner can issue fresh Attempt authority. P4 has resumed whole-phase LSP/DAP/REPL source work against P1's exact protocol contract; all effectful paths remain false-gated pending Guard, RepoIntel, and OS acceptance.
+
+P8's source pass found no safe runtime change beyond existing bounded resource/recovery modules and has added §32.40 HUP-001..004: paired fixed-model baseline versus HorizonCode, controlled feature ablations, uncertainty/provenance reporting, and honest rate-limit/capability-failure handling. This is a test specification, not benchmark evidence. Active whole-phase owners: P1, P4, P6; P2/P3/P5/P7/P8 remain partial or gated as recorded in HANDOFF and the operative plan.
+
+No tests, builds, typechecks, audits, benchmarks/evaluations, provider calls, staging, commits, or pushes ran. Git remains mixed and unstaged; the latest repo-only inspection found one worktree and `kernel/target` at 627 MB, with no project build/test process. HorizonCode V1 P1–P8 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-20 — Direct-message ACK recovery contract; P2/P3 roster refresh
+
+P6 implemented the Core safe-boundary inbox consumer and durable ACK preimage/proof in its exclusive files: consumed input is never reinjected after a crash; lost HostKernel ACK replies leave capacity occupied; retries use a fresh authenticated LIVE same-authority child Attempt and retain the immutable original consumption proof. P1 must accept that fresh currentConsumer Attempt while independently revalidating the complete live child/profile/permission/epoch/workspace scope; the immutable proof remains pinned to the original consuming Attempt, inbox receipt, prompt/message, payload digest and ACK digest. P1 owns HostKernel/§37.9 and P6 owns Core/§29.2. `direct.message.v1` remains unavailable until that integrated contract and acceptance are complete.
+
+P3 found `indexd/src/generation_store.rs` provides bounded immutable generation packs and corruption detection, but no production caller exists. HostKernel must own one store beneath an authenticated principal/workspace/policy-protected root, validate that root before reuse, and trigger rebuild on corruption; P3 cannot add a parallel persistence owner. P3 recorded this in §30; RD-013 already covers corruption rebuild. P3 is PARTIAL / NOT VERIFIED with no other unblocked source work.
+
+Active whole-phase owners are P1 Guard/ExecutionHost, P2 managed vertical, and P6 providers/settings/Doctor/S1. P2 was dispatched after P3 released its slot and is restricted away from P1 HostKernel and P6 direct-inbox files. P4 is PARTIAL pending P1 Guard acceptance and P3 document-read integration; P5 remains parent-integrated and disabled; P7/P8 remain PARTIAL/gated. No tests/builds/typechecks/audits/benchmarks/provider calls/Git publication occurred. Repo-only resource check: 819 GB available, `kernel/target` 627 MB; one project worktree; no project build/test process.
+
+## 2026-10-20 — P2 handoff; P4/P7 resumed; CodeMode metadata redaction
+
+P2 completed its current source pass PARTIAL / NOT VERIFIED. Core/TUI strictly decode durable verifier OwnerLog evidence and bounded UNKNOWN outcomes, enforce accepted criterion coverage and workspace/revision pins, preserve final Inspect/P8 settlement receipt data, and validate HTTP BLAKE3 final/source revisions plus decimal-u64 OwnerLog revisions. No additional independent P2 source gap was found. Effectful verifier/finalization remain disabled pending P1 process-tree quiescence and integrated lifecycle acceptance.
+
+P4 resumed to wire the authenticated RepoIntel document reader into the supervised LSP lifecycle against P1's typed process/Guard boundary. P7 resumed for streaming/rendering/artifact/automation/rewind source. P6 finished the safe-boundary inbox consumer; HostKernel ACK remains gated pending P1 integration/acceptance. P7 CodeMode review found raw nested-call arguments in metadata; the parent removed those from `CallEntry` and updated regression expectations. The exact CodeMode implementation/test paths are now Git-visible via narrow `.gitignore` exceptions.
+
+Active owners: P1, P4, P7. P2/P3/P6 source passes are PARTIAL; P5 remains parent-integrated but disabled; P8 remains PARTIAL. No tests/builds/typechecks/audits/benchmark runs/provider calls/Git publication. Repo-only resource check: 819 GB available, `kernel/target` 627 MB, one worktree; no project build/test process.
+
+Disk correction: 819 GB is the WSL filesystem reading and does not represent C:. `df -h /mnt/c` reports C: 454 GB total, 431 GB used, 24 GB free (95%). One long-running Cargo test was inspected and belongs to `/home/sarvesh/business_Dev/litecowork` outside agentx; it was left untouched. No HorizonCode build/test was started.
+
+Benchmark/CodeMode review: §32.40 HUP-001..004 already specify paired fixed-model uplift, ablations, provenance, and honest failures. Added HUP-005..006 for deterministic runner self-check and paired-arm parity/contamination; added §32.41 CM-001..007 for Guarded CodeMode exposure, nested-call batch admission, metadata redaction, bounds, cancellation and UNKNOWN recovery. These are acceptance requirements, not evidence. Existing CodeMode interpreter is the V1 base; registry exposure remains disabled until nested calls use Rust Guard/ExecutionHost. Current adapter tests still assert positive direct-MCP and plugin-hook behavior inconsistent with the unconditional fail-closed adapter and need reconciliation before tests run. `repo_take/jcode` QuickJS and swarm-core are reference-only; no second interpreter is planned. Current active owners are P4/P6/P8; P2 completed a source review PARTIAL, P1 completed its source checkpoint with effects still gated, and P7 completed unblocked source work with restore/automation/terminal graphics gated. P1's Core Git audit found existing fail-closed AppProcess mediation before spawn; RepoIntel-facing reads remain unavailable. P4 added supervised LSP/DAP composition behind false gates. C: remains 24 GB free via `/mnt/c`; no tests/builds/checks/evaluations/provider calls ran.
+Current test-catalog addition: LM-018 now specifies the later consented OpenCode-free-provider check (selected route verification, one streamed response, one bounded coding task, honest 429 handling and no paid fallback). It has not been run.
+
+Owner refresh: active whole-phase source owners are P3, P6 and P8. P4 completed its unblocked source pass PARTIAL with LSP/DAP/REPL still gated; its supervised protocol setup now cancels the exact process once on uncertain/malformed terminal failure and quarantines REPL refs on cancellation/UNKNOWN. P2 completed a source review PARTIAL. P1/P7 are PARTIAL; P5 remains runtime-disabled. No validation/provider activity ran.
+
+## 2026-10-20 18:25 UTC — whole-phase continuation and evaluation source review
+
+Implementation-first remains active: do not run HorizonCode tests, builds, typechecks, audits, benchmarks, or provider calls until all requested implementation is complete. Current active whole-phase owners are P1 Guard/ExecutionHost, P2 managed vertical, and P3 RepoIntel; the three available child slots are occupied with the parent. P1 and P2 were relaunched against current source; P3 continued with exclusive Core/indexd ownership. P6 and P8 returned PARTIAL source handoffs. P8 bounded RC0 session/outcome input/output handling and added unrun fixtures; resource pressure/worker/OS guarantees remain gated on P1/P2/P3 contracts. P6 fixed same-owner-epoch exact prepare retry and retained queue-only delivery/follow-up boundaries; P6 settings/provider/Doctor/S1 acceptance remains open.
+
+P3 identified strict response-schema gaps (page/node source revision mismatch, stale status with current freshness, coverage/node count mismatch, and unbounded document response text) and is adding bounded validators/fixtures. P3 confirmed raw ripgrep is already false-gated before resolution/command construction/spawn; no generic HostKernel query endpoint exists, so do not invent one. P1 owns Guard contract decisions and P3 owns Core/indexd callsites.
+
+Evaluation source review: `arch_V1/32` already specifies paired fixed-model uplift, controlled ablations, exact public-benchmark provenance, and honest provider/capability failures (HUP-001..004); this turn's prior additions HUP-005..006 and CM-001..007 remain specification only. `scripts/perf/rc0.py` is an operational resource-calibration reporter, not a coding benchmark runner. No paired evaluation runner, benchmark adapters, or measured HorizonCode uplift were found/claimed. Existing CodeMode is OpenCode's restricted JS orchestration interpreter; HorizonCode's adapter is hidden from the model registry and nested MCP dispatch refuses before transport. `repo_take/jcode` includes a separate QuickJS CodeMode and a helper-only swarm-core; neither is a durable subagent executor or an approved second runtime. Do not adopt the second interpreter. Adapt useful limits/cancellation patterns only if they fit the canonical Rust Guard and existing interpreter.
+
+C: via `/mnt/c` has 24 GB free of 454 GB (95% used); one main worktree; `kernel/target` 627 MB. The HorizonCode Git tree is mixed and unstaged; preserve all paths. An active Cargo test under `/home/sarvesh/business_Dev/litecowork` is outside this repository and remains untouched. No HorizonCode checks/evaluations/provider calls or Git publication ran. Status remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-20 18:30 UTC — P2 handoff and P4 resumed
+
+P2 returned PARTIAL / NOT VERIFIED with no independent source gap: its Core managed verifier decoders match the current Rust `SETTLING`/`UNKNOWN` evidence, final/source revision, artifact, candidate, approval-location and settlement fields; TUI Goal proposal/review/verify/control/plan/start handlers are registered. P2 remains gated on P1 verifier adapter plus quiescence/cancel/restart/UNKNOWN acceptance and P8 final-Inspect/capacity recovery acceptance.
+
+P3 implemented strict RepoIntel response cross-field/bounds validation in schema/Core-facing sources: page/node source revisions must agree; STALE status must match stale freshness; bounded coverage count must equal nodes; unavailable sources/fallback source kinds must be consistent; document text is capped at 131,072 characters with Core's UTF-8 byte bound retained. Source fixtures were added but not run. Raw ripgrep is already unavailable before binary resolution/process start; P3 owns callers, P1 owns any future Guard endpoint, and no generic query RPC is invented.
+
+P1 continues the entire Guard/ExecutionHost phase. Source review confirms bounded atomic ToolBatch admission, receipt-chain lease-next, queued-cancel handling, durable UNKNOWN recovery, direct-message journal and PTY janitor/subreaper. Remaining open question is positive post-cancel process-tree quiescence for stdio/verifier, not merely bubblewrap process-tree confinement or child EOF. P4 resumed full-phase work on Core LSP/DAP/REPL consumers against P1/P3 interfaces, all effect gates false. Active owners: P1/P3/P4. No checks or provider calls. No Git publication. Resource snapshot remains C: `/mnt/c` 24 GB free, one worktree, `kernel/target` 627 MB; external processes remain untouched.
+
+## 2026-10-20 18:37 UTC — P4 source audit, P7 fix, P9 resumed; agent lifecycle cases
+
+P4 completed its source audit PARTIAL with no safe ingress code to add: LSP has no trusted Session/Location/Attempt context and initializes no clients; DAP/REPL also have no production ingress. Current adapters and policies are source-present, but enabling a route or accepting caller-provided authority would violate the trust contract. P4 remains gated on P1 Guard/process acceptance and an authenticated ingress owner.
+
+P7 found and is fixing a concrete unblocked consumer gap in `artifact-control.readRange`: reject offsets beyond the referenced artifact length and prevent a zero-byte nonterminal range from returning a non-advancing cursor. Source tests are authored but unrun. Checkpoint restore remains unavailable without exact same-revision filesystem/Git observation; automation invocation remains disabled absent canonical scheduler/Guarded dispatch. P9 is active on source-only Linux CLI/TUI distribution, command aliases and licensing/notices; no package/build/release commands may run.
+
+Added SA-018..020 to §32.12 for partial-write interruption/reassignment, process restart with queued/running/completed children, and 429 behavior with explicit-only provider/model change. These are future acceptance requirements. Active whole-phase owners: P3, P7, P9. P1/P2/P4/P6/P8 are partial or dependency-gated; P5 remains disabled. No tests/builds/typechecks/audits/benchmarks/provider calls. C: `/mnt/c` 24 GB free; one worktree; `kernel/target` 627 MB; mixed tree preserved unstaged.
+
+## 2026-10-20 — P3/P9 handoffs and P1 resumption
+
+P3 returned PARTIAL after completing source-safe RepoIntel work: strict page/source-revision/freshness/count/provenance/text bounds; exact Git-visible allowlist for three Core ripgrep/config files; truthful fail-closed process origin; bounded RepoIntel tree/detect/document sources. Remaining P3 blockers are authenticated P1/P8 read/cache acceptance, cursor acceptance, approved semantic parser provenance, and a trusted unsaved-buffer producer. P9 returned PARTIAL: both `horizoncode` and `hzcode` are wired to one `./bin/opencode` launcher; its only source edit changed the install documentation link. The package remains `opencode`/private with root `UNLICENSED` and upstream OpenCode license; no manifest/legal license decision was made, and release audits/package commands were not run.
+
+P1 resumed against P3's latest source, focusing the authenticated HostKernel document/cache boundary and remaining Guard origins. P7 remains active on artifact read-range bounds/progress. Active owners: P1 and P7. P3/P9 returned source-partial; P2/P4/P6/P8 remain dependency-limited. No tests/builds/typechecks/audits/benchmarks/provider calls or release commands. Git remains mixed/unstaged, no publication. C: `/mnt/c` 24 GB free; one worktree; `kernel/target` 627 MB.
+
+## 2026-10-20 — P6 resumed; P7 artifact/checkpoint hardening
+
+The P6 whole-phase owner resumed to reconcile direct-child inbox prepare/commit/ACK/inspect against P1 and to finish any independent settings/Doctor/S1 source gaps; no tests/provider calls. P7 added source validation that rejects artifact offsets past immutable length and non-advancing nonterminal ranges before returning them; checkpoint preview now must match the request checkpoint, mode and selected path set and rejects duplicate paths. Regression fixtures and the narrow Git-visible exception are source-only, unrun. Full restore still remains gated on trusted same-revision workspace observations and Guarded dispatch. Active owners: P1/P6/P7; P3/P9 returned PARTIAL. No validation or publication. C: `/mnt/c` 24 GB free; one worktree; `kernel/target` 627 MB.
+## 2026-10-20 19:10 UTC — implementation continuation after context reload
+
+Reloaded the root implementation policy, CURRENT_RUN, HANDOFF, normative architecture index and governance decisions, and the operative full-scope plan. The latest source-backed roster is P3 RepoIntel and P7 streaming/artifacts/automation/rewind active; P1 completed a source-only pass; P6 and P8 returned source-exhausted PARTIAL; P2/P4/P5/P9 remain partial/dependency-gated. P1 added a final HostKernel RepoIntel cancellation/deadline response fence and found no further safe source-only changes. P3 is correcting effective-source provenance and reviewing remaining Core/indexd gaps. P7 is hardening checkpoint preview action-path projection. Parent refreshed the V1 release tracker; all feature/runtime gates remain as-is.
+
+## 2026-10-21 — P9 source handoff (implementation only)
+
+P9 release-helper source now pins evidence writes to repository-local directory descriptors, creates evidence files exclusively without replacing an existing leaf, validates the exact isolated build marker against build root/revision/source digest, atomically patches only the isolated build script, and hashes candidate binaries through no-follow regular-file handles. Source fixtures were added but not run. The release guide now records the exact unresolved product decisions and acceptance evidence: distribution grant and notices; package/artifact identity under §18.16 (canonical CLI `horizoncode`, alias `hzcode`, vendor package identifiers retained until gates pass); signing trust root plus channel/update/rollback policy; separate native Linux/WSL claims; and exact-clean-candidate install/migration/TUI/upgrade/rollback acceptance. Native Windows remains unavailable. No tests/builds/typechecks/audits/package/release commands or Git publication ran. P9 is PARTIAL; V1 is PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+Implementation-first hold remains active: no tests, builds, typechecks, audits, benchmarks, provider probes, staging, commits, pushes, or cleanup. Git is mixed and unstaged (no conflicts), one worktree, 13 commits ahead of origin/main. C: via `/mnt/c` has 23 GB free; `kernel/target` is 627 MB. Work remains inside agentx. V1 is PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+
+## 2026-10-20 19:10 UTC — P1/P6/P7/P8 handoffs; P3/P4 resumed (implementation only)
+
+P1 completed its latest source pass PARTIAL. It added a final HostKernel cancellation/deadline fence to RepoIntel responses; guarded document reads, direct-message consume ACK, cache-owner handoff, and pre-spawn ripgrep denial are source-present. A durable OS-level process-tree quiescence proof after abrupt HostKernel death is still missing, so verifier/finalization remain false. P6 reconciled Core inbox prepare/commit/inspect/consume-ACK against the HostKernel pins and found no safe isolated source change; protected credentials/live probes and provider journeys remain gated. P8 found no safe independent source change without trusted pressure-policy ingress, P1 quiescence, supported OS quotas, and HostRun attestation; worker fan-out and cache eviction remain unavailable.
+
+P7 completed its independent source pass PARTIAL: checkpoint action paths now receive strict safe-relative-path, selection, aggregate-byte, regular-file, BLAKE3 and single-link validation in the Core projection, with unrun regression fixtures. Automation invocation and restore remain gated on Guarded dispatch/scheduler and complete same-revision observations. P3 resumed to correct RepoIntel effective-source provenance and inspect remaining safe index/client changes. P4 resumed to resolve safe production LSP/DAP/REPL ingress and lifecycle integration with P1/P3's current contracts.
+
+No tests, builds, typechecks, audits, benchmarks, provider calls, staging, commits, pushes, or cleanup ran. Current active owners: P3 and P4. Git stays mixed/unstaged with one worktree; C: via `/mnt/c` has 23 GB free and `kernel/target` is 627 MB. Work remained inside agentx. V1 is PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+
+## 2026-10-20 19:22 UTC — P2/P5/P9 active; benchmark provenance corrected
+
+P3 returned PARTIAL after fixing RepoIntel configuration-source attribution and closing unbounded high-fanout directory enumeration; parser provenance, editor overlays, persistent-cache owner/root, cursor acceptance and Guarded ripgrep remain gated. P4 returned PARTIAL after adding a constant-false REPL authorization gate, invalidating output refs/quarantining callbacks on uncertain outcomes, memoized exact-process cancellation for LSP/DAP failures, and LSP setup cleanup. P7 returned PARTIAL after tightening checkpoint preview action paths to Rust's relative-path, selection, aggregate-size, regular-file, digest and link-count constraints. All new/adjusted fixtures remain unrun. Current active owners are P2, P5 and P9; P1/P3/P4/P6/P7/P8 have source-only PARTIAL handoffs.
+
+The benchmark note in §32.40 now distinguishes NVIDIA's Nemotron report values (SWE-bench Verified 70.7% BF16 / 69.5% NVFP4; Terminal-Bench 2.1 56.4 / 53.9) from the user's older estimates; separates Opus 4.5's 80.60% thinking and 80.90% no-thinking configurations; and notes FeatureBench's displayed Lite results are Dataset V1.0 with separate `passed`/`resolved` scores, not comparable directly to Nemotron or a generic 11% claim. HUP-001..006 remain evaluation contracts only; there is no HorizonCode uplift runner or score. CodeMode is intentionally absent from the registry even if experimental flags are set; direct nested MCP dispatch fails before transport. The legacy large CodeMode unit file still contains positive dispatch expectations and must be reconciled before the verification wave.
+
+No tests, builds, typechecks, audits, benchmarks, provider calls, release commands, staging, commits, pushes or cleanup ran. Git remains mixed/unstaged with one worktree. C: via `/mnt/c` has 23 GB free; `kernel/target` is 627 MB. Work stays inside agentx. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+
+## 2026-10-20 19:28 UTC — P2 source handoff; P5/P6/P9 active
+
+P2 completed a whole-phase Core/TUI source recheck PARTIAL with no correction: managed verifier SETTLING/UNKNOWN and final-revision decoders match HostKernel; artifact preview resolves exact managed scope through HostKernel; P8 settlement projections match. Managed verifier/finalization/fan-out remain unavailable pending P1 process-tree quiescence and P8 acceptance. P5 found a Settings truth gap: BYO routes are hardcoded as “unconfigured” and UI has no per-route inspect status despite `WebSearchRuntime.inspect` already exposing sanitized local `configured/available/status`; P5 is adding a read-only authenticated settings projection using the existing runtime, without network calls or secret bytes. P6 is active on trusted SecretBroker credential input and remaining provider/Doctor/S1 source work, keeping credential mutation and live probes disabled absent accepted protected input. P9 is adapting release-tool temporary paths to an ignored repo-local artifact subtree and correcting native Windows support claims; no package/legal/signing policy is being invented.
+
+Benchmark evidence in §32.40 now distinguishes the current cited NVIDIA Nemotron and Anthropic Opus configurations, FeatureBench V1.0 leaderboard score fields from V1.1 dataset release, and the 7.7-point Meta-Harness classification result from its TerminalBench-2 coding experiment. Added paired task/repository-group uncertainty guidance and clarified that FeatureBench's CPU gold-patch scoring timing is not HorizonCode inference time. These are reference corrections and acceptance requirements only; no runner or uplift evidence exists.
+
+No tests/builds/typechecks/audits/benchmarks/provider calls/release commands/Git publication/cleanup ran. Active whole-phase owners: P5/P6/P9. Git remains mixed and unstaged with one worktree; C: via `/mnt/c` has 23 GB free and `kernel/target` is 627 MB. Work stays inside agentx. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-20 20:04 UTC — P5/P6 source handoff; P1/P7/P9 active
+
+P5 returned PARTIAL after adding authenticated read-only `GET /websearch/providers`, a strict credential-free status schema, SDK method, and TUI Settings projection for configured/available/cost/auth/freshness and sanitized attempt/cooldown state. It performs no network probe; `WEB_SEARCH_RUNTIME_READY` and dispatch gates remain false. P6 returned PARTIAL after implementing authenticated Session-owner QuestionV2 list/reply/reject handlers, adding ownership filtering for both `question.asked/replied/rejected` and `question.v2.*` SSE events, and bounding ancestry by instance/workspace, cycle and depth; QA-006/007 are now catalogued. Protected credential entry and live Doctor remain disabled.
+
+A new whole-phase P1 Guard/ExecutionHost owner is active on the critical quiescence/Guard/origin backlog; a new whole-phase P7 owner is active on stream/render/artifact/automation/checkpoint backlog; P9 continues Linux/WSL release-source work. P2/P3/P4/P8 remain PARTIAL/dependency-limited. Exact `.gitignore` exceptions now expose P5's three API/schema files and P9's release operator guide; the overlay audit remains deferred until implementation ends. No tests/builds/typechecks/audits/benchmarks/provider calls/release commands ran. The mixed tree remains unstaged and unpublished; one worktree; C: `/mnt/c` has 23 GB free and `kernel/target` is 627 MB. Work remains inside agentx. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-20 20:08 UTC — P9 handoff; P1/P4/P7 active
+
+P9 returned PARTIAL after making Linux/WSL installation local-candidate-only, denying native Windows and unsigned remote installs, removing unsupported upgrade target/method flags, placing release harness outputs under ignored repository-local `kernel/target/horizoncode-release`, and documenting platform/release gates. Clean-install acceptance was not run. Distribution license/notices, package identity, signing/update/rollback policy and final candidate evidence remain blockers. P4 resumed as a whole-phase Core LSP/DAP/REPL owner alongside P1 Guard and P7; effect gates remain false pending P1/P3 prerequisites. No validation or release commands ran; mixed tree preserved.
+
+
+## 2026-10-21 06:33 UTC — evaluation runner and release-source continuation
+
+The user asked for a source-based inventory of benchmark/testing assets, CodeMode, and local `repo_take` patterns. §32.40 already defines HUP-001..008 and a staged evaluation order; §32.41 defines CM-001..009. New `scripts/eval/` source provides only an offline fake-provider HUP-005 paired-run self-check, with frozen manifests, randomized task/arm order, resume journal, typed infrastructure/cancellation/capability outcomes, and grouped uncertainty summary. It is not a real benchmark/provider runner or evidence of uplift. Source review found the paired-summary fixture calls `summarize_pairs` without its required manifest, and journal validation currently rejects its own `UNSUPPORTED_CAPABILITY` rows on resume; P8 owns fixes plus symlink-safe artifact I/O. No checks ran.
+
+P2 returned PARTIAL: follow-up delivery remains fail-closed until P1 publishes typed HostKernel turn-scope authority. P1 resumed as a whole-phase source owner; P8 and P9 remain active. P9 release output paths still need race-safe exclusive creation/pinned-directory handling. CodeMode remains absent from the model registry; HorizonCode's adapter rejects nested MCP before transport, and has no configured finite timeout/call/output bounds or memory guarantee. JCode QuickJS is reference-only; do not add a second interpreter. No tests/builds/typechecks/audits/benchmarks/provider calls/release commands/Git publication ran. Mixed Git state and one worktree are preserved; repository-local disk shows 820 GB free and `kernel/target` 627 MB. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+
+## 2026-10-21 06:38 UTC — owner refresh after reference audit
+
+Read the user-authorized single attachment `pasted-text-1.txt`; it reiterates whole-V1 delivery, source-first OpenCode/Codex comparison, future-design explanation, complete architecture/flow/event audit, documentation updates, implementation before tests, and an explicit ask to raise any unresolved design decisions promptly. No additional external path/service/remote access occurred. Actual in-repo Codex handlers confirm distinct spawn, queue-only send, trigger-turn follow-up, list, bounded wait, interrupt, parent/root-turn correlation and activity projection; OpenCode TaskTool confirms role resolution, depth bounds, parent-intersected permissions, child Session creation, and explicit background completion injection. HorizonCode adapts these under §29/§37 profile pins, Rust Guard/HostKernel and durable delivery; it does not inherit their ambient authority.
+
+P1/P2/P9 are active whole-phase owners; P8 returned PARTIAL after source-only fake HUP-005 runner work. P1 confirmed §37.9's exact `direct-turn-v1` schema/Rust DTOs exist and is implementing the HostKernel dispatcher/journal; P2 resumed for Core/TUI integration against that exact contract. P8 evaluation artifacts are append-only/fsynced JSONL with no-follow descriptor traversal and paired uncertainty summary; fixtures remain unrun, and worker/resource/RC0 work remains blocked on P1/P2 contracts and an approved pressure policy. P9 added exclusive no-follow artifact writing; remaining P9 decisions/gates are still open. No tests/builds/typechecks/audits/benchmarks/provider calls/release commands ran. Git remains mixed/unstaged; no publication or cleanup. V1 PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-21 06:41 UTC — full-scope continuation; P1/P2/P5 owners active
+
+Re-read the user-authorized attachment and current repository governance, plan, release tracker and relevant P1/P2/P5 architecture sources. The attachment reiterates whole-V1 implementation, source-first OpenCode/Codex adaptation, complete lifecycle/architecture review, prompt doubt escalation, and implementation before tests. Current whole-phase owners are P1 Guard/ExecutionHost, P2 managed/direct child lifecycle, and P5 V1 web search; P9 returned source-partial and its slot is now assigned to P5. Remaining P3/P4/P6/P7/P8 are PARTIAL or dependency-limited and remain queued for the next available slots. No tests/builds/typechecks/audits/benchmarks/provider calls/release commands/Git publication/cleanup were run. The repository tree is mixed and preserved; repo-local `kernel/target` remains 627 MB. The newer repository-only boundary prevents `/mnt/c` inspection, external services and remotes.
+
+P2 found the direct follow-up lifecycle is not a DTO-only change: current TaskTool settles the DirectAttempt after one prompt, but §37.9 requires the same live EXECUTING attempt through the safe follow-up turn; Core also lacks fresh-proof storage/prepare wiring and an existing-owner wake/turn trigger. P2 is continuing independent source work and leaves follow-up/effectful turn dispatch unavailable. P1 found a contract issue: an exact DirectTurnScope digest over a mutable full Attempt snapshot can become stale after an effect advances revision/workspace. Asked the user to choose between stable-cycle identity pins with current refreshed Attempt on each effect, or full-snapshot refresh semantics; dependent schema/dispatch changes remain fail-closed pending answer. P1/P2 are coordinating; parent owns shared status trackers this wave.
+
+P5 is active on the complete V1 web-search cascade, authenticated read-only settings/status, and acceptance fixtures. DEC-V1-26 governs auth 401/403/407 fallthrough to the next explicitly enabled route, other non-rate-limit 4xx stop, bounded transient retry, and no hidden paid fallback. No provider route is exercised. P9 source work now covers no-follow release artifact/state roots and candidate-bound markers; its remaining distribution/license/package/signing decisions and exact-candidate acceptance are recorded in `scripts/release/README.md`. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-21 06:43 UTC — turn journal crash fencing and Core RPC adapters
+
+P1 added process-incarnation binding to direct child turn cycles and fresh-turn authorization issue/reserve records. On journal replay, a same-epoch active cycle from another HostKernel process is UNKNOWN; unresolved prior-process authorizations and consumed proofs without their successor cycle are also UNKNOWN. Completion replay now uses the canonical OwnerLog cursor digest. §37.9 records this as source-only, not restart acceptance. P2 added strict Core `turn_begin`, `turn_complete`, and `issue_fresh_turn_authorization` RPC adapters with exact shape, sequence, digest and authority-pin decoding; it has not wired the TaskTool/sessionRunner lifecycle or enabled follow-up. No checks ran. Effect-scoped turn contract remains fail-closed pending the user decision recorded above.
+
+## 2026-10-21 06:45 UTC — P5/P2 handoffs; full-phase slots refilled
+
+P5 returned SOURCE COMPLETE / PARTIAL / NOT VERIFIED: cascade order, default + explicitly enabled BYO routes, route-local 401/403/407 fallthrough, bounded retries/cooldown, cancellation/UNKNOWN, response/provenance bounds, offline authenticated status and TUI Settings are source-present. It added BYO cost/charge warnings and SecretRef non-leak fixture source, updated P5 owner/catalog sections, and kept `WEB_SEARCH_RUNTIME_READY=false`; P1/P6 acceptance remains prerequisite. P2 returned PARTIAL after adding strict, false-gated turn RPC DTO adapters; no TaskTool/sessionRunner lifecycle caller exists yet. P2's managed vertical still requires P1/P8 dispatch/receipt/quiescence/verifier integration. Active whole-phase owners are now P1, P6, P7. P5, P2 are PARTIAL and queued for dependency re-entry. P3/P4/P8 remain queued/dependency-limited; P9 source-partial with release decisions outstanding. No tests/builds/typechecks/audits/benchmarks/provider calls/release commands/Git publication/cleanup ran. Shared Git state preserved, no staged paths; repo-local target 627 MB.
+
+## 2026-10-21 06:47 UTC — evaluation/CodeMode source review; P6/P7 source updates
+
+Source review for the user's benchmark-testing question: `scripts/eval/` is a fake-only HUP-005 self-check, with no model/provider, subprocess, benchmark image/download, or product-effect adapter. §32.40 already specifies paired baseline/full-harness evaluation, frozen provenance, ablations, stage attribution and a staged smoke/holdout order; §32.41 defines CM-001..009. The local `repo_take/oh-my-pi/packages/metaharness` is an experiment/run/task/trace manager with per-task arm matrices and exact-trial resume; adapt its run/trace/provenance ideas only, not its Harbor/VM/provider-gateway/paid execution infrastructure. The submitted leaderboard figures are not a valid common target; §32.40 already documents configuration and benchmark-version mismatches.
+
+CodeMode is an interpreter for scripts over explicit schema-described tools. HorizonCode's wrapper keeps it out of the model registry and rejects nested MCP dispatch before transport. Its runtime is constructed without explicit finite timeout/call/output limits, and no hard memory guarantee is configured; the correct tests are already enumerated CM-001..009, with CM-008/009 calling out these concrete gaps. Interpreter-package tests do not prove HorizonCode Guard/receipt/recovery. No test or eval was run.
+
+P6 reports source-only improvement to provider picker truth (“dispatch unverified”), context/input/output limits with unknown values preserved, and matching test-fixture edits; SecretBroker writes and live Doctor remain unavailable without P1's protected Guarded grant. P7 reports source for bounded transcript virtualization, sequence/generation fencing, redaction, artifacts/analytics, guarded automation CRUD, checkpoint preview and restore receipt tracking; run-now and checkpoint create/restore remain closed. P7's due-occurrence producer lacks specified schedule grammar, timezone DB version and DST/clock-jump rules; keep scheduled invocation unavailable pending a product contract. All phase acceptance evidence remains unrun. Active whole-phase owners are P1, P6 and P7; no tests/builds/typechecks/audits/benchmarks/provider calls or Git publication performed. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-21 06:48 UTC — P3/P1 integration issue routed
+
+P3 source audit found that `HostKernel::ensure_repo_generation` snapshots and builds indexd generations per request, deduplicating retained Arcs only after build; identical in-flight work is not coalesced as §30.22 requires. HostKernel is P1-owned, so P1 accepted the exact source fix. P3 continues independent RepoIntel work and will not edit HostKernel. P7 found its transcript source/test are hidden by the root ignore rule and will add only the two exact path exceptions; P1 confirmed its own direct-turn exception is finished. These are source changes, not acceptance evidence. No tests/builds/typechecks/audits/benchmarks/provider calls ran.
+
+## 2026-10-21 06:49 UTC — P7 handoff; P8 resumed
+
+P7 returned SOURCE PARTIAL and released its slot. It added bounded incremental transcript formatting (10k window, per-message/aggregate caps, part/reasoning bounds, truncation markers), UI-018 fixture source, §31.2 detail, and exact `.gitignore` exceptions for only the transcript source/test. Unrun. Remaining P7: scheduled invocation needs a product-owned cron/timezone/DST/clock-jump policy and Guarded dispatch; checkpoint capture/restore needs same-revision VCS facts plus P1 Guard/receipt; graphics remain unavailable with text fallback; integrated stream/render/artifact/analytics acceptance remains. P8 is active again as whole-phase owner for resources/workers/RC0/evaluation. Current active owners P1, P3, P8. No tests/builds/typechecks/audits/benchmarks/provider calls ran; V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-21 06:50 UTC — P1 RepoIntel reuse review; P3 artifact-search composition
+
+P1 added an exact retained-generation lookup before index build in `ensure_repo_generation`. Parent source review found the HostKernel reader loop synchronously dispatches one request at a time through `&mut HostKernel`; this can prevent a later queued request from rebuilding the retained index. It still collects a full snapshot before lookup and currently requires identical Session as well as base pins, so call it retained-generation reuse, not overlapping singleflight or full scan avoidance. P1 is checking §30.22 base-pin sharing semantics against per-query owner isolation; coalescing completion is not accepted yet. P3 is implementing the independent §30.17 managed artifact-search composition through current Session ArtifactControl scope + HostKernel digest-pinned range reads, without filesystem fallback; P1 has been asked not to duplicate or edit P3's tool registry work. No checks ran.
+
+## 2026-10-21 — Direct-turn contract decision and phase refill
+
+The mutable-snapshot question is resolved by preserving §37.9's full `DirectTurnScopeV1` and `cycleDigest` contract. Each settled effect returns a newly minted scope for the same cycle ID/sequence after exact receipt reconciliation and live Attempt re-resolution; Core persists that refreshed scope before another effect or completion. Batches refresh only after every member has a terminal reconciled receipt. Stale scopes are denied; lost refresh replies reconcile the exact receipt without redispatch; UNKNOWN or unresolved refresh fences the cycle. P1 owns HostKernel integration; P2 owns the Core lifecycle.
+
+Current active owners are P1 Guard/ExecutionHost, P3 RepoIntel/artifact search, and P8 resources/workers/RC0. These occupy all child slots. P2 is next for whole-phase resumption. Source review confirms TaskTool now resolves versioned Core `AgentProfileV2` selectors and pins profile definitions; TaskTool still needs same-Attempt turn lifecycle and `turn_begin`/completion/fresh-proof caller wiring. P3 owns ArtifactControl-backed range search and registry wiring. No tests/builds/typechecks/audits/benchmarks/provider calls/release commands or Git publication have run. Mixed working tree remains preserved. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-21 — P3 repository-discovery boundary
+
+P3 removed `repo_tree` and `repo_detect` from model-visible registry exposure because their current implementation reads through app-process `RepoIntel.nodeSource` rather than authenticated HostKernel. Their canonical capability IDs remain documented but are UNAVAILABLE until a bounded authenticated HostKernel discovery/manifest DTO and Core adapter exist. This is a deliberate fail-closed source boundary; it is not feature acceptance. P1 owns HostKernel API/Guard; P3 owns any Core adapter. P3's managed artifact search now has an exact `.gitignore` exception and is registry-wired through ArtifactControl + HostKernel digest-pinned range reads. No tests/builds run.
+
+## 2026-10-21 — P3 handoff and P2 resumed
+
+P3 returned PARTIAL after wiring managed artifact/text/terminal range search through authenticated ArtifactControl and digest-pinned HostKernel reads, with bounded output and no local path fallback. It removed `repo_tree`/`repo_detect` from model-visible exposure pending P1's bounded authenticated HostKernel discovery/manifest operation and P3's Core adapter. Remaining P3 dependencies are HostKernel/P8 cache policy/retirement integration; approved semantic parser provenance; a trusted unsaved-buffer producer; verified P1/P4 LSP lifecycle; and direct-session artifact ownership. Exact retained-Arc reuse still follows a full snapshot and is same-Session only; it does not establish §30.22's full work-reduction claim.
+
+P2 resumed as the whole-phase owner; active owners are P1/P2/P8. P1 has source for durable direct-turn batch journal events and the strict schema/§37.9 shape, but `prepare_tool_batch`, approval/lease, every direct effect receipt path, and Core consumer are not yet wired. P1 owns HostKernel integration and will send P2 the exact DTO when available. RC0 remains NOT_ATTESTED pending authenticated P1 process ownership plus P2 final verifier receipt. No tests/builds/typechecks/audits/provider/benchmark/release operations were run; P3 accidentally ran `git diff --check` once (no diagnostics). No staging/commit/push/cleanup. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+P8 interim source update: paired HUP summaries now account for all invocations, incomplete pairs and per-arm failure stages; fixture costs are labeled `FIXTURE_REPORTED`, and predeclared ablation arm labels remain neutral. Worker replay/settlement is already conservative and durable; it cannot advance without P1 quiescence/Guard proofs and P2 terminal Attempt/effect-chain/final-revision proofs. RC0 remains NOT_ATTESTED. P8 continues RC0 append-boundary review; no tests/builds/evaluation ran.
+
+## 2026-10-21 — P8 independent source handoff; P7 resumed
+
+P8 completed source-only work on HUP reporting: per-arm status/failure-stage/accounting includes incomplete invocations; fixture costs are `FIXTURE_REPORTED`; ablation roles are generic and added fixture assertions remain unrun. RC0 output capture is repository-local, no-follow, locked and bounded, but RC0 stays NOT_ATTESTED. P8 settlement has no safe independent release until P1 quiescence/effect receipts and P2 terminal Attempt/final-revision evidence exist; OS-enforced quotas and trusted pressure-policy ingress remain unavailable.
+
+P7 resumed as a whole-phase owner for streaming/rendering/artifacts/analytics/automation/rewind. Active owners are P1/P2/P7. No test/build/evaluation/provider/release run. P8 and P3 reported `git diff --check` only on their owned paths with no diagnostics; no staging/commit/push/cleanup. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+P2 interim source progress: `managed-control.ts` and `session/tool-batch.ts` now require `DirectTurnScope` for direct effect batches, validate same-cycle/sequence transitions strictly, and persist the post-bind scope before dispatch. Core supervisor request/approval/receipt decoding, propagation through LLM/prompt/TaskTool, turn completion/fresh-follow-up wake and managed recovery remain. P1's final HostKernel refreshed-scope receipt DTO is the current shared dependency; P2 owns the Core bridge. No tests run.
+
+P7 interim source progress: per-instance authenticated SSE fanout now has a 256-event bounded queue, rejects serialized events above 64 KiB, filters unrelated Location/workspace traffic before enqueue, and closes on overflow so clients reconnect/resnapshot. Limits and remaining reconnect constraints are recorded in §31.17. Source only; no tests/builds ran.
+
+## 2026-10-21 — P7 source handoff; P4 resumed
+
+P7 returned PARTIAL after adding bounded authenticated per-instance SSE fanout (256 queued events, 64 KiB/event, workspace/Location filtering, fail-closed overflow/reconnect) in the existing event route. Session messages resnapshot on reconnect; transient non-Session projections such as Guard approval prompts still lack a list/replay owner API. Checkpoint capture/restore remain unavailable pending P1 Guard receipts and exact same-revision HostKernel filesystem/fixed-Git facts. Automation invocation remains unavailable pending canonical timezone/DST/clock-jump semantics and Guarded dispatch/recovery. Terminal graphics remain text fallback. Existing cursor fencing, redaction/render bounds, artifact fidelity/store, analytics, automation journal and preview are source-present but unverified.
+
+P4 resumed as whole-phase owner for supervised LSP/DAP/REPL integration against P1's per-operation protocol auth and P3's authenticated document reader. Keep effectful gates false until P1 acceptance. Active owners: P1/P2/P4. No tests/builds/typechecks/acceptance run.
+
+P2 interim update: Core supervisor now has strict direct-turn schema validators; `DirectTurnAuthority` is being propagated Prompt → LLM → ToolBatch, and `prepareToolBatch` sends top-level DirectTurnScope and validates HostKernel's post-bind response. Write/patch receipt projection and Task child persistence/lifecycle remain; follow-up wake stays gated pending P1 HostKernel turn RPC/recovery acceptance and P8 settlement evidence.
+
+P4 lane decision: prepare an explicit mutually exclusive DirectTurnScope lane for normal authenticated direct Sessions, in addition to managed and child Attempt lanes, because direct coding does not require a Goal. Session ID alone is never authority. Keep the lane/editor effects unavailable until P1 supplies matching HostKernel process/Guard/protocol contracts and acceptance. P4 owns client projection; P1 owns HostKernel authority.
+
+## 2026-10-21 — P4 authority-lane correction and existing RepoIntel discovery seam
+
+Correction to the earlier P4 lane note: §37.9 `DirectTurnScopeV1` wraps a child `DirectAttemptScope` and uses a child-keyed journal; it cannot authorize an arbitrary root direct Session. P4 supports the Goal-less child direct-turn lane plus managed Attempt, while root-session LSP/DAP stays unavailable until P1 establishes a canonical authenticated root-session effect/process scope. Session ID alone is never authority. P4 also found AgentProfile and ExecutionLaunchProfile are distinct pins; validators must compare each to its own HostKernel source.
+
+P1 source review found an existing authenticated bounded `repo_intel.v1/query_structure` HostKernel operation (`RepoStructureQueryV1`/`RepoStructurePageV1`) backed by Guard-authorized snapshots and owner-bound cursor leases. This may support P3 tree/detect adapters without a new HostKernel DTO; P3 will be resumed to assess exact semantics when capacity opens. No checks ran.
+
+P4 interim source: corrected a profile-authority conflation across LSP/DAP/REPL. `AgentProfileV2` and `ExecutionLaunchProfile` now remain distinct pins; HostProcessRef launch identity must not be compared to the AgentProfile ID/revision/digest. P4 source-reviewed that DAP attach/evaluate/variables remain denied, LSP edits/rename are proposals, and REPL callbacks are generation-scoped while launch/invocation stay disabled. Child DirectTurnScope and managed lanes await P1's full editor wire/Guard/receipt integration; root direct-session editor scope is currently absent and remains unavailable. P4 continues output receipt fidelity work. No checks run.
+
+## 2026-10-21 — P4 source handoff; P6 resumed
+
+P4 returned PARTIAL after correcting the LSP/DAP/REPL cross-profile pin bug and requiring exact HostProcessRef identity, authenticated epoch, and matching durable effect/profile/executable receipt for editor output. P4 remains gated: P1 editor wire/Guard/receipt/recovery and OS confinement; P3 authenticated document read acceptance; P4 production ingress, DAP attach/evaluate/variables, REPL launch/callback recovery, and Linux diagnostics/debug/bounded-REPL acceptance. Root direct-session editor authority is unavailable under the current contract; do not misuse child DirectTurnScope as root authority.
+
+P6 resumed as whole-phase provider/settings/Doctor/S1 owner. Active owners P1/P2/P6; P4 queued to resume when P1/P3 prerequisites or a slot become available. No tests/builds/provider calls run.
+
+P2 interim source update: `DirectTurnAuthority` is persisted for child sessions at turn begin, post-batch bind, final file write/patch receipt, and terminal receipt. Core PTY/shell now carries DirectTurnScope through terminal.run prepare/dispatch and decodes the Attempt/final-turn receipt; exact replay is accepted only with the same scope. TaskTool same-Attempt lifecycle, completion/fresh-proof wake, managed vertical recovery and final integration remain. P1 has the HostKernel batch admission/lease/receipt path source-wired, and is fixing journal replay so prior batch receipts remain addressable after subsequent batches. No tests run.
+
+P1/P2 interim integration: HostKernel now validates DirectTurnScope before direct ToolBatch challenges, retains cycle pins, durably binds batch/effect IDs before leases, returns post-bind and final settlement scopes, and fences UNKNOWN. P1 repaired journal replay so completed batch receipts/scopes remain available after later batches; exact Attempt pins/member progression are retained. P2 Core supervisor, TaskPrompt→LLM→ToolBatch, write/patch and PTY/shell now carry/validate/persist scopes. Direct turn begin remains runtime-gated; TaskTool still settles after one prompt and lacks same-live-Attempt reentry/fresh-proof recovery, so follow-up cannot enable yet. No tests run.
+
+P6 interim: legacy HTTP provider OAuth authorize/callback mutation paths are being fail-closed before ProviderAuth while protected credential input is unavailable; offline Doctor missing freshness is being corrected from INVALID to UNKNOWN. No live provider call or tests run.
+
+P1/P2/P6 dependency update: P2 cannot resume a same-live EXECUTING DirectAttempt after restart because current HostKernel `direct_attempt_snapshot` returns summary/revision only, not authenticated DirectAttemptScope/workspace pins; local TaskTool metadata is not authority. P1 is asked for strict live-scope recovery projection. Fresh-turn issuer remains gated. P6 found S1 owner-chain validators/readers but no trusted writer for `metadata.horizonPrincipalOwner` on server_auth Session creation; P1/Core ingress stamping is required and fail-closed ownership stays. P1 is evaluating this source prerequisite.
+
+P6 source update: offline Doctor now preserves UNKNOWN for missing/stale/undefined catalog freshness when config omits the model. Legacy HTTP provider OAuth authorize/callback now return typed 503 before ProviderAuth; OpenAPI records protected-input/Guard prerequisite; CLI login/logout remain unavailable. The exact provider route source is Git-visible. Remaining P6 source/evidence: protected credential input/write and trusted probe grants/dispatch (P1), trusted S1 root-owner stamping (P1/Core), FEAT-001..014, QA-001..007, LM-018 and free-model switch/coding journey later. No tests/builds/provider calls run.
+
+RepoIntel cache correction from P1 source inspection: `ensure_repo_generation` excludes request/Session from immutable generation matching and can reuse across Sessions for the same authenticated principal, Location/root/workspace binding, source revision, read policy, limits and owner epoch. Each request still collects a full bounded snapshot and receives its own per-Session lease; this skips index build only, not source scan. Existing §30.22 prose incorrectly says same-Session cache reuse and needs correction; do not claim scan savings or full performance acceptance.
+
+## 2026-10-21 07:17 UTC — whole-phase continuation and source-only work
+
+Re-read the governing implementation docs and checked the live agent list. P1 and P3 remain active; the prior P2 owner errored on model capacity, so P2 was re-dispatched as a whole-phase owner using an available model. P1 reports source work for authenticated same-owner live Attempt scope recovery and trusted server-auth Session principal stamping; P2 is coordinating exact Core caller integration. P1 was also asked to supply finite trusted CodeMode timeout/call/output limits while keeping `execute` hidden and memory-bound claims unavailable. P3 confirmed current HostKernel structure query cannot enumerate a repository tree or distinguish missing-path detection from denial/stale/error; both model-facing tools stay unavailable with no app-process filesystem fallback. No tests/builds/typechecks/audits/benchmarks/provider calls/release commands/Git publication/cleanup were run. The repository-only path boundary still prohibits reading the external attachment path; work continues from repo-contained architecture and reference snapshots. Mixed Git state remains preserved; V1 is PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-21 07:21 UTC — P3 handoff and P6 whole-phase refill
+
+P3 returned PARTIAL after source review: existing authenticated HostKernel RepoIntel DTOs cannot enumerate tree entries or produce a typed missing-path outcome, so `repo_tree`/`repo_detect` remain unavailable and have no live app-process filesystem fallback. Managed artifact search remains HostKernel/ArtifactControl-backed; cache docs now say cross-Session compatible generation reuse still takes a fresh source snapshot. P1/P2 remain active; P6 is now active as a whole-phase owner on the released slot. P2 found `handlers/session.ts` has multiple `.handleRaw(...)` references without local declarations (including create/fork/prompt/shell/revert); it is auditing against exact index/HEAD content before restoring only missing route definitions while preserving Security/Question/subagent changes and false-gated effects. No tests/builds/typechecks/audits/benchmarks/providers/release/Git operations ran. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+P1 follow-up: CodeMode now receives fixed trusted bounds (30 s, 64 nested calls, 64 KiB output) and caps final adapter output including failure diagnostics; registry remains `undefined`, and no memory ceiling is claimed. P1 confirms no authenticated protected-native-input bridge, credential-mutation capability, or Doctor/probe grant exists; P6 was instructed to keep those network/credential paths unavailable and finish independent offline/settings/source work. Scope-recovery DTO is confirmed: exact HostKernel-generated `directAttempt` only for authenticated same-owner, live EXECUTING, current-epoch/current-workspace state; stale, UNKNOWN and foreign owner fail closed. These are source updates only.
+
+## 2026-10-21 07:24 UTC — P1 source handoff; P7 resumed
+
+P1 returned PARTIAL: HostKernel authenticated live Attempt scope recovery and trusted Session principal stamping are source-present; CodeMode now supplies 30 s / 64-call / 64 KiB trusted execution bounds and a UTF-8-safe final-output cap while staying hidden. P1 explicitly leaves protected-native credential input and live Doctor grants unavailable; no memory ceiling is claimed. P2/P6 continue their full phases. P7 was resumed as a whole-phase owner on the newly free slot for stream/replay, rendering, artifacts, analytics, automation, and rewind source closure. Current active owners: P2/P6/P7. P1, P3 are source-PARTIAL; P4/P5/P8/P9 remain queued or dependency-limited. No checks/tests/provider/benchmark/release/Git operations ran. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+P2 source review found additional compile/contract blockers while restoring Session route declarations: DirectAttemptSnapshot revision number-vs-string mismatch; DirectAttempt profile revision/scope decoder assumptions; BigInt JSON serialization in direct-turn requests; TaskTool profile decoder receives the wrong object; duplicate `currentChild`; and an undefined parent variant. P2 is correcting these against actual wire contracts before full same-Attempt lifecycle wiring. All source-only; no checks run.
+
+P7 interim audit: activity stream is mounted; replay/source-generation fencing and renderer redaction/bounds are source-present. Checkpoint preview/list are HostKernel-routed, but capture/restore remain dispatcher 503s. Automation CRUD/reconcile exists; `run_now` remains unavailable because no canonical timezone/cron policy or guarded invocation contract is accepted. P7 is checking remaining independent artifact/analytics/transcript source gaps; no validation run.
+
+Attachment correction (2026-10-21): the latest user continuation explicitly authorized reading the single path `/home/sarvesh/.codex/attachments/54d18db8-65b6-4096-bf59-15e64b9f5a35/pasted-text-1.txt`; it is now read. It reiterates full V1, source-first local OpenCode/Codex comparison across relevant modules/phases, implementation before testing, exhaustive architecture/flow/event audit, docs upkeep, and prompt listed escalation for genuine design doubts. No other host paths were accessed. The C: space check remains deferred until a build/cleanup wave requires it.
+
+P6 interim finding: FeatureExposure machine metadata omits owner/runtime prerequisites and supported platform/model/harness metadata required by §16.15. P6 is adding these to the Core descriptor, schema, TUI detail projection, and owning architecture section. This is source work only; network/probe routes remain unavailable.
+
+P7 source progress: hardened bounded printable tool-name labels and bidi/control stripping for tool text; resnapshot-triggered recovery now validates Session IDs and caps recovery loops at 64. Added fixture source, unrun. §31 updated. Artifact/checkpoint adapters exist, but no exact HostKernel capture/restore DTO or fixed-Git dirty/untracked facts exist; scheduled automation accepts UTC-resolved due-occurrences only and has no canonical scheduler. P7 keeps restore/run_now disabled and continues independent artifact/analytics source work.
+
+P2 follow-up: exact missing HTTP handler declarations are restored from the repository index; current Question/subagent/Guard changes were retained. P2 fixed profile harness decoding, trusted Task execution/background/child Session context, DirectAttempt scope/profile/u64 parsing, snapshot authority consistency, BigInt-safe delivery IDs, duplicate local declarations and the undefined variant. It is now implementing same-live-Attempt resume through HostKernel scope recovery, fresh follow-up proof, Guard inbox commit and turn_begin; terminal Attempt stays live across turns. Remaining major blockers are integrated Guard/recovery acceptance (runtime remains gated), follow-up wake service and exact restart replay for pending completion/delivery. No checks run.
+
+Resource check (2026-10-21 12:11 UTC): C: via `/mnt/c` has 18 GB free of 454 GB (97% used); repo-local `kernel/target` is 627 MB; only the primary agentx worktree is listed. No build/test process was started; avoid heavyweight outputs until C: pressure is addressed.
+
+
+2026-10-21 current-source continuation: P1 split direct-turn schema binding IDs/profile IDs to match the Rust validators and added authenticated request-deadline checks throughout bounded ToolBatch admission. P6 updated provider schemas/routes/TUI projections and dual-lane S1 question prompts/callbacks, but protected credential mutation, Guarded live Doctor, FEAT/QA acceptance and free-model coding journey remain open. P7 continues only in TUI/TypeScript/render ownership; shared Rust artifact/automation/checkpoint modules remain P1-owned. CodeMode stays model-hidden: the interpreter is present, finite timeout/call/output caps are source-wired, but nested MCP calls deliberately fail before transport and no hard heap limit exists. Benchmark acceptance remains HUP-005 fake self-check then separately authorized provider smoke and pinned paired runs; headline scores are not comparable targets without exact provenance. No tests, builds, typechecks, audits, provider calls, benchmarks or release actions ran. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+
+2026-10-21 continuation: active implementation slots are P2 managed/child lifecycle, P3 RepoIntel (then immediate P1 Guard continuation), and P7 streaming/render/artifact presentation. P6 finished its currently unblocked source pass; protected credential/live Doctor remain gated on P1. P5 source audit confirms cascade/settings fixtures exist but remain unrun and runtime false. P7 is adding the missing checkpoint TUI entry while preserving disabled restore. No tests/builds/typechecks/provider calls/evaluations/release actions. Keep all runtime gates false until cross-phase acceptance.
+
+
+2026-10-21 implementation progress: P3 added UTF-8/query/path validation and authored unrun schema-rejection fixtures; tree/detect remain unavailable pending the user's decision on a new authenticated bounded HostKernel discovery DTO. Direct artifact ownership also lacks a resolver. P7 added aggregate SSE queue byte limits, a read-only checkpoint list/preview dialog and bounded printable transcript labels; restore remains unavailable. P2 owner is auditing the Core managed/child lifecycle. P1 will resume Guard source review after P3. These are source changes only; no validation or external calls.
+
+
+P7 follow-up: checkpoint preview now renders IDs, paths, digests and conflict labels through bounded terminal-safe redaction while preserving exact raw IDs for SDK requests. Authored fixture coverage includes bidi/control characters, Bearer redaction, limits and raw-ID preservation. No tests run; restore remains unavailable.
+
+
+P1 current blocker: no durable boot-scoped containment identity is retained to prove a stdio process tree is quiescent after abrupt HostKernel owner loss. The live-process PTY janitor and bubblewrap `--die-with-parent`/PDEATHSIG do not give a fresh HostKernel restart proof. Keep unresolved effects UNKNOWN and protocol/verifier gates false; do not use PID-only kill. P1 is checking the local Codex/OpenCode supervisor implementations before settling whether an existing safe primitive can be adapted.
+
+
+Owner handoff update (2026-10-21): P2 source audit found TaskTool, authenticated follow-up runner, committed inbox claim, turn begin/complete, scope refresh and restart fencing present; runtime remains disabled pending P1/P8. Its owner is now on P4 source completion. P7 returned PARTIAL; its slot is on P8 resources/workers/RC0/HUP. P1 remains the critical Guard owner. Correction to the prior P1 note: `repos/codex/codex-rs` exists in this workspace; an earlier claim that it was absent was wrong and is being rechecked against the actual local source. No tests, builds, typechecks, provider calls or benchmarks.
+
+
+User decision (2026-10-21): add the authenticated bounded HostKernel discovery/manifest DTO for P3; keep `repo_tree`/`repo_detect` gated until integrated acceptance. P1 owns the HostKernel contract/schema and will hand the precise revision to P3. Codex restart review is corrected: local Rust source exists; its process groups/PDEATHSIG, process-local Windows Job handles, and persisted single-daemon identity do not prove descendant quiescence after restart. P4 found production LSP supervised launch is not wired; a narrow `session/prompt.ts` authority-scope seam is now P4-owned, while launch remains gated on P1. No checks executed.
+
+
+P8 update: resource/worker Rust files remain proof-gated and preserve OS quotas as unsupported, advisory pressure as unwired, worker settlement as proof-gated, and fan-out closed. RC0 test fixtures now use repository-local scratch instead of default OS temp paths; an unrun locality fixture was added. Remaining P8 blockers: P1/P2 owner-backed HostRun and verifier attestation, quiescence/effect/final-revision evidence, trusted resource ingress/retention, and real OS CPU/memory/process/FD limits. HUP live evaluation remains disabled.
+
+
+Active phase ownership refresh: P1 HostKernel Guard + approved P3 discovery DTO; P4 LSP/DAP/REPL source integration; P9 local release tooling. P8 source pass is partial and its slot moved to P9. P2 source pass is partial, fail-closed pending P1/P8; P3 adapter waits on P1 DTO. P5/P6 source is present for unblocked work; P7 source is partial. No tests/builds/typechecks/provider/benchmark/release commands have run.
+
+
+Current owner slots: P1 Guard + approved discovery DTO; P4 supervised LSP/DAP/REPL source work; P9 bounded local release audit/tooling. P1 additionally rechecked actual Codex process sources and found no restart-proof descendant quiescence primitive. P8 partial handoff is complete; RC0/worker proofs remain gated. No test/build/typecheck/provider/eval/release command has run.
+
+
+P1/P3 integration progress: the approved bounded discovery contract now exists in RepoIntel schema, HostKernel and Core SessionSupervisor source. The response binds authenticated principal, Session, Location, owner epoch, workspace binding, source revision, read-policy digest, root, mode, limits and coverage; HostKernel rechecks Guard/read scope and request deadline. P1 is handing the exact DTO to P3 for model-tool adapter wiring; `repo_tree`/`repo_detect` remain hidden pending acceptance. Source only, no validation.
+
+2026-10-21 user decision: implement optional Linux cgroup-v2 containment inside the existing ExecutionHost to prove process-tree quiescence after restart. It requires a delegated subtree and must fail closed when unavailable; persist a boot-scoped, verified containment identity before dispatch; after cancellation/restart, reconcile only the same validated containment and accept quiescence only after kill/wait plus `populated=0`. Any identity/emptiness uncertainty remains UNKNOWN. This does not claim CPU/memory/FD quotas, authorize PID-only signaling, add a second supervisor, or enable unsupported platforms. P1 owns the implementation and authoritative §14/§21/§32/§37 contract updates. No tests/builds were run. P3 adapter contract: `repo-intel.v1/discover`, authenticated `SessionSupervisor.discoverRepo`, tree/manifests only, ≤512 entries/256 KiB/16 depth; model exposure remains disabled through acceptance.
+
+2026-10-21 source update: P1 completed the P3 adapter handoff. `repo_tree`/`repo_detect` consume authenticated `SessionSupervisor.discoverRepo`; manifests are fetched only through `readRepoDocument` at the exact pinned source revision, and symlinks are shown without following. Registry exposure remains disabled; fixtures and §30/§37 documentation are source-only. P4 now creates lazy LSP clients within fiber-local authenticated ExecutionScope, fenced to workspace and current Attempt, and routes launch/protocol through HostKernel and per-operation Guard approval; status remains snapshot-only. DAP/REPL source closure and P1 cgroup implementation remain in progress. Active whole-phase owners: P1, P2, P4. P9 returned source-partial with bounded root-local distribution audit; release policy gates remain open. No tests/builds/typechecks have run.
+P4's new `packages/opencode/test/lsp/supervised.test.ts` was hidden by the first-party ignore overlay; an exact path exception was added, and Git now reports it visible. No test was run.
+
+P1 process-origin update: the sole non-PTY `execution.v1` supervisor now owns cgroup-backed spawn and durable recovery source. Interactive PTY still uses a separate `terminal.v1/run` path; P1 hard-disabled HostKernel prepare/run/start before effect dispatch because it has no durable cgroup identity/restart proof. This limitation is documented; do not claim interactive PTY support. P2 returned PARTIAL/source-complete for currently unblocked work, awaiting P1 cgroup/Guard, P7 artifact evidence and P8 settlement proof for integrated acceptance. P7 resumed as a whole-phase owner for remaining stream/render/artifact/analytics/automation/rewind source; active whole-phase owners P1/P4/P7. No checks run.
+
+P7 checkpoint preview source hardening: selected restore/preview paths reject absolute/traversal/backslash/empty-component/control inputs; response paths receive the same validation; action/conflict path aggregates are capped at 4 MiB and must match the Rust restore planner's regular-file/single-link shape. Fixtures are Git-visible and unrun. This is one P7 source repair, not phase completion; P7 remains active on the remaining phase inventory. No checks run.
+
+P2/P1 managed-budget contract decision: authenticated Task creation will pin the validated canonical AgentProfileV2 definition's `limits.tokenBudget` alongside the exact profile ID/revision/digest. HostKernel then returns `effectiveMaxTokens=min(SpecVersion.maxTokens, pinned profile tokenBudget)` on scheduling, and each usage receipt/refreshed managedAttempt scope returns authoritative durable decimal-u64 `remainingTokens` under the authority digest. Managed provider steps clamp to remaining tokens; direct sessions are unchanged. Missing/mismatched profile pins or exhausted budget fail closed. P1 owns Rust source/DTO, P2 owns Core integration and docs; no checks run.
+
+P1 cgroup-v2 source checkpoint: `StdioExecutionSupervisor` now creates a per-execution cgroup and the same pre-spawn `EffectHost::begin_execution_dispatch` transaction persists its identity with full HostProcessRef/effect/lease pins before the sandbox child’s pre-exec placement barrier. Normal/cancel settlement verifies exact cgroup identity and `populated=0` before recording a quiescence digest in the durable terminal receipt; restart recovery can store quiescence but preserves effect result as UNKNOWN. Exact empty-cgroup cleanup is implemented for settled/discard paths; preflight/authorization/DB error cleanup and full origin review remain in progress. P1 is also adding the approved internal REPL DTO. No checks run.
+
+P2 source continuation: exhausted usage now yields STOPPED/zero scope, the managed prompt unwinds as a durable error and settles FAILED/nonretryable only after exact quiescence; restart recovery uses existing returned/quiescence evidence without replay. Managed dispatch and verifier/finalization are hard-disabled without environment override; a 503-before-dispatch fixture is authored but unrun. P4 has source-wired DAP status/cancel and gated REPL profile/start/status/output/cancel; per-call typed execute/reset and callback replies remain with P1/P4.
+2026-10-21 continuation checkpoint: P1's optional Linux cgroup-v2 containment is source-wired through the existing non-PTY ExecutionHost PREPARED/dispatch/receipt/restart path. The launcher joins before `exec`; settlement and restart require exact boot/root/inode/process/effect/profile/lease pins plus `populated=0`. Ambiguous cases remain UNKNOWN; empty cgroups are retained to avoid raceable name-based deletion. No CPU/memory/process/FD quota is claimed, and PTY stays disabled. P1 also added typed internal REPL operation and authenticated next-sequence routes; REPL remains gated pending real OS limits and callback/result receipts. P4 now consumes that sequence contract and continues editor integration behind false gates.
+
+P7 handed off PARTIAL after adding an SSE JSON preflight before serialization (64 KiB, 8,192 nodes, depth 32), preserving existing auth/workspace/location/question-owner filtering. Remaining P7 items: durable replay ownership for transient projections, complete same-revision Guarded checkpoint facts, canonical schedule/DST/clock semantics and Guarded automation recovery, plus renderer/activity/artifact/analytics acceptance. Restore and `run_now` remain unavailable.
+
+P2 has resumed as a whole-phase owner for managed/direct child lifecycle. Active owners: P1, P2, P4. P3 discovery adapters remain hidden pending acceptance; P5/P6 dispatch and protected-provider work remains gated; P8 settlement/RC0 awaits integrated P1/P2 evidence and actual OS enforcement; P9 release decisions and exact-candidate acceptance remain open. Mixed Git state is preserved and unstaged. No tests, builds, typechecks, audits, benchmarks, provider calls, release commands, or publication ran. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+2026-10-21 owner refill: P2's Core/TUI source pass is PARTIAL and queued on P1's Guarded verifier/effect receipts, cgroup-backed quiescence/fresh-process UNKNOWN recovery, and P8's final-Inspect/terminal settlement proof; P2 updated §29/§37 and released its slot. P8 now owns the reopened slot for its whole resources/workers/worktrees/RC0/fake-evaluation phase. Active owners are P1, P4 and P8. P4 has source-wired authenticated REPL sequence fetch/classification, DAP target binding to HostKernel-minted same-scope terminal process refs, and session/Attempt-pinned LSP cache keys; all effectful gates remain false. No validation run.
+2026-10-21 source review: P1 bounds retained cgroup entries at 256, stops enumeration at 257, rejects unexpected names/list errors, and serializes count+create with process and directory locks; unsupported locking fails closed. This bounds source-created empty-group retention, but remains unverified. P4 documents and rejects DAP attach before Guard because bwrap `--unshare-all` gives adapter and target separate PID namespaces; no same-namespace proof exists. P8 added source-only repo-root/no-follow bounds for RC0 outcome/owner-snapshot inputs and frozen HUP seed parity. P7's SSE preflight is not yet considered closed: the helper still materializes `Object.keys` before applying node caps and queues the mutable event for later JSON serialization; bounded own-key traversal plus synchronous serialization/snapshot remains to be implemented. Active owners P1/P4/P8; P2 queued on P1/P8. No checks run.
+2026-10-21 owner refill: P4 handed off PARTIAL after documenting the bwrap PID-namespace/ptrace blocker for DAP attach, keeping DAP attach/evaluate gated, and completing source-only REPL sequence/Guard/receipt wiring. P8 handed off PARTIAL after RC0 repository-local no-follow input bounds and fake-HUP seed/resume/cancellation-accounting source fixes; RC0 still lacks trusted P1/P2 attestation and actual OS quotas. P7 has resumed to repair bounded own-key enumeration plus queue-time immutable JSON snapshot, then continue its whole phase. P6 has resumed for providers/settings/Doctor/S1 source closure. Active owners: P1, P6, P7. P2 and P8 are queued on P1/P2 evidence; P3/P4 remain gated pending their stated acceptance. No validation/provider/evaluation/release activity.
+
+## 2026-10-21 12:11 UTC — implementation continuation
+
+Active whole-phase owners: P1 Guard/ExecutionHost, P6 providers/settings/Doctor/S1, and resumed P7 streaming/render/artifact/analytics/automation/rewind. P1 source now retains Linux cgroup-v2 identity through the existing non-PTY ExecutionHost and keeps PTY/unsupported OS paths unavailable; it is closing the remaining first-party process-origin inventory. The public SDK `createOpencodeServer`/`createOpencodeTui` exports in both SDK versions spawn `opencode` outside HostKernel; parent directed P1 to disable them before spawn for V1. P6 corrected offline Doctor missing-model truth and settings lock state, and found a P2-owned title-generation model fallback that must preserve the Session-pinned provider/model unless an explicit title model exists. P7 fixed SSE own-key/node-bounded traversal and synchronous immutable JSON wire snapshot before queue admission, updating §31/§37/§32.33. These are source claims only. No tests/builds/typechecks/audits/provider calls/evaluation/release/Git publication ran under the implementation-first hold. P2/P4/P8 remain queued/partial on identified dependencies; P9 release gates remain open. Preserve mixed Git state. V1 is PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-21 12:11 UTC — phase owner refill
+
+P1 completed a source-only origin audit: TUI editor/clipboard execution is unavailable; both SDK server/TUI launch APIs fail before spawn; plugin hooks/tools, MCP connections/calls, hosted workflows, and LSP/DAP/REPL launch adapters are disabled or gated; shell remains Guard/HostKernel-routed; `resource_sampler` bash spawn is test-only; the CLI package launcher is user-invoked and unreachable from model/tool dispatch. This is not P1 acceptance: cgroup dispatch/restart, Guard/lease/receipt/recovery and OS acceptance remain unverified, and PTY/native Windows/WSL remain unavailable. P6 handed off PARTIAL after source-only settings, Doctor and model capability truth fixes; protected credentials/probes, Guarded search, FEAT/S1/provider journeys remain gated or unverified. P7 handed off PARTIAL after bounded immutable SSE snapshot, safe timeline titles, activity/render/artifact/analytics source fixes; capture/restore, `run_now`, and transient event replay remain gated. Active whole-phase owners are P2 managed vertical, P4 LSP/DAP/REPL, and P8 resources/workers/evaluation. P2 must fix implicit title-model fallback to preserve Session selection. No tests/builds/typechecks/audits/providers/evaluations/releases or Git publication ran. Preserve mixed unstaged/untracked work. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-21 12:11 UTC — critical-path refill
+
+P4 returned PARTIAL after confirming LSP/DAP/REPL cannot safely be enabled without P1 Guard/receipt/recovery, P3 document/buffer authority, shared DAP namespace/ptrace, and actual REPL OS quotas; it aligned the launch-profile cache digest contract and kept all gates false. P8 returned PARTIAL with no additional safe P8-only source gap: durable worker/OwnerLog, final-Inspect binding, cache metadata, repo-local RC0 and fake HUP source exist; P1/P2 proofs, trusted resource ingress/retention and actual CPU/memory/process/FD quotas remain absent, so fan-out/cache eviction stay off and RC0 stays NOT_ATTESTED. Active owners are P1 resumed for whole-phase Guard/ExecutionHost (including approved protected-input/Guarded SecretBroker and Doctor grants if exact contracts permit), P2 managed vertical, and P9 distribution source. No validation/provider/release commands ran. P6/P7 remain partial and dependency-gated; P3/P4/P5 source remains gated pending acceptance. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+P2 source update: title generation now defaults to the exact Session-pinned provider/model; only an explicit title-agent model may override it. P9 source audit found qualification workflow outputs pointed at `/tmp/opencode` and `$RUNNER_TEMP`; P9 is moving these workflow outputs to repository-contained paths and checking other release definitions without executing them. Both are source-only; P2/P9 remain active and no checks run.
+
+## 2026-10-21 12:11 UTC — phase source refill
+
+P2 handed off PARTIAL after fixing the Session-pinned title-model fallback; no further safe Core/TUI source was identified without P1's trusted verifier/evidence producer and P8 settlement acceptance. P5 has been assigned as a whole-phase source owner to audit and close any remaining approved web-search cascade gaps while keeping runtime disabled on missing P1/P6 grants. P9 continues local distribution source. Active owners are P1/P5/P9. P4/P8/P2 are partial and queued for dependency release; P6/P7/P3 source is partial or gated. No validation, network/provider, evaluation, release or Git publication commands ran. Overall V1 PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+P9 source update: qualification workflow scratch outputs now point to `$GITHUB_WORKSPACE/kernel/target/horizoncode-release/ci-<run>-<attempt>/`; unrun assertions reject `/tmp` and `$RUNNER_TEMP`. Release README now states qualification is manually dispatched, registry-read-only, repo-read-only, and has no sign/publish/upload/update activation. No release scripts/workflows were executed. Installer HOME path is retained as intentional installed-product behavior; build/test homes/caches are repository-local.
+
+## 2026-10-21 12:11 UTC — P1/P5/P9/P6 source checkpoint
+
+P1 confirmed §12.17/§14.7/§37 do not define the required authenticated write context, protected-input binding, SecretBroker put/revoke Guard grant/receipt, or Doctor NetworkReadGrantV1/SpendApprovalRef policy. It keeps those routes unavailable and hardened put/revoke to fail before broker mutation with `SECRET_MUTATION_GUARD_READY=false`; no authority was invented. ToolBatch source inspection shows complete bounded batch plan/persist and cancellation only of undispatched APPROVED/AWAITING members; PREPARED members require owner cancellation/reconciliation. cgroup empties remain retained to preserve identity, with a fail-closed lifetime cap of 256. P5 confirms Core adapters match the existing HostKernel cascade/secret-attempt protocol; it is removing or disabling an exported legacy callback executor that could bypass HostKernel. P6 resumed full FEAT/provider/Doctor/S1 source audit. P9 completed its source pass PARTIAL: repo-local CI artifacts, bounded legal-file inventory, installer version/binary conflict denial and unrun fixtures. Active owners: P1/P5/P6. No validation, provider, release, workflow or Git publication operations ran.
+
+P6 resumed-source finding: `pending_apply` now requires explicit `unlocked`; UNKNOWN lock state reports blocked rather than implying an accepted deferred change. An unrun fixture and §16/§32 notes were added. P1's latest source handoff confirms no schema/policy for SecretBroker write/protected-input or Doctor network/spend grants, so these stay unavailable; P1 also confirmed bounded atomic ToolBatch admission and one-use Guard lease/recovery/cancel behavior source-only. Active owners are P3 RepoIntel, P5 web search, and P6 provider/settings/Doctor/S1. No checks/providers/evaluations ran.
+
+## 2026-10-21 12:11 UTC — P5 closure and P1/P3 handoff
+
+P5 handed off PARTIAL: production no longer exports the callback-based direct search executor; the simulator is test-only and the production fixture requires zero callback dispatch. P5 source matches approved route ordering, auth 401/403/407 fall-through once, other 4xx stop, 429 retry/cooldown, explicit enablement, UNKNOWN BYO cost, and no selected model/provider mutation. Runtime stays false pending P1 aggregate Guard/recovery and P6 SecretBroker acceptance; grounded-model search has no production adapter. P6 handed off PARTIAL after additional two-way lock-state fixes; no network/credential implementation is safe without P1 grants. P3 found a client discovery DTO validation gap in P1-owned Core supervisor: depth, sorting/duplicate and mode-specific semantics need validation. P1 resumed to own that shared boundary and continue P1 source. Active owners P1/P3; no checks or provider calls.
+
+P2 final source pass added one more safety guard: the Goal verification dialog defaults unavailable, and its verify option/callback stay disabled unless explicitly opted in; the mounted app does not opt in. P2 handed off PARTIAL: title model pins and UI false-gates are source-correct, but managed verifier launch/evidence/final-revision recovery and P8 settlement are not accepted; P1 is addressing the lost in-memory challenge-set recovery while Run remains Verifying. P4 resumed on the released slot to continue authenticated LSP/DAP/REPL source against current P1/P3 DTOs. Active owners P1/P3/P4. No tests/checks run.
+
+Parent integration decision: §12.19 already requires exact challenge-set recovery, so P1 will add an internally derived HostKernel idempotency key from the authenticated Goal/Run/Task/Attempt, owner epoch, accepted SpecVersion/profile, frozen final revision and evidence-plan tuple. HostKernel must atomically persist the full set before returning challenge IDs; exact retry returns the same awaiting set, mismatched tuple conflicts, and partial/UNKNOWN never recreates or replays. P1 owns the schema/OwnerLog adapter; P2 will resume against its exact DTO. P1 also adds immutable DAP `allowEvaluate` policy (missing/false deny, digest-bound) under P4, while runtime stays false pending acceptance. No checks run.
+
+Owner correction: P3 handed off PARTIAL after adding bounded manifest-derived detection and aggregate document-byte enforcement; discovery/tree/detect remain absent from ToolRegistry pending acceptance, parser semantics/unsaved buffer/cache integration remain gated. P2 resumed in parallel with P1 for client-side verifier-set recovery against the parent-approved HostKernel idempotency contract. Current active owners are P1/P2/P4. No tests or builds.
+
+P1/P2/P4 integration update: P1 is implementing default-deny DAP evaluation policy on immutable DAP launch profiles; HostKernel retains it per process generation and checks it before challenge creation and dispatch, while P4 emits explicit false. P1 is also implementing HostKernel-derived verifier-set idempotency over the trusted Run/Attempt/epoch/Spec/profile/final-revision/evidence-plan tuple, with broker-set prepare returning only the exact still-awaiting durable set. A changed owner epoch or any approved/expired/partial/UNKNOWN set does not recreate challenges. P2 is aligning its Core consumer; P4 is aligning its DAP source. These are source changes, not acceptance.
+
+P4 resumed-source update: Core now projects immutable DAP-only `dapPolicy.allowEvaluate` with explicit false by default; DAP client requires true before per-call Guard authorization. P4 wired read-only LSP status to exact-scope HostKernel execution status without starting a process, corrected REPL source notes, and updated §37. P1 is aligning the Rust/schema enforcement. P4 continues the remaining protocol ingress/document/REPL adapter audit; attach and interpreter effects stay gated. No checks run.
+
+P4 REPL source guard: callback-event projection now has a constant-false ingress gate and unavailable capability projection because no HostKernel callback-read/reply-receipt DTO exists. An unrun fixture asserts candidate events cannot be promoted; local ledger is bookkeeping only. REPL operation still requires exact next-sequence, fresh Guard and `repl_op`, and overall execution remains false pending quotas/receipts. No tests run.
+
+P4 handed off PARTIAL after adding default-deny DAP evaluate policy, exact-scope LSP status for cached processes, and a false-gated REPL callback ingress/negative fixture. LSP code actions/rename remain versioned proposals through `files.patch`; unsaved editor buffers/production ingress are absent; DAP attach awaits shared namespace/ptrace acceptance; REPL awaits OS quotas and receipt recovery. P8 resumed as a whole-phase owner to reconcile worker terminal/final-Inspect recovery against P1's new verifier-set contract and P2's managed work. Active owners P1/P2/P8. No checks run.
+
+Managed verifier-set boundary detail: P1's source now has a HostKernel-managed set identity but the response DTO is still being finalized. Parent requires explicit trusted pin projections (Goal/Run/Task/Attempt, ownerEpoch, accepted SpecVersion and AgentProfile pins, finalRevision, evidencePlanDigest, verificationRunID, setIdentityDigest, challengeSetDigest) so Core and P8 can compare them to their own persisted/current authority; an opaque digest alone is insufficient for this cross-owner consistency check. P8 settlement must carry and validate the verifier run/set identity and challenge-set digest alongside evidence/final Inspect. Exact retries only; no partial/UNKNOWN recreation. No checks.
+
+## 2026-10-21 12:42 UTC — P2 challenge-set consumer resumed
+
+P2 Core now strictly decodes the agreed ChallengeSetV1 pins (`schemaVersion`, Goal/Run/Task/Attempt, ownerEpoch, accepted SpecVersion and verifier profile pins, finalRevision, evidencePlanDigest, verificationRunID, setIdentityDigest, challengeSetDigest) on initial/resumed/SETTLING/UNKNOWN responses. UNKNOWN returns immediately with its bounded reason and source revision; it cannot trigger another approval or verifier attempt. Counters must be canonical positive decimal strings; all digests require BLAKE3. Core checks the live accepted Spec/Run, recovered Task/Attempt/spec/final-revision against the terminal snapshot, binds settlement input to a privately branded HostKernel-decoded tuple, and requires the P8 receipt to echo verifierRunID/setIdentityDigest/challengeSetDigest. The Goal verification HTTP schema and generated JS result type now expose the set identity fields. P1 still must add the full exact tuple to `settlement_recovery` and validate/echo the three verifier identities from `settle_dispatch`; P8 must consume and durably validate that tuple. Verification/finalization remains disabled. No tests, builds, typechecks or audits were run.
+
+
+## 2026-10-21 12:57 UTC — implementation continuation / owner refresh
+
+User reaffirmed implementation-first and approved optional Linux cgroup-v2 containment for restart proof. Bootstrap was refreshed from root instructions, trackers, V1 architecture/governance and operative plan. Repo-only boundary remains in force: no host paths, external services, Git remotes, checks/builds/typechecks/audits/provider calls/evaluations/releases, or Git staging/publication. Git state remains mixed and unstaged (198 modified paths, 76 untracked at refresh); one repository worktree; repo-local kernel/target is 627 MB and filesystem reports 817 GB free. No cleanup performed.
+
+Active whole-phase owners (3 child slots): P1 Guard/ExecutionHost (agent_lifecycle_opencode_codex), P3 RepoIntel/Discovery (v1_phase_source_inventory), and P7 stream/render/artifacts/analytics/automation/rewind (arch_audit_contract_flows). P2 source handoff is PARTIAL and not accepted; its exact verifier settlement integration still depends on P1/P8 proof. P4/P5/P6/P8/P9 remain PARTIAL, gated, or queued. P1 cgroup-v2 is optional and Linux-only; assignment requires authenticated delegation, identity is persisted before dispatch, restart recovery reconciles only the same verified cgroup, and uncertain/non-empty state remains UNKNOWN/disabled. No quota guarantees or unsupported native Windows acceptance are implied.
+
+Parent approved two bounded cross-owner source tasks: P3 may add the missing discovery request/page union arms to the canonical RepoIntel JSON Schema matching TS/HostKernel DTOs; P7 may repair only refreshSessionMessages reconnect bookkeeping in packages/tui/src/context/data.tsx to preserve/detect live deltas during canonical pagination, leaving P6 question handling untouched. Parent updated arch_V1/37-RUNTIME-SERVICE-LLD.md §37.11 to make V1 SSE explicitly live-only (no SSE id/global Last-Event-ID), specify per-part sequence/sourceGeneration fencing and canonical owner resnapshot, and record the overlapping-fetch race requirement. These are source changes only. No checks have run. HorizonCode V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-21 12:59 UTC — overlay visibility correction
+
+P1 discovered `kernel/src/cgroup_v2.rs` was hidden by the root overlay ignore policy, despite being included by `kernel/src/lib.rs`. Parent added the narrow `!/kernel/src/cgroup_v2.rs` exception in `.gitignore` and informed P1; the source remains unverified, and the full overlay audit is still deferred with the rest of implementation-first checks.
+
+## 2026-10-21 13:00 UTC — P7 reconnect source handoff; P4 slot refill
+
+P7 completed the source repair of the canonical Session refresh race: overlapping message fetches coalesce; live Session deltas advance generation; pagination retries once; a repeatedly moving source preserves the live projection/cursor rather than overwriting newer events. The change is bounded to refresh/reconnect bookkeeping; P6 question handling was not edited. §31/§45 now reflect this. No checks were run; P7 remains PARTIAL pending full TUI/stream/artifact/analytics/recovery acceptance and P1/P2 dependencies for effectful automation/checkpoint paths.
+
+Available slot is assigned to P4 as a whole-phase source owner for supervised LSP/DAP/REPL integration. Current active owners: P1, P3, P4. P1 cgroup module Git visibility is restored by a narrow root ignore exception; P3 is aligning the missing discovery JSON Schema arms. All three phases remain unverified; implementation-first hold continues.
+
+## 2026-10-21 13:02 UTC — P3 source/docs pass complete; P8 slot assignment
+
+P3 completed its unblocked source/docs pass. The RepoDiscovery request/page union arms now mirror the strict TS/HostKernel DTO in the canonical JSON Schema; §30, §32, and §33 no longer claim discovery is absent and now describe the feature as source-present but gated. Remaining P3 blockers are intentionally fail-closed: registry/cursor use await integrated acceptance, parser-backed semantics lack approved provenance, overlays lack trusted immutable editor-buffer ingress, and cache eviction lacks an authenticated pressure trigger. No schema validation or tests were run.
+
+The freed P3 slot is assigned to P8 whole-phase source integration, prioritizing the P1/P2 verifier-set pins through durable worker/final-Inspect/settlement receipts, then remaining unblocked resource/RC0 source. Current active owners: P1, P4, P8. P1/P4/P8 remain source-only; no validation commands have run.
+
+## 2026-10-21 13:04 UTC — P1/P8 final-Inspect verifier-pin integration
+
+P1 source review closed an identity-binding gap: cgroup `process_kind` is now checked against the persisted capability at preflight, terminal settlement, and startup/restart reconciliation using the canonical stdio process-kind mapping. No validation was run.
+
+P8 confirmed worker terminal settlement already persists and replays opaque verifier-set pins with P2/P8 receipt identity checks, and FAILED/CANCELLED quarantine remains pinless. A newly found source gap is that the P8 managed final-Inspect candidate pin/digest does not yet bind `verificationRunID`, `setIdentityDigest`, and `challengeSetDigest`. P8 owns the worker_durable candidate contract; P1 owns HostKernel prepare/execute/recovery resolution and must pass the exact HostKernel-issued settled token. P2 candidate code is not to be edited. This integration is in progress; no tests.
+
+## 2026-10-21 — Pi/Codex comparative design update and phase owner refresh
+
+Reviewed current public Pi coding-agent/Pi Durable documentation and the in-repo Codex
+snapshot against HorizonCode's current `arch_V1`. Added the adopt/adapt/defer decision note
+at `docs/research/2026-10-21-pi-codex-harness-decisions.md` and aligned §§29/30/31/42/45.
+Key decisions: reuse Core ContextService and current models.dev catalog; preserve Core Session
+and Rust managed ownership; keep CodeMode fail-closed until Guarded nested dispatch; keep
+cache warming off; adopt explicit queue-vs-wake, replay/recovery, bounded activity and
+provenance-rich analytics patterns; defer hosted history sharing. No upstream code was copied.
+
+Latest source handoffs: P1 completed its current source pass, including cgroup process-kind
+identity checks and HostKernel-derived verifier-set pins through prepare, replay, settlement and
+terminal recovery; P3 completed source/docs for bounded authenticated discovery and remains
+gated pending acceptance/provenance/editor-ingress prerequisites. P4 and P8 completed their
+unblocked source passes and remain PARTIAL/NOT VERIFIED with cross-phase/platform blockers.
+P6 has been reassigned as the next whole-phase source owner; a Codex source researcher is
+finishing the detailed lifecycle/event/UI comparison. No tests, builds, typechecks, audits,
+provider calls, benchmarks, or release checks were run. V1 remains PARTIAL / NOT VERIFIED /
+NOT RELEASED.
+
+
+## 2026-10-21 — Codex comparison completed; whole-phase source owners refreshed
+
+The deeper local Codex lifecycle/event/UI review is recorded in §42.17 and the comparison note.
+Codex's separate operation/activity events, reserve→create→persist-lineage→accept-input order,
+separate admission/execution/residency budgets, bounded activity overview, and parallel-work
+guidance are useful patterns. Its topology/thread history persists, but mailbox/runtime state and
+completion notification are process-local/best-effort; HorizonCode's explicit durable delivery,
+named wait, Attempt authority, and receipt reconciliation remain the stronger contract. No new
+schema/runtime was justified and no upstream code was copied.
+
+Active whole-phase source owners: P2 delegation (Codex research agent reassigned after completing
+research) and P6 providers/settings/Doctor/S1 (source inventory agent reassigned after P8 pass).
+P1's current source integration and P3/P4/P8 unblocked source passes are complete for now, but
+remain PARTIAL/NOT VERIFIED because acceptance and dependencies are open. P8 verifier pins now
+flow through all five HostKernel→worker final-Inspect/replay/recovery paths and bind the verifier
+IDs/digests in its candidate/receipt; worker fan-out, cache retirement, hard OS quotas and RC0
+remain gated. No tests, builds, typechecks, audits, provider calls, benchmarks, or release checks
+were run. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+
+## 2026-10-21 13:10 UTC — P6 handoff and P7/P9 slot refill
+
+P6 completed its unblocked source pass: provider/model routing and explicit free-route eligibility,
+settings provenance/lock semantics, offline Doctor, and S1 ownership/callback paths are present.
+Provider Doctor TUI now renders the server's VALID/INVALID/UNKNOWN configuration status rather
+than conflating a probe PASS/FAIL with configuration validity. Credentials and live probes remain
+closed pending P1 authorization; real provider journeys and FEAT/QA acceptance are not run.
+
+The available whole-phase slots now belong to P2 delegation, P7 streaming/rendering/artifacts/
+analytics/automation/rewind, and P9 packaging/release-readiness source. All three work source-only;
+no validation/release commands run during the implementation-first hold. P1/P3/P4/P5/P6/P8 have
+no currently assigned source worker and remain partial/unverified or gated as listed in the phase
+ledger. Research/docs are in `docs/research/2026-10-21-pi-codex-harness-decisions.md` and §42.
+No changes are staged or published; existing mixed Git work is preserved. V1 remains PARTIAL /
+NOT VERIFIED / NOT RELEASED.
+
+
+## 2026-10-21 13:12 UTC — P7 source pass and P1/P2/P9 owner allocation
+
+P7 reviewed all remaining unblocked source and found no safe change beyond the current bounded
+stream/redaction, replay fencing/resnapshot, activity, artifact/analytics, automation-management
+and checkpoint-preview implementations. Effectful automation remains disabled; checkpoint
+capture/restore and transient-event replay remain blocked on HostKernel facts/owners and Guarded
+receipts. No tests/builds/audits were run.
+
+Current whole-phase source owners are P1 Guard/ExecutionHost, P2 direct/managed delegation and
+Goal review, and P9 local packaging/release-readiness source. The P2 review-inbox component exposed
+source issues that its owner is correcting before route integration; the shared session route is
+being coordinated to avoid P7/P2 writer overlap. P7/P6 source passes are complete but unverified;
+V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED. Mixed Git state remains unstaged and preserved.
+
+
+## 2026-10-21 13:13 UTC — P1 source pass handoff; P5 slot refill
+
+P1's final source-origin pass found all reachable first-party process origins already rejected
+before spawn or fail-closed behind HostKernel readiness. ToolBatch admission, durable receipt and
+UNKNOWN reconciliation source are present. No safe P1 source expansion remains. P1 stays
+PARTIAL/NOT VERIFIED pending Linux confinement/cgroup restart and crash/cancel/UNKNOWN acceptance;
+SecretBroker mutation/live Doctor remain gated on trusted authenticated input/grant contracts.
+
+The freed slot is assigned to whole-phase P5 cascade source closure against approved route order,
+explicit opt-in, auth fall-through, provenance/retry/failure bounds, consent, and no paid fallback.
+Current owners are P2/P5/P9. No provider calls, tests, builds, typechecks, audits, or release
+operations have run. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+
+## 2026-10-21 13:15 UTC — P5 source closure; P3 source owner reassignment
+
+P5 compared the ordered cascade against the approved contract and found the source aligned:
+explicit enabled-route order, auth 401/403/407 fall-through without retrying that route, stop on
+other 4xx, bounded 429 cooldown/retry, ordered per-route provenance, consent and no paid fallback.
+The production callback executor is absent and `WEB_SEARCH_RUNTIME_READY` remains false. P5 has no
+unblocked source changes; runtime awaits P1/P6 acceptance.
+
+The freed slot is assigned to whole-phase P3 RepoIntel/Discovery source continuation, reviewing
+existing local OpenCode/Codex parser/query patterns and implementing only safe source gaps within
+HostKernel's single authority. Parser semantics, unsaved overlays and cache eviction remain gated
+unless their exact provenance/ingress/pressure authority exists. Current source owners: P2/P3/P9.
+No tests/builds/audits/provider calls were run. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+
+## 2026-10-21 13:18 UTC — P3/P6/P9 source handoff; P4/P8 slot refill
+
+P3 added safe display sanitation for RepoIntel tree labels while preserving canonical HostKernel
+paths, and corrected byte accounting so the 32 KiB truncation marker is included. Parser-backed
+semantics, overlays, public tree/detect exposure, cursor runtime, and cache retirement remain gated
+by missing approved provenance, trusted editor-buffer ingress, or acceptance/retirement evidence.
+P3 is source-complete for currently unblocked work, not verified.
+
+P9 completed its currently unblocked release-hardening source: inherited publication workflows have
+fail-closed first-party overlays, direct package publication fails closed, local container builds
+remain available while push mode rejects before Docker, and the distribution audit checks these
+guards. Legal redistribution/notices, signing/update policy, toolchain provisioning, and exact
+candidate acceptance remain release blockers.
+
+P6's source re-audit found no safe additional gap: providers/settings, offline Doctor, and S1 paths
+exist; credentials and live probes remain closed. Its integrated acceptance, FEAT-001..014, Doctor
+catalog/full and free-model real journey remain outstanding.
+
+Active whole-phase source owners are P2 delegation/managed Goal flow, P4 supervised LSP/DAP/REPL,
+and P8 workers/resource/RC0. P2 added the explicit two-step PLAN_ONLY then goal.start TUI
+path and is checking whether existing authenticated Core projections can replace user-authored plan
+JSON without inventing endpoints or trusting caller-supplied profile authority. P4/P8 continue
+source-only. P4 reported one initial out-of-repository `/dev/null` redirection while reading repo
+docs; it was stopped, and the agent was instructed that even sink paths must remain inside the repo.
+No user files, services, or remotes were accessed. The repository-only boundary remains in force.
+Mixed Git changes remain unstaged and preserved. No tests/builds/typechecks/audits/provider calls/
+releases ran. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+
+## 2026-10-21 13:21 UTC — P4/P6/P8 handoffs; P1/P7 refill
+
+P4 corrected the Core DAP validator to accept bounded evaluate only under the trusted immutable
+profile's `allowEvaluate` pin, while HostKernel independently checks policy and a fresh Guard lease.
+Standalone LSP/DAP callback dispatch now checks the shared false HostKernel readiness gate. Attach
+and REPL remain gated on namespace/ptrace, OS quotas and authenticated recovery receipts. P6/P8
+source re-audits found no further safe additions; acceptance dependencies remain open. No checks ran.
+
+Active whole-phase owners are P1 Guard/ExecutionHost source re-audit, P2 managed delegation/Goal
+flow, and P7 streaming/rendering/artifacts/analytics/automation/rewind. P2 is implementing a typed
+trusted accepted-Spec/Profile projection rather than treating caller-authored JSON as a final TUI
+experience. P7 avoids the P2-owned session route. Repo-only boundary applies to every agent; no
+tests/builds/typechecks/audits/provider calls ran. Mixed changes remain unstaged and preserved.
+V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+
+## 2026-10-21 13:22 UTC — P1/P7 source handoffs; P5 refill
+
+P1's final source re-audit found no safe change under current contracts. Process effects are Linux
+only through HostKernel/cgroup-v2; unmediated origins and unsupported platforms remain unavailable.
+Integrated Linux confinement, cancel/crash/restart/UNKNOWN evidence is still required. SecretBroker
+mutation and live Doctor probes remain blocked by missing §14.22 protected-input/Guard-grant and
+probe-receipt contracts; routes fail closed.
+
+P7's whole-phase source audit found no further safe code beyond bounded, redacted rendering, replay
+fencing/resnapshot, artifact truth/read bounds, analytics provenance, durable automation management,
+and read-only checkpoint preview. Effectful automation and checkpoint capture/restore remain gated.
+Active owners are P2 managed delegation/Goal flow and P5 web-search production integration; P5 is
+checking existing Guarded network grant/receipt support. No checks/provider/network calls ran.
+Mixed Git state remains preserved and unstaged. V1 PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+
+## 2026-10-21 13:23 UTC — P5 source handoff; P1/P2 contract integration
+
+P5's full source re-audit found no safe gap: the production cascade, aggregate HostKernel adapter,
+one-use Guard lease/receipt path, route provenance, bounded retry/failure parsing, and disabled
+readiness gate are present. Native model-grounded search remains unavailable without a real adapter
+and consent; acceptance awaits P1 Guard/recovery and P6 protected credentials. No provider calls.
+
+P2 found a concrete PLAN_ONLY response gap: HostKernel persists Task profiles but does not return
+the Rust-derived profile digest and effective permission-scope digest. P1 resumed to add those
+per-Task authority pins to the authenticated Rust DTO/schema. P2 exclusively owns Core/HTTP/SDK/TUI
+projection and selection; P1 exclusively owns Rust protocol/schema. The UI must display HostKernel
+pins and keep `goal.start` unavailable until they arrive. Active owners: P1 and P2. No tests/builds/
+audits/network/provider calls ran; mixed Git work remains unstaged. V1 PARTIAL / NOT VERIFIED /
+NOT RELEASED.
+
+
+## 2026-10-21 13:24 UTC — Corrected P1/P2 planned-scope contract
+
+Source inspection showed that `EffectiveCapabilityCeilingProofV1.effective_ceiling_digest` includes
+authenticated Attempt ID and owner epoch, so it cannot exist at PLAN_ONLY. This supersedes the prior
+13:23 checkpoint's request for an effective `permissionScopeDigest` in that response. P1/P2 will use
+separate Rust-minted `acceptedScopeDigest` (`AcceptedTaskCapabilityScopeFactsV1.digest()`) and
+`profilePermissionCeilingDigest`, alongside canonical profile ID/revision/digest and Run/Goal/Spec
+pins. TUI labels these as planned scope/profile ceiling only. The actual effective permission digest
+is minted after authenticated Attempt admission; no TypeScript hashing or premature authority.
+
+
+## 2026-10-21 13:29 UTC — P1/P2 source integration; P4/P8 resumed
+
+P1 completed the Rust-authored PLAN_ONLY response/schema pins. P2 aligned Core, HTTP, SDK, and TUI consumption to exact `taskPins[]`, verifies sorted one-to-one Task pins against top-level Goal/Run/Spec facts, displays `acceptedScopeDigest` and `profilePermissionCeilingDigest` as planned-only facts, and starts only with the exact planned Run/Spec revision. An authenticated accepted-Goal listing does not exist: the current HostKernel list is only pending review, so Goal ID entry remains an explicit, bounded input and no local Session/DB view is treated as managed Goal authority. Review identity comes from TrustedPrincipalContext; self-review/unavailable and stale conflicts fail closed.
+
+P4 and P8 are active whole-phase source owners again, each limited to its phase write set. P4 reviews remaining LSP/DAP/REPL lifecycle source; P8 completes worker/final-Inspect/verifier recovery and resource-budget source integration. Pi/Codex comparisons use checked-in reference snapshots and the existing decision note; no URL fetches or remote Codex checks under the repository-only rule. No tests/builds/typechecks/audits, provider calls, staging, cleanup, or publication were run. Git remains mixed unstaged (201 modified, 86 untracked, none staged; one worktree); `kernel/target` 627 MB, `node_modules` 2.5 GB, repo filesystem free space 817 GB. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+
+## 2026-10-21 13:31 UTC — P2/P4/P8 handoffs; P6/P7/P9 active
+
+P2's complete source pass now includes authenticated Goal/Spec/Profile selection, strict Rust PLAN_ONLY Task-pin consumption, explicit separate `goal.start`, authenticated reviewer identity, self-review denial, exact Spec revision/digest checks, workspace/Session ownership, and Rust-pinned retry recovery. No accepted-only Goal-list API exists, so the bounded Goal-ID input is retained. PLAN_ONLY displays only Rust `acceptedScopeDigest` and `profilePermissionCeilingDigest`; Attempt-bound effective permissions remain unavailable until Attempt admission.
+
+P4 and P8 report no further safe source gaps. P4's LSP/DAP/REPL effects remain gated on Guard/OS/callback acceptance; P8's fan-out, hard OS quotas, cache retirement/pressure and RC0 remain gated by missing authority/evidence. P4 updated only its P4-owned LLD inventory. Current active whole-phase owners are P6 providers/settings/Doctor/S1, P7 context/history/rendering/analytics, and P9 release-source hardening. P7 found a source gap in aggregate token/cost analytics and is implementing bounded provenance-aware UI; P6 has exclusive provider/settings paths. P9 is checking only safe local release source; no remote/signing/publication.
+
+Parent found P2's three new dialogs were ignored by a broad root rule. Added exact exceptions for proposal, review-inbox and plan dialogs; Git MCP now reports them as untracked, alongside 201 modified files, with none staged, and 89 untracked files total. One repo worktree remains; disk last measured 817 GB free, `kernel/target` 627 MB, `node_modules` 2.5 GB. No tests/builds/typechecks/audits/provider calls/remote operations/staging/cleanup were performed. Repo-only restriction remains. V1 PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-21 13:35 UTC — P6/P9 handoff; P1/P7 context contract reopened
+
+P6 completed currently unblocked source work: bundled Models.dev metadata now reports freshness UNKNOWN absent a source revision/retrieval timestamp; provider listing and model picker carry catalog provenance; existing anonymous-free eligibility, model selection, settings, Doctor and S1 source remain. Product source does not automatically fetch catalog updates. P9 completed local release-source work: container builds use HorizonCode-local image names/tags rather than implicitly pulling upstream CI images; release audit checks hidden publication/control sources; publication stays disabled.
+
+P7 completed aggregate usage analytics in the Debug dialog: bounded latest-256 Session-message subtotals preserve provider-reported/measured/estimated provenance per token metric and count unknown remainder; cost is reported as provenance/quality counts and per-request evidence, with no cross-route monetary sum because the contract defines no currency. P7 identified a deeper ContextSelection gap: the current managed-only source records only Session messages/cursor and is not consumed by the prompt compiler. P1 now owns the strict Rust/schema DTO/digest binding; P7 owns Core managed-context source resolution and request integration after the exact DTO is fixed. Ordinary direct legacy Sessions must not invent AgentProfileV2 authority; managed context must use the exact Task-pinned profile and fail closed if absent/stale. No tests/builds/typechecks run.
+
+Parent fixed one P2 selector source issue found during review: accepted Spec capabilities are no longer intersected away to fit a weaker profile; only profiles covering every required capability are selectable, and the complete sorted Spec requirement is sent to Rust. P2 dialogs were made Git-visible by exact ignore exceptions. Active source owners: P1 ContextSelection contract and P7 ContextService/request integration; P6/P9 source handoff complete. No verification/provider/remotes/staging/cleanup. Overall V1 PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-21 13:41 UTC — Pi/Codex local review; managed context and RepoIntel dependencies
+
+Expanded the checked-in Pi/Codex comparison in `docs/research/2026-10-21-pi-codex-harness-decisions.md`. The local Pi-like checkout is the OMP fork `repo_take/oh-my-pi` at `a536558` (2026-10-16), not Earendil Pi, and contains no `packages/durable`; the supplied Pi Durable RFC is treated as user-provided design material. Local Codex is `repos/codex` at `14830654c` (2026-10-20) with 206 tracked modifications, so it is a dirty source reference, not a clean/latest-upstream claim. No external URLs/services/remotes were accessed. Adopted patterns remain mapped to §§29–31, 37, 42 and 45; no second runtime/store/scheduler/effect authority is introduced.
+
+P1/P7/P2 are coordinating a critical managed-context contract gap: admission currently carries an empty selection and one Attempt-level digest cannot represent later provider requests after tool/history changes. ContextSelection must bind each exact provider request at its request boundary, retain monotonic request ordering under the same live Attempt/owner epoch, and include real managed Task/accepted Spec/profile/tool/system/context source refs with authentic owner revisions/digests. P1 owns Rust/schema/HostKernel; P2 owns managed request-context transition APIs; P7 owns compiling and dispatching the same immutable prompt. Dispatch remains closed until that chain is source-complete.
+
+P3's full unblocked source audit is complete. It found the shared HostKernel workspace revision walker rejects symlinks before RepoIntel discovery can safely list them without following them; P1 owns a typed RepoIntel-safe observation/revision solution without weakening mutation snapshot safety. Parser provenance, editor-buffer ingress, cache retirement/pressure and Guarded query limits remain dependency-gated. No test/build/typecheck/audit/provider/release commands ran. Active owners: P1, P2, P7. Git work remains mixed and unstaged. Repo-local disk check: 815 GB free; `kernel/target` 627 MB; no cleanup or remote operation. V1 PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+**2026-10-21 13:48 UTC — RESERVED target projection gap:** §37.22 specifies a read-only P8 RESERVED worktree-target projection from the exact opaque reservation proof. WorkerDurable already persists that reservation and HostKernel resolves the target during admission, but `managed.ready_task_selection` returns only the root `workspaceRef`; the exposed target projection is post-admission. P2/P7 keep initial provider request dispatch fail-closed until the authenticated projection/preflight route exists. P8 owner dispatch hit the platform's current child-thread cap (three active children); assign at the first free slot. P2 also reports that the TS `managed_context.advance` wrapper exists but the Rust OwnerLog event/HostKernel endpoint is not complete; P1 has been asked to include it or record it as an explicit blocker. No checks ran.
+
+**2026-10-21 13:50 UTC — CodeMode comparison:** reviewed first-party `packages/codemode` and added its concrete behavior/limitations to the local Pi/Codex decision note. Keep its confined interpreter and progressive catalog; treat it as a tool composition surface only. Its nested calls reuse one outer invocation and do not create durable child-call identities or independently run registry/output hooks, so effectful leaves must be mediated by P1 Guard/ExecutionHost with Attempt, lease, atomic batch, receipts and UNKNOWN recovery, or stay unavailable. No checks were run. Active phase owners remain P1/P2/P7; P8 is queued for the first free child slot.
+
+**2026-10-21 13:52 UTC — managed prompt preflight safety:** P7's new compiler reaches the Task prompt loop and LLM boundary, but the existing `LLMRequestPrep.prepare` executes system-transform, parameter and header plugin hooks. Managed pre-admission compilation must not run those hooks as ambient effects. P7 is splitting deterministic prompt compilation over trusted snapshots and must either disable/gate managed mutating hooks or mediate any effects through P1 before using their output. The same frozen normalized provider body must be hashed and dispatched; route and approved non-secret parameters stay separately pinned, with credentials excluded. No checks ran.
+
+**2026-10-21 13:54 UTC — managed extension-hook isolation:** P7 implemented the first safe boundary by disabling system/parameter/header transform hooks and message transforms on managed LLM requests while preserving direct-session behavior. The remaining gap is coordinator ordering: P2 must compile child Session/tool/system inputs pre-admission and hand the same immutable prepared object to the LLM after admission. Later requests must use the authenticated exact-next cursor and P1 advance receipt; recovery must reprepare and match before consuming dispatch. No checks ran.
+
+P1 reports the Rust selection record/advance event/endpoint and seq1 recovery projection are now source-present, with P1 still reconciling the live protocol contract. Remaining P1 scope includes nesting request pins in `ManagedAttemptScopeV1` and returning refreshed scope on advance; P2 is aligning its TS scope/decoders. P7 has added a fail-closed `prepareManagedTaskRequest` stub but still needs the real no-dispatch compiler API over the exact normalized prompt. HostKernel's READY_TASK does not yet expose `preAdmissionTarget`.
+
+P2 reports recovery coordinator source now reparses saved seq1 selection before claim/consume, checks live request ID/sequence/digest and complete DTO equality, and passes the same prepared object through prompt execution; missing refs fail before one-use claim. It also consumes the Rust `worktreeTarget` scope field. This does not unblock runtime while P7's preflight remains a fail-closed stub and P8's authenticated READY_TASK target projection is absent. No tests run.
+
+P1 now projects a full HostKernel-authored Attempt scope on successful admission, including exact ContextSelection pins and P8 target. Recovery does not currently have the authenticated RESERVED target; P2 remains fail-closed until P8 exposes a candidate/task-revision-bound pre-admission projection. No path may reconstruct it from root `workspaceRef`.
+
+P2 found a later-request recovery hazard: `managed_context.advance` durably pins seq N before a provider request, but on crash it cannot distinguish never-dispatched from dispatched/charged. Advance is not a dispatch receipt. P1/P2 are coordinating a per-request one-use dispatch state and exact settlement, or conservative DISPATCHING→UNKNOWN recovery with no replay, bound to request ID/sequence/context digest/route/model/live Attempt. Keep later provider dispatch closed until the distinction is durable.
+
+P1's source audit found no Rust-owned managed inference route resolver, endpoint revision pin, or network Guard/consent path; existing ProviderTransport only covers web search. The provider lifecycle can persist PREPARED/DISPATCHING/SETTLED/UNKNOWN, but `begin` must not mint send authorization from Core-supplied route strings. P1 is implementing the Rust Guarded provider boundary against the existing Core provider owner and will keep send false until authenticated route pins and Guard/consent/budget rechecks are wired. A Core route adapter may require P6 ownership when a slot frees. No network/provider calls.
+
+## 2026-10-21 13:44 UTC — managed per-request API shape agreed; benchmark readiness recorded
+
+P1/P2/P7 aligned the managed context transition: seq=1 selection is pinned at Attempt admission; later provider requests use `managed_context.advance` with exact next sequence 2..1024, request ID and digest under the live Attempt/session/profile/owner epoch/revision. Exact replay returns the prior receipt; gaps, conflicts, stale/terminal authority reject. P1 owns Rust/schema/HostKernel and durable ref-only selection event; P2 owns the managed-control wrapper/lifecycle projection; P7 owns the actual pre-provider seam (`processor.ts`/`llm.ts`) and must pass the identical immutable compiled input. Source implementation is underway; no API/runtime gate is accepted until reviewed and later verified.
+
+Evaluation review: `scripts/eval/eval_harness.py` is fake-only and explicitly cannot produce official scores or invoke providers/benchmarks. Existing HUP docs already specify a frozen paired baseline/full-harness design, ablations, task partitions, provenance/accounting, and a staged future order: fake self-check, one explicitly selected free-route smoke, pinned FeatureBench fast split plus development samples, then held-out paired evaluation. Source details and limitations were added to the Pi/Codex research note. No tests, builds, provider requests, or benchmark runs were performed.
+
+## 2026-10-21 13:46 UTC — managed-session identity parity found
+
+Source tracing exposed an additional contradictory check: TypeScript ManagedControl.admitAttempt rejects a ContextSelection whose sessionID equals the Attempt child Session, while Rust HostKernel requires it to equal that exact child sessionID and separately differ from parentSessionID. P2 owns strict TS parity and removal of this pre-dispatch contradiction. The real provider request and transcript are owned by the child Session; root remains lineage only. P2 also owns carrying requestSequence, requestID, and contextSelectionDigest through Core/OpenCode managed scope adapters; P7 consumes those fields at processor/LLM pre-dispatch; P1 owns Rust truth and durable receipts. Per-request transition contract remains seq 1 at admission, exact next 2..1024 thereafter. No checks run.
+
+## 2026-10-21 — provider transport reuse review
+
+Parent source review of `kernel/src/http_execution.rs` confirms an existing single
+`HttpExecutionSupervisor`, bounded DNS/public-address and redirect handling, request/response/time
+limits, and durable EffectHost PREPARED → RUNNING → SETTLED/UNKNOWN receipts/reconciliation. Its
+current request validator and fixed endpoint policies are web-search-specific; do not loosen them
+for model providers. P1 owns a distinct authenticated provider-route projection and managed request
+binding that may reuse this transport/lifecycle, with route revision, Guard/consent/budget,
+SecretBroker, send authorization, and response settlement all required before any provider send.
+P2's prepare/begin/settle/UNKNOWN TS wrappers are source adapters only; P7 still owns the actual
+deterministic preflight compiler and identical frozen-input handoff. No tests, builds, provider
+calls, or remote access were performed.
+
+## 2026-10-21 — managed provider boundary follow-up
+
+Superseding earlier in-file notes where they conflict: P1 now reports ContextSelection admission,
+advance, and recovery wiring in Rust/HostKernel, with event/security contracts updated. Its provider
+request record model is in source, but dispatch remains disabled pending the P6-authored trusted
+provider route/credential/consent projection and exact Rust-to-ExecutionHost handoff. P6 is queued
+for the first available implementation slot; three child slots are currently occupied by P1, P2,
+and P7. Parent found a managed LLM `prepareStep` block-order defect where `nextSequence` is read
+before its `const` declaration and sent it to P7 for repair. P2's typed provider wrappers remain
+non-dispatching adapters until Rust authority exists. No checks/provider calls/remotes.
+
+## 2026-10-21 — P2 request-bound child lifecycle source update
+
+P2 Core adapters now require the Rust active managed-scope shape with exact child Session,
+worktree target, request sequence/ID/ContextSelection digest, and refreshed revision; `admitAttempt`
+now matches Rust's child-session identity rule. Managed recovery recompiles the persisted seq=1
+selection on the exact HostKernel worktree target and compares the full DTO before claim/consume;
+the same prepared object is handed through the Task prompt path. Provider prepare/begin/settle/UNKNOWN
+wrappers validate full profile/route/request pins and remain adapters only. P1 has OwnerLog provider
+record/parser/reducer source but no HostKernel provider RPC operations because authenticated route,
+credential and Guarded ExecutionHost transport are absent. P8's authenticated pre-admission target
+projection is also missing; READY_TASK and recovery therefore fail closed. P7's prompt preflight is
+currently a typed unavailable stub pending its shared deterministic no-dispatch compiler. P2's
+remaining source work is to reconcile wrappers against P1's eventual exact HostKernel DTOs, wire the
+P8 pre-admission projection when available, and complete the prompt/coordinator integration with
+P7; managed sends must remain disabled. No tests/builds/typechecks/audits/provider calls ran. V1
+PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+P1 follow-up: `ManagedProviderRequestRecordV1` and its OwnerLog transitions are now source-present,
+including exact ContextSelection/DelegationBinding provider/model pin equality, replay constraints,
+state-specific delivery IDs, and startup DISPATCHING→UNKNOWN reconciliation. HostKernel request
+RPCs and the trusted Core route adapter are still absent; P1 is proceeding with strict Rust operation
+DTOs that remain unavailable until P6 supplies the route/SecretRef/consent facts. No checks run.
+
+P2 wrapper DTO alignment: provider prepare/begin pass separate strict `routeProjection` and
+`requestPins` objects matching P1's Rust operation contract. The route projection contains only
+opaque provider/model/harness/route/endpoint/credential-lease/consent/Guard/capability refs; it
+contains no credential bytes or URL. P2 decodes no-mutation `UNAVAILABLE` prepare/begin receipts
+only when they echo exact pins and leave OwnerLog revision and Attempt scope unchanged;
+`sendAuthorization` must be null. P1 confirmed this is the only begin behavior before Guarded
+ExecutionHost can consume the request. P1 still needs the OwnerLog replay comparison to persist and
+compare the additional non-secret route/lease/consent/challenge/capability refs. P7 is building its
+Task/profile/child staging wrapper around the existing no-dispatch `prepareManagedPrompt` compiler;
+it will reuse the staged message and frozen request after admission. No checks ran.
+
+P1 follow-up supersedes the prior note: Rust now persists and compares the full route/lease/consent/
+Guard/capability refs in `ManagedProviderRequestRecordV1`, and HostKernel exposes strict provider
+operation DTOs. Prepare/begin still return no-mutation `UNAVAILABLE` because P6's authenticated
+route/SecretRef/consent projection and Guarded ExecutionHost provider transport are not available.
+P2's response decoders match that no-mutation status and continue to reject any send authorization.
+No checks ran.
+
+## 2026-10-21 15:50 UTC — P6 managed provider route source
+
+P6 added `Provider.managedRouteProjection` in `packages/opencode/src/provider/provider.ts` over
+the existing Core provider registry and Auth SecretBroker metadata owner. It resolves the exact
+active provider/model, restricts adapters to the bundled first-party table, requires HTTPS or
+loopback HTTP, computes opaque route and BLAKE3 endpoint-revision identities, and returns no URL,
+headers, or credential bytes. A non-null `credentialLeaseRef` is an opaque SecretRef, not a
+one-use lease; `null` is allowed only when the existing exact anonymous-free model projection
+proves the selected OpenCode model. Consent, Guard-challenge and capability-lease refs must come
+from an authenticated internal Guard caller. P1 confirms the Rust DTO accepts null but both null
+and non-null still return no-mutation `UNAVAILABLE`; HostKernel cannot yet independently resolve
+the route/consent/Guard refs, and no send authorization or managed provider transport exists. P7
+has the consumer seam for preflight integration. No tests/builds/typechecks/provider calls ran.
+
+## 2026-10-21 — Pi contract map and phase restart
+
+Expanded `docs/research/2026-10-21-pi-codex-harness-decisions.md` with a contract-level mapping
+of the user-supplied Pi Durable RFC to HorizonCode owners, LLDs, event flows and V1 dispositions:
+context/resources, prompt changes, durability/replay, forks, child lifecycle, queue/wake, extensions,
+compaction, app state, snapshot/replay, analytics, export/catalog/cache. The mapping adds no runtime
+or event authority; it is source-context analysis, not a claim of full upstream Pi source review.
+
+P1/P6/P8 whole-phase owners restarted after prior agents exhausted usage. P8 implemented the
+worker-durable `reserve_managed_ready_task_with_target` helper to produce a RESERVED target from the
+exact persisted proof; P1 owns wiring that into authenticated `managed_next_schedulable_task`.
+P1 also found managed-provider HostKernel handlers existed but had a TS/Rust DTO mismatch (missing
+revision/echo pins and rejecting nested routeProjection/requestPins); P1 is correcting that while
+keeping send authorization null/unavailable pending P6 and Guarded ExecutionHost transport. P6 is
+building the Core route/credential/consent projection from existing provider/SecretBroker owners.
+No tests/builds/typechecks/provider calls. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+**2026-10-21 — Managed pre-admission order correction and provider route source:** supersedes
+the one-step target wiring note above. `TrustedPreAdmissionPinsV1` requires the compiled
+ContextSelection digest, but compiling requires the reserved child worktree. The agreed flow is
+`managed.pre_admission_target.reserve` (known authenticated candidate/profile/scope/resource pins,
+no dispatch) → Core no-dispatch compile on P8's exact target →
+`managed.pre_admission_target.bind_context` (Rust validates and binds the exact ContextSelection to
+the same still-RESERVED lease through P8's `PreAdmissionContextBound` OwnerLog event) → Attempt admission consumes that reservation without reserving
+again. P1 owns HostKernel and P8 owns staged lease/recovery; P2/P7 must preserve the exact prepared
+request. The normative contract and phase note were corrected in §§37.22/18.18 and the Pi/Codex
+decision note. P6 has added `managedRouteProjection` in `packages/opencode/src/provider/provider.ts`
+using the existing Provider/Auth SecretBroker owners, fixed bundled routes, opaque endpoint/secret/
+consent/Guard refs, and no dispatch. Core projects a null SecretRef only for an exact active,
+zero-priced, credential-free OpenCode model; HostKernel still returns UNAVAILABLE for both null and
+non-null references until it can independently validate route/consent/Guard facts and consume a
+guarded send authorization. P1 is aligning strict nullable DTOs and Guarded transport. No
+tests/builds/typechecks or
+provider calls; all sends remain disabled. V1 PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+**2026-10-21 — phase slot refill:** P6 returned a source-only checkpoint after reviewing its
+provider/settings/offline Doctor/S1 surfaces; no additional unblocked source gap surfaced. P6's
+managed route projection is source-present but no-dispatch; P1-dependent provider/credential/Doctor
+effects and P6 acceptance remain open. P2 has been relaunched as the whole-phase managed/direct
+child lifecycle owner to adapt its strict Core DTOs and coordinator ordering to P1/P8's staged
+pre-admission API. Active owners: P1/P2/P8. No tests/builds/typechecks/provider calls. V1 remains
+PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-21 — P8 staged lease source update
+
+P8 added Stage-A exact target reservation, persisted candidate replay, and Stage-B immutable ContextSelection binding in `kernel/src/worker_durable.rs`. Stage A uses trusted known pins with no fabricated ContextSelection; restart resolution keeps the persisted expiry and exact worktree/root/resource pins. Stage B binds the real Rust-validated digest to the same RESERVED lease, is idempotent across a lost response, and conflicts on changed context. Candidate receipt, bound receipt, and current cursor/pool lease proof are distinct. P1 owns HostKernel wiring; P2/P7 own the frozen request lifecycle. Exact APIs have been sent to P1/P2.
+
+P8's full source audit found no additional safe source path to enable: settlement/fan-out/worktree release need P1 quiescence and P2 terminal/final-revision/verifier evidence; pressure needs approved recovery policy plus authenticated ingress; cache retirement needs authenticated retained-owner callbacks and measured reclaimed bytes; OS hard quotas and RC0 attestation remain unsupported. Keep those unavailable. No tests/builds/typechecks/audits/provider calls run; V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED. Repo-only boundary and mixed Git state remain in force.
+## 2026-10-21 16:13 UTC — V1 continuation and Pi/Codex source comparison
+
+Re-read the named attachment and the required project checkpoint sources. The requested work remains full V1 implementation, implementation before tests, local OpenCode/Codex reuse, complete architecture/flow/event reconciliation, HorizonCode naming, documentation upkeep and preservation of mixed Git state. Current source tree is 5.4 GiB; C: has 20 GiB free of 454 GiB; only the primary worktree is present. No build was started.
+
+Active slots: P1 Guard/ExecutionHost, P2 managed/direct child lifecycle, and the P3 reference reviewer (documentation-only, comparing checked-in Pi-like/Codex sources to arch_V1). P3 source phase has no additional independent change ready. P1/P2/P3 are working in the same shared tree but with disjoint source/doc ownership. Parent re-audited §§31.5/31.17/31.19, §37.22–.24 and VEO-012/VEO-018. Terminal capture will use immutable ArtifactStore data, exact Attempt/source-revision ownership, and typed ArtifactRef/fidelity in the settled receipt. Core/user range reads remain unavailable until the exact reference is linked from succeeded verified managed evidence; internal verifier consumption stays HostKernel-authenticated. P1 owns EffectHost/ArtifactStore integration; P2 owns HostKernel projection.
+
+The local reference audit is not complete yet: OMP is not Earendil Pi Durable, and the local Codex snapshot is dirty and cannot establish latest upstream state. The user-supplied Pi Durable contract and prior comparison note remain the design inputs. No tests/builds/typechecks/provider calls, benchmarks, release checks, staging, commits, pushes or cleanup have occurred. Overall V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+## 2026-10-21 16:16 UTC — local-reference audit and P7 resume
+
+The focused checked-in Pi-like/Codex comparison is complete and recorded in `docs/research/2026-10-21-pi-codex-harness-decisions.md`, with source paths, HorizonCode contract sections, and adopt/adapt/defer decisions. It explicitly limits evidence to the local OMP-like Pi fork, the dirty Codex snapshot, and user-supplied Pi Durable text; no latest-upstream claim. The freed slot is now assigned to whole-phase P7 implementation (activity/replay/rendering/usage/artifact presentation/automation/checkpoint UI), with P1/P2-owned Rust and managed-control files excluded.
+
+P1 changed EffectHost terminal settlement to accept only typed immutable capture metadata, persist no raw output BLOB or synthetic artifact ID, and bind the ArtifactRef/fidelity/counts into its receipt. P2 is replacing HostKernel's terminal output Vec capture with bounded ArtifactCapture, publishing under exact Attempt/workspace/effect scope, and preserving artifact fidelity independently from process status; capture failure after dispatch remains UNKNOWN. Core `pty.ts` already has strict typed ArtifactRef/capture-provenance decoding. No tests/builds/typechecks/provider calls/evaluations/release checks run. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+## 2026-10-21 16:18 UTC — HostKernel artifact wiring and provider boundary
+
+P2 reports HostKernel terminal capture now streams bounded `ArtifactCapture`, hashes all observed output, persists FULL/SAMPLE bytes under HostKernel-derived effect/Attempt/workspace owner refs after observed exit, and passes typed capture metadata to P1's EffectHost settlement. Capture/publication/settlement failure after dispatch stays UNKNOWN. P1's EffectHost no longer persists raw output or synthetic refs. Core `pty.ts` strictly decodes the typed reference and capture provenance.
+
+P7 made a source correction in its owned checkpoint files: only regular single-link targets with a valid digest are emitted; Core/TUI reject malformed/duplicate/out-of-selection restore actions; §31.18 updated. §37.11's reconnect guard status was corrected. One TUI verifier artifact callback issue in `packages/tui/src/app.tsx` is assigned to P2 because it overlaps the managed goal dialog.
+
+Re-audited §14.24 and §37.22–24: P2 owns managed-provider OwnerLog lifecycle transitions; P1 owns HostKernel route/consent/budget validation and Guard/ExecutionHost one-use send authorization; P6 owns Core fixed-route projection, SecretBroker sender and existing provider transport. No second transport/registry. Provider dispatch remains false-gated until connected and later accepted. Active owners P1/P2/P7. No tests/builds/typechecks/provider calls or release operations.
+## 2026-10-21 16:19 UTC — P7 source handoff; P6 slot refill
+
+P7 completed its current source assignment: checkpoint preview now enforces digest-bound regular single-link targets, required before-digest semantics, and duplicate/out-of-selection rejection across HTTP/Core/TUI; prompt usage footer now uses per-request token provenance and avoids fabricated aggregate USD. P7 corrected §31.18/§31.21 and §37.11. Effectful automation invocation and checkpoint capture/restore remain gated; artifact reads stay limited to verified managed evidence. No checks were run.
+
+P2 fixed the `app.tsx` verifier preview decoder with exact response/reference keys, immutable ref equality, canonical range/completion checks, encoded-size/alphabet preflight, then decode and canonical round-trip checks. P2's HostKernel terminal ArtifactCapture integration is in source. The freed slot is assigned to whole-phase P6 provider/settings/Doctor/S1 implementation; P1/P2 provider ownership remains P2 journal transitions, P1 Guarded authorization, P6 Core/SecretBroker transport. Active owners P1/P2/P6. No tests/builds/typechecks/provider calls/release work.
+## 2026-10-21 16:23 UTC — Pi/Codex continuation, progressive tools, managed authority
+
+Re-read the requested attachment and bootstrap files. The source comparison is deliberately scoped: the local Pi-like checkout is OMP (not Earendil Pi Durable); local Codex is dirty; no remote/latest-upstream check was performed. The design comparison and adopt/adapt/defer decisions are in `docs/research/2026-10-21-pi-codex-harness-decisions.md`.
+
+P7 found the normative progressive `tools.search`/next-turn toolset-generation requirement (§30.18, §33.21, §14.6, §29.8), but current SessionTools/ToolRegistry has no generation API. P7 is tracing Core prompt/AI-SDK boundary and will implement the selected HarnessProfileV1 projection and next-boundary expansion, coordinating a bounded generation manifest into each managed ContextSelection with P2. No partial discovery tool may expose denied/internal capabilities or widen Guard authority.
+
+P1/P2 reconciled a second authority gap: managed-message `permissionScopeDigest` is distinct from capability ceiling/profile ceiling/accepted scope and must bind the effective admitted permission intersection. P1 owns protocol DTO/schema and guarded helper consumption; P2 owns HostKernel mint/recompute/persistence and Core projection. Managed message effects remain disabled until both sides bind the same digest. Active phase owners: P1, P2, P7. No tests/builds/typechecks/provider calls run. Mixed Git work remains unstaged and preserved; V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+**16:24 UTC delta:** P2 has implemented the Rust-side managed ContextSelection validator for the progressive toolset manifest: exactly one `toolset:<harnessID>` generation row and at most 32 sorted tool rows, matching the pinned harness; per-tool schemas are bounded to 1 MiB. Canonical schema digest is BLAKE3 over `horizon.tool-schema.v1\0` plus canonical JSON; generation digest is BLAKE3 over `horizon.toolset.v1\0` plus canonical JSON of harness ID/revision and sorted `(tool ID, schemaDigest)` pairs. P7 owns the exact Core compiler mirror and next-request tool projection. These are source changes only and have not been tested.
+**16:26 UTC delta:** P1's Rust protocol now exposes `managed_effective_permission_scope_digest_v1` and requires `permissionScopeDigest` in `DelegationBindingV1` and `ManagedAttemptScopeV1`. It domain-separates with `horizoncode.effective-permission-scope.v1\0` and binds Attempt/owner epoch, Run/Task, accepted scope, profile revision/digest/owner binding/permission digest, Guard policy revision, and sorted concrete effective capabilities. P2 is wiring HostKernel computation/persistence/projection and correcting the separate pre-admission profile-ceiling field name. This is implementation evidence only; no checks were run.
+**16:28 UTC integration boundary:** P1 confirmed managed model sends must stay on the existing Core streaming ProviderTransport inside SecretBroker `withUse`; HostKernel supplies only a trusted route/revision/consent/budget-bound one-use permit and durable PREPARED→DISPATCHING/settle/UNKNOWN transitions. Do not reuse the search reqwest executor or add a second provider transport. P2 keeps provider handlers gated unless the exact P6 route projection matches. P6 is next after the current P7 owner slot because this provider path is on the managed vertical's critical path; P4 follows as capacity opens.
+**16:29 UTC owner correction:** P1 returned a source-only protocol/API handoff but its whole phase is still partial; it is resumed to implement/reconcile all remaining unblocked Guard/ExecutionHost work, not released as complete. The corrected pre-admission field is now `profile_permission_ceiling_digest` across `worker_durable.rs` and HostKernel comparisons; Attempt `permission_scope_digest` remains separate. P6 remains queued for the next available slot after current owners; no verification commands have run.
+**16:30 UTC delta/boundary note:** P2 now compares Stage-A/Stage-B and attached reservations against `profile_permission_ceiling_digest`; dispatch handoff projects the immutable Attempt `permission_scope_digest` and recomputes it against current Guard proof before accepting. Legacy pre-admission OwnerLog decoding accepts the old serialized spelling only as a replay compatibility alias; new writes use the explicit ceiling name. No checks ran. P1 reported one accidental host-wide process-table listing during a status check, stopped without terminating or mutating processes, and was directed to use only repo-contained evidence/task-agent roster henceforth.
+## 2026-10-21 16:32 UTC — Pi/Codex question follow-up and phase refill
+
+The requested comparison has been done as a focused repository-local source/contract review and recorded in `docs/research/2026-10-21-pi-codex-harness-decisions.md`, with mappings to the active HLD/LLD, event and acceptance owners. The exact local Pi checkout is absent: only `repo_take/oh-my-pi` is present, so Pi Durable details were assessed from the user-supplied RFC, not represented as an upstream Pi source audit. The local Codex snapshot is `repos/codex@14830654c` and dirty; no remote/latest Codex check occurred under the repository-only boundary. No blanket claim that every file in either upstream repository was read.
+
+Active child phase owners: P2 managed/direct lifecycle, P6 providers/settings/Doctor/S1 plus P5 transport integration, and P7 stream/render/artifacts/analytics/automation/rewind. P1 remains PARTIAL and queued for the next freed slot; its latest provider authorization helper binds Attempt ID and effective permission-scope digest, but this does not complete P1. P2 is continuing managed inbox/wake implementation against its own HostKernel journal; the current handler still denies managed `follow_up` because there is no managed-lane completed-turn proof. P7 has source for bounded permission-filtered tool discovery, next-request toolset generation, managed ContextSelection refs, and restart rehydration from matching completed discovery outputs. P7 is checking HarnessProfile digest/schema and wire-API support claims. All this remains source-only. No tests/builds/typechecks/audits/provider calls/release/Git operations were run; mixed Git state and repository-only boundary are preserved. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-21 16:40 UTC — active phase source update
+
+P1 is active again: durable cgroup identity now includes the exact optional Attempt-scope digest, includes it in quiescence evidence, and checks it before Guarded PREPARED dispatch, settlement, and restart reconciliation. Old pending records without the pin fail closed as UNKNOWN. P2 has added Rust recomputation of the managed `horizon.toolset.v1` digest from harness ID/revision plus ordered tool/schema members, with matching Core and JSON schema fields. P7 has been resumed for the full stream/artifact/analytics/automation/rewind phase. P6's provider sender remains source scaffolding only and blocked on the pending dual-digest decision plus P2's exact fresh-begin permit DTO; no send/lease is created. Current active whole-phase owners: P1, P2 (resume queued for remaining lifecycle), P7; P6/P5, P3, P4, P8, P9, integration and release remain open/queued. No tests/builds/typechecks/audits/provider calls/benchmarks/release operations ran. Preserve mixed unstaged Git state and repo-only boundary. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+## 2026-10-21 16:36 UTC — P7 source handoff, P1 slot refill, integration review
+
+P7 returned its unverified source pass: bounded permission-filtered tool discovery, current-generation schema matching on restart rehydration, direct next-request tool activation, managed ContextSelection toolset refs, and real inclusion of resolvable immutable built-in harness prompt payloads. It updated §§31 status; relevant implementation is in `packages/core/src/harness-profile.ts`, `packages/schema/src/harness-profile-v1.ts`, `packages/opencode/src/tool/discovery.ts`, `session/tools.ts`, `session/llm.ts`, and `session/prompt.ts`. Parent `git diff --check` on those paths is clean; no compile/tests/audit ran. Parent found the Rust ContextSelection decoder validates toolset ref shape but does not recompute the advertised `horizon.toolset.v1` generation digest; P2 is reconciling this with the contract before managed use.
+
+The freed slot is assigned to whole-phase P1 on non-overlapping ExecutionHost/sandbox/Core process/PTY files. P2 retains exclusive `kernel/src/host_kernel.rs` and managed-control/Core managed lifecycle ownership. P6/P5 owns the existing Provider/SecretBroker sender and route integration. Active owners are P1, P2, P6/P5; P3/P4/P7/P8/P9 remain partial, gated, or queued in the full V1 ledger. P2 continues a separate managed message journal; managed `follow_up` has no implemented managed completed-turn authorization yet. P6 is implementing the selected-route sender and received the §14.24 split: HostKernel authorizes opaque route/revision pins, existing Core Provider validates the actual SDK URL, and Auth derives SecretBroker context internally. No tests/builds/typechecks/provider/audit/release/Git operations ran. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+
+## 2026-10-21 16:41 UTC — managed follow-up proof decision
+
+Resolved the P2 design gap from §29.5: provider request settlement does not prove a complete assistant turn because it may end in a tool call. P2 will add an authenticated Rust `managed_provider.complete_turn` owner-log transition tied to the exact latest settled request/assistant/response/usage pins, live Attempt and epoch, and absence of in-flight provider work or unresolved effects. That durable completion will mint the separate one-use follow-up wake proof; queued messages remain non-waking. P7 owns the Core final-assistant boundary in `session/processor.ts`/`session/llm/request.ts` and is coordinating the callback with P2; P2 owns Rust/managed-control. Active whole-phase owners: P2, P6 (source continuation), P7. P1 returned a source checkpoint PARTIAL and must be resumed for remaining gaps/acceptance; P3/P4/P5/P8/P9 and final integration remain open. No tests/builds/typechecks/audits/provider calls/release operations ran. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+
+## 2026-10-21 16:42 UTC — P1/P2/P6/P7 orchestration update
+
+P6/P5 returned SOURCE COMPLETE for currently unblocked code, not verified: catalog/settings/offline Doctor/S1 ownership projections and ordered search auth-failure behavior are present; provider and search dispatch remain false-gated. The managed transport scaffold prepares an exact request and transport digest without lease or send. The user decision on whether HostKernel must bind both normalized input and exact SDK transport digests is still pending; this is a concrete blocker for managed sends, while independent P6 source is closed. P1 has resumed whole-phase source audit. P2 and P7 coordinated a distinct `managed_provider.complete_turn` proof because a settled provider step may be an intermediate tool-call response; P7 will invoke the P2-owned strict HostKernel transition only after `handle.process()` returns at the exact final assistant boundary, not on `finish-step`. Active whole-phase owners: P1, P2, P7. No tests/builds/typechecks/audits/provider calls/benchmark/release operations ran.
+
+## 2026-10-21 16:44 UTC — P7 managed final-turn boundary
+
+P7 wired `ManagedControl.completeManagedProviderTurn` at the actual terminal SessionPrompt loop exit: Core reloads the persisted assistant entry, requires a final finish reason, the current user parent, and no non-orphan tool work, then passes only the final assistant entry ID and the live managed Attempt authority. ManagedControl retains and submits the exact latest HostKernel settlement pins; errors fail the managed flow closed. This is source only. P1/P2/P6 provider integration does not yet produce a usable settlement through a live Guarded send, so no managed turn can complete or wake a follow-up in practice. No checks ran; overall V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+
+## 2026-10-21 16:45 UTC — P1 checkpoint and P2/P3/P7 active
+
+P1 returned source-complete for currently unblocked work, not verified. `EffectHost::begin_execution_dispatch` now returns UNAVAILABLE before validation/persistence on non-Linux, and §14.21 records the platform gate. P1's audit found bounded ToolBatch admission, serial receipt/lease handling, fixed Guard-pinned shell execution, and fail-closed unsupported effect origins; HostKernel/P2 authority integration and later adversarial/OS acceptance remain. The freed slot is assigned to full-phase P3 RepoIntel/Discovery source work. P2 is implementing a durable `managed_provider.complete_turn` proof from the latest exact HostKernel SETTLED request; P7 wired the caller only at the persisted terminal runLoop boundary (final assistant, current user parent, no non-orphan tool work). Parent review identified a required restart path for recovering exact settlement pins after `.settle` before `.complete_turn`; P2 is addressing it, otherwise UNKNOWN/unavailable. P6/P5 source is complete for unblocked work, with provider/search still closed pending the user dual-digest answer and Guard/SecretBroker integration. Active owners: P2, P3, P7. No tests/builds/typechecks/audits/provider/benchmark/release operations ran. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-21 16:51 UTC — provider, Guard and comparative-source continuation
+
+Active implementation owners are P1 Guard/ExecutionHost, P2 managed lifecycle, and P6 providers/settings/Doctor/S1; P6 owns the source parse repair observed at `packages/opencode/src/session/llm.ts:1016` and the existing SecretBroker provider settlement callsite. P2 keeps exclusive `host_kernel.rs`, `managed_control.rs`, and managed-control Core files; P1 owns EffectHost/Guard/sandbox/process boundaries and must send HostKernel API gaps to P2. Managed follow-up requires a separate exact complete-turn receipt; queued inbox messages never wake. Normative §§12.19/37.22 keep the coding Attempt live through verification: verifier effects use `managed_run` origin but bind to the same live Attempt, trusted verifier profile principal, current revision and distinct authenticated reviewer.
+
+P3 source pass returned PARTIAL: authenticated lexical discovery/read paths are present; symlink workspace-revision handling is P1-owned; LSP composition is P4-owned; semantic parsing, trusted overlay ingress, and authenticated cache-pressure/retirement triggers remain unavailable. P7 source callback is present but depends on P6 settlement; automation/checkpoint effectful paths remain gated. P4/P5/P8/P9 and final integration remain queued.
+
+Comparative-source audit corrected provenance: `repos/codex` and `repo_take/oh-my-pi` are ignored local references, not Git-tracked source; the Codex snapshot has no local Git identity, so its upstream commit pin is unverified. OMP is a nested clone, not Earendil Pi. Pi Durable content is user-supplied design input. No remote/latest-upstream claims are made. Research decisions remain: adopt progressive context, branch/compaction provenance, usage/activity UI and explicit scoped parallel lifecycle; retain Horizon owners and existing CodeMode; defer automatic cache warming, hosted sharing, second runtimes/registries and any unguarded nested effects.
+
+A focused P1 test selector was mistakenly invoked despite the implementation-first hold; Bun failed parsing the concurrently edited `packages/opencode/src/session/llm.ts` before reaching the test body. It was not retried; P6 owns the syntax repair. No test assertions, builds, typechecks, audits, provider calls, release operations, Git staging or publication were performed. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-21 17:12 UTC — implementation continuation and phase allocation
+
+The user reiterated that full V1 implementation is the target and requested the fastest safe completion. Source work remains ahead of tests/builds/typechecks. Active child slots: P1 Guard/ExecutionHost, P2 managed/direct lifecycle, and P4 LSP/DAP/REPL; P6 returned a source report but remains open and will resume when a slot frees. The parent owns integration and this shared tracker.
+
+P1 has added `StdioExecutionBindingV1.execution_principal` through Linux cgroup identity/quiescence, broker profile persistence, dispatch/recovery, settlement, and receipt digest; reviewer `principal` remains separate. P2 is adding that field to HostKernel verifier invocation and receipt projection, using the registered verifier profile principal for process execution while retaining the authenticated reviewer identity. Source only; not verified.
+
+P2 confirmed the existing direct-only inbox cannot hold managed Goal/Run/Task/Attempt authority. A distinct managed inbox migration and Core persistence API now store per-Attempt sequence, immutable scope pins, payload digest, state, HostKernel lease/ACK, and one-use wake receipt. Remaining P2 source includes route prepare/ACK/recovery, managed safe-boundary wake, exact provider settlement/complete-turn recovery, reviewer/verifier/current-revision evidence, Core-to-TUI, and P1/P6 integration. A restart must not reinject an ambiguous `delivering` row.
+
+P5 cascade source matches the agreed route policy, including auth 4xx fallthrough only to explicitly enabled routes, bounded 429 handling, transient retry, route provenance and strict ordering. Search is still disabled by `WEB_SEARCH_RUNTIME_READY=false`. P6 provider send remains unconnected: Core has triple-digest one-use authorization scaffolding, while Rust/HostKernel still needs normalized request + non-secret SDK transport + SecretBroker operation pins and opaque same-process authorization; `session/llm.ts` must use the existing Auth/SecretBroker/Provider path. No provider send is permitted.
+
+| Phase | Current source state | Remaining implementation / acceptance |
+|---|---|---|
+| P1 | Active whole-phase owner; separate execution principal added; effects remain gated | Finish source gaps and HostKernel integration; later Guard, confinement, adversarial, cancellation/restart/UNKNOWN and OS acceptance |
+| P2 | Active whole-phase owner; managed inbox persistence and verifier-principal source in progress | Finish managed wake/recovery, provider transitions, authenticated review/verifier/current revision, Goal/TUI delivery, end-to-end source; later lifecycle/evidence acceptance |
+| P3 | Partial, no active owner | Parser provenance/bridge, trusted overlay producer, authenticated pressure/retirement integration, P1 symlink and P4 LSP dependencies; reassign when slot opens |
+| P4 | Active whole-phase owner | Complete supervised LSP/DAP/REPL source and exact Guard/profile gates; later OS and real-project acceptance |
+| P5 | Cascade source present, runtime disabled | Integrate with P1 Guard/SecretBroker and finish failure/consent/recovery acceptance |
+| P6 | Partial, source report returned; slot queued | Wire exact HostKernel triple-digest one-use sender through existing provider transport; finish source integration and later provider/model/settings/Doctor/S1 journeys |
+| P7 | Partial; progressive discovery, stream/UI, complete-turn callback source present | Finish remaining stream/artifact/analytics/automation/rewind source; dependent effects stay gated; later rendered/replay/artifact acceptance |
+| P8 | Partial | Finish durable worker settlement/recovery, authenticated pressure/evaluation source; preserve unsupported OS quotas and disabled fan-out until prerequisites pass |
+| P9 | Partial | Finish distribution/install/signing/update/rollback policy and candidate release tooling/source |
+
+No tests, builds, typechecks, audits, benchmarks, provider calls, release actions, staging, commits, pushes, or cleanup were run in this continuation. Mixed Git state is preserved. Repository-only boundary remains in force. HorizonCode V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+**17:22 UTC delta:** P4 source pass has returned: Rust now has bounded callback read/reply DTOs, and Core REPL callback digest/wire source aligns with the exact Rust canonical MessagePack contract via the shared `packages/schema/src/canonical-msgpack-v1.ts`; `.gitignore` now exposes that file to Git. Callback ingress stays disabled pending P1 EffectHost journal, P2 HostKernel route, P3 reader evidence and platform acceptance. The freed whole-phase slot is assigned to P7; P7 exclusively owns `session/prompt.ts` and `session/processor.ts` for managed follow-up runner and final-turn boundary, plus stream/artifact/UI source. P2 must call that interface without editing those files. P6 remains queued. No checks run.
+
+## 2026-10-21 — implementation continuation
+
+P1's current source pass is complete but remains unverified: guarded shell dispatch, bounded atomic ToolBatch admission, disabled/unclassified effect origins, and fail-closed restart/UNKNOWN handling are present; native macOS/Windows and REPL remain unavailable without required confinement proof. P2 added managed context-advance wake-claim validation and the typed `TaskPromptOps` runner seam; P7 owns SessionPrompt injection. P6 resumed as a whole-phase owner for provider authorization/transport, including the `session/llm.ts` parse issue and strict normalized/SDK/SecretBroker digests. Current active owners: P2, P6, P7. P3/P4/P8/P9 remain open for later slots; implementation-first hold remains in force, so no tests/builds/typechecks/audits/provider calls/release/Git publication ran. Preserve mixed Git state and repository-only boundary. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+**Continuation delta:** P7 returned source-complete for currently unblocked work, not phase-verified. Managed follow-up runner plumbing and bounded replay/render/analytics/artifact/checkpoint foundations are source-present; effectful automation and restore remain disabled behind canonical scheduler, same-revision observation and P1 Guard routes. P7 found that `claimManagedMessageWake` consumes `permissionScopeDigest` not present in the displayed managed scope; P2 is reconciling this exact authority pin. P3 has been resumed as the whole-phase RepoIntel owner in the newly free child slot. Active owners: P2/P3/P6. No tests/builds/typechecks/audits/provider calls were run; V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+**P2 contract delta:** P2 fixed the managed scope mismatch by requiring/exact-key validating `permissionScopeDigest` in Core managed scope and identity comparisons and requiring digest-shaped `workspaceRevision`. Its follow-up order is claim → persist exact claim → compile request/context at claimed ID/sequence → HostKernel advance with claim → refreshed scope → P6 prepare/P1 Guard. P2 is waiting on P6's exact provider DTO fields before wiring HostKernel call sites. No verification run.
+
+**Cross-phase ownership control:** P6 surfaced provider DTO/OwnerLog edits in P2-owned `session/managed-control.ts` and `kernel/src/managed_control.rs`. To prevent parallel writer races, P6 was told to stop those hunks and provide an exact handoff; P2 pauses those two files while continuing coordinator/HTTP/Task work, then resumes HostKernel integration after handoff. P6 continues exclusive `session/llm.ts` and `auth/provider-transport.ts` plus non-overlapping P6 source. No checks run.
+
+**P3 source delta:** tree/detect are installed in the shared model ToolRegistry but remain hidden unless the explicit experimental flag, negotiated HostKernel `repo-intel.read-context-v1`, and source-acceptance readiness all pass; both readiness constants remain false. Removed the unused local RepoIntel service node so HostKernel remains sole production query owner. P3 docs distinguish its bounded no-follow discovery revision observer from strict mutation revision. Overlay snapshot minting and pressure trigger remain P1/P8 dependencies. No checks run.
+
+**P3 owner handoff:** P3 returned PARTIAL after finishing unblocked registry wiring and documenting authority seams. Remaining P3 source dependencies: P4 must provide a genuine immutable unsaved-buffer producer before P1 can mint private overlay refs; §42.11 does not admit current parser dependencies, so semantic definitions/references remain unavailable pending an explicit provenance decision; P8's trusted pressure trigger is absent; persistent generation storage lacks P1-owned protected-root/restart lifecycle; stale-write fence producer convenience and symlink journey remain open. The freed slot is assigned to whole-phase P4 source continuation. Active owners: P2/P4/P6. No tests/builds/typechecks/audits ran.
+
+**Managed follow-up compiler unblocker:** P2 confirmed coordinator alone cannot derive the exact normalized next provider body from a child Session with real history; reusing seq-1 or fabricating body is invalid. Parent transferred a narrow exclusive source scope to P2 for a no-dispatch `prepareManagedFollowUp` helper in the currently idle P7 `prompt.ts`, only if it reuses the existing runLoop/Core compiler and makes no transcript mutation or send. P7 will reconcile its runner against the helper when a slot opens. If exact body compilation cannot be proved from current code, follow_up stays unavailable.
+
+**P6 source checkpoint:** P6 completed its current unblocked source pass. Managed request/dispatch/settlement/UNKNOWN pins and replay shapes plus an opaque Auth transport matcher are present; actual managed sends remain gated on P1 Guarded ExecutionHost and P2 HostKernel wiring. Offline Doctor, explicitly zero-priced OpenCode model filtering/default, Models.dev metadata, requested/effective settings and owner-scoped S1 question paths are source-present but unverified. P6 remains open for dependency integration and acceptance. Its freed slot is assigned to whole-phase P8 worker/resource/evaluation source. Active owners: P2/P4/P8. No checks/provider calls.
+
+**Managed follow-up ACK boundary:** P2 identified that a runner result needs a post-message-commit/pre-provider-dispatch hook for exact managed inbox consume and HostKernel ACK. Parent authorized a typed `onPromptCommitted` continuation callback in the current exclusive prompt.ts bridge; it receives exact committed message/current scope/request pins, and any ACK failure/UNKNOWN prevents provider dispatch. Direct and queue paths remain callback-free; P7 will reconcile when available.
+
+**P8 source delta:** P8 now rejects successful worker settlement when final Inspect is `DIRTY_UNATTRIBUTED` or reports user-owned changes, enforcing only CLEAN or Attempt-owned DIRTY_OWNED through proof minting, live settlement, terminal Inspect resolution, and replay. Failed/cancelled reconciliation remains quarantine-only. No checks run.
+
+**P4 source handoff:** P4 returned PARTIAL after aligning callback DTO/wire/digest and denied-versus-settled result types. Remaining gates: P2 HostKernel callback RPC routes, P1 durable denial/Guard receipt authority (P1 has been resumed to reconcile this against actual source), authenticated DAP product ingress, genuine unsaved-buffer producer/overlay mint, and P1 confinement/resource acceptance. LSP/REPL runtime paths stay unavailable. P1 has been resumed for the full Guard/ExecutionHost phase. Active owners P1/P2/P8; P6/P4/P3/P5/P7/P9 and integration remain open/gated. No checks run.
+
+**Managed provider Guard decision:** local §14.24 requires each selected-provider model send to be a Guarded durable effect; §17 A-V2-27 assigns existing Rust Guard/ExecutionHost. The canonical registry has no matching inference action. Reusing `web.search` is wrong and generic outbound HTTP is too broad. P1 is adding dedicated internal `providers.infer`, bound to selected provider/model/harness/route/endpoint, all three request digests, Attempt/epoch, explicit consent/spend/token budget and one-use permit. It is not model-callable and cannot authorize arbitrary URLs or fallback. Dispatch remains disabled until P2/P6 wiring and acceptance.
+
+**P2 follow-up source delta:** the typed no-dispatch context-preparation and post-message-commit/pre-send callback are wired at both managed `runManagedTask` call sites. The callback binds refreshed scope/request ID+sequence, committed prompt message ID/text, delivery/consuming scope digests and exact one-use wake receipt; it performs Core consume plus EffectHost ACK before dispatch, with failure closed. P2 is reconciling crash-after-Core-consume/ACK replay and provider digest echoes. Provider begin remains UNAVAILABLE.
+
+**P8 restart-disposition source delta:** P8 added a success-settlement recovery proof/journal seam for a current-epoch fresh Inspect, binding original settlement/Attempt/worker pins, current root/owner, P2 terminal/quiescence and current Guard receipt before disposition. Cross-epoch historical Inspect cannot release the retained worktree lease. P8 is finishing source-only pressure/cache/RC0/verifier reconciliation and will provide exact P1/P2 HostKernel integration APIs. No checks run.
+
+**P8 source handoff:** P8 returned source-complete for currently unblocked work, not verified. It added a cross-epoch successful-settlement disposition proof plus fresh current-epoch Guarded Inspect helper APIs and updated §§18/21/37/JC-RES-022.B. Pressure/cache eviction/RC0 promotion remain unavailable without trusted durable triggers/attestation; unsupported OS quotas remain unavailable. P1 must wire current-root/owner/quiescence/fresh Inspect through HostKernel, P2 current terminal snapshot; until then worktree lease remains quarantined. Freed slot assigned to whole-phase P9 distribution/release source. Active owners: P1/P2/P9. No checks/release/Git publication.
+
+**P1 provider Guard source delta:** the dedicated `providers.infer` action is now recorded as a sealed internal `kind: action` in the canonical capability inventory and §17/§33/§37; it is not a model tool, ActionDescriptor, ToolBatch member or alternative route. P1 added separate prepare binding and final Guard effect binding plus EffectHost prepare→authorize→consume one-use permit; Guard challenge/lease are host-created, and unresolved token rows become UNKNOWN on restart. P2 is removing Core-projected challenge/lease authority from HostKernel route DTOs. Also landed the EffectHost REPL durable-page reader using only live supervisor/journal status. No checks ran.
+
+**P2 follow-up recovery delta:** a typed pre-provider-dispatch callback now checks live scope against the exact committed prompt. It consumes only a matching delivering inbox row; consumed rows replay only the stored exact proof; HostKernel ACK is persisted before `handle.process`. Crash after message append/Core consume cannot redeliver or send without ACK; UNKNOWN/errors stop the send. REPL callback RPC remains unavailable because no authenticated interpreter frame codec/IO-sequence proof exists.
+
+**P9 source delta:** release audit found `prepare_build` mutates the isolated candidate after digesting it, making the compiled checkout dirty and unreproducible. P9 is moving the cleanup guard into the first-party build script and making candidate preparation verify without mutation. Source-only; no build/release action.
+
+
+## 2026-10-21 18:03 UTC — V1 source implementation continuation
+
+Parent re-read the required bootstrap in order. Repository-only boundary remains absolute; mixed unstaged Git state is preserved. Source-first hold remains: no tests, builds, typechecks, audits, provider calls, release operations, remotes, staging, commits, cleanup, or external paths. Repo-local free space remains ample from the last repository-contained inspection (814 GB available; `kernel/target` 627 MB); no build has run since.
+
+Current whole-phase owners (actual live slots): P1 Guard/ExecutionHost, P2 managed lifecycle, P9 distribution/install readiness. P1 reports the sealed internal `providers.infer` EffectHost prepare/approve/consume/settle/UNKNOWN/recovery source with exact request/route/SecretBroker/Attempt bindings; remaining end-to-end HostKernel/Provider/SecretBroker wiring is P2/P6-owned and gated. P2 owns the HostKernel + `session/managed-control.ts` API/response contract; the next P6 owner must own `session/llm.ts`, ProviderTransport, and provider/SecretBroker send callbacks to avoid shared-file races. P2 continues follow-up, reviewer/verifier/current-revision, P8 settlement integration and REPL fail-closed review. P9 is closing unblocked local source; no candidate build or release action.
+
+Queued whole-phase owners for newly freed slots: P6 first (managed provider sender and remaining provider/settings/Doctor/S1 integration), then P3/P4/P5/P7/P8 as their dependencies and owner slots permit. All phase source remains unverified; V1 is PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+
+## 2026-10-21 18:06 UTC — active owner correction and P6/P7 dispatch
+
+P1's unblocked source phase has now returned source-complete (not accepted). P1 reports Guard checks canonical capability membership through P2's `canonical_capability_id_is_registered`; P2 confirmed the implementation helper is `managed_control::canonical_capability_id_is_registered(&str) -> bool`. P1's provider Guard/EffectHost contract is ready for P2/P6 integration; REPL remains unavailable without the authenticated HostKernel route and sourced interpreter frame codec. P9 returned source-complete for unblocked local packaging/audit source, not release accepted.
+
+Freed phase slots were immediately assigned to P6 (existing Provider/SecretBroker sender plus settings/Doctor/S1) and P7 (stream/render/artifact/analytics/automation/rewind). Actual live owners: P2, P6, P7; P2 exclusively owns HostKernel + managed-control files and is correcting stale §17.15/§17.17 ownership notes. P7 is reclaiming its prompt/processor files after reconciling P2's temporary no-dispatch helper. P1/P9 must be resumed by the parent for integrated acceptance after source freeze. Queued P3, P4, P5 and P8 remain open; start whole-phase owners as slots free, based on dependency readiness.
+
+No verification/provider/release/remote/Git mutation has occurred. Mixed working tree preserved. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+
+**18:08 UTC integration finding:** Parent source inspection found the managed provider prepare input still contains caller-projected `guardChallengeID` and `capabilityLeaseDigest` (`ManagedProviderRouteProjectionV1` and the Rust `managed_provider_prepare` serializer/strict response shape). This conflicts with P1's HostKernel/EffectHost contract: HostKernel must create the challenge/effect only after prepare is durably recorded; callers cannot supply challenge or lease authority. P2 owns removing these input fields and exposing the host-minted prepare/approval response, then the post-approval one-use dispatch authorization. P6 will consume the exact new response in the existing Provider/SecretBroker sender. Provider sends remain disabled until P1/P2/P6 integration and final acceptance.
+
+
+**18:10 UTC P7 continuation:** P2 has handed prompt.ts back to P7; the temporary managed follow-up seam is now P7-owned for reconciliation. P7's full source audit identified missing timezone-aware durable automation scheduling/invocation source and checkpoint capture/restore implementation beyond the existing preview UI/endpoint. P7 is implementing the schedulable/control source while keeping invocation gated until P1/P2 receipts are accepted, and will implement checkpoint lifecycle only where complete same-revision no-follow filesystem/Git observations and Guard routes exist; otherwise restore remains unavailable. P2 retains HostKernel. No tests or builds run.
+
+
+**P7 source correction, 18:11 UTC:** A parent source search found that the canonical Rust automation already contains timezone-aware schedule fields, due-occurrence logic, missed-run handling, and deduplication in `kernel/src/automation.rs`. Therefore P7's earlier statement that a scheduler model was absent is superseded: P7 will reuse and wire that existing authority, not build a parallel scheduler. The production Guarded invocation boundary may still be missing and remains gated. P7 will also inspect the existing `kernel/src/checkpoint.rs` before changing checkpoint lifecycle source.
+
+
+**18:13 UTC automation integration finding:** P7's source audit found `AutomationGuardContextV1` currently impersonates `SessionBatch`, which violates §§14.1/14.2; the action invocation also lacks stored/resolvable arguments. The canonical Rust scheduler exists, but effectful invocation still needs a dedicated host-selected `AutomationRun` Guard origin/policy (P1), plus exact HostKernel prepare/begin/settle/reconcile and canonical action resolution (P2). P7 will add only its durable schedule candidate/preview/payload projection and TUI source, leaving invocation unavailable until those contracts arrive. This supersedes no prior scheduler implementation; no duplicate scheduler is authorized.
+
+
+**18:16 UTC provider authority update:** P2 has removed caller-projected Guard challenge/lease from the managed route projection and split the HostKernel-minted challenge (`prepare`) from approved lease/opaque send authorization (`begin`); OwnerLog no longer records a lease at PREPARED. P6 reports the sender contract is aligned, but HostKernel prepare/begin/settle still return `UNAVAILABLE`, and route consent still needs a trusted source. P2 now owns activating the actual Guard/EffectHost-backed durable lifecycle using P1 interfaces; P6 owns resolving authenticated user consent and the existing Provider/SecretBroker sender. No send is enabled.
+
+
+**18:19 UTC managed inference consent decision:** Architecture review of §§14.24/.25, 16.17, 37.22/.23 found no accepted separate persistent provider-enable setting for inference routes. Use the exact HostKernel-created Guard approval challenge as per-effect route consent, bound to the selected provider/model/harness/endpoint revision, billing/budget class, live Attempt and request. Do not accept caller `consentRef`, infer consent from credentials, or add another config authority. Existing user-selected provider/model remains authoritative; persistent web-search route enablement stays a distinct setting. P2 is recording the contract in §14.25/§37.23 and implementing OwnerLog approval pins; P6 carries the host-issued challenge proof through the existing Provider/SecretBroker sender.
+
+
+**Automation scheduler correction (18:22 UTC):** Parent's 18:11 source note was wrong and is superseded. `kernel/src/automation.rs` stores `schedule_expression`/`timezone` and processes externally resolved UTC `DueOccurrenceV1` records; it has no cron/timezone resolver or producer. §31 explicitly says not to add an ad hoc parser. P7 removed its TUI parser/preview. Scheduled execution remains blocked until an accepted canonical timezone-aware Rust scheduler source is available; no external fetch/dependency install is allowed under the repository-only boundary. P7 is documenting this exact limitation and can complete the fixed-input payload/Guarded invocation source, but must keep scheduling unavailable without the resolver. Proposed action inputs are immutable bounded user-authored payloads, versioned with the AutomationDefinition, validated against the canonical action schema at save and dispatch, and digest-bound to Guard approval/receipt; dynamic model args and raw secrets are forbidden.
+
+## 2026-10-21 — managed provider consent-pin unblocker
+
+User renewed the full V1 deadline request. Actual child capacity is three active agents; current whole-phase owners are P2 managed/direct lifecycle, P6 provider/settings/Doctor/S1, and P7 streaming/artifacts/automation/rewind. P1 is queued for the next slot, followed by remaining open P3/P4/P5/P8/P9 work. Parent source review found `ManagedProviderPrepareBindingV1` and `ManagedProviderAuthorizationPinsV1` still required `consent_ref`, contradicting the accepted per-request HostKernel Guard challenge and making prepare circular. Parent removed that field from both Rust DTOs and their validation/digests in `kernel/src/http_execution.rs`; exact route identity and request/Attempt/scope/budget pins remain, while Guard challenge/lease remain post-prepare authorization pins. P2/P6 were notified to align integration; P2 owns corresponding §37 wording. This is a narrow source unblocker, not P1 acceptance. No tests/builds/typechecks/audits/provider calls/release operations ran. Mixed Git state remains preserved, repo-only boundary remains active, and V1 is PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+**P7 source milestone — 2026-10-21:** Automation definitions now have optional legacy-safe `action_schema_digest` / `action_input_json`, a v2 OwnerLog snapshot migration (v1 loads unbound), 16 KiB canonical object validation and schema/payload digest pinning in the effect intent; Core API/TUI models carry fields but hide payload content. New writes require both values and legacy unbound definitions cannot dispatch. This is incomplete: P2 HostKernel parser/summary/Guard projection still rejects the new shape; P1 must validate schema IDs/digests against the authenticated canonical action registry and enforce secret/opaque-ref policy. Dispatch remains disabled. No tests/builds ran.
+
+**P2/P6 provider approval seam — 2026-10-21:** P2 confirms the existing authenticated approval flow: HostKernel registers the provider Guard challenge in `self.challenges`; TUI calls existing `effects.resolve_approval_set` with `{sessionID,locationID,batchID,challengeIDs:[challengeID]}`; `managed_provider.begin` follows the authenticated user decision and receives no caller-supplied challenge/lease authority. P2 has also updated the HostKernel automation parser/summary to carry P7's `actionSchemaDigest` and `actionInputJSON`; canonical registry validation and execution remain gated on P1. P6's LLM managed path still hard-fails until P2 lands prepare/challenge/begin plus the one-use consume route and settlement. No checks/provider calls ran.
+
+**P1/P2/P6 exact approval blocker — 2026-10-21:** source review found the current managed approval set is verifier-specific: `EffectHost::resolve_managed_run_approval_set` requires `BUILTIN_VERIFIER_ID` and recomputes a verifier-profile Guard decision; TUI decoder/eligibility accepts only `managed_run` + `host.managed_verifier`. P2/P6 cannot use it for `providers.infer` without a trusted P1-owned exact action path. P1 was assigned this whole-phase follow-up when a slot opens: allow only the canonical provider inference challenge with HostKernel-authenticated exact binding, update the strict approval projection/UI eligibility, and hand P2 the exact approval contract. No synthetic allow path is permitted. This is now the top queued critical-path phase; existing three slots remain occupied by P2/P6/P7.
+
+**P7 automation schema trust correction — 2026-10-21:** HostKernel now parses and returns the new action schema/input fields, but no authenticated canonical registry resolver exists. P7 found Core create/update still submitted caller-entered `actionSchemaDigest` to Guarded prepare, contrary to §31.20. P7 is adding a pre-prepare fail-closed gate for create/update; enable/disable/read paths remain available according to existing policy. Parser presence is not schema validation; P1 must supply the authenticated resolver before definitions can be accepted for effectful invocation. No tests ran.
+
+**P6 transport hardening — 2026-10-21:** the existing Provider SDK construction now rejects resolved environment/provider/model credentials for managed routing and uses the selected SDK `languageModel`; prepared request validation also rejects credential-shaped URL query parameters. This remains source-only; managed dispatch is fail-closed until P1 canonical provider action/approval and P2 prepare/begin/consume/settle routes land. No checks ran.
+
+**P6 status-message correction — 2026-10-21:** P6 updated managed LLM fail-closed diagnostics to identify the actual pending Guard approval, one-use HostKernel authorization, bounded SecretBroker transport and settlement/UNKNOWN prerequisites. No gate opened and no checks ran.
+
+**Provider production wiring gap — 2026-10-21:** P6 source search found `settleManagedProviderRequest()` and `markManagedProviderRequestUnknown()` currently have no production call sites; the fresh authorization handle and Auth dispatcher also remain unused behind the managed LLM hard gate. Complete managed provider integration still requires SDK fetch interception through the existing Auth adapter, final persisted assistant-entry/usage settlement, and UNKNOWN marking/recovery. P2/P6 were assigned these exact integration edges. Keep the gate closed until they land; no checks/provider calls ran.
+
+**Provider settlement ownership clarified — 2026-10-21:** P2 owns HostKernel settle/UNKNOWN enforcement; P6 owns existing SDK/Auth request-local transport; P7 owns `prompt.ts`/`processor.ts` orchestration after persisted final assistant entry and exact usage receipt, including UNKNOWN on uncertain send. P7 has requested exact P2 supervisor DTO/signatures before wiring; P6 will prepare its fetch adapter against current pins. Automation create/update now fail closed before `prepareUserEffect` until P1's authenticated schema resolver exists; TUI reports unavailable. No checks ran.
+
+**Provider response digest contract gap — 2026-10-21:** P6 found no defined canonical `responseDigest` formula/source verifier. Parent proposed reuse of the existing strict `SessionMessage.Assistant` schema and `encodeCanonicalMessagePackV1`: BLAKE3 over domain `horizoncode.managed-provider-response-entry.v1\0` plus the exact final persisted Assistant entry bytes, including ID/content/model/finish/usage provenance; derive usageDigest separately via §12 and persist only digests in OwnerLog. P2 must confirm this or point to an existing authoritative transcript digest API and update the LLD/schema before P7 settlement wiring. No response-text reconstruction or dispatch until resolved.
+
+**Provider response digest resolved — 2026-10-21:** P2 confirmed no existing persisted-entry digest API and accepted the proposed contract in §37: `responseDigest = BLAKE3("horizoncode.managed-provider-response-entry.v1\\0" || encodeCanonicalMessagePackV1(schema-decoded exact persisted Assistant row))`, binding ID/content/provider/model/finish/UsageProvenance. `usageDigest` remains the separate §12 canonical-JSON usage receipt. HostKernel binds authenticated Core's exact persisted-entry receipt to live DISPATCHING OwnerLog; it does not claim an independent transcript reader. P7 has the exact contract and may proceed. No tests ran.
+
+**Managed provider route authority gap — 2026-10-21:** parent source review confirms HostKernel currently compares provider/model to Task-pinned AgentProfileV2 but accepts harness/route/endpoint revision/credential ref only as the caller's projection. P2 recorded that these facts need admission-time resolution from existing Core Config and a secret-free immutable Attempt route pin/digest; prepare/begin must compare exact pins. P6 is identifying the current canonical Core provider resolver/DTO. No second registry may be introduced; until that source exists and exact pinning lands, managed route dispatch stays unavailable. This extends the critical P1/P2/P6 gate.
+
+**Provider route resolver identified — 2026-10-21:** P6 found the canonical existing source: `Provider.managedRouteProjection({providerID,modelID,harnessID})` from `Provider.Service.list()` plus Auth metadata-only SecretBroker refs. It derives route ID and endpoint revision from provider/model/SDK adapter identity and canonical endpoint URL; `managedRouteTransportTarget` re-resolves and compares endpoint revision before constructing the SDK model. No separate provider-config revision API exists. P2/P6 are pinning the six-field secret-free DTO (`providerID`, `modelID`, `harnessID`, `routeID`, `endpointRevision`, `credentialLeaseRef`) at managed Attempt admission from Task-pinned AgentProfileV2 and requiring exact equality on each request. No second registry; dispatch remains gated.
+
+## 2026-10-21 — quota recovery and active phase roster
+
+The requested attachment was read. It restates the local-source-first OpenCode/Codex comparison, full V1, whole-phase implementation and source-before-tests requirements; the repository-local comparison/adapt/defer record is `docs/research/2026-10-21-pi-codex-harness-decisions.md`. Prior P2/P6/P7 child invocations reached their usage limit; P1/P2/P7 have been relaunched as the three actual whole-phase owners. P6 remains open and queued to resume first when a slot frees. P3/P4/P5/P8/P9 remain open and queued by dependencies/critical path. Parent is coordinating route pins, approval and settlement interfaces; P1/P2/P7 have non-overlapping owned source scopes. No tests/builds/typechecks/audits/provider calls/release/Git publication ran. Repository-only boundary remains, mixed Git state is preserved, and V1 is PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+**P1 provider approval API source milestone — 2026-10-21:** P1 reports a dedicated `providers.infer` managed-run approval resolver is now source-present in EffectHost. Its exact UI projection is `origin=managed_run`, `source=host.managed_provider`, capability/action `providers.infer`, policy `provider-inference.managed.v1`, exact nonempty requested-guarantee set for live Attempt/route revision/all three digests/explicit consent/budget/one-use/no fallback, assessed residual empty, and allow enabled only with complete host facts. UI targets contain only nonsecret provider/model/route/revision. P2 owns HostKernel capability-specific source mapping and challenge registration; no verifier/root borrowing. P1 is sending the exact resolver signature to P2. Source-only, no checks.
+
+## 2026-10-21 19:08 UTC — accelerated V1 continuation
+
+User reiterated the full V1 deadline and requested maximum safe phase concurrency. Actual active child slots remain three: P1 Guard/ExecutionHost, P2 managed lifecycle, P7 streaming/artifacts/automation/rewind. P1 now reports a source-landed, exact-binding `providers.infer` approval resolver in EffectHost and strict nonsecret TUI approval projection; retries do not resurface prior approved/denied/expired challenges. P2 owns HostKernel challenge registration/HTTP mapping and begin/consume/settle integration. P7 is implementing the strict final Assistant-entry digest adapter from `MessageV2.get` plus the exact persisted `step-finish` part keyed by `stepFinishIndex`; it fails on ambiguity because `usageProvenance` is not declared in the base persisted schemas and is currently dynamically attached by processor code.
+
+P1/P2/P7 continue as whole-phase owners; P6 is next for a whole-phase slot, followed by open P3/P4/P5/P8/P9 according to critical-path dependencies. Current code search shows provider settlement/response digest functions and partial provider transport scaffolding exist, but this is not evidence that a real managed send is wired or accepted. No tests, builds, typechecks, audits, benchmark/provider calls, release operations, staging, commit, push, or cleanup ran, per the implementation-first hold. Repo-only boundary and mixed Git preservation remain active; one worktree, `kernel/target` 627 MB, repo filesystem 814 GB available at this checkpoint. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+**Managed multi-step settlement decision — 2026-10-21 19:12 UTC:** do not disable provider tool use. Every actual provider dispatch is a distinct monotonic Attempt requestSequence/providerRequestID. Core must persist that step's `step-finish` and current MessageV2 Assistant snapshot, settle it before any ToolBatch effect or following provider dispatch, and compute `responseDigest` over canonical schema-decoded MessageV2 Assistant info plus the exact indexed schema-decoded `step-finish` projection. This is a point-in-time durable snapshot; later parts appended to the same Assistant message do not change it. `usageDigest` remains §12's separate receipt for that same stepFinishIndex/provenance. HostKernel OwnerLog rows must be unique per providerRequestID/sequence. `complete_turn` binds the final response and all ordered settled dispatches. Updated §37.22 and §45.8; P2 owns durable identity/lifecycle integration and P7 owns Core persisted snapshot/digest adapter. No validation ran; provider dispatch remains unavailable.
+
+**Step-finish schema compatibility note:** inherited `opencode/packages/schema/src/v1/session.ts::StepFinishPart` does not declare the HorizonCode-persisted `stepFinishIndex` or `usageProvenance`. P7 must validate both in a first-party versioned HorizonCode projection; do not mutate the pinned OpenCode snapshot. §37.22 now records this requirement. This is source work, not evidence that it is implemented.
+
+**19:15 UTC phase handoff:** P1 released a child slot after its full source handoff (PARTIAL). P1 remains accountable for Guard/ExecutionHost regressions and final acceptance; no tests were run. P6 has immediately resumed as a whole-phase owner for provider/auth/SecretBroker/catalog/settings/offline Doctor/S1 source. Scope is non-overlapping: P6 excludes Session `llm.ts`/`processor.ts`/managed-provider receipt callsites (P7) and HostKernel/managed-control (P2). Provider network probes and dispatch, Doctor network grants, SecretBroker writes, and automation invocation stay gated where their authenticated authority contracts are missing. Active children: P2, P6, P7. P3/P4/P5/P8/P9 remain next queue. No checks, provider calls, release, or Git mutation.
+
+**19:23 UTC managed ToolBatch ordering correction:** parent inspection of current stream adapters found that `tool-batch.ts` buffers provider tool-call and finish parts; therefore `processor.ts`'s awaited step-finish handler runs only after Guard admission for buffered effects. P7 is authorized to make a narrow write to `packages/opencode/src/session/tool-batch.ts` (callback input/callsite only) and owns the persisted-before-Guard snapshot bridge; all P1 Guard/atomic admission behavior remains unchanged. It must pass only validated normalized calls, durably write the exact pending-call + indexed step snapshot before settlement/Guard, and make later buffered events idempotent without duplicate transcript parts. If this cannot be proven from source, managed effectful tool calls remain unavailable. This supersedes the earlier assumption that processor event order alone guaranteed settlement-before-Guard. No tests ran.
+
+**19:28 UTC managed provider source delta:** P7's first-party `ManagedProviderStepFinishV1` strict projection and v2 response adapter now bind `{assistantInfo, stepFinishPart, stepFinishIndex}` under `horizoncode.managed-provider-response-step.v2\0`; assistant snapshot is schema-decoded and the step-finish index is exact-matched. P2 is adding `stepFinishIndex` to settle/inspect and OwnerLog's per-dispatch identity. P7 confirmed ToolBatch buffering prevents downstream processor events from settling before Guard; P7 now owns only a narrow `tool-batch.ts` callback DTO/callsite seam to persist the validated call and finish snapshot before Guard, then reconcile downstream events without duplicates. P2 is implementing HostKernel prepare/approval and consume routes; it retains fail-closed begin until lease, SecretBroker requester context, and authenticated approval are exact. P6 found managed anonymous OpenCode free route rejects its literal public marker/nullable lease and is correcting only that route; it awaits P2's exact full-binding Auth consume/UNKNOWN DTO before wiring transport. No checks or network calls ran.
+
+**Overlay visibility correction, 19:31 UTC:** P7's new `managed-provider-entry.ts` and `managed-provider-step-finish-v1.ts` had been hidden by the root overlay `*` rule. Parent added only those two exact negative patterns to `.gitignore`; both files are now Git-visible untracked and remain unstaged. No broad ignore changes or staging occurred.
+
+**19:35 UTC P6 authorization adapter delta:** P6 updated only `auth/provider-transport.ts` and `auth/index.ts` to require EffectHost `effectID` plus `authorizationBindingDigest`, and carry routeProjection, requestPins, challenge/effect/lease/binding pins through consume/UNKNOWN; the fresh-only SecretUseContext travels from the retained Auth handle. P6 asked P2 to include the matching fields when retaining/validating begin authorization. No validation or provider calls ran.
+
+## 2026-10-21 — architecture freeze and source resumption
+
+User directed architecture-first completion across `arch_V1` before continuing V1 implementation. Reviewed all 47 `arch_V1/*.md` files line-by-line across assigned document coverage and reconciled relevant HLD/LLD, flow/event atlas, UI/Settings, governance, test catalog, source provenance and machine contracts. Decisions now normative: direct Core sessions use one explicit authenticated `DirectSessionGrantV1` for bounded quiet workspace coding (read baseline is no-grant; exact session/workspace scopes are revocable/expiring; network egress is separate exact destinations and finite budgets); CodeMode reuses the existing OpenCode-derived interpreter, is model-visible as `execute` under canonical `codemode.execute`, and remains gated until each bounded wave passes normal Guard/lease/receipt admission; web search accepts query intent only and HostKernel chooses trusted route plan; the initial keyless cascade is Exa → You.com free profile → Firecrawl Keyless → Parallel, with separately enabled authenticated routes and route-local bounded retries in one ordered pass; ContextLedger/ContextService is required V1 while snapcompact imaging/archive is deferred.
+
+External evidence reviewed from primary sources: Anthropic MCP code execution, current OpenCode V2 permissions, OpenAI multi-agent orchestration, and vendor endpoint/auth disclosures from Exa, You.com, Firecrawl and Parallel. Crawl4AI browser extraction was unavailable because its configured browser executable is missing; web search primary sources were used as fallback. This is architecture evidence only, not HorizonCode runtime acceptance.
+
+The schema owner completed `arch_V1/contracts-v2` work: repaired invalid JSON; added DecimalU64, direct-session grant, CodeMode and trusted search route-plan contracts; made search request intent-only; fixed 10-route/20-attempt limits and canonical counter types. Reported static evidence: 52 JSON documents parse, 50 schemas/OpenAPI pass Draft 2020-12, 793 refs resolve, JSON integer fields have safe bounds, DecimalU64 edge cases pass, `git diff --check` clean. No product tests/builds/typechecks/provider calls were run. Known source projection gaps now explicitly enter P6/P5 implementation: TS WebSearch types/runtime need routePlanDigest and routeId/index, 20-attempt cap, and route index 0–9; CodeMode dispatcher and direct grant Guard integration remain source work.
+
+A post-edit consistency review fixed search retry ambiguity (per-route retry only; no second cascade pass), clarified V1 ContextService ownership for future snapcompact transforms, clarified direct grants versus generic per-challenge `always`, and labeled historical source/decision notes. Current source phases remain PARTIAL / NOT VERIFIED / NOT RELEASED. Mixed Git state remains unstaged and preserved; one repository worktree, `kernel/target` 627 MB, 813 GB available within the repo filesystem. Implementation resumes with whole-phase P1/P2/P5 owners; P6 is queued as soon as a slot frees. User-directed hold on product testing remains until source implementation closes.
+
+### Source-phase owner/dependency ledger — 2026-10-21
+
+| Phase | Owner/status | Source scope and dependency | Acceptance still required after implementation |
+|---|---|---|---|
+| P0 direct Core session/tool loop | Parent integration owner; existing V2 route is source-wired | Preserve Core transcript/session owner; parity/reconciliation with managed SessionPrompt, provider/tool/context/discovery behavior | Real selected-free-model coding journey; direct/managed behavior and replay evidence |
+| P1 Guard/ExecutionHost | `/root/p1_exec_host` active | Rust Guard, horizoncode-sandbox confinement, ToolBatch/effect origin mediation, leases/receipts/UNKNOWN, process recovery, CodeMode wave boundary; P2 owns HostKernel integration and P5 owns TS caller | Guard denial-before-dispatch matrix, malformed/over-limit/stale/conflict/cancel/crash/receipt-loss/restart, supported Linux OS acceptance; no WSL-as-native-Windows claim |
+| P2 managed vertical | `/root/p2_managed_lifecycle_resume` active | HostKernel + managed-control; consumes P1 Guard contracts; P7 owns Core final transcript settlement and P6 owns provider transport | Distinct authenticated reviewer/verifier, live Attempt/effect lease, current-workspace revision, proposal/review TUI, pause/cancel/restart/UNKNOWN/stale/conflict and complete managed vertical |
+| P3 RepoIntel/discovery | queued | Authenticated bounded discovery/manifest DTO, structural query/read, index and provenance; depends on P1 read Guard and P8 retention/pressure authority | Real-project navigation/diagnostics journeys; stale/cross-workspace/oversize denied and bounded recovery |
+| P4 LSP/DAP/REPL | queued | Existing supervised lifecycle only; depends on P1 OS confinement and P3 source revisions; unsupported adapters stay unavailable | OS acceptance + real-project diagnostics, debug, bounded REPL journeys |
+| P5 web search + CodeMode orchestration | `/root/p5_search_codemode` active | Existing web search adapters/registry/Settings and interpreter; normal Guard admission depends on P1; HostKernel route plan and RPC integration belongs to P2/P1 interfaces | Search consent/failure/rate-limit/exhaustion/route-provenance; CodeMode every-wave Guard/receipt/UNKNOWN/cancel/bounds; user-visible productive research-to-code journey |
+| P6 providers/settings/Doctor/S1 | queued next | Existing Provider/SecretBroker and catalog/settings/Doctor/S1; depends on P1/P2 managed auth/lease APIs; P7 owns prompt/processor settlement | Selected provider/model journeys, free-route streamed coding task, truthful cost/auth/capability; settings acceptance; S1 question.ask checks; no paid fallback |
+| P7 streams/artifacts/analytics/automation/rewind | queued | Core prompt/processor/renderers, artifact/provenance, event replay, existing Rust automation/checkpoint; effectful invocation/restore depends on P1/P2/P8 | Real TUI stream replay/resnapshot/large histories; redaction/limits; artifact truth; guarded automation and CP-001/002 |
+| P8 workers/resources/evaluation | queued | Rust worker settlement/recovery, supported resource enforcement, paired real benchmark runner; depends on P1/P2; no unsupported OS quota claims | Worker crash/recovery, safe fan-out release proof, budget/resource tests, reproducible same-model baseline vs harness coding results |
+| P9 distribution/release | queued | Linux/WSL CLI/TUI packaging, clean install/rollback/provenance/license; depends on all source and acceptance | Candidate integrity, install journey, full required gate, final release notes; publication stays prohibited by repo-only boundary |
+
+No product validation has started; source work is the current user-directed stage. Queue/reassign one whole phase per newly freed child slot; the parent continues cross-phase contract review and keeps the ledger current. Release status remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+**P5/P2 integration finding (2026-10-21):** source audit found the Rust HostKernel still accepts `tavily_keyless` as FREE/no-auth, contradicting the frozen four-keyless + six-auth route set; P2 owns making it non-dispatchable (legacy decode may remain only if it cannot be newly configured or executed). Rust search results also need the routePlanDigest plus routeId/routeIndex per attempt; P2 owns Rust projection, P5 owns TS validators/projections and the 20-attempt / index-0..9 bounds. Search stays gated until exact integration. This is a source finding, not test evidence.
+
+**Search failure provenance refinement (2026-10-21):** P5 identified that a pre-dispatch `not_dispatched` result can exist before any trusted HostKernel route plan, so it cannot truthfully require a `routePlanDigest`. The schema now permits omission only for that pre-plan outcome; `exhausted`, `unknown` and `completed_result_unavailable` require the trusted digest. TS must never fabricate it. §37.5 now states the same.
+
+**Direct-session grant issuer contract (2026-10-21):** P1 source review found the grant schema lacked canonical digest computation and HostKernel issuance/revocation ownership. Frozen decision: explicit Guard UI choice can request `allow_this_session` or `remember_for_workspace`; authenticated Core→HostKernel accepts only grant class + bounded selected scope, derives all identity/workspace/backend/policy/time pins from trusted state, then Rust recomputes a domain-separated canonical MessagePack digest and persists grant/revocation transitions. Issuance does not dispatch the challenged effect; it is re-prepared and Guarded against fresh state. Added §37.25 private RPC contract, canonical digest rule to §12.21/schema, explicit flow to §3.23 and source-generation/sequence-fenced `DirectSessionGrantChangedV1` event schema. P2 owns HostKernel/issuance; P1 owns durable Rust authority and Guard lookup. No effect is enabled by documentation alone.
+
+**CodeMode managed-lane dependency (2026-10-21):** P1 confirms no current managed Attempt dynamic-intent wave path exists. Frozen §12.21/§37.24 include direct Session and managed Attempt bindings. P1 owns Guard/ToolBatch wave admission; P2 owns durable HostKernel/OwnerLog managed binding/receipts once the P1 DTO is published; P5 keeps execute hidden until both lanes can revalidate authority and terminal receipts between waves. P1/P2 are continuing this as unblocked full-phase work.
+
+## 2026-10-22 — V1 continuation and search contract correction
+
+Active whole-phase owners are P1 Guard/ExecutionHost, P2 managed/direct lifecycle, and P5 web search/CodeMode. P1 has added private durable CodeMode run/wave APIs to EffectHost; P2 is integrating HostKernel lifecycle; P5 is implementing strict TS codecs and search. A source review found §12.9 said 22 route attempts while the canonical schema/runtime bound is 20 (10 routes × 2); §12.9 is corrected to 20. CodeMode lifecycle request/response DTOs are being aligned across P1/P2/P5. No tests/builds/typechecks/provider calls/audits/release actions ran under the implementation-first hold. P6 is next when a slot opens, then P4/P7/P8/P9 and P3 remaining integrations. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-22 07:58 UTC — CodeMode lane authority and receipt digest correction
+
+P2 identified that P1's first CodeMode authority struct required `EffectAttemptScopeV1` for root direct sessions. §37.24 and the enablement schema define a direct root Session authority with no Attempt, while managed execution is Attempt-bound. P1 is changing the private authority to `DirectSession` vs `ManagedAttempt`; root direct uses normal SessionBatch Guard, with DirectTurnScope only for a real direct child. §37.24 and the worker-message contract now state this explicitly and prohibit synthetic Attempts. Also clarified two distinct digests: HostKernel derives the public `codemode-receipts.v1` digest from ordered durable `(callId, receiptRef, receiptDigest)` rows for the helper frame; Rust separately verifies/settles its private batch/call/effect/receipt digest. Core checks the public digest against authenticated rows and invents no receipt authority. P2 is wiring the HostKernel RPC; P5 the strict codec. Managed independent verifier ingress remains disabled and is the critical P2 source gap being worked. No tests/builds/typechecks/provider calls/audits ran.
+## 2026-10-22 — direct-session permission UX and Explorer/editor source checkpoint
+
+User directed a low-friction Codex-style permission UX. Parent updated DEC-V1-28 and the normative direct-session contracts: independent sandbox and approval controls, default `workspace-write` + `on-request`, `always` for per-effect prompts, `never` for no prompts inside the chosen sandbox, and explicit per-Session `danger-full-access` + `never` with no HorizonCode filesystem/network sandbox. Every supported effect still uses authenticated Guard, budget, intent, one-use lease, ExecutionHost, receipt and UNKNOWN recovery; paid provider/search consent remains separate; managed Attempts do not inherit direct-session settings. New `direct-session-permission-mode-v1.schema.json`; updated §§03, 04, 12, 14, 16, 17, 32, 37 and §42 provenance. P1/P2 are coordinating the HostKernel-owned projection and EffectHost admission seam. Permission-mode source/UI/runtime is not yet integrated.
+
+Explorer/editor source status from inspection: general workspace Explorer pane is not present; a Git diff file tree exists. Bounded HostKernel-backed `repo_tree`/`repo_detect` adapters exist but `REPO_DISCOVERY_TOOL_ACCEPTANCE_READY=false`, so model registry hides them pending integrated P1/P3 acceptance. TUI inline prompt editing exists; external `$EDITOR` launch currently returns unavailable before temp-file/process creation. LSP client/supervisor source exists and parent connected the direct root-session workspace snapshot into the prompt path; unsaved-buffer ingress, parser-backed navigation, effectful code actions/rename, DAP runtime and REPL remain gated/unavailable. No builds, tests, typechecks, audits or provider probes ran per implementation-first instruction. P1/P2/P5 remain the only active phase owners; overall V1 PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+**External editor decision (2026-10-22):** User asked to use familiar terminal/GUI editors rather than depend on an inbuilt editor. DEC-V1-33 now specifies user-owned profiles for nano/vi/vim/nvim and wait-mode GUI CLIs such as Sublime, VS Code and Zed; no raw `$EDITOR` parsing, model-chosen executable/argv/path, or Core spawn. Parent added `external-editor-profile-v1.schema.json` and normative contracts in §§4.17/12.22/14.27/16.20/32.44/37.28 plus capability `editor.launch`. P1 owns the Guard/ExecutionHost process boundary, P2 the authenticated HostKernel launch lifecycle, parent the contract/Core/TUI integration review. The feature remains designed and unavailable; no tests/builds/typechecks/audits ran. Preserve the current mixed Git tree. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+
+## 2026-10-22 — Explorer/editor opt-in UX decision
+
+User clarified that Explorer/editor surfaces must not be forced on users. V1 starts in a
+single-pane coding session with no Explorer/editor panel, persistent right sidebar, or
+always-visible external-editor button. `/editor` opens the Explorer as a temporary overlay;
+`/editor --side` opts into a right-side pane for that session. Selecting a file and choosing
+Open uses the configured user-owned editor profile. `/settings` → Editors changes that
+profile. Prompt scratch editing is available through `/editor` too. Architecture updated in
+DEC-V1-33 and §§16.2/16.3/16.20, 20.14, 32.44, 33.5, 37.28 and 45.28. This remains
+design-only: Explorer/editor launch is not wired and must remain unavailable until P1/P2
+Guarded launch and P3/P4/P6 acceptance are complete. No tests/builds ran. V1 remains
+PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+Competitive engineering is the primary product objective, recorded as DEC-V1-34: evaluate
+real coding tasks for correctness, success rate, speed, capability coverage and recovery;
+compare harness uplift only with the same model/version, task set, tools, permissions,
+budgets and environment. Competitor superiority requires reproducible matched evidence.
+
+P4 whole-phase implementation owner `/root/p4_lsp_editor_ui` is now active. Its exclusive
+write scope is TUI plus OpenCode-derived LSP/DAP/REPL modules/tests; it owns the UI command
+surface and must preserve the single-pane default while Guard-dependent editor launch
+remains gated. P1/P2/P5 are the other active owners (P5 returned PARTIAL). P2 must leave
+P8 worker/resource files untouched. User's evaluation objective is now recorded as
+DEC-V1-34 with paired, reproducible coding-task evidence required for competitor claims.
+
+## 2026-10-22 — P2 handoff and P6 refill
+
+P2 handed off PARTIAL after wiring the direct-session permission-mode Core API to the
+HostKernel CAS operation. Source stores only the sandbox/approval choice and revision;
+HostKernel derives authenticated owner, Location, root, backend, policy and workspace pins.
+Terminal approval preflight and persisted binding now include the current mode digest and
+revision, and Full Access is selected only for `danger-full-access + never`. Source fixtures
+were added but not run. P2 still lacks managed independent-verifier acceptance and aggregate
+DAG finalization; CodeMode fixed Bun resolver/enablement; and editor profile/launch lifecycle.
+P8-owned workers remain untouched. Active whole-phase owners now: P1 Guard/ExecutionHost,
+P4 LSP/DAP/REPL + TUI command/layout, P6 providers/settings/Doctor/S1. P5 returned PARTIAL;
+P3/P7/P8/P9 remain to be resumed as slots free. No tests/builds/typechecks/provider calls run.
+V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+P4/P6 TUI write ownership split to prevent racing shared app/route files: P4 owns `packages/tui/src/app.tsx`, `packages/tui/src/editor.ts`, prompt and session Explorer/layout integration, and all LSP/DAP/REPL modules/tests. P6 owns provider and permission/settings dialog components, settings-specific contexts/components/tests, and provider/auth/config/Doctor/S1 modules. P6 must expose a component/API for P4 to wire from `/settings` and `/permissions`; neither edits the other's owned paths.
+
+## 2026-10-22 — continued full V1 source execution
+
+Live child-slot check: `/root/p1_guardv1`, `/root/p4_lsp_editor_ui`, and
+`/root/p6_provider_settings` are running whole-phase source owners; all three
+child slots are occupied. P1 reports private EffectHost CodeMode operations
+(`register_code_mode_execution`, `prepare_code_mode_wave`, `bind_code_mode_wave`,
+settle/reject/cancel/complete); HostKernel lifecycle still needs integration.
+P1 also found that editor-specific Guard/process identity is absent and is adding
+only a non-runnable Rust foundation. P4 is implementing the single-pane `/editor`
+overlay and explicit `/editor --side`; authenticated Explorer selection and
+external launch remain unavailable. P6 continues provider/auth/catalog/settings/
+Doctor/S1 source work in the agreed separate TUI component scope.
+
+Next whole-phase queue when a slot frees: P2 managed lifecycle/HostKernel first
+(independent verifier, DAG settlement, CodeMode host lifecycle, external editor
+launch); then P5 search/CodeMode completion, P3 RepoIntel/context, P7 streams and
+artifacts, P8 workers/resources/evaluation, and P9 distribution/release source.
+P5's prior partial handoff does not close the phase. Parent integration owns
+cross-phase contract review and tracker accuracy. Testing remains held: no tests,
+builds, typechecks, audits, benchmarks, provider calls, or release checks until
+source implementation is complete. Git remains mixed, unstaged, and unpublished;
+only repository-local paths are in scope. Overall V1 remains PARTIAL / NOT
+VERIFIED / NOT RELEASED.
+
+**P4/P6 source update (2026-10-22):** P4 reports the command-only Explorer/editor
+surface in source: startup hides the sidebar even with an old `sidebar=auto`
+preference; the sidebar toggle is no longer keybound/palette-exposed; `/editor`
+opens the overlay; `/editor --side` opts into a per-session pane and resets on
+session change; prompt scratch editing is under `/editor`; export has no editor
+launch path. P4 rejected the legacy `file.list` fallback; the HostKernel-authenticated
+Explorer projection and external launch remain unavailable. LSP composition is
+present but runtime route gates remain false; DAP/REPL are gated pending P1/P3.
+P6 has exported its dialog components to P4 and is adding a ServerAuth-protected
+Config wrapper for SessionSupervisor permission-mode snapshot/CAS, SDK methods,
+and `/permissions`; `/settings` → Editors currently reports unavailable until
+P2 provides the profile projection and guarded launch. No checks were run.
+
+**P1 editor Guard source delta (2026-10-22):** P1 added a dedicated
+`EDITOR_LAUNCH_ID` broker policy/action with root-session, profile, argv, mode,
+process-tree, fence and one-use pins; Rust now identifies the process ref as
+`ExternalEditor` and routes it through the existing stdio ExecutionHost
+classifier. Regression fixture is authored but unrun. This is not a runnable
+editor path: profile parsing, terminal PTY handoff, Full Access supervisor, and
+HostKernel lifecycle are still missing. P2 owns the HostKernel/profile caller;
+Core/TUI owns user selection and handoff. No tests run.
+
+## 2026-10-22 — phase refill after P6 source handoff
+
+P6 handed off SOURCE COMPLETE for currently unblocked work, not verified. Provider
+eligibility remains exact catalog-backed active zero-priced OpenCode only when
+anonymous; credential mutation and credentialed sends remain gated on P1's
+protected write/receipt and P1/P2 transport acceptance. Offline Doctor, managed
+provider truth projections, and owner-filtered QuestionV2/SSE source are present.
+P6 added ServerAuth-protected permission-mode APIs/SDK/dialogs, informational
+editor settings, and RepoIntel Settings projection; P4 owns mounting the settings
+chooser and has acknowledged it. Parent added only exact `.gitignore` exceptions
+for the first-party permission/editor/RepoIntel dialog files and permission-mode
+schema DTO.
+
+A child slot was immediately refilled by whole-phase P2 managed lifecycle/HostKernel
+owner `/root/p2_managed_hostkernel`; active owners now P1/P2/P4. P2 owns HostKernel
+CodeMode/editor lifecycle and remaining managed verifier/DAG/recovery work. P5
+remains open after partial handoff; P3/P7/P8/P9 remain queued. No checks/provider
+calls/releases ran. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+**P2 continuation checkpoint (2026-10-22):** P2 confirms managed planned-run
+start, plan/TUI projection, coordinator, verifier challenge and final Inspect
+settlement source already exist, but `TRUSTED_VERIFIER_ADAPTER_AVAILABLE=false`
+keeps approval/dispatch/finalization gated. The active P2 source gap is connecting
+HostKernel to P1's private CodeMode lifecycle, resolving ExternalEditor profiles/
+launch/recovery, and closing managed verifier artifact/verification caller seams.
+P2 has requested exact typed process/API shapes from P1 and will keep gates closed.
+
+**P4 DAP source scope extension (2026-10-22):** To avoid ending at the current
+module boundary, P4 is authorized to add a dedicated gated
+`packages/opencode/src/tool/dap.ts` and edit `tool/registry.ts` only for DAP
+import/registration/readiness. P4 must use canonical DAP capability IDs and
+existing DAPSession/supervised adapters; dispatch, launch and evaluate remain
+unavailable while Guard/HostKernel prerequisites are false. The existing
+websearch/CodeMode registry sections remain reserved for P5. P2 owns HostKernel
+routes; P4 will coordinate the registry boundary when P5 resumes.
+
+**P1/P4 source delta (2026-10-22):** P1 sent P2 the exact existing
+`prepare_external_editor` supervisor API and lane-tagged CodeMode EffectHost
+lifecycle methods; P2 owns HostKernel RPC, profile resolution and recovery.
+P4 added `packages/opencode/src/tool/dap.ts` and isolated DAP-only registration
+in the shared registry. The model-visible tool uses canonical `debug.start`,
+accepts only an adapter profile ID, and returns typed unavailable; exposure
+requires both DAP readiness and `debugEffectRouteAvailable()` (currently false).
+The supervised factory still lacks authenticated profile/scope/Attempt/Guard
+lease lifecycle and must not fabricate userActionID/callID. No dispatch/launch/
+evaluate enabled and no checks ran. P5 must preserve the DAP-only registry hunks.
+
+**DAP provenance correction (2026-10-22):** P4 hardened
+`createSupervisedDapClientV1` to require producer-supplied bounded nonempty
+`userActionID` and `callID` and forwards them into trusted profile resolution;
+it no longer fabricates authority/provenance IDs. `approvalID` remains a
+separate random challenge correlation. The route still fails before RPC while
+process readiness is false; P2 must supply authenticated runtime IDs. P1/P2 are
+coordinating the typed `ExternalEditorLaunchBindingV1` HostKernel request, which
+must pin authenticated Session/Attempt identity, profile/executable digests,
+workspace/revision/file preimage, permission mode, challenge/effect/lease and
+process-generation facts. No checks ran.
+
+## 2026-10-22 — P4 handoff and P5 refill
+
+P4 handed off source-partial, not verified. It reports startup single-pane,
+`/editor` Explorer overlay, `/editor --side`/`--close`, no prompt scratch or export
+launch shortcut, and P6 Editors/RepoIntel/Permissions components mounted. P4 added
+a model-visible DAP tool only under canonical `debug.start` with both false
+readiness and Guard-route gates; its caller must supply authenticated action/call
+IDs. LSP/DAP/REPL remain unavailable where P1/P2/P3/OS acceptance is missing.
+P2 owns authenticated lifecycle; P3 owns Explorer/RepoIntel acceptance.
+
+The freed slot was immediately refilled by whole-phase P5 search/CodeMode owner
+`/root/p5_search_codemode`. Current active owners are P1/P2/P5. P5 must preserve
+P4's DAP-only registry hunks and coordinate with P1/P2 on lane authority, bounded
+waves, receipts and trusted search consent. P6 handed off source-complete for
+currently unblocked work; P3/P7/P8/P9 remain queued. No tests/builds/typechecks/
+audits/benchmarks/provider/release checks ran. V1 remains PARTIAL / NOT VERIFIED /
+NOT RELEASED.
+
+**P1/P2 CodeMode and editor authority decision (2026-10-22):** One receipt/process
+authority is required. P1 owns the canonical EffectHost/ExecutionHost editor
+prepare/begin/settle/UNKNOWN journal and fixed CodeMode helper executable/
+entrypoint/package-digest resolver. P2 owns HostKernel authenticated live
+authority, session/Attempt binding, RPC, and Core projections that consume P1's
+journal APIs. P5 owns strict TS codecs/callers and package-entrypoint integration
+only against the exact P1/P2 resolver contract, coordinating P9 packaging as
+needed. HostKernel must not keep parallel editor receipts/process authority.
+Effectful routes remain gated pending integrated acceptance. No checks ran.
+
+**P5 Settings ownership clarification (2026-10-22):** P5 owns the web-search
+specific Settings component and config HTTP route/API primitives (`dialog-websearch-settings.tsx`
+and websearch route handlers/groups). P4 owns only mounting the exported P5
+component through the command/settings chooser in session routes/app; P6's
+provider/settings phase has handed off. P5 must implement route enable/order and
+separate query-sharing/cost-consent controls from §37.5 while preserving no
+silent billing/auth upgrade. Search dispatch remains disabled pending P1/P2.
+
+**P5 Settings source correction (2026-10-22):** The websearch dialog already
+implements route toggle/order, first-use anonymous query-sharing consent,
+separate BYO auth/cost consent and revocation, local-only provider status, and
+uses generic authenticated Config get/update. `/websearch/providers` is existing
+read-only inspection with no provider probes. No new route is needed unless P5
+finds the contract cannot be represented. P4 owns only mounting the dialog.
+
+**P1 journal source audit (2026-10-22):** P1 found the ExternalEditor
+EffectHost journal partially present but incomplete: receipt digest helper and
+binding digest are missing from returned outcomes, and a `DecisionKindV1` typo
+needs repair. It is fixing those before freezing the typed HostKernel API, then
+continues fixed CodeMode helper resolution and remaining P1 invariant source
+review. P5's rejected/cancelled wave contract is accepted: terminal failure/cancel
+prevents future waves, exactly one matching failed/cancelled completion is
+emitted, and UNKNOWN emits no completion. No checks run.
+
+
+**2026-10-22 — CodeMode nested-dispatch owner boundary:** P5's caller audit found that `tool/code-mode.ts` currently enumerates MCP-only definitions, while the contract requires exact authorized current tool definitions and nested invocation through ordinary ToolBatch. P5 will implement the authorized registry projection and continue independent search/runtime source. It must not directly invoke `Tool.Def` or build a parallel dispatcher. The typed reusable `dispatchNestedToolBatch` adapter belongs to queued whole-phase P7 in `session/tool-batch.ts`; CodeMode stays gated until that shared path is wired and the integrated P1/P2/P5 boundary is accepted. Current owners remain P1/P2/P5; P3 is next for a freed slot, with P7 next as capacity permits. User's implementation-first hold remains: no product tests/builds/typechecks/audits/provider calls/benchmarks/release checks. Preserve mixed Git state. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+
+**2026-10-22 — P2 managed DAG source gap:** P2 found run-plan admission was still functionally single-Task: roots were not made ready by `StartPlannedRun`, dependency readiness relied on disabled `mark_task_ready`, and concurrent workers could mutate one shared workspace. P2 is implementing Rust-derived root/dependency readiness and single-writer admission until distinct authenticated workspace leases exist, plus verifier support for prior verified Tasks alongside one current pending/live Task. Parent asked P2 to reconcile exact §11/DEC-V1-31 fan-out scope and use existing worktree leases for any required independent workers; serialized behavior must not be reported as parallel fan-out acceptance. P2 also found the fixed CodeMode helper still needs a normative owner-only package manifest path; P9 owns packaging and P1 is adding helper-digest authority. All gates remain closed. No tests/builds/typechecks/audits/provider calls/benchmarks/release checks. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+
+**2026-10-22 — P5 CodeMode source delta:** `tool/code-mode.ts` now removes the old Core-side MCP interpreter/dispatcher and defines an immutable `CodeModeToolContextV1`, strict effective-tool projection, recursive CodeMode exclusion, and a required typed `dispatchWave` callback carrying the exact P2 HostKernel batch projection. Runtime stays unavailable when helper readiness or this context is missing. Parent source review confirmed the catalog must come from the post-filter/post-transform `SessionTools.resolve` active definitions, not raw ToolRegistry/MCP data. P7 owns supplying that exact projection and wiring the callback through ordinary ToolBatch. P5 continues search implementation and TS caller/package integration. No validation or provider/network action ran; all CodeMode/search effect paths remain gated until integrated acceptance.
+
+
+**2026-10-22 — P1 CodeMode confinement source:** P1 reports CodeMode launch construction now binds only the fixed verified packaged helper (`horizoncode:codemode:bun`), fixed Bun `run <entrypoint>`, a read-only package mount, and no workspace/environment mount. EffectHost now returns the editor binding digest and terminal receipt, while CodeMode terminal reject/cancel/UNKNOWN semantics fence later waves/completion correctly. P1 is adding helper SHA-256 to persisted authority. No checks ran. P2/P9 must supply the trusted owner-only package manifest; no path or entrypoint may come from RPC/Core/model input. Exposure stays unavailable unless cgroup-v2 memory/CPU/PID and RLIMIT_NOFILE controls are each enforced and verified before first instruction, per DEC-V1-29/§37.24.
+
+## 2026-10-22 continuation — live phase roster
+
+Current active whole-phase implementation owners: P3 RepoIntel, P5 built-in web search/CodeMode, and P7 streams/artifacts/analytics/automation/rewind. P3 source review found `RepoDocumentReadV1` schema drift: the canonical schema now includes `revisionKind` and the 131,072-byte response ceiling; P3 is reconciling the exact §12.18 example and §37.4 prose. P7 is wiring the request-scoped effective CodeMode tool projection into the existing ToolBatch path; the runtime gate remains closed. P5 continues the approved search cascade and CodeMode adapters. P1/P2 continuation attempts are currently unavailable because the collaboration service reports the agent thread limit; their source remains incomplete and they are next critical-path whole phases when actual capacity opens. P4/P6 source handoffs are partial; P8/P9 are still required. No tests/builds/typechecks/audits/provider calls/benchmarks/release checks run in this implementation wave. Preserve mixed Git state. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+**CodeMode zero-call contract alignment (2026-10-22):** The normative §12.18/§37.24 contract permits a bounded pure-computation script with no nested tools. Parent aligned `codemode-worker-message-v1.schema.json` `start.tools.minItems` to 0. P5 reports the TS start decoder/context now permits an empty effective tool set; Rust `CodeModeFrameV1` still rejects an empty start tool list at `kernel/src/codemode_protocol.rs` and P1 has been asked to remove only that stale rejection while preserving digest/byte validation. No validation ran; CodeMode remains disabled pending P1/P2/P5/P7 integration and acceptance.
+
+**Web-search retry boundary decision (2026-10-22):** User confirmed bounded network retry. `NOT_DISPATCHED` is a durable route receipt only when trusted ProviderTransport proves no request bytes left the process; it has null HTTP status, Retry-After, result count and body digest, zero body bytes and `responseComplete=false`. Permit at most one same-route retry. Retry HTTP 408/425/5xx once only after a durable response receipt. Any possible-send ambiguity stays UNKNOWN and cannot be retried. Parent updated DEC-V1-26, §§12/37 and search receipt/route schemas. P1 owns Rust receipt/journal, P2 owns HostKernel route progression, P5 owns TS cascade parsing, P6 owns transport classification. Runtime remains closed. No tests/checks ran.
+
+**2026-10-22 — P5 source handoff (PARTIAL; no checks):** P5 completed its currently unblocked search source: exact 4 anonymous + 6 BYO route catalog, consent/order/Settings and read-only status surfaces; strict route plan digest/ID/index provenance; 20-attempt parsing/projection; EMPTY and one same-route retry for durable `NOT_DISPATCHED` or bounded 408/425/5xx; route-local auth 401/403/407 fallthrough; terminal other 4xx; no implicit paid upgrade. Anonymous root DirectSession routing already exists. BYO root DirectSession remains blocked because HostKernel/P6 authorization requires an Attempt-pinned AgentProfileV2, while a root Session has no Attempt; it needs a trusted AgentProfileV2 projection or an approved root-session scope alternative. P6 Auth still lacks the durable `NOT_DISPATCHED` receipt/transport classifier; only positive pre-send proof may retry, and ambiguous fetch failures stay UNKNOWN. CodeMode strict TS framing/helper/context source is present, including zero-tool pure computation; P7 is wiring the effective SessionTools projection and shared ToolBatch dispatcher. P1 fixed helper/EffectHost launch authority and P2 authenticated `codemode_*` HostKernel lifecycle/DTO are not yet source-present, so no safe caller integration exists. Search and CodeMode runtime/registry gates remain false. No tests/builds/typechecks/audits/provider calls/benchmarks/release checks ran. Preserve mixed Git state; phase returns PARTIAL so root can refill the slot with P1/P2 and resume P5 when those interfaces land.
+
+
+**2026-10-22 — P7 source checkpoint (PARTIAL; no checks):** P7 completed unblocked source for bounded/redacted activity rendering and replay/resnapshot fences; artifact fidelity/render/resource caps and bounded provenance-aware usage analytics; an ephemeral managed `session.context_ledger` event plus TUI context-bar projection (request/source-generation identity fences, 48 KiB cap, no raw provider params, and best-effort publication); and authenticated read-only artifact/checkpoint preview adapters. Added `lane:"managed"` to `compileManagedContextSelection`. Remains blocked on P2 authenticated CodeMode wave source/durable nested settlement, exact direct ContextSelection/profile pins, P1/P2 guarded automation invocation and checkpoint capture/restore/partial-restore recovery, and authenticated direct artifact search provenance. P5-owned CodeMode binder left untouched per parent instruction; CodeMode remains unbound/unavailable without its HostKernel source. No tests/builds/typechecks/audits/provider calls/benchmarks/release checks ran. P7 is PARTIAL / NOT VERIFIED; slot may be refilled for P2, with P7 to resume at the dependency handoff.
+
+## 2026-10-22 — source-only continuation, search settlement boundary
+
+Current child phase owners: P1 Guard/ExecutionHost, P2 managed lifecycle/HostKernel/DAG, and P6 providers/settings/Doctor/S1. P5 returned PARTIAL after completing its currently unblocked search/CodeMode source: strict NOT_DISPATCHED reason+receipt projection, bounded retry, terminal FAILED/CANCELLED outcomes, exact route ordering/provenance, explicit consent, and removal of arbitrary callback construction from CodeMode's ToolBatch seam. Search and CodeMode remain unavailable pending cross-phase integration and acceptance.
+
+P2 converted both production HostKernel MCP search dispatch callsites to P1's whole-handshake pre-send proof API and is finishing the resume/keyless terminal path. The canonical `routePlanDigest` is BLAKE3 over canonical MessagePack of the exact approved ordered `routes` array (including `attemptCount`); P1's EffectHost terminal receipt persists and compares that HostKernel-provided digest rather than recomputing it from route IDs. §37.5 recovery prose was corrected to retain exact FAILED/CANCELLED/EXHAUSTED terminal status. No tests/builds/typechecks/audits/provider probes/benchmarks/release checks were run. Mixed Git state is preserved; nothing staged, committed or pushed. All P1–P9 remain in V1 scope; overall status PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+**P6 direct-provider source audit (2026-10-22):** `provider.getLanguage` still constructs regular SDK clients through `resolveSDK`/`timeoutFetch`; no direct Core request journal or selected-route ProviderTransport send is wired. §§14.23.1/37.23.1 require an authenticated Core SessionStore PINNED→DISPATCHING→SETTLED/UNKNOWN journal over the frozen direct ContextSelection/provider payload, with a protected selected-route SecretBroker callback; direct inference must not use a per-request HostKernel or `providers.infer` path. Ownership is now explicit: P6 owns Core direct journal/API plus ProviderTransport/Auth integration; P7 owns the frozen provider payload/ContextSelection producer; P2 stays on managed HostKernel/control/Attempt lifecycle; P1 owns Rust Guard/ExecutionHost. Provider routes remain gated. No checks or provider calls run.
+
+**P1/P2 Git read path gap (2026-10-22):** Core `Git.Interface` currently injects a process port that rejects every command, so normal read-only status/diff/log/history/tree callers are unavailable as well as mutations. The existing HostKernel fixed-Git supervisor call is scoped to P8 child-root final Inspect and cannot serve general Session Git. Keep Core raw process execution closed; P1 is defining the shared-supervisor preflight/profile requirements, and P2 is resolving an authenticated Session/Attempt-bounded read-only Git route. Do not add per-read approval prompts. General Git inspection remains gated until this route is wired.
+# 2026-10-22 P7 continuation — source only
+
+P7 direct ContextLedger source is connected to Core SessionRunner as an asynchronous bounded UI projection. It captures `LLMClient.prepare`'s provider-native body without auth/headers, records the exact provider-input digest, BLAKE3 message references, event source revision/generation, and only an explicit primary AgentProfileV2 that matches the already-selected provider/model plus the built-in HarnessProfile. The TUI accepts distinct direct request IDs within one same-generation source revision while preserving monotonic managed request-sequence checks. This is not a durable provider-request pin or dispatch authorization: SessionStore has journal APIs, but complete route/effective-scope pins and P6's `RequestExecutor.Service.execute` adapter are not integrated; provider sends remain fail-closed. Core's legacy file rewind `stage`/`clear` now refuse file restoration because the available HostKernel checkpoint route is preview-only and §15.15 requires reviewed revision-bound restore. Direct ArtifactStore search, automation invocation, checkpoint restore, and ContextSelection journal persistence remain gated. No tests/builds/typechecks/audits/provider probes ran. Mixed Git state is preserved; no staging, commit, push, or cleanup.
+
+
+
+## 2026-10-22 — live implementation continuation (source only)
+
+Actual active phase owners: P1 Guard/ExecutionHost, P2 managed lifecycle/HostKernel/DAG, and P7 streaming/context/artifacts/analytics/automation/rewind. The four-slot collaboration limit is full (root plus these three owners); P6 is next queued for direct provider journal/ProviderTransport/Auth integration. No tests/builds/typechecks/audits/provider calls/benchmarks/release gates are running, per the user's implementation-first instruction. Repo-only disk check: 842 GB free; `kernel/target` is 627 MB. No worktree cleanup was performed. Git remains broadly mixed and unstaged.
+
+P1 has added managed CodeMode authority recovery keyed by authenticated principal/session/location/owner epoch/request ID and exact live Attempt scope; it checks persisted outer process/challenge pins, returns no authorized tools, and permits read-only inspect to refresh authority. It has now added `list_direct_session_terminal_artifact_receipts(principal, session_id, owner_epoch, batch_id, ordered_effect_ids)` with full batch cardinality/index checks and no caller-supplied artifact refs, plus `active_code_mode_outer_effect(session_id, principal, private_call_id)` to resolve the exact PREPARED `codemode.execute` and RUNNING stdio process with the same consumed lease. P2 must authenticate/derive the owner epoch and committed turn/batch/order before calling the artifact query.
+
+P2 is implementing the private Core-to-HostKernel CodeMode call context and typed lifecycle; the receipt APIs alone do not provide start/resume/prepare-wave/settle/cancel. P2 will now consume the P1 root artifact and outer-effect APIs. P7 owns frozen ContextSelection/provider-input production and ordinary ToolBatch nested-wave adapter; P6 owns the durable direct request journal and protected transport and is next for a freed child slot. Direct child Attempt artifacts have list/inspect/range source; root DirectSession artifact search remains gated until P2 adds the authenticated batch-to-ArtifactStore projection. Provider dispatch, CodeMode, guarded automation invocation and checkpoint restore remain unavailable pending source integration and later acceptance. Overall V1: PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+
+**Live roster correction (2026-10-22):** P1 source pass handed off PARTIAL and retains ownership for later integration/acceptance; its new EffectHost CodeMode recovery, root terminal-artifact receipt lookup and outer-call lookup APIs are now with P2. Active full-phase owners are P2 HostKernel lifecycle, P7 streams/context/artifacts/automation/rewind, and newly resumed P6 provider/settings/Doctor/S1. P6 owns the direct request journal and ProviderTransport/Auth sender; P7 owns the frozen ContextSelection handoff and P2 owns managed lifecycle. P3/P4/P5/P8/P9 remain open for slot refill. No checks run.
+
+
+**P2/P7 interface delta (2026-10-22):** P2 has added the strict private `CodeModeCall` envelope in Rust protocol/Core supervisor and `SessionSupervisor.codeModeHostRequest(...)`, binding session/location/callID/lane/optional managed scope outside the frozen public request body. HostKernel now routes authenticated inspect and rehydrates exact current-epoch direct/managed authority through P1's recovery APIs; start/resume/cancel/enablement remain unavailable pending durable enablement, frame/tool-set validation and supervisor dispatch. P2 is wiring launch next. P7 will send P6 only the frozen directContext (request ID, source revision, profile ref/digest, ContextSelection); P6 captures and hashes the exact prepared selected-route payload once at RequestExecutor, with no credential/header bytes in the handoff or digest. No tests run.
+
+## 2026-10-22 — direct-provider and root-artifact source contracts
+
+Active whole-phase owners: P2 managed lifecycle/HostKernel/DAG, P6 provider/settings/Doctor/S1, and P7 streaming/context/artifacts/analytics/automation/rewind. P2 is implementing the immutable root DirectSession ToolBatch admission index in the existing HostKernel location-authority store (PREPARING → ADMITTED/DENIED; restart ambiguity → UNKNOWN) and then wiring its exact ordered effect IDs to P1 terminal receipts and ArtifactStore metadata. P6 owns a Core-neutral selected-route projection at the existing SessionRunnerModel/catalog boundary; P7 consumes it and may not use `model.route.id` as route authority. The protected transport must independently resolve and exactly match provider/model/harness/route/revision/endpoint-revision before dispatch. Architecture §§15.2, 17.26 and 37.12 now define this and the separate HostKernel `permissionScopeDigest` versus Core privacy/budget `policyDigest`. No tests/builds/typechecks/provider calls/audits ran under the implementation-first hold. Mixed Git state is preserved; V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-22 — owner restart after platform usage limit
+
+The previous P2/P6/P7 owner threads terminated with the platform usage-limit error; they were not continuing in the background. Refilled three real child slots with whole-phase source owners P1 Guard/ExecutionHost, P2 managed lifecycle/HostKernel/DAG, and P6 providers/settings/Doctor/S1. P7 is next in the queue. Parent inspected repository-local OpenCode child-job/restart/completion source and Codex delegate/thread-manager/message source; distilled the adaptation into §42.19. Source decisions for trusted direct provider route and root artifact lineage are now in §§15.2, 17.26, 37.12; the latest owner/evidence ledger is at the top of implementationtov1release.md. No tests/builds/typechecks/provider calls/audits run. V1 PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+**2026-10-22 resumed implementation checkpoint:** Re-read the bootstrap sources and refreshed Engram. Current whole-phase owners are P1 Guard/ExecutionHost, P2 managed lifecycle/HostKernel/DAG, and P7 streams/context/artifacts/automation/rewind (root + 3 owners, actual concurrency full). P2 now owns `kernel/src/managed_control.rs`; it is removing a stale capacity-one `max_workers.min(1)` reducer guard while retaining distinct workspace lease safety and DEC-V1-31 bounded DAG semantics. P1 is completing root-session permission preflight and fixed-argv command profile dispatch. P7 is completing safe renderer redaction and the remaining phase source requirements.
+
+**Cgroup policy resolution:** User asked for Codex/OpenCode comparison. Repo-local source comparison finds scoped process-group cleanup in those projects, but no durable cgroup identity/restart janitor. Keep HorizonCode's stronger durable proof: delete only exact isolated cgroups after persisted quiescence, empty membership, identity/path revalidation under the exclusive namespace lock. Preserve the 256-row bound only for UNKNOWN/unproven/legacy/Full Access/failed-removal quarantine; it is not a lifetime launch cap for successfully reaped confined groups. This matches `arch_V1/14-EFFECTS-EXECUTION-SECURITY.md` and `arch_V1/42-EXTERNAL-SOURCE-PROVENANCE-REGISTER.md`; P1 has been told to continue that design.
+
+No tests/builds/typechecks/audits/provider probes/benchmarks/release checks ran. Disk remains 841 GB free with `kernel/target` 627 MB; only the root worktree exists. Git remains heavily mixed, unstaged, and unpublished. Overall V1: PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+**2026-10-22 source delta:** P2 removed the stale capacity-one reducer gate. `AdmitAttempt` now honors accepted `maxWorkers`, counts active/pending-verification/UNKNOWN slots, verifies retained Attempt→Run/Task bindings, rejects duplicate/reused mutable Locations, and requires verified dependency revisions. P2 continues all other P2 requirements; this is source-only. P7 is correcting CodeMode nested result hashing/forwarding to use the exact bounded redacted tool-result projection, instead of raw callback output. No validation ran.
+
+**P2/P8 settlement API seam (2026-10-22):** HostKernel already has the canonical worker settlement flow: resolve the exact final Inspect for the verified terminal snapshot, mint `WorkerSettlementProofV1::from_host_kernel`, call `settle_managed_worker`, then resolve the durable worktree disposition. P2 will reuse that path rather than add another P8 settlement API; owner-epoch recovery uses the existing disposition-recovery proof. P2 reported it is now implementing CodeMode HostKernel start/resume/cancel/enablement and direct-session artifact inspect/range, in addition to the DAG source. No checks ran.
+
+**P1 cgroup source review follow-up (2026-10-22):** `ExecutionCgroupV2::create` retains a just-created group if CodeMode controller setup fails before the identity can be persisted. P1 is checking whether this exact never-dispatched inode can be safely reclaimed under the shared namespace lock, or whether such bounded setup failures remain in the quarantine by design; dispatched groups must still require the persisted quiescence proof and full identity checks before deletion. No checks ran.
+
+**P2 verifier/DAG source delta (2026-10-22):** Managed settlement recovery now projects one deterministic eligible Task at a time, so bounded DAGs can finish the separate P8 disposition append for each successful Task instead of returning UNCERTAIN when several are pending. Each terminal snapshot retains the exact verifier ChallengeSet identity; callers repeat until `NO_SETTLEMENT_PENDING`. P2 confirms it will reuse P8's existing settle/quarantine and fresh-current-epoch Inspect/reconcile APIs. No checks ran.
+
+**P2 root artifact read source delta (2026-10-22):** `dispatch_artifact_read_request` now recognizes the authenticated `DirectSessionArtifactRead` context for `artifacts.inspect` and `artifacts.read_range`. HostKernel checks the exact ArtifactRef against `direct_session_artifacts` output (which resolves ordered ToolBatch admission, terminal EffectHost receipt and ArtifactStore metadata), then reads through `GuardedArtifactIngress`; range parsing accepts the agreed schemaVersion envelope and strips only that field before the existing operation decoder. P7 owns the Core reader interface/producer. CodeMode start/prepare/settle/cancel remains incomplete and all gates remain closed. No tests/builds/typechecks ran.
+
+**P2 CodeMode mixed-wave blocker (2026-10-22):** Source confirms `dispatch_code_mode_request` routes `codemode_settle_tool_results` and `codemode_wave_receipts`, but the matching HostKernel methods are missing. EffectHost wave-call identity currently lacks the explicit parent-authorized `effect` versus `host_callback` kind, and its existing result settlement assumes effect rows. Architecture §37.24 already specifies mixed-wave semantics: host callbacks receive no synthetic lease; actual effects use ordinary Guard leases and exact receipts; only bounded redacted output projection/digest reaches the helper. P1 is supplying the typed EffectHost call-kind/receipt resolver surface; P2 continues artifacts and DAG source independently. CodeMode stays gated. No checks ran.
+
+**P2/P7 latest source delta (2026-10-22):** P2 fixed a managed DAG recovery loop: `managed_settlement_recovery` now consults P8's durable settlement/disposition resolvers, skips already completed Task dispositions, returns one deterministic remaining eligible candidate, and reports `NO_SETTLEMENT_PENDING` when all successful Tasks are released; unresolved/old-epoch cases remain uncertain. P7 wired strict authenticated root DirectSession artifact inspect/range producers and changed CodeMode cancellation to correlated `{callID,requestID,waveIndex,reason}` with checked response digest; P2 HostKernel cancellation remains missing, so it stays fail-closed. No checks ran.
+
+**P2/P7 CodeMode identity seam (2026-10-22):** P2 found the internal `prepareCodeModeToolBatch.calls` projection omits the exact resolved executor `toolName`, so HostKernel cannot yet compare the helper frame name with the normalized authorized executor/catalog. P7 owns adding this trusted name from `SessionTools.resolve`; P2 will compare exact names and capability pins. No model-supplied override; CodeMode remains gated. No checks ran.
+
+**P7 CodeMode identity source update (2026-10-22):** The CodeMode-only Core DTO now carries exact trusted `toolName` from the resolved `SessionTools` executor; the ordinary ToolBatch interface is unchanged. P2 is aligning the strict Rust parser and exact helper-frame/catalog/executor comparison. No checks ran.
+
+**P1 Full Access availability review (2026-10-22):** The current cgroup retention policy keeps Full Access groups because that mode does not hide the cgroup hierarchy, which would eventually turn the 256 quarantine bound into a lifetime launch ceiling for repeated successful Full Access commands. P1 is evaluating use of the existing supervised process-tree lifecycle without a persistent cgroup, or safe cleanup after exact process-tree quiescence. Preserve Full Access semantics without claiming sandboxing; only unresolved/unproven cases should consume bounded quarantine. Pending P1 source decision; no checks.
+
+**P1 Full Access threat-model decision (2026-10-22):** P1 confirmed Full Access children can access the delegated cgroup hierarchy and potentially move descendants out; an empty cgroup cannot prove process-tree quiescence, so deleting visible Full Access groups is unsafe. Parent directed P1 to avoid allocating retained cgroups for Full Access while preserving the existing supervisor and durable effect journal; if restart cannot prove exact process quiescence, keep UNKNOWN/no-replay and do not claim cgroup confinement or crash recovery of escaped children. This avoids imposing the successful-launch 256 cap without weakening cleanup safety. P1 is implementing and reconciling the relevant DEC/LLD/provenance. No checks.
+
+**P1 Full Access path implementation decision (2026-10-22):** P1 accepted the no-persistent-cgroup branch for authenticated `danger-full-access` launches, retaining the existing live process-group supervisor and durable effect journal. If restart cannot prove exact process-tree quiescence, recovery remains UNKNOWN/no-replay. Confined workspace profiles retain cgroup-v2 and exact quiescence cleanup. Public Codex/OpenCode source comparison supports this distinction: Codex uses scoped process-group termination and documents helper-orphan failure modes; OpenCode uses process-tree/group cleanup and has child-survival reports. These are lifecycle references, not proof of durable containment. No tests/builds run.
+
+**CodeMode HostKernel integration (2026-10-22):** P1 reports typed EffectHost `prepare_code_mode_wave`/`settle_code_mode_wave` APIs and call inspection are now source-present. P2 is implementing authenticated HostKernel prepare/settle/receipt/cancel handlers, strict call/frame/name/argument identity comparison, and public protocol receipt projection. Parent source review did not reproduce P2's suspected three-column row decode defect in `read_code_mode_wave_outcome`; P2 is rechecking that report. Current blocker: P1 prepare path still uses a private body shape incompatible with strict ordinary EffectHost ToolBatch admission and includes callbacks in an effect-only handler; P1/P2 are reconciling one admission path that composes callbacks without synthetic leases. No checks ran.

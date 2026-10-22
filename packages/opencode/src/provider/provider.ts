@@ -1,4 +1,6 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { blake3 } from "@noble/hashes/blake3.js"
+import { bytesToHex } from "@noble/hashes/utils.js"
 import os from "os"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import fuzzysort from "fuzzysort"
@@ -12,6 +14,8 @@ import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import { type LanguageModelV3 } from "@ai-sdk/provider"
 import { ModelsDev } from "@opencode-ai/core/models-dev"
 import { Auth } from "../auth"
+import { MANAGED_PROVIDER_CREDENTIAL_PLACEHOLDER } from "../auth/provider-transport"
+import type { DirectProviderRouteV1 } from "../auth/provider-transport"
 import { Env } from "../env"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { iife } from "@/util/iife"
@@ -214,15 +218,14 @@ function ratesAreZero(rates: {
   return (
     rates.input === 0 &&
     rates.output === 0 &&
-    (rates.cache?.read === undefined || rates.cache.read === 0) &&
-    (rates.cache?.write === undefined || rates.cache.write === 0)
+    rates.cache?.read === 0 &&
+    rates.cache?.write === 0
   )
 }
 
-// A catalog entry is free only when input and output pricing is explicitly
-// zero and no declared cache, context, or tier rate is non-zero. Missing base
-// prices remain unknown (AN-002: unknown is not free).
-export function isFreeModel(model: Model): boolean {
+// A catalog entry is free only when all declared base/cache/context/tier rates
+// are explicitly zero. Missing price components remain unknown (AN-002).
+export function isFreeModel(model: { cost?: Model["cost"] }): boolean {
   if (!model.cost || !ratesAreZero(model.cost)) return false
   if (model.cost.tiers?.some((tier) => !ratesAreZero(tier))) return false
   if (model.cost.experimentalOver200K && !ratesAreZero(model.cost.experimentalOver200K)) return false
@@ -1193,6 +1196,16 @@ export const ListResult = Schema.Struct({
   all: Schema.Array(Info),
   default: DefaultModelIDs,
   connected: Schema.Array(Schema.String),
+  /** Provenance for the local Models.dev snapshot; this is not endpoint health. */
+  catalogSnapshot: Schema.Struct({
+    source: Schema.Literals(["cache", "bundled", "override", "unavailable"]),
+    freshness: Schema.Literals(["fresh", "stale", "unknown"]),
+    updatedAt: optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+  }),
+  /** Provider IDs with the explicit anonymous, active, fully zero-priced offer. */
+  anonymousFreeProviders: Schema.optional(Schema.Array(ProviderV2.ID)),
+  /** Exact provider/model refs with anonymous dispatch eligibility. */
+  anonymousFreeModels: Schema.optional(Schema.Array(Schema.String)),
 })
 export type ListResult = Types.DeepMutable<Schema.Schema.Type<typeof ListResult>>
 
@@ -1208,7 +1221,50 @@ const PUBLIC_REDACTION = "[redacted]"
 // options or headers. Names are matched case-insensitively so apiKey, api_key,
 // x-api-key, Authorization and Cookie headers are all covered.
 const SENSITIVE_PUBLIC_FIELD =
-  /api[-_ ]?key|access[-_ ]?token|refresh[-_ ]?token|auth[-_ ]?token|authorization|secret|password|credential|private[-_ ]?key|cookie/i
+  /api[-_ ]?key|access[-_ ]?token|refresh[-_ ]?token|auth[-_ ]?token|(^|[-_])token$|authorization|secret|password|credential|private[-_ ]?key|cookie/i
+
+function hasCredentialMaterial(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(hasCredentialMaterial)
+  if (value === null || typeof value !== "object") return false
+  return Object.entries(value).some(([field, item]) => {
+    if (SENSITIVE_PUBLIC_FIELD.test(field)) return item !== undefined && item !== null && item !== ""
+    return hasCredentialMaterial(item)
+  })
+}
+
+function providerCredentialUnavailable(provider: Info, model: Model, hasCustomLoader: boolean): boolean {
+  // OpenCode's explicit anonymous offer is the only currently admitted model
+  // route. Its literal public token is not a user credential, and its catalog
+  // is restricted to active models with fully known zero pricing.
+  if (
+    !hasCustomLoader && isAnonymousFreeModel(provider, model)
+  ) return false
+
+  // Provider SDKs may consult ambient environment credentials even when the
+  // key is not present in the resolved options. Until the request-scoped
+  // SecretBroker transport is wired, fail closed for any declared credential
+  // source and any credential-bearing provider/model projection.
+  return provider.source === "env" || provider.source === "api" || provider.env.length > 0 ||
+    provider.key !== undefined || hasCustomLoader || Object.hasOwn(provider.options, "credentialProvider") ||
+    hasCredentialMaterial(provider.options) ||
+    hasCredentialMaterial(model.options) || hasCredentialMaterial(model.headers)
+}
+
+/** The one catalog-backed anonymous route; this is eligibility metadata, not endpoint health. */
+export function isAnonymousFreeModel(provider: Info, model: Model): boolean {
+  return provider.id === ProviderV2.ID.opencode &&
+    provider.source === "custom" &&
+    provider.key === undefined &&
+    provider.options.apiKey === "public" &&
+    !Object.entries(provider.options).some(([key, value]) =>
+      key !== "apiKey" && SENSITIVE_PUBLIC_FIELD.test(key) && value !== undefined && value !== null && value !== "",
+    ) &&
+    model.providerID === provider.id &&
+    model.status === "active" &&
+    isFreeModel(model) &&
+    !hasCredentialMaterial(model.options) &&
+    !hasCredentialMaterial(model.headers)
+}
 
 function redactPublicInfo(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(redactPublicInfo)
@@ -1241,8 +1297,17 @@ export function toPublicInfo(provider: Info): Info {
   )
 }
 
-export function defaultModelIDs<T extends { models: Record<string, { id: string }> }>(providers: Record<string, T>) {
-  return mapValues(providers, (item) => sort(Object.values(item.models))[0].id)
+export function defaultModelIDs<T extends {
+  models: Record<string, { id: string; status?: Model["status"]; cost?: Model["cost"] }>
+}>(providers: Record<string, T>) {
+  return Object.fromEntries(Object.entries(providers).flatMap(([providerID, item]) => {
+    const models = Object.values(item.models)
+    const eligible = providerID === "opencode"
+      ? models.filter((model) => model.status === "active" && isFreeModel(model))
+      : models
+    const selected = sort(eligible)[0]
+    return selected ? [[providerID, selected.id]] : []
+  }))
 }
 
 export class ModelNotFoundError extends Schema.TaggedErrorClass<ModelNotFoundError>()("ProviderModelNotFoundError", {
@@ -1296,14 +1361,73 @@ export class NoModelsError extends Schema.TaggedErrorClass<NoModelsError>()("Pro
   }
 }
 
+export class CredentialTransportUnavailableError extends Schema.TaggedErrorClass<CredentialTransportUnavailableError>()(
+  "ProviderCredentialTransportUnavailableError",
+  { providerID: ProviderV2.ID },
+) {
+  override get message() {
+    return `Provider inference for ${this.providerID} is unavailable until its request-scoped direct or managed journaled transport is used`
+  }
+
+  static isInstance(input: unknown): input is CredentialTransportUnavailableError {
+    return input instanceof CredentialTransportUnavailableError
+  }
+}
+
+/** Secret-free managed route projection from the existing Core provider owner. */
+export type ManagedProviderRouteProjectionV1 = {
+  readonly providerID: string
+  readonly modelID: string
+  readonly harnessID: string
+  readonly routeID: string
+  readonly endpointRevision: string
+  /**
+   * Stable opaque Auth SecretRef, or null only for Core's exact anonymous-free
+   * model predicate. This is not a one-use credential lease or consumption
+   * receipt; HostKernel must validate the reference and derive/consume any
+   * scoped use authorization without serializing secret bytes.
+   */
+  readonly credentialLeaseRef: string | null
+}
+
+export class ManagedProviderRouteUnavailableError extends Schema.TaggedErrorClass<ManagedProviderRouteUnavailableError>()(
+  "ManagedProviderRouteUnavailableError",
+  {
+    reason: Schema.String,
+  },
+) {
+  override get message() {
+    return `Managed provider route is unavailable: ${this.reason}`
+  }
+}
+
 export type DefaultModelError = ModelNotFoundError | NoProvidersError | NoModelsError
-export type Error = ModelNotFoundError | InitError | NoProvidersError | NoModelsError
+export type Error = ModelNotFoundError | InitError | NoProvidersError | NoModelsError | CredentialTransportUnavailableError
 
 export interface Interface {
   readonly list: () => Effect.Effect<Record<ProviderV2.ID, Info>>
+  readonly anonymousFreeModelRefs?: () => Effect.Effect<string[]>
   readonly getProvider: (providerID: ProviderV2.ID) => Effect.Effect<Info>
   readonly getModel: (providerID: ProviderV2.ID, modelID: ModelV2.ID) => Effect.Effect<Model, ModelNotFoundError>
-  readonly getLanguage: (model: Model) => Effect.Effect<LanguageModelV3, ModelNotFoundError>
+  readonly getLanguage: (model: Model) => Effect.Effect<
+    LanguageModelV3,
+    ModelNotFoundError | CredentialTransportUnavailableError
+  >
+  /** Request-scoped direct model construction. Only the explicit anonymous-free route is presently enabled. */
+  readonly getDirectLanguage: (input: {
+    readonly model: Model
+    readonly harnessID: string
+    readonly fetch: typeof fetch
+  }) => Effect.Effect<{
+    readonly language: LanguageModelV3
+    readonly route: DirectProviderRouteV1
+  }, ModelNotFoundError | CredentialTransportUnavailableError | ManagedProviderRouteUnavailableError | InitError>
+  /** Build an uncached bundled SDK model with no ambient credentials and a request-local guarded fetch. */
+  readonly getManagedLanguage: (input: {
+    model: Model
+    harnessID: string
+    fetch: typeof fetch
+  }) => Effect.Effect<LanguageModelV3, ModelNotFoundError | ManagedProviderRouteUnavailableError | InitError>
   readonly closest: (
     providerID: ProviderV2.ID,
     query: string[],
@@ -1397,7 +1521,10 @@ function fromModelsDevModel(provider: ModelsDev.Provider, model: ModelsDev.Model
       temperature: model.temperature ?? false,
       reasoning: model.reasoning ?? false,
       attachment: model.attachment ?? false,
-      toolcall: model.tool_call ?? true,
+      // Missing catalog metadata is unknown support, not an affirmative
+      // capability claim. Keep tool calling unavailable until a provider/model
+      // descriptor explicitly advertises it.
+      toolcall: model.tool_call ?? false,
       input: {
         text: model.modalities?.input?.includes("text") ?? false,
         audio: model.modalities?.input?.includes("audio") ?? false,
@@ -1528,9 +1655,6 @@ const layer = Layer.effect(
           [providerID: string]: CustomVarsLoader
         } = {}
         const sdk = new Map<string, BundledSDK>()
-        const discoveryLoaders: {
-          [providerID: string]: CustomDiscoverModels
-        } = {}
         const dep = {
           auth: (id: string) => auth.get(id).pipe(Effect.orDie),
           config: () => config.get(),
@@ -1565,32 +1689,11 @@ const layer = Layer.effect(
           return true
         }
 
-        for (const hook of plugins) {
-          const p = hook.provider
-          const models = p?.models
-          if (!p || !models) continue
-
-          const providerID = ProviderV2.ID.make(p.id)
-          if (disabled.has(providerID)) continue
-
-          const provider = database[providerID]
-          if (!provider) continue
-          const pluginAuth = yield* auth.get(providerID).pipe(Effect.orDie)
-
-          provider.models = yield* Effect.promise(async () => {
-            const next = await models(toPublicInfo(provider), { auth: pluginAuth })
-            return Object.fromEntries(
-              Object.entries(next).map(([id, model]) => [
-                id,
-                {
-                  ...model,
-                  id: ModelV2.ID.make(id),
-                  providerID,
-                },
-              ]),
-            )
-          })
-        }
+        // Plugin provider-model callbacks are disabled until the callback
+        // origin is mediated through Guard and its credential inputs use the
+        // request-scoped SecretBroker transport. Passing even a legacy auth
+        // projection here would let plugin code observe provider credentials
+        // during catalog construction, before request admission.
 
         // Preserve cached routing metadata without enabling the effectful plugin
         // loader or its automatic OAuth/catalog refresh path.
@@ -1648,16 +1751,16 @@ const layer = Layer.effect(
                 temperature: model.temperature ?? existingModel?.capabilities.temperature ?? false,
                 reasoning: model.reasoning ?? existingModel?.capabilities.reasoning ?? false,
                 attachment: model.attachment ?? existingModel?.capabilities.attachment ?? false,
-                toolcall: model.tool_call ?? existingModel?.capabilities.toolcall ?? true,
+                toolcall: model.tool_call ?? existingModel?.capabilities.toolcall ?? false,
                 input: {
-                  text: model.modalities?.input?.includes("text") ?? existingModel?.capabilities.input.text ?? true,
+                  text: model.modalities?.input?.includes("text") ?? existingModel?.capabilities.input.text ?? false,
                   audio: model.modalities?.input?.includes("audio") ?? existingModel?.capabilities.input.audio ?? false,
                   image: model.modalities?.input?.includes("image") ?? existingModel?.capabilities.input.image ?? false,
                   video: model.modalities?.input?.includes("video") ?? existingModel?.capabilities.input.video ?? false,
                   pdf: model.modalities?.input?.includes("pdf") ?? existingModel?.capabilities.input.pdf ?? false,
                 },
                 output: {
-                  text: model.modalities?.output?.includes("text") ?? existingModel?.capabilities.output.text ?? true,
+                  text: model.modalities?.output?.includes("text") ?? existingModel?.capabilities.output.text ?? false,
                   audio:
                     model.modalities?.output?.includes("audio") ?? existingModel?.capabilities.output.audio ?? false,
                   image:
@@ -1764,7 +1867,6 @@ const layer = Layer.effect(
           if (result && (result.autoload || providers[providerID])) {
             if (result.getModel) modelLoaders[providerID] = result.getModel
             if (result.vars) varsLoaders[providerID] = result.vars
-            if (result.discoverModels) discoveryLoaders[providerID] = result.discoverModels
             const opts = result.options ?? {}
             const patch: Partial<Info> = providers[providerID] ? { options: opts } : { source: "custom", options: opts }
             mergeProvider(providerID, patch)
@@ -1779,20 +1881,6 @@ const layer = Layer.effect(
           if (provider.name) partial.name = provider.name
           if (provider.options) partial.options = provider.options
           mergeProvider(providerID, partial)
-        }
-
-        const gitlab = ProviderV2.ID.make("gitlab")
-        if (discoveryLoaders[gitlab] && providers[gitlab] && isProviderAllowed(gitlab)) {
-          yield* Effect.promise(async () => {
-            try {
-              const discovered = await discoveryLoaders[gitlab]()
-              for (const [modelID, model] of Object.entries(discovered)) {
-                if (!providers[gitlab].models[modelID]) {
-                  providers[gitlab].models[modelID] = model
-                }
-              }
-            } catch (e) {}
-          })
         }
 
         for (const [id, provider] of Object.entries(providers)) {
@@ -1857,6 +1945,13 @@ const layer = Layer.effect(
     )
 
     const list = Effect.fn("Provider.list")(() => InstanceState.use(state, (s) => s.providers))
+    const anonymousFreeModelRefs = Effect.fn("Provider.anonymousFreeModelRefs")(() => InstanceState.use(state, (s) =>
+      Object.values(s.providers).flatMap((provider) =>
+        Object.values(provider.models)
+          .filter((model) => !s.modelLoaders[provider.id] && isAnonymousFreeModel(provider, model))
+          .map((model) => `${provider.id}/${model.id}`),
+      ),
+    ))
 
     async function resolveSDK(model: Model, s: State, envs: Record<string, string | undefined>) {
       try {
@@ -1975,32 +2070,168 @@ const layer = Layer.effect(
 
     const getLanguage = Effect.fn("Provider.getLanguage")(function* (model: Model) {
       const s = yield* InstanceState.get(state)
-      const envs = yield* env.all()
-      const key = `${model.providerID}/${model.id}`
-      if (s.models.has(key)) return s.models.get(key)!
-
       const provider = s.providers[model.providerID]
+      if (!provider || !provider.models[model.id]) {
+        return yield* new ModelNotFoundError({ providerID: model.providerID, modelID: model.id })
+      }
+      // Never let the legacy cached SDK path bypass the direct SessionStore
+      // request journal. SessionRunner uses getDirectLanguage with the
+      // request-scoped pinned Auth transport; other callers remain unavailable.
+      return yield* new CredentialTransportUnavailableError({ providerID: model.providerID })
+    })
+
+    const getManagedLanguage = Effect.fn("Provider.getManagedLanguage")(function* (input: {
+      model: Model
+      harnessID: string
+      fetch: typeof fetch
+    }) {
+      const s = yield* InstanceState.get(state)
+      const provider = s.providers[input.model.providerID]
+      const model = provider?.models[input.model.id]
+      const unavailable = (reason: string) => new ManagedProviderRouteUnavailableError({ reason })
+      if (!provider || !model || model.providerID !== input.model.providerID || model.id !== input.model.id) {
+        return yield* new ModelNotFoundError({ providerID: input.model.providerID, modelID: input.model.id })
+      }
+      if (typeof input.fetch !== "function" || !Object.hasOwn(BUNDLED_PROVIDERS, model.api.npm) || s.modelLoaders[model.providerID]) {
+        return yield* unavailable("managed inference requires a bundled first-party adapter with a request-local fetch")
+      }
+      if (model.api.url.includes("${") || typeof provider.options.baseURL === "string" ||
+        typeof model.options.baseURL === "string" || provider.options.credentialProvider !== undefined ||
+        model.options.credentialProvider !== undefined) {
+        return yield* unavailable("custom endpoints, templated endpoints, and ambient credential providers are unavailable for managed inference")
+      }
+      const hasCredentialMaterial = (value: unknown, depth = 0): boolean => {
+        if (depth > 32) return true
+        if (Array.isArray(value)) return value.some((item) => hasCredentialMaterial(item, depth + 1))
+        if (typeof value !== "object" || value === null) return false
+        return Object.entries(value).some(([name, item]) => {
+          if (SENSITIVE_PUBLIC_FIELD.test(name)) return item !== undefined && item !== null && item !== ""
+          return hasCredentialMaterial(item, depth + 1)
+        })
+      }
+      const hasResolvedEnvironmentCredential = provider.env.some((name) =>
+        typeof process.env[name] === "string" && process.env[name]!.length > 0,
+      )
+      // The sole anonymous exception is the exact bundled OpenCode offer. Its
+      // literal `apiKey: "public"` is an SDK-required placeholder, not a user
+      // credential. Remove only that exact field before scanning; nested
+      // credential options, custom loaders, env credentials and model headers
+      // remain rejected. The request-local transport later strips the SDK
+      // placeholder and requires the one-use HostKernel dispatch permit.
+      const anonymousFree = isAnonymousFreeModel(provider, model)
+      const providerOptionsForCredentialScan = { ...provider.options }
+      if (anonymousFree && providerOptionsForCredentialScan.apiKey === "public") {
+        delete providerOptionsForCredentialScan.apiKey
+      }
+      if (provider.key || hasResolvedEnvironmentCredential ||
+        hasCredentialMaterial(providerOptionsForCredentialScan) || hasCredentialMaterial(model.options) ||
+        hasCredentialMaterial(model.headers)) {
+        return yield* unavailable("managed inference cannot reuse resolved provider credentials or credential-bearing options")
+      }
+      const target = yield* managedRouteTransportTarget({
+        providerID: model.providerID,
+        modelID: model.id,
+        harnessID: input.harnessID,
+      })
+      if (target.routeProjection.providerID !== model.providerID || target.routeProjection.modelID !== model.id ||
+        target.activeEndpointRevision !== target.routeProjection.endpointRevision) {
+        return yield* unavailable("managed provider route changed during SDK construction")
+      }
+
       return yield* EffectPromise.refineRejection(
         async () => {
-          const sdk = await resolveSDK(model, s, envs)
-          const language = s.modelLoaders[model.providerID]
-            ? await s.modelLoaders[model.providerID](
-                sdk,
-                model.api.id,
-                {
-                  ...provider.options,
-                  ...model.options,
-                },
-                model,
-              )
-            : sdk.languageModel(model.api.id)
-          s.models.set(key, language)
+          const options: Record<string, unknown> = {
+            ...provider.options,
+            ...model.options,
+            baseURL: target.endpointBase,
+            apiKey: MANAGED_PROVIDER_CREDENTIAL_PLACEHOLDER,
+          }
+          const headers = {
+            ...(provider.options.headers as Record<string, string> | undefined),
+            ...(model.options.headers as Record<string, string> | undefined),
+            ...(model.headers as Record<string, string> | undefined),
+          }
+          if (Object.keys(headers).length > 0) options.headers = headers
+          else delete options.headers
+          options.fetch = timeoutFetch({ ...options, fetch: input.fetch })
+          delete options.chunkTimeout
+          delete options.headerTimeout
+          const factory = await BUNDLED_PROVIDERS[model.api.npm]!()
+          const sdk = factory({ name: model.providerID, ...options })
+          // Keep the same adapter selection semantics as the normal Core path;
+          // only its construction and fetch boundary differ for managed calls.
+          const language = sdk.languageModel(model.api.id)
           return language
         },
-        (cause) =>
-          cause instanceof NoSuchModelError
-            ? new ModelNotFoundError({ modelID: model.id, providerID: model.providerID, cause })
-            : undefined,
+        (cause) => cause instanceof NoSuchModelError
+          ? new ModelNotFoundError({ modelID: model.id, providerID: model.providerID, cause })
+          : cause instanceof ManagedProviderRouteUnavailableError
+            ? cause
+            : new InitError({ providerID: model.providerID, cause }),
+      )
+    })
+
+    const getDirectLanguage = Effect.fn("Provider.getDirectLanguage")(function* (input: {
+      model: Model
+      harnessID: string
+      fetch: typeof fetch
+    }) {
+      const providers = yield* InstanceState.get(state)
+      const provider = providers.providers[input.model.providerID]
+      const model = provider?.models[input.model.id]
+      const unavailable = (reason: string) => new ManagedProviderRouteUnavailableError({ reason })
+      if (!provider || !model || model.id !== input.model.id || model.providerID !== input.model.providerID) {
+        return yield* new ModelNotFoundError({ providerID: input.model.providerID, modelID: input.model.id })
+      }
+      if (!input.harnessID || input.harnessID.length > 256 || typeof input.fetch !== "function" ||
+        !Object.hasOwn(BUNDLED_PROVIDERS, model.api.npm) || providers.modelLoaders[model.providerID]) {
+        return yield* unavailable("direct inference requires a fixed bundled adapter and request-local transport")
+      }
+      if (!isAnonymousFreeModel(provider, model) || providerCredentialUnavailable(provider, model, false)) {
+        return yield* new CredentialTransportUnavailableError({ providerID: model.providerID })
+      }
+      if (provider.options.baseURL !== undefined || model.options.baseURL !== undefined ||
+        model.options.fetch !== undefined || model.options.headers !== undefined ||
+        model.options.apiKey !== undefined || Object.keys(model.headers).length > 0) {
+        return yield* unavailable("direct anonymous route cannot use model-supplied endpoint, fetch, header, or credential overrides")
+      }
+      let endpoint: URL
+      try { endpoint = new URL(model.api.url) } catch {
+        return yield* unavailable("the selected provider endpoint is malformed")
+      }
+      const loopback = endpoint.hostname === "localhost" || endpoint.hostname === "127.0.0.1" || endpoint.hostname === "[::1]"
+      if ((endpoint.protocol !== "https:" && !(endpoint.protocol === "http:" && loopback)) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
+        return yield* unavailable("the selected provider endpoint is outside the fixed HTTPS or loopback route")
+      }
+      const routeMaterial = JSON.stringify(["horizoncode.direct-provider-route.v1", model.providerID, model.id, model.api.npm, model.api.id])
+      const routeID = `llm_${bytesToHex(blake3(new TextEncoder().encode(routeMaterial)))}`
+      const endpointRevision = `blake3:${bytesToHex(blake3(new TextEncoder().encode(JSON.stringify(["horizoncode.direct-provider-endpoint.v1", routeMaterial, endpoint.href]))))}`
+      const route: DirectProviderRouteV1 = Object.freeze({
+        providerID: model.providerID,
+        modelID: model.id,
+        harnessID: input.harnessID,
+        routeID,
+        routeRevision: routeID,
+        endpointRevision,
+        endpointBase: endpoint.href,
+        anonymousOpenCodeFree: true,
+        credentialHeader: Object.freeze({ name: "authorization", prefix: "Bearer " }),
+      })
+      return yield* EffectPromise.refineRejection(
+        async () => {
+          const factory = await BUNDLED_PROVIDERS[model.api.npm]!()
+          const sdk = factory({
+            name: model.providerID,
+            ...model.options,
+            baseURL: endpoint.href,
+            apiKey: "public",
+            fetch: timeoutFetch({ fetch: input.fetch }),
+          })
+          return { language: sdk.languageModel(model.api.id), route }
+        },
+        (cause) => cause instanceof NoSuchModelError
+          ? new ModelNotFoundError({ modelID: model.id, providerID: model.providerID, cause })
+          : new InitError({ providerID: model.providerID, cause }),
       )
     })
 
@@ -2030,18 +2261,9 @@ const layer = Layer.effect(
       const provider = s.providers[providerID]
       if (!provider) return undefined
 
-      const experimental = yield* plugin.trigger<"experimental.provider.small_model">(
-        "experimental.provider.small_model",
-        { provider: toPublicInfo(provider) },
-        { model: undefined },
-      )
-      if (experimental.model) {
-        return {
-          ...experimental.model,
-          id: ModelV2.ID.make(experimental.model.id),
-          providerID: ProviderV2.ID.make(experimental.model.providerID),
-        }
-      }
+      // Plugin-selected small models can change the provider/model route without
+      // an explicit role binding or request-scoped Guard admission. Keep this
+      // origin unavailable until those contracts are accepted.
 
       // TODO: Remove these provider-specific assumptions once model syncing reliably reports available deployments.
       if (providerID === ProviderV2.ID.azure || providerID === ProviderV2.ID.make("azure-cognitive-services")) {
@@ -2109,18 +2331,29 @@ const layer = Layer.effect(
         return { providerID: entry.providerID, modelID: entry.modelID }
       }
 
-      const configured = Object.keys(cfg.provider ?? {})
-      const provider = Object.values(s.providers).find((p) => configured.length === 0 || configured.includes(p.id))
-      if (!provider) return yield* new NoProvidersError()
-      const [model] = sort(Object.values(provider.models))
-      if (!model) return yield* new NoModelsError({ providerID: provider.id })
-      return {
-        providerID: provider.id,
-        modelID: model.id,
+      // HorizonCode's requested out-of-box route is the catalog-backed
+      // OpenCode provider. Its keyless projection contains only active models
+      // with explicit zero pricing; when a credential exposes paid catalog
+      // entries too, keep the default on the same explicitly free subset.
+      // A missing free model is a typed failure, never a silent paid fallback.
+      const openCodeID = ProviderV2.ID.make("opencode")
+      const openCode = s.providers[openCodeID]
+      if (openCode) {
+        const model = sort(Object.values(openCode.models).filter((item) =>
+          !s.modelLoaders[openCodeID] && isAnonymousFreeModel(openCode, item),
+        ))[0]
+        if (!model) return yield* new NoModelsError({ providerID: openCodeID })
+        return { providerID: openCodeID, modelID: model.id }
       }
+
+      // V1's initial/default route is the explicit anonymous OpenCode offer.
+      // If the catalog has not supplied an eligible, completely zero-priced
+      // model, fail with a typed unavailable error instead of selecting a
+      // configured provider that may require credentials or incur charges.
+      return yield* new NoModelsError({ providerID: openCodeID })
     })
 
-    return Service.of({ list, getProvider, getModel, getLanguage, closest, getSmallModel, defaultModel })
+    return Service.of({ list, anonymousFreeModelRefs, getProvider, getModel, getLanguage, getDirectLanguage, getManagedLanguage, closest, getSmallModel, defaultModel })
   }),
 )
 
@@ -2147,6 +2380,130 @@ export const node = LayerNode.make({
   service: Service,
   layer: layer,
   deps: [FSUtil.node, Config.node, Auth.node, Env.node, Plugin.node, ModelsDev.node, RuntimeFlags.node, Npm.node],
+})
+
+const providerIdentifier = /^[^\s\u0000-\u001f\u007f]{1,256}$/
+const blake3Digest = (input: string) => `blake3:${bytesToHex(blake3(new TextEncoder().encode(input)))}`
+
+/**
+ * Resolve one managed model route from Core's active provider registry and
+ * Auth's metadata-only SecretBroker lookup. The endpoint itself stays inside
+ * Core and is represented to HostKernel only by a revision digest. Guard facts
+ * must come from the internal Guard/managed-control path, never HTTP or model
+ * input. This projection does not dispatch a request or authorize a send.
+ *
+ * A null credential reference is emitted only if the canonical provider owner
+ * independently proves this exact model is in its anonymous-free offer set.
+ * Missing/ambiguous SecretBroker metadata does not otherwise become anonymous
+ * eligibility. HostKernel still returns UNAVAILABLE for every provider request
+ * until it can validate the complete route and authorize the guarded transport.
+ */
+export const managedRouteProjection = Effect.fn("Provider.managedRouteProjection")(function* (input: {
+  readonly providerID: ProviderV2.ID
+  readonly modelID: ModelV2.ID
+  /** Harness from the trusted, Task-pinned AgentProfileV2 definition. */
+  readonly harnessID: string
+}) {
+  const invalid = (reason: string) => new ManagedProviderRouteUnavailableError({ reason })
+  if (!providerIdentifier.test(input.providerID) || !providerIdentifier.test(input.modelID) ||
+    !providerIdentifier.test(input.harnessID)) {
+    return yield* Effect.fail(invalid("selected provider, model, or profile harness identity is malformed"))
+  }
+  const providers = yield* Service
+  const active = yield* providers.list()
+  const provider = active[input.providerID]
+  const model = provider?.models[input.modelID]
+  if (!provider || !model || model.providerID !== input.providerID || model.id !== input.modelID) {
+    return yield* Effect.fail(invalid("the exact selected provider/model is not in Core's active provider registry"))
+  }
+  if (!Object.hasOwn(BUNDLED_PROVIDERS, model.api.npm)) {
+    return yield* Effect.fail(invalid("the model adapter is not a bundled first-party provider adapter"))
+  }
+
+  let endpoint: URL
+  try {
+    endpoint = new URL(model.api.url)
+  } catch {
+    return yield* Effect.fail(invalid("the registered model endpoint is not a valid absolute URL"))
+  }
+  const loopback = endpoint.hostname === "localhost" || endpoint.hostname === "127.0.0.1" || endpoint.hostname === "[::1]"
+  if ((endpoint.protocol !== "https:" && !(endpoint.protocol === "http:" && loopback)) ||
+    endpoint.username !== "" || endpoint.password !== "" || endpoint.search !== "" || endpoint.hash !== "") {
+    return yield* Effect.fail(invalid("the registered endpoint is outside the supported HTTPS or loopback profile"))
+  }
+
+  const auth = yield* Auth.Service
+  const credentialRefs = yield* auth.credentialRefsForProviders([input.providerID]).pipe(
+    Effect.catch(() => Effect.succeed({} as Partial<Record<string, string>>)),
+  )
+  const credentialLeaseRef = credentialRefs[input.providerID] ?? null
+  if (credentialLeaseRef === null) {
+    const anonymousModels = providers.anonymousFreeModelRefs ? yield* providers.anonymousFreeModelRefs() : []
+    if (!anonymousModels.includes(`${input.providerID}/${input.modelID}`)) {
+      return yield* Effect.fail(invalid("a unique available SecretBroker reference or exact anonymous-free model proof is unavailable"))
+    }
+  } else if (!providerIdentifier.test(credentialLeaseRef)) {
+    return yield* Effect.fail(invalid("the SecretBroker reference is malformed"))
+  }
+
+  const routeMaterial = JSON.stringify([
+    "horizoncode.managed-provider-route.v1",
+    input.providerID,
+    input.modelID,
+    model.api.npm,
+    model.api.id,
+  ])
+  const endpointMaterial = JSON.stringify([
+    "horizoncode.managed-provider-endpoint.v1",
+    routeMaterial,
+    endpoint.href,
+  ])
+  return {
+    providerID: input.providerID,
+    modelID: input.modelID,
+    harnessID: input.harnessID,
+    routeID: `llm_${bytesToHex(blake3(new TextEncoder().encode(routeMaterial)))}`,
+    endpointRevision: blake3Digest(endpointMaterial),
+    credentialLeaseRef,
+  } satisfies ManagedProviderRouteProjectionV1
+})
+
+/**
+ * Internal Core-only target for compiling a managed SDK request. The endpoint
+ * is returned to the in-process P6 transport adapter and must never be copied
+ * into a HostKernel/Core RPC projection. The revision is recomputed so a
+ * registry change between selection and request preparation fails closed.
+ */
+export const managedRouteTransportTarget = Effect.fn("Provider.managedRouteTransportTarget")(function* (input: {
+  readonly providerID: ProviderV2.ID
+  readonly modelID: ModelV2.ID
+  readonly harnessID: string
+}) {
+  const projection = yield* managedRouteProjection(input)
+  const providers = yield* Service
+  const active = yield* providers.list()
+  const model = active[input.providerID]?.models[input.modelID]
+  if (!model || model.providerID !== input.providerID || model.id !== input.modelID || !Object.hasOwn(BUNDLED_PROVIDERS, model.api.npm)) {
+    return yield* Effect.fail(new ManagedProviderRouteUnavailableError({ reason: "the selected provider adapter changed before request preparation" }))
+  }
+  let endpoint: URL
+  try {
+    endpoint = new URL(model.api.url)
+  } catch {
+    return yield* Effect.fail(new ManagedProviderRouteUnavailableError({ reason: "the selected endpoint changed before request preparation" }))
+  }
+  const loopback = endpoint.hostname === "localhost" || endpoint.hostname === "127.0.0.1" || endpoint.hostname === "[::1]"
+  if ((endpoint.protocol !== "https:" && !(endpoint.protocol === "http:" && loopback)) ||
+    endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
+    return yield* Effect.fail(new ManagedProviderRouteUnavailableError({ reason: "the selected endpoint is outside the fixed managed route profile" }))
+  }
+  const routeMaterial = JSON.stringify(["horizoncode.managed-provider-route.v1", input.providerID, input.modelID, model.api.npm, model.api.id])
+  const endpointMaterial = JSON.stringify(["horizoncode.managed-provider-endpoint.v1", routeMaterial, endpoint.href])
+  const currentRevision = blake3Digest(endpointMaterial)
+  if (projection.endpointRevision !== currentRevision) {
+    return yield* Effect.fail(new ManagedProviderRouteUnavailableError({ reason: "the selected endpoint revision changed during request preparation" }))
+  }
+  return { routeProjection: projection, endpointBase: endpoint.href, activeEndpointRevision: currentRevision }
 })
 
 export * as Provider from "./provider"

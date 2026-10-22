@@ -14,6 +14,40 @@ from unittest.mock import patch
 import rc0
 
 
+def temporary_directory():
+    """Keep fixture artifacts inside the repository even when tests run later."""
+    return tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent)
+
+
+class Rc0UnsupportedPlatformTests(unittest.TestCase):
+    def test_fixture_scratch_is_repository_local(self):
+        with temporary_directory() as directory:
+            self.assertEqual(Path(directory).parent.resolve(), Path(__file__).resolve().parent)
+
+    def test_sampler_names_the_actual_unsupported_platform(self):
+        with patch.object(rc0.platform, 'system', return_value='Darwin'):
+            result = rc0.sample_tree(10, 1)
+        self.assertEqual(result['quality'], 'UNKNOWN')
+        self.assertTrue(result['truncated'])
+        self.assertIn('native Darwin sampler is unavailable', result['reason'])
+
+    def test_capture_output_is_bounded_and_descriptor_relative(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as directory:
+            output = Path(directory) / 'capture.jsonl'
+            rc0.append_capture_output(output, b'{"record_type":"fixture"}\n')
+            rc0.append_capture_output(output, b'{"record_type":"second"}\n')
+            self.assertEqual(output.read_bytes(),
+                             b'{"record_type":"fixture"}\n{"record_type":"second"}\n')
+            link = Path(directory) / 'redirect.jsonl'
+            link.symlink_to(output)
+            with self.assertRaises(ValueError):
+                rc0.append_capture_output(link, b'{"should_not":"follow"}\n')
+            partial = Path(directory) / 'partial.jsonl'
+            partial.write_bytes(b'{"truncated"')
+            with self.assertRaises(ValueError):
+                rc0.append_capture_output(partial, b'{"new":"row"}\n')
+
+
 def measured_session(session_id):
     pid, start = {'s1': (101, 1), 's2': (102, 2)}[session_id]
     return {
@@ -206,7 +240,7 @@ class Rc0AggregateTests(unittest.TestCase):
 
 class Rc0BudgetTests(unittest.TestCase):
     def test_source_read_cannot_exceed_remaining_byte_budget(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with temporary_directory() as directory:
             path = Path(directory) / 'sample'
             path.write_bytes(b'12345678')
             budget = rc0.Budget(max_bytes=8, max_work=2)
@@ -222,9 +256,70 @@ class Rc0BudgetTests(unittest.TestCase):
             budget.charge_work()
 
 
+class Rc0InputBoundTests(unittest.TestCase):
+    def test_identity_session_key_is_bounded(self):
+        self.assertEqual(rc0.identity_arg('s=1:2'), ('s', 1, 2))
+        with self.assertRaises(argparse.ArgumentTypeError):
+            rc0.identity_arg('s' * (rc0.MAX_SESSION_ID_BYTES + 1) + '=1:2')
+
+    def test_outcomes_reject_duplicate_properties(self):
+        with temporary_directory() as directory:
+            path = Path(directory) / 'outcomes.json'
+            path.write_text('{"s":{"expected":"a","expected":"b"}}', encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, 'duplicate JSON property'):
+                rc0.load_outcomes(path)
+
+    def test_outcomes_enforce_byte_and_session_count_bounds(self):
+        with temporary_directory() as directory:
+            path = Path(directory) / 'outcomes.json'
+            path.write_bytes(b' ' * (rc0.MAX_OUTCOMES_BYTES + 1))
+            with self.assertRaisesRegex(ValueError, '1 MiB input bound'):
+                rc0.load_outcomes(path)
+            path.write_text(json.dumps({f's{i}': {} for i in range(21)}), encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, 'more than 20 Session IDs'):
+                rc0.load_outcomes(path)
+
+    def test_caller_inputs_are_repository_local_and_do_not_follow_symlinks(self):
+        with temporary_directory() as directory:
+            root = Path(directory)
+            target = root / 'outcomes.json'
+            target.write_text('{}', encoding='utf-8')
+            link = root / 'linked.json'
+            link.symlink_to(target)
+            with self.assertRaisesRegex(ValueError, 'without following links'):
+                rc0.load_outcomes(link)
+
+            directory_link = root / 'directory-link'
+            directory_link.symlink_to(root, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, 'directory traversal failed safely'):
+                rc0.load_outcomes(directory_link / 'outcomes.json')
+
+            if hasattr(os, 'mkfifo'):
+                fifo = root / 'outcomes.fifo'
+                os.mkfifo(fifo)
+                with self.assertRaisesRegex(ValueError, 'regular file'):
+                    rc0.load_outcomes(fifo)
+
+        with self.assertRaisesRegex(ValueError, 'inside the repository'):
+            rc0.load_outcomes(Path('/outside-agentx/outcomes.json'))
+
+
+class Rc0DeterministicCohortTests(unittest.TestCase):
+    def test_preflight_rejects_capture_matrix_overflow(self):
+        pid, start = (101, 1)
+        selected = {f's{i:02}': (pid + i, start + i) for i in range(21)}
+        outcomes = {session: {'expected': 'ok', 'actual': 'ok', 'status': 'passed'}
+                    for session in selected}
+        ready, record = rc0.preflight(selected, outcomes, preflight_args(), 'abc123', True,
+                                      machine_metadata(), 1)
+        self.assertFalse(ready)
+        self.assertTrue(any('at most 20 Session identities' in item
+                            for item in record['missing_inputs']))
+
+
 class Rc0ChildFenceTests(unittest.TestCase):
     def setUp(self):
-        self.directory = tempfile.TemporaryDirectory()
+        self.directory = temporary_directory()
         self.proc_root = Path(self.directory.name)
         child_file = self.proc_root / '10' / 'task' / '10' / 'children'
         child_file.parent.mkdir(parents=True)
@@ -248,7 +343,7 @@ class Rc0ChildFenceTests(unittest.TestCase):
                 rc0.children(10, 1, rc0.Budget())
 
     def test_child_reparented_after_enumeration_is_not_attributed_to_owner_tree(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with temporary_directory() as directory:
             proc_root = Path(directory)
             write_process(proc_root, 10, 1, 1, [11])
             write_process(proc_root, 11, 2, 10, [])
@@ -276,7 +371,7 @@ class Rc0ChildFenceTests(unittest.TestCase):
         self.assertEqual(result['processes'][1]['metrics'], {})
 
     def test_reused_parent_pid_generation_does_not_authorize_queued_child(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with temporary_directory() as directory:
             proc_root = Path(directory)
             write_process(proc_root, 10, 1, 1, [11])
             write_process(proc_root, 11, 2, 10, [])
@@ -303,7 +398,7 @@ class Rc0ChildFenceTests(unittest.TestCase):
         self.assertEqual(result['processes'][1]['metrics'], {})
 
     def test_reparented_intermediate_ancestor_does_not_authorize_queued_grandchild(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with temporary_directory() as directory:
             proc_root = Path(directory)
             write_process(proc_root, 10, 1, 1, [11])
             write_process(proc_root, 11, 2, 10, [12])
@@ -358,7 +453,7 @@ def write_process(proc_root, pid, start, parent, children):
 
 class Rc0LinuxCounterTests(unittest.TestCase):
     def setUp(self):
-        self.directory = tempfile.TemporaryDirectory()
+        self.directory = temporary_directory()
         self.proc_root = Path(self.directory.name)
         write_process(self.proc_root, 123, 77, 1, [])
         for name in ('0', '1'):
@@ -431,7 +526,7 @@ class Rc0SmapsPrivateBytesTests(unittest.TestCase):
 @unittest.skipUnless(platform.system() == 'Linux', 'Linux /proc harness')
 class Rc0SampleTreeTests(unittest.TestCase):
     def setUp(self):
-        self.directory = tempfile.TemporaryDirectory()
+        self.directory = temporary_directory()
         self.proc_root = Path(self.directory.name)
         write_process(self.proc_root, 10, 1, 1, [11])
         write_process(self.proc_root, 11, 2, 10, [])
@@ -628,7 +723,7 @@ class Rc0PreflightTests(unittest.TestCase):
                             for item in record['missing_inputs']))
 
     def test_cli_preflight_checks_local_inference_identity_without_sampling(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with temporary_directory() as directory:
             outcomes_path = Path(directory) / 'outcomes.json'
             outcomes_path.write_text(json.dumps({
                 'ses-a': {'expected': 'ok', 'actual': 'ok', 'status': 'passed'},
@@ -693,6 +788,30 @@ class Rc0ProvenanceGateTests(unittest.TestCase):
                          'session_ids': ('s1', 's2'), 'run_ids': ('run-a',)},
             **common))
 
+
+class Rc0UnsupportedPlatformPreflightTests(unittest.TestCase):
+    def test_non_linux_preflight_reports_unsupported_instead_of_mislabeling_processes_dead(self):
+        selected = {'session-a': (101, 1)}
+        outcomes = {'session-a': {'expected': 'ok', 'actual': 'ok', 'status': 'passed'}}
+        args = preflight_args(
+            local_inference='included',
+            local_inference_identity=('local-model', 202, 2),
+        )
+        with patch.object(rc0.platform, 'system', return_value='Windows'), \
+             patch.object(rc0, 'proc_identity', side_effect=AssertionError(
+                 'unsupported platforms must not probe Linux /proc')):
+            ready, record = rc0.preflight(
+                selected, outcomes, args, 'abc123', True, machine_metadata(), 1,
+            )
+
+        self.assertFalse(ready)
+        self.assertEqual(record['status'], 'INPUTS_INCOMPLETE')
+        self.assertTrue(any('UNSUPPORTED_PLATFORM' in item for item in record['missing_inputs']))
+        self.assertEqual(record['sessions'][0]['identity_status'], 'UNSUPPORTED_PLATFORM')
+        self.assertEqual(record['local_inference_owner']['identity_status'], 'UNSUPPORTED_PLATFORM')
+        self.assertFalse(record['release_eligible'])
+        self.assertFalse(record['baseline_eligible'])
+
     @unittest.skipUnless(platform.system() == 'Linux', 'Linux /proc harness')
     def test_fabricated_identity_and_outcomes_are_not_owner_verified(self):
         child = subprocess.Popen(['sleep', '0'])
@@ -725,7 +844,7 @@ class Rc0ProvenanceGateTests(unittest.TestCase):
     @unittest.skipUnless(platform.system() == 'Linux', 'Linux /proc harness')
     def test_capture_output_is_labeled_provisional_raw_sample(self):
         pid, start = live_identity()
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as directory:
             outcomes_path = Path(directory) / 'outcomes.json'
             output_path = Path(directory) / 'rc0.jsonl'
             outcomes_path.write_text(json.dumps(
@@ -754,20 +873,181 @@ class Rc0ProvenanceGateTests(unittest.TestCase):
 
 class Rc0OwnerSampleAggregationTests(unittest.TestCase):
     def test_owner_metrics_reject_values_for_unknown_and_noncanonical_numbers(self):
-        with self.assertRaisesRegex(ValueError, 'UNKNOWN metric must not carry a value'):
+        with self.assertRaisesRegex(ValueError, 'UNKNOWN metric must carry a canonical reason'):
             rc0._validate_owner_metric({'quality': 'UNKNOWN', 'value': '0'}, 'metric')
+        with self.assertRaisesRegex(ValueError, 'UNKNOWN metric must carry a canonical reason'):
+            rc0._validate_owner_metric({'quality': 'UNKNOWN', 'reason': 'invented'}, 'metric')
         with self.assertRaisesRegex(ValueError, 'canonical nonnegative decimal'):
             rc0._validate_owner_metric({'quality': 'MEASURED', 'value': '00'}, 'metric')
 
+    def test_owner_metrics_accept_the_rust_unknown_reason_projection(self):
+        # Rust serializes UNKNOWN as {quality, reason}; it never emits a value.
+        rc0._validate_owner_metric(
+            {'quality': 'UNKNOWN', 'reason': 'PERMISSION_DENIED'}, 'metric')
+        rc0._validate_owner_metric(
+            {'quality': 'MEASURED', 'value': '0'}, 'metric')
+
+    def test_owner_metrics_reject_unicode_decimal_digits(self):
+        with self.assertRaisesRegex(ValueError, 'canonical nonnegative decimal'):
+            rc0._validate_owner_metric(
+                {'quality': 'MEASURED', 'value': '٠'}, 'metric')
+
     def test_owner_snapshot_ingest_rejects_duplicate_json_properties(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with temporary_directory() as directory:
             path = Path(directory) / 'owner.json'
             path.write_text('{"schemaVersion":1,"schemaVersion":1}', encoding='utf-8')
 
             with self.assertRaisesRegex(ValueError, 'duplicate JSON property'):
                 rc0.load_owner_snapshot(path)
 
-    def test_shared_authenticated_core_process_is_counted_once_across_sessions(self):
+    def test_owner_snapshot_rejects_boolean_schema_version(self):
+        with temporary_directory() as directory:
+            path = Path(directory) / 'owner.json'
+            path.write_text('{"schemaVersion":true}', encoding='utf-8')
+
+            with self.assertRaisesRegex(ValueError, 'schemaVersion must be 1, 2, or 3'):
+                rc0.load_owner_snapshot(path)
+
+    def test_owner_snapshot_ingests_rust_unknowns_and_preserves_worker_attribution(self):
+        measured = {'quality': 'MEASURED', 'value': '0'}
+        unknown = {'quality': 'UNKNOWN', 'reason': 'PERMISSION_DENIED'}
+        metrics = {
+            'pssBytes': measured, 'rssBytes': measured, 'cpuNs': unknown,
+            'threadCount': measured, 'fdCount': measured, 'privateBytes': unknown,
+        }
+        snapshot = {
+            'schemaVersion': 3,
+            'producer': 'horizoncode.worker-owner.resource-sampler',
+            'owner': {
+                'principalRef': 'server_auth:test', 'workspaceBinding': 'workspace-a',
+                'sessionId': 'session-a', 'runId': 'run-a', 'taskId': 'task-a',
+                'attemptId': 'attempt-a', 'ownerEpoch': '1',
+            },
+            'ownerLog': {
+                'ownerId': 'worker-pool-a', 'sequence': '4',
+                'eventDigest': 'blake3:' + 'a' * 64, 'workerPoolRevision': '3',
+            },
+            'sampledAtMs': '10', 'sampleSequence': '2',
+            'sessionProcessOwner': {'status': 'NOT_PROVIDED', 'processIdentity': None, 'metrics': None},
+            'workers': [{
+                'workerExecutionId': 'worker-a', 'taskId': 'task-a', 'attemptId': 'attempt-a',
+                'sourceRevision': 'blake3:' + 'b' * 64,
+                'reservationState': 'QUARANTINED', 'quality': 'UNKNOWN',
+                'metrics': metrics, 'processes': [],
+            }],
+            'aggregate': metrics,
+            'resourceLimits': [
+                {'dimension': dimension, 'status': 'UNSUPPORTED', 'enforced': False,
+                 'reason': 'worker OS quota backend is not integrated'}
+                for dimension in ('cpuTime', 'memory', 'processCount', 'fileDescriptors')
+            ],
+            'productAttestation': {
+                'status': 'NOT_ATTESTED', 'hostRunReceiptRef': None,
+                'independentVerifierEvidenceRef': None,
+                'sourceCommit': None,
+                'required': ['hostRunReceiptRef', 'independentVerifierEvidenceRef', 'sourceCommit'],
+            },
+        }
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[2]) as directory:
+            path = Path(directory) / 'owner.json'
+            path.write_text(json.dumps(snapshot), encoding='utf-8')
+            ingested = rc0.load_owner_snapshot(path)
+            self.assertEqual(
+                ingested['workers'][0]['source_revision'],
+                'blake3:' + 'b' * 64,
+            )
+            duplicate_worker = json.loads(json.dumps(snapshot))
+            duplicate_worker['workers'].append(json.loads(json.dumps(duplicate_worker['workers'][0])))
+            path.write_text(json.dumps(duplicate_worker), encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, 'duplicate workerExecutionId'):
+                rc0.load_owner_snapshot(path)
+
+            duplicate_attempt = json.loads(json.dumps(snapshot))
+            second_worker = json.loads(json.dumps(duplicate_attempt['workers'][0]))
+            second_worker['workerExecutionId'] = 'worker-b'
+            duplicate_attempt['workers'].append(second_worker)
+            path.write_text(json.dumps(duplicate_attempt), encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, 'duplicate Task/Attempt identity'):
+                rc0.load_owner_snapshot(path)
+
+            overlapping_process = json.loads(json.dumps(snapshot))
+            first_worker = overlapping_process['workers'][0]
+            first_worker['processes'] = [{'pid': 77, 'startIdentity': '8'}]
+            second_worker = json.loads(json.dumps(first_worker))
+            second_worker['workerExecutionId'] = 'worker-b'
+            second_worker['attemptId'] = 'attempt-b'
+            overlapping_process['workers'].append(second_worker)
+            path.write_text(json.dumps(overlapping_process), encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, 'overlapping worker process identities'):
+                rc0.load_owner_snapshot(path)
+
+            snapshot['workers'][0].pop('sourceRevision')
+            path.write_text(json.dumps(snapshot), encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, 'worker source revision is invalid'):
+                rc0.load_owner_snapshot(path)
+            snapshot['workers'][0]['sourceRevision'] = 'blake3:' + 'b' * 64
+            snapshot['sessionProcessOwner'] = {
+                'status': 'MEASURED',
+                'processIdentity': {
+                    'pid': True, 'startIdentity': '77', 'ownerEpoch': '1',
+                    'processIncarnation': 'inc-1',
+                    'executableIdentityDigest': 'blake3:' + 'a' * 64,
+                },
+                'metrics': metrics,
+            }
+            path.write_text(json.dumps(snapshot), encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, 'Core process owner identity is invalid'):
+                rc0.load_owner_snapshot(path)
+
+        self.assertEqual(ingested['workers'][0]['worker_execution_id'], 'worker-a')
+        self.assertEqual((ingested['task_id'], ingested['attempt_id']), ('task-a', 'attempt-a'))
+        self.assertEqual(ingested['workers'][0]['metrics']['cpuNs'], unknown)
+        self.assertEqual(len(ingested['resource_limits']), 4)
+        self.assertEqual(ingested['resource_limits_provenance'], 'UNVERIFIED_CALLER_SUPPLIED')
+
+    def test_owner_snapshot_never_accepts_monitoring_as_os_enforcement(self):
+        # Start from the complete schema-2 shape used above and alter only the
+        # resource-limit claim. Caller-authored counters cannot become proof.
+        snapshot = {
+            'schemaVersion': 2,
+            'producer': 'horizoncode.worker-owner.resource-sampler',
+            'owner': {
+                'principalRef': 'server_auth:test', 'workspaceBinding': 'workspace-a',
+                'sessionId': 'session-a', 'runId': 'run-a', 'taskId': 'task-a',
+                'attemptId': 'attempt-a', 'ownerEpoch': '1',
+            },
+            'ownerLog': {
+                'ownerId': 'worker-pool-a', 'sequence': '4',
+                'eventDigest': 'blake3:' + 'a' * 64, 'workerPoolRevision': '3',
+            },
+            'sampledAtMs': '10', 'sampleSequence': '2',
+            'sessionProcessOwner': {'status': 'NOT_PROVIDED', 'processIdentity': None, 'metrics': None},
+            'workers': [],
+            'aggregate': {name: {'quality': 'UNKNOWN', 'reason': 'UNAVAILABLE'} for name in (
+                'pssBytes', 'rssBytes', 'cpuNs', 'threadCount', 'fdCount', 'privateBytes')},
+            'resourceLimits': [
+                {'dimension': dimension, 'status': 'UNSUPPORTED', 'enforced': False,
+                 'reason': 'worker OS quota backend is not integrated'}
+                for dimension in ('cpuTime', 'memory', 'processCount', 'fileDescriptors')
+            ],
+            'productAttestation': {
+                'status': 'NOT_ATTESTED', 'hostRunReceiptRef': None,
+                'independentVerifierEvidenceRef': None,
+                'sourceCommit': None,
+                'required': ['hostRunReceiptRef', 'independentVerifierEvidenceRef', 'sourceCommit'],
+            },
+        }
+        snapshot['resourceLimits'][0] = {
+            'dimension': 'cpuTime', 'status': 'MONITORING_ONLY', 'enforced': True,
+            'observed': '100', 'reason': None,
+        }
+        with temporary_directory() as directory:
+            path = Path(directory) / 'owner.json'
+            path.write_text(json.dumps(snapshot), encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, 'monitoring-only resource limit claims enforcement'):
+                rc0.load_owner_snapshot(path)
+
+    def test_shared_reported_core_process_is_counted_once_but_unattested(self):
         metrics = {name: {'quality': 'MEASURED', 'value': '5'} for name in (
             'pssBytes', 'rssBytes', 'cpuNs', 'threadCount', 'fdCount', 'privateBytes')}
         owner = {
@@ -777,11 +1057,15 @@ class Rc0OwnerSampleAggregationTests(unittest.TestCase):
         }
         samples = [{
             'worker_count': 0,
+            'workers': [],
             'process_identities': [],
-            'aggregate': {name: {'quality': 'MEASURED', 'value': '0'} for name in metrics},
+            # The supplied aggregate includes the Core process in each
+            # Session sample. Duplicated aggregates must not be summed.
+            'aggregate': {name: {'quality': 'MEASURED', 'value': '5'} for name in metrics},
             'session_process_owner': owner,
             'session_process_metrics': metrics,
-        } for _ in range(2)]
+            'sample_sequence': sequence,
+        } for sequence in (1, 2)]
 
         result = rc0.aggregate_owner_samples(samples)
 
@@ -790,17 +1074,73 @@ class Rc0OwnerSampleAggregationTests(unittest.TestCase):
         self.assertEqual(result['session_process_owner_metrics']['pssBytes']['value'], '5')
         self.assertEqual(result['combined_metrics']['pssBytes']['value'], '5')
         self.assertEqual(result['quality'], 'MEASURED')
+        self.assertEqual(result['source_provenance'], 'UNVERIFIED_CALLER_SUPPLIED')
+        self.assertEqual(result['attestation'], 'NOT_ATTESTED')
+        self.assertEqual(result['product_attribution'], 'UNAVAILABLE')
+
+    def test_worker_rows_are_summed_and_shared_core_is_added_once(self):
+        core_metrics = {name: {'quality': 'MEASURED', 'value': '5'} for name in (
+            'pssBytes', 'rssBytes', 'cpuNs', 'threadCount', 'fdCount', 'privateBytes')}
+        worker_metrics = {name: {'quality': 'MEASURED', 'value': '7'} for name in core_metrics}
+        result = rc0.aggregate_owner_samples([{
+            'worker_count': 1,
+            'sample_sequence': 1,
+            'workers': [{'metrics': worker_metrics}],
+            'process_identities': [{'pid': 902, 'start_identity': '78'}],
+            # Aggregate is 12, but is intentionally not the source used for
+            # the worker total because it already includes the Core process.
+            'aggregate': {name: {'quality': 'MEASURED', 'value': '12'} for name in core_metrics},
+            'session_process_owner': {
+                'pid': 901, 'start_identity': '77', 'owner_epoch': '4',
+                'process_incarnation': 'inc-4',
+                'executable_identity_digest': 'blake3:' + 'a' * 64,
+            },
+            'session_process_metrics': core_metrics,
+        }])
+
+        self.assertEqual(result['metrics']['pssBytes']['value'], '7')
+        self.assertEqual(result['session_process_owner_metrics']['pssBytes']['value'], '5')
+        self.assertEqual(result['combined_metrics']['pssBytes']['value'], '12')
+        self.assertEqual(result['source_provenance'], 'UNVERIFIED_CALLER_SUPPLIED')
+        self.assertEqual(result['attestation'], 'NOT_ATTESTED')
+        self.assertEqual(result['product_attribution'], 'UNAVAILABLE')
 
     def test_unknown_core_owner_keeps_combined_resource_truth_unknown(self):
         metrics = {name: {'quality': 'MEASURED', 'value': '0'} for name in (
             'pssBytes', 'rssBytes', 'cpuNs', 'threadCount', 'fdCount', 'privateBytes')}
         result = rc0.aggregate_owner_samples([{
             'worker_count': 0,
+            'sample_sequence': 1,
             'process_identities': [],
             'aggregate': metrics,
             'session_process_owner': None,
             'session_process_metrics': None,
         }])
+
+        self.assertEqual(result['session_process_owner_metrics']['pssBytes']['quality'], 'UNKNOWN')
+        self.assertEqual(result['combined_metrics']['pssBytes']['quality'], 'UNKNOWN')
+        self.assertEqual(result['quality'], 'UNKNOWN')
+
+    def test_latest_shared_core_unknown_sample_is_not_hidden_by_older_measurement(self):
+        measured = {name: {'quality': 'MEASURED', 'value': '5'} for name in (
+            'pssBytes', 'rssBytes', 'cpuNs', 'threadCount', 'fdCount', 'privateBytes')}
+        latest = dict(measured)
+        latest['pssBytes'] = {'quality': 'UNKNOWN', 'value': None, 'reason': 'permission_denied'}
+        owner = {
+            'pid': 901, 'start_identity': '77', 'owner_epoch': '4',
+            'process_incarnation': 'inc-4',
+            'executable_identity_digest': 'blake3:' + 'a' * 64,
+        }
+        samples = [
+            {'sample_sequence': 1, 'worker_count': 0, 'workers': [], 'process_identities': [],
+             'aggregate': measured, 'session_process_owner': owner,
+             'session_process_metrics': measured},
+            {'sample_sequence': 2, 'worker_count': 0, 'workers': [], 'process_identities': [],
+             'aggregate': latest, 'session_process_owner': owner,
+             'session_process_metrics': latest},
+        ]
+
+        result = rc0.aggregate_owner_samples(samples)
 
         self.assertEqual(result['session_process_owner_metrics']['pssBytes']['quality'], 'UNKNOWN')
         self.assertEqual(result['combined_metrics']['pssBytes']['quality'], 'UNKNOWN')

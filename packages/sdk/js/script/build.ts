@@ -19,6 +19,81 @@ const document = (await Bun.file("./openapi.json").json()) as {
 }
 const schemas = document.components?.schemas
 if (schemas) {
+  // HorizonCode's durable assistant usage provenance is an additive V2
+  // projection over the OpenCode-derived AssistantMessage contract. Keep this
+  // exact with packages/schema/src/session-message.ts: unknown is represented
+  // by status alone, and measured cost requires billing evidence.
+  const nonNegativeNumber = { type: "number", minimum: 0 }
+  const nonNegativeInteger = { type: "integer", minimum: 0 }
+  const strictObject = (properties: Record<string, unknown>, required: string[]) => ({
+    type: "object",
+    properties,
+    required,
+    additionalProperties: false,
+  })
+  const usageMetric = {
+    oneOf: [
+      ...["provider-reported", "measured", "estimated"].map((status) =>
+        strictObject({ status: { const: status }, value: nonNegativeInteger }, ["status", "value"]),
+      ),
+      strictObject({ status: { const: "unknown" } }, ["status"]),
+    ],
+  }
+  schemas.UsageProvenanceMetricV1 = usageMetric
+  schemas.UsageProvenanceCostV1 = {
+    oneOf: [
+      strictObject({ status: { const: "provider-reported" }, value: nonNegativeNumber }, ["status", "value"]),
+      strictObject({
+        status: { const: "measured" },
+        value: nonNegativeNumber,
+        measurementSource: { const: "provider-billing-receipt-v1" },
+        evidenceRef: { type: "string", minLength: 1, maxLength: 512 },
+      }, ["status", "value", "measurementSource", "evidenceRef"]),
+      strictObject({
+        status: { const: "estimated" },
+        value: nonNegativeNumber,
+        priceSource: { type: "string" },
+        pricingRevision: { type: "string", pattern: "^sha256:[0-9a-f]{64}$" },
+        pricing: strictObject({
+          input: nonNegativeNumber,
+          output: nonNegativeNumber,
+          cacheRead: nonNegativeNumber,
+          cacheWrite: nonNegativeNumber,
+        }, ["input", "output", "cacheRead", "cacheWrite"]),
+        algorithm: { const: "per-million-linear-v1" },
+        tokenInputs: strictObject({
+          input: nonNegativeInteger,
+          output: nonNegativeInteger,
+          reasoning: nonNegativeInteger,
+          cacheRead: nonNegativeInteger,
+          cacheWrite: nonNegativeInteger,
+        }, ["input", "output", "reasoning", "cacheRead", "cacheWrite"]),
+      }, ["status", "value", "priceSource", "pricingRevision", "pricing", "algorithm", "tokenInputs"]),
+      strictObject({ status: { const: "unknown" } }, ["status"]),
+    ],
+  }
+  schemas.UsageProvenanceV1 = strictObject({
+    providerID: { type: "string" },
+    modelID: { type: "string" },
+    operationID: { type: "string" },
+    requestID: { type: "string" },
+    cost: { $ref: "#/components/schemas/UsageProvenanceCostV1" },
+    tokens: strictObject({
+      input: { $ref: "#/components/schemas/UsageProvenanceMetricV1" },
+      output: { $ref: "#/components/schemas/UsageProvenanceMetricV1" },
+      reasoning: { $ref: "#/components/schemas/UsageProvenanceMetricV1" },
+      cache: strictObject({
+        read: { $ref: "#/components/schemas/UsageProvenanceMetricV1" },
+        write: { $ref: "#/components/schemas/UsageProvenanceMetricV1" },
+      }, ["read", "write"]),
+    }, ["input", "output", "reasoning", "cache"]),
+  }, ["providerID", "modelID", "cost", "tokens"])
+  const assistantMessage = schemas.AssistantMessage as
+    | { properties?: Record<string, unknown> }
+    | undefined
+  if (!assistantMessage?.properties) throw new Error("Generated AssistantMessage schema is missing")
+  assistantMessage.properties.usageProvenance = { $ref: "#/components/schemas/UsageProvenanceV1" }
+
   const reachable = new Set<string>()
   const visit = (value: unknown) => {
     if (Array.isArray(value)) {

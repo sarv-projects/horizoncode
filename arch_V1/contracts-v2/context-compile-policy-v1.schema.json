@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "horizon://schemas/context-compile-policy-v1",
+  "title": "ContextCompilePolicyV1",
+  "description": "User/profile-requested and runtime-effective context compilation tier. Does not select provider/model; only shapes the model-visible projection and provider cache breakpoints for the already-pinned route.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "requested", "effective", "resolvedFrom", "prefixCacheSupport"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "requested": {
+      "enum": ["auto", "cache_anchor", "minimize_tokens"],
+      "description": "From AgentProfileV2, Settings, or session override."
+    },
+    "effective": {
+      "enum": ["cache_anchor", "minimize_tokens"],
+      "description": "Applied on this compile. Never switches provider/model."
+    },
+    "resolvedFrom": {
+      "enum": [
+        "profile",
+        "settings",
+        "route_adapter",
+        "catalog_hint",
+        "measured_usage",
+        "conservative_default"
+      ]
+    },
+    "prefixCacheSupport": {
+      "enum": ["none", "ephemeral", "explicit_breakpoints", "unknown"],
+      "description": "From the selected ProviderTransport adapter for this exact route revision."
+    },
+    "catalogHints": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["providerID", "modelID", "catalogSource", "catalogFreshness"],
+      "properties": {
+        "providerID": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "modelID": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "catalogSource": {
+          "enum": ["cache", "bundled", "override", "unavailable"]
+        },
+        "catalogFreshness": {
+          "enum": ["fresh", "stale", "unknown"]
+        },
+        "contextLimitTokens": { "type": "integer", "minimum": 1, "maximum": 100000000 },
+        "outputLimitTokens": { "type": "integer", "minimum": 1, "maximum": 100000000 },
+        "priceCacheReadKnown": { "type": "boolean" },
+        "priceCacheWriteKnown": { "type": "boolean" }
+      }
+    },
+    "anchorArtifactRef": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "description": "When effective=cache_anchor, the pinned RepoContextAnchor artifact ref."
+    },
+    "anchorProjection": {
+      "enum": ["full", "compressed"],
+      "description": "full for cache_anchor; compressed for minimize_tokens."
+    }
+  }
+}

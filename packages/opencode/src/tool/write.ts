@@ -10,8 +10,14 @@ import { InstanceState } from "@/effect/instance-state"
 import { SessionSupervisor } from "@opencode-ai/core/session/supervisor"
 import { Location } from "@opencode-ai/core/location"
 import { AbsolutePath } from "@opencode-ai/core/schema"
-import type { DirectAttemptScopeV1, EffectLease, ManagedAttemptScopeV1 } from "@opencode-ai/core/session/supervisor"
+import type { EffectLease, ManagedAttemptScopeV1 } from "@opencode-ai/core/session/supervisor"
 import type { ManagedAttemptAuthority } from "@/session/managed-control"
+import {
+  acceptDirectAttemptReceipt,
+  acceptDirectTurnBatchReceipt,
+  settleToolBatchLease,
+  type ToolBatchDirectAttemptAuthority,
+} from "@/session/tool-batch"
 
 const MAX_PROJECT_DIAGNOSTICS_FILES = 5
 
@@ -54,6 +60,8 @@ export const WriteTool = Tool.define(
           }
           const managedAttempt = ctx.extra?.managedAttempt as ManagedAttemptAuthority | undefined
           const managedAttemptScope = managedAttempt?.currentScope()
+          const directAttempt = ctx.extra?.directAttempt as ToolBatchDirectAttemptAuthority | undefined
+          const directAttemptScope = directAttempt?.currentScope()
           const locationRef = Location.Ref.make({ directory: AbsolutePath.make(instance.directory) })
           const receipt = yield* Effect.uninterruptible(
             supervisor.executeWrite({
@@ -62,14 +70,22 @@ export const WriteTool = Tool.define(
               lease,
               content: params.content,
               trustedPrincipal,
-              ...(ctx.extra?.directAttempt !== undefined
-                ? { directAttempt: ctx.extra.directAttempt as DirectAttemptScopeV1 }
+              ...(directAttemptScope !== undefined
+                ? { directAttempt: directAttemptScope }
                 : {}),
+              ...(directAttempt?.directTurn ? { directTurnScope: directAttempt.directTurn.currentScope() } : {}),
               ...(managedAttemptScope !== undefined
                 ? { managedAttempt: managedAttemptScope as ManagedAttemptScopeV1 }
                 : {}),
             }),
           )
+          if (directAttemptScope) {
+            acceptDirectAttemptReceipt(directAttempt, directAttemptScope, receipt)
+            if (directAttempt.directTurn && receipt.directTurnScope) {
+              yield* Effect.promise(() => acceptDirectTurnBatchReceipt(directAttempt, receipt))
+            }
+          }
+          yield* Effect.promise(() => settleToolBatchLease(lease, { effectID: receipt.effectID }))
           if (managedAttemptScope) {
             if (!receipt.managedAttempt || receipt.attemptScopeTransition !== "effect_receipt") {
               return yield* Effect.fail(new Error("Write denied: HostKernel omitted managed receipt scope"))

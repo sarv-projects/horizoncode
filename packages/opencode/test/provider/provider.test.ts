@@ -374,9 +374,24 @@ it.instance("getModel returns model for valid provider/model", () =>
     expect(model).toBeDefined()
     expect(String(model.providerID)).toBe("anthropic")
     expect(String(model.id)).toBe("claude-sonnet-4-6")
-    const language = yield* provider.getLanguage(model)
-    expect(language).toBeDefined()
+    const unavailable = yield* provider
+      .getLanguage(model)
+      .pipe(Effect.catchTag("ProviderCredentialTransportUnavailableError", (error) => Effect.succeed(error)))
+    expect(Provider.CredentialTransportUnavailableError.isInstance(unavailable)).toBe(true)
   }),
+)
+
+it.instance(
+  "configured provider credentials fail closed before SDK construction",
+  Effect.gen(function* () {
+    const provider = yield* Provider.Service
+    const model = yield* provider.getModel(ProviderV2.ID.anthropic, ModelV2.ID.make("claude-sonnet-4-6"))
+    const unavailable = yield* provider
+      .getLanguage(model)
+      .pipe(Effect.catchTag("ProviderCredentialTransportUnavailableError", (error) => Effect.succeed(error)))
+    expect(Provider.CredentialTransportUnavailableError.isInstance(unavailable)).toBe(true)
+  }),
+  { config: { provider: { anthropic: { options: { apiKey: "config-secret-fixture" } } } } },
 )
 
 it.instance("getModel throws ModelNotFoundError for invalid model", () =>
@@ -412,12 +427,34 @@ test("parseModel handles model IDs with slashes", () => {
   expect(String(result.modelID)).toBe("anthropic/claude-3-opus")
 })
 
+test("provider API default IDs keep OpenCode on active explicitly free models", () => {
+  const defaults = Provider.defaultModelIDs({
+    opencode: {
+      models: {
+        paid: { id: "paid", status: "active" as const, cost: { input: 4, output: 8 } },
+        unknown: { id: "unknown", status: "active" as const, cost: undefined },
+        inactiveFree: {
+          id: "inactiveFree",
+          status: "deprecated" as const,
+          cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+        },
+        free: { id: "free", status: "active" as const, cost: { input: 0, output: 0, cache: { read: 0, write: 0 } } },
+      },
+    },
+  })
+  expect(defaults).toEqual({ opencode: "free" })
+})
+
 it.instance("defaultModel returns first available model when no config set", () =>
   Effect.gen(function* () {
     yield* setProcessEnv("ANTHROPIC_API_KEY", "test-api-key")
     const model = yield* Provider.use.defaultModel()
-    expect(model.providerID).toBeDefined()
+    expect(String(model.providerID)).toBe("opencode")
     expect(model.modelID).toBeDefined()
+    const providers = yield* Provider.use.list()
+    const selected = providers[model.providerID]?.models[model.modelID]
+    expect(selected).toBeDefined()
+    expect(Provider.isFreeModel(selected!)).toBe(true)
   }),
 )
 
@@ -1963,7 +2000,7 @@ it.instance(
   },
 )
 
-it.instance("Google Vertex: uses REP endpoint for Claude continental multi-regions", () =>
+it.instance("Google Vertex credentialed dispatch remains unavailable before SecretBroker transport", () =>
   Effect.gen(function* () {
     yield* set("GOOGLE_CLOUD_PROJECT", "test-project")
     yield* set("VERTEX_LOCATION", "eu")
@@ -1972,14 +2009,14 @@ it.instance("Google Vertex: uses REP endpoint for Claude continental multi-regio
       ProviderV2.ID.make("google-vertex"),
       ModelV2.ID.make("claude-sonnet-4-6@default"),
     )
-    const language = yield* provider.getLanguage(model)
-    expect(languageBaseURL(language)).toBe(
-      "https://aiplatform.eu.rep.googleapis.com/v1/projects/test-project/locations/eu/publishers/anthropic/models",
+    const unavailable = yield* provider.getLanguage(model).pipe(
+      Effect.catchTag("ProviderCredentialTransportUnavailableError", (error) => Effect.succeed(error)),
     )
+    expect(Provider.CredentialTransportUnavailableError.isInstance(unavailable)).toBe(true)
   }),
 )
 
-it.instance("Google Vertex Anthropic: uses REP endpoint for continental multi-regions", () =>
+it.instance("Google Vertex Anthropic credentialed dispatch remains unavailable", () =>
   Effect.gen(function* () {
     yield* set("GOOGLE_CLOUD_PROJECT", "test-project")
     yield* set("VERTEX_LOCATION", "us")
@@ -1988,14 +2025,14 @@ it.instance("Google Vertex Anthropic: uses REP endpoint for continental multi-re
       ProviderV2.ID.make("google-vertex-anthropic"),
       ModelV2.ID.make("claude-sonnet-4-6@default"),
     )
-    const language = yield* provider.getLanguage(model)
-    expect(languageBaseURL(language)).toBe(
-      "https://aiplatform.us.rep.googleapis.com/v1/projects/test-project/locations/us/publishers/anthropic/models",
+    const unavailable = yield* provider.getLanguage(model).pipe(
+      Effect.catchTag("ProviderCredentialTransportUnavailableError", (error) => Effect.succeed(error)),
     )
+    expect(Provider.CredentialTransportUnavailableError.isInstance(unavailable)).toBe(true)
   }),
 )
 
-it.instance("Google Vertex: keeps regional Claude endpoints unchanged", () =>
+it.instance("Google Vertex regional Claude credentialed dispatch remains unavailable", () =>
   Effect.gen(function* () {
     yield* set("GOOGLE_CLOUD_PROJECT", "test-project")
     yield* set("VERTEX_LOCATION", "europe-west1")
@@ -2004,36 +2041,36 @@ it.instance("Google Vertex: keeps regional Claude endpoints unchanged", () =>
       ProviderV2.ID.make("google-vertex"),
       ModelV2.ID.make("claude-sonnet-4-6@default"),
     )
-    const language = yield* provider.getLanguage(model)
-    expect(languageBaseURL(language)).toBe(
-      "https://europe-west1-aiplatform.googleapis.com/v1/projects/test-project/locations/europe-west1/publishers/anthropic/models",
+    const unavailable = yield* provider.getLanguage(model).pipe(
+      Effect.catchTag("ProviderCredentialTransportUnavailableError", (error) => Effect.succeed(error)),
     )
+    expect(Provider.CredentialTransportUnavailableError.isInstance(unavailable)).toBe(true)
   }),
 )
 
-it.instance("Google Vertex: uses REP endpoint for Gemini continental multi-regions", () =>
+it.instance("Google Vertex Gemini credentialed dispatch remains unavailable", () =>
   Effect.gen(function* () {
     yield* set("GOOGLE_CLOUD_PROJECT", "test-project")
     yield* set("VERTEX_LOCATION", "eu")
     const provider = yield* Provider.Service
     const model = yield* provider.getModel(ProviderV2.ID.make("google-vertex"), ModelV2.ID.make("gemini-3.5-flash"))
-    const language = yield* provider.getLanguage(model)
-    expect(languageBaseURL(language)).toBe(
-      "https://aiplatform.eu.rep.googleapis.com/v1beta1/projects/test-project/locations/eu/publishers/google",
+    const unavailable = yield* provider.getLanguage(model).pipe(
+      Effect.catchTag("ProviderCredentialTransportUnavailableError", (error) => Effect.succeed(error)),
     )
+    expect(Provider.CredentialTransportUnavailableError.isInstance(unavailable)).toBe(true)
   }),
 )
 
-it.instance("Google Vertex: keeps regional Gemini endpoints unchanged", () =>
+it.instance("Google Vertex regional Gemini credentialed dispatch remains unavailable", () =>
   Effect.gen(function* () {
     yield* set("GOOGLE_CLOUD_PROJECT", "test-project")
     yield* set("VERTEX_LOCATION", "europe-west1")
     const provider = yield* Provider.Service
     const model = yield* provider.getModel(ProviderV2.ID.make("google-vertex"), ModelV2.ID.make("gemini-3.5-flash"))
-    const language = yield* provider.getLanguage(model)
-    expect(languageBaseURL(language)).toBe(
-      "https://europe-west1-aiplatform.googleapis.com/v1beta1/projects/test-project/locations/europe-west1/publishers/google",
+    const unavailable = yield* provider.getLanguage(model).pipe(
+      Effect.catchTag("ProviderCredentialTransportUnavailableError", (error) => Effect.succeed(error)),
     )
+    expect(Provider.CredentialTransportUnavailableError.isInstance(unavailable)).toBe(true)
   }),
 )
 

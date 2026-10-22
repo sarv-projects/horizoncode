@@ -31,7 +31,23 @@ const hostProcessRef: HostProcessRefV1 = {
   profileDigest: digest("3"),
   executableDigest: digest("4"),
 }
+const targetHostProcessRef: HostProcessRefV1 = {
+  executionID: "terminal-target-test",
+  generation: "2",
+  ownerEpoch: "7",
+  kind: "terminal_run",
+  profileID: "shell-default",
+  profileRevision: "1",
+  profileDigest: digest("8"),
+  executableDigest: digest("9"),
+}
 const workspaceRevision = digest("1")
+const directAttempt = {
+  attemptID: "attempt-1", parentSessionID: "parent-session-1", childSessionID: "session-1",
+  ownerEpoch: "7", expectedRevision: "0", locationID: "location-1", workspaceID: "workspace-1",
+  workspaceRevision, profileID: "agent-profile", profileRevision: "2", profileDigest: digest("a"),
+  capabilityDigest: digest("5"), permissionsDigest: digest("6"), budgetDigest: digest("7"), scopeDigest: digest("8"),
+}
 
 function hostOperationRequest() {
   return {
@@ -43,6 +59,7 @@ function hostOperationRequest() {
     challengeID: "challenge-1",
     capabilityID: "debug.start",
     capabilityLeaseDigest: digest("2"),
+    directAttempt,
     operation: {
       requestSequence: "1",
       requestID: 1,
@@ -367,12 +384,55 @@ describe("DAP typed HostKernel protocol contract", () => {
     expect(() => validateHostOperationRequestV1(large)).toThrow(ProtocolError)
   })
 
+  test("rejects accessor and custom-array serialization before reading or dispatch", () => {
+    let getterCalled = false
+    const accessor = hostOperationRequest()
+    Object.defineProperty(accessor.operation.arguments, "locale", {
+      enumerable: true,
+      get() {
+        getterCalled = true
+        return "en"
+      },
+    })
+    expect(() => validateHostOperationRequestV1(accessor)).toThrow(ProtocolError)
+    expect(getterCalled).toBe(false)
+
+    const customArray = hostOperationRequest()
+    customArray.capabilityID = "debug.breakpoint.set"
+    customArray.operation.command = "setExceptionBreakpoints"
+    const exceptionOptions = [{ path: [], breakMode: "always" }] as unknown[] & { toJSON?: () => unknown }
+    exceptionOptions.toJSON = () => ({ injected: true })
+    customArray.operation.arguments = { filters: [], exceptionOptions }
+    expect(() => validateHostOperationRequestV1(customArray)).toThrow(ProtocolError)
+  })
+
+  test("binds each DAP command to its canonical Guard capability and scopes attach to a minted terminal ref", () => {
+    const mismatch = hostOperationRequest()
+    mismatch.capabilityID = "debug.evaluate"
+    expect(() => validateHostOperationRequestV1(mismatch)).toThrow(ProtocolError)
+
+    const attach = hostOperationRequest()
+    attach.operation.command = "attach"
+    attach.capabilityID = "debug.attach"
+    attach.operation.arguments = { targetHostProcessRef }
+    expect(validateHostOperationRequestV1(attach).operation.arguments).toEqual({ targetHostProcessRef })
+    attach.operation.arguments = { targetHostProcessRef: { ...targetHostProcessRef, ownerEpoch: "8" } }
+    expect(() => validateHostOperationRequestV1(attach)).toThrow(ProtocolError)
+    attach.operation.arguments = { targetHostProcessRef: { ...targetHostProcessRef, generation: "3", pid: 1234 } }
+    expect(() => validateHostOperationRequestV1(attach)).toThrow(ProtocolError)
+
+    const malformed = hostOperationRequest()
+    malformed.operation.command = "threads"
+    malformed.operation.arguments = { threadId: 1, unexpected: true }
+    expect(() => validateHostOperationRequestV1(malformed)).toThrow(ProtocolError)
+  })
+
   test("rejects mismatched Attempt scope and page limits before projection", () => {
     const scoped = hostOperationRequest() as ReturnType<typeof hostOperationRequest> & { directAttempt?: unknown }
     scoped.directAttempt = {}
     expect(() => validateHostOperationRequestV1(scoped)).toThrow(ProtocolError)
 
-    const cursor = new HostDapEventCursorV1(hostProcessRef, "session-1", "location-1", workspaceRevision)
+    const cursor = new HostDapEventCursorV1(hostProcessRef, "session-1", "location-1", workspaceRevision, undefined, directAttempt)
     const page = hostResponsePage()
     expect(() => validateHostEventPageV1(
       { ...cursor.readRequest(), maxEvents: 0 },
@@ -413,7 +473,7 @@ describe("DAP typed HostKernel protocol contract", () => {
     const journal = new HostDapProtocolJournalV1(hostProcessRef, workspaceRevision)
     journal.acceptOperation(request, hostDispatchReceipt())
 
-    const cursor = new HostDapEventCursorV1(hostProcessRef, "session-1", "location-1", workspaceRevision)
+    const cursor = new HostDapEventCursorV1(hostProcessRef, "session-1", "location-1", workspaceRevision, undefined, directAttempt)
     const page = hostResponsePage()
     const accepted = cursor.accept(page)
     expect(accepted.events).toHaveLength(1)
@@ -429,7 +489,7 @@ describe("DAP typed HostKernel protocol contract", () => {
     const request = hostOperationRequest()
     const journal = new HostDapProtocolJournalV1(hostProcessRef, workspaceRevision)
     journal.acceptOperation(request, hostDispatchReceipt())
-    const cursor = new HostDapEventCursorV1(hostProcessRef, "session-1", "location-1", workspaceRevision)
+    const cursor = new HostDapEventCursorV1(hostProcessRef, "session-1", "location-1", workspaceRevision, undefined, directAttempt)
     const badPage = {
       ...hostResponsePage(),
       events: [

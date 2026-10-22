@@ -27,6 +27,35 @@ export interface Context {
   readonly effect?: EffectLease
   /** Captured from TrustedPrincipalContext by the session runner; never tool input. */
   readonly trustedPrincipal?: TrustedPrincipal
+  /** Exact HostKernel-normalized call admitted for this first-party effect leaf. */
+  readonly guardedCall?: import("../session/supervisor").GuardedToolCall
+  /** Private trusted Config projection correlated to a workspace-profile terminal call. */
+  readonly workspaceCommandProfile?: import("../pty").WorkspaceCommandProfileBindingV1
+  readonly locationRef?: import("@opencode-ai/schema/location").Ref.Type
+  /**
+   * Runner-owned nested batch seam for bounded orchestration tools. Until the
+   * HostKernel CodeMode lifecycle API is wired, the supplied callback fails
+   * closed and cannot dispatch effects or return an unreceipted result.
+   */
+  readonly dispatchPreparedToolBatch?: (input: {
+    readonly calls: ReadonlyArray<{
+      readonly callID: string
+      readonly toolName: string
+      readonly capabilityID: string
+      readonly arguments: Readonly<Record<string, unknown>>
+    }>
+  }) => Effect.Effect<ReadonlyArray<
+    | {
+        readonly callID: string
+        readonly status: "settled" | "rejected" | "cancelled"
+        readonly receiptRef: string
+        readonly receiptDigest: string
+        readonly result?: import("@opencode-ai/llm").ToolResultValue
+        readonly output?: import("@opencode-ai/llm").ToolOutput
+        readonly errorCode?: string
+      }
+    | { readonly callID: string; readonly status: "unknown"; readonly errorCode?: string }
+  >, ToolFailure>
 }
 
 export type SchemaType<A> = Schema.Codec<A, any, never, never>

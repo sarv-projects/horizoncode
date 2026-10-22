@@ -34,6 +34,10 @@ function fixture() {
     async describe(secretRef) {
       return secrets.get(secretRef)?.metadata
     },
+    async listByProviderIds(providerIds) {
+      const allowed = new Set(providerIds)
+      return [...secrets.values()].map((entry) => entry.metadata).filter((metadata) => allowed.has(metadata.providerId))
+    },
     async revoke(secretRef, expectedVersion, next, receipt) {
       const secret = secrets.get(secretRef)
       if (!secret || secret.metadata.version !== expectedVersion) return false

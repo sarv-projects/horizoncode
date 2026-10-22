@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { isZeroPricedModel, modelAvailabilityLabel, sortModelOptions } from "../../src/component/dialog-model"
+import { isZeroPricedModel, modelAvailabilityLabel, modelSelectableInV1, sortModelOptions } from "../../src/component/dialog-model"
 import { providerAuthFailureMessage, providerProvenance } from "../../src/component/dialog-provider"
 import { modelPriceLabel } from "../../src/util/model"
 import { FeatureExposure } from "@opencode-ai/core/v1/config/feature-exposure"
@@ -77,22 +77,61 @@ describe("modelPriceLabel (AN-002)", () => {
 })
 
 describe("modelAvailabilityLabel", () => {
-  test("uses provider availability and catalog status without claiming auth or endpoint probes", () => {
+  test("separates detected credentials, anonymous access, catalog hints and endpoint health", () => {
     expect(modelAvailabilityLabel({
+      providerID: "anthropic",
       connected: true,
       status: "active",
       capabilities: { toolcall: true, reasoning: false, input: { image: true, audio: false } },
-    })).toBe("Provider available · Catalog active · Listed support: tools, image input")
+    })).toContain("Capabilities: tools yes · reasoning no · image-in yes · audio-in no · video-in unknown · pdf-in unknown")
+    expect(modelAvailabilityLabel({
+      providerID: "anthropic",
+      connected: true,
+      status: "active",
+      capabilities: { toolcall: true, reasoning: false, input: { image: true, audio: false } },
+    })).toContain("Price freshness unknown")
+    const anonymous = modelAvailabilityLabel({
+      providerID: "opencode",
+      connected: false,
+      anonymousOffer: true,
+      status: "active",
+      cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+      limits: { context: 131072, input: 120000, output: 8192 },
+    })
+    expect(anonymous).toContain("Anonymous OpenCode offer · zero-priced catalog only")
+    expect(anonymous).toContain("Selectable by HorizonCode V1 policy; dispatch unverified")
+    expect(anonymous).toContain("Price freshness unknown")
     expect(modelAvailabilityLabel({
       connected: false,
       status: "beta",
       capabilities: { toolcall: false, reasoning: false, input: { image: false, audio: false } },
-    })).toBe("Provider unavailable · Catalog beta")
+    })).toContain("No Guarded credential reference or anonymous route detected · Catalog beta")
     expect(modelAvailabilityLabel({
       connected: false,
       status: undefined,
       capabilities: undefined,
-    })).toBe("Provider unavailable · Catalog status unknown")
+    })).toContain("No Guarded credential reference or anonymous route detected · Catalog status unknown")
+    expect(modelAvailabilityLabel({
+      providerID: "opencode",
+      connected: false,
+      anonymousOffer: true,
+      status: "active",
+      cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+      limits: { context: -1, input: Number.NaN, output: Number.POSITIVE_INFINITY },
+    })).toContain("Catalog limits: context unknown · input unknown · output unknown")
+  })
+})
+
+describe("modelSelectableInV1", () => {
+  const zeroPrice = { input: 0, output: 0, cache: { read: 0, write: 0 } }
+  test("requires the server's anonymous-offer projection and explicit zero pricing", () => {
+    expect(modelSelectableInV1({ providerID: "opencode", credentialSourceDetected: false, anonymousOffer: true, status: "active", cost: zeroPrice })).toBe(true)
+    expect(modelSelectableInV1({ providerID: "opencode", credentialSourceDetected: true, anonymousOffer: true, status: "active", cost: zeroPrice })).toBe(true)
+    expect(modelSelectableInV1({ providerID: "opencode", credentialSourceDetected: false, status: "active", cost: zeroPrice })).toBe(false)
+    expect(modelSelectableInV1({ providerID: "opencode", credentialSourceDetected: true, status: "active", cost: zeroPrice })).toBe(false)
+    expect(modelSelectableInV1({ providerID: "anthropic", credentialSourceDetected: false, status: "active", cost: zeroPrice })).toBe(false)
+    expect(modelSelectableInV1({ providerID: "opencode", credentialSourceDetected: false, status: "beta", cost: zeroPrice })).toBe(false)
+    expect(modelSelectableInV1({ providerID: "opencode", credentialSourceDetected: false, status: "active" })).toBe(false)
   })
 })
 
@@ -131,43 +170,43 @@ describe("providerAuthFailureMessage", () => {
       response: { body: "private provider response" },
     })
 
-    expect(message).toBe("Provider credential changes are unavailable until Guarded credential-write support is enabled. Use an environment credential source instead.")
+    expect(message).toBe("Guarded SecretBroker credential entry is unavailable. HorizonCode does not use raw environment, config, or legacy Auth credentials for provider dispatch.")
     expect(message).not.toContain("sk-test-secret-value")
     expect(message).not.toContain("private provider response")
   })
 
   test("reports disabled OAuth credential changes without echoing details", () => {
     expect(providerAuthFailureMessage({ name: "ProviderAuthOauthCallbackFailed", message: "private detail" })).toBe(
-      "Provider credential changes are unavailable until Guarded credential-write support is enabled. Use an environment credential source instead.",
+      "Guarded SecretBroker credential entry is unavailable. HorizonCode does not use raw environment, config, or legacy Auth credentials for provider dispatch.",
     )
   })
 
   test("never echoes non-error values", () => {
     expect(providerAuthFailureMessage("private string detail")).toBe(
-      "Provider credential changes are unavailable until Guarded credential-write support is enabled. Use an environment credential source instead.",
+      "Guarded SecretBroker credential entry is unavailable. HorizonCode does not use raw environment, config, or legacy Auth credentials for provider dispatch.",
     )
     expect(providerAuthFailureMessage(null)).toBe(
-      "Provider credential changes are unavailable until Guarded credential-write support is enabled. Use an environment credential source instead.",
+      "Guarded SecretBroker credential entry is unavailable. HorizonCode does not use raw environment, config, or legacy Auth credentials for provider dispatch.",
     )
     expect(providerAuthFailureMessage(undefined)).toBe(
-      "Provider credential changes are unavailable until Guarded credential-write support is enabled. Use an environment credential source instead.",
+      "Guarded SecretBroker credential entry is unavailable. HorizonCode does not use raw environment, config, or legacy Auth credentials for provider dispatch.",
     )
   })
 })
 
 describe("providerProvenance", () => {
-  test("labels a connected environment provider by variable name only", () => {
+  test("labels legacy environment providers as detected but unused by dispatch", () => {
     expect(providerProvenance({ source: "env", env: ["OPENAI_API_KEY"], connected: true })).toBe(
-      "Environment: OPENAI_API_KEY",
+      "Legacy environment source detected · provider-declared variables: OPENAI_API_KEY · not used for dispatch",
     )
     expect(providerProvenance({ source: "env", env: ["A_KEY", "B_KEY"], connected: true })).toBe(
-      "Environment: A_KEY, B_KEY",
+      "Legacy environment source detected · provider-declared variables: A_KEY, B_KEY · not used for dispatch",
     )
   })
 
-  test("makes no provenance claim for api, config, disconnected, or empty-env providers", () => {
-    expect(providerProvenance({ source: "api", env: [], connected: true })).toBeUndefined()
-    expect(providerProvenance({ source: "config", env: [], connected: true })).toBeUndefined()
+  test("distinguishes legacy auth from configuration without claiming dispatch", () => {
+    expect(providerProvenance({ source: "api", env: [], connected: true })).toBe("Legacy Auth credential detected · not used for dispatch")
+    expect(providerProvenance({ source: "config", env: [], connected: true })).toBe("Provider configuration present · credential status unknown; dispatch unavailable")
     expect(providerProvenance({ source: "env", env: ["KEY"], connected: false })).toBeUndefined()
     expect(providerProvenance({ source: "env", env: [], connected: true })).toBeUndefined()
     expect(providerProvenance({ source: "config", env: [], connected: false })).toBeUndefined()

@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://horizoncode.dev/contracts/managed-run-plan-response-v1.schema.json",
+  "title": "ManagedRunPlanResponseV1",
+  "description": "Authenticated HostKernel PLAN_ONLY response. Per-Task pins are review/display facts only. acceptedScopeDigest is not an Attempt-bound permissionScopeDigest or an execution grant.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "status",
+    "goalID",
+    "runID",
+    "specID",
+    "specDigest",
+    "runPhase",
+    "tasksReady",
+    "taskIDs",
+    "taskPins",
+    "revision"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "const": "PLAN_ONLY"
+    },
+    "goalID": {
+      "$ref": "#/$defs/Identifier"
+    },
+    "runID": {
+      "$ref": "#/$defs/Identifier"
+    },
+    "specID": {
+      "$ref": "#/$defs/Identifier"
+    },
+    "specDigest": {
+      "$ref": "#/$defs/Digest"
+    },
+    "runPhase": {
+      "const": "PLAN_ONLY"
+    },
+    "tasksReady": {
+      "const": false
+    },
+    "taskIDs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/Identifier"
+      },
+      "description": "Sorted Task IDs from the durable Run plan. They correspond one-for-one and in the same order to taskPins."
+    },
+    "taskPins": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "$ref": "#/$defs/TaskPinV1"
+      },
+      "description": "Rust-derived immutable Task/Profile/Spec pins at the final plan revision. This does not create an Attempt or authorize execution."
+    },
+    "revision": {
+      "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64",
+      "description": "Unsigned 64-bit JSON value encoded as canonical decimal string."
+    }
+  },
+  "$defs": {
+    "Identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+    },
+    "Digest": {
+      "type": "string",
+      "pattern": "^blake3:[0-9a-f]{64}$"
+    },
+    "PositiveDecimalU64": {
+      "$ref": "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64"
+    },
+    "DecimalU64": {
+      "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64"
+    },
+    "TaskPinV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "taskID",
+        "goalID",
+        "runID",
+        "runRevision",
+        "specID",
+        "specDigest",
+        "profileID",
+        "profileRevision",
+        "profileDigest",
+        "acceptedScopeDigest",
+        "profilePermissionCeilingDigest"
+      ],
+      "properties": {
+        "taskID": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "goalID": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "runID": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "runRevision": {
+          "$ref": "#/$defs/DecimalU64"
+        },
+        "specID": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "specDigest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "profileID": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "profileRevision": {
+          "$ref": "#/$defs/PositiveDecimalU64"
+        },
+        "profileDigest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "acceptedScopeDigest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "profilePermissionCeilingDigest": {
+          "$ref": "#/$defs/Digest"
+        }
+      }
+    }
+  },
+  "$comment": "acceptedScopeDigest is AcceptedTaskCapabilityScopeFactsV1.digest() at runRevision. profilePermissionCeilingDigest is derived from the validated canonical AgentProfileV2. Neither substitutes for the Attempt-bound permissionScopeDigest minted after authenticated Attempt admission."
+}

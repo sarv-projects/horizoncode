@@ -20,12 +20,7 @@
       ]
     },
     "Horizon.AgentProfileV2.Revision": {
-      "type": "integer",
-      "allOf": [
-        {
-          "exclusiveMinimum": 0
-        }
-      ]
+      "$ref": "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64"
     },
     "Horizon.AgentProfileV2.Adapter": {
       "type": "object",
@@ -454,7 +449,9 @@
             {
               "minimum": 0
             }
-          ]
+          ],
+          "maximum": 30000,
+          "description": "Fixed V1 bound (600000) keeps this value exactly representable as a JSON number."
         },
         "maxOutputBytes": {
           "type": "integer",
@@ -462,7 +459,9 @@
             {
               "minimum": 0
             }
-          ]
+          ],
+          "maximum": 1048576,
+          "description": "Fixed V1 bound (16777216) keeps this value exactly representable as a JSON number."
         }
       },
       "required": [
@@ -484,7 +483,9 @@
             {
               "minimum": 0
             }
-          ]
+          ],
+          "maximum": 64,
+          "description": "Fixed V1 bound (64) keeps this value exactly representable as a JSON number."
         },
         "maxActiveChildren": {
           "type": "integer",
@@ -492,7 +493,9 @@
             {
               "minimum": 0
             }
-          ]
+          ],
+          "maximum": 4096,
+          "description": "Fixed V1 bound (4096) keeps this value exactly representable as a JSON number."
         },
         "maxTotalChildren": {
           "type": "integer",
@@ -500,7 +503,9 @@
             {
               "minimum": 0
             }
-          ]
+          ],
+          "maximum": 65536,
+          "description": "Fixed V1 bound (65536) keeps this value exactly representable as a JSON number."
         },
         "maxPendingMessages": {
           "type": "integer",
@@ -508,7 +513,9 @@
             {
               "minimum": 0
             }
-          ]
+          ],
+          "maximum": 4096,
+          "description": "Fixed V1 bound (4096) keeps this value exactly representable as a JSON number."
         },
         "maxMessageBytes": {
           "type": "integer",
@@ -516,17 +523,15 @@
             {
               "minimum": 0
             }
-          ]
+          ],
+          "maximum": 16777216,
+          "description": "Fixed V1 bound (16777216) keeps this value exactly representable as a JSON number."
         },
         "tokenBudget": {
           "anyOf": [
             {
-              "type": "integer",
-              "allOf": [
-                {
-                  "exclusiveMinimum": 0
-                }
-              ]
+              "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64",
+              "description": "Unsigned 64-bit JSON counter/budget; encoded as canonical decimal string."
             },
             {
               "type": "null"
@@ -536,17 +541,18 @@
         "wallTimeMs": {
           "anyOf": [
             {
-              "type": "integer",
-              "allOf": [
-                {
-                  "exclusiveMinimum": 0
-                }
-              ]
+              "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64",
+              "description": "Unsigned 64-bit JSON counter/budget; encoded as canonical decimal string."
             },
             {
               "type": "null"
             }
           ]
+        },
+        "contextCompilePolicy": {
+          "enum": ["auto", "cache_anchor", "minimize_tokens"],
+          "default": "auto",
+          "description": "Per-agent default for §30.26 Models.dev-informed compile tier. Does not change selected provider/model."
         }
       },
       "required": [
@@ -725,12 +731,8 @@
               ]
             },
             "maxCompiledTokens": {
-              "type": "integer",
-              "allOf": [
-                {
-                  "exclusiveMinimum": 0
-                }
-              ]
+              "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64",
+              "description": "Unsigned 64-bit JSON counter/budget; encoded as canonical decimal string."
             }
           },
           "required": [
@@ -907,12 +909,8 @@
             "maxParentHistoryTokens": {
               "anyOf": [
                 {
-                  "type": "integer",
-                  "allOf": [
-                    {
-                      "exclusiveMinimum": 0
-                    }
-                  ]
+                  "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64",
+                  "description": "Unsigned 64-bit JSON counter/budget; encoded as canonical decimal string."
                 },
                 {
                   "type": "null"
@@ -1009,7 +1007,9 @@
             {
               "minimum": 0
             }
-          ]
+          ],
+          "maximum": 1024,
+          "description": "Fixed V1 bound (1024) keeps this value exactly representable as a JSON number."
         },
         "enabled": {
           "type": "boolean"
@@ -1194,12 +1194,8 @@
               ]
             },
             "maxCompiledTokens": {
-              "type": "integer",
-              "allOf": [
-                {
-                  "exclusiveMinimum": 0
-                }
-              ]
+              "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64",
+              "description": "Unsigned 64-bit JSON counter/budget; encoded as canonical decimal string."
             }
           },
           "required": [
@@ -1376,12 +1372,8 @@
             "maxParentHistoryTokens": {
               "anyOf": [
                 {
-                  "type": "integer",
-                  "allOf": [
-                    {
-                      "exclusiveMinimum": 0
-                    }
-                  ]
+                  "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64",
+                  "description": "Unsigned 64-bit JSON counter/budget; encoded as canonical decimal string."
                 },
                 {
                   "type": "null"
@@ -1478,7 +1470,9 @@
             {
               "minimum": 0
             }
-          ]
+          ],
+          "maximum": 1024,
+          "description": "Fixed V1 bound (1024) keeps this value exactly representable as a JSON number."
         },
         "enabled": {
           "type": "boolean"

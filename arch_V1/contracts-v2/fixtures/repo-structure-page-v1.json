@@ -48,9 +48,9 @@
     "freshness": "current",
     "completeness": "complete",
     "coverage": {
-      "files": 12,
-      "nodes": 40,
-      "bytes": 32768
+      "files": "12",
+      "nodes": "40",
+      "bytes": "32768"
     },
     "nodes": [
       {
@@ -84,9 +84,9 @@
     "freshness": "unknown",
     "completeness": "unavailable",
     "coverage": {
-      "files": 0,
-      "nodes": 0,
-      "bytes": 0
+      "files": "0",
+      "nodes": "0",
+      "bytes": "0"
     },
     "nodes": [],
     "fallback": {
@@ -144,9 +144,9 @@
     "freshness": "current",
     "completeness": "complete",
     "coverage": {
-      "files": 12,
-      "nodes": 40,
-      "bytes": 32768
+      "files": "12",
+      "nodes": "40",
+      "bytes": "32768"
     },
     "nodes": [
       {

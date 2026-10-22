@@ -62,6 +62,16 @@ pub(super) struct VerifierJournalEntryV1 {
     pub(super) spec_id: String,
     pub(super) spec_digest: String,
     pub(super) verification_run_id: String,
+    /// Host-derived digest of the complete accepted verifier-set identity tuple.
+    /// Empty historical values are not eligible for recovery or dispatch.
+    #[serde(default)]
+    pub(super) set_identity_digest: String,
+    #[serde(default)]
+    pub(super) managed_revision: u64,
+    #[serde(default)]
+    pub(super) receipt_basis_digest: String,
+    #[serde(default)]
+    pub(super) evidence_plan_digest: String,
     /// Durable live Attempt binding for every verifier edge; empty legacy values fail closed.
     #[serde(default)]
     pub(super) attempt_id: String,
@@ -366,6 +376,10 @@ mod tests {
             spec_id: "spec-1".to_owned(),
             spec_digest: format!("blake3:{}", "a".repeat(64)),
             verification_run_id: id.to_owned(),
+            set_identity_digest: format!("blake3:{}", "1".repeat(64)),
+            managed_revision: 2,
+            receipt_basis_digest: format!("blake3:{}", "2".repeat(64)),
+            evidence_plan_digest: format!("blake3:{}", "3".repeat(64)),
             attempt_id: "attempt-fixture".to_owned(),
             challenge_set_digest: format!("blake3:{}", "b".repeat(64)),
             owner_epoch: 1,
@@ -578,6 +592,10 @@ fn read_entries(path: &Path) -> Result<BTreeMap<String, VerifierJournalEntryV1>,
     }
     for (key, entry) in &journal.entries {
         if key != &entry.verification_run_id
+            || !valid_digest(&entry.set_identity_digest)
+            || entry.managed_revision == 0
+            || !valid_digest(&entry.receipt_basis_digest)
+            || !valid_digest(&entry.evidence_plan_digest)
             || entry.members.is_empty()
             || entry.members.len() > 32
             || entry.members.iter().any(|member| {
@@ -592,4 +610,12 @@ fn read_entries(path: &Path) -> Result<BTreeMap<String, VerifierJournalEntryV1>,
         }
     }
     Ok(journal.entries)
+}
+
+fn valid_digest(value: &str) -> bool {
+    value.len() == 71
+        && value.starts_with("blake3:")
+        && value.as_bytes()[7..]
+            .iter()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }

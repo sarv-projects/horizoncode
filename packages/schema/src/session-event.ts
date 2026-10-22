@@ -12,6 +12,7 @@ import { SessionID } from "./session-id"
 import { Location } from "./location"
 import { SessionMessage } from "./session-message"
 import { Revert } from "./revert"
+import { ContextLedgerV2 } from "./context-ledger-v2"
 
 export { FileAttachment }
 
@@ -110,6 +111,20 @@ export const ContextUpdated = Event.define({
   },
 })
 export type ContextUpdated = typeof ContextUpdated.Type
+
+/** Request-scoped, best-effort UI projection. It is intentionally ephemeral. */
+export const ContextLedger = Event.define({
+  type: "session.context_ledger",
+  schema: {
+    ...Base,
+    requestID: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9._:-]{1,256}$/)),
+    sourceRevision: Schema.String.check(Schema.isPattern(/^(0|[1-9][0-9]{0,19})$/)),
+    sourceGeneration: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9._:-]{1,256}$/)),
+    ledger: ContextLedgerV2,
+    ledgerDigest: Schema.String.check(Schema.isPattern(/^blake3:[0-9a-f]{64}$/)),
+  },
+})
+export type ContextLedger = typeof ContextLedger.Type
 
 export const Synthetic = Event.define({
   type: "session.next.synthetic",
@@ -506,6 +521,7 @@ export const Definitions = Event.inventory(
   Prompted,
   PromptAdmitted,
   ContextUpdated,
+  ContextLedger,
   Synthetic,
   Shell.Started,
   Shell.Ended,

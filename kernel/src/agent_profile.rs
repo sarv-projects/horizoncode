@@ -146,6 +146,36 @@ impl AgentProfileDefinitionV2 {
         canonical_digest(PROFILE_DOMAIN, &self.value)
     }
 
+    pub(crate) fn selected_provider_model(&self) -> Option<(String, String)> {
+        let Value::Map(fields) = &self.value else { return None };
+        let Value::Map(selection) = fields.get("model")? else { return None };
+        let Value::String(provider_id) = selection.get("providerId")? else { return None };
+        let Value::String(model_id) = selection.get("modelId")? else { return None };
+        if valid_id(provider_id) && valid_id(model_id) {
+            Some((provider_id.clone(), model_id.clone()))
+        } else { None }
+    }
+
+    /// Returns the trusted harness selector from the complete pinned profile.
+    /// Callers must still resolve it through the configured provider adapter;
+    /// this value is not a route or endpoint authorization by itself.
+    pub(crate) fn harness_id(&self) -> Option<String> {
+        let Value::Map(fields) = &self.value else { return None };
+        match fields.get("harness") {
+            Some(Value::String(value)) if valid_id(value) => Some(value.clone()),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn token_budget(&self) -> Option<u64> {
+        let Value::Map(fields) = &self.value else { return None };
+        let Value::Map(limits) = fields.get("limits")? else { return None };
+        match limits.get("tokenBudget") {
+            Some(Value::Unsigned(value)) if *value > 0 => Some(*value),
+            _ => None,
+        }
+    }
+
     /// This binds profile rules, role scope, source and enabled state. It is
     /// never an effective Guard ceiling or lease.
     pub(crate) fn permission_ceiling_digest(&self) -> Result<String, messagepack::MessagePackError> {

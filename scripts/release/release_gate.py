@@ -25,7 +25,15 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from scripts.release.audit_distribution import audit_repository
-from scripts.release.clean_install import APPROVED_TEMP_ROOT, run_matrix
+from scripts.release.clean_install import (
+    APPROVED_TEMP_ROOT,
+    REPOSITORY_ROOT,
+    _inside,
+    _reject_symlink_components,
+    _validated_output_path,
+    _write_new_artifact_file,
+    run_matrix,
+)
 
 
 PLATFORM_SUPPORT_DIMENSIONS = (
@@ -45,10 +53,11 @@ KNOWN_INSTALL_MATRIX_STATUSES = frozenset({"PASS", "PARTIAL", "FAIL", "BLOCKED"}
 
 def _sha256(path: Path) -> str | None:
     try:
-        if not stat.S_ISREG(path.stat(follow_symlinks=False).st_mode):
-            return None
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
         digest = hashlib.sha256()
-        with path.open("rb") as file:
+        with os.fdopen(descriptor, "rb") as file:
+            if not stat.S_ISREG(os.fstat(file.fileno()).st_mode):
+                return None
             for chunk in iter(lambda: file.read(1024 * 1024), b""):
                 digest.update(chunk)
         return digest.hexdigest()
@@ -202,7 +211,31 @@ def evaluate_release_gate(
     expected_model: str | None = None,
     state_root: Path | None = None,
 ) -> dict:
+    requested_root = Path(os.path.abspath(root))
+    if not _inside(requested_root, REPOSITORY_ROOT):
+        raise ValueError(f"release source root must be inside this repository: {root}")
+    _reject_symlink_components(requested_root, REPOSITORY_ROOT, "release source root")
     root = root.resolve()
+    if not _inside(root, REPOSITORY_ROOT):
+        raise ValueError(f"resolved release source root escapes this repository: {root}")
+    if artifact is not None:
+        requested_artifact = Path(os.path.abspath(artifact))
+        if not _inside(requested_artifact, root):
+            raise ValueError("distribution artifact must be inside the repository-local source root")
+        _reject_symlink_components(requested_artifact, root, "distribution artifact")
+    if checkout is not None:
+        requested_checkout = Path(os.path.abspath(checkout))
+        if not _inside(requested_checkout, REPOSITORY_ROOT):
+            raise ValueError("candidate checkout must be inside this repository")
+        _reject_symlink_components(requested_checkout, REPOSITORY_ROOT, "candidate checkout")
+    for label, value in (("candidate binary", candidate_binary), ("previous binary", previous_binary), ("migration fixture", migration_fixture)):
+        if value is None:
+            continue
+        requested_value = Path(os.path.abspath(value))
+        requested_checkout = Path(os.path.abspath(checkout)) if checkout is not None else None
+        if requested_checkout is None or not _inside(requested_value, requested_checkout):
+            raise ValueError(f"{label} must be inside the repository-local candidate checkout")
+        _reject_symlink_components(requested_value, requested_checkout, label)
     audit = audit_repository(root, artifact)
     blockers = list(audit["blockers"])
     candidate_checkout = _checkout_facts(checkout)
@@ -262,7 +295,7 @@ def evaluate_release_gate(
     release_scripts = Path(__file__).resolve().parent
     tooling_hashes = {
         name: _sha256(release_scripts / name)
-        for name in ("audit_distribution.py", "clean_install.py", "release_gate.py")
+        for name in ("audit_distribution.py", "clean_install.py", "prepare_build.py", "release_gate.py")
     }
     return {
         "schema_version": 1,
@@ -310,10 +343,11 @@ def main() -> int:
     parser.add_argument("--previous-binary", type=Path, help="previous release executable inside --checkout")
     parser.add_argument("--migration-fixture", type=Path, help="isolated legacy TOML migration fixture")
     parser.add_argument("--expected-model", help="expected model after the migration fixture is read")
-    parser.add_argument("--state-root", type=Path, help="new evidence directory under /tmp/opencode")
+    parser.add_argument("--state-root", type=Path, help="new evidence directory under kernel/target/horizoncode-release")
     parser.add_argument("--output", type=Path, help="write JSON evidence here instead of stdout")
     args = parser.parse_args()
     try:
+        output_path = _validated_output_path(args.output) if args.output else None
         report = evaluate_release_gate(
             args.root,
             artifact=args.artifact,
@@ -329,9 +363,9 @@ def main() -> int:
         return 3
 
     encoded = json.dumps(report, indent=2, sort_keys=True) + "\n"
-    if args.output:
-        args.output.write_text(encoded, encoding="utf-8")
-        print(f"release gate: {report['status']} ({len(report['blockers'])} blockers); report={args.output}")
+    if output_path:
+        _write_new_artifact_file(output_path, encoded)
+        print(f"release gate: {report['status']} ({len(report['blockers'])} blockers); report={output_path}")
     else:
         print(encoded, end="")
     return 1 if report["blockers"] else 0

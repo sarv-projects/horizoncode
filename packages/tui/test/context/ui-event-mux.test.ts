@@ -604,6 +604,58 @@ test("mux keeps legacy paint events coalescing alongside gated envelope deltas",
   queue.close()
 })
 
+test("required replay cursor rejects malformed source metadata and requests a canonical resnapshot", () => {
+  const batches: Delta[][] = []
+  const resnapshots: string[] = []
+  const queue = createUiEventMux<Delta>({
+    sessionID: (event) => event.sessionID,
+    key: (event) => event.partID,
+    merge: (previous, next) => ({ ...previous, text: previous.text + next.text }),
+    size: (event) => Buffer.byteLength(event.text),
+    deliver: (events) => batches.push([...events]),
+    maxQueuedEvents: 8,
+    maxQueuedBytes: 64,
+    flushAfterMs: 10_000,
+    cursor: () => undefined,
+    requireCursor: true,
+    onInvalidCursor: (sessionID) => resnapshots.push(sessionID),
+  })
+
+  expect(queue.push({ sessionID: "a", partID: "text-1", text: "unfenced" })).toBe("resnapshot_required")
+  expect(batches).toEqual([])
+  expect(resnapshots).toEqual(["a"])
+  expect(queue.streamStats().resnapshotsRequired).toBe(1)
+  queue.close()
+})
+
+test("delivery exceptions forget accepted replay state and request a canonical resnapshot", () => {
+  const resnapshots: string[] = []
+  const queue = createUiEventMux<Delta>({
+    sessionID: (event) => event.sessionID,
+    key: (event) => event.partID,
+    merge: (previous, next) => ({ ...previous, text: previous.text + next.text }),
+    size: (event) => Buffer.byteLength(event.text),
+    deliver: () => {
+      throw new Error("consumer partially applied the batch")
+    },
+    maxQueuedEvents: 8,
+    maxQueuedBytes: 64,
+    flushAfterMs: 10_000,
+    cursor: (event) => event.cursor,
+    requireCursor: true,
+    onInvalidCursor: (sessionID) => resnapshots.push(sessionID),
+  })
+  queue.seedStream({ sessionID: "a", partID: "text-1", sourceGeneration: "generation-1", sequence: 0 })
+
+  expect(queue.push(envelope("a", "text-1", 0, "first"))).toBe("apply")
+  expect(() => queue.flush("a")).not.toThrow()
+  expect(resnapshots).toEqual(["a"])
+  expect(queue.streamStats().trackedCursors).toBe(0)
+  expect(queue.push(envelope("a", "text-1", 1, "next"))).toBe("resnapshot_required")
+  expect(queue.streamStats().trackedCursors).toBe(0)
+  queue.close()
+})
+
 test("rejects a cursor from another subscription generation and requires a resnapshot (AC-011)", () => {
   const { queue, batches, resnapshots } = envelopedMux()
   queue.seedStream({ sessionID: "a", partID: "text-1", sourceGeneration: "subscription-1", sequence: 0 })
@@ -682,4 +734,23 @@ test("seals an ended stream so a late delta cannot re-append text, and a restart
   queue.flush("a")
   expect(batches[1]?.[0]?.text).toBe("fresh")
   queue.close()
+})
+
+test("cursor pressure forgets an ended cursor when its bounded seal is evicted", () => {
+  const guard = createStreamEnvelopeGuard({ maxCursors: 2 })
+  const first = { sessionID: "a", partID: "part-a", sourceGeneration: "g1", sequence: 0 }
+  const second = { sessionID: "b", partID: "part-b", sourceGeneration: "g1", sequence: 0 }
+  const third = { sessionID: "c", partID: "part-c", sourceGeneration: "g1", sequence: 0 }
+
+  expect(guard.seed(first)).toBe(true)
+  expect(guard.seal(first)).toBe(true)
+  expect(guard.seed(second)).toBe(true)
+  expect(guard.seal(second)).toBe(true)
+  expect(guard.accept({ ...first, advance: 1 })).toBe("duplicate")
+  expect(guard.seed(third)).toBe(true)
+  expect(guard.seal(third)).toBe(true)
+
+  // Evicting a seal must also discard its cursor; otherwise a later ordinal
+  // could be accepted after the bounded ended-stream record was forgotten.
+  expect(guard.accept({ ...first, sequence: 1, advance: 1 })).toBe("resnapshot_required")
 })

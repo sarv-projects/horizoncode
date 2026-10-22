@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "horizon://schemas/direct-session-protocol-grant-preflight-v1",
+  "title": "DirectSessionProtocolGrantPreflightV1",
+  "description": "Private effects.v1 read-only candidate check for one root direct-Session typed protocol challenge. It cannot approve, reserve grant usage, issue a lease, or dispatch.",
+  "oneOf": [
+    { "$ref": "#/$defs/request" },
+    { "$ref": "#/$defs/response" }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^blake3:[a-f0-9]{64}$"
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sessionID", "locationID", "challengeID"],
+      "properties": {
+        "sessionID": { "$ref": "#/$defs/id" },
+        "locationID": { "$ref": "#/$defs/id" },
+        "challengeID": { "$ref": "#/$defs/id" }
+      }
+    },
+    "response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["challengeID", "challengeSetDigest", "status"],
+      "properties": {
+        "challengeID": { "$ref": "#/$defs/id" },
+        "challengeSetDigest": { "$ref": "#/$defs/digest" },
+        "status": { "enum": ["eligible", "prompt_required"] }
+      }
+    }
+  },
+  "x-horizon-validation": [
+    "request-runs-only-through-authenticated-effects-v1-envelope-with-principal-and-owner-fence-outside-request-body",
+    "HostKernel-resolves-exact-retained-unleased-protocol-challenge-and-typed-authorization;-request-contains-no-workspace-revision-or-principal",
+    "eligible-requires-root-direct-Session-without-synthetic-Attempt-or-DirectTurn;-only-typed-read-only-LSP-queries-and-DAP-inspection-are-candidates",
+    "HostKernel-revalidates-live-process-reference-generation-owner-epoch-journal-sequence-current-workspace-revision-registered-Location-root-backend-guarantee-policy-and-active-grant",
+    "challengeSetDigest-is-BLAKE3-of-domain-horizoncode.direct-grant-challenge-set.v1-NUL-followed-by-canonical-MessagePack-of-the-singleton-ordered-challengeID-array-and-is-correlation-only",
+    "preflight-is-read-only-and-does-not-reserve-grant-usage-pin-grant-mutate-challenge-or-journal-approve-issue-a-lease-or-dispatch",
+    "Core-may-skip-the-dialog-only-on-exact-challengeID-and-recomputed-challengeSetDigest-match;any-error-mismatch-or-conflict-falls-back-to-prompt",
+    "auto-resolution-echoes-challengeSetDigest-as-grantPreflightDigest-to-resolve_approval;HostKernel-revalidates-and-reserves-the-grant-atomically-before-normal-Guard-approval-and-one-use-lease",
+    "a-user-selected-allow_once-omits-grantPreflightDigest-and-approves-only-the-exact-single-operation-through-the-normal-Guard-receipt-lifecycle",
+    "managed-Attempts-callback-replies-LSP-sync-start-stop-DAP-control-attach-evaluate-and-other-mutating-operations-always-return-prompt_required"
+  ]
+}

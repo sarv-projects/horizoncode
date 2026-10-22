@@ -24,6 +24,7 @@ test("provider.doctor.offline is discoverable as a system settings command", asy
       tier: "offline",
       selection: { providerRef: "provider:unselected", configurationStatus: "UNKNOWN" },
       localReadiness: "UNKNOWN",
+      catalogFreshness: "UNKNOWN",
       remoteChecks: { entitlement: "UNCHECKED", quota: "UNCHECKED", service: "UNCHECKED" },
       credentialAccess: "NOT_READ",
       networkRequestCount: 0,

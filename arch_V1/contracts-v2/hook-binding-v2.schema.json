@@ -67,11 +67,15 @@
     },
     "timeoutMs": {
       "type": "integer",
-      "minimum": 1
+      "minimum": 1,
+      "maximum": 600000,
+      "description": "Fixed V1 bound (600000) keeps this value exactly representable as a JSON number."
     },
     "maxOutputBytes": {
       "type": "integer",
-      "minimum": 0
+      "minimum": 0,
+      "maximum": 16777216,
+      "description": "Fixed V1 bound (16777216) keeps this value exactly representable as a JSON number."
     }
   },
   "required": [

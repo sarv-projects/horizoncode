@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "horizon://schemas/direct-session-grant-event-v1",
+  "title": "DirectSessionGrantChangedV1",
+  "description": "Derived non-authoritative UI projection of Rust Guard grant state. It cannot issue, widen, renew, or authorize a grant.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "eventId",
+    "eventType",
+    "sourceGeneration",
+    "sequence",
+    "grantId",
+    "grantDigest",
+    "scopeKind",
+    "scopeDigest",
+    "status"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "eventId": {
+      "$ref": "#/$defs/id"
+    },
+    "eventType": {
+      "const": "direct_session_grant.changed"
+    },
+    "sourceGeneration": {
+      "$ref": "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64"
+    },
+    "sequence": {
+      "$ref": "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64"
+    },
+    "grantId": {
+      "$ref": "#/$defs/id"
+    },
+    "grantDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "scopeKind": {
+      "enum": [
+        "session",
+        "workspace",
+        "network_egress"
+      ]
+    },
+    "scopeDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "expiresAtUnixMs": {
+      "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64"
+    },
+    "status": {
+      "enum": [
+        "active",
+        "revoked",
+        "expired",
+        "stale"
+      ]
+    },
+    "reasonCode": {
+      "enum": [
+        "user_revoked",
+        "session_closed",
+        "owner_epoch_changed",
+        "principal_changed",
+        "workspace_root_changed",
+        "policy_digest_changed",
+        "backend_guarantee_changed",
+        "expired"
+      ]
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^blake3:[a-f0-9]{64}$"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "revoked",
+              "expired",
+              "stale"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "required": [
+          "reasonCode"
+        ]
+      }
+    }
+  ]
+}

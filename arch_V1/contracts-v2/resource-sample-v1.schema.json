@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "horizon://schemas/resource-sample-v1",
+  "title": "ResourceSampleV1",
+  "description": "Attributed resource measurement sample (A-V2-30 §12.16).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "sampleId",
+    "metricId",
+    "unit",
+    "quality",
+    "osMethod",
+    "observedAt",
+    "processStartFingerprint",
+    "ownerScope"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "sampleId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "metricId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "unit": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "value": { "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64" },
+    "quality": { "enum": ["measured", "estimated", "unknown"] },
+    "osMethod": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "observedAt": { "type": "string", "format": "date-time" },
+    "processStartFingerprint": { "type": "string", "minLength": 8, "maxLength": 256 },
+    "ownerScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["logicalOwner", "ownerEpoch"],
+      "properties": {
+        "logicalOwner": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "ownerEpoch": { "$ref": "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64" }
+      }
+    }
+  }
+}

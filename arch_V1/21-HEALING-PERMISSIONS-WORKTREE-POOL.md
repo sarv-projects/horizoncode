@@ -40,6 +40,15 @@ Ask, Safe Auto and YOLO-in-sandbox are user experience policies over the same ca
 
 Mode changes are explicit config actions. No mode grants secret access, production authority, unsupported sandbox or hidden paid routing.
 
+Safe Auto must support low-friction direct coding: bounded in-workspace reads follow the baseline
+read policy; routine edits and selected build/test commands under the user's selected sandbox and
+bounded workspace/capability grant do not require a prompt per effect. Guard still performs
+admission and creates one-use leases and receipts. Prompt when crossing a grant boundary, when
+requested scope expands, or when action classification is uncertain. This direct-session grant
+does not flow to children, plugins, MCP or other origins. A direct child receives only its own
+authenticated scope after intersection with the parent grant, profile, current policy and
+platform support; every child effect still uses the same Guard checks.
+
 ## 21.4 Worktree/resource pool
 
 Use a worktree only when isolation benefits exceed integration/cleanup cost.
@@ -71,6 +80,13 @@ Parallelize independent work when:
 - expected speedup exceeds orchestration/model/worktree cost.
 
 Prefer single writer plus read-only reviewers for shared critical files.
+
+Direct Core child-Session fan-out is a V1 goal and remains a separate lane from managed Task
+workers. Admit bounded children only with authenticated profile/grant, resource, effect and
+cancellation/recovery controls. Direct follow-up can request one fresh serialized child turn only
+after its guarded one-use wake/recovery proof is implemented; it is neither arbitrary append nor
+managed DAG fan-out. Managed multi-Task workers remain unavailable until durable aggregate
+settlement and independent final verification are accepted.
 
 ## 21.6 Recovery coordinator
 
@@ -217,3 +233,165 @@ Core process exited. It releases the worktree to the Free pool only when the fre
 observation matches P2's final workspace head and proves clean, owned, no-follow state with
 no user changes; all other workspace outcomes remain quarantined. Receipt lookup by Attempt
 recovers a committed result after a lost response without dispatch or release authority.
+
+### 21.13 Final Inspect evidence, settlement and pool disposition
+
+A successful Task may finish on a workspace that is dirty relative to its registered
+base. P2's independent verdict must bind the exact current workspace-content revision;
+P8's final guarded Inspect must then observe that same revision under the registered
+workspace binding, with `owned=true` and `noFollow=true`. A `CLEAN` observation can
+qualify for reuse. A `DIRTY_OWNED` observation, including user-owned changes, may be
+retained as evidence for that exact verified revision, but it always quarantines the
+worktree. `MISSING`, `UNKNOWN`, a revision/binding mismatch, or missing ownership/no-follow
+proof cannot settle successful work. A dirty evidence snapshot never implies that a
+worktree is clean or reusable.
+
+Before final Inspect is prepared, HostKernel resolves the exact persisted SETTLED
+ChallengeSet and committed verifier evidence into its opaque `SettledVerifierChallengeSetPinsV1`.
+P8 binds `verificationRunID`, `setIdentityDigest`, and `challengeSetDigest` into the durable
+final-Inspect candidate pin and digest alongside the Attempt, Spec, evidence, and final revision.
+The successful terminal settlement proof must carry the same opaque token; raw request strings
+cannot create or replace it. FAILED/CANCELLED quarantine carries no verifier pins and cannot
+release capacity or reuse the worktree.
+Legacy P8 candidate-pin OwnerLog records without this tuple remain replayable for history,
+but their missing pins cannot satisfy current final-Inspect receipt recovery or settlement.
+
+The durable settlement evidence pins the final Inspect operation ID, HostKernel receipt
+reference, observed workspace revision, terminal evidence digest/references, verifier-set
+identity tuple, and the settlement receipt digest. Recovery must resolve those values back to the exact durable
+P8 Inspect intent and receipt, including the Attempt-derived idempotency key, worktree,
+base revision, root registration generation, and workspace binding. A missing or
+`UNKNOWN` edge is a replay conflict; do not redispatch Inspect or reconstruct success
+from a caller-supplied digest.
+
+Worker capacity settlement and worktree disposition are separate durable decisions.
+The settlement event may release the logical-worker reservation only after P1/P2 proof
+and the exact final Inspect evidence are revalidated. It first quarantines the worktree
+while retaining its lease. A distinct durable disposition event then pins the settlement
+receipt digest, final Inspect operation ID and HostKernel receipt reference, observed
+revision, and Inspect receipt digest; only this second event releases the worktree lease.
+The second transition is independently replayable and idempotent. A crash between the two
+events therefore leaves the worktree quarantined and unavailable, with the lease retained
+until authorized recovery completes disposition. P8 exposes this state through
+`managed_worktree_disposition_pending_for_attempt`; a missing second receipt is not a
+successful terminal projection. Same-epoch replay may append the exact already-pinned
+disposition. After an owner-epoch change, the historical final Inspect cannot release or
+reuse the retained lease: P1 must supply current authenticated root authority and a fresh
+Guarded Inspect, with P2's current quiescent terminal proof, before P8 can record recovery
+disposition. Until that owner-bound recovery path is wired, the lease remains quarantined.
+In particular, a dirty final
+revision is preserved for verification while the worktree stays quarantined; only an
+independently recorded clean disposition can make it eligible for reuse. Since Inspect
+does not report an untracked-only count, a quarantined dirty tree records that dimension
+as unknown rather than inferring that every dirty entry is untracked. If the implementation
+cannot record that separate transition, reuse stays unavailable.
+
+Resource sampling and admission are not OS quotas. V1 may use bounded measurements for
+backpressure and expose unknown/unsupported values honestly. Per-worker CPU/memory/FD
+limits, disk guarantees, and native Windows confinement remain unavailable until the
+corresponding OS backend is enforced and accepted; WSL/Linux evidence does not satisfy
+native Windows acceptance. RC0 captures are provisional until a trusted P1 HostRun
+settlement and P2 independent-verifier attestation source can bind the live Sessions,
+outcomes, and exact source revision. Caller-supplied metadata cannot promote a sample.
+
+**P8 source reconciliation (2026-10-21; source-only, not verified):** successful-settlement
+disposition recovery now has a separate typed proof and durable transition. After an
+epoch change, historical final Inspect evidence cannot release the retained lease. P8
+requires a current `RootCoordinatorExecutionProofV1`, authenticated current
+`AuthenticatedOwnerContext`, current P2 `ManagedAttemptTerminalSnapshotV1`, a fresh
+current-epoch Guarded Inspect receipt for the exact retained worktree and terminal head,
+and a P1 HostKernel process/effect-quiescence digest. The HostKernel-only constructor is
+`WorkerSettlementDispositionRecoveryProofV1::from_host_kernel`; the durable transition is
+`WorkerPoolControl::reconcile_settled_managed_worktree_disposition`. P8 also owns the
+target/intent/dispatch/receipt/resolve methods for the fresh Inspect. P1 must authenticate
+and originate each proof member; P2 supplies the fresh verified terminal projection.
+HostKernel ingress and cross-phase acceptance remain unavailable, so the retained lease
+stays quarantined until integration supplies all evidence.
+
+Pressure remains closed: P8's bounded tracker is process-local, its required lower
+watermark/calm-window inputs are not projected by trusted policy, and there is no
+authenticated HostKernel ingress or durable OwnerLog retention/compaction contract. It
+cannot trigger admission, cancellation, cache eviction or lease release. Cache retirement
+remains closed: the bounded registry has no authenticated Core/HostKernel cache RPC or
+retained-generation handle, and reclaimed bytes cannot be claimed without post-retirement
+measurement. RC0 remains provisional: HUP-005 fixtures are not provider-measured evidence;
+the trusted attestation-source list is empty and no P1 HostRun/P2 independent-verifier path
+attests the exact revision. Resource admission is bounded reservation/accounting and
+monitoring only; unsupported OS-enforced CPU/memory/FD/disk guarantees and native Windows
+guarantees remain unavailable.
+
+### 21.14 Two-stage managed pre-admission reservation
+
+Core must compile the child `ContextSelectionV1` against the exact isolated child
+worktree. P8 therefore reserves the READY candidate before ContextSelection exists,
+then binds the compiled digest to that same reservation:
+
+1. Stage A contains authenticated owner/epoch, Goal/Run/Task and candidate revision,
+   accepted SpecVersion, profile/revision/digest, permission/effective-scope and
+   capability-ceiling digests, parent lineage, bounded worker/resource policy,
+   workspace revision and stable idempotency key. The ContextSelection field is
+   explicitly absent (`None`); no synthetic selection or placeholder digest is
+   permitted. P8 selects and durably reserves the exact registered worktree and
+   deadline, returning an opaque proof plus a read-only target/proof-digest/pool-revision
+   projection. The stage has no Attempt, DelegationBinding, claim, effect or dispatch
+   authority.
+2. Core compiles against that target without dispatch. P1 validates the bounded
+   ContextSelection and rechecks current authority facts. P8 appends a context-bind
+   OwnerLog event on the same still-RESERVED lease. It copies the exact stored Stage-A
+   pins and adds only the canonical ContextSelection digest. The candidate identity
+   digest and ticket/worker IDs remain stable. P8 returns a stable Stage-B bind
+   receipt digest over that candidate identity, the actual context digest and
+   immutable lease IDs. The current reservation proof separately binds the
+   latest OwnerLog cursor and pool revision; it must be refreshed before
+   authority checks and is not the idempotency receipt.
+3. Managed Attempt admission consumes that Stage-B proof and attaches the exact
+   DelegationBinding. Admission must not create a second reservation. Claim and
+   dispatch require a context-bound reservation and attached binding.
+
+Retries resolve by Rust-derived Attempt identity and stable idempotency key. They
+return P8's persisted deadline, root/resource pins and exact worktree without extending
+the lease or selecting another target. Stage-A's candidate receipt and Stage-B's
+context-bind receipt remain stable after later OwnerLog events; the returned cursor and
+pool revision are refreshed independently and are required for current lease checks. A changed key for the same Attempt conflicts.
+Expired or changed-epoch reservations require exact no-dispatch reconciliation and a
+new candidate generation. Exact Stage-B replay returns the stored bound pins and
+bind receipt plus a freshly resolved current lease proof; another ContextSelection
+conflicts. A crash after either append remains fenced and
+cannot authorize dispatch. Legacy full-pin OwnerLog entries remain replayable; their
+identity derivation is distinct from the staged candidate identity.
+### Managed DAG scope and V1 sequencing (DEC-V1-31)
+
+Bounded managed worker/DAG execution remains a V1 goal after the single-Task vertical
+passes acceptance. Scheduler admission reserves each Task's resource and workspace lease
+atomically; conflicting or unknown write sets serialize or remain unavailable. Dependency
+success comes only from independent verification of each Task's actual final revision,
+with durable receipts and no unresolved UNKNOWN. Cancellation/restart retains capacity
+until owned work and effects are reconciled. The current one-Task gate protects the
+prerequisite implementation and does not remove the DAG from final V1 scope.
+
+### 21.15 P8 paired-evaluation source boundary (2026-10-22; source-complete for currently unblocked work, not phase-accepted)
+
+**P8 status: SOURCE-COMPLETE FOR CURRENTLY UNBLOCKED P8 WORK; NOT PHASE-ACCEPTED.**
+
+`scripts/eval/eval_harness.py` now has a library-only paired `HOST_RUN_PAIRED` runner
+boundary in addition to the offline HUP-005 fake self-check. A future P1/P2 adapter
+must resolve task inputs from the frozen repository image, call the existing
+authenticated HostKernel/managed Attempt path, honor the selected model/provider route,
+and return independently verified evidence bound to the final workspace revision and
+OwnerLog. The current module registers no such adapter and exposes only the fake
+self-check on its CLI; a Python callback does not establish HostKernel authenticity.
+
+`RepositoryTaskImageResolver` loads only a no-follow repository-local JSONL task catalog
+whose benchmark provenance header, exact task set/group, and per-task canonical input
+digests plus repository-image digest match the frozen manifest; each task envelope is bounded to 1 MiB and the
+catalog to 64 MiB. HostRun dispatch indexes are kept
+separate from provider request counts. A stable digest-derived dispatch idempotency
+key binds each frozen manifest/task/arm. A production bridge must reconcile that key to
+the same managed Attempt after process restart before it proceeds. Any exception after
+entering the bridge is durably recorded as `UNKNOWN` and not retried in-process; pre-dispatch cancellation is recorded
+without a dispatch index, and remaining pairs are `NOT_RUN`. Both lanes use the bounded,
+locked, repository-local journal. The report remains non-official, RC0/resource use
+remains `UNKNOWN`, and HUP-001/002 remain incomplete until the concrete authenticated
+HostRun, verifier and resource-sample evidence integrations exist. Source fixtures were
+authored but not executed under the implementation-first hold.
+

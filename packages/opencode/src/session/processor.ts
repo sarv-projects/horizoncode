@@ -24,8 +24,11 @@ import { isRecord } from "@/util/record"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@opencode-ai/core/database/database"
 import { Usage, type LLMEvent } from "@opencode-ai/llm"
+import { SessionMessage as SessionMessageSchema } from "@opencode-ai/schema/session-message"
 
 import { SessionSupervisorError } from "@opencode-ai/core/session/supervisor"
+import * as ManagedControl from "./managed-control"
+import { managedProviderStepFinish } from "./managed-provider-entry"
 const DOOM_LOOP_THRESHOLD = 3
 export type Result = "compact" | "stop" | "continue"
 
@@ -45,6 +48,8 @@ export interface Handle {
     },
   ) => Effect.Effect<void>
   readonly process: (streamInput: LLM.StreamInput) => Effect.Effect<Result, SessionSupervisorError>
+  /** No-dispatch managed request compilation using the same LLMRequestPrep path. */
+  readonly prepareManagedRequest: (streamInput: LLM.StreamInput) => Effect.Effect<LLM.ManagedProviderInputV1, unknown>
 }
 
 type Input = {
@@ -69,6 +74,14 @@ interface ProcessorContext extends Input {
   shouldBreak: boolean
   blocked: boolean
   needsCompaction: boolean
+  managedUsageStopped: boolean
+  /** Usage receipts staged before ToolBatch Guard admission, keyed by provider step. */
+  managedUsageReceipts: Map<number, ManagedControl.ManagedAttemptUsageReceiptV1 | null>
+  /** Dispatch receipts are correlated by the provider SDK's stable finish index. */
+  managedProviderDispatches: Map<number, LLM.ManagedProviderDispatchHandoffV1>
+  managedProviderSettledIndices: Set<number>
+  /** Tool calls emitted by the currently streaming provider step. */
+  managedProviderStepToolCallIDs: Set<string>
   currentText: SessionV1.TextPart | undefined
   reasoningMap: Record<string, SessionV1.ReasoningPart>
 }
@@ -102,10 +115,16 @@ const layer = Layer.effect(
         shouldBreak: false,
         blocked: false,
         needsCompaction: false,
+        managedUsageStopped: false,
+        managedUsageReceipts: new Map(),
+        managedProviderDispatches: new Map(),
+        managedProviderSettledIndices: new Set(),
+        managedProviderStepToolCallIDs: new Set(),
         currentText: undefined,
         reasoningMap: {},
       }
       let aborted = false
+      let activeManagedAttempt: ManagedControl.ManagedAttemptAuthority | undefined
 
       const parse = (e: unknown) =>
         MessageV2.fromError(e, {
@@ -245,6 +264,121 @@ const layer = Layer.effect(
         return { call: ctx.toolcalls[input.id], part }
       })
 
+      const persistAndSettleManagedStep = Effect.fn("SessionProcessor.persistAndSettleManagedStep")(function* (input: {
+        stepFinishIndex: number
+        finishReason: SessionV1.Assistant["finish"]
+        cost: number
+        tokens: SessionV1.Assistant["tokens"]
+        usageProvenance: SessionMessageSchema.UsageProvenance
+        usageReceipt: ManagedControl.ManagedAttemptUsageReceiptV1
+        calls: readonly {
+          toolCallID: string
+          toolName: string
+          capabilityID: string
+          arguments: Record<string, unknown>
+        }[]
+        authority: ManagedControl.ManagedAttemptAuthority
+      }) {
+        const handoff = ctx.managedProviderDispatches.get(input.stepFinishIndex)
+        if (!handoff) return yield* new SessionSupervisorError({
+          stage: "managed_provider_settlement",
+          reason: "effectful provider step has no matching one-use HostKernel dispatch receipt",
+        })
+        const allowed = new Set<string>()
+        for (const call of input.calls) {
+          if (!call.toolCallID || !call.toolName || allowed.has(call.toolCallID)) {
+            return yield* new SessionSupervisorError({
+              stage: "managed_provider_settlement",
+              reason: "validated ToolBatch calls have malformed or duplicate identities",
+            })
+          }
+          allowed.add(call.toolCallID)
+          const existing = yield* ensureToolCall({ id: call.toolCallID, name: call.toolName })
+          if (existing.part.state.status !== "pending") {
+            return yield* new SessionSupervisorError({
+              stage: "managed_provider_settlement",
+              reason: "provider call is already running or terminal before its effect admission",
+            })
+          }
+          yield* session.updatePart({
+            ...existing.part,
+            state: {
+              status: "pending",
+              input: call.arguments,
+              raw: JSON.stringify(call.arguments),
+            },
+          })
+          ctx.managedProviderStepToolCallIDs.add(call.toolCallID)
+        }
+
+        ctx.assistantMessage.finish = input.finishReason
+        ctx.assistantMessage.cost += input.cost
+        ctx.assistantMessage.tokens = input.tokens
+        ;(ctx.assistantMessage as typeof ctx.assistantMessage & { usageProvenance?: typeof input.usageProvenance }).usageProvenance = input.usageProvenance
+        yield* session.updatePart({
+          id: PartID.ascending(),
+          reason: input.finishReason,
+          messageID: ctx.assistantMessage.id,
+          sessionID: ctx.assistantMessage.sessionID,
+          type: "step-finish",
+          tokens: input.tokens,
+          cost: input.cost,
+          usageProvenance: input.usageProvenance,
+          stepFinishIndex: input.stepFinishIndex,
+          managedUsageReceipt: input.usageReceipt,
+        } as SessionV1.StepFinishPart & {
+          usageProvenance: SessionMessageSchema.UsageProvenance
+          stepFinishIndex: number
+          managedUsageReceipt: ManagedControl.ManagedAttemptUsageReceiptV1
+        })
+        yield* session.updateMessage(ctx.assistantMessage)
+
+        const persisted = yield* MessageV2.get({ sessionID: ctx.sessionID, messageID: ctx.assistantMessage.id }).pipe(
+          Effect.provideService(Database.Service, database),
+        )
+        const matchingSteps = persisted.parts.filter((part) =>
+          part.type === "step-finish" && (part as SessionV1.StepFinishPart & { stepFinishIndex?: number }).stepFinishIndex === input.stepFinishIndex)
+        if (matchingSteps.length !== 1) {
+          return yield* new SessionSupervisorError({
+            stage: "managed_provider_settlement",
+            reason: "persisted transcript does not contain exactly one indexed step-finish part",
+          })
+        }
+        const unresolved = persisted.parts.filter((part) => part.type === "tool" && (part.state.status === "pending" || part.state.status === "running"))
+        if (unresolved.length !== allowed.size || unresolved.some((part) => !allowed.has(part.callID))) {
+          return yield* new SessionSupervisorError({
+            stage: "managed_provider_settlement",
+            reason: "persisted provider snapshot contains missing or unrelated unresolved tool work",
+          })
+        }
+        const receipt = managedProviderStepFinish({
+          info: persisted.info,
+          stepFinishPart: matchingSteps[0],
+          stepFinishIndex: input.stepFinishIndex,
+        })
+        const previous = input.authority.currentScope()
+        const settlement = yield* ManagedControl.settleManagedProviderRequest({
+          authority: input.authority,
+          scope: previous,
+          providerRequestID: handoff.providerRequestID,
+          prepareDigest: handoff.prepareDigest,
+          dispatchDigest: handoff.dispatchDigest,
+          transportRequestDigest: handoff.requestPins.transportRequestDigest,
+          operationDigest: handoff.requestPins.operationDigest,
+          assistantEntryID: persisted.info.id,
+          responseDigest: receipt.responseDigest,
+          usageProvenance: receipt.usageProvenance,
+          stepFinishIndex: input.stepFinishIndex,
+        })
+        input.authority.acceptRefreshedScope({
+          previous,
+          refreshed: settlement.managedAttempt,
+          transition: "provider_settlement",
+        })
+        ctx.managedProviderDispatches.delete(input.stepFinishIndex)
+        ctx.managedProviderSettledIndices.add(input.stepFinishIndex)
+      })
+
       const isFilePart = (value: unknown): value is SessionV1.FilePart => Schema.is(SessionV1.FilePart)(value)
 
       const toolResultOutput = (
@@ -268,7 +402,10 @@ const layer = Layer.effect(
         }
       }
 
-      const handleEvent = Effect.fnUntraced(function* (value: StreamEvent) {
+      const handleEvent = Effect.fnUntraced(function* (
+        value: StreamEvent,
+        managedAttempt?: LLM.StreamInput["managedAttempt"],
+      ) {
         switch (value.type) {
           case "reasoning-start":
             if (value.id in ctx.reasoningMap) return
@@ -326,6 +463,7 @@ const layer = Layer.effect(
               throw new Error(`Tool call not allowed while generating summary: ${value.name}`)
             }
             yield* ensureToolCall(value)
+            if (managedAttempt) ctx.managedProviderStepToolCallIDs.add(value.id)
             const input = isRecord(value.input) ? value.input : { value: value.input }
             yield* updateToolCall(value.id, (match) => ({
               ...match,
@@ -444,19 +582,140 @@ const layer = Layer.effect(
               usage: value.usage ?? new Usage({}),
               metadata: value.providerMetadata,
             })
-            ctx.assistantMessage.finish = value.reason
-            ctx.assistantMessage.cost += usage.cost
-            ctx.assistantMessage.tokens = usage.tokens
-            yield* session.updatePart({
-              id: PartID.ascending(),
-              reason: value.reason,
-              messageID: ctx.assistantMessage.id,
-              sessionID: ctx.assistantMessage.sessionID,
-              type: "step-finish",
-              tokens: usage.tokens,
-              cost: usage.cost,
-            })
-            yield* session.updateMessage(ctx.assistantMessage)
+            const alreadySettledBeforeEffects = ctx.managedProviderSettledIndices.has(value.index)
+            let managedUsageReceipt: ManagedControl.ManagedAttemptUsageReceiptV1 | undefined
+            if (managedAttempt) {
+              if (ctx.managedUsageReceipts.has(value.index)) {
+                managedUsageReceipt = ctx.managedUsageReceipts.get(value.index) ?? undefined
+                ctx.managedUsageReceipts.delete(value.index)
+                ctx.managedUsageStopped ||= managedUsageReceipt?.status === "STOPPED" || managedUsageReceipt === undefined
+                if (ctx.managedUsageStopped) managedAttempt.markUsageStopped?.()
+              } else {
+                const previous = managedAttempt.currentScope()
+                managedUsageReceipt = yield* ManagedControl.recordAttemptUsage({
+                  scope: previous,
+                  assistantMessageID: ctx.assistantMessage.id,
+                  stepFinishIndex: value.index,
+                  usageProvenance: usage.usageProvenance,
+                })
+                managedAttempt.acceptRefreshedScope({
+                  previous,
+                  refreshed: managedUsageReceipt.managedAttempt,
+                  transition: "usage_accounting",
+                })
+                ctx.managedUsageStopped = managedUsageReceipt.status === "STOPPED"
+                if (ctx.managedUsageStopped) managedAttempt.markUsageStopped?.()
+              }
+            }
+            if (!alreadySettledBeforeEffects) {
+              ctx.assistantMessage.finish = value.reason
+              ctx.assistantMessage.cost += usage.cost
+              ctx.assistantMessage.tokens = usage.tokens
+              ;(ctx.assistantMessage as typeof ctx.assistantMessage & { usageProvenance?: typeof usage.usageProvenance }).usageProvenance = usage.usageProvenance
+              yield* session.updatePart({
+                id: PartID.ascending(),
+                reason: value.reason,
+                messageID: ctx.assistantMessage.id,
+                sessionID: ctx.assistantMessage.sessionID,
+                type: "step-finish",
+                tokens: usage.tokens,
+                cost: usage.cost,
+                usageProvenance: usage.usageProvenance,
+                stepFinishIndex: value.index,
+                ...(managedUsageReceipt ? { managedUsageReceipt } : {}),
+              } as SessionV1.StepFinishPart & { usageProvenance: typeof usage.usageProvenance; stepFinishIndex: number; managedUsageReceipt?: ManagedControl.ManagedAttemptUsageReceiptV1 })
+              yield* session.updateMessage(ctx.assistantMessage)
+            }
+            if (managedAttempt) {
+              if (alreadySettledBeforeEffects) {
+                ctx.managedProviderSettledIndices.delete(value.index)
+                ctx.managedProviderStepToolCallIDs.clear()
+              } else {
+              const handoff = ctx.managedProviderDispatches.get(value.index)
+              if (!handoff) {
+                managedAttempt.markUsageStopped?.()
+                return yield* new SessionSupervisorError({
+                  stage: "managed_provider_settlement",
+                  reason: "persisted provider step has no matching one-use HostKernel dispatch receipt",
+                })
+              }
+              const persisted = yield* MessageV2.get({ sessionID: ctx.sessionID, messageID: ctx.assistantMessage.id }).pipe(
+                Effect.provideService(Database.Service, database),
+              )
+              const matchingSteps = persisted.parts.filter((part) =>
+                part.type === "step-finish" && (part as SessionV1.StepFinishPart & { stepFinishIndex?: number }).stepFinishIndex === value.index)
+              if (matchingSteps.length !== 1) {
+                managedAttempt.markUsageStopped?.()
+                return yield* new SessionSupervisorError({
+                  stage: "managed_provider_settlement",
+                  reason: "persisted transcript does not contain exactly one indexed step-finish part",
+                })
+              }
+              const pending = persisted.parts.filter((part) => part.type === "tool" && (part.state.status === "pending" || part.state.status === "running"))
+              if (pending.some((part) => !ctx.managedProviderStepToolCallIDs.has(part.callID))) {
+                managedAttempt.markUsageStopped?.()
+                return yield* new SessionSupervisorError({
+                  stage: "managed_provider_settlement",
+                  reason: "persisted provider snapshot contains unrelated unresolved tool work",
+                })
+              }
+              let receipt: ReturnType<typeof managedProviderStepFinish>
+              try {
+                receipt = managedProviderStepFinish({
+                  info: persisted.info,
+                  stepFinishPart: matchingSteps[0],
+                  stepFinishIndex: value.index,
+                })
+              } catch {
+                managedAttempt.markUsageStopped?.()
+                return yield* new SessionSupervisorError({
+                  stage: "managed_provider_settlement",
+                  reason: "persisted provider response snapshot failed strict receipt decoding",
+                })
+              }
+              const previous = managedAttempt.currentScope()
+              const settlement = yield* Effect.exit(ManagedControl.settleManagedProviderRequest({
+                authority: managedAttempt,
+                scope: previous,
+                providerRequestID: handoff.providerRequestID,
+                prepareDigest: handoff.prepareDigest,
+                dispatchDigest: handoff.dispatchDigest,
+                transportRequestDigest: handoff.requestPins.transportRequestDigest,
+                operationDigest: handoff.requestPins.operationDigest,
+                assistantEntryID: persisted.info.id,
+                responseDigest: receipt.responseDigest,
+                usageProvenance: receipt.usageProvenance,
+                stepFinishIndex: value.index,
+              }))
+              if (Exit.isFailure(settlement)) {
+                const unknown = yield* ManagedControl.markManagedProviderRequestUnknown({
+                  scope: managedAttempt.currentScope(),
+                  providerRequestID: handoff.providerRequestID,
+                  prepareDigest: handoff.prepareDigest,
+                  dispatchDigest: handoff.dispatchDigest,
+                  transportRequestDigest: handoff.requestPins.transportRequestDigest,
+                  operationDigest: handoff.requestPins.operationDigest,
+                  reasonCode: "settlement_unknown",
+                })
+                managedAttempt.acceptRefreshedScope({
+                  previous: managedAttempt.currentScope(),
+                  refreshed: unknown.managedAttempt,
+                  transition: "provider_settlement",
+                })
+                return yield* new SessionSupervisorError({
+                  stage: "managed_provider_settlement",
+                  reason: "provider response settlement is ambiguous; the exact dispatch is fenced UNKNOWN",
+                })
+              }
+              managedAttempt.acceptRefreshedScope({
+                previous,
+                refreshed: settlement.value.managedAttempt,
+                transition: "provider_settlement",
+              })
+              ctx.managedProviderDispatches.delete(value.index)
+              ctx.managedProviderStepToolCallIDs.clear()
+              }
+            }
             yield* summary
               .summarize({
                 sessionID: ctx.sessionID,
@@ -571,6 +830,32 @@ const layer = Layer.effect(
       })
 
       const halt = Effect.fn("SessionProcessor.halt")(function* (e: unknown) {
+        if (activeManagedAttempt) {
+          for (const handoff of ctx.managedProviderDispatches.values()) {
+            const previous = activeManagedAttempt.currentScope()
+            const unknown = yield* Effect.exit(ManagedControl.markManagedProviderRequestUnknown({
+              scope: previous,
+              providerRequestID: handoff.providerRequestID,
+              prepareDigest: handoff.prepareDigest,
+              dispatchDigest: handoff.dispatchDigest,
+              transportRequestDigest: handoff.requestPins.transportRequestDigest,
+              operationDigest: handoff.requestPins.operationDigest,
+              reasonCode: aborted ? "stream_interrupted_unknown" : "stream_failure_unknown",
+            }))
+            if (Exit.isSuccess(unknown)) {
+              try {
+                activeManagedAttempt.acceptRefreshedScope({
+                  previous,
+                  refreshed: unknown.value.managedAttempt,
+                  transition: "provider_settlement",
+                })
+                ctx.managedProviderDispatches.delete(handoff.stepFinishIndex)
+              } catch {
+                // Preserve the local dispatch record; recovery will inspect its durable HostKernel state.
+              }
+            }
+          }
+        }
         yield* Effect.logError("process", {
           "session.id": input.sessionID,
           messageID: input.assistantMessage.id,
@@ -604,6 +889,9 @@ const layer = Layer.effect(
           messageID: input.assistantMessage.id,
         })
         ctx.needsCompaction = false
+        ctx.managedUsageReceipts.clear()
+        ctx.managedProviderDispatches.clear()
+        ctx.managedProviderStepToolCallIDs.clear()
         ctx.shouldBreak = (yield* config.get()).experimental?.continue_loop_on_deny !== true
 
         return yield* Effect.gen(function* () {
@@ -611,11 +899,216 @@ const layer = Layer.effect(
             ctx.currentText = undefined
             ctx.reasoningMap = {}
             yield* status.set(ctx.sessionID, { type: "busy" })
-            const stream = llm.stream(streamInput)
+            const managedAttempt = streamInput.managedAttempt
+            activeManagedAttempt = managedAttempt
+            const stream = llm.stream({
+              ...streamInput,
+              ...(managedAttempt
+                ? {
+                    authorizeManagedProviderRequest: (selection) =>
+                      Effect.gen(function* () {
+                        const previous = managedAttempt.currentScope()
+                        const context = streamInput.managedContext
+                        if (!context || !context.initialSelection) {
+                          return yield* new SessionSupervisorError({
+                            stage: "managed_context",
+                            reason: "managed request has no frozen sequence-1 ContextSelection",
+                          })
+                        }
+                        const pin = managedAttempt.contextSelectionPin()
+                        if (selection.requestSequence === context.requestSequence) {
+                          if (selection.requestID !== context.requestID ||
+                            JSON.stringify(selection) !== JSON.stringify(context.initialSelection) ||
+                            pin.requestSequence !== selection.requestSequence ||
+                            pin.requestID !== selection.requestID ||
+                            pin.contextSelectionDigest !== context.contextSelectionDigest ||
+                            previous.contextSelectionDigest !== context.contextSelectionDigest) {
+                            return yield* new SessionSupervisorError({
+                              stage: "managed_context",
+                              reason: "prepared sequence-1 request differs from the HostKernel admission pin",
+                            })
+                          }
+                          return
+                        }
+                        const exit = yield* Effect.exit(ManagedControl.advanceManagedContext({
+                          scope: previous,
+                          contextSelection: selection,
+                        }))
+                        if (Exit.isFailure(exit)) {
+                          return yield* new SessionSupervisorError({
+                            stage: "managed_context",
+                            reason: "HostKernel did not admit the exact next managed provider request",
+                          })
+                        }
+                        try {
+                          managedAttempt.acceptRefreshedScope({
+                            previous,
+                            refreshed: exit.value.managedAttempt,
+                            transition: "context_selection",
+                          })
+                        } catch {
+                          return yield* new SessionSupervisorError({
+                            stage: "managed_context",
+                            reason: "HostKernel context receipt did not advance the current Attempt scope",
+                          })
+                        }
+                      }),
+                    onManagedProviderDispatch: (handoff) =>
+                      Effect.gen(function* () {
+                        const scope = managedAttempt.currentScope()
+                        const pin = managedAttempt.contextSelectionPin()
+                        if (handoff.status !== "DISPATCHING" ||
+                          !Number.isSafeInteger(handoff.stepFinishIndex) || handoff.stepFinishIndex < 0 ||
+                          handoff.contextSelection.sessionID !== streamInput.managedContext?.selectionSessionID ||
+                          handoff.contextSelection.attemptID !== scope.attemptID ||
+                          handoff.contextSelection.requestID !== pin.requestID ||
+                          handoff.contextSelection.requestSequence !== pin.requestSequence ||
+                          handoff.requestPins.requestID !== pin.requestID ||
+                          handoff.requestPins.requestSequence !== pin.requestSequence ||
+                          handoff.requestPins.contextSelectionDigest !== pin.contextSelectionDigest ||
+                          handoff.providerRequestID !== `mpr_${scope.attemptID}_${pin.requestSequence}` ||
+                          !/^blake3:[0-9a-f]{64}$/.test(handoff.prepareDigest) ||
+                          !/^blake3:[0-9a-f]{64}$/.test(handoff.dispatchDigest)) {
+                          return yield* new SessionSupervisorError({
+                            stage: "managed_provider_dispatch",
+                            reason: "HostKernel dispatch handoff does not match the current managed ContextSelection and Attempt",
+                          })
+                        }
+                        if (ctx.managedProviderDispatches.has(handoff.stepFinishIndex)) {
+                          return yield* new SessionSupervisorError({
+                            stage: "managed_provider_dispatch",
+                            reason: "a provider dispatch already occupies this persisted step-finish index",
+                          })
+                        }
+                        ctx.managedProviderDispatches.set(handoff.stepFinishIndex, handoff)
+                      }),
+                    beforeManagedEffects: ({ stepFinishIndex, usageProvenance, finishReason, cost, tokens, calls }) =>
+                      Effect.gen(function* () {
+                        const previous = managedAttempt.currentScope()
+                        const handoff = ctx.managedProviderDispatches.get(stepFinishIndex)
+                        const fenceUnknown = Effect.fn("SessionProcessor.fenceUnknownManagedProviderStep")(function* (reasonCode: string) {
+                          if (!handoff) return false
+                          const scope = managedAttempt.currentScope()
+                          const exit = yield* Effect.exit(ManagedControl.markManagedProviderRequestUnknown({
+                            scope,
+                            providerRequestID: handoff.providerRequestID,
+                            prepareDigest: handoff.prepareDigest,
+                            dispatchDigest: handoff.dispatchDigest,
+                            transportRequestDigest: handoff.requestPins.transportRequestDigest,
+                            operationDigest: handoff.requestPins.operationDigest,
+                            reasonCode,
+                          }))
+                          if (Exit.isFailure(exit)) return false
+                          try {
+                            managedAttempt.acceptRefreshedScope({
+                              previous: scope,
+                              refreshed: exit.value.managedAttempt,
+                              transition: "provider_settlement",
+                            })
+                            return true
+                          } catch {
+                            return false
+                          }
+                        })
+                        if (!handoff || handoff.stepFinishIndex !== stepFinishIndex) {
+                          ctx.managedUsageReceipts.set(stepFinishIndex, null)
+                          ctx.managedUsageStopped = true
+                          managedAttempt.markUsageStopped?.()
+                          return "STOPPED" as const
+                        }
+                        const exit = yield* Effect.exit(
+                          ManagedControl.recordAttemptUsage({
+                            scope: previous,
+                            assistantMessageID: ctx.assistantMessage.id,
+                            stepFinishIndex,
+                            usageProvenance,
+                          }),
+                        )
+                        if (Exit.isFailure(exit)) {
+                          ctx.managedUsageReceipts.set(stepFinishIndex, null)
+                          ctx.managedUsageStopped = true
+                          managedAttempt.markUsageStopped?.()
+                          yield* fenceUnknown("usage_accounting_unknown")
+                          yield* Effect.logError("managed usage could not be accounted before Guard admission", {
+                            sessionID: ctx.sessionID,
+                            messageID: ctx.assistantMessage.id,
+                            stepFinishIndex,
+                            cause: Cause.pretty(exit.cause),
+                          })
+                          return "STOPPED" as const
+                        }
+                        try {
+                          managedAttempt.acceptRefreshedScope({
+                            previous,
+                            refreshed: exit.value.managedAttempt,
+                            transition: "usage_accounting",
+                          })
+                        } catch (error) {
+                          ctx.managedUsageReceipts.set(stepFinishIndex, null)
+                          ctx.managedUsageStopped = true
+                          managedAttempt.markUsageStopped?.()
+                          yield* fenceUnknown("usage_scope_unknown")
+                          yield* Effect.logError("managed usage receipt scope was stale before Guard admission", {
+                            sessionID: ctx.sessionID,
+                            messageID: ctx.assistantMessage.id,
+                            stepFinishIndex,
+                            error,
+                          })
+                          return "STOPPED" as const
+                        }
+                        ctx.managedUsageReceipts.set(stepFinishIndex, exit.value)
+                        ctx.managedUsageStopped = exit.value.status === "STOPPED"
+                        if (ctx.managedUsageStopped) managedAttempt.markUsageStopped?.()
+                        const persisted = yield* Effect.exit(persistAndSettleManagedStep({
+                          stepFinishIndex,
+                          finishReason,
+                          cost,
+                          tokens,
+                          usageProvenance,
+                          usageReceipt: exit.value,
+                          calls,
+                          authority: managedAttempt,
+                        }))
+                        if (Exit.isFailure(persisted)) {
+                          ctx.managedUsageStopped = true
+                          managedAttempt.markUsageStopped?.()
+                          yield* fenceUnknown("provider_settlement_unknown")
+                          yield* Effect.logError("managed provider step could not be durably persisted and settled before Guard admission", {
+                            sessionID: ctx.sessionID,
+                            messageID: ctx.assistantMessage.id,
+                            stepFinishIndex,
+                            cause: Cause.pretty(persisted.cause),
+                          })
+                          return "STOPPED" as const
+                        }
+                        if (exit.value.status === "STOPPED") {
+                          for (const call of calls) {
+                            const existing = yield* readToolCall(call.toolCallID)
+                            if (existing?.part.state.status === "pending") {
+                              const now = Date.now()
+                              yield* session.updatePart({
+                                ...existing.part,
+                                state: {
+                                  status: "error",
+                                  input: call.arguments,
+                                  error: "Managed Attempt budget is exhausted; the guarded action was not dispatched",
+                                  time: { start: now, end: now },
+                                },
+                              })
+                              yield* settleToolCall(call.toolCallID)
+                            }
+                          }
+                          return "STOPPED" as const
+                        }
+                        return exit.value.status
+                      }),
+                  }
+                : {}),
+            })
 
             yield* stream.pipe(
-              Stream.tap((event) => handleEvent(event)),
-              Stream.takeUntil(() => ctx.needsCompaction),
+              Stream.tap((event) => handleEvent(event, streamInput.managedAttempt)),
+              Stream.takeUntil(() => ctx.needsCompaction || ctx.managedUsageStopped),
               Stream.runDrain,
             )
           }).pipe(
@@ -651,7 +1144,13 @@ const layer = Layer.effect(
           )
 
           if (ctx.needsCompaction) return "compact"
-          if (ctx.blocked || ctx.assistantMessage.error) return "stop"
+          // Rust durably marks the managed Attempt STOPPED when its token/cost
+          // ceiling is reached or usage cannot be accounted safely. The stream
+          // has already been cut at that step-finish, so do not re-enter the
+          // prompt loop and start another provider request under the stopped
+          // Attempt. Returning "continue" here would turn the accounting
+          // boundary into a local UI hint instead of a dispatch fence.
+          if (ctx.blocked || ctx.assistantMessage.error || ctx.managedUsageStopped) return "stop"
           return "continue"
         })
       })
@@ -663,6 +1162,7 @@ const layer = Layer.effect(
         updateToolCall,
         completeToolCall,
         process,
+        prepareManagedRequest: (streamInput) => llm.prepareManagedRequest(streamInput),
       } satisfies Handle
     })
 

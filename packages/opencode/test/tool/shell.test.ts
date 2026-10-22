@@ -122,6 +122,43 @@ describe("tool.shell Guard boundary", () => {
     // machine; the denials under test are immediate once the layer is built.
     { timeout: 20_000 },
   )
+
+  // C13/PTY-001 negative: `Permission` auto-accept/always and legacy `ctx.ask` are not
+  // authorization. ShellTool must require a Rust-issued one-use lease and must never
+  // consult the prompt surface, even when the Permission service would answer allow.
+  it.live("permission auto-accept/always and ctx.ask cannot authorize a shell call", () =>
+    Effect.gen(function* () {
+      const directory = yield* tmpdirScoped()
+      const marker = path.join(directory, "shell-permission-was-launched")
+      let asked = 0
+      const autoAccept: Tool.Context = {
+        ...context,
+        effect: {
+          challengeID: "challenge_auto_accept",
+          effectID: "effect_auto_accept",
+          target: directory,
+          resource: "shell",
+          existed: false,
+        },
+        // Stands in for a Permission rule that auto-accepts (or persists "always").
+        ask: () => Effect.sync(() => { asked++ }).pipe(Effect.asVoid),
+      }
+      // A well-formed but client-supplied lease must not be trusted locally either; only
+      // the real location-scoped runtime can present a kernel-issued lease.
+      const forgedLease: Tool.Context = {
+        ...autoAccept,
+        extra: { guardedLease: { effectID: "effect_forged", capabilityLeaseDigest: `blake3:${"a".repeat(64)}` } },
+      }
+
+      const permissionError = yield* runIn(directory, fail({ command: commandThatWouldLaunch(marker) }, autoAccept))
+      expect(permissionError.message).toContain("Shell denied: missing Rust Guard lease")
+      const forgedError = yield* runIn(directory, fail({ command: commandThatWouldLaunch(marker) }, forgedLease))
+      expect(forgedError.message).toContain("Shell denied: missing authenticated principal")
+      expect(asked).toBe(0)
+      expect(existsSync(marker)).toBe(false)
+    }),
+    { timeout: 20_000 },
+  )
 })
 
 // C13/PTY-001 live acceptance: the real host kernel, the app's location graph and an

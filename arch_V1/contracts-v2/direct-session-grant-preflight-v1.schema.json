@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "horizon://schemas/direct-session-grant-preflight-v1",
+  "title": "DirectSessionGrantPreflightV1",
+  "description": "Private effects.v1 advisory preflight for one complete ToolBatch. It cannot authorize an effect, reserve budget, consume grant capacity, issue a lease, or dispatch.",
+  "oneOf": [
+    { "$ref": "#/$defs/request" },
+    { "$ref": "#/$defs/response" }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^blake3:[a-f0-9]{64}$"
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sessionID", "locationID", "batchID", "challengeIDs"],
+      "properties": {
+        "sessionID": { "$ref": "#/$defs/id" },
+        "locationID": { "$ref": "#/$defs/id" },
+        "batchID": { "$ref": "#/$defs/id" },
+        "challengeIDs": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/id" },
+          "description": "The complete ordered set of challenges returned for this batch."
+        }
+      }
+    },
+    "response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["batchID", "challengeSetDigest", "status"],
+      "properties": {
+        "batchID": { "$ref": "#/$defs/id" },
+        "challengeSetDigest": { "$ref": "#/$defs/digest" },
+        "status": { "enum": ["eligible", "prompt_required"] }
+      }
+    }
+  },
+  "x-horizon-validation": [
+    "request-runs-only-through-authenticated-effects-v1-envelope-with-principal-and-owner-fence-outside-request-body",
+    "HostKernel-resolves-every-challenge-from-its-live-retained-batch-and-rejects-missing-duplicate-reordered-foreign-or-stale-members",
+    "challengeSetDigest-is-BLAKE3-of-domain-horizoncode.direct-grant-challenge-set.v1-NUL-followed-by-canonical-MessagePack-of-the-ordered-challengeIDs-array-and-is-only-for-correlation",
+    "HostKernel-independently-resolves-and-validates-every-retained-challenge-binding-against-authenticated-principal-owner-fence-session-location-batch-and-unleased-state",
+    "eligible-requires-a-live-direct-session-or-workspace-grant-that-matches-every-challenge-and-current-principal-session-location-workspace-root-backend-guarantee-policy-and-resource-scope-pin",
+    "managed-attempts-never-use-direct-session-grants-and-return-prompt_required",
+    "preflight-is-read-only-and-does-not-reserve-budget-consume-grant-capacity-mutate-journals-extend-ttl-issue-approval-or-lease-or-authorize-dispatch",
+    "Core-skips-user-prompts-only-on-an-exact-eligible-response-matching-the-request-batchID-and-host-returned-challengeSetDigest",
+    "following-atomic-approval-set-resolution-revalidates-the-entire-set-and-current-authority-reserves-usage-and-issues-one-use-leases-before-dispatch",
+    "preflight-errors-are-treated-as-prompt_required-and-never-as-eligible"
+  ]
+}

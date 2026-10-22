@@ -1,16 +1,43 @@
 {
   "selection": {
     "schemaVersion": 1,
+    "lane": "direct",
     "sessionID": "ses_01J9ABCDEF0123456789ABCDEFGH",
+    "requestID": "ctxreq_01J9ABCDEF0123456789ABCDEFGH",
     "mode": "conversation_slice",
     "sourceRevision": "12",
     "sources": [
       {
         "kind": "session-message",
-        "messageID": "msg_01J9ABCDEF0123456789ABCDEFGH",
-        "contentDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        "sourceID": "msg_01J9ABCDEF0123456789ABCDEFGH",
+        "sourceRevision": "12",
+        "contentDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "sourceAuthority": "session-store",
+        "trust": "user",
+        "included": true,
+        "inclusionReason": "history"
+      },
+      {
+        "kind": "provider-input",
+        "sourceID": "ctxreq_01J9ABCDEF0123456789ABCDEFGH",
+        "sourceRevision": "12",
+        "contentDigest": "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "sourceAuthority": "core-prompt-compiler",
+        "trust": "mixed",
+        "included": true,
+        "inclusionReason": "current_request"
+      },
+      {
+        "kind": "agent-profile",
+        "sourceID": "profile_default",
+        "sourceRevision": "1",
+        "contentDigest": "blake3:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "sourceAuthority": "core-config",
+        "trust": "system",
+        "included": true,
+        "inclusionReason": "profile"
       }
     ]
   },
-  "digest": "blake3:803bf76abcadc28b4792b0fe217267f753a7fc05deefa86aa7cb2e665dae5f5b"
+  "digest": "blake3:0f0a6f7e0126bb293617b867dc8701a60631fea93364a89fe37ef89cd6f28db7"
 }

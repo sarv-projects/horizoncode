@@ -758,6 +758,10 @@ describe("SessionRunnerLLM", () => {
   it.effect("denies the entire ToolBatch before settling any sibling when Rust Guard rejects it", () =>
     Effect.gen(function* () {
       yield* setup
+      // Model the eligible first-party WriteTool registration; this test targets
+      // HostKernel's explicit denial after complete batch admission, not the
+      // separate registry policy that withholds unapproved write tools.
+      writePermissionAllowed = true
       executions.length = 0
       const session = yield* SessionV2.Service
       yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Write and echo" }), resume: false })
@@ -943,6 +947,9 @@ describe("SessionRunnerLLM", () => {
   it.effect("denies the complete batch when Rust effect preparation is unavailable", () =>
     Effect.gen(function* () {
       yield* setup
+      // Keep the first-party write registration available so this fixture reaches
+      // the missing Rust effect owner and verifies whole-batch fail-closed behavior.
+      writePermissionAllowed = true
       executions.length = 0
       const session = yield* SessionV2.Service
       yield* session.prompt({

@@ -7,7 +7,7 @@ it("keeps upgrade unavailable without querying or invoking the installer", async
   const method = spyOn(Installation, "method").mockResolvedValue("npm")
   const installerUpgrade = spyOn(Installation, "upgrade").mockResolvedValue(undefined)
   try {
-    await expect(UpgradeCommand.handler({ target: "9.9.9" })).rejects.toMatchObject({
+    await expect(UpgradeCommand.handler()).rejects.toMatchObject({
       message: "Installation upgrades are unavailable in this release.",
     })
     await automaticUpgrade()

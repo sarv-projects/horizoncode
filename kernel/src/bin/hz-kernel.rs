@@ -7,7 +7,10 @@ mod linux {
     use horizoncode_kernel::host_kernel::HostKernel;
     use horizoncode_kernel::protocol::{
         AuthenticatedPrincipalV1, AuthenticatedRequestContextV1, FEATURE_EFFECTS_MULTI_CALL,
-        FEATURE_EFFECTS_V2, FEATURE_REPO_INTEL_READ_CONTEXT_V1, FrameFence, HandshakePolicy,
+        FEATURE_EFFECTS_V2, FEATURE_REPO_INTEL_READ_CONTEXT_V1, FEATURE_WEB_SEARCH_CASCADE_V1,
+        FEATURE_ARTIFACT_READ_CONTEXT_V1,
+        FEATURE_RESOURCE_POLICY_INGRESS_V1,
+        FrameFence, HandshakePolicy,
         RpcControlV1, RpcMessageV1, RpcOutcomeV1, read_message, write_message,
     };
     use horizoncode_kernel::request_cancellation::{ActiveRequest, RequestCancellationRegistry};
@@ -25,6 +28,7 @@ mod linux {
     #[derive(Debug)]
     struct Options {
         state_dir: PathBuf,
+        codemode_helper_root: Option<PathBuf>,
         socket: PathBuf,
         host_exe: PathBuf,
         nonce: String,
@@ -79,13 +83,14 @@ mod linux {
                 .ok_or("arguments must start with --")?;
             if !matches!(
                 key,
-                "state-dir" | "socket" | "host-exe" | "nonce" | "incarnation"
+                "state-dir" | "codemode-helper-root" | "socket" | "host-exe" | "nonce" | "incarnation"
             ) || value.is_empty()
                 || values.insert(key.to_owned(), value.to_owned()).is_some()
             {
                 return Err("unknown, duplicate, or empty hz-kernel argument".to_owned());
             }
         }
+        let codemode_helper_root = values.remove("codemode-helper-root").map(PathBuf::from);
         let mut take = |key: &str| {
             values
                 .remove(key)
@@ -93,6 +98,7 @@ mod linux {
         };
         let options = Options {
             state_dir: take("state-dir")?.into(),
+            codemode_helper_root,
             socket: take("socket")?.into(),
             host_exe: take("host-exe")?.into(),
             nonce: take("nonce")?,
@@ -102,6 +108,7 @@ mod linux {
             || !options.state_dir.is_absolute()
             || !options.socket.is_absolute()
             || !options.host_exe.is_absolute()
+            || options.codemode_helper_root.as_ref().is_some_and(|path| !path.is_absolute())
             || options.nonce.len() > 256
             || options.incarnation.is_empty()
             || options.incarnation.len() > 256
@@ -143,7 +150,19 @@ mod linux {
         // Load durable Location bindings and reconcile each matching EffectHost database
         // before accepting Core or announcing READY; UNKNOWN is retained unless target
         // evidence proves the after-state.
-        let mut host = HostKernel::open(&canonical_state)?;
+        let code_mode_root = options
+            .codemode_helper_root
+            .as_deref()
+            .map(fs::canonicalize)
+            .transpose()
+            .map_err(|error| format!("CodeMode helper installation root: {error}"))?;
+        if code_mode_root.as_deref() != options.codemode_helper_root.as_deref() {
+            return Err("CodeMode helper installation root must be canonical".to_owned());
+        }
+        let mut host = HostKernel::open_with_code_mode_install_root(
+            &canonical_state,
+            code_mode_root.as_deref(),
+        )?;
         // Worker intents/process leases share the host supervisor epoch. Replay and
         // conservative UNKNOWN recovery must finish before this process can report READY.
         host.open_worker_owner(lease.epoch())?;
@@ -174,7 +193,14 @@ mod linux {
             // read-only HostKernel grant. Offer it only when the same enforced
             // OS backend required by Guard is available on this connection.
             supported_features.insert(FEATURE_REPO_INTEL_READ_CONTEXT_V1.to_owned());
+            // The fixed no-key route cascade uses the already recovered EffectHost
+            // HTTP journal and requires the same enforced Guard backend.
+            supported_features.insert(FEATURE_WEB_SEARCH_CASCADE_V1.to_owned());
         }
+        if cfg!(target_os = "linux") {
+            supported_features.insert(FEATURE_ARTIFACT_READ_CONTEXT_V1.to_owned());
+        }
+        supported_features.insert(FEATURE_RESOURCE_POLICY_INGRESS_V1.to_owned());
         let policy = HandshakePolicy {
             min_protocol: 1,
             max_protocol: 1,
@@ -183,7 +209,7 @@ mod linux {
             expected_host_process_incarnation: Some(options.incarnation.clone()),
             owner_epoch: lease.epoch(),
         };
-        let (effects_negotiated, repo_intel_negotiated) =
+        let (effects_negotiated, repo_intel_negotiated, web_search_cascade_negotiated, artifact_reads_negotiated, resource_policy_negotiated) =
             match serve_authenticated_unix_hello(&mut stream, &policy)
                 .map_err(|error| format!("negotiate host hello: {error}"))?
             {
@@ -198,6 +224,18 @@ mod linux {
                         .enabled_features
                         .iter()
                         .any(|feature| feature == FEATURE_REPO_INTEL_READ_CONTEXT_V1),
+                    result
+                        .enabled_features
+                        .iter()
+                        .any(|feature| feature == FEATURE_WEB_SEARCH_CASCADE_V1),
+                    result
+                        .enabled_features
+                        .iter()
+                        .any(|feature| feature == FEATURE_ARTIFACT_READ_CONTEXT_V1),
+                    result
+                        .enabled_features
+                        .iter()
+                        .any(|feature| feature == FEATURE_RESOURCE_POLICY_INGRESS_V1),
                 ),
                 HelloOutcome::Rejected(_) => return Err("Core hello was rejected".to_owned()),
             };
@@ -221,10 +259,15 @@ mod linux {
         // services ready. Effects remain disabled if either that recovery or the OS
         // confinement preflight did not succeed.
         host.set_effects_enabled(guard_execution_ready && effects_negotiated);
+        host.set_web_search_cascade_enabled(
+            guard_execution_ready && effects_negotiated && web_search_cascade_negotiated,
+        );
         // Negotiation is connection-scoped. The dispatcher still validates the
         // authenticated ServerAuth subject, registered Location owner, current
         // files.read grant, generation pin and expiry before each read.
         host.set_repo_intel_enabled(guard_execution_ready && repo_intel_negotiated);
+        host.set_artifact_reads_enabled(artifact_reads_negotiated);
+        host.set_resource_policy_enabled(resource_policy_negotiated);
         send_status(&mut stream, &gate)?;
 
         // The negotiated HelloResult echoes the Core process incarnation that

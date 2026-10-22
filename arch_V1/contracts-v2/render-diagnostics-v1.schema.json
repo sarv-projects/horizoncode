@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "horizon://schemas/render-diagnostics-v1",
+  "title": "RenderDiagnosticsV1",
+  "description": "Ephemeral UI render diagnostics bound to UiStreamEventV2 (A-V2-30 §12.16).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "streamEventRef",
+    "paintReason",
+    "dirtyEpoch",
+    "queueLostCount"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "streamEventRef": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "paintReason": { "enum": ["initial", "stream_delta", "resize", "theme", "focus", "recovery"] },
+    "dirtyEpoch": { "$ref": "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64" },
+    "dirtyRegionCount": { "type": "integer", "minimum": 0, "maximum": 65536 },
+    "queueLostCount": { "type": "integer", "minimum": 0, "maximum": 65536 },
+    "toolTailBytes": { "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64" },
+    "fidelity": { "enum": ["full", "head_tail_sample", "failed"] }
+  }
+}

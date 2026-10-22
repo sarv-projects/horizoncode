@@ -1,8 +1,10 @@
 # 45. V1 event & flow atlas — comprehensive module diagram set (derived synthesis)
 
-Status: **DERIVED, NON-NORMATIVE SYNTHESIS** for final-V1 review, onboarding and acceptance planning. This document **depends on** the `arch_V1` normative owners listed in `README.md`. Every event name, state name and step below is transcribed from an owning section; if any diagram here conflicts with an owner, **the owner wins**. This file must never be cited as authority, and adding it changes no feature status (`DESIGNED → CODE_PRESENT → WIRED → TESTED → VERIFIED → RELEASED` unchanged). Generation date: 2026-10-18.
+Status: **DERIVED, NON-NORMATIVE SYNTHESIS** for final-V1 review, onboarding and acceptance planning. This document **depends on** the `arch_V1` normative owners listed in `README.md`. Every event name, state name and step below is transcribed from an owning section; if any diagram here conflicts with an owner, **the owner wins**. This file must never be cited as authority, and adding it changes no feature status (`DESIGNED → CODE_PRESENT → WIRED → TESTED → VERIFIED → RELEASED` unchanged). Generation date: 2026-10-22.
 
 Scope: final V1 (Linux/WSL-first CLI/TUI). Post-V1 surfaces appear only where explicitly marked `[post-V1]`.
+Reconciled: 2026-10-22. This is a target-flow map with explicit source-status notes, not
+an implementation report. Every claim below remains subordinate to its normative owner.
 
 How to use: pick the module, read the owning topic document, then use the diagram here as the mental model for implementation/testing. The coverage matrix (§45.24) proves every numbered architecture document is accounted for; the test map (§45.23) links modules to §32 acceptance families.
 
@@ -26,7 +28,7 @@ How to use: pick the module, read the owning topic document, then use the diagra
 | §45.13 | Terminal/PTY & process ownership | 33.7, 37.13, 13.6 | 32.7, 32.20 |
 | §45.14 | Skills, hooks, MCP, plugins | 29.6–29.8, 5.9 | 32.13 |
 | §45.15 | Automations | 03.14, 11.15, 37.10, 31.12 | 32.18 |
-| §45.16 | Streaming UI, artifacts, analytics | 31.1–31.12, 37.11–37.12, 12.10 | 32.16, 32.17 |
+| §45.16 | Streaming UI, artifacts, analytics | 31.1–31.22, 16.21, 37.11–37.12, 12.10 | 32.16, 32.17, 32.48 |
 | §45.17 | Recovery, reconciliation, cancellation | 03.15, 04.7–04.8, 11.1, 11.20 | 32.19 |
 | §45.18 | Checkpoint / rewind | 14.19, 31.18, 16.18, `DEC-V1-25` | 32.19 |
 | §45.19 | Resource-aware concurrency (A-V2-30) | 11.20, 18.17–18.18, 21.10–21.11, 29.18, 03.20 | 32.32, 32.37 |
@@ -35,6 +37,8 @@ How to use: pick the module, read the owning topic document, then use the diagra
 | §45.22 | Event catalog quick reference | 04.3–04.5 | — |
 | §45.23 | Acceptance/test map | 32 | — |
 | §45.24 | Coverage matrix (all documents) | README index | — |
+| §45.29 | V1 competitive adaptation map | 10.18, 17 (`DEC-V1-35`), 30.25, 32.47, 42.21 | §32.47 |
+| §45.30 | Models.dev context compile bridge | 30.26, 37.14, 37.30, 16, 31 | §32.10 CX-014..021, CTX-* |
 
 ---
 
@@ -83,11 +87,12 @@ flowchart TD
     GUARD --> EH
     EH --> OLOG
     EH --> WORKERS
+    EH --> MCPSRV
+    MCPSRV --> MCPR
     EH --> RES
     CORE -->|"read-only scoped calls"| ADAPT
-    ADAPT --> SEARCH
-    TODO --> MCPR
-    TODO --> BRD
+    EH -->|"fixed, Guarded V1 route"| SEARCH
+    EH -.->|"post-V1 only; unavailable in V1"| BRD
     OLOG -->|"bounded projection"| TUI
 ```
 
@@ -159,6 +164,11 @@ Rules: private transport is authenticated local IPC, bounded length-prefixed Mes
 
 ## 45.5 Direct coding turn + ToolBatch (owner: 03.2, 15.2, 15.20, 11.6)
 
+Ordinary direct CLI/TUI prompts and continuation run through Core `SessionRunner`. Each direct
+provider request is pinned by Core `ContextService` + `SessionStore` under DEC-V1-32 (§17.26);
+managed provider requests use the separate `SessionPrompt` adapter and HostKernel binding to a
+live Attempt. Shared stream/tool contracts do not merge the transcript or effect authorities.
+
 ```mermaid
 sequenceDiagram
     participant U as User (CLI/TUI)
@@ -166,11 +176,17 @@ sequenceDiagram
     participant P as Provider transport
     participant G as Rust Guard
     participant X as ExecutionHost
-    participant L as OwnerLog + Session store
+    participant S as Core SessionStore
+    participant L as Rust OwnerLog
+    participant A as ArtifactStore
     U->>C: input
-    C->>C: compile bounded context; pin provider/model/harness/tool-registry generation; freeze spend cap
-    C->>P: provider request with hard byte/call/finish deadlines
+    C->>C: authenticate explicit prompt/continue; resolve active AgentProfileV2 and selected provider/model/account/harness and policy
+    C->>C: compile exact bounded context; freeze provider input and digest
+    C->>S: atomically persist direct ContextSelection, route/policy pins and PINNED request
+    C->>S: persist DISPATCHING before provider bytes can leave
+    C->>P: exact frozen request on exact selected route; no fallback
     P-->>C: stream text/thinking/tool calls (untrusted)
+    C->>S: atomically persist canonical assistant entry, usage and SETTLED state
     C->>C: collect COMPLETE batch; size-check; normalize IDs; reject on schema/unknown effect/oversize/unfinished
     alt read-only calls only
         C-->>U: canonical tool-result parts + answer
@@ -181,6 +197,9 @@ sequenceDiagram
         G->>X: authorized execution
         X-->>L: bounded observation; receipt or UNKNOWN
         L-->>C: receipt reference
+        X->>A: persist output artifact with direct Session/request/tool-call/effect receipt scope
+        A-->>C: immutable artifact ref (digest, generation, fidelity, redaction)
+        C->>S: persist Session-bound artifact reference; render bounded preview/search only
         C-->>U: tool-result Part + derived status/evidence
     end
 ```
@@ -200,7 +219,7 @@ stateDiagram-v2
     EXECUTING --> UNKNOWN_RECONCILIATION
 ```
 
-No effectful member executes before the complete batch validates and is admitted. If a partly executed parallel batch fails, each admitted effect settles independently — no claimed atomic rollback of external operations. UNKNOWN can never be converted to success by model text. Hard current bounds (source-verified in §15.20): 32 calls, 256 KiB per-call arguments, 512 KiB total, 16,384 delta chunks, 10-minute max stream.
+Direct inference authorization covers only the bounded model continuation for the authenticated user turn; it does not authorize any tool effect. The direct request journal is owned by Core SessionStore, not Rust OwnerLog, and exact retries reuse the existing state. A crash after durable `DISPATCHING` without the exact settled assistant response leaves `UNKNOWN` and is never automatically resent; a user continuation starts a new request ID. Managed requests instead require the live Attempt, HostKernel context receipt and managed provider-dispatch lifecycle. No per-round-trip prompt is added for the ordinary direct model/tool loop. No effectful member executes before the complete batch validates and is admitted. If a partly executed parallel batch fails, each admitted effect settles independently — no claimed atomic rollback of external operations. UNKNOWN can never be converted to success by model text. Hard current bounds (source-verified in §15.20): 32 calls, 256 KiB per-call arguments, 512 KiB total, 16,384 delta chunks, 10-minute max stream.
 
 ---
 
@@ -328,14 +347,35 @@ stateDiagram-v2
 
 Journey (§3.4): draft objective/criteria/budget → reviewable Goal/SpecVersion with zero effects → user accepts SpecVersion → Rust initializes Run + dependency DAG → scheduler reserves resources/workspaces and dispatches bounded Attempts → all effects use the same Guard as direct mode → integration produces a known final revision → independent verifier checks criteria/evidence against that revision → Run terminal state. Causal ordering (§11.20): spec acceptance precedes Run admission; predecessor trusted PASS precedes dependent READY; Guard approval precedes lease claim; process exit does not imply effect settlement; all receipts and final-revision evidence precede Run SUCCEEDED.
 
+Managed model requests have an additional request-scoped durable subflow. Core compiles the
+exact prepared provider input and ContextSelection on the reserved child workspace before seq1
+Attempt admission; the same immutable prepared object continues through claim/consume. For each
+request, HostKernel stores `managed_context_advanced` when the model-visible source set changes,
+then the existing OwnerLog binds the provider route request through
+`managed_provider_request_prepared` → `managed_provider_request_dispatching` →
+`managed_provider_request_settled` or `managed_provider_request_unknown`. `begin` is the only
+one-use send authority and requires the guarded fixed-route transport; exact replay returns no
+send authorization. A crash after DISPATCHING becomes UNKNOWN and cannot replay. See §37.22.
+The current source has no Guarded managed-provider transport, so this lifecycle is normative
+and managed network dispatch remains unavailable. After the final assistant entry is durably
+reloaded, belongs to the current user message, has a final finish reason, and has no remaining
+tool work, Core may request `managed_provider.complete_turn` using the exact latest settlement
+retained by its live Attempt authority. HostKernel verifies the exact settled provider request,
+assistant entry, response and usage digests, live owner epoch, and absence of pending provider or
+effect work before persisting completion; an intermediate tool-call response cannot complete a
+turn or authorize follow-up. This source path remains unverified and unavailable until the
+Guarded transport and recovery acceptance pass.
+
 ---
 
 ## 45.8 Subagents and DAG workers (owner: 03.5, 29.5, 29.17–29.18, 21.11)
 
 Direct-session delegation and managed DAG workers share profiles, bounded resource
 admission and Guarded effects, but have different owners and completion meaning. A direct
-child has its own Core Session and never needs a Goal; a managed child is attached to an
-accepted SpecVersion Task/Attempt and only Rust plus the independent verifier can settle it.
+child has its own Core Session and never needs a Goal; direct fan-out results are independent
+candidate results and do not participate in managed dependency settlement or aggregate PASS.
+A managed child is attached to an accepted SpecVersion Task/Attempt and only Rust plus the
+independent verifier can settle it.
 Both use one `SubagentDeliveryV1` envelope tagged `direct_session` or `managed_attempt`;
 the lane authority is bound as specified in §§12.11/37.9, and its digest does not replace
 authenticated owner lookup or live policy/Attempt validation.
@@ -385,6 +425,8 @@ sequenceDiagram
     Note over K: downstream READY only after trusted PASSED; late child cannot overwrite newer revision
 ```
 
+Current implementation admits one coding Task per Run. Under DEC-V1-31 this is the prerequisite managed vertical, not final V1 scope: bounded managed DAG dispatch and aggregate settlement are also required after that vertical passes acceptance. Keep multi-Task dispatch unavailable until per-Task exact-revision verification, conflict-safe workspace leases, replay/cancel/UNKNOWN recovery and aggregate Run settlement pass their acceptance. Direct Core child Sessions remain a separate lane and cannot satisfy managed Task evidence.
+
 Invariants (§29.18, §21.11): exactly one authoritative Task revision at a time; every task has finite attempt/deadline/depth/token bounds; descendant capability grant = intersection(parent grant, policy, consent, support, task subset) — never derived from model text; parallel write scopes either disjoint or serialized by workspace leases; “unknown write set” counts as conflicting. Worker is not scheduler: agents may propose graph changes but never commit task transitions or acceptance.
 
 Worker/lease machines (§11.5, §21.11): WorkerExecution `RESERVED → STARTING → READY → BUSY → IDLE → RELEASED`; delegated dispatch `PREPARED → STARTING → RUNNING → RETURNED | FAILED | CANCELLED | UNKNOWN`. `AcquireResourceLease` reserves capacity atomically with workspace lease and one Attempt identity; durable append wins before any process spawn; release only after observed process-tree exit, artifact flush and effect reconciliation.
@@ -406,7 +448,17 @@ flowchart TD
     G --> H["Continue with the SAME pinned model — no silent switch"]
 ```
 
-ContextLedger exposes the model-visible plan: entry kind, source ref/revision, trust class, exact/estimated/unknown tokens, inclusion reason, protection, cache class, digest. The context bar shows absolute tokens where known, percentage of window, exact vs estimated, and what the next cleanup would remove. Canonical history is never modified by pressure handling.
+Target ContextLedger exposes the model-visible plan: entry kind, source ref/revision, trust class, exact/estimated/unknown tokens, inclusion reason, protection, cache class, digest. The context bar shows absolute tokens where known, percentage of window, exact vs estimated, and what the next cleanup would remove. Canonical history is never modified by pressure handling. Current direct ContextSelection pins a bounded recent-message reference set; managed ContextSelection pins an already-prepared request. Neither is the complete model-aware retrieval and pressure-recovery pipeline in §30.2/30.21. The pure ledger compiler is source-present; exact payload capture, lane integration, UI event/rendering and acceptance remain implementation work.
+
+For a normalized provider request, Core compiles the exact request-bound ContextLedger and emits
+`session.context_ledger` on the existing ephemeral Session stream before transport dispatch.
+The event is bound to request ID/source generation, contains only the typed ledger plus digest,
+and is rendered by the TUI context bar; it is not a second event store or authority source.
+Managed capture requires the live HostKernel ContextSelection digest. Direct capture requires
+the exact Core ContextSelection and workspace source revision for that same request; if either
+lane cannot supply those pins, it emits no ledger and reports the view unavailable rather than
+inventing revision, token, or provenance values. Reconnect may use the active request's bounded
+in-memory projection, otherwise the next request supplies the next ledger.
 
 ---
 
@@ -428,7 +480,7 @@ sequenceDiagram
     A->>A: inspect diff/evidence; managed mode verifies criteria
 ```
 
-RepoIntel pipeline (§30.7): manifest discovery → language/framework/build/test detection → file inventory → tree-sitter symbols → persistent lexical/symbol index → on-demand LSP enrichment → optional embeddings only when explicitly enabled. Workspace/Git stays canonical; the index is derived and rebuildable.
+Target RepoIntel pipeline (§30.7): manifest discovery → language/framework/build/test detection → file inventory → structural symbols → persistent lexical/symbol index → on-demand LSP enrichment → optional embeddings only when explicitly enabled. Current source has lexical RepoIntel; parser-backed tree/detect and structural symbol routes remain unavailable pending their authenticated implementation and acceptance. Workspace/Git stays canonical; the index is derived and rebuildable.
 
 ```mermaid
 stateDiagram-v2
@@ -477,33 +529,48 @@ sequenceDiagram
     participant M as Model / User
     participant B as WebSearchBroker
     participant S as Settings route list
+    participant G as Guard / ExecutionHost
     participant P as Provider route
     M->>B: web.search(query)
     B->>B: validate query / privacy / domain policy
     B->>S: resolve enabled ordered cascade (built-in default + enabled BYO-key routes)
+    B->>G: authorize aggregate route plan, query digest and budget
+    G-->>B: DENIED / NEEDS_APPROVAL / admitted fixed-route authority
     loop enabled routes in order
-        B->>P: bounded request
+        B->>G: dispatch exact next enabled route with one-use attempt
+        G->>P: bounded request through the fixed SecretBroker sender
         alt success
-            P-->>B: results + provider/route/auth/cost/freshness provenance
+            P-->>G: results + provider/route/auth/cost/freshness observation
+            G-->>B: observation + durable receipt
         else auth 4xx (401/403/407)
-            P-->>B: route-local failure + status; no same-route retry
-            B->>P: next explicitly enabled route
-        else timeout / rate-limit / empty / 5xx
-            P-->>B: typed failure reason
+            P-->>G: route-local failure + status; no same-route retry
+            G-->>B: failure observation + durable receipt
+            Note over B,G: Continue only to the next explicitly enabled route under its own authority
+        else timeout / rate-limit / 5xx
+            P-->>G: typed failure reason
+            G-->>B: failure observation + receipt or UNKNOWN
+        else complete 2xx with recognized zero-row result array
+            P-->>G: terminal EMPTY route outcome + count 0
+            G-->>B: EMPTY observation + durable receipt
+            Note over B,G: Advance to the next enabled route; never retry this route
         else other 4xx
-            P-->>B: typed terminal request/configuration failure
+            P-->>G: typed terminal request/configuration failure
+            G-->>B: failure observation + durable receipt
         end
     end
     alt a route succeeded
         B-->>M: bounded results, provenance explicit
     else chain exhausted
-        B-->>M: one bounded normal retry; per-route reasons surfaced — never a fabricated result
+        B-->>M: per-route reasons surfaced; no second cascade pass or fabricated result
     end
 ```
 
 State machine: `VALIDATED → ROUTED → RUNNING → COMPLETE | FAILED | CANCELLED` (§11, web-search lane).
+Current source readiness is false for anonymous and BYO route execution. The designed cascade
+and route UI do not mean the model-visible search tool can dispatch today; expose it only after
+the authenticated Guard/transport/recovery acceptance in §32.28.
 
-Binding rules (`37.5`, `DEC-V1-20/26`): the built-in default route needs no key; every enabled route joins one ordered, inspectable, reorderable cascade; disabled/unconfigured providers are simply absent (no separate off step); enabling a paid/authenticated route is the recorded consent for its cost/auth class; auth 401/403/407 is recorded and may continue only to another explicitly enabled route, while other non-rate-limit 4xx stops; `web.search.inspect_provider` reports auth/cost/rate-limit/last-error/freshness per route; results are untrusted data (injection handling per §5.8) and never authorize an effect; large fetched content becomes an artifact, not prompt context. Provider matrix owner: `DEC-V1-20`.
+Binding rules (`37.5`, `DEC-V1-20/26`): trusted code supplies the route plan; the query contains user intent only and cannot name an endpoint, credential, route or cost class. After first-use query-sharing consent, the anonymous/no-key built-in cascade is the default in §37.5 order: Exa, You.com free profile, Firecrawl Keyless, Parallel. BYO/authenticated routes join only after explicit per-route enablement/configuration; that enablement records consent for its auth/cost class. Auth 401/403/407 is recorded and falls through only to another explicitly enabled route; 429 applies bounded route cooldown; other 4xx stops. A complete HTTP 2xx with a recognized zero-row provider result array is recorded as terminal `EMPTY`, advances to the next enabled route, and is not retried on that route. Model-grounded search is not a preferred/default path and requires a supported adapter plus explicit route selection and consent. `web.search.inspect_provider` reports auth/cost/rate-limit/last-error/freshness per route; results are untrusted data (injection handling per §5.8) and never authorize an effect; large fetched content becomes an artifact, not prompt context. Provider matrix owner: `DEC-V1-20`.
 
 ---
 
@@ -526,10 +593,12 @@ flowchart TD
     C -->|"MCP stdio server"| F["Spawned as confined process under Guard/ExecutionHost; canonical capability mapping"]
     C -->|"remote MCP server"| G["Network policy; auth class surfaced; no silent change"]
     C -->|"third-party executable plugin"| H["Unavailable until signing/isolation gates resolve (DEC/§5.9)"]
-    D --> I["Every effect still routes through canonical action + Guard"]
+    D --> I["Map callable tools to canonical capabilities; data cannot grant authority"]
     E --> I
     F --> I
     G --> I
+    I --> J["Whole ToolBatch preflight through Guard; deny / approval / admit"]
+    J --> K["ExecutionHost dispatch, bounded observation and receipt / UNKNOWN"]
 ```
 
 MCP tools map to canonical capabilities and Guard policy — never a parallel tool universe. Sealed built-ins cannot be shadowed. Hooks cannot veto Guard, leak secrets or grant capabilities; a hook failure cannot convert a denied effect into allowed (`DEC-V1-15`).
@@ -537,6 +606,66 @@ MCP tools map to canonical capabilities and Guard policy — never a parallel to
 ---
 
 ## 45.15 Automations (owner: 03.14, 11.15, 37.10, 31.12)
+
+Definition CRUD is a persisted effect, not a direct registry write. The Core/UI prepares the
+exact `automations.create|update|enable|disable` capability and CAS/idempotency arguments
+through §14.3 `effects.v2/prepare_user_effect`; any ASK decision uses the §14.2 authenticated
+Guard approval event/reply. HostKernel binds the approved intent to one one-use lease before
+Rust `AutomationRegistryV1` commits its single OwnerLog CAS and returns the durable mutation
+receipt. The Core projection is updated only from that receipt/state; stale definition version
+requires a fresh read and new authorization. Lost replies use exact idempotency/receipt
+reconciliation and never reapply a mutation. Missing approval, lease, receipt or trusted scope
+keeps CRUD unavailable. This flow adds no automation-specific effect authority. `runNow` and
+scheduled invocation remain closed until the target action is dispatched through its own
+ordinary Guarded authorization and supervised receipt/recovery path.
+
+The automation workspace-owner ASK is a sessionless authenticated `user_action`: its consent
+event is scoped to the HostKernel Location and exact automation capability/challenge/effect. The
+TUI can offer `allow_once` only for `origin=user_action`, `source=authenticated.user_action`, one
+of the four CRUD capabilities above, a valid HostKernel Location ID, and the complete assessed
+consent projection. It must not fabricate Session or Run identity. Other approval origins retain
+the existing Session/Run binding.
+
+The mutation receipt contains a `guardedProof` with `challengeDigest`, `effectIntentDigest`,
+`leaseDigest`, and `executionReceiptDigest`. Rust computes the last digest over the canonical
+receipt core (key, approved input digest, automation ID, resulting definition version, operation)
+before attaching the proof, then commits the core and all four proof values in one OwnerLog write.
+Core receives the exact HostKernel-approved `inputDigest` from its private supervisor adapter and
+uses that digest for both mutation and reconciliation; it does not reserialize the request to
+recompute it. Reconciliation repeats the exact location/action/challenge/effect/lease/input/key
+pins plus `automationID` and canonical `hostOperation` (`automations.create|update|enable|disable`),
+and is read-only. A missing registry row means `NOT_FOUND` only if durable EffectHost state
+also proves that the authorized operation was never dispatched; PREPARED, UNKNOWN, or disagreement
+returns `UNKNOWN` and cannot trigger redispatch.
+
+Each definition pins exactly one immutable fixed action-input JSON object and the schema digest
+resolved through the canonical HostKernel machine registry for its exact action/version. The
+TUI obtains that projection and validates the authored object before save; Rust/HostKernel
+revalidates it before the Guarded definition CAS and before dispatch. EffectIntent binds the
+canonical schema and payload digests. Model-generated per-occurrence arguments and raw secrets
+are prohibited; secret fields may contain only schema-approved opaque references. Updating any
+action/schema/payload creates a new definition version and requires a fresh owner approval. A
+legacy definition with no schema or payload pin remains readable but cannot dispatch. If the
+canonical schema cannot be resolved, save and dispatch fail closed. The current Rust registry
+does not include a cron/timezone producer; it accepts only externally resolved ordered
+`DueOccurrenceV1`, so schedule execution remains unavailable until that canonical producer and
+the Guarded invocation path are accepted.
+
+```mermaid
+sequenceDiagram
+    participant U as User / TUI
+    participant C as Core automation route
+    participant G as Guard / EffectHost
+    participant R as Rust AutomationRegistryV1
+    U->>C: create/update/enable/disable(definition, expectedVersion, idempotencyKey)
+    C->>G: prepare_user_effect(exact capability + canonical args)
+    G-->>C: DENY / PREPARED / NEEDS_APPROVAL
+    U->>G: authenticated approval (ASK only)
+    G-->>C: one-use lease bound to exact intent/scope/revision
+    C->>R: consume lease + CAS mutation + idempotency key
+    R-->>C: OwnerLog mutation receipt + current definition
+    C-->>U: durable status/event projection
+```
 
 ```mermaid
 stateDiagram-v2
@@ -571,21 +700,37 @@ sequenceDiagram
     participant MUX as UiEventMuxV2
     participant T as TUI/CLI
     participant R as ArtifactRenderServiceV2
-    SR->>MUX: durable owner/receipt events (never dropped, never reordered)
+    SR->>MUX: live owner/receipt notifications (not settlement; source owner remains canonical)
     SR->>MUX: ephemeral paint/progress (coalescible)
     MUX->>T: bounded per-surface queues, source sequence/revision
     T->>R: render request (immutable source ref, kind, theme/geometry generation)
     R->>R: bounded crash-isolated parser: Markdown/code/diff, Mermaid, safe SVG, numeric chart, image/PDF metadata
     R-->>T: render OR typed failure (stale async result discarded by generation)
     Note over T,R: source/text fallback always shown; durable export is a separate Guarded action
-    T-->>SR: reconnect/rebuild from canonical sources, never from the paint queue
+    T-->>SR: reconnect/resnapshot Session messages; re-read durable state from its owner
 ```
 
-Artifact model (§31.5): distinguish original/canonical source, durable artifact bytes/metadata, derived render, and ephemeral terminal image placement. Durable records: content digest, MIME/kind, owner/scope/source revision, byte count, fidelity `FULL/HEAD_TAIL_SAMPLE/FAILED`, retention/security metadata. A sampled artifact is never labeled FULL. Artifact states: `STAGED → PERSISTED_FULL | PERSISTED_SAMPLE | FAILED`; renders `OPEN → RENDERING → READY`.
+V1 instance SSE is live-only: it emits no SSE `id` and has no global `Last-Event-ID`
+replay cursor. The UI event envelope's opaque `cursor` orders/deduplicates observed events
+only; it does not authorize replay or reconstruct missed state. Event payload IDs identify notifications; Session part deltas carry their
+own source `sequence` and `sourceGeneration` for duplicate/gap fencing. On reconnect or
+bounded-queue overflow, the TUI reloads canonical Session messages and re-reads durable
+managed projections from their owner APIs; it does not reconstruct state from missed SSE
+notifications. This path adds no parallel event store. A durable owner transition remains
+authoritative even when its notification is absent.
+
+While paginated Session messages load, the TUI tracks live Session source changes. It
+retries the canonical read once if events arrive during pagination and commits only a
+stable page set. If events continue through that retry, it keeps the live projection and
+cursor; a later gap or reconnect can request another bounded resnapshot.
+
+Artifact model (§31.5): distinguish original/canonical source, durable artifact bytes/metadata, derived render, and ephemeral terminal image placement. Durable records: content digest, MIME/kind, owner/scope/source revision, byte count, wire fidelity `full`/`head_tail_sample`/`failed`, retention/security metadata. UI labels render these as `FULL`/`SAMPLE`/`FAILED` without changing wire values; a sampled artifact is never labeled `FULL`. Artifact states: `STAGED → PERSISTED_FULL | PERSISTED_SAMPLE | FAILED`; renders `OPEN → RENDERING → READY`. A managed Attempt cannot resolve/read/cite a direct artifact or its content; equivalent bytes require an independent producer in that Attempt to create a new managed artifact.
 
 Streaming lanes (§31.1): owning Session message stream; durable Rust control/effect events; ephemeral UI events; analytics observations — the mux may coalesce the ephemeral lane only. Performance budgets (§31.3) are measured on declared hardware; never marketed as guarantees before benchmarking.
 
 Mission Control is a derived view (Runs/Tasks/Attempts, worker graph, leases, approvals/NeedsYou, budget, evidence, automations); its actions dispatch canonical capabilities and it can never edit owner stores directly. Analytics records measured/estimated/unknown provenance and can never authorize behavior.
+
+**Activity digest (§31.22, layout §16.21):** Session tool parts project to `ActivityCardV1` rows in the digest pane (not the transcript). File writes/patches render as `file_edit` cards with `▎+`/`▎−` gutter previews, `+N −M` stats, and **Ctrl+R** review overlay over `SourceArtifact` or patch metadata. Reads coalesce to `read_group` within a turn; shell cards update in place while running. Cards honor §31.16 tail budgets and §31.22.3 node/byte caps with `limit_marker` rows. Acceptance: **§32.48** `ACT-001`..`ACT-024`.
 
 ---
 
@@ -629,7 +774,7 @@ flowchart TD
     G -->|partial| I["UNKNOWN — partial-restore surfaced honestly, never silent"]
 ```
 
-Checkpoints are a bounded app-owned artifact family: per-Session count/byte caps with a declared eviction owner, oldest-first eviction under §18 pressure before touching user work or evidence, truthful FULL/SAMPLE/FAILED status, and no destructive git action ever implied by deleting a checkpoint. Rewind is not claimed available until §14.19/§16.18/§31.18 are wired and CP-001/CP-002 pass on the exact revision (`DEC-V1-25`).
+Checkpoints are a bounded app-owned artifact family: per-Session count/byte caps with a declared eviction owner, oldest-first eviction under §18 pressure before touching user work or evidence, truthful FULL/SAMPLE/FAILED checkpoint presentation status (SourceArtifact fidelity remains the wire enum `full`/`head_tail_sample`/`failed`), and no destructive git action ever implied by deleting a checkpoint. Rewind is not claimed available until §14.19/§16.18/§31.18 are wired and CP-001/CP-002 pass on the exact revision (`DEC-V1-25`).
 
 ---
 
@@ -701,6 +846,7 @@ Every post-V1 row must keep its routes unavailable until an explicit scope decis
 |---|---|
 | Goal/spec | `goal_created`, `spec_proposed`, `spec_accepted`, `goal_paused/resumed/completed/cancelled` |
 | Run/task/attempt | `run_started/paused/resumed/cancelling/cancelled/verifying/succeeded/failed/needs_you`; `task_proposed/ready/running/verifying/passed/failed/blocked/cancelled`; `attempt_admitted/executing/settling/succeeded/failed/unknown/cancelled` |
+| Managed provider request | `managed_context_advanced`; `managed_provider_request_prepared/dispatching/settled/unknown`; `managed_provider_turn_completed` — each actual provider dispatch has a unique monotonic Attempt request sequence/providerRequestID; settlement binds the exact persisted Assistant snapshot and indexed step-finish before subsequent effects/requests; turn completion binds the final response plus ordered settled dispatches; dispatching is never replayed |
 | Tool/effect | `tool_batch_validated/admitted/rejected/executing/settling/settled/unknown`; `effect_prepared/authorized/leased/observed/settled/failed/unknown`; `approval_requested/approved/denied/expired`; `lease_claimed/consumed/expired/revoked` |
 | Evidence | `evidence_collected/accepted/rejected/stale`; `verification_started/passed/failed/needs_you` |
 | Resource | `resource_acquired/released/quarantined`; `checkpoint_created/restore_requested/restored/rejected` |
@@ -749,13 +895,13 @@ Real-case rule: a module is `VERIFIED` only after its acceptance family passes o
 | 07-UX-COMMANDS.md | Compatibility stub (archived) | — | Not an implementation input |
 | 08-RECONCILIATION.md | Compatibility stub (archived) | — | Not an implementation input |
 | 09-SOURCE-MAP.md | Compatibility stub (archived) | — | Not an implementation input |
-| 10-DELIVERY.md | Normative owner | Delivery dependency order P0–P9 | §45.1 phase references; tracker |
+| 10-DELIVERY.md | Normative owner | Delivery dependency order P0–P9; §10.18 V1 adaptation priorities | §45.1, §45.29 |
 | 11-LIFECYCLE.md | Normative owner | State machines + terminal criteria | §45.5–§45.8, §45.15, §45.18–§45.20 |
 | 12-DOMAIN-SCHEMAS.md | Normative owner | Schema registry + ownership | §45.3, §45.7–§45.8, §45.19 |
 | 13-COMPOSITION-IPC.md | Normative owner | Process composition + IPC | §45.2, §45.4, §45.6 |
 | 14-EFFECTS-EXECUTION-SECURITY.md | Normative owner | Guard, EffectService, ExecutionHost, sandbox | §45.6, §45.12, §45.18, §45.21 |
 | 15-RUNTIME-EXECUTION.md | Normative owner | Direct/managed runtime, providers, recovery | §45.5, §45.7, §45.12, §45.17, §45.20 |
-| 16-UX-SETTINGS-ECOSYSTEM.md | Normative owner | UI, ActionDescriptor, settings, provider UX | §45.12, §45.16, §45.18, §45.20 |
+| 16-UX-SETTINGS-ECOSYSTEM.md | Normative owner | UI, ActionDescriptor, settings, provider UX; §16.21 layout | §45.12, §45.16, §45.18, §45.20 |
 | 17-GOVERNANCE-DECISIONS.md | Normative decisions | Frozen decisions + open gates | Referenced throughout (DEC-V1-*), §45.21 |
 | 18-OPERATIONS-RELEASE.md | Normative owner | Storage, telemetry, packaging, release | §45.19, §45.17, §45.24 audit statement |
 | 19-OPENCODE-UPSTREAM-REUSE.md | Compatibility stub (archived) | — | Not an implementation input |
@@ -769,19 +915,19 @@ Real-case rule: a module is `VERIFIED` only after its acceptance family passes o
 | 27-IMPLEMENTATION-READINESS-AUDIT.md | Compatibility stub (archived) | — | Not an implementation input |
 | 28-COMPETITIVE-GAP-AUDIT.md | Compatibility stub (archived) | — | Not an implementation input |
 | 29-AGENTS-SKILLS-HOOKS-MCP.md | Normative owner | Agents, subagents, skills, hooks, MCP | §45.8, §45.14, §45.19 |
-| 30-CONTEXT-INDEXING-LOCAL-MODELS.md | Normative owner | Context, indexing, LSP, local models | §45.9, §45.10, §45.11, §45.19 |
-| 31-UI-PERFORMANCE-ARTIFACTS-ANALYTICS.md | Normative owner | Streaming UI, artifacts, analytics, automations | §45.15, §45.16, §45.18, §45.19 |
-| 32-TASK-BASED-AGENT-TEST-CATALOG.md | Normative owner | Acceptance catalog | §45.23 (map), all sections |
+| 30-CONTEXT-INDEXING-LOCAL-MODELS.md | Normative owner | Context, indexing, LSP; §30.25 retrieval; §30.26 Models.dev bridge | §45.9, §45.10, §45.11, §45.19, §45.29, §45.30 |
+| 31-UI-PERFORMANCE-ARTIFACTS-ANALYTICS.md | Normative owner | Streaming UI, artifacts, analytics, automations; §31.22 activity cards | §45.15, §45.16, §45.18, §45.19 |
+| 32-TASK-BASED-AGENT-TEST-CATALOG.md | Normative owner | Acceptance catalog; §32.47 V1-ADAPT; §32.48 activity cards | §45.23, §45.29 |
 | 33-BUILTIN-CAPABILITIES-CATALOG.md | Normative owner | Canonical capability IDs | §45.1, §45.12, §45.13, §45.21 |
-| 34-DOCUMENT-LINE-AUDIT-LEDGER.md | Retained audit (non-normative) | Historical audit ledger | Not an implementation input |
-| 35-USER-REQUEST-COVERAGE-MATRIX.md | Retained navigation (non-normative) | Historical request coverage | Not an implementation input |
+| 34-DOCUMENT-LINE-AUDIT-LEDGER.md | Compatibility stub (archived) | — | Not an implementation input |
+| 35-USER-REQUEST-COVERAGE-MATRIX.md | Compatibility stub (archived) | — | Not an implementation input |
 | 36-CONTRACT-CONVERGENCE-PLAN.md | Compatibility stub (archived) | — | Not an implementation input |
-| 37-RUNTIME-SERVICE-LLD.md | Normative LLD | Service interfaces incl. web search, DAP, REPL | §45.11–§45.13, §45.20, §45.21 |
+| 37-RUNTIME-SERVICE-LLD.md | Normative LLD | Services incl. §37.14 cache observation, §37.30 compile bridge | §45.11–§45.16, §45.20, §45.21, §45.30 |
 | 38-OMP-SOURCE-COMPETITIVE-AUDIT.md | Compatibility stub (archived) | — | Research only; distilled into 16/31/33/37/32 |
 | 39-OMP-TUI-SLASH-MODEL-SETTINGS-AUDIT.md | Compatibility stub (archived) | — | Research only; distilled into 16/31/33/37/32 |
 | 40-HORIZONCODE-OMP-INSPIRED-UI-PROPOSAL.md | Compatibility stub (archived) | — | Research only; distilled into 16/31/33/37/32 |
 | 41-OMP-STREAMING-VISUAL-ARTIFACTS-AUDIT.md | Compatibility stub (archived) | — | Research only; distilled into 16/31/33/37/32 |
-| 42-EXTERNAL-SOURCE-PROVENANCE-REGISTER.md | Normative register | Source pins/provenance for extraction | §45.12 (SRC-007 web search), §45.21 |
+| 42-EXTERNAL-SOURCE-PROVENANCE-REGISTER.md | Normative register | Source pins; §42.21 competitive V1 disposition | §45.12, §45.21, §45.29 |
 | 43-IMPLEMENTATION-SOURCE-LLD-PLAYBOOK.md | Compatibility stub (archived) | — | Not an implementation input |
 | 44-FINAL-REPO-AUDIT-LEDGER.md | Compatibility stub (archived) | — | Not an implementation input |
 | GLOSSARY.md | Normative terms | Terminology | Terminology of every section |
@@ -795,7 +941,200 @@ Real-case rule: a module is `VERIFIED` only after its acceptance family passes o
 
 ## 45.25 Audit statement and regeneration rule
 
-- Structure: this file is an `arch_V1` document subject to the repo Markdown structural audit (`scripts/architecture/audit_markdown_repo.py`) and the architecture convergence validator (`scripts/architecture/validate_convergence.py`); both were run after its creation and pass (see CURRENT_RUN.md entry for the exact numbers).
+- Structure: this file is an `arch_V1` document subject to the repo Markdown structural audit (`scripts/architecture/audit_markdown_repo.py`) and the architecture convergence validator (`scripts/architecture/validate_convergence.py`). Re-run both after any normative owner change; do not cite a past pass as current evidence.
 - Authority: derived synthesis only. Additions to this atlas must never introduce new events, states, ownership or policy. If a diagram and an owner disagree, stop and fix the atlas (or raise a §17 decision if the owner itself is wrong — never patch around it here).
 - Regeneration triggers: any change to 01–05, 10–18, 20–21, 29–33, 37, 42; any new `DEC-V1-*`; any change to event families (§4.3) or lifecycle states (§11). Re-run both audits; keep the coverage matrix rows in sync.
 - Status honesty: a rendered Mermaid diagram is not `WIRED`, `TESTED` or `VERIFIED`. The statuses in `HANDOFF.md`/trackers remain the only progress truth.
+
+
+## 45.26 External harness pattern reconciliation (2026-10-22)
+
+This atlas's existing sequence diagrams remain the event and owner authority. Pi Durable's
+intent/checkpoint/replay-safe task pattern maps to the existing durable effect intent, receipt,
+UNKNOWN reconciliation and canonical resnapshot flows; Codex's separate operation request
+and child lifecycle activity maps to the existing Core Session stream plus Rust managed
+projections. Do not add a parallel transcript or event store. The accepted context/tool revision
+changes are pinned at the next request boundary (§29.21/§30.24); analytics and child activity
+remain derived projections (§31.21). The comparative decision and source list are in
+[`docs/research/2026-10-21-pi-codex-harness-decisions.md`](../docs/research/2026-10-21-pi-codex-harness-decisions.md).
+
+Rust managed provider OwnerLog record/parser/reducer source is present. HostKernel guarded
+route resolution, provider RPC operations and Credential/SecretBroker dispatch are not a
+usable end-to-end path; managed dispatch remains gated. Direct provider transport also
+remains unavailable for credentialed routes until Guarded SecretBroker integration; anonymous
+routes are restricted to the explicitly selected supported route. The authenticated
+pre-admission RESERVED worktree target projection and final integration acceptance remain
+required. Neither direct nor managed source projections establish a real model request.
+
+**Evidence status:** UI activity, artifact, usage and cost provenance projections have
+source, but no final integrated rendered TUI journey has been accepted. Unknown cost stays
+unknown; zero is not a default for missing cost. No source-level analytics row proves a
+completed provider or coding task.
+
+## 45.27 Direct workspace grants and CodeMode (derived, DEC-V1-28/29)
+
+```mermaid
+sequenceDiagram
+    participant U as User/TUI
+    participant C as Core SessionRunner
+    participant K as Rust Guard/HostKernel
+    participant X as ExecutionHost
+    participant D as CodeMode interpreter
+    U->>C: direct coding request
+    C->>K: validate direct CodeModeEnablementV1 before helper exposure/launch
+    Note over K: managed launch instead checks accepted Spec + Task profile + live Attempt
+    C->>D: execute(script, current authorized tools)
+    D->>C: complete nested-call wave (<=32)
+    C->>K: prepare ToolBatch + current grant/Attempt scope
+    K->>K: resolve resources, evaluate Guard, reserve budget
+    alt within explicit bounded workspace grant
+        K->>X: one-use leases after durable PREPARED
+    else outside grant but approvable
+        K-->>U: exact operation/wave challenge
+        alt allow_once
+            U->>K: authenticate approval for this exact action/batch
+            K->>X: one-use leases after fresh validation and durable PREPARED
+        else persistent grant choice
+            U->>K: persist Session/workspace grant only
+            K-->>C: pending batch discarded; fresh submission required
+        end
+    else immutable deny or unsupported guarantee
+        K-->>C: deny before dispatch
+    end
+    X-->>K: receipt or UNKNOWN
+    K-->>C: settled receipts and refreshed scope
+    C-->>D: bounded results
+    D->>D: admit next wave only after settlement and fresh scope
+```
+
+One user-owned direct grant may cover routine confined workspace work without repeated
+dialogs; Guard, leases, receipts and confinement remain per-effect. The `always` approval
+policy asks for each effect; it does not persist a no-grant preference or itself allow a
+later action. `allow_once` authorizes only the
+current action/batch after fresh validation; a persistent grant choice saves policy only, discards
+the pending action and never dispatches it. A fresh later submission is prepared and evaluated
+under current scope. Direct CodeMode exposure separately requires explicit `CodeModeEnablementV1`
+for the principal, Session/owner epoch, fixed helper and exact resource-profile digest. Managed
+CodeMode has no direct grant and requires accepted SpecVersion `codemode.execute`, Task-pinned
+AgentProfileV2 permission and HostKernel validation against the live Attempt. The interpreter
+runs in a short-lived helper process under the existing Rust ExecutionHost supervisor, using a
+bounded versioned stdio protocol. HostKernel applies fixed `CodeModeResourceProfileV1` before the
+first instruction (cgroup-v2 memory 512 MiB, one CPU, 64 PIDs, 256 FDs) and selects only the fixed
+`horizoncode:codemode:bun` runtime; without verified containment CodeMode is unavailable. The
+script shares a 64-call, at-most-64 sequential-wave, 30-second, 64-KiB source/output and 1-MiB
+aggregate payload budget. Each wave is one atomic ToolBatch of at most 32 calls; managed waves
+append `attempt_effect_wave_bound` before leases become consumable. Cancellation terminates and
+reaps the helper before settlement. Existing `$codemode.search` discovers only the authorized
+tree; MCP adapters are callable only through Core's same Guarded dispatcher. The untrusted program
+gains no ambient authority; its tool RPC is serviced only by Core through Guard. Expose
+`codemode.execute` after this adapter and the canonical nested dispatcher are wired; CM-001..012
+are integrated release acceptance. Current source still hard-disables registry exposure, invokes
+the interpreter in-process, and rejects nested dispatch before a tool call; helper protocol and
+Rust containment source are not the Core-to-helper bridge. This is a target flow, not a working
+journey. This diagram is derived; §§14, 17, 29 and 37 remain authority.
+
+## 45.28 User-selected external editor flow (DEC-V1-33)
+
+```mermaid
+sequenceDiagram
+    actor U as User
+    participant T as HorizonCode TUI
+    participant C as Core Config/Session
+    participant K as Rust Guard/HostKernel
+    participant X as Existing ExecutionHost
+    U->>T: Run /editor; Explorer opens as an overlay (or /editor --side for right pane)
+    U->>T: Select prompt scratch or one workspace file; choose Open
+    Note over T: /settings → Editors selects the saved profile; default session remains single pane
+    T->>C: Read immutable user-owned profile ref and exact target revision
+    C->>K: editor.launch(profileRef, target, session/location)
+    K->>K: Derive owner/root/mode; validate executable + containment
+    K->>K: Prepare intent, apply permission policy, consume one-use lease
+    K->>X: Launch exact argv in supervised PTY/process tree
+    alt terminal profile
+        X-->>T: Foreground process owns terminal until exit
+    else GUI wait profile
+        X-->>T: Retained wait handle until editor closes file
+    end
+    X-->>K: Receipt with status and bounded changed-path/revision facts
+    K-->>C: Settled result or UNKNOWN
+    C-->>T: Resume TUI; import prompt scratch or show workspace changes/conflict
+```
+
+No model tool initiates this flow. There is no shell fallback. A lost launch response is
+reconciled by exact process status and never causes a second editor process. Unsupported
+workspace/process containment fails before dispatch in `workspace-write`; the user may
+explicitly select Full access and accept its warning. This flow is a design contract;
+runtime readiness requires EDITOR-001..013 in §32.44.
+
+## 45.30 Models.dev context compile bridge (owner: 30.26, 37.30)
+
+```mermaid
+sequenceDiagram
+    participant MD as ModelsDev catalog
+    participant AP as AgentProfileV2
+    participant CS as ContextService
+    participant RI as RepoIntel anchor
+    participant SS as SessionStore
+    participant PT as PrefixCacheAdapter
+    participant P as Provider API
+    AP->>CS: contextCompilePolicy (auto default)
+    CS->>MD: getSnapshot provider/model row
+    CS->>PT: prefixCacheSupport(route)
+    CS->>CS: resolveContextCompilePolicyV1
+    alt cache_anchor
+        CS->>RI: ensure RepoContextAnchor artifact
+        RI-->>CS: immutable anchor bytes + digests
+    end
+    CS->>CS: compile ledger + ContextSelection pin
+    CS->>SS: persist before transport
+    CS->>PT: planBreakpoints(static segments)
+    PT->>P: API with cache metadata
+    P-->>CS: usage cache_read/write or absent
+```
+
+Catalog endpoints (`https://models.dev/api.json`, mirrored by OpenCode) supply **`cost.cache_read` / `cache_write`** and **`limit.context`** as **hints only** — not route authority. Effective tier is **`cache_anchor`** vs **`minimize_tokens`** per §30.26.4. Canonical history unchanged; anchor invalidates only on workspace/harness/profile revision. Analytics never fabricate cache hits (`CX-015`, `CX-021`). **Empirical testing law:** §30.26.10.
+
+---
+
+## 45.29 V1 competitive adaptation map (derived, `DEC-V1-35`)
+
+Normative source: §10.18.1 (priorities 1–11), §10.18.3 (nice-to-have), §10.18.4 (post-V1). Test traceability: §32.47 `V1-ADAPT-001`..`011`. Research register: §42.21.
+
+```mermaid
+flowchart TB
+  subgraph critical [Release-critical adapt P1-P9]
+    P1[P1 Guard sandbox receipts]
+    P2[P2 managed vertical then DAG]
+    P3[§30 context ledger selection]
+    P4[P3 indexd RepoIntel]
+    P5[P4 LSP DAP REPL]
+    P6[P5 web search cascade]
+    P7[P6 providers settings Doctor]
+    P8[P7 TUI streaming artifacts]
+    P9[P8 worktrees resources]
+    P10[Grants CodeMode]
+    P11[P9 release]
+  end
+  P1 --> P2
+  P1 --> P4
+  P1 --> P5
+  P1 --> P6
+  P2 --> P9
+  P1 --> P10
+  critical --> P11
+  subgraph alg [Same-owner algorithms §30.25]
+    A1[Aider rank to token budget]
+    A2[Lexical plus opt-in embeddings]
+    A3[LSP diagnostic loop]
+  end
+  P4 --> A1
+  P4 --> A2
+  P5 --> A3
+  subgraph post [Post-V1 §10.18.4]
+    X1[Browser desktop GUI]
+    X2[mgrep CRG as core index]
+    X3[LanceDB preferences Wasm]
+  end
+```
+
+This diagram orders **delivery and ownership** only. It is not evidence that any phase is `VERIFIED` or `RELEASED`.

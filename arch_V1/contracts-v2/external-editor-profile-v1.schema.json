@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "horizon://schemas/external-editor-profile-v1",
+  "title": "HorizonCode ExternalEditorProfileV1",
+  "description": "Authenticated Core Config profile for user-invoked external editor processes. A profile is configuration, never launch authority.",
+  "oneOf": [
+    { "$ref": "#/$defs/ExternalEditorProfileDefinitionV1" },
+    { "$ref": "#/$defs/ExternalEditorProfileRefV1" },
+    { "$ref": "#/$defs/ExternalEditorLaunchRequestV1" },
+    { "$ref": "#/$defs/ExternalEditorLaunchResultV1" }
+  ],
+  "$defs": {
+    "Identifier": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$" },
+    "Revision": { "$ref": "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64" },
+    "Digest": { "type": "string", "pattern": "^blake3:[a-f0-9]{64}$" },
+    "ExternalEditorProfileDefinitionV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "profileId", "revision", "executableSelector", "argv", "targetArgIndex", "launchMode", "targetKinds", "environmentPolicy"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "profileId": { "$ref": "#/$defs/Identifier" },
+        "revision": { "$ref": "#/$defs/Revision" },
+        "executableSelector": { "type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^[^\\u0000-\\u001f\\u007f]+$" },
+        "argv": { "type": "array", "maxItems": 127, "items": { "type": "string", "maxLength": 4096, "pattern": "^[^\\u0000-\\u001f\\u007f]*$" } },
+        "targetArgIndex": { "type": "integer", "minimum": 0, "maximum": 127 },
+        "launchMode": { "enum": ["foreground_tty", "wait"] },
+        "targetKinds": { "type": "array", "minItems": 1, "maxItems": 2, "uniqueItems": true, "items": { "enum": ["prompt_scratch", "workspace_file"] } },
+        "environmentPolicy": { "const": "sanitized_host" }
+      },
+      "x-horizon-validation": [
+        "profile-owner-is-authenticated-user-core-config-only",
+        "profile-digest-is-blake3-domain-horizoncode.external-editor-profile.v1-NUL-plus-canonical-msgpack-of-schema-decoded-definition",
+        "argv-is-literal-vector-and-never-shell-parsed-or-interpolated",
+        "target-argument-is-inserted-as-one-separate-argv-token-at-targetArgIndex",
+        "target-argument-index-is-between-zero-and-argv-length-inclusive-after-target-insertion;resulting-argv-is-at-most-128-items",
+        "request-target-kind-must-be-an-exact-member-of-profile-targetKinds",
+        "host-resolves-executable-selector-and-binds-resolved-binary-digest",
+        "no-profile-supplied-working-directory-or-environment-values",
+        "workspace-write-requires-verified-filesystem-and-process-tree-confinement",
+        "managed-attempts-and-model-tool-calls-cannot-launch-user-editor-profiles"
+      ]
+    },
+    "ExternalEditorProfileRefV1": {
+      "type": "object", "additionalProperties": false,
+      "required": ["profileId", "revision", "profileDigest"],
+      "properties": { "profileId": { "$ref": "#/$defs/Identifier" }, "revision": { "$ref": "#/$defs/Revision" }, "profileDigest": { "$ref": "#/$defs/Digest" } }
+    },
+    "ExternalEditorLaunchRequestV1": {
+      "description": "Private TUI-to-HostKernel request for a user initiated direct-session edit. Location/session identity is authenticated out of band; targetRelativePath names the original user-selected workspace file, never the editor launch path and never model-provided. HostKernel launches the editor against private scratch.",
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "sessionId", "locationId", "profileRef", "targetKind", "targetRelativePath", "expectedWorkspaceRevision", "expectedFileDigest"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "sessionId": { "$ref": "#/$defs/Identifier" },
+        "locationId": { "$ref": "#/$defs/Identifier" },
+        "profileRef": { "$ref": "#/$defs/ExternalEditorProfileRefV1" },
+        "targetKind": { "enum": ["prompt_scratch", "workspace_file"] },
+        "targetRelativePath": { "type": "string", "maxLength": 4096, "pattern": "^[^\\u0000-\\u001f\\u007f]*$" },
+        "expectedWorkspaceRevision": { "$ref": "#/$defs/Digest" },
+        "expectedFileDigest": { "oneOf": [{ "$ref": "#/$defs/Digest" }, { "type": "null" }] }
+      },
+      "allOf": [{ "if": { "properties": { "targetKind": { "const": "workspace_file" } }, "required": ["targetKind"] }, "then": { "properties": { "targetRelativePath": { "minLength": 1 }, "expectedFileDigest": { "$ref": "#/$defs/Digest" } } }, "else": { "properties": { "targetRelativePath": { "const": "" }, "expectedFileDigest": { "type": "null" } } } }],
+      "x-horizon-validation": ["path-is-normalized-relative-path-with-no-parent-traversal-or-symlink-escape", "workspace-file-expectedFileDigest-is-the-contentDigest-from-the-authenticated-preview-at-sourceRevision", "workspace-file-editor-target-is-copied-to-private-host-scratch-and-only-the-scratch-path-is-inserted-into-editor-argv", "host-retains-original-relative-path-and-preview-sourceRevision/contentDigest-in-effect-authority", "workspace-result-is-applied-only-after-known-success-and-current-revision/preimage-recheck-through-a-distinct-Guarded-files.patch-effect", "prompt-scratch-path-is-host-generated-and-does-not-use-workspace-path", "host-derives-principal-owner-epoch-root-backend-and-permission-mode", "host-derives-one-user-action-and-one-effect-intent;these-are-never-request-fields", "request-is-direct-root-session-only-and-never-model-callable"]
+    },
+    "ExternalEditorLaunchResultV1": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "status", "effectID", "executionID", "bindingDigest", "processRef", "receiptDigest", "exitCode", "resultFileDigest", "observedWorkspaceRevision"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "status": { "enum": ["prepared", "running", "unknown", "cancelled", "completed", "conflict"] },
+        "effectID": { "$ref": "#/$defs/Identifier" },
+        "executionID": { "$ref": "#/$defs/Identifier" },
+        "bindingDigest": { "$ref": "#/$defs/Digest" },
+        "processRef": {
+          "type": "object", "additionalProperties": false,
+          "required": ["executionID", "generation", "ownerEpoch", "kind", "profileID", "profileRevision", "profileDigest", "executableDigest"],
+          "properties": {
+            "executionID": { "$ref": "#/$defs/Identifier" },
+            "generation": { "$ref": "#/$defs/Revision" },
+            "ownerEpoch": { "$ref": "#/$defs/Revision" },
+            "kind": { "const": "external_editor" },
+            "profileID": { "$ref": "#/$defs/Identifier" },
+            "profileRevision": { "$ref": "#/$defs/Revision" },
+            "profileDigest": { "$ref": "#/$defs/Digest" },
+            "executableDigest": { "$ref": "#/$defs/Digest" }
+          }
+        },
+        "receiptDigest": { "oneOf": [{ "$ref": "#/$defs/Digest" }, { "type": "null" }] },
+        "exitCode": { "type": ["integer", "null"], "minimum": -2147483648, "maximum": 2147483647 },
+        "resultFileDigest": { "oneOf": [{ "$ref": "#/$defs/Digest" }, { "type": "null" }] },
+        "observedWorkspaceRevision": { "oneOf": [{ "$ref": "#/$defs/Digest" }, { "type": "null" }] }
+      },
+      "x-horizon-validation": ["projection-preserves-EffectHost-effectID-executionID-bindingDigest-and-receiptDigest-exactly", "prepared-running-and-unknown-have-no-receipt-or-result-digests;terminal-states-have-a-durable-receipt", "unknown-never-relaunches-the-editor-and-reconciles-only-this-execution", "completed-workspace-edit-produces-normal-Guarded-files-patch-after-current-revision-and-original-content-digest-comparison", "result-content-is-read-only-through-authenticated-HostKernel-scope-and-is-never-written-to-events"]
+    }
+  }
+}

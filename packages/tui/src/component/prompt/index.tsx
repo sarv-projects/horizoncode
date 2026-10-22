@@ -26,7 +26,6 @@ import { useProject } from "../../context/project"
 import { useSync } from "../../context/sync"
 import { useEvent } from "../../context/event"
 import { editorSelectionKey, useEditorContext, type EditorSelection } from "../../context/editor"
-import { normalizePromptContent, openEditor } from "../../editor"
 import { useExit } from "../../context/exit"
 import { promptOffsetWidth } from "../../prompt/display"
 import { createStore, produce, unwrap } from "solid-js/store"
@@ -95,11 +94,6 @@ export type PromptRef = {
   focus(): void
   submit(): void
 }
-
-const money = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-})
 
 const DRAFT_RETENTION_MIN_CHARS = 20
 
@@ -263,22 +257,64 @@ export function Prompt(props: PromptProps) {
 
   const usage = createMemo(() => {
     if (!props.sessionID) return
-    const session = sync.session.get(props.sessionID)
     const msg = sync.data.message[props.sessionID] ?? []
-    const last = msg.findLast((item): item is AssistantMessage => item.role === "assistant" && item.tokens.output > 0)
+    const last = msg.findLast((item): item is AssistantMessage => item.role === "assistant")
     if (!last) return
-
-    const tokens =
-      last.tokens.input + last.tokens.output + last.tokens.reasoning + last.tokens.cache.read + last.tokens.cache.write
-    if (tokens <= 0) return
-
-    const model = sync.data.provider.find((item) => item.id === last.providerID)?.models[last.modelID]
-    const pct = model?.limit.context ? `${Math.round((tokens / model.limit.context) * 100)}%` : undefined
-    const cost = session?.cost ?? 0
-    return {
-      context: pct ? `${Locale.number(tokens)} (${pct})` : Locale.number(tokens),
-      cost: cost > 0 ? money.format(cost) : undefined,
+    const provenance = last.usageProvenance
+    if (!provenance) return
+    const metric = (value: unknown, label: string) => {
+      if (typeof value !== "object" || value === null || Array.isArray(value)) return `${label} unknown`
+      const item = value as { status?: unknown; value?: unknown }
+      if (item.status === "unknown") return `${label} unknown`
+      if ((item.status !== "provider-reported" && item.status !== "measured" && item.status !== "estimated") ||
+          !Number.isSafeInteger(item.value) || (item.value as number) < 0) return `${label} unknown`
+      const quality = item.status === "provider-reported" ? "R" : item.status === "measured" ? "M" : "E"
+      return `${label} ${Locale.number(item.value as number)}${quality}`
     }
+    const costStatus = provenance.cost?.status
+    return {
+      context: [
+        metric(provenance.tokens?.input, "in"),
+        metric(provenance.tokens?.output, "out"),
+        metric(provenance.tokens?.cache?.read, "cr"),
+        metric(provenance.tokens?.cache?.write, "cw"),
+      ].join(" · "),
+      // V1 has no currency field and its session-level scalar is legacy
+      // compatibility data. Show the source quality, never a fabricated USD
+      // amount or cross-provider aggregate.
+      cost: costStatus === "provider-reported" ? "cost R" : costStatus === "measured" ? "cost M" : costStatus === "estimated" ? "cost E" : "cost ?",
+    }
+  })
+
+  const contextLedgerSummary = createMemo(() => {
+    if (!props.sessionID) return "context unavailable"
+    const snapshot = sync.data.session.contextLedger[props.sessionID]
+    if (!snapshot) return "context unavailable"
+    const entries = Array.isArray(snapshot.ledger.entries) ? snapshot.ledger.entries : []
+    const numericTokens = entries.map((entry) => {
+      if (typeof entry !== "object" || entry === null) return undefined
+      const tokens = (entry as Record<string, unknown>).tokens
+      if (typeof tokens !== "object" || tokens === null || Array.isArray(tokens)) return undefined
+      const value = (tokens as Record<string, unknown>).value
+      return Number.isSafeInteger(value) && (value as number) >= 0 ? value as number : undefined
+    })
+    const tokenText = numericTokens.length > 0 && numericTokens.every((value) => value !== undefined)
+      ? Locale.number(numericTokens.reduce<number>((total, value) => total + (value ?? 0), 0))
+      : "unknown"
+    const requestBytes = Number.isSafeInteger(snapshot.ledger.requestBytes) &&
+      (snapshot.ledger.requestBytes as number) >= 0
+      ? `${Locale.number(snapshot.ledger.requestBytes as number)}B request payload`
+      : "request payload size unknown"
+    const protectedCount = entries.filter((entry) => typeof entry === "object" && entry !== null &&
+      (entry as Record<string, unknown>).protected === true).length
+    const cacheCounts = new Map<string, number>()
+    for (const entry of entries) {
+      if (typeof entry !== "object" || entry === null) continue
+      const cacheClass = (entry as Record<string, unknown>).cacheClass
+      if (typeof cacheClass === "string") cacheCounts.set(cacheClass, (cacheCounts.get(cacheClass) ?? 0) + 1)
+    }
+    const cache = [...cacheCounts].map(([name, count]) => `${name}:${count}`).join("/") || "unknown"
+    return `ctx ${tokenText} tokens · ${requestBytes} · ${entries.length} refs · ${protectedCount} protected · cache ${cache}`
   })
 
   const [store, setStore] = createStore<{
@@ -421,95 +457,22 @@ export function Prompt(props: PromptProps) {
         },
       },
       {
-        title: "Open editor",
-        category: "Session",
+        title: "Open workspace Explorer",
         name: "prompt.editor",
+        category: "Workspace",
         slashName: "editor",
-        run: async () => {
-          dialog.clear()
-
-          // replace summarized text parts with the actual text
-          const text = store.prompt.parts
-            .filter((p) => p.type === "text")
-            .reduce((acc, p) => {
-              if (!p.source) return acc
-              return acc.replace(p.source.text.value, p.text)
-            }, store.prompt.input)
-
-          const nonTextParts = store.prompt.parts.filter((p) => p.type !== "text")
-
-          const value = text
-          const content = await openEditor({
-            renderer,
-            value,
-            cwd:
-              (project.instance.path().worktree === "/" ? undefined : project.instance.path().worktree) ||
-              project.instance.directory() ||
-              paths.cwd,
-          })
-          if (!content) return
-          const normalized = normalizePromptContent(content)
-
-          input.setText(normalized)
-
-          // Update positions for nonTextParts based on their location in new content
-          // Filter out parts whose virtual text was deleted
-          // this handles a case where the user edits the text in the editor
-          // such that the virtual text moves around or is deleted
-          const updatedNonTextParts = nonTextParts
-            .map((part) => {
-              let virtualText = ""
-              if (part.type === "file" && part.source?.text) {
-                virtualText = part.source.text.value
-              } else if (part.type === "agent" && part.source) {
-                virtualText = part.source.value
-              }
-
-              if (!virtualText) return part
-
-              const newStart = normalized.indexOf(virtualText)
-              // if the virtual text is deleted, remove the part
-              if (newStart === -1) return null
-
-              const newEnd = newStart + virtualText.length
-
-              if (part.type === "file" && part.source?.text) {
-                return {
-                  ...part,
-                  source: {
-                    ...part.source,
-                    text: {
-                      ...part.source.text,
-                      start: newStart,
-                      end: newEnd,
-                    },
-                  },
-                }
-              }
-
-              if (part.type === "agent" && part.source) {
-                return {
-                  ...part,
-                  source: {
-                    ...part.source,
-                    start: newStart,
-                    end: newEnd,
-                  },
-                }
-              }
-
-              return part
-            })
-            .filter((part) => part !== null)
-
-          setStore("prompt", {
-            input: normalized,
-            // keep only the non-text parts because the text parts were
-            // already expanded inline
-            parts: updatedNonTextParts,
-          })
-          restoreExtmarksFromParts(updatedNonTextParts)
-          input.cursorOffset = Bun.stringWidth(normalized)
+        hidden: true,
+        run: () => {
+          const command = store.prompt.input.trim()
+          const side = command === "/editor --side"
+          const close = command === "/editor --close"
+          if (command !== "/editor" && !side && !close) {
+            toast.show({ title: "Usage", message: "Use /editor, /editor --side, or /editor --close.", variant: "info" })
+            return
+          }
+          input.setText("")
+          setStore("prompt", { input: "", parts: [] })
+          keymap.dispatchCommand(side ? "session.editor.open.side" : close ? "session.editor.close" : "session.editor.open")
         },
       },
       {
@@ -567,7 +530,6 @@ export function Prompt(props: PromptProps) {
     mode: OPENCODE_BASE_MODE,
     bindings: tuiConfig.keybinds.gather("prompt.palette", [
       "prompt.submit",
-      "prompt.editor",
       "prompt.editor_context.clear",
       "prompt.stash",
       "prompt.stash.pop",
@@ -1056,7 +1018,15 @@ export function Prompt(props: PromptProps) {
           ]
         : []
 
-    if (store.mode === "shell") {
+    if (store.mode !== "shell" && inputText.trim() === "/editor --side") {
+      input.setText("")
+      setStore("prompt", { input: "", parts: [] })
+      keymap.dispatchCommand("session.editor.open.side")
+    } else if (store.mode !== "shell" && inputText.trim() === "/editor --close") {
+      input.setText("")
+      setStore("prompt", { input: "", parts: [] })
+      keymap.dispatchCommand("session.editor.close")
+    } else if (store.mode === "shell") {
       move.startSubmit()
       void sdk.client.session
         .shell(
@@ -1676,13 +1646,13 @@ export function Prompt(props: PromptProps) {
                     <Match when={usage()}>
                       {(item) => (
                         <text fg={theme.textMuted} wrapMode="none">
-                          {[item().context, item().cost].filter(Boolean).join(" · ")}
+                          {[contextLedgerSummary(), item().context, item().cost].filter(Boolean).join(" · ")}
                         </text>
                       )}
                     </Match>
                     <Match when={true}>
                       <text fg={theme.text}>
-                        {agentShortcut()} <span style={{ fg: theme.textMuted }}>agents</span>
+                        {[contextLedgerSummary(), `${agentShortcut()} agents`].filter(Boolean).join(" · ")}
                       </text>
                     </Match>
                   </Switch>

@@ -1,0 +1,282 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "horizon://schemas/web-search-route-plan-v1",
+  "title": "TrustedWebSearchRoutePlanV1",
+  "description": "HostKernel-minted trusted projection after consent, route settings, policy, auth availability, and bounded aggregate admission. Never model input; no caller-chosen endpoints or raw credentials.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/directSearchPlan"
+    },
+    {
+      "$ref": "#/$defs/groundedSearchPlan"
+    }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^blake3:[a-f0-9]{64}$"
+    },
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "routeId",
+        "providerId",
+        "authSource",
+        "costClass",
+        "retryProfile",
+        "cooldownProfile"
+      ],
+      "properties": {
+        "routeId": {
+          "$ref": "#/$defs/id"
+        },
+        "providerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9._-]+$"
+        },
+        "authSource": {
+          "enum": [
+            "none",
+            "secret_broker",
+            "model_provider"
+          ]
+        },
+        "costClass": {
+          "enum": [
+            "free",
+            "paid",
+            "trial",
+            "unknown"
+          ]
+        },
+        "secretRef": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256,
+          "description": "Opaque SecretBroker reference; raw credential bytes are forbidden."
+        },
+        "retryProfile": {
+          "enum": [
+            "no_retry_auth_or_other_4xx",
+            "one_retry_network_timeout_5xx",
+            "rate_limit_next_route",
+            "empty_next_route_once"
+          ]
+        },
+        "cooldownProfile": {
+          "enum": [
+            "none",
+            "retry_after_max_60s"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "authSource": {
+                "const": "secret_broker"
+              }
+            },
+            "required": [
+              "authSource"
+            ]
+          },
+          "then": {
+            "properties": {
+              "secretRef": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "secretRef"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "authSource": {
+                "const": "none"
+              }
+            },
+            "required": [
+              "authSource"
+            ]
+          },
+          "then": {
+            "not": {
+              "required": [
+                "secretRef"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "directSearchPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "planId",
+        "requestId",
+        "routePlanDigest",
+        "requestDigest",
+        "principalDigest",
+        "sessionId",
+        "messageId",
+        "toolCallId",
+        "routeClass",
+        "consentRef",
+        "issuedAtUnixMs",
+        "routes"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "planId": {
+          "$ref": "#/$defs/id"
+        },
+        "requestId": {
+          "$ref": "#/$defs/id"
+        },
+        "routePlanDigest": {
+          "$ref": "#/$defs/digest",
+          "description": "BLAKE3 of canonical MessagePack encoding of the exact approved ordered routes array; requestDigest and protected identity pins are carried separately."
+        },
+        "requestDigest": {
+          "$ref": "#/$defs/digest",
+          "description": "Digest of exact normalized model intent including bounded options."
+        },
+        "principalDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/id"
+        },
+        "messageId": {
+          "$ref": "#/$defs/id"
+        },
+        "toolCallId": {
+          "$ref": "#/$defs/id"
+        },
+        "routeClass": {
+          "const": "direct_search"
+        },
+        "consentRef": {
+          "$ref": "#/$defs/id"
+        },
+        "issuedAtUnixMs": {
+          "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64"
+        },
+        "routes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 10,
+          "items": {
+            "$ref": "#/$defs/route"
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "groundedSearchPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "planId",
+        "requestId",
+        "routePlanDigest",
+        "requestDigest",
+        "principalDigest",
+        "sessionId",
+        "messageId",
+        "toolCallId",
+        "routeClass",
+        "consentRef",
+        "issuedAtUnixMs",
+        "explicitRouteConsent",
+        "routes"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "planId": {
+          "$ref": "#/$defs/id"
+        },
+        "requestId": {
+          "$ref": "#/$defs/id"
+        },
+        "routePlanDigest": {
+          "$ref": "#/$defs/digest",
+          "description": "BLAKE3 of canonical MessagePack encoding of the exact approved ordered routes array."
+        },
+        "requestDigest": {
+          "$ref": "#/$defs/digest",
+          "description": "Digest of exact normalized model intent including bounded options."
+        },
+        "principalDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/id"
+        },
+        "messageId": {
+          "$ref": "#/$defs/id"
+        },
+        "toolCallId": {
+          "$ref": "#/$defs/id"
+        },
+        "routeClass": {
+          "const": "grounded_model_search"
+        },
+        "consentRef": {
+          "$ref": "#/$defs/id"
+        },
+        "issuedAtUnixMs": {
+          "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64"
+        },
+        "explicitRouteConsent": {
+          "const": true
+        },
+        "routes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {
+            "$ref": "#/$defs/route"
+          }
+        }
+      }
+    }
+  },
+  "x-horizon-validation": [
+    "route-plan-authenticated-principal-session-message-tool-call-must-match-protected-context",
+    "route-plan-digest-is-blake3-canonical-messagepack-of-exact-ordered-routes-array",
+    "routes-only-from-fixed-registered-adapters-and-current-user-enabled-routes",
+    "direct-search-has-at-most-ten-distinct-enabled-route-profiles (four anonymous defaults plus six separately consented authenticated routes)",
+    "grounded-model-search-is-separate-explicitly-consented-single-route-never-implicit-fallback",
+    "secret-ref-must-be-opaque-available-and-bound-to-matching-provider-route",
+    "route-cost-auth-retry-cooldown-are-fixed-by-trusted-adapter-policy",
+    "route-plan-and-request-digests-pinned-through-Guard-lease-receipt-and-UNKNOWN-reconciliation",
+    "route-order-is-the-current-explicit-user-configured-order",
+    "routeIds-unique-and-routeIndex-in-result-matches-exact-ordered-plan",
+    "perform-one-ordered-pass-through-enabled-routes; only timeout-network-or-5xx gets-one-short-retry-on-that-route; auth-4xx-and-429-never-retry-the-same-route"
+  ]
+}

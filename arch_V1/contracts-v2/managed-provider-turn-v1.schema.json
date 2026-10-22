@@ -1,0 +1,1508 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "horizon://schemas/managed-provider-turn-v1",
+  "title": "ManagedProviderTurnV1",
+  "description": "Private authenticated HostKernel/Core DTOs for rehydrating the exact latest settled provider response and closing a managed turn. Settlement may be an intermediate tool-call response; only the separate completion operation creates fresh-turn proof.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/PrepareRequest"
+    },
+    {
+      "$ref": "#/$defs/PrepareResponse"
+    },
+    {
+      "$ref": "#/$defs/ResolveApprovalRequest"
+    },
+    {
+      "$ref": "#/$defs/ResolveApprovalResponse"
+    },
+    {
+      "$ref": "#/$defs/BeginRequest"
+    },
+    {
+      "$ref": "#/$defs/BeginUnavailableResponse"
+    },
+    {
+      "$ref": "#/$defs/BeginReplayResponse"
+    },
+    {
+      "$ref": "#/$defs/BeginFreshResponse"
+    },
+    {
+      "$ref": "#/$defs/SettleRequest"
+    },
+    {
+      "$ref": "#/$defs/SettleResponse"
+    },
+    {
+      "$ref": "#/$defs/UnknownRequest"
+    },
+    {
+      "$ref": "#/$defs/UnknownResponse"
+    },
+    {
+      "$ref": "#/$defs/InspectSettlementRequest"
+    },
+    {
+      "$ref": "#/$defs/InspectSettlementResponse"
+    },
+    {
+      "$ref": "#/$defs/CompleteTurnRequest"
+    },
+    {
+      "$ref": "#/$defs/CompleteTurnResponse"
+    }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^blake3:[0-9a-f]{64}$"
+    },
+    "operationDigest": {
+      "type": "string",
+      "pattern": "^(?:sha256|blake3):[0-9a-f]{64}$"
+    },
+    "revision": {
+      "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64"
+    },
+    "requestPins": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requestID",
+        "requestSequence",
+        "contextSelectionDigest",
+        "requestDigest",
+        "transportRequestDigest",
+        "operationDigest"
+      ],
+      "properties": {
+        "requestID": {
+          "$ref": "#/$defs/id"
+        },
+        "requestSequence": {
+          "$ref": "#/$defs/revision"
+        },
+        "contextSelectionDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "requestDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "transportRequestDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "operationDigest": {
+          "$ref": "#/$defs/operationDigest"
+        }
+      }
+    },
+    "routeProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "providerID",
+        "modelID",
+        "harnessID",
+        "routeID",
+        "endpointRevision",
+        "credentialLeaseRef"
+      ],
+      "properties": {
+        "providerID": {
+          "$ref": "#/$defs/id"
+        },
+        "modelID": {
+          "$ref": "#/$defs/id"
+        },
+        "harnessID": {
+          "$ref": "#/$defs/id"
+        },
+        "routeID": {
+          "$ref": "#/$defs/id"
+        },
+        "endpointRevision": {
+          "$ref": "#/$defs/digest"
+        },
+        "credentialLeaseRef": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/id"
+            }
+          ]
+        }
+      }
+    },
+    "secretUseContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requesterRef",
+        "runRef",
+        "profileRef",
+        "purpose",
+        "expiresAtUnixMs"
+      ],
+      "properties": {
+        "requesterRef": {
+          "$ref": "#/$defs/id"
+        },
+        "runRef": {
+          "$ref": "#/$defs/id"
+        },
+        "profileRef": {
+          "$ref": "#/$defs/id"
+        },
+        "purpose": {
+          "const": "PROVIDER_REQUEST"
+        },
+        "expiresAtUnixMs": {
+          "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64",
+          "description": "Unsigned 64-bit JSON counter/budget; encoded as canonical decimal string."
+        }
+      }
+    },
+    "preparePins": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "managedAttempt",
+        "routeProjection",
+        "requestPins",
+        "contextSelection",
+        "profileSelection"
+      ],
+      "properties": {
+        "managedAttempt": {
+          "$ref": "#/$defs/managedAttempt"
+        },
+        "routeProjection": {
+          "$ref": "#/$defs/routeProjection"
+        },
+        "requestPins": {
+          "$ref": "#/$defs/requestPins"
+        },
+        "contextSelection": {
+          "type": "object"
+        },
+        "profileSelection": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "profileId",
+            "revision"
+          ],
+          "properties": {
+            "profileId": {
+              "$ref": "#/$defs/id"
+            },
+            "revision": {
+              "$ref": "#/$defs/revision"
+            }
+          }
+        }
+      }
+    },
+    "PrepareRequest": {
+      "$ref": "#/$defs/preparePins"
+    },
+    "PrepareResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "requestID",
+        "requestSequence",
+        "contextSelectionDigest",
+        "providerID",
+        "modelID",
+        "harnessID",
+        "routeID",
+        "endpointRevision",
+        "credentialLeaseRef",
+        "requestDigest",
+        "transportRequestDigest",
+        "operationDigest",
+        "revision",
+        "managedAttempt",
+        "guardChallenge"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "PREPARED",
+            "REPLAY",
+            "UNAVAILABLE"
+          ]
+        },
+        "requestID": {
+          "$ref": "#/$defs/id"
+        },
+        "requestSequence": {
+          "$ref": "#/$defs/revision"
+        },
+        "contextSelectionDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "providerID": {
+          "$ref": "#/$defs/id"
+        },
+        "modelID": {
+          "$ref": "#/$defs/id"
+        },
+        "harnessID": {
+          "$ref": "#/$defs/id"
+        },
+        "routeID": {
+          "$ref": "#/$defs/id"
+        },
+        "endpointRevision": {
+          "$ref": "#/$defs/digest"
+        },
+        "credentialLeaseRef": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/id"
+            }
+          ]
+        },
+        "requestDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "transportRequestDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "operationDigest": {
+          "$ref": "#/$defs/operationDigest"
+        },
+        "providerRequestID": {
+          "$ref": "#/$defs/id"
+        },
+        "prepareDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "revision": {
+          "$ref": "#/$defs/revision"
+        },
+        "managedAttempt": {
+          "$ref": "#/$defs/managedAttempt"
+        },
+        "guardChallenge": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/guardChallenge"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "UNAVAILABLE"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "providerRequestID"
+                  ]
+                },
+                {
+                  "required": [
+                    "prepareDigest"
+                  ]
+                }
+              ]
+            }
+          },
+          "else": {
+            "required": [
+              "providerRequestID",
+              "prepareDigest"
+            ]
+          }
+        }
+      ]
+    },
+    "BeginRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "managedAttempt",
+        "providerRequestID",
+        "prepareDigest",
+        "routeProjection",
+        "requestPins"
+      ],
+      "properties": {
+        "managedAttempt": {
+          "$ref": "#/$defs/managedAttempt"
+        },
+        "providerRequestID": {
+          "$ref": "#/$defs/id"
+        },
+        "prepareDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "routeProjection": {
+          "$ref": "#/$defs/routeProjection"
+        },
+        "requestPins": {
+          "$ref": "#/$defs/requestPins"
+        }
+      }
+    },
+    "ResolveApprovalRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "managedAttempt",
+        "routeProjection",
+        "requestPins",
+        "challengeID",
+        "effectID",
+        "allow"
+      ],
+      "properties": {
+        "managedAttempt": {
+          "$ref": "#/$defs/managedAttempt"
+        },
+        "routeProjection": {
+          "$ref": "#/$defs/routeProjection"
+        },
+        "requestPins": {
+          "$ref": "#/$defs/requestPins"
+        },
+        "challengeID": {
+          "$ref": "#/$defs/id"
+        },
+        "effectID": {
+          "$ref": "#/$defs/id"
+        },
+        "allow": {
+          "type": "boolean"
+        }
+      }
+    },
+    "ResolveApprovalResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "challengeID",
+        "effectID",
+        "providerRequestID",
+        "prepareDigest",
+        "revision",
+        "managedAttempt"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "APPROVED",
+            "DENIED"
+          ]
+        },
+        "challengeID": {
+          "$ref": "#/$defs/id"
+        },
+        "effectID": {
+          "$ref": "#/$defs/id"
+        },
+        "providerRequestID": {
+          "$ref": "#/$defs/id"
+        },
+        "prepareDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "revision": {
+          "$ref": "#/$defs/revision"
+        },
+        "managedAttempt": {
+          "$ref": "#/$defs/managedAttempt"
+        }
+      }
+    },
+    "BeginBaseResponse": {
+      "type": "object",
+      "required": [
+        "status",
+        "sendAuthorization",
+        "revision",
+        "managedAttempt",
+        "requestID",
+        "requestSequence",
+        "contextSelectionDigest",
+        "providerID",
+        "modelID",
+        "harnessID",
+        "routeID",
+        "endpointRevision",
+        "credentialLeaseRef",
+        "guardChallengeID",
+        "effectID",
+        "capabilityLeaseDigest",
+        "authorizationBindingDigest",
+        "requestDigest",
+        "transportRequestDigest",
+        "operationDigest"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "DISPATCHING",
+            "REPLAY"
+          ]
+        },
+        "providerRequestID": {
+          "$ref": "#/$defs/id"
+        },
+        "prepareDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "dispatchDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "sendAuthorization": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          ]
+        },
+        "revision": {
+          "$ref": "#/$defs/revision"
+        },
+        "managedAttempt": {
+          "$ref": "#/$defs/managedAttempt"
+        },
+        "requestID": {
+          "$ref": "#/$defs/id"
+        },
+        "requestSequence": {
+          "$ref": "#/$defs/revision"
+        },
+        "contextSelectionDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "providerID": {
+          "$ref": "#/$defs/id"
+        },
+        "modelID": {
+          "$ref": "#/$defs/id"
+        },
+        "harnessID": {
+          "$ref": "#/$defs/id"
+        },
+        "routeID": {
+          "$ref": "#/$defs/id"
+        },
+        "endpointRevision": {
+          "$ref": "#/$defs/digest"
+        },
+        "credentialLeaseRef": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/id"
+            }
+          ]
+        },
+        "guardChallengeID": {
+          "$ref": "#/$defs/id"
+        },
+        "effectID": {
+          "$ref": "#/$defs/id"
+        },
+        "capabilityLeaseDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "authorizationBindingDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "requestDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "transportRequestDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "operationDigest": {
+          "$ref": "#/$defs/operationDigest"
+        }
+      }
+    },
+    "BeginUnavailableResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "sendAuthorization",
+        "revision",
+        "managedAttempt",
+        "requestID",
+        "requestSequence",
+        "contextSelectionDigest",
+        "providerID",
+        "modelID",
+        "harnessID",
+        "routeID",
+        "endpointRevision",
+        "credentialLeaseRef",
+        "guardChallengeID",
+        "effectID",
+        "capabilityLeaseDigest",
+        "authorizationBindingDigest",
+        "requestDigest",
+        "transportRequestDigest",
+        "operationDigest"
+      ],
+      "properties": {
+        "status": {
+          "const": "UNAVAILABLE"
+        },
+        "sendAuthorization": {
+          "type": "null"
+        },
+        "revision": {
+          "$ref": "#/$defs/revision"
+        },
+        "managedAttempt": {
+          "$ref": "#/$defs/managedAttempt"
+        },
+        "requestID": {
+          "$ref": "#/$defs/id"
+        },
+        "requestSequence": {
+          "$ref": "#/$defs/revision"
+        },
+        "contextSelectionDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "providerID": {
+          "$ref": "#/$defs/id"
+        },
+        "modelID": {
+          "$ref": "#/$defs/id"
+        },
+        "harnessID": {
+          "$ref": "#/$defs/id"
+        },
+        "routeID": {
+          "$ref": "#/$defs/id"
+        },
+        "endpointRevision": {
+          "$ref": "#/$defs/digest"
+        },
+        "credentialLeaseRef": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/id"
+            }
+          ]
+        },
+        "guardChallengeID": {
+          "type": "null"
+        },
+        "effectID": {
+          "type": "null"
+        },
+        "capabilityLeaseDigest": {
+          "type": "null"
+        },
+        "authorizationBindingDigest": {
+          "type": "null"
+        },
+        "requestDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "transportRequestDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "operationDigest": {
+          "$ref": "#/$defs/operationDigest"
+        }
+      }
+    },
+    "BeginReplayResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/BeginBaseResponse"
+        },
+        {
+          "required": [
+            "providerRequestID",
+            "prepareDigest",
+            "dispatchDigest"
+          ],
+          "properties": {
+            "status": {
+              "const": "REPLAY"
+            },
+            "sendAuthorization": {
+              "type": "null"
+            }
+          },
+          "not": {
+            "required": [
+              "secretUseContext"
+            ]
+          },
+          "unevaluatedProperties": false
+        }
+      ]
+    },
+    "BeginFreshResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/BeginBaseResponse"
+        },
+        {
+          "required": [
+            "providerRequestID",
+            "prepareDigest",
+            "dispatchDigest",
+            "secretUseContext"
+          ],
+          "properties": {
+            "status": {
+              "const": "DISPATCHING"
+            },
+            "sendAuthorization": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "secretUseContext": {
+              "$ref": "#/$defs/secretUseContext"
+            }
+          },
+          "unevaluatedProperties": false
+        }
+      ]
+    },
+    "SettleRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "managedAttempt",
+        "providerRequestID",
+        "prepareDigest",
+        "dispatchDigest",
+        "transportRequestDigest",
+        "operationDigest",
+        "assistantEntryID",
+        "stepFinishIndex",
+        "responseDigest",
+        "usageProvenance"
+      ],
+      "properties": {
+        "managedAttempt": {
+          "$ref": "#/$defs/managedAttempt"
+        },
+        "providerRequestID": {
+          "$ref": "#/$defs/id"
+        },
+        "prepareDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "dispatchDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "transportRequestDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "operationDigest": {
+          "$ref": "#/$defs/operationDigest"
+        },
+        "assistantEntryID": {
+          "$ref": "#/$defs/id"
+        },
+        "stepFinishIndex": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1024
+        },
+        "responseDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "usageProvenance": {
+          "type": "object"
+        }
+      }
+    },
+    "SettleResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "providerRequestID",
+        "prepareDigest",
+        "dispatchDigest",
+        "assistantEntryID",
+        "stepFinishIndex",
+        "responseDigest",
+        "usageDigest",
+        "requestID",
+        "requestSequence",
+        "contextSelectionDigest",
+        "providerID",
+        "modelID",
+        "harnessID",
+        "routeID",
+        "endpointRevision",
+        "credentialLeaseRef",
+        "requestDigest",
+        "transportRequestDigest",
+        "operationDigest",
+        "revision",
+        "managedAttempt"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "SETTLED",
+            "REPLAY"
+          ]
+        },
+        "providerRequestID": {
+          "$ref": "#/$defs/id"
+        },
+        "prepareDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "dispatchDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "assistantEntryID": {
+          "$ref": "#/$defs/id"
+        },
+        "stepFinishIndex": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1024
+        },
+        "responseDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "usageDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "requestID": {
+          "$ref": "#/$defs/id"
+        },
+        "requestSequence": {
+          "$ref": "#/$defs/revision"
+        },
+        "contextSelectionDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "providerID": {
+          "$ref": "#/$defs/id"
+        },
+        "modelID": {
+          "$ref": "#/$defs/id"
+        },
+        "harnessID": {
+          "$ref": "#/$defs/id"
+        },
+        "routeID": {
+          "$ref": "#/$defs/id"
+        },
+        "endpointRevision": {
+          "$ref": "#/$defs/digest"
+        },
+        "credentialLeaseRef": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/id"
+            }
+          ]
+        },
+        "requestDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "transportRequestDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "operationDigest": {
+          "$ref": "#/$defs/operationDigest"
+        },
+        "revision": {
+          "$ref": "#/$defs/revision"
+        },
+        "managedAttempt": {
+          "$ref": "#/$defs/managedAttempt"
+        }
+      }
+    },
+    "UnknownRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "managedAttempt",
+        "providerRequestID",
+        "prepareDigest",
+        "dispatchDigest",
+        "transportRequestDigest",
+        "operationDigest",
+        "reasonCode"
+      ],
+      "properties": {
+        "managedAttempt": {
+          "$ref": "#/$defs/managedAttempt"
+        },
+        "providerRequestID": {
+          "$ref": "#/$defs/id"
+        },
+        "prepareDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "dispatchDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "transportRequestDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "operationDigest": {
+          "$ref": "#/$defs/operationDigest"
+        },
+        "reasonCode": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z0-9_]+$"
+        }
+      }
+    },
+    "UnknownResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "providerRequestID",
+        "prepareDigest",
+        "dispatchDigest",
+        "reasonCode",
+        "requestID",
+        "requestSequence",
+        "contextSelectionDigest",
+        "providerID",
+        "modelID",
+        "harnessID",
+        "routeID",
+        "endpointRevision",
+        "credentialLeaseRef",
+        "requestDigest",
+        "transportRequestDigest",
+        "operationDigest",
+        "revision",
+        "managedAttempt"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "UNKNOWN",
+            "REPLAY"
+          ]
+        },
+        "providerRequestID": {
+          "$ref": "#/$defs/id"
+        },
+        "prepareDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "dispatchDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "reasonCode": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z0-9_]+$"
+        },
+        "requestID": {
+          "$ref": "#/$defs/id"
+        },
+        "requestSequence": {
+          "$ref": "#/$defs/revision"
+        },
+        "contextSelectionDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "providerID": {
+          "$ref": "#/$defs/id"
+        },
+        "modelID": {
+          "$ref": "#/$defs/id"
+        },
+        "harnessID": {
+          "$ref": "#/$defs/id"
+        },
+        "routeID": {
+          "$ref": "#/$defs/id"
+        },
+        "endpointRevision": {
+          "$ref": "#/$defs/digest"
+        },
+        "credentialLeaseRef": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/id"
+            }
+          ]
+        },
+        "requestDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "transportRequestDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "operationDigest": {
+          "$ref": "#/$defs/operationDigest"
+        },
+        "revision": {
+          "$ref": "#/$defs/revision"
+        },
+        "managedAttempt": {
+          "$ref": "#/$defs/managedAttempt"
+        }
+      }
+    },
+    "managedAttempt": {
+      "type": "object",
+      "description": "Exact ManagedAttemptScopeV1 from kernel/src/protocol.rs, including requestID, requestSequence, contextSelectionDigest, permissionScopeDigest and worktreeTarget when required by the live provider boundary. The HostKernel independently resolves every field against the authenticated current Attempt.",
+      "additionalProperties": false,
+      "required": [
+        "goalID",
+        "runID",
+        "taskID",
+        "attemptID",
+        "ownerEpoch",
+        "expectedManagedRevision",
+        "locationID",
+        "sessionID",
+        "workspaceRevision",
+        "delegationBindingDigest",
+        "permissionScopeDigest",
+        "effectiveMaxTokens",
+        "remainingTokens"
+      ],
+      "properties": {
+        "goalID": {
+          "$ref": "#/$defs/id"
+        },
+        "runID": {
+          "$ref": "#/$defs/id"
+        },
+        "taskID": {
+          "$ref": "#/$defs/id"
+        },
+        "attemptID": {
+          "$ref": "#/$defs/id"
+        },
+        "ownerEpoch": {
+          "$ref": "#/$defs/revision"
+        },
+        "expectedManagedRevision": {
+          "$ref": "#/$defs/revision"
+        },
+        "locationID": {
+          "$ref": "#/$defs/id"
+        },
+        "sessionID": {
+          "$ref": "#/$defs/id"
+        },
+        "workspaceRevision": {
+          "$ref": "#/$defs/digest"
+        },
+        "delegationBindingDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "permissionScopeDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "effectiveMaxTokens": {
+          "$ref": "#/$defs/revision"
+        },
+        "remainingTokens": {
+          "$ref": "#/$defs/revision"
+        },
+        "requestID": {
+          "$ref": "#/$defs/id"
+        },
+        "requestSequence": {
+          "$ref": "#/$defs/revision"
+        },
+        "contextSelectionDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "worktreeTarget": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "worktreeID",
+            "worktreeBaseRevision",
+            "worktreePoolRevision",
+            "locationID",
+            "workspaceID",
+            "workspaceRef",
+            "canonicalRoot",
+            "workspaceRevision"
+          ],
+          "properties": {
+            "worktreeID": {
+              "$ref": "#/$defs/id"
+            },
+            "worktreeBaseRevision": {
+              "$ref": "#/$defs/id"
+            },
+            "worktreePoolRevision": {
+              "$ref": "#/$defs/revision"
+            },
+            "locationID": {
+              "$ref": "#/$defs/id"
+            },
+            "workspaceID": {
+              "$ref": "#/$defs/id"
+            },
+            "workspaceRef": {
+              "$ref": "#/$defs/id"
+            },
+            "canonicalRoot": {
+              "$ref": "#/$defs/id"
+            },
+            "workspaceRevision": {
+              "$ref": "#/$defs/id"
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "requestID"
+            ]
+          },
+          "then": {
+            "required": [
+              "requestSequence",
+              "contextSelectionDigest"
+            ]
+          },
+          "else": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "requestSequence"
+                  ]
+                },
+                {
+                  "required": [
+                    "contextSelectionDigest"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "InspectSettlementRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "managedAttempt"
+      ],
+      "properties": {
+        "managedAttempt": {
+          "$ref": "#/$defs/managedAttempt"
+        }
+      }
+    },
+    "InspectSettlementResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "providerRequestID",
+        "prepareDigest",
+        "dispatchDigest",
+        "assistantEntryID",
+        "stepFinishIndex",
+        "responseDigest",
+        "usageDigest",
+        "requestID",
+        "requestSequence",
+        "contextSelectionDigest",
+        "providerID",
+        "modelID",
+        "harnessID",
+        "routeID",
+        "endpointRevision",
+        "credentialLeaseRef",
+        "requestDigest",
+        "transportRequestDigest",
+        "operationDigest",
+        "revision",
+        "managedAttempt"
+      ],
+      "properties": {
+        "status": {
+          "const": "SETTLED"
+        },
+        "providerRequestID": {
+          "$ref": "#/$defs/id"
+        },
+        "prepareDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "dispatchDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "assistantEntryID": {
+          "$ref": "#/$defs/id"
+        },
+        "stepFinishIndex": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1024
+        },
+        "responseDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "usageDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "requestID": {
+          "$ref": "#/$defs/id"
+        },
+        "requestSequence": {
+          "$ref": "#/$defs/revision"
+        },
+        "contextSelectionDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "providerID": {
+          "$ref": "#/$defs/id"
+        },
+        "modelID": {
+          "$ref": "#/$defs/id"
+        },
+        "harnessID": {
+          "$ref": "#/$defs/id"
+        },
+        "routeID": {
+          "$ref": "#/$defs/id"
+        },
+        "endpointRevision": {
+          "$ref": "#/$defs/digest"
+        },
+        "credentialLeaseRef": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/id"
+            }
+          ]
+        },
+        "requestDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "transportRequestDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "operationDigest": {
+          "$ref": "#/$defs/operationDigest"
+        },
+        "revision": {
+          "$ref": "#/$defs/revision"
+        },
+        "managedAttempt": {
+          "$ref": "#/$defs/managedAttempt"
+        }
+      }
+    },
+    "CompleteTurnRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "managedAttempt",
+        "providerRequestID",
+        "assistantEntryID",
+        "responseDigest",
+        "usageDigest"
+      ],
+      "properties": {
+        "managedAttempt": {
+          "$ref": "#/$defs/managedAttempt"
+        },
+        "providerRequestID": {
+          "$ref": "#/$defs/id"
+        },
+        "assistantEntryID": {
+          "$ref": "#/$defs/id"
+        },
+        "responseDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "usageDigest": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "CompleteTurnResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "providerRequestID",
+        "assistantEntryID",
+        "responseDigest",
+        "usageDigest",
+        "dispatchSettlementDigest",
+        "requestSequence",
+        "completionReceiptDigest",
+        "managedAttempt"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "COMPLETED",
+            "REPLAY"
+          ]
+        },
+        "providerRequestID": {
+          "$ref": "#/$defs/id"
+        },
+        "assistantEntryID": {
+          "$ref": "#/$defs/id"
+        },
+        "responseDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "usageDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "dispatchSettlementDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "requestSequence": {
+          "$ref": "#/$defs/revision"
+        },
+        "completionReceiptDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "managedAttempt": {
+          "$ref": "#/$defs/managedAttempt"
+        }
+      }
+    },
+    "guardChallenge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "challengeID",
+        "effectID",
+        "capabilityID",
+        "inputDigest",
+        "normalizedTargets",
+        "expiresAtUnixMs",
+        "policySummary",
+        "origin",
+        "source",
+        "policyID",
+        "policyDigest",
+        "normalizedAction",
+        "argumentSummary",
+        "requestedGuarantees",
+        "guaranteeAssessment",
+        "runID",
+        "sessionID",
+        "noResponse",
+        "allowEnabled"
+      ],
+      "properties": {
+        "challengeID": {
+          "$ref": "#/$defs/id"
+        },
+        "effectID": {
+          "$ref": "#/$defs/id"
+        },
+        "capabilityID": {
+          "const": "providers.infer"
+        },
+        "inputDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "normalizedTargets": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "providerID",
+              "modelID",
+              "harnessID",
+              "routeID",
+              "endpointRevision",
+              "maxTokens",
+              "maxCostMicros"
+            ],
+            "properties": {
+              "providerID": {
+                "$ref": "#/$defs/id"
+              },
+              "modelID": {
+                "$ref": "#/$defs/id"
+              },
+              "harnessID": {
+                "$ref": "#/$defs/id"
+              },
+              "routeID": {
+                "$ref": "#/$defs/id"
+              },
+              "endpointRevision": {
+                "$ref": "#/$defs/digest"
+              },
+              "maxTokens": {
+                "$ref": "#/$defs/revision"
+              },
+              "maxCostMicros": {
+                "$ref": "#/$defs/revision"
+              }
+            }
+          }
+        },
+        "expiresAtUnixMs": {
+          "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64",
+          "description": "Unsigned 64-bit JSON counter/budget; encoded as canonical decimal string."
+        },
+        "policySummary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "origin": {
+          "const": "managed_run"
+        },
+        "source": {
+          "const": "host.managed_provider"
+        },
+        "policyID": {
+          "const": "provider-inference.managed.v1"
+        },
+        "policyDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "normalizedAction": {
+          "const": "providers.infer"
+        },
+        "argumentSummary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "text"
+          ],
+          "properties": {
+            "status": {
+              "const": "available"
+            },
+            "text": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          }
+        },
+        "requestedGuarantees": {
+          "const": [
+            "live_managed_attempt",
+            "selected_route_revision",
+            "normalized_request_digest",
+            "transport_request_digest",
+            "secret_operation_digest",
+            "explicit_route_consent",
+            "budget_bound",
+            "one_use",
+            "no_fallback"
+          ]
+        },
+        "guaranteeAssessment": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "residual"
+          ],
+          "properties": {
+            "status": {
+              "const": "assessed"
+            },
+            "residual": {
+              "const": []
+            }
+          }
+        },
+        "runID": {
+          "$ref": "#/$defs/id"
+        },
+        "sessionID": {
+          "$ref": "#/$defs/id"
+        },
+        "noResponse": {
+          "const": "deny_and_expire"
+        },
+        "allowEnabled": {
+          "const": true
+        }
+      }
+    }
+  },
+  "$comment": "HostKernel prepares a per-request Guard challenge bound to exact route, request, Attempt and budget. That challenge and its approved one-use lease are the provider inference consent proof. Route/request/settlement projections never accept or echo caller-supplied consent or Guard authority. Each SDK step-finish settles its immutable persisted MessageV2 snapshot; responseDigest uses horizoncode.managed-provider-response-step.v2 and includes the exact stepFinishIndex. A later SDK step creates a new monotonically sequenced provider request. Completion is allowed only from the ordered settled dispatches and final assistant snapshot, with no unresolved/in-flight request or Attempt effects. A Core restart recovers pins only through inspect_settlement, never by recomputing pins from transcript text."
+}

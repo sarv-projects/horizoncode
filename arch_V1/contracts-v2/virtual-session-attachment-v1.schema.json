@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "horizon://schemas/virtual-session-attachment-v1",
+  "title": "VirtualSessionAttachmentV1",
+  "description": "Authenticated read-only client attachment to a virtual session scope (A-V2-30 §12.16).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "attachmentId",
+    "hostBindingRef",
+    "sourceStoreId",
+    "sourceEpoch",
+    "sourceCursor",
+    "workspacePolicyRevision",
+    "maxQueueDepth",
+    "subscribedCapabilities"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "attachmentId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "hostBindingRef": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "sourceStoreId": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "sourceEpoch": { "$ref": "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64" },
+    "sourceCursor": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "workspacePolicyRevision": { "type": "string", "minLength": 8, "maxLength": 128 },
+    "maxQueueDepth": { "type": "integer", "minimum": 1, "maximum": 4096 },
+    "subscribedCapabilities": {
+      "type": "array",
+      "maxItems": 64,
+      "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+    }
+  }
+}

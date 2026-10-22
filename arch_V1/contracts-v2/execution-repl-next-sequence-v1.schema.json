@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://horizoncode.dev/contracts/execution-repl-next-sequence-v1.schema.json",
+  "title": "HorizonCode ExecutionHost REPL next sequence v1",
+  "description": "Read-only projection from the durable HostKernel journal. It reserves no sequence and authorizes no interpreter input.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "hostProcessRef",
+    "sessionID",
+    "locationID",
+    "workspaceRevision"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "hostProcessRef": {
+      "allOf": [
+        {
+          "$ref": "execution-launch-profile-v1.schema.json#/$defs/HostProcessRefV1"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "interpreter"
+            }
+          }
+        }
+      ]
+    },
+    "sessionID": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "locationID": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "workspaceRevision": {
+      "$ref": "execution-launch-profile-v1.schema.json#/$defs/Digest"
+    },
+    "managedAttempt": {
+      "type": "object"
+    },
+    "directAttempt": {
+      "type": "object"
+    }
+  },
+  "oneOf": [
+    {
+      "required": [
+        "managedAttempt"
+      ],
+      "not": {
+        "required": [
+          "directAttempt"
+        ]
+      }
+    },
+    {
+      "required": [
+        "directAttempt"
+      ],
+      "not": {
+        "required": [
+          "managedAttempt"
+        ]
+      }
+    }
+  ],
+  "$defs": {
+    "Reply": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "hostProcessRef",
+        "nextRequestSequence"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "hostProcessRef": {
+          "$ref": "execution-launch-profile-v1.schema.json#/$defs/HostProcessRefV1"
+        },
+        "nextRequestSequence": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,19}$"
+        }
+      }
+    }
+  },
+  "$comment": "Private authenticated HostKernel projection. Core must fetch immediately before Guard admission and bind the returned value into the approved operation subject. Concurrent use is rejected; a potentially dispatched operation is never retried by fetching a new sequence."
+}

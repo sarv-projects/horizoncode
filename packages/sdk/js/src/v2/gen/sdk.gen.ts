@@ -26,6 +26,23 @@ import type {
   ConfigGetResponses,
   ConfigProvidersErrors,
   ConfigProvidersResponses,
+  ConfigResourcePolicyErrors,
+  ConfigResourcePolicyResponses,
+  ConfigRepoIntelProfileErrors,
+  ConfigRepoIntelProfileResponses,
+  ConfigExternalEditorProfilesErrors,
+  ConfigExternalEditorProfilesResponses,
+  ConfigUpdateExternalEditorProfilesErrors,
+  ConfigUpdateExternalEditorProfilesResponses,
+  ExternalEditorProfileDefinitionV1,
+  ExternalEditorProfileRefV1,
+  ConfigUpdateRepoIntelProfileErrors,
+  ConfigUpdateRepoIntelProfileResponses,
+  ConfigDirectSessionPermissionModeErrors,
+  ConfigDirectSessionPermissionModeResponses,
+  ConfigUpdateDirectSessionPermissionModeErrors,
+  ConfigUpdateDirectSessionPermissionModeResponses,
+  DirectSessionPermissionModeUpdateV1,
   ConfigUpdateErrors,
   ConfigUpdateResponses,
   EventSubscribeResponses,
@@ -48,6 +65,11 @@ import type {
   ExperimentalGoalReviewGoalReviewDecisionResponses,
   ExperimentalGoalReviewGoalVerificationErrors,
   ExperimentalGoalReviewGoalVerificationResponses,
+  VerifiedArtifactMetadataV1,
+  VerifiedArtifactRangeV1,
+  VerifiedArtifactRefV1,
+  RepoExplorerDiscoveryV1,
+  RepoExplorerDocumentV1,
   ExperimentalGoalReviewGoalRunControlErrors,
   ExperimentalGoalReviewGoalRunControlResponses,
   ExperimentalGoalReviewGoalRunPlanErrors,
@@ -239,6 +261,10 @@ import type {
   SessionShellResponses,
   SessionStatusErrors,
   SessionStatusResponses,
+  SessionSubagentsErrors,
+  SessionSubagentsResponses,
+  SessionSubagentMessageErrors,
+  SessionSubagentMessageResponses,
   SessionSummarizeErrors,
   SessionSummarizeResponses,
   SessionTodoErrors,
@@ -1695,6 +1721,129 @@ export class Experimental extends HeyApiClient {
   get automation(): Automation {
     return (this._automation ??= new Automation({ client: this.client }))
   }
+
+  private _checkpoint?: Checkpoint
+  get checkpoint(): Checkpoint {
+    return (this._checkpoint ??= new Checkpoint({ client: this.client }))
+  }
+
+  private _artifact?: Artifact
+  get artifact(): Artifact {
+    return (this._artifact ??= new Artifact({ client: this.client }))
+  }
+
+  private _repoExplorer?: RepoExplorer
+  get repoExplorer(): RepoExplorer {
+    return (this._repoExplorer ??= new RepoExplorer({ client: this.client }))
+  }
+}
+
+export class RepoExplorer extends HeyApiClient {
+  private post<Success, ThrowOnError extends boolean = false>(
+    path: "discover" | "read",
+    parameters: Record<string, string | number>,
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const { directory, workspace, ...body } = parameters
+    const params = buildClientParams([{ directory, workspace }, body], [
+      { args: [{ in: "query", key: "directory" }, { in: "query", key: "workspace" }] },
+      { args: Object.keys(body).map((key) => ({ in: "body" as const, key })) },
+    ])
+    return (options?.client ?? this.client).post<Success, Record<string, unknown>, ThrowOnError>({
+      url: `/experimental/repo-explorer/${path}`,
+      ...options,
+      ...params,
+      headers: { "Content-Type": "application/json", ...options?.headers, ...params.headers },
+    })
+  }
+
+  public discover<ThrowOnError extends boolean = false>(parameters: {
+    directory?: string
+    workspace?: string
+    sessionID: string
+    rootRef: string
+    maxDepth: number
+  }, options?: Options<never, ThrowOnError>) {
+    return this.post<RepoExplorerDiscoveryV1, ThrowOnError>("discover", parameters, options)
+  }
+
+  public read<ThrowOnError extends boolean = false>(parameters: {
+    directory?: string
+    workspace?: string
+    sessionID: string
+    pathRef: string
+    sourceRevision: string
+  }, options?: Options<never, ThrowOnError>) {
+    return this.post<RepoExplorerDocumentV1, ThrowOnError>("read", parameters, options)
+  }
+}
+
+export class Checkpoint extends HeyApiClient {
+  private queryParams(parameters: object) {
+    return buildClientParams([parameters], [{ args: Object.keys(parameters).map((key) => ({ in: "query" as const, key })) }])
+  }
+
+  public list<ThrowOnError extends boolean = false>(parameters: { directory?: string; workspace?: string; sessionID: string }, options?: Options<never, ThrowOnError>) {
+    const params = this.queryParams(parameters)
+    return (options?.client ?? this.client).get<{ checkpointIDs: Array<string> }, Record<string, unknown>, ThrowOnError>({ url: "/experimental/checkpoint/list", ...options, ...params })
+  }
+
+  public restorePreview<ThrowOnError extends boolean = false>(parameters: {
+    directory?: string
+    workspace?: string
+    sessionID: string
+    checkpointID: string
+    mode: "FULL" | "SELECTED_PATHS"
+    selectedPaths: Array<string>
+  }, options?: Options<never, ThrowOnError>) {
+    const { directory, workspace, ...body } = parameters
+    const params = buildClientParams([{ directory, workspace }, body], [
+      { args: [{ in: "query", key: "directory" }, { in: "query", key: "workspace" }] },
+      { args: Object.keys(body).map((key) => ({ in: "body" as const, key })) },
+    ])
+    return (options?.client ?? this.client).post<Record<string, unknown>, Record<string, unknown>, ThrowOnError>({
+      url: "/experimental/checkpoint/restore-preview",
+      ...options,
+      ...params,
+      headers: { "Content-Type": "application/json", ...options?.headers, ...params.headers },
+    })
+  }
+}
+
+export class Artifact extends HeyApiClient {
+  private request<ThrowOnError extends boolean = false>(path: string, parameters: {
+    directory?: string
+    workspace?: string
+    schemaVersion: 1
+    sessionID: string
+    artifactRef: VerifiedArtifactRefV1
+    offset?: string
+    maxBytes?: number
+  }, options?: Options<never, ThrowOnError>) {
+    const { directory, workspace, ...body } = parameters
+    const params = buildClientParams([{ directory, workspace }, body], [
+      { args: [{ in: "query", key: "directory" }, { in: "query", key: "workspace" }] },
+      { args: Object.keys(body).map((key) => ({ in: "body" as const, key })) },
+    ])
+    return (options?.client ?? this.client).post<VerifiedArtifactMetadataV1 | VerifiedArtifactRangeV1, Record<string, unknown>, ThrowOnError>({
+      url: `/experimental/artifacts/${path}`,
+      ...options,
+      ...params,
+      headers: { "Content-Type": "application/json", ...options?.headers, ...params.headers },
+    })
+  }
+
+  public inspect<ThrowOnError extends boolean = false>(parameters: {
+    directory?: string; workspace?: string; schemaVersion: 1; sessionID: string; artifactRef: VerifiedArtifactRefV1
+  }, options?: Options<never, ThrowOnError>) {
+    return this.request("inspect", parameters, options)
+  }
+
+  public readRange<ThrowOnError extends boolean = false>(parameters: {
+    directory?: string; workspace?: string; schemaVersion: 1; sessionID: string; artifactRef: VerifiedArtifactRefV1; offset: string; maxBytes: number
+  }, options?: Options<never, ThrowOnError>) {
+    return this.request("read-range", parameters, options)
+  }
 }
 
 export class Automation extends HeyApiClient {
@@ -2019,6 +2168,110 @@ export class Config2 extends HeyApiClient {
     })
   }
 
+  /** Read the requested/effective RepoIntel profile projection. */
+  public repoIntelProfile<ThrowOnError extends boolean = false>(
+    parameters?: { directory?: string; workspace?: string },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [
+      { in: "query", key: "directory" },
+      { in: "query", key: "workspace" },
+    ] }])
+    return (options?.client ?? this.client).get<ConfigRepoIntelProfileResponses, ConfigRepoIntelProfileErrors, ThrowOnError>({
+      url: "/config/repo-intelligence/profile",
+      ...options,
+      ...params,
+    })
+  }
+
+  /** Read user global immutable external editor profiles. */
+  public externalEditorProfiles<ThrowOnError extends boolean = false>(
+    parameters?: { directory?: string; workspace?: string },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [
+      { in: "query", key: "directory" },
+      { in: "query", key: "workspace" },
+    ] }])
+    return (options?.client ?? this.client).get<ConfigExternalEditorProfilesResponses, ConfigExternalEditorProfilesErrors, ThrowOnError>({
+      url: "/config/external-editor-profiles",
+      ...options,
+      ...params,
+    })
+  }
+
+  /** Append an immutable global editor profile and compare-and-set the selected revision. */
+  public updateExternalEditorProfiles<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      updateExternalEditorProfiles?: {
+        expectedSelection: ExternalEditorProfileRefV1 | null
+        addProfile?: ExternalEditorProfileDefinitionV1
+        select: ExternalEditorProfileRefV1 | null
+      }
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [
+      { in: "query", key: "directory" },
+      { in: "query", key: "workspace" },
+      { key: "updateExternalEditorProfiles", map: "body" },
+    ] }])
+    return (options?.client ?? this.client).patch<
+      ConfigUpdateExternalEditorProfilesResponses,
+      ConfigUpdateExternalEditorProfilesErrors,
+      ThrowOnError
+    >({
+      url: "/config/external-editor-profiles",
+      ...options,
+      ...params,
+      headers: { "Content-Type": "application/json", ...options?.headers, ...params.headers },
+    })
+  }
+
+  /** Read exact requested limits and Config-owned effective enforcement state. */
+  public resourcePolicy<ThrowOnError extends boolean = false>(
+    parameters?: { directory?: string; workspace?: string },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [
+      { in: "query", key: "directory" },
+      { in: "query", key: "workspace" },
+    ] }])
+    return (options?.client ?? this.client).get<ConfigResourcePolicyResponses, ConfigResourcePolicyErrors, ThrowOnError>({
+      url: "/config/resources",
+      ...options,
+      ...params,
+    })
+  }
+
+  /** Compare-and-write the RepoIntel requested profile without starting analysis. */
+  public updateRepoIntelProfile<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      updateRepoIntelProfile?: { expectedProfile: string | null; profile: "lightweight" | "adaptive" | "full" }
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [
+      { in: "query", key: "directory" },
+      { in: "query", key: "workspace" },
+      { key: "updateRepoIntelProfile", map: "body" },
+    ] }])
+    return (options?.client ?? this.client).patch<
+      ConfigUpdateRepoIntelProfileResponses,
+      ConfigUpdateRepoIntelProfileErrors,
+      ThrowOnError
+    >({
+      url: "/config/repo-intelligence/profile",
+      ...options,
+      ...params,
+      headers: { "Content-Type": "application/json", ...options?.headers, ...params.headers },
+    })
+  }
+
   /**
    * List config providers
    *
@@ -2044,6 +2297,72 @@ export class Config2 extends HeyApiClient {
     )
     return (options?.client ?? this.client).get<ConfigProvidersResponses, ConfigProvidersErrors, ThrowOnError>({
       url: "/config/providers",
+      ...options,
+      ...params,
+    })
+  }
+
+  /** Read the authenticated HostKernel-owned direct Session permission posture. */
+  public directSessionPermissionMode<ThrowOnError extends boolean = false>(
+    parameters: { sessionID: string; directory?: string; workspace?: string },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [
+      { in: "query", key: "directory" },
+      { in: "query", key: "workspace" },
+      { in: "query", key: "sessionID" },
+    ] }])
+    return (options?.client ?? this.client).get<
+      ConfigDirectSessionPermissionModeResponses,
+      ConfigDirectSessionPermissionModeErrors,
+      ThrowOnError
+    >({ url: "/config/direct-session-permission-mode", ...options, ...params })
+  }
+
+  /** Compare-and-set the direct Session sandbox and approval posture. */
+  public updateDirectSessionPermissionMode<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+      directSessionPermissionModeUpdateV1: DirectSessionPermissionModeUpdateV1
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [
+      { in: "query", key: "directory" },
+      { in: "query", key: "workspace" },
+      { in: "query", key: "sessionID" },
+      { key: "directSessionPermissionModeUpdateV1", map: "body" },
+    ] }])
+    return (options?.client ?? this.client).patch<
+      ConfigUpdateDirectSessionPermissionModeResponses,
+      ConfigUpdateDirectSessionPermissionModeErrors,
+      ThrowOnError
+    >({
+      url: "/config/direct-session-permission-mode",
+      ...options,
+      ...params,
+      headers: { "Content-Type": "application/json", ...options?.headers, ...params.headers },
+    })
+  }
+}
+
+export class WebSearch extends HeyApiClient {
+  /** Read sanitized local search-route state without probing providers. */
+  public providers<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [{ args: [{ in: "query", key: "directory" }, { in: "query", key: "workspace" }] }],
+    )
+    return (options?.client ?? this.client).get<Array<Record<string, unknown>>, Record<string, unknown>, ThrowOnError>({
+      url: "/websearch/providers",
       ...options,
       ...params,
     })
@@ -4232,6 +4551,102 @@ export class Session2 extends HeyApiClient {
     )
     return (options?.client ?? this.client).get<SessionChildrenResponses, SessionChildrenErrors, ThrowOnError>({
       url: "/session/{sessionID}/children",
+      ...options,
+      ...params,
+    })
+  }
+
+  /** Inspect bounded, owner-checked direct child Session status and pins. */
+  public subagents<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<SessionSubagentsResponses, SessionSubagentsErrors, ThrowOnError>({
+      url: "/session/{sessionID}/subagents",
+      ...options,
+      ...params,
+    })
+  }
+
+  /** Wait briefly for one direct child update. A timeout never cancels the child. */
+  public subagentWait<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      childSessionID: string
+      timeoutMs: number
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "path", key: "childSessionID" },
+            { in: "query", key: "timeoutMs" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<SessionSubagentWaitResponses, SessionSubagentWaitErrors, ThrowOnError>({
+      url: "/session/{sessionID}/subagents/{childSessionID}/wait",
+      ...options,
+      ...params,
+    })
+  }
+
+  /** Queue a bounded message or request one authorized follow-up turn for a direct child. */
+  public subagentMessage<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      childSessionID: string
+      requestId: string
+      mode: "queued" | "follow_up"
+      content: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "path", key: "childSessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "requestId" },
+            { in: "body", key: "mode" },
+            { in: "body", key: "content" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<SessionSubagentMessageResponses, SessionSubagentMessageErrors, ThrowOnError>({
+      url: "/session/{sessionID}/subagents/{childSessionID}/message",
       ...options,
       ...params,
     })
@@ -7845,6 +8260,11 @@ export class OpencodeClient extends HeyApiClient {
   private _provider?: Provider
   get provider(): Provider {
     return (this._provider ??= new Provider({ client: this.client }))
+  }
+
+  private _webSearch?: WebSearch
+  get webSearch(): WebSearch {
+    return (this._webSearch ??= new WebSearch({ client: this.client }))
   }
 
   private _session?: Session2

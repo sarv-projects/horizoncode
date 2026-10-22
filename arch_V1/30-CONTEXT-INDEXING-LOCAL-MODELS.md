@@ -37,16 +37,17 @@ type ContextEntryKindV2 =
   | "environment"
 
 type ContextEntryV2 = {
-  entryId: Id<"ContextEntryId">
+  entryID: Id<"ContextEntryId">
   kind: ContextEntryKindV2
   sourceRef: string
   sourceRevision?: string
-  trust: "system" | "user" | "workspace" | "external"
-  bytes: number
+  trust: "system" | "user" | "workspace" | "external" | "mixed"
+  bytes?: number
+  bytesKind: "exact" | "estimated" | "unknown"
   tokens: {
-    value: number
     kind: "exact" | "estimated" | "unknown"
-    tokenizerId?: string
+    value?: number
+    tokenizerID?: string
   }
   included: boolean
   inclusionReason?: string
@@ -55,7 +56,36 @@ type ContextEntryV2 = {
   freshness?: string
   digest: Digest
 }
+
+type ContextLedgerV2 = {
+  schemaVersion: 2
+  lane: "direct" | "managed"
+  sessionID: SessionID
+  requestID: string
+  sourceRevision: DecimalU64
+  providerID: string
+  modelID: string
+  harnessID: string
+  harnessRevision: number
+  requestPayloadDigest: Digest
+  requestBytes: number
+  contextSelection: ContextSelectionV1
+  contextSelectionDigest?: Digest // required for managed; HostKernel-issued
+  entries: ContextEntryV2[]
+  completeness: "complete" | "partial"
+  partialReason?: string
+}
 ```
+
+`ContextLedgerV2` is a bounded read-only projection for one exact provider request. The
+request payload is represented only by its digest and byte count; raw prompt content and
+credentials are not stored in the ledger. Each included entry must refer to a source in the
+exact `ContextSelectionV1`, and the ledger identity/revision must match that selection.
+Managed ledgers additionally carry HostKernel's selection digest. Unknown byte/token facts
+omit numeric values; exact token counts identify their tokenizer. `complete` and
+`partialReason` are mutually exclusive. This DTO does not create a second transcript store,
+select a provider route, or grant effect authority. See
+[`contracts-v2/context-ledger-v2.schema.json`](contracts-v2/context-ledger-v2.schema.json).
 
 Context bar segments:
 - system/control;
@@ -93,6 +123,10 @@ Relevance-based removal of stale natural-language/history entries.
 
 Creates a bounded summary artifact over an older history range.
 
+**Heritage alias:** `/summarize` maps to the same ActionDescriptor as `/compact` in direct
+Sessions (OpenCode compatibility). `/trim`, `/prune`, and `/clear` are **not** aliases of
+compact; help text must describe the §30.3 differences.
+
 - summary has provenance and covered cursor range;
 - original history remains canonical/retrievable;
 - changed Goal/constraints after summary creation are not retroactively folded into it;
@@ -113,6 +147,7 @@ soft_pressure = max(estimated_input, last_provider_reported_input)
                  >= context_window - output_reserve - tool_reserve - safety_margin
 
 recovery order:
+  0. at **soft_pressure** (user may disable): auto-run `/trim` once per epoch (§30.30 REL-M)
   1. evict expired/rebuildable tool payloads to artifacts
   2. remove duplicate/stale file reads
   3. trim paired historical tool calls/results
@@ -122,7 +157,7 @@ recovery order:
   7. if still impossible -> CONTEXT_BUDGET_EXCEEDED with exact diagnostics
 ```
 
-**Snapcompact feasibility (DEFERRED/UNAVAILABLE in V1):** pinned OMP distinguishes ephemeral inline imaging from a persistent archive stored in compaction state. The latter would require a new durable archive/reference and rebuild contract; the former still needs a future ContextService projection, selected-model image-capability metadata, image-aware token/count/byte budgeting and a local renderer. Current Core V2 provides media transport for user attachments, but not those owners or proofs. No code or setting is added. Any later experiment must preserve canonical history, use only the selected provider/model, remain rebuildable/disableable, and pass protected-fact, privacy, cost, cache and rejection/recovery tests; see §16.15.2 and §42 SRC-024.
+**Snapcompact feasibility (DEFERRED/UNAVAILABLE in V1):** pinned OMP distinguishes ephemeral inline imaging from a persistent archive stored in compaction state. The latter would require a new durable archive/reference and rebuild contract; the former must be implemented later as a derived projection through the existing V1 ContextService, with selected-model image-capability metadata, image-aware token/count/byte budgeting and a local renderer. Current Core V2 provides media transport for user attachments, but not those snapcompact-specific owners or proofs. No snapcompact code or setting is added. Any later experiment must preserve canonical history, use only the selected provider/model, remain rebuildable/disableable, and pass protected-fact, privacy, cost, cache and rejection/recovery tests; see §16.15.2 and §42 SRC-024.
 
 A provider's reported input-token usage, when available, is recorded and may raise pressure earlier than estimates. Estimates never overwrite measured usage.
 
@@ -306,6 +341,21 @@ Drift-safe lookup:
 
 ## 30.9 Built-in repository-intelligence tools
 
+**V1 exposure boundary (2026-10-21, source-only):** The authenticated HostKernel
+`query_structure` endpoint returns bounded lexical occurrences and immutable
+generation provenance. Bounded authenticated `discover` source and Core-backed
+`repo.tree`/`repo.detect` adapters now exist; those tools remain omitted from the
+model registry pending integrated acceptance. Search inputs are rejected before
+dispatch when the UTF-8 query exceeds 1 KiB, contains line/control characters, or
+the relative root exceeds 4 KiB/is not normalized. Search results remain lexical
+candidates. Parser-backed definitions, symbol outlines, impact graphs and resolved
+reference edges report unavailable because no approved parser/index provenance is
+wired. Unsaved-buffer overlays remain unavailable because no trusted immutable
+editor-buffer producer is wired. Managed artifact text search is scoped by
+Rust-resolved verified Attempt evidence and bounded HostKernel ranges; direct-session
+artifact search remains unavailable without a durable ArtifactRef-to-DirectAttempt
+authority index. These are source observations, not acceptance evidence.
+
 | Tool | Purpose | Model-visible output |
 |---|---|---|
 | `repo.detect` | languages/framework/build/test/package systems | compact structured manifest |
@@ -345,6 +395,8 @@ CURRENT/PARTIAL -> RETIRED
 
 ## 30.11 Context caching
 
+Tier selection (cache-anchor vs minimize-tokens) and Models.dev hint bridge: **§30.26**. This section states caching law for all tiers.
+
 Cache metadata is provider-specific and advisory.
 
 Context compiler marks stable segments:
@@ -366,6 +418,23 @@ History remains useful after `clear/trim/prune/compact`.
 `history.search` searches authorized canonical session ranges and artifacts by lexical/FTS index first; optional model synthesis happens only after candidate retrieval. It returns message/artifact refs and can add selected entries back to context with user-visible provenance.
 
 The built-in History Search specialist is read-only and receives only candidate ranges, not the entire account history.
+
+**Current P3 source projection (2026-10-22; unverified):** `history.search` scans only the
+current canonical Session's text parts through one-message SQL projections (up to 64 messages,
+16 text parts per message, a 16,384-character prefix per part, 1 MiB of inspected UTF-8 text
+and 12 excerpts). A truncated part stops the scan with PARTIAL provenance rather than
+hydrating the rest of its stored text. Each Part's serialized UTF-8 size is projected before
+JSON text extraction; Parts above 65,536 encoded bytes are returned as explicit oversized or
+unavailable evidence without loading their text into the caller. `history.read_range` first
+projects only serialized byte length, returns oversized before JSON extraction, then selects a
+bounded SQL substring only if a second exact-key query still satisfies the byte cap and the
+serialized length is unchanged. A changed/disappeared row is unavailable. Offsets count Unicode
+code points, matching SQLite `substr/length`. Both tools return message/part provenance and
+sanitize display controls, format controls and common
+credential-shaped strings. This is a bounded lexical page scan, not an
+FTS index; it does not search other Sessions or artifacts. `history.attach` remains
+unavailable because no accepted attachment authority/freshness path binds selected history
+to a new ContextSelection. These tools are source-present, not acceptance evidence.
 
 ## 30.13 Accuracy rules for small models
 
@@ -500,6 +569,84 @@ the selected literal-query or regular-expression mode. Terminal search/output-ra
 accept no `processRef`, arbitrary path or full-log injection. PTY status/replay is a
 separate bounded terminal-ID/generation operation, not artifact search.
 
+**P3 managed artifact source update (2026-10-21; source only):** the model-facing
+`artifacts_search_text`, `terminal_search`, and `terminal_output_range` adapters resolve
+the exact opaque `ArtifactRef` through Rust's verified managed-Attempt scope, inspect its
+metadata, and retrieve bytes only with bounded `ArtifactControl.readRange` calls. They
+have no filesystem or arbitrary-path fallback. Current scope resolution admits only
+unambiguous current-epoch succeeded Attempts whose exact verifier evidence owns the
+artifact; direct-session artifacts remain unavailable. Sensitive classification,
+UNKNOWN redaction, failed capture, and non-text media types are refused. Search/range
+responses disclose digest generation, fidelity, classification/redaction status, exact
+byte/line bounds, and partial UTF-8/scan/line-limit state. This is source wiring only;
+no validation was run and it does not establish terminal artifact acceptance.
+
+**P3 context-discovery fail-closed correction (historical, 2026-10-21):** `repo_tree`
+and `repo_detect` previously enumerated/read workspace files directly from the
+OpenCode-derived process after a UI permission prompt. The available HostKernel RepoIntel
+contract supports generation-bound structure queries and reads only for HostKernel-issued
+document refs; it has no bounded directory-listing or manifest-discovery operation.
+The direct filesystem tools are therefore no longer included in the model-visible
+registry, and their adapters return typed UNAVAILABLE without reading locally. The
+existing authenticated HostKernel query can return bounded literal text occurrences;
+it cannot enumerate directory entries. `read_document` reads one caller-named relative
+path at a revalidated revision, but the earlier query/read contract had no bounded
+listing operation or typed not-found result for fixed manifest probes. Neither operation
+alone could implement truthful tree or manifest-detection semantics. The additive
+RepoDiscoveryV1 contract below supplies bounded enumeration and typed manifest candidates.
+Statements above describing the missing DTO are historical; the tools remain absent from
+ToolRegistry pending integrated P1/P3 acceptance.
+
+**P1/P3 RepoDiscoveryV1 source contract (2026-10-21; unverified):** `repo-intel.v1/discover`
+accepts an authenticated out-of-body ServerAuth + RepoRead(Session, Location) context and a
+strict body containing only request ID, normalized root, `tree|manifests` mode, deadline and
+bounded `maxEntries≤512`, `maxBytes≤262144`, `maxDepth≤16`. HostKernel rechecks Location owner,
+current Guard `files.read`, workspace identity/revision and the principal binding; every reply
+pins principal, Session, Location, owner epoch, workspace, source revision, read-policy digest,
+root, mode and limits. Entries contain relative names, kind, depth, size and optional recognized
+manifest/language hints, never file contents. Enumeration is descriptor-rooted and no-follow;
+symlinks may be listed but are never traversed. CURRENT/PARTIAL carries explicit coverage/reason;
+Core treats transport, stale, deadline and authorization failures as UNAVAILABLE. Manifest bytes
+are obtained only with `read_document` at the exact returned source revision. OpenCode Core-backed
+tree/detect adapters and the TypeScript runtime schema are source-present, but registry exposure
+stays disabled until integrated acceptance. The canonical JSON Schema mirror now contains the
+strict discovery request/page definitions and union entries; cross-field request correlation,
+authority echo, ordering, and request-bound checks remain enforced by Core. No checks have run.
+
+**P3 Explorer source addition (2026-10-22; not accepted):** the opt-in `/editor` overlay and
+`/editor --side` pane now have a read-only browse/preview path. The authenticated
+`/experimental/repo-explorer/discover` and `/read` endpoints project the existing Core
+`SessionSupervisor` RepoIntel operations; request bodies contain no principal, Location,
+filesystem root or permission authority. Discovery is capped at 256 entries, 262,144 accounted
+bytes and depth 8. Selecting a regular file reads at most 131,072 UTF-8 bytes through
+`read_document` at the exact `discovery_observation` revision. Symlinks are shown but disabled,
+large files are disabled for preview, and the TUI has no local filesystem fallback. The side pane
+supports the same parent/directory/file-preview flow. Rendered path labels remove terminal/control
+and bidi characters and mask credential-shaped filename segments while retaining the exact raw
+path reference for the authenticated read. External editor launch/profile selection is
+P4-owned and is not implied by this browse path. Both components expose an optional exact
+`(pathRef, sourceRevision)` callback with a distinct “Open in configured editor” action after a
+valid preview; P4 must bind that callback to its guarded launch adapter. Source files are
+`packages/opencode/src/server/routes/instance/httpapi/groups/repo-explorer.ts`,
+`packages/opencode/src/server/routes/instance/httpapi/handlers/repo-explorer.ts`,
+`packages/sdk/js/src/v2/gen/sdk.gen.ts`, `packages/sdk/js/src/v2/gen/types.gen.ts`, and
+`packages/tui/src/component/dialog-editor-explorer.tsx`. Acceptance and generated-client
+consistency checks have not run; keep model-visible RepoIntel tools and external launch gated.
+
+**P3 RepoIntel source audit (2026-10-21; unverified):** HostKernel revalidates
+authenticated principal, Session, Location, owner epoch, current workspace revision and Guard
+read policy for discovery and structure queries. Opaque continuation leases bind the exact
+query digest, root, principal, Session, Location, source generation/revision and owner epoch;
+Core rejects malformed, repeated, oversized or non-progressing pages. The current indexd
+backend is lexical-only. The checked-in parser references in UI highlighting are not an
+approved RepoIntel parser source, and no immutable editor-buffer ingress exists: the current
+LSP reader snapshots on-disk bytes through HostKernel rather than receiving a user's unsaved
+buffer. Therefore semantic symbols/definitions/references and overlay queries stay typed
+UNAVAILABLE. Query-to-patch admission reopens the current source snapshot and checks the exact
+generation, digest and read-policy pins before Guarded patch planning. HostKernel owns bounded
+generation retention and exact lease retirement; memory-pressure eviction remains unused until
+an authenticated policy trigger exists. These source paths are not acceptance evidence.
+
 ## 30.18 Acceptance tests
 
 - 4K/8K context fixture can inspect and patch a small repo without prompt overflow.
@@ -613,3 +760,447 @@ Under existing §18.18 pressure rules, throttle or suspend background indexing f
 Use §12.18 `RepoGenerationRequestV1`, `RepoGenerationPinV1`, `RepoNodeRefV1` and `RepoStructureQueryV1` over the single existing RepoIntel generation. First, Core calls `repo-intel.v1/ensure_generation` with authenticated RepoRead context and bounded relative `rootRef`/collection limits; HostKernel resolves Location and Guard `files.read`, securely collects bounded snapshots, and returns a short-lived generation pin. The registered Location must carry a durable principal binding established by authenticated registration; unbound legacy Locations and principal mismatches have no RepoIntel read authority and are rejected before filesystem observation. Core then calls `query_structure` with the returned index digest. The measured workspace `sourceRevision` and derived index `sourceGeneration` are distinct pins; a source/policy change between calls returns typed STALE and no nodes. A reference is opaque, short-lived and bound to workspace, source generation/revision, file digest, parser identity and exact byte range. A query pins one compatible base/owner overlay and returns bounded node pages, explicit coverage/completeness and typed fallback provenance. Enforce server-side hard maxima for nodes, bytes, depth and deadline; cursors bind to the same authenticated owner and generation. Unsupported parser features return partial/lexical/LSP provenance, never fabricated AST certainty.
 
 Structural results are read evidence only. A later edit reopens the current file and validates digest/range through canonical `files.patch` and Guard. Generation changes, overlay mismatch, incomplete parse or stale digest returns a typed stale/partial result and requires refresh. The P3 phase owns the source adapter and transport; a large index generation must use bounded authenticated chunks or an embedded API, never exceed the existing HostKernel RPC frame limit. Query paging is V1 scope; broader parser language coverage is evidence-gated.
+
+**Current P3 integration boundary (2026-10-20):** OpenCode's model-visible symbol/reference/definition tools call Core `SessionSupervisor.queryRepoStructure`; Core performs authenticated `ensure_generation → query_structure` over the same RepoRead Session/Location context. Source snapshots remain HostKernel-internal and indexd is an embedded Rust library, so no source bytes are serialized through the Core RPC frame. HostKernel remeasures workspace/read-policy pins and binds page/node refs to its query lease. The lease and retained `Arc<RepoIntelGeneration>` are HostKernel-epoch scoped; restart invalidates them. HostKernel retains at most 64 lease generations and caps their aggregate observed source bytes at 64 MiB. These are admission/accounting bounds, not measured index heap size. Expiry, stale source/policy and epoch teardown remove the retained generation and invalidate its exact P8 registry row; cursor leases tied to the generation are removed too. P8's `CacheRegistryV1` receives an authenticated HostKernel observation during `ensure_generation`, using source-byte accounting only; physical allocation and reclaimed bytes remain unknown. The exact HostKernel retirement composer consumes P8's eviction candidate, revalidates owner and zero live Arc pins, drops its retained generation, and returns the exact retirement acknowledgement. The composition source exists but has no authenticated policy/pressure trigger and remains unused; P3 must not synthesize pressure or invoke it. The legacy OpenCode in-process lexical cache remains unavailable as a product default; it is not a second production index owner. Structural parsing currently returns typed UNAVAILABLE (`sourceKind=none`, no nodes) because §42.11 rejects the available external parser/dependency paths. Overlay requests fail typed unavailable before source collection: there is no genuine Core-owned immutable unsaved-buffer snapshot producer, and P4's authenticated disk document reader does not represent unsaved editor buffers. Resource-pressure profile projection likewise remains unavailable to Core/RepoIntel; P3 must not accept pressure from caller, model or configuration input.
+
+Authenticated structure pagination remains unavailable at runtime until final integrated acceptance. Core has a strict opaque `repo_cur_` lease schema and capability-gated continuation plumbing. It requests `repo-intel.cursor-lease-v1` as an optional HostKernel feature, rejects a supplied cursor before Location registration unless that feature is negotiated, skips page-one generation acquisition on continuation, and sends no caller-supplied `sourceGeneration`. HostKernel source now resolves/mints owner-bound leases, remeasures workspace/read policy before collection, and invalidates on source/policy change, expiry, cancellation, retirement, or owner-epoch restart; the feature remains disabled by default. A stale or foreign cursor returns typed stale/unavailable with no nodes. Current model-visible search remains one bounded page and reports partial coverage honestly.
+
+**P3 source audit checkpoint (2026-10-21; not acceptance evidence):** the authenticated discovery DTO is present in the TypeScript and canonical JSON schemas; Core verifies request identity, principal binding, Session/Location, owner epoch, bounds, sorted unique descendant paths, per-entry depth, and tree-versus-manifest semantics. The `repo_tree`/`repo_detect` adapters use only HostKernel inventory and exact-revision document reads, and remain unregistered pending integrated acceptance. The then-open conflict between `workspace_revision_digest` and displaying symlink metadata was addressed in a later P1 source change: discovery now uses a separate no-follow observation revision and does not weaken the workspace mutation/checkpoint digest. The symlink journey still needs integrated acceptance. Parser-backed definitions/references, unsaved-buffer overlays, and pressure-triggered cache retirement also remain unavailable because their trusted parser, editor-buffer, and resource-policy producers are not yet accepted. No test, build, typecheck, or audit evidence is implied by this checkpoint.
+
+**P3 source update (2026-10-20; historical):** Core's structure-page adapter rejects repeated/no-progress continuation tokens, oversize UTF-8 cursor bytes, and cursors on non-current/non-partial responses; the public search input also enforces the canonical cursor bound before HostKernel transport. At that point `repo_tree` and `repo.detect` were inert because no authenticated HostKernel discovery contract existed. The 2026-10-21 authenticated discovery integration below supersedes that limitation: Core-backed adapters now use Guarded HostKernel enumeration and exact-revision document reads, while registry exposure remains acceptance-gated. App-process filesystem fallback remains prohibited. Parser-backed definitions/references and unsaved-buffer overlays remain unavailable; cursor source is wired but disabled pending acceptance; the authenticated pressure trigger and cache-eviction acceptance remain outstanding.
+
+The disabled legacy RepoIntel LRU has an idle TTL, generation pin-aware eviction and an optional owner-event port for isolated adapter use. Its events are not sent to P8 and do not describe HostKernel's retained `Arc`; keep this LRU out of the product path. P8's HostKernel-only cache consumer accepts only its non-Clone HostKernel-minted observation from the exact live RepoRead lease/generation and its exact retirement acknowledgement. P3/Core must not reconstruct those proofs or treat its own source-byte/event counters as Rust cache authority. HostKernel now invalidates the exact P8 row and linked cursor when removing a generation lease; no Core-side invalidation is allowed. Eviction remains P8 plan → P1 revalidates the exact owner/generation and zero live query pins → P1 drops the retained generation → P8 accepts the exact retirement acknowledgement and a fresh observation. The retirement adapter exists, but the authenticated trigger remains unavailable. Source-byte accounting is not physical allocation; `reclaimedBytes` stays unknown absent measured memory. No second registry is introduced and a planned eviction is not reported as reclaimed memory. The canonical Config projection continues to supply requested/effective profile and configuration provenance, without asserting resource pressure.
+
+**P3 source ownership checkpoint (2026-10-20; historical, not acceptance evidence):** `packages/core/src/session/supervisor.ts` owns the authenticated Core `ensure_generation → query_structure` and `read_document` transport, including `cancelOnInterrupt`, ServerAuth/Session/Location binding, strict generation-pin decoding, and source-revision equality checks. `indexd/src/repo_structure.rs` emits honest bounded lexical occurrence candidates and typed unavailable results; it does not claim AST declarations, reference edges, overlays, or continuation tokens. `packages/opencode/src/tool/repo-tools.ts` owns the model-visible symbols/references/definitions. Its former `repo_tree`/`repo.detect` implementations used local filesystem reads; these were replaced with the authenticated discovery adapters described below, which remain absent from the model-visible registry pending acceptance. `packages/opencode/src/lsp/repo-document-reader.ts` delegates document sync to HostKernel with no filesystem fallback. No parser source was added because the approved provenance register does not admit a parser dependency/source, and no trusted unsaved-buffer producer exists in Core.
+
+**P3 bounded-output/client correction (2026-10-20; source only):** `repo_tree` now caps rendered UTF-8 output at 32 KiB in addition to its depth, entry and scan-count limits, reserving space for truncation and partial-coverage notices. The strict RepoIntel page client rejects a continuation token unless the page is current, partial, nonempty and exactly fills the requested node limit, matching indexd's proof that an additional occurrence exists beyond the emitted page. Regression coverage was updated/authored for full-page continuation and aggregate tree output bounds; no tests or builds were run, so P3 remains unverified.
+
+**P3 continuation client and index paging source update (2026-10-20; not acceptance evidence):** `packages/schema/src/repo-intelligence-v1.ts` brands and bounds HostKernel cursor leases and enforces first-page `sourceGeneration` versus continuation-with-cursor shape. Core requests the optional capability and only dispatches continuation when HostKernel negotiates `repo-intel.cursor-lease-v1`; it retains authenticated RepoRead context and `cancelOnInterrupt`, skips `ensure_generation` for a continuation, and sends no caller-supplied generation authority. `indexd/src/repo_structure.rs` exposes `RepoIntelGeneration::query_structure_page` with internal `RepoStructurePositionV1 { path_ref, symbol_index, byte_offset }`; the exclusive last-emitted position follows canonical BTreeMap path and selector order and uses UTF-8 byte offsets. Indexd emits `next_position` only after observing a further matching node; it does not mint tokens. It skips paths before the resolved anchor before applying each page's byte budget. P1 has now wired the HostKernel source lease resolution/minting and strict public `nextCursor` projection, including owner-epoch, identity, workspace, generation, revision, root, digest, expiry, cancellation, and current Guard/source remeasurement. HostKernel still initializes the cursor capability disabled and does not advertise it by default; source wiring is not runtime acceptance.
+
+**P3 base-generation reuse clarification (2026-10-21; source review only):** HostKernel dispatch is synchronous through one mutable HostKernel instance, so concurrent `ensure_generation` calls cannot overlap inside this process and no in-flight singleflight map is required for this dispatcher. `ensure_repo_generation` collects and remeasures the full bounded source snapshot before looking up a retained exact matching `Arc<RepoIntelGeneration>`; an equivalent later request can skip the index build, but receives no source-scan savings. The immutable base may be reused across Sessions when authenticated principal, Location/root, workspace binding, source revision, read-scope and policy pins, limits, observed file count/bytes, parser identity and owner epoch match. Session/request IDs remain per-query lease identity and are excluded from the base key. This is serialized retained reuse, not overlapping concurrent coalescing or evidence of the full §30.22 work-reduction acceptance; that acceptance remains open and must be evaluated against final integrated source/runtime evidence.
+
+**P3 semantic parser/source audit (2026-10-20; source only):** The pinned OpenCode package uses `web-tree-sitter` plus Bash and PowerShell grammars for shell-command parsing, not RepoIntel semantics; its broader TUI parser table is syntax highlighting. The in-repo `repo_take/jcode` has no compatible semantic index/parser surface. The pinned OMP source contains an ast-grep parser and bounded walker, but §42.11 explicitly rejects porting its `pi_ast`/`pi-vfs` dependency graph into the canonical Rust indexd generation. The existing OpenCode LSP client has workspace/document symbol methods, but `packages/opencode/src/lsp/lsp.ts` has no process clients and its launch/protocol gates remain false under P4/P1 ownership; it cannot currently supply semantic answers. Therefore definitions and semantic references remain truthfully unavailable; lexical results are explicitly labeled candidates. No parser package/dependency or cross-runtime source-byte path was added.
+
+Exact remaining P3 integration dependencies: (1) Cursor source is wired but remains disabled pending integrated acceptance. A file suffix that cannot fit in the remaining per-page `max_bytes` is explicitly skipped, marks the result partial, and does not stop scanning later files; only a real extra matching node may mint the next cursor. This preserves the approved last-emitted-occurrence position and byte limit while allowing forward progress, at the cost of explicit omissions from oversized suffixes. (2) P1/P8 cache observation, exact generation-row invalidation, and HostKernel retirement composition are source-present; the authenticated pressure/policy trigger and cross-phase acceptance remain unavailable. P3 must not synthesize cache lifecycle events or invoke eviction. (3) Parser-backed semantics require an approved parser provenance/dependency and a single-owner bridge into the immutable indexd generation; overlays require a genuine authenticated immutable Core editor-buffer producer. All P3 journeys still require final integrated verification and acceptance.
+
+**P3 persistence integration status (2026-10-20; source audit only):** `indexd::PersistentGenerationStore` provides bounded, corruption-checking immutable-pack persistence, but there is no production caller in HostKernel, Core, or OpenCode. It remains an opt-in library facility, not a persistent RepoIntel product path. Integrating it requires P1/HostKernel to select and protect a cache root under authenticated principal/workspace/policy scope, revalidate pins before reuse, and own one store per root; P3 must not add a second index or filesystem cache owner. Until that HostKernel integration and rebuild/restart acceptance exist, the canonical index remains rebuildable/in-process and §30.7/§30.10 persistence requirements remain open.
+
+**P3 schema consistency and process-origin checkpoint (2026-10-20; source only):** `RepoStructurePageV1` now rejects node refs whose source revision differs from the page, stale status without stale freshness, mismatched reported/returned node counts, source-less non-unavailable pages, and fallback source provenance inconsistent with the page. `RepoDocumentReadResponseV1.text` is character-bounded to the canonical 128 KiB document ceiling; Core still enforces the exact UTF-8 byte bound from the request. Core `Ripgrep` currently rejects `find`, `glob`, and `grep` before binary resolution, command construction, or spawn because no HostKernel operation provides the same bounded glob/regex semantics under authenticated current `files.read` scope. The existing RepoIntel structure query is literal lexical occurrence paging only and is not an equivalent replacement. Do not re-enable ripgrep or add another process route until P1 supplies that Guarded HostKernel read contract. RepoIntel schema and pre-spawn gate regressions were authored but not run; P3 remains unverified.
+
+**P3 config provenance correction (2026-10-20; source only):** when Core cannot identify the configuration source for a requested RepoIntel profile, the projection now preserves `effectiveSource=unknown` through the OpenCode tool result instead of relabeling it as a settings-origin value. An omitted profile resolves to lightweight with `effectiveSource=default`, even when a user/project config layer exists. This is provenance only; it does not grant analysis or process authority. Focused regression coverage was authored but not run.
+
+**P3 directory-enumeration bound correction (2026-10-20; source only):** RepoIntel generation collection and `repo.tree` now use only the descriptor-rooted bounded directory enumerator; `RepoIntelSourceRoot` no longer exposes an unbounded listing API. The collector caps total enumerated entries from its existing file/directory budgets and reports a typed partial stop. This does not add a new cache or HostKernel quota. Source regressions were adjusted but not run.
+
+**P3 selector bound parity (2026-10-21; source only):** the public RepoStructure query schema now enforces the same combined `symbols + nodeRefs ≤ 100` ceiling as indexd, rather than allowing a 200-item request through schema validation only to have Rust reject it. Regression authored; not run.
+
+**P3 structural scan-work bound (2026-10-21; source only):** `indexd::RepoIntelGeneration::query_structure_page` separately caps repeated selector scan work at 4 MiB. `maxBytes` continues to report unique source bytes; the work cap prevents a bounded body containing many selectors from multiplying scans without limit. A work-limited page is `PARTIAL` with `resource_refused` fallback and no continuation position. Added unrun indexd fixtures for selector-work exhaustion, exact host-resolved continuation, and forged continuation anchors. This remains lexical-only and does not change the disabled HostKernel cursor feature or promote RepoIntel acceptance.
+
+**P3 document response integrity and repo-contained fixture state (2026-10-21; source only):** Core now verifies `RepoDocumentReadResponseV1.contentDigest` against the BLAKE3 digest of the returned UTF-8 text in addition to path, exact workspace revision and byte limit. The shared browser-safe schema package owns the pure digest helper; a known-vector fixture and the real HostKernel document journey assert the contract. That real-socket fixture stores temporary state beneath the repository's ignored `kernel/target/repo-intel-live-tests/` tree, so running it will not touch an external temp directory. These fixtures remain unrun; document reads remain false-gated until the integrated P1/P4 acceptance wave.
+
+**P3 authenticated discovery integration (2026-10-21; source only):** P1 has added the bounded `repo-intel.v1/discover` contract and Guarded HostKernel enumeration; Core strictly verifies response authority, limits, descendant paths, relative depth, UTF-8 byte ordering/uniqueness, and tree-versus-manifest entry semantics. P3's `repo_tree` adapter renders only the returned no-follow inventory and caps model-visible output at 32 KiB. `repo_detect` reads recognized manifest candidates only through Core `readRepoDocument` at the exact discovery `sourceRevision`, enforces the aggregate actual UTF-8 read-byte budget and candidate basename/kind, and reports bounded package/language/framework plus declared build/test facts. Invalid JSON is reported as PARTIAL rather than a complete detection. Both tools remain absent from `ToolRegistry` pending integrated acceptance; their adapters do not fall back to app-process filesystem reads. Source fixtures now cover the manifest-derived framework/package-manager/test/build facts; no test or build was run.
+
+**P3 discovery acceptance dependency (2026-10-21; source audit):** The source contract and fixtures require a tree containing symlinks to return their canonical path labels without following them. HostKernel discovery uses `symlink_metadata` and a dedicated bounded `repo_discovery_observation_revision`; it hashes the stored link target text with `read_link` and never resolves or descends the link. The ordinary `workspace_revision_digest` remains stricter for mutation, snapshot, and checkpoint authority. This separate discovery-only observation source resolves the previously recorded revision-walker blocker without weakening those paths. The source change still needs the symlink journey acceptance on the integrated revision.
+
+**P3 effective analysis profile correction (2026-10-21; source only):** persisted `adaptive`/`full` requests are retained as requested configuration but project `effective=lightweight`, `effectiveSource=unknown`, and `reason=feature_unavailable` while parser, overlay, LSP and trusted resource-admission capability paths remain unaccepted. This prevents a configuration value from claiming analysis capability that the runtime does not supply. No pressure signal or eviction authority is inferred; P8's exact CacheRegistry observations/retirement composer remain unused absent its trusted trigger, and the legacy Core cache remains disabled in production. Profile regression fixtures were updated but not run.
+
+**P3 RepoDocumentRead contract reconciliation and phase status (2026-10-22; source only):**
+§12.18 and §37.4 now match the TypeScript/HostKernel contract: each read names
+`revisionKind` (`workspace` or `discovery_observation`) and is bounded to 131,072 UTF-8
+bytes. The canonical JSON Schema mirror already carries those constraints. P3 remains
+PARTIAL: model-visible RepoIntel/discovery tools and cursor continuation are acceptance-gated;
+semantic parser results, trusted editor overlays, persistent protected cache/restart
+lifecycle, pressure-triggered retirement, broader artifact history search/attach, and final
+integrated journeys remain open. No tests, builds or typechecks were run.
+
+**P3 model registry gate (2026-10-21; source only):** RepoIntel and discovery tool definitions are now installed in the shared OpenCode `ToolRegistry`, which is the same model-tool projection used by direct CLI/TUI sessions. Exposure requires the existing experimental setting, the negotiated authenticated `repo-intel.read-context-v1` HostKernel feature, and a separate source acceptance constant. Both acceptance constants remain false: discovery still needs integrated symlink/revision and manifest-read journeys; structure query/cursor still needs authenticated end-to-end acceptance. Feature negotiation alone cannot expose a tool, and a registry handshake failure resolves to hidden. No separate CLI/TUI tool registry or local filesystem fallback is added. This is fail-closed source wiring, not acceptance evidence.
+
+
+## 30.24 Request-bound context revision and catalog provenance (2026-10-21)
+
+Pi's dynamic context sections and transcript-aware system/tool updates reinforce the existing
+ContextService contract: resolve trusted instructions, skills, templates, profile, toolset,
+history and artifact refs into one bounded `ContextSelectionV1`; pin its revisions/digest to
+the model request; and apply changes only at the next request boundary. Progressive
+disclosure is a context-size optimization, not an authority decision. Compaction summaries
+remain derived, bounded references; canonical history is retained and recoverable.
+
+`ContextSelectionV1.lane` makes the pin owner explicit. In the direct lane, Core
+ContextService compiles the exact provider-visible payload and Core SessionStore atomically
+persists the selection/digest and observed Session cursor before the configured ProviderTransport
+is called. Core passes the same immutable payload whose digest was pinned. No direct request
+requires a HostKernel bind/advance RPC. In the managed lane, Core compiles and retains the same
+immutable payload while HostKernel validates the selection against the live Attempt,
+computes/persists its canonical DTO digest in OwnerLog, and returns the exact request
+ID/sequence/digest receipt before Core dispatches. The Session cursor is a canonical
+`DecimalU64` string in both lanes; opaque owner-issued revisions remain strings. Provider-input
+source identity is the request ID, and its revision is the direct Session cursor or managed
+request sequence, respectively. Source ownership never changes the requirement that tools and
+other effects pass through Guard.
+
+**Managed multi-request binding (2026-10-21):** `ContextSelectionV1` describes one exact
+provider request, not an entire multi-step Attempt. Attempt admission binds request sequence
+1. Before that admission, Core prepares the child Session and exact initial provider request
+without dispatch, compiles its selection, and retains the immutable prepared request. After
+admission, Core must dispatch that same prepared request; it cannot rebuild or mutate it.
+Before each later provider request, Core compiles the actual next prompt and obtains
+`managed_context.advance` for the exact next sequence (2–1024), request ID and selection
+digest, under the same live Attempt, child Session, profile, owner epoch and current managed
+revision. HostKernel persists the bounded reference-only selection and returns an idempotent
+receipt; an exact retry replays that receipt, while a gap, conflict, stale owner, terminal
+Attempt or missing source revision denies before provider dispatch. The selection's
+`sessionID` is the Attempt's child Core Session that owns the prompt/transcript; the parent
+Session remains a separate lineage pin. Include authoritative managed Task/accepted Spec,
+profile, toolset, instruction/skill/template, history and artifact refs only with exact
+owner-provided revisions and canonical digests. Where prompt transformations cannot expose
+stable individual references, Core adds a separate `provider-input` aggregate reference over
+the exact normalized provider-visible system/messages/tools; this is integrity provenance,
+not a replacement for available source refs or an authority grant. The digest returned by
+Rust must be attached to the same immutable request passed to the provider. Tool results or
+context changes after one dispatch enter only the next compiled request. No context reference
+may grant effect authority or widen the live Attempt capability scope.
+
+**Direct request lifecycle (V1, DEC-V1-32):** Core ingress authenticates the explicit user
+prompt or continue and resolves only the already-selected route and configured policies. Core
+assigns the request ID and, in one SessionStore transaction, pins the `lane: direct`
+ContextSelection, active AgentProfileV2 revision/digest and effective permission-scope digest,
+exact normalized provider-input digest, selected provider/model/account/
+harness/endpoint revisions, privacy/network/output-token/cost-policy revision, and request
+status before transport. Exact request-ID replay with identical pins returns existing state;
+changed input or authority pins conflict. The transport rechecks the digest of the same
+frozen object immediately before send. `PINNED` can resume after restart only with that exact
+object and route. Once `DISPATCHING` is durable, missing response/assistant settlement is
+`UNKNOWN` and must not trigger automatic retry; final assistant entry, usage and `SETTLED`
+state commit atomically, and explicit user continuation creates a new request ID. Provider
+credential bytes are supplied only through the selected-route protected
+SecretBroker callback and are never persisted with ContextSelection. A hard cost ceiling is
+enforced against conservatively reserved or settled usage before another request; unknown
+usage stops continuation when the ceiling cannot be proven. This direct journal does not use
+OwnerLog or the managed `providers.infer` challenge/lease path.
+
+HorizonCode already consumes models.dev metadata. Provider-agnostic context limits,
+modalities and prices are catalog claims with source/freshness; selected-route availability,
+authentication and actual usage come from runtime/provider evidence. Do not overlay a second
+Pi catalog, silently reroute a selected model, or infer cost/cache hits from missing fields.
+Automatic prompt-cache warming remains off; any future opt-in must account for its extra
+provider requests and disclose the selected route and cost/savings estimate. Comparative
+decisions and links: [`docs/research/2026-10-21-pi-codex-harness-decisions.md`](../docs/research/2026-10-21-pi-codex-harness-decisions.md).
+
+**P3 source update (2026-10-22; not acceptance evidence):** `ContextLedgerV2` now has a
+strict schema and pure Core `compileContextLedgerV2` projection keyed to one exact request,
+provider/model/harness, source revision, payload digest/bytes and required `ContextSelection`;
+managed projections also require the HostKernel selection digest. The compiler persists no
+raw prompt or credentials and creates no second transcript store. Direct ledger projection
+fails closed until the provider boundary receives the exact Core selection. P7 owns final
+provider-boundary capture/stream projection. Same-session `history.search` and
+`history.read_range` use a size-first SQL projection with a 65,536-byte serialized-Part cap,
+bounded text prefix/range, and explicit oversized/unavailable outcomes; `history.attach`
+remains unavailable. Core `ContextSelectionV1` now requires the normative explicit `lane`
+and a typed trusted profile reference for direct requests. The P2 managed producer in
+`packages/opencode/src/session/llm.ts` still needs `lane: "managed"`, and the actual direct
+request path still needs its trusted profile resolution/persisted selection caller. Cross-phase
+writer coordination and integrated acceptance remain open. P3 remains PARTIAL; discovery,
+cursor, semantic parser, overlay, persistent cache lifecycle and final journeys are not
+accepted by this source update.
+
+## 30.25 Competitive retrieval algorithms — V1 adaptation (`DEC-V1-35`, §10.18)
+
+External repo-intelligence products (Aider repo-map, Cursor semantic index + grep, mgrep, code-review-graph) are **not** imported as parallel authorities. V1 adapts **algorithms inside the single RepoIntel/`indexd` owner and ContextService** per §10.18.2 and §42.21.
+
+| Pattern (evidence) | Horizon adaptation | Rejected V1 bolt-on |
+|---|---|---|
+| Aider: tree-sitter tags → file graph → personalized rank → token-budgeted map | Build/reference edges in §30.8; rank into `ContextSelection` / context compile (§30.21); expose via progressive repo tools | Separate Python repo-map process |
+| Cursor: custom embeddings + Merkle sync + **grep hybrid** | Lexical `indexd` first; optional **user-enabled** local embeddings (§30.7); never default cloud team index | Hosted Turbopuffer-style default index |
+| mgrep / “Codebase Memory MCP”: semantic MCP + background sync | Optional routed MCP tool only; no second generation owner | mgrep as canonical RepoIntel |
+| CRG: persistent SQLite graph + MCP review context | Incremental parse, blast-radius queries, and token-budgeted graph walks **in `indexd`** when parser provenance is approved (§42.11) | Installing CRG as required dependency |
+| LSP diagnostic loop | P4 broker: publish buffer → diagnostics → session runner bounded repair before user-visible settle | New standalone Rust LSP product without ADR |
+
+**Nice-to-have (§10.18.3):** symbol/reference edges and `impact.analyze`; opt-in embeddings; persistent `indexd` packs under HostKernel — none are alternate indexes.
+
+**Acceptance:** §32.47 `V1-ADAPT-003`..`005` plus existing §32.4, §32.10–11, RD-* and CTX-* families. Marketing token-reduction percentages are not acceptance criteria (`DEC-V1-34`).
+
+## 30.26 Models.dev bridge and tiered context compile (`ContextCompilePolicyV1`)
+
+Status: normative V1 design (2026-10-22). **WIRED/VERIFIED** requires §32.10 `CX-014`..`CX-021`, §32.45 `CTX-*`, §37.14, §37.30, and real-provider journeys documented below. Schemas: [`context-compile-policy-v1.schema.json`](contracts-v2/context-compile-policy-v1.schema.json), [`repo-context-anchor-v1.schema.json`](contracts-v2/repo-context-anchor-v1.schema.json); ledger embeds optional `compilePolicy`. LLD: **§37.30**. Atlas: **§45.30**.
+
+### 30.26.1 Problem and goal
+
+Provider prefix caching (Anthropic, DeepSeek, Google routes, OpenAI ephemeral cache where supported) rewards **byte-stable prefixes**; uncached routes (many gateways, Groq-class speedsters, local models) reward **smaller prompts**. Horizon must **maximize useful work per token and per dollar** without:
+
+- switching the user-selected provider/model/harness (`DEC-V1-32`, `DEC-V1-34`);
+- fabricating cache hits or savings (**§30.11**, **`CX-013`**);
+- a second catalog/router (**§42.21** — models.dev is **metadata only**);
+- a parallel Rust/string `PromptBuilder` that bypasses Core `ContextService` and `ContextSelectionV1`.
+
+### 30.26.2 External catalog truth (models.dev — verified 2026-10-22)
+
+Horizon consumes the same JSON family as OpenCode **`ModelsDev.Service`** (`packages/core/src/models-dev.ts`):
+
+| Endpoint | Use |
+|---|---|
+| `https://models.dev/api.json` (default mirror: `https://models.opencode.ai/api.json`) | `Record<providerId, Provider>` with nested `models` |
+| `https://models.dev/models.json` | Provider-agnostic model metadata |
+| `https://models.dev/catalog.json` | Combined |
+
+**Provider record:** `id`, `name`, `env[]`, optional `api`, `npm`, `models: Record<modelId, Model>`.
+
+**Model record (authoritative fields for this bridge):**
+
+- `limit.context`, `limit.output`, optional `limit.input`
+- `cost.input`, `cost.output`, optional **`cost.cache_read`**, **`cost.cache_write`**, tiers
+- `tool_call`, `reasoning`, `modalities`, etc.
+
+There is **no** `lab`, `features[]`, or `pricing.cached` field in this schema. **`cost.cache_read` present** is a **catalog hint** that the model *may* support billed cache reads — not proof that **this user's route** exposes prefix caching (gateways may strip it). Live sample (models.dev `anthropic` / `claude-sonnet-4-5`): `cache_read: 0.3`, `cache_write` present, `limit.context: 200000`.
+
+Catalog rows are **advisory** with `source` (`cache` \| `bundled` \| `override` \| `unavailable`) and `freshness` (`fresh` \| `stale` \| `unknown`) from `ModelsDev.getSnapshot()`.
+
+### 30.26.3 HLD — components and ownership
+
+```mermaid
+flowchart TB
+  subgraph catalog ["Catalog (advisory)"]
+    MD["ModelsDev.Service\napi.json disk cache + refresh"]
+  end
+  subgraph core ["Core (authoritative compile)"]
+    CFG["Config / AgentProfileV2\ncontextCompilePolicy"]
+    RCP["resolveContextCompilePolicyV1()"]
+    CS["ContextService.compileRequest()"]
+    CL["compileContextLedgerV2()"]
+    SS["SessionStore pin\nContextSelectionV1"]
+  end
+  subgraph intel ["RepoIntel (anchor bytes)"]
+    HK["HostKernel ensure_generation"]
+    IDX["indexd bounded map"]
+    ART["ArtifactStore\nRepoContextAnchorV1"]
+  end
+  subgraph transport ["Provider boundary"]
+    PT["ProviderTransport +\nPrefixCacheAdapter"]
+    AD["AI SDK / provider API\ncache_control / prompt cache keys"]
+  end
+  subgraph ui ["UI / analytics"]
+    BAR["Context bar + ledger stream"]
+    AN["Analytics usage\ncache_read/write only"]
+  end
+  MD --> RCP
+  CFG --> RCP
+  PT -->|prefixCacheSupport| RCP
+  RCP --> CS
+  HK --> IDX --> ART
+  ART --> CS
+  CS --> CL --> SS
+  CS --> PT --> AD
+  CL --> BAR
+  AD --> AN
+```
+
+| Layer | Owner | Responsibility |
+|---|---|---|
+| HLD policy | **§30.26** (this), **§30.11** caching law | Tier semantics, invalidation, no fake hits |
+| Catalog ingest | **`ModelsDev.Service`** (Core TS) | Fetch/cache `api.json`; provenance |
+| Policy resolution | **`resolveContextCompilePolicyV1`** (Core) | `requested` → `effective` + hints |
+| Compile | **`ContextService`** (Core) | Messages, segments, `ContextSelection`, pressure |
+| Anchor artifact | **RepoIntel + ArtifactStore** | One bounded map per anchor epoch |
+| Cache breakpoints | **`ProviderTransport` / §37.30** | API-level cache metadata, not prompt XML |
+| Pin / authority | **SessionStore** (direct), **HostKernel** (managed) | **DEC-V1-32**, **§30.24** |
+| Observation | **§37.14 CacheObservationAdapterV1** | Measured cache buckets only |
+| UX | **§16** context bar, **§31** ledger event | Show policy + UNKNOWN cache |
+
+**Rust HostKernel** produces index/anchor bytes and guards reads; it does **not** assemble provider chat strings.
+
+### 30.26.4 Compile tiers (effective policy)
+
+| `effective` | When | Stable prefix | Tail |
+|---|---|---|---|
+| **`cache_anchor`** | Route adapter reports `ephemeral` or `explicit_breakpoints`, or strong catalog hint + verified adapter | Full **RepoContextAnchor** projection (`anchorProjection: full`), harness, static system segments — **identical bytes** across turns in same anchor epoch | User message, current turn tools/results, **query-targeted** file slices |
+| **`minimize_tokens`** | No reliable prefix cache | **Compressed** anchor projection (`compressed`), aggressive snippet caps, §30.5 layers | Same, but smaller |
+
+**`requested`** (`auto` \| `cache_anchor` \| `minimize_tokens`): from `AgentProfileV2.limits.contextCompilePolicy` (default `auto`), Settings override, or session-local override (ActionDescriptor).
+
+**`resolveContextCompilePolicyV1` algorithm (normative):**
+
+```text
+1. requested := profile → settings → session override (first explicit wins)
+2. routeCaps := ProviderTransport.prefixCacheSupport for pinned route revision
+3. hints := ModelsDev row for (providerID, modelID) + snapshot source/freshness
+4. If requested == cache_anchor AND routeCaps == none → fail closed before dispatch
+   with typed UNAVAILABLE (or require user confirm downgrade — product choice; default deny)
+5. If requested == minimize_tokens → effective minimize_tokens
+6. If requested == cache_anchor → effective cache_anchor
+7. If requested == auto:
+   a. If routeCaps in {explicit_breakpoints, ephemeral} → cache_anchor (resolvedFrom route_adapter)
+   b. Else if hints.priceCacheReadKnown AND catalogFreshness != stale → cache_anchor (catalog_hint)
+   c. Else → minimize_tokens (conservative_default)
+8. Attach catalogHints + prefixCacheSupport to ContextCompilePolicyV1 on ledger
+9. After SETTLED usage: optional measured_usage adjustment is telemetry-only;
+   it MUST NOT switch provider/model; may suggest UI “cache not observed” only
+```
+
+**Guarantee disclaimer (required in UI/docs):** Horizon **maximizes prefix stability** and **reports** provider cache buckets; it does **not** guarantee cache hits (TTL, minimum tokens, account, gateway, normalization drift).
+
+### 30.26.5 RepoContextAnchor — “universal map” without intent churn
+
+**Bug avoided:** rebuilding the repo map from the **current user question** changes prefix bytes → cache miss.
+
+**Fix:**
+
+1. On **anchor epoch start** (session start, or workspace `sourceRevision` change, or explicit `/context anchor regen`): build bounded map from RepoIntel generation — paths + public signatures / lexical summaries per §30.25 (not query-specific).
+2. Persist canonical bytes in **ArtifactStore**; metadata **`RepoContextAnchorV1`** (`repo-context-anchor-v1.schema.json`).
+3. Pin in **`ContextSelectionV1`** as `kind: artifact`, `inclusionReason: context_anchor`, digest-stable.
+4. **Query-specific** retrieval (ranked files, symbols) compiles into **tail** sources only (`inclusionReason: retrieval`).
+
+**Bounds:** `byteLength ≤ 8 MiB`, `fileCount ≤ 4096` (align indexd); partial maps labeled `completeness: partial`.
+
+**Invalidation:** workspace revision, harness revision, profile revision, permission revocation, or explicit regen — not per user message.
+
+### 30.26.6 Provider transport (not string markers)
+
+Forbidden: fake tags such as `<cache_control_block_end/>` inside concatenated text.
+
+Required: **`PrefixCacheAdapterV1`** (§37.30) marks **structured** message blocks per provider:
+
+- Anthropic: `cache_control` on eligible content blocks
+- OpenAI-compatible: documented prompt-cache / `promptCacheKey` where supported (existing session-scoped key path in Core runner is one input; adapter unifies)
+- Others: `none` unless Doctor `phase: "cache"` proves otherwise
+
+Ledger entries for anchor + system use `cacheClass: "static"`; tail uses `turn` / `history` per §30.11.
+
+### 30.26.7 End-to-end sequence (direct lane)
+
+```mermaid
+sequenceDiagram
+  participant U as User
+  participant T as TUI
+  participant CS as ContextService
+  participant MD as ModelsDev
+  participant RI as RepoIntel
+  participant SS as SessionStore
+  participant PT as ProviderTransport
+  participant P as Provider API
+  U->>T: prompt / continue
+  T->>CS: compile turn (pinned route)
+  CS->>MD: getSnapshot()
+  CS->>CS: resolveContextCompilePolicyV1()
+  alt anchor epoch missing
+    CS->>RI: ensure_generation + build anchor
+    RI-->>CS: RepoContextAnchorV1 + artifact bytes
+  end
+  CS->>CS: compile messages (tier + pressure §30.4)
+  CS->>CS: compileContextLedgerV2 + compile ContextSelection
+  CS->>SS: atomic pin request + selection digest
+  CS-->>T: session.context_ledger (ephemeral)
+  CS->>PT: dispatch frozen payload + cache breakpoints
+  PT->>P: API request
+  P-->>PT: stream + usage (cache_read/write if reported)
+  PT-->>CS: SETTLED + usage provenance
+  CS-->>T: context bar / analytics update
+```
+
+Managed lane: identical compile through step `ContextSelection`; add **`managed_context.advance`** digest bind before dispatch (**§30.24**).
+
+### 30.26.8 Connection map (rest of architecture)
+
+| Consumer | Connection |
+|---|---|
+| **§01** immutable constraints | Single compiler; no hidden model switch |
+| **§03.6** context pressure | §30.4 recovery runs inside compile; tier affects prefix size not delete canonical history |
+| **§12–15** IPC | `ContextSelectionV1` wire; managed digest |
+| **§16** UX | Context bar shows `effective` tier, anchor digest, next trim; Settings optional override |
+| **§17 DEC-V1-32** | Direct pin before transport |
+| **§29** harness | Harness revision invalidates static segment |
+| **§31** UI | `session.context_ledger` includes `compilePolicy` |
+| **§32** tests | `CX-014`..`021`, `CTX-*` |
+| **§37.16–18** Doctor | `phase: "cache"` on full tier probes |
+| **§37.30** | `PrefixCacheAdapterV1`, `resolveContextCompilePolicyV1` interfaces |
+| **§42.21** | models.dev = metadata; no second router |
+| **§45.30** | Atlas diagram |
+| **§10.18 prio 3** | `V1-ADAPT-003` |
+
+### 30.26.9 LLD entry points (implementation, not VERIFIED)
+
+| Module | Function / service |
+|---|---|
+| `packages/core/src/models-dev.ts` | `Service.getSnapshot()` → catalog hints |
+| `packages/core/src/session/context-compile-policy.ts` (new) | `resolveContextCompilePolicyV1(...)` |
+| `packages/core/src/session/context-service.ts` (owner) | `compileDirectProviderRequestContextV1` calls resolver + anchor |
+| `packages/core/src/session/context-ledger.ts` | attach `compilePolicy` to ledger |
+| `packages/core/src/session/runner/llm.ts` | pass policy into compile; no post-pin mutation |
+| `packages/opencode/src/auth/provider-transport.ts` | `prefixCacheSupport` capability |
+| HostKernel / `indexd` | anchor generation RPC (bounded) |
+
+### 30.26.10 Testing law — cache outcomes are empirical
+
+Acceptance rows **`CX-014`..`CX-021`** (§32.10) are **required** before VERIFIED. **Critical testing note:**
+
+> **Provider prefix cache behavior MUST be validated on real pinned routes in CI/canary. Tests PASS when policy, stability, and honest telemetry are correct; they do NOT FAIL the release solely because `cache_read` is zero on a given run — that result is recorded as UNKNOWN or “no observed cache” and investigated. Tests FAIL if the product claims a cache hit without provider usage evidence, mutates the anchor prefix between turns without invalidation, switches model/provider to “optimize cache”, or sends cache breakpoints on routes with `prefixCacheSupport: none`.**
+
+Suggested canary matrix (document in test plan, not marketing):
+
+| Route class | Expect |
+|---|---|
+| Anthropic direct | Stable anchor digest across 3 turns; usage shows `cache_read` **or** honest UNKNOWN |
+| OpenAI with cache | Same stability; ephemeral cache may miss on turn 1 |
+| Groq / local | `minimize_tokens`; smaller `requestBytes`; no cache breakpoints |
+| Gateway stripping cache | `catalog_hint` may suggest anchor but `route_adapter` → minimize unless user forces anchor |
+
+### 30.26.11 Current implementation status
+
+**CODE_PRESENT / PARTIAL:** `ModelsDev.Service`, `compileContextLedgerV2`, `ContextSelection` pin, models.dev-shaped `cost.cache_read` in catalog, optional `promptCacheKey` on one OpenCode path. **Not yet wired:** `resolveContextCompilePolicyV1`, `RepoContextAnchor` generation, `PrefixCacheAdapterV1`, ledger `compilePolicy`, profile `contextCompilePolicy`, `CX-014`..`021` execution on integrated revision.
+
+## 30.27 Session epochs and lane choice (long-horizon UX)
+
+Users coming from OpenCode/Cursor/Claude Code need explicit rules for **when to reset what**:
+
+| Action | Model-visible history | Session record | Workspace files | Use when |
+|---|---|---|---|---|
+| Continue chat | Full | Same Session | Unchanged | Default |
+| `/trim` | Drops verbose tool payload only | Same | Unchanged | Soft pressure (§30.4) |
+| `/prune` | Removes selected stale turns (preview) | Same | Unchanged | Relevance cleanup |
+| `/compact` | Summary artifact + shorter view | Same | Unchanged | Long chat, keep thread |
+| `/clear` | **New context epoch** | Same Session ID | Unchanged | Fresh model window; history searchable |
+| `/fork` / timeline | Branch from message | New Session link | Unchanged | Experiment without losing parent |
+| New Session | Empty chat | New Session | Unchanged | New task, same repo |
+| Managed **new Run** | Managed context slice | Run/Task IDs | Worktree may differ | Multi-step verified automation only |
+
+**Law:** `/clear` is not delete; `/compact` is not `/clear`. Goals and protected lines survive
+pressure recovery (§30.4). Help text and `builtin.context-recovery` must teach this table.
+
+## 30.28 Direct-session speed compiler (`DEC-V1-37` speed arm)
+
+Normative behaviors (mutations stay Guarded):
+
+| ID | Behavior | Owner |
+|---|---|---|
+| SP-A | **Compile overlap:** start `ContextService.compile` on send; if ledger digest unchanged from cache, overlap with provider transport | Core runner |
+| SP-B | **Symbol-first:** default tool-plan bias `repo.tree` / `symbols.search` before whole-file `files.read` | Harness + §30.25 |
+| SP-C | **Cold RepoIntel:** `query_structure` async; first turn uses lexical/grep + honest `index_warming` flag; never block Send | `indexd`, P3 |
+| SP-D | **Harness auto-pick:** context window ≤8k → prefer `harness.native-minimal`; else rich when model supports tools | Profile + §33.20 |
+| SP-E | **PERF-DIRECT** release fixture | §32.49 |
+
+Acceptance: §32.50 `SPD-*` plus existing `PERF-DIRECT-*`.
+
+## 30.29 SWE accuracy contracts (direct + managed)
+
+| ID | Contract | Owner |
+|---|---|---|
+| ACC-F | **Edit loop:** after `files.patch`, schedule bounded LSP `diagnostics.get`; surface in tool result; optional one repair turn (user setting) | P4 + §10.19 |
+| ACC-G | **Stale-edit:** every write carries revision/hashline fence; mismatch → typed retry, not silent apply | §10.5, hooks §33.18 |
+| ACC-H | Managed PASS requires `builtin.verifier` evidence on exact revision | §11, DEC-V1-31 |
+| ACC-I | Release claims require HUP-001/002 holdout | DEC-V1-34, §32.40 |
+| ACC-J | **Verify locally:** `job.*` / workspace command profile runs tests; structured pass/fail for user (not chat PASS) | §33.4 jobs, §16 |
+
+## 30.30 Reliability and long-horizon defaults
+
+| ID | Behavior | Owner |
+|---|---|---|
+| REL-K | UNKNOWN UX copy and reconcile actions (§14, §16) | P7 TUI |
+| REL-L | `/checkpoints` priority for rewind | §16.18 |
+| REL-M | Auto `/trim` at soft pressure; suggest `/compact`; never auto-drop Goal lines | §30.4 (extend) |
+| REL-N | Session import/export (OpenCode transfer seam) | §42, P3 |
+| REL-O | Soft pressure: coalesce UI + tool tail; hard: stop new subagents | §18.18, §31.16 |
+| LH-T | Direct hours-long vs managed Goals opt-in | §01.4, §16.4.1 |
+| LH-U | Long sessions: §30.26 `cache_anchor` when route supports | §37.30 |
+| LH-V | Recall opt-in only (§30.20) | Settings |
+| LH-W | Parallel work: worktree lease per task | §21, P8 |
+| LH-X | Activity digest not injected into model context | §31.22 |
+| LH-Y | `builtin.context-recovery` + `builtin.horizoncode` teach epochs | §29, §33.17 |
+
+Acceptance IDs: §32.52 `LHR-001`..`003` (epoch/verify); do not confuse with §32.11 `LH-001`.. migration journeys.

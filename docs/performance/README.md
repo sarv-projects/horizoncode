@@ -58,4 +58,18 @@ JCode public comparison sources (external, **not independently confirmed results
 }
 ```
 
-Do not generate a fake success report from this template. Benchmark harness scripts and CI ratchet are **outstanding implementation tasks**.
+Do not generate a fake success report from this template. `scripts/perf/rc0.py` provides
+bounded Linux process-tree sampling, a harness self-check, and caller-input preflight;
+it does not attest HorizonCode Session ownership or independently verified Run outcomes.
+When `--output` is selected, it appends only under the repository through no-follow
+directory handles, a private regular-file check, a bounded size and an exclusive file
+lock; unsafe or external output paths are refused. Every supplied capture remains
+provisional `NOT_BASELINE`. The product-backed sampler
+projection, authenticated attestation path, reproducible 1/5/10/20 real-workload captures,
+and CI ratchet remain outstanding; no RC0 performance claim is currently supported.
+The RC0 fixture suite now creates all temporary files beneath `scripts/perf/` rather than
+using the host's default temporary directory, preserving the repository-only operating
+boundary in a future authorized test run. RC0 outcome and Rust owner-snapshot input files
+are also opened only through repository-relative no-follow directory handles; symlinked,
+external, multiply linked, changed-during-read, or over-limit files are rejected. This
+hardens local input handling but does not elevate their provenance. Fixtures remain unrun.

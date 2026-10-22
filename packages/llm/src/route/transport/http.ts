@@ -144,7 +144,7 @@ export const httpJson = <Body, Frame>(input: HttpJsonInput<Body, Frame>): HttpJs
         framing: input.framing,
       })),
     ),
-  frames: (prepared, request, runtime) =>
+  frames: (prepared, request, runtime, executionContext) =>
     Stream.unwrap(
       Auth.withRequestEffect(prepared.auth, prepared.authInput, (headers) =>
         runtime.http.execute(
@@ -153,6 +153,7 @@ export const httpJson = <Body, Frame>(input: HttpJsonInput<Body, Frame>): HttpJs
             body: prepared.bodyText,
             headers,
           }),
+          executionContext,
         ),
       )
         .pipe(

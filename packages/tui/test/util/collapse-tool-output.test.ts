@@ -2,10 +2,33 @@ import { expect, test } from "bun:test"
 import {
   boundToolOutput,
   collapseToolOutput,
+  redactToolText,
   sanitizeToolDisplayValue,
+  safeToolName,
+  safeTimelineTitle,
   toolArtifactFidelity,
   toolArgumentPreview,
 } from "../../src/util/collapse-tool-output"
+
+test("tool labels accept only printable capability identifiers", () => {
+  expect(safeToolName("repo.search_text")).toBe("repo.search_text")
+  expect(safeToolName(`${String.fromCharCode(27)}[31mred${String.fromCharCode(27)}[0m`)).toBe("tool")
+  expect(safeToolName("tool\u202ename")).toBe("tool")
+  expect(safeToolName("x".repeat(81))).toBe("tool")
+})
+
+test("tool text strips C1 controls and all bidi formatting controls", () => {
+  const unsafe = `left${String.fromCharCode(0x009b)}2J${String.fromCharCode(0x061c)}${String.fromCharCode(0x200e)}${String.fromCharCode(0x200f)}${String.fromCharCode(0x202e)}${String.fromCharCode(0x206f)}right`
+  expect(redactToolText(unsafe)).toBe("left2Jright")
+})
+
+test("timeline labels redact credentials and cap prompt text before rendering", () => {
+  const title = safeTimelineTitle(`Review Bearer private-token-value\n${"x".repeat(4096)}`)
+  expect(title).toContain("Bearer [REDACTED]")
+  expect(title).not.toContain("private-token-value")
+  expect(new TextEncoder().encode(title).byteLength).toBeLessThanOrEqual(512)
+  expect(title).not.toContain("\n")
+})
 
 test("passes through output within the line and character budget", () => {
   const output = "one\ntwo\nthree"

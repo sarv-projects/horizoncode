@@ -30,6 +30,8 @@ export interface SecretBrokerStore {
     expectedVersion?: number,
   ): Promise<SecretBrokerV1.MetadataV1>
   describe(secretRef: SecretBrokerV1.SecretRef): Promise<SecretBrokerV1.MetadataV1 | undefined>
+  /** Metadata-only bounded lookup used by trusted provider-route projections. */
+  listByProviderIds(providerIds: readonly string[]): Promise<readonly SecretBrokerV1.MetadataV1[]>
   /**
    * Atomically verifies the exact ISSUED lease and current secret version,
    * commits ISSUED -> CONSUMED, then returns a fresh byte copy. Implementations
@@ -157,6 +159,27 @@ export function createSecretBroker(options: {
       }
       if (!metadata) throw new SecretBrokerError("UNAVAILABLE", "Secret reference is unavailable")
       return decodeMetadata(metadata)
+    },
+
+    async listByProviderIds(providerIds: readonly string[]): Promise<readonly SecretBrokerV1.MetadataV1[]> {
+      if (!Array.isArray(providerIds) || providerIds.length > 16 || providerIds.some((value) =>
+        typeof value !== "string" || value.length === 0 || value.length > 128 || /[\u0000-\u001f\u007f]/.test(value),
+      )) {
+        throw new SecretBrokerError("INVALID_REQUEST", "Provider credential lookup is invalid")
+      }
+      let records: readonly SecretBrokerV1.MetadataV1[]
+      try {
+        records = await options.store.listByProviderIds([...new Set(providerIds)])
+      } catch {
+        throw new SecretBrokerError("UNAVAILABLE", "Provider credential metadata is unavailable")
+      }
+      if (!Array.isArray(records) || records.length > 256) {
+        throw new SecretBrokerError("UNAVAILABLE", "Provider credential metadata is invalid")
+      }
+      const allowed = new Set(providerIds)
+      return records.map(decodeMetadata).filter((metadata) =>
+        allowed.has(metadata.providerId) && metadata.status === "AVAILABLE",
+      )
     },
 
     async authorizeUse(

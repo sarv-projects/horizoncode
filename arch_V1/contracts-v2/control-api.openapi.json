@@ -357,7 +357,8 @@
             "type": "string"
           },
           "version": {
-            "type": "integer"
+            "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64",
+            "description": "Decimal-string entity revision per §12.11."
           },
           "eventCursor": {
             "type": "string"

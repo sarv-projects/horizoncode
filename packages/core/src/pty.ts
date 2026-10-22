@@ -3,22 +3,27 @@ export * as Pty from "./pty"
 import { randomUUID } from "node:crypto"
 import { Buffer } from "node:buffer"
 import { makeLocationNode } from "./effect/app-node"
-import { Context, Effect, Fiber, Layer, Schema, Scope, Stream, Types } from "effect"
+import { Context, Effect, Fiber, Layer, Option, Schema, Scope, Stream, Types } from "effect"
 import { Pty } from "@opencode-ai/schema/pty"
 import { Config } from "./config"
 import { EventV2 } from "./event"
 import { Location } from "./location"
 import { PtyID } from "./pty/schema"
 import { Shell } from "./shell"
+import * as WorkspaceCommandProfileV1 from "@opencode-ai/schema/workspace-command-profile-v1"
 import {
   SessionSupervisor,
   SessionSupervisorError,
-  directAttemptScopeToWire,
+  directAttemptScopeFromWire,
+  directTurnScopeFromWire,
+  directTurnScopeToWire,
   wireUnixMs,
   type Cursor,
   type EffectAdmission,
   type EffectLease,
   type DirectAttemptScopeV1,
+  type DirectTurnScopeV1,
+  type ArtifactRefWireV1,
   type GuardApprovalDecision,
   type GuardedToolCall,
   type HostKernelEvent,
@@ -26,7 +31,7 @@ import {
   type HostKernelResnapshot,
   type HostKernelStreamMessage,
 } from "./session/supervisor"
-import { TrustedPrincipalContext } from "./trusted-principal"
+import { TrustedPrincipalContext, type TrustedPrincipal } from "./trusted-principal"
 
 const STATUS_REPLAY_LIMIT = 2 * 1024 * 1024
 const SUBSCRIBER_LIMIT = 2 * 1024 * 1024
@@ -101,6 +106,17 @@ export type TerminalRunInput = {
   readonly timeoutMs: number
 }
 
+/** Model-authored profile intent. Executable, fixed argv, environment and cwd
+ * stay in the authenticated Core Config projection sent beside the ToolBatch. */
+export type WorkspaceCommandInvocationV1 = {
+  readonly mode: "workspace_profile"
+  readonly action: "build" | "test"
+  readonly profileID: string
+  readonly revision: string
+  readonly profileDigest: string
+  readonly arguments: ReadonlyArray<string>
+}
+
 export type TerminalRunResult = {
   readonly status: "exited" | "timed_out" | "cancelled" | "unknown"
   readonly exitCode?: number
@@ -108,8 +124,14 @@ export type TerminalRunResult = {
   readonly previewTruncated: boolean
   readonly artifactTruncated: boolean
   readonly artifactFidelity: "FULL" | "SAMPLE" | "FAILED"
-  readonly artifactRef: string
+  readonly artifactRef: ArtifactRefWireV1
+  readonly outputDigest: string
+  readonly observedBytes: string
+  readonly droppedBytes: string
   readonly receiptRef: string
+  readonly directAttempt?: DirectAttemptScopeV1
+  readonly directTurnScope?: DirectTurnScopeV1
+  readonly attemptScopeTransition?: "effect_receipt"
 }
 
 export type TerminalToolBatchInput = {
@@ -118,10 +140,23 @@ export type TerminalToolBatchInput = {
   readonly batchID: string
   readonly turnContextDigest: string
   readonly calls: ReadonlyArray<GuardedToolCall>
-  readonly directAttempt?: DirectAttemptScopeV1
+  readonly directTurnScope?: DirectTurnScopeV1
   /** Supplied by the server-private shell/plugin environment provider, never by model tool arguments. */
   readonly resolvedEnvironment?: Readonly<Record<string, string>>
 }
+export type WorkspaceCommandProfileBindingV1 = {
+  readonly callID: string
+  readonly reference: {
+    readonly profileId: string
+    readonly revision: string
+    readonly profileDigest: string
+    readonly action: "build" | "test"
+  }
+  readonly definition: WorkspaceCommandProfileV1.WorkspaceCommandProfileDefinitionV1
+  /** Trusted, pre-resolved values filtered to the profile's configured allowlist. */
+  readonly resolvedEnvironment: Readonly<Record<string, string>>
+}
+export type TerminalRunInvocationV1 = TerminalRunInput | WorkspaceCommandInvocationV1
 export type AttachInput = {
   // Absolute byte cursor to replay from. -1 tails from the current end; omitted requests retained host output.
   readonly cursor?: number
@@ -163,6 +198,8 @@ type Active = {
   effectID: string
   grantID: string
   locationID: string
+  /** Owner principal pinned by the host when this terminal was admitted. */
+  principal: TrustedPrincipal
   sessionID?: string
   channel: Channel
   byteCursor: number
@@ -242,7 +279,7 @@ export interface Interface {
   readonly prepareToolBatch: (
     input: TerminalToolBatchInput,
   ) => Effect.Effect<
-    { readonly admission: EffectAdmission; readonly calls: ReadonlyArray<GuardedToolCall> },
+    { readonly admission: EffectAdmission; readonly calls: ReadonlyArray<GuardedToolCall>; readonly workspaceCommandProfiles: ReadonlyArray<WorkspaceCommandProfileBindingV1> },
     InvalidInputError | ShellProfileUnavailableError | SessionSupervisorError,
     TrustedPrincipalContext
   >
@@ -259,6 +296,8 @@ export interface Interface {
       readonly locationRef: typeof Location.Ref.Type
       readonly lease: EffectLease
       readonly call: GuardedToolCall
+      readonly workspaceCommandProfile?: WorkspaceCommandProfileBindingV1
+      readonly directTurnScope?: DirectTurnScopeV1
     },
   ) => Effect.Effect<
     TerminalRunResult,
@@ -587,6 +626,10 @@ const layer = Layer.effect(
       stopAtByteCursor?: number,
     ) =>
       Effect.gen(function* () {
+        // The host binds a terminal to the authenticated principal that started it, so
+        // continuations carry the ambient typed principal when one exists; untyped
+        // legacy attach stays host_os and the kernel still enforces its own binding.
+        const trusted = yield* Effect.serviceOption(TrustedPrincipalContext)
         let sequence = afterSequence
         let byteCursor = afterByteCursor
         let bytes = 0
@@ -600,6 +643,8 @@ const layer = Layer.effect(
             afterSequence: sequence,
             afterByteCursor: byteCursor,
             maxBytes: SNAPSHOT_PAGE_BYTES,
+          }, {
+            ...(Option.isSome(trusted) ? { trustedPrincipal: trusted.value.principal } : {}),
           })
           if (
             page.terminalID !== session.info.id ||
@@ -700,6 +745,7 @@ const layer = Layer.effect(
       const channel: Channel = { attachmentID, sequence: 0, failed: false }
       const submit = (operation: "input" | "resize", value: Uint8Array | { cols: number; rows: number }) =>
         Effect.gen(function* () {
+          const trusted = yield* Effect.serviceOption(TrustedPrincipalContext)
           if (channel.failed) return yield* Effect.fail(new UnavailableError({ ptyID: session.info.id }))
           if (session.info.status !== "running") return yield* Effect.fail(new ExitedError({ ptyID: session.info.id }))
           if (operation === "input" && (value as Uint8Array).byteLength > INPUT_FRAME_LIMIT) {
@@ -719,7 +765,9 @@ const layer = Layer.effect(
             sequence: channel.sequence,
             ...(operation === "input" ? { bytes: value } : value),
           }
-          yield* supervisor.requestHostKernel("terminal.v1", operation, body).pipe(
+          yield* supervisor.requestHostKernel("terminal.v1", operation, body, {
+            ...(Option.isSome(trusted) ? { trustedPrincipal: trusted.value.principal } : {}),
+          }).pipe(
             Effect.tapError(() => Effect.sync(() => (channel.failed = true))),
           )
           channel.sequence += 1
@@ -745,7 +793,7 @@ const layer = Layer.effect(
                 terminalID: session.info.id,
                 generation: session.generation,
                 reason: "owner_shutdown",
-              })
+              }, { trustedPrincipal: session.principal })
               .pipe(Effect.ignore)
           }
           notifyEnd(session, { unknown: true })
@@ -776,11 +824,14 @@ const layer = Layer.effect(
     const remove = Effect.fn("Pty.remove")(function* (id: PtyID) {
       const session = yield* requireSession(id)
       if (session.info.status === "running") {
+        const trusted = yield* Effect.serviceOption(TrustedPrincipalContext)
         yield* supervisor.requestHostKernel("terminal.v1", "cancel", {
           effectID: session.effectID,
           terminalID: id,
           generation: session.generation,
           reason: "user_removed",
+        }, {
+          ...(Option.isSome(trusted) ? { trustedPrincipal: trusted.value.principal } : {}),
         })
       }
       yield* removeSession(id)
@@ -812,6 +863,7 @@ const layer = Layer.effect(
       const cols = 80
       const rows = 24
       const validated = validateStartInput({ command, args, cwd, env, cols, rows, shellProfileID })
+      const trusted = yield* TrustedPrincipalContext
       const admission = yield* supervisor.prepareUserEffect({
         locationRef,
         sessionID: input.sessionID,
@@ -831,7 +883,7 @@ const layer = Layer.effect(
         env,
         cols,
         rows,
-      })
+      }, { trustedPrincipal: trusted.principal })
       if (response.status !== "running" || response.terminalID !== id) {
         return yield* new UnavailableError({ ptyID: id })
       }
@@ -854,6 +906,7 @@ const layer = Layer.effect(
         effectID: admission.effectID,
         grantID,
         locationID: admission.locationID,
+        principal: trusted.principal,
         ...(input.sessionID === undefined ? {} : { sessionID: input.sessionID }),
         channel: { attachmentID: `owner_${randomUUID().replaceAll("-", "")}`, sequence: 0, failed: false },
         byteCursor: finiteInt(response.byteCursor) ?? 0,
@@ -1029,14 +1082,21 @@ const layer = Layer.effect(
           error instanceof InvalidInputError ? error : new InvalidInputError({ reason: "Terminal environment is invalid" }),
       })
       const calls: GuardedToolCall[] = []
+      const workspaceCommandProfiles: Array<{
+        readonly callID: string
+        readonly reference: WorkspaceCommandProfileBindingV1["reference"]
+        readonly definition: WorkspaceCommandProfileV1.WorkspaceCommandProfileDefinitionV1
+        readonly resolvedEnvironment: Readonly<Record<string, string>>
+      }> = []
       for (const call of input.calls) {
         if (call.capabilityID !== "terminal.run") {
           calls.push(call)
           continue
         }
-        const argumentsValue = yield* Effect.try({
+        const argumentsValue: TerminalRunInvocationV1 = yield* Effect.try({
           try: () => {
             const args = asRecord(call.arguments)
+            if (args.mode === "workspace_profile") return validateWorkspaceCommandInvocationV1(args)
             if (
               Object.keys(args).length !== 3 ||
               !("command" in args) ||
@@ -1052,10 +1112,31 @@ const layer = Layer.effect(
           catch: (error) =>
             error instanceof InvalidInputError ? error : new InvalidInputError({ reason: "terminal.run arguments are invalid" }),
         })
+        if ("mode" in argumentsValue && argumentsValue.mode === "workspace_profile") {
+          const profileArgs = argumentsValue
+          const definition = yield* config.workspaceCommandProfile(profileArgs.profileID, profileArgs.revision, profileArgs.action)
+            .pipe(Effect.mapError(() => new InvalidInputError({ reason: "Workspace command profile is unavailable" })))
+          if (definition.profileDigest !== profileArgs.profileDigest || !WorkspaceCommandProfileV1.validateWorkspaceCommandProfileV1(definition) ||
+            !definition.enabled || !definition.actions.includes(profileArgs.action) ||
+            !workspaceCommandArgumentsAllowed(definition, profileArgs.arguments)) {
+            return yield* new InvalidInputError({ reason: "Workspace command profile does not match current user configuration" })
+          }
+          const allowedNames = new Set(definition.environment.allowedNames)
+          const profileEnvironment = Object.fromEntries(
+            Object.entries(resolvedEnvironment).filter(([name]) => allowedNames.has(name)),
+          )
+          workspaceCommandProfiles.push({ callID: call.callID, reference: {
+            profileId: definition.profileId, revision: definition.revision,
+            profileDigest: definition.profileDigest, action: profileArgs.action,
+          }, definition, resolvedEnvironment: profileEnvironment })
+          calls.push(call)
+          continue
+        }
         profile ??= yield* registerShellProfiles()
         calls.push({
           ...call,
           arguments: {
+            mode: "shell",
             ...argumentsValue,
             shellProfileID: profile.shellProfileID,
             resolvedEnvironment,
@@ -1068,9 +1149,10 @@ const layer = Layer.effect(
         batchID: input.batchID,
         turnContextDigest: input.turnContextDigest,
         calls,
-        ...(input.directAttempt ? { directAttempt: input.directAttempt } : {}),
+        ...(workspaceCommandProfiles.length ? { workspaceCommandProfiles } : {}),
+        ...(input.directTurnScope ? { directTurnScope: input.directTurnScope } : {}),
       })
-      return { admission, calls }
+      return { admission, calls, workspaceCommandProfiles }
     })
     const runHost = Effect.fn("Pty.runHost")(function* (input: {
       readonly sessionID?: string
@@ -1082,7 +1164,7 @@ const layer = Layer.effect(
       readonly cwd: string
       readonly timeoutMs: number
       readonly resolvedEnvironment: Readonly<Record<string, string>>
-      readonly directAttempt?: DirectAttemptScopeV1
+      readonly directTurnScope?: DirectTurnScopeV1
     }) {
       const trusted = yield* TrustedPrincipalContext
       const locationID = yield* supervisor.registerHostLocation(input.locationRef)
@@ -1092,11 +1174,45 @@ const layer = Layer.effect(
         locationID,
         ...(input.sessionID === undefined ? {} : { sessionID: input.sessionID }),
         shellProfileID: input.shellProfileID,
+        mode: "shell",
         command: input.command,
         cwd: input.cwd,
         timeoutMs: input.timeoutMs,
         resolvedEnvironment: input.resolvedEnvironment,
-        ...(input.directAttempt ? { directAttempt: directAttemptScopeToWire(input.directAttempt) } : {}),
+        ...(input.directTurnScope ? { directTurnScope: directTurnScopeToWire(input.directTurnScope) } : {}),
+      }, { cancelOnInterrupt: true, trustedPrincipal: trusted.principal })
+      return yield* Effect.try({
+        try: () => parseTerminalRunResult(response),
+        catch: () => new InvalidInputError({ reason: "Terminal host returned an invalid run result" }),
+      })
+    })
+    const runProfileHost = Effect.fn("Pty.runProfileHost")(function* (input: {
+      readonly sessionID: string
+      readonly locationRef: typeof Location.Ref.Type
+      readonly effectID: string
+      readonly capabilityLeaseDigest: string
+      readonly invocation: WorkspaceCommandInvocationV1
+      readonly definition: WorkspaceCommandProfileV1.WorkspaceCommandProfileDefinitionV1
+      readonly resolvedEnvironment: Readonly<Record<string, string>>
+      readonly directTurnScope?: DirectTurnScopeV1
+    }) {
+      const trusted = yield* TrustedPrincipalContext
+      const locationID = yield* supervisor.registerHostLocation(input.locationRef)
+      const response = yield* supervisor.requestHostKernel("terminal.v1", "run", {
+        effectID: input.effectID,
+        capabilityLeaseDigest: input.capabilityLeaseDigest,
+        locationID,
+        sessionID: input.sessionID,
+        workspaceCommandProfile: {
+          profileID: input.invocation.profileID,
+          revision: input.invocation.revision,
+          profileDigest: input.invocation.profileDigest,
+          action: input.invocation.action,
+          arguments: input.invocation.arguments,
+        },
+        workspaceCommandProfileDefinition: input.definition,
+        resolvedEnvironment: input.resolvedEnvironment,
+        ...(input.directTurnScope ? { directTurnScope: directTurnScopeToWire(input.directTurnScope) } : {}),
       }, { cancelOnInterrupt: true, trustedPrincipal: trusted.principal })
       return yield* Effect.try({
         try: () => parseTerminalRunResult(response),
@@ -1117,7 +1233,7 @@ const layer = Layer.effect(
         locationRef: input.locationRef,
         sessionID: input.sessionID,
         capabilityID: "terminal.run",
-        arguments: { ...args, shellProfileID, resolvedEnvironment },
+        arguments: { mode: "shell", ...args, shellProfileID, resolvedEnvironment },
       })
       return yield* runHost({
         ...args,
@@ -1134,16 +1250,18 @@ const layer = Layer.effect(
       readonly locationRef: typeof Location.Ref.Type
       readonly lease: EffectLease
       readonly call: GuardedToolCall
-      readonly directAttempt?: DirectAttemptScopeV1
+      readonly workspaceCommandProfile?: WorkspaceCommandProfileBindingV1
+      readonly directTurnScope?: DirectTurnScopeV1
     }) {
       if (input.call.capabilityID !== "terminal.run") {
         return yield* new InvalidInputError({ reason: "runTool requires a prepared terminal.run call" })
       }
-      const args = yield* Effect.try({
+      const invocation = yield* Effect.try({
         try: () => {
           const value = asRecord(input.call.arguments)
+          if (value.mode === "workspace_profile") return validateWorkspaceCommandInvocationV1(value)
           if (
-            Object.keys(value).length !== 5 ||
+            Object.keys(value).length !== 6 || value.mode !== "shell" ||
             !("shellProfileID" in value) ||
             !("resolvedEnvironment" in value) ||
             typeof value.shellProfileID !== "string" ||
@@ -1160,13 +1278,47 @@ const layer = Layer.effect(
         catch: (error) =>
           error instanceof InvalidInputError ? error : new InvalidInputError({ reason: "Prepared terminal.run arguments are invalid" }),
       })
+      if ("mode" in invocation) {
+        const binding = input.workspaceCommandProfile
+        if (!binding || binding.callID !== input.call.callID || binding.reference.profileId !== invocation.profileID ||
+          binding.reference.revision !== invocation.revision || binding.reference.profileDigest !== invocation.profileDigest ||
+          binding.reference.action !== invocation.action || binding.definition.profileId !== binding.reference.profileId ||
+          binding.definition.revision !== binding.reference.revision || binding.definition.profileDigest !== binding.reference.profileDigest) {
+          return yield* new InvalidInputError({ reason: "Prepared workspace profile does not match terminal.run call" })
+        }
+        const currentDefinition = yield* config.workspaceCommandProfile(invocation.profileID, invocation.revision, invocation.action)
+          .pipe(Effect.mapError(() => new InvalidInputError({ reason: "Workspace command profile is no longer current" })))
+        if (!WorkspaceCommandProfileV1.validateWorkspaceCommandProfileV1(currentDefinition) ||
+          currentDefinition.profileDigest !== binding.reference.profileDigest ||
+          currentDefinition.profileId !== binding.reference.profileId || currentDefinition.revision !== binding.reference.revision) {
+          return yield* new InvalidInputError({ reason: "Workspace command profile changed after ToolBatch admission" })
+        }
+        const resolvedEnvironment = yield* Effect.try({
+          try: () => validateResolvedEnvironment(binding.resolvedEnvironment),
+          catch: () => new InvalidInputError({ reason: "Workspace command environment is invalid" }),
+        })
+        if (Object.keys(resolvedEnvironment).some((name) => !currentDefinition.environment.allowedNames.includes(name))) {
+          return yield* new InvalidInputError({ reason: "Workspace command environment exceeds its configured allowlist" })
+        }
+        return yield* runProfileHost({
+          sessionID: input.sessionID,
+          locationRef: input.locationRef,
+          effectID: input.lease.effectID,
+          capabilityLeaseDigest: input.lease.capabilityLeaseDigest,
+          invocation,
+          definition: binding.definition,
+          resolvedEnvironment,
+          directTurnScope: input.directTurnScope,
+        })
+      }
+      const args = invocation
       return yield* runHost({
         ...args,
         sessionID: input.sessionID,
         locationRef: input.locationRef,
         effectID: input.lease.effectID,
         capabilityLeaseDigest: input.lease.capabilityLeaseDigest,
-        directAttempt: input.directAttempt,
+        directTurnScope: input.directTurnScope,
       })
     })
     const acquireTicket = Effect.fn("Pty.acquireTicket")(function* (input: TicketBinding) {
@@ -1400,6 +1552,38 @@ function validateTerminalRunInput(value: unknown): TerminalRunInput {
   }
 }
 
+function validateWorkspaceCommandInvocationV1(value: unknown): WorkspaceCommandInvocationV1 {
+  const args = asRecord(value)
+  if (Object.keys(args).sort().join("\0") !== ["action", "arguments", "mode", "profileDigest", "profileID", "revision"].join("\0") ||
+    args.mode !== "workspace_profile" || (args.action !== "build" && args.action !== "test") ||
+    typeof args.profileID !== "string" || !/^[A-Za-z0-9._:-]{1,256}$/.test(args.profileID) ||
+    typeof args.revision !== "string" || !/^[1-9][0-9]{0,19}$/.test(args.revision) ||
+    BigInt(args.revision) > 18_446_744_073_709_551_615n ||
+    typeof args.profileDigest !== "string" || !/^blake3:[0-9a-f]{64}$/.test(args.profileDigest) ||
+    !Array.isArray(args.arguments) || args.arguments.length > 128 ||
+    args.arguments.some((item) => typeof item !== "string" || item.length > 256) ||
+    args.arguments.reduce((total, item) => total + Buffer.byteLength(item as string, "utf8"), 0) > 32_768) {
+    throw new InvalidInputError({ reason: "Workspace command invocation does not match the strict profile schema" })
+  }
+  return {
+    mode: "workspace_profile", action: args.action,
+    profileID: args.profileID, revision: args.revision,
+    profileDigest: args.profileDigest, arguments: args.arguments as string[],
+  }
+}
+
+function workspaceCommandArgumentsAllowed(
+  profile: WorkspaceCommandProfileV1.WorkspaceCommandProfileDefinitionV1,
+  args: ReadonlyArray<string>,
+) {
+  const fixed = profile.arguments.fixedPrefix
+  const allowed = profile.arguments.allowedValuesByPosition
+  return fixed.length + args.length <= profile.arguments.maxCount && args.length === allowed.length &&
+    fixed.reduce((bytes, value) => bytes + Buffer.byteLength(value, "utf8"), 0) +
+      args.reduce((bytes, value, index) => bytes + Buffer.byteLength(value, "utf8") +
+        (allowed[index]?.includes(value) ? 0 : 32_769), 0) <= profile.arguments.maxBytes
+}
+
 function validateResolvedEnvironment(value: unknown): Readonly<Record<string, string>> {
   const environment = asRecord(value)
   const entries = Object.entries(environment)
@@ -1441,19 +1625,44 @@ function parseTerminalRunResult(value: unknown): TerminalRunResult {
   if (artifactFidelity !== "FULL" && artifactFidelity !== "SAMPLE" && artifactFidelity !== "FAILED") {
     throw new InvalidInputError({ reason: "Terminal host omitted artifact fidelity" })
   }
-  if (
-    (artifactFidelity === "FULL" && (status !== "exited" || artifactTruncated)) ||
-    (artifactFidelity === "SAMPLE" && (status !== "exited" || !artifactTruncated)) ||
-    (artifactFidelity === "FAILED" && status === "exited")
-  ) {
+  if (artifactFidelity === "FAILED") {
+    throw new InvalidInputError({ reason: "Terminal capture failure cannot return a successful artifact receipt" })
+  }
+  if ((artifactFidelity === "FULL" && artifactTruncated) || (artifactFidelity === "SAMPLE" && !artifactTruncated)) {
     throw new InvalidInputError({ reason: "Terminal host returned inconsistent artifact fidelity" })
   }
-  const artifactRef = result.artifactRef
+  const artifactRefValue = result.artifactRef
+  if (typeof artifactRefValue !== "object" || artifactRefValue === null || Array.isArray(artifactRefValue)) {
+    throw new InvalidInputError({ reason: "Terminal host returned an invalid typed artifact reference" })
+  }
+  const artifactRef = artifactRefValue as Record<string, unknown>
+  if (Object.keys(artifactRef).toSorted().join("\0") !== ["artifactId", "byteLength", "classification", "digest", "mediaType"].sort().join("\0") ||
+    typeof artifactRef.artifactId !== "string" || !/^[A-Za-z0-9._-]{1,256}$/.test(artifactRef.artifactId) ||
+    typeof artifactRef.digest !== "string" || !/^blake3:[0-9a-f]{64}$/.test(artifactRef.digest) ||
+    typeof artifactRef.byteLength !== "string" || !/^(0|[1-9][0-9]{0,19})$/.test(artifactRef.byteLength) ||
+    BigInt(artifactRef.byteLength) > 0xffff_ffff_ffff_ffffn ||
+    typeof artifactRef.mediaType !== "string" || artifactRef.mediaType.length === 0 || Buffer.byteLength(artifactRef.mediaType, "utf8") > 256 ||
+    (artifactRef.classification !== "public" && artifactRef.classification !== "workspace" && artifactRef.classification !== "sensitive")) {
+    throw new InvalidInputError({ reason: "Terminal host returned an invalid typed artifact reference" })
+  }
+  const outputDigest = result.outputDigest
+  const observedBytes = result.observedBytes
+  const droppedBytes = result.droppedBytes
+  if (typeof outputDigest !== "string" || !/^blake3:[0-9a-f]{64}$/.test(outputDigest) ||
+    typeof observedBytes !== "string" || !/^(0|[1-9][0-9]{0,19})$/.test(observedBytes) ||
+    typeof droppedBytes !== "string" || !/^(0|[1-9][0-9]{0,19})$/.test(droppedBytes)) {
+    throw new InvalidInputError({ reason: "Terminal host returned invalid capture provenance" })
+  }
+  const retainedBytes = BigInt(artifactRef.byteLength)
+  const observed = BigInt(observedBytes)
+  const dropped = BigInt(droppedBytes)
+  if (observed > 0xffff_ffff_ffff_ffffn || dropped > 0xffff_ffff_ffff_ffffn || retainedBytes + dropped !== observed || artifactTruncated !== (dropped > 0n) ||
+    (artifactFidelity === "FULL" && observed !== retainedBytes) ||
+    (artifactFidelity === "SAMPLE" && (dropped === 0n || observed <= retainedBytes))) {
+    throw new InvalidInputError({ reason: "Terminal host returned inconsistent capture bounds" })
+  }
   const receiptRef = result.receiptRef
   if (
-    typeof artifactRef !== "string" ||
-    artifactRef.length === 0 ||
-    Buffer.byteLength(artifactRef, "utf8") > 4 * 1024 ||
     typeof receiptRef !== "string" ||
     receiptRef.length === 0 ||
     Buffer.byteLength(receiptRef, "utf8") > 4 * 1024
@@ -1470,6 +1679,21 @@ function parseTerminalRunResult(value: unknown): TerminalRunResult {
   if (status === "exited" && exitCode === undefined) {
     throw new InvalidInputError({ reason: "Terminal host omitted the exit code" })
   }
+  const parsedArtifactRef: ArtifactRefWireV1 = {
+    artifactId: artifactRef.artifactId,
+    digest: artifactRef.digest,
+    byteLength: artifactRef.byteLength,
+    mediaType: artifactRef.mediaType,
+    classification: artifactRef.classification,
+  }
+  const directAttempt = result.directAttempt === undefined ? undefined : directAttemptScopeFromWire(result.directAttempt)
+  const directTurnScope = result.directTurnScope === undefined ? undefined : directTurnScopeFromWire(result.directTurnScope)
+  if ((directAttempt !== undefined || directTurnScope !== undefined) && result.attemptScopeTransition !== "effect_receipt") {
+    throw new InvalidInputError({ reason: "Terminal host returned an unbound Attempt receipt scope" })
+  }
+  if (directTurnScope && directAttempt && JSON.stringify(directTurnScope.directAttempt) !== JSON.stringify(directAttempt)) {
+    throw new InvalidInputError({ reason: "Terminal host returned mismatched direct turn and Attempt receipt scopes" })
+  }
   return {
     status: status as TerminalRunResult["status"],
     ...(exitCode === undefined ? {} : { exitCode }),
@@ -1477,8 +1701,14 @@ function parseTerminalRunResult(value: unknown): TerminalRunResult {
     previewTruncated,
     artifactTruncated,
     artifactFidelity,
-    artifactRef,
+    artifactRef: parsedArtifactRef,
+    outputDigest,
+    observedBytes,
+    droppedBytes,
     receiptRef,
+    ...(directAttempt ? { directAttempt } : {}),
+    ...(directTurnScope ? { directTurnScope } : {}),
+    ...(directAttempt || directTurnScope ? { attemptScopeTransition: "effect_receipt" as const } : {}),
   }
 }
 

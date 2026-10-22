@@ -39,6 +39,8 @@ export class Service extends ConfigService.Service<Service>()("@opencode/Runtime
   }).pipe(Config.map((flags) => flags.enabled || flags.legacy)),
   enableExperimentalModels: bool("OPENCODE_ENABLE_EXPERIMENTAL_MODELS"),
   enableQuestionTool: bool("OPENCODE_ENABLE_QUESTION_TOOL"),
+  /** Hard-disabled until integrated P1 Guard/cgroup/quiescence and P8 settlement acceptance. */
+  managedTaskDispatch: Config.succeed(false),
   experimentalReferences: enabledByExperimental("OPENCODE_EXPERIMENTAL_REFERENCES"),
   experimentalBackgroundSubagents: enabledByExperimental("OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS"),
   experimentalLspTy: bool("OPENCODE_EXPERIMENTAL_LSP_TY"),

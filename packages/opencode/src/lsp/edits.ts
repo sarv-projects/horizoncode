@@ -33,6 +33,11 @@ export const VersionedDocumentEdits = Schema.Struct({
 })
 export type VersionedDocumentEdits = typeof VersionedDocumentEdits.Type
 
+/** Only versioned, text-only WorkspaceEdit documents survive projection. */
+export type VersionedWorkspaceEditV1 = Readonly<{
+  documentChanges: readonly VersionedDocumentEdits[]
+}>
+
 export const GuardedEditBatch = Schema.Struct({
   serviceGeneration: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
   workspaceRevision: Schema.String,
@@ -55,6 +60,7 @@ export type EditFailureReason =
   | "too_many_documents"
   | "too_many_edits"
   | "too_many_bytes"
+  | "too_complex"
   | "unsupported_workspace_operation"
 
 export class EditValidationError extends Schema.TaggedErrorClass<EditValidationError>()("LspEditValidationError", {
@@ -71,6 +77,7 @@ export class EditValidationError extends Schema.TaggedErrorClass<EditValidationE
     "too_many_documents",
     "too_many_edits",
     "too_many_bytes",
+    "too_complex",
     "unsupported_workspace_operation",
   ]),
 }) {}
@@ -101,10 +108,10 @@ function comparePosition(a: { line: number; character: number }, b: { line: numb
   return a.line - b.line || a.character - b.character
 }
 
-function hasExactKeys(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+function hasExactKeys(value: unknown, keys: readonly string[], optional: readonly string[] = []): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false
   const actual = Object.keys(value)
-  return actual.length === keys.length && actual.every((key) => keys.includes(key))
+  return keys.every((key) => actual.includes(key)) && actual.every((key) => keys.includes(key) || optional.includes(key))
 }
 
 function isExactBatchShape(input: unknown): boolean {
@@ -303,6 +310,142 @@ export function validatePreparedEdits(
     effectIntentDigest: authority.effectIntentDigest,
     capabilityLeaseDigest: authority.capabilityLeaseDigest,
   })
+}
+
+const MAX_LSP_REQUEST_BYTES = 256 * 1024
+const MAX_CODE_ACTIONS = 256
+
+function boundedLspValue(value: unknown, depth = 0, budget = { nodes: 0 }): void {
+  budget.nodes += 1
+  if (depth > 16 || budget.nodes > 4096) return fail("too_complex")
+  if (value === null || typeof value === "boolean") return
+  if (typeof value === "string") {
+    if (encoder.encode(value).byteLength > MAX_LSP_REQUEST_BYTES) return fail("too_many_bytes")
+    return
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) return fail("malformed")
+    return
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) boundedLspValue(item, depth + 1, budget)
+    return
+  }
+  if (typeof value !== "object") return fail("malformed")
+  const prototype = Object.getPrototypeOf(value)
+  if ((prototype !== Object.prototype && prototype !== null) || Object.getOwnPropertySymbols(value).length) {
+    return fail("malformed")
+  }
+  for (const [key, item] of Object.entries(value)) {
+    if (["__proto__", "prototype", "constructor"].includes(key) || key.includes("\0")) return fail("malformed")
+    boundedLspValue(item, depth + 1, budget)
+  }
+}
+
+function freezeLspJson(value: unknown): unknown {
+  if (Array.isArray(value)) return Object.freeze(value.map(freezeLspJson))
+  if (typeof value !== "object" || value === null) return value
+  return Object.freeze(Object.fromEntries(Object.entries(value).map(([key, child]) => [key, freezeLspJson(child)])))
+}
+
+function validateLspPosition(value: unknown): value is { line: number; character: number } {
+  return typeof value === "object" && value !== null && !Array.isArray(value) &&
+    hasExactKeys(value, ["line", "character"]) &&
+    Number.isSafeInteger(value.line) && Number(value.line) >= 0 &&
+    Number.isSafeInteger(value.character) && Number(value.character) >= 0
+}
+
+function validateTextDocumentIdentifier(value: unknown): value is { uri: string } {
+  if (typeof value !== "object" || value === null || Array.isArray(value) || !hasExactKeys(value, ["uri"])) return false
+  if (typeof value.uri !== "string" || value.uri.length > 8 * 1024) return false
+  try {
+    return new URL(value.uri).protocol === "file:"
+  } catch {
+    return false
+  }
+}
+
+/** Validate bounded `textDocument/codeAction` params before any host dispatch.
+ * The HostKernel permits this read/query method only under
+ * `language.diagnostics`; returned edits remain proposals. */
+export function validateCodeActionParamsV1(input: unknown): Readonly<Record<string, unknown>> {
+  if (typeof input !== "object" || input === null || Array.isArray(input) ||
+    !hasExactKeys(input, ["textDocument", "range", "context"])) return fail("malformed")
+  const record = input as Record<string, unknown>
+  if (!validateTextDocumentIdentifier(record.textDocument) || typeof record.range !== "object" ||
+    record.range === null || Array.isArray(record.range) || !hasExactKeys(record.range, ["start", "end"])) return fail("malformed")
+  const range = record.range as Record<string, unknown>
+  if (!validateLspPosition(range.start) || !validateLspPosition(range.end) ||
+    comparePosition(range.start, range.end) > 0 || typeof record.context !== "object" ||
+    record.context === null || Array.isArray(record.context) ||
+    !hasExactKeys(record.context, ["diagnostics"], ["only", "triggerKind"])) return fail("malformed")
+  const context = record.context as Record<string, unknown>
+  if (!Array.isArray(context.diagnostics) ||
+    (context.only !== undefined && (!Array.isArray(context.only) || context.only.some((kind) => typeof kind !== "string"))) ||
+    (context.triggerKind !== undefined && context.triggerKind !== 1 && context.triggerKind !== 2)) return fail("malformed")
+  boundedLspValue(input)
+  if (encoder.encode(JSON.stringify(input)).byteLength > MAX_LSP_REQUEST_BYTES) return fail("too_many_bytes")
+  return freezeLspJson(input) as Readonly<Record<string, unknown>>
+}
+
+/** Validate bounded `textDocument/rename` params. Returned edits remain
+ * proposals and must pass `validatePreparedEdits` and the canonical
+ * files.patch Guard path before any workspace mutation. */
+export function validateRenameParamsV1(input: unknown): Readonly<Record<string, unknown>> {
+  if (typeof input !== "object" || input === null || Array.isArray(input) ||
+    !hasExactKeys(input, ["textDocument", "position", "newName"])) return fail("malformed")
+  const record = input as Record<string, unknown>
+  if (!validateTextDocumentIdentifier(record.textDocument) || !validateLspPosition(record.position) ||
+    typeof record.newName !== "string" || !record.newName.trim() || encoder.encode(record.newName).byteLength > 4 * 1024) {
+    return fail("malformed")
+  }
+  boundedLspValue(input)
+  if (encoder.encode(JSON.stringify(input)).byteLength > MAX_LSP_REQUEST_BYTES) return fail("too_many_bytes")
+  return freezeLspJson(input) as Readonly<Record<string, unknown>>
+}
+
+export type CodeActionEditProposalV1 = Readonly<{
+  title: string
+  kind?: string
+  isPreferred?: boolean
+  edit: VersionedWorkspaceEditV1
+}>
+
+/** Code-action responses with commands or arbitrary extension data are not
+ * executed. Keep the human-facing title with each bounded edit proposal. */
+export function validateCodeActionProposalsV1(input: unknown): readonly CodeActionEditProposalV1[] {
+  if (input === null) return Object.freeze([])
+  if (!Array.isArray(input) || input.length > MAX_CODE_ACTIONS) return fail("malformed")
+  boundedLspValue(input)
+  if (encoder.encode(JSON.stringify(input)).byteLength > MAX_EDIT_BATCH_BYTES) return fail("too_many_bytes")
+  const proposals: CodeActionEditProposalV1[] = []
+  for (const action of input) {
+    if (typeof action !== "object" || action === null || Array.isArray(action) ||
+      !hasExactKeys(action, ["title", "edit"], ["kind", "isPreferred", "diagnostics", "data"])) return fail("unsupported_workspace_operation")
+    const value = action as Record<string, unknown>
+    if (typeof value.title !== "string" || !value.title.trim() || encoder.encode(value.title).byteLength > 4096 ||
+      (value.kind !== undefined && typeof value.kind !== "string") ||
+      (value.isPreferred !== undefined && typeof value.isPreferred !== "boolean") ||
+      (value.diagnostics !== undefined && !Array.isArray(value.diagnostics))) return fail("malformed")
+    const documentChanges = lspWorkspaceEditDocuments(value.edit)
+    proposals.push(Object.freeze({
+      title: value.title,
+      ...(value.kind === undefined ? {} : { kind: value.kind as string }),
+      ...(value.isPreferred === undefined ? {} : { isPreferred: value.isPreferred as boolean }),
+      edit: freezeLspJson({ documentChanges }) as VersionedWorkspaceEditV1,
+    }))
+  }
+  return Object.freeze(proposals)
+}
+
+/** Rename returns a WorkspaceEdit or null. Null is a valid no-op; any
+ * non-null payload is still untrusted and must pass `validatePreparedEdits`. */
+export function validateRenameEditV1(input: unknown): VersionedWorkspaceEditV1 | undefined {
+  if (input === null) return undefined
+  boundedLspValue(input)
+  if (encoder.encode(JSON.stringify(input)).byteLength > MAX_EDIT_BATCH_BYTES) return fail("too_many_bytes")
+  const documentChanges = lspWorkspaceEditDocuments(input)
+  return freezeLspJson({ documentChanges }) as VersionedWorkspaceEditV1
 }
 
 /**

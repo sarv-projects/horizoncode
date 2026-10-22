@@ -1,4 +1,6 @@
 export * as ConfigV1 from "./config"
+export * as ConfigRepoIntelligenceV1 from "./repo-intelligence"
+export * as ConfigResourcePolicyV1 from "./resource-policy"
 
 import { Schema } from "effect"
 import { NonNegativeInt, PositiveInt, type DeepMutable } from "../../schema"
@@ -7,6 +9,7 @@ import { ConfigReference } from "../../config/reference"
 import { ConfigAgentV1 } from "./agent"
 import { ConfigAttachmentV1 } from "./attachment"
 import { ConfigCommandV1 } from "./command"
+import { ConfigDAPV1 } from "./dap"
 import { ConfigFormatterV1 } from "./formatter"
 import { ConfigLayoutV1 } from "./layout"
 import { ConfigLSPV1 } from "./lsp"
@@ -14,10 +17,28 @@ import { ConfigMCPV1 } from "./mcp"
 import { ConfigPermissionV1 } from "./permission"
 import { ConfigPluginV1 } from "./plugin"
 import { ConfigProviderV1 } from "./provider"
+import * as ConfigRepoIntelligenceV1 from "./repo-intelligence"
+import * as ConfigResourcePolicyV1 from "./resource-policy"
+import * as HarnessProfileV1 from "@opencode-ai/schema/harness-profile-v1"
+import * as WorkspaceCommandProfileV1 from "@opencode-ai/schema/workspace-command-profile-v1"
+import * as ExternalEditorProfileV1 from "@opencode-ai/schema/external-editor-profile-v1"
 import { ConfigServerV1 } from "./server"
 import { ConfigSkillsV1 } from "./skills"
 
-export const WEB_SEARCH_ROUTE_IDS = ["exa_keyless", "youcom_free", "tavily_keyless", "firecrawl_keyless", "parallel_keyless", "brave", "exa"] as const
+export const WEB_SEARCH_ROUTE_IDS = [
+  "exa_keyless",
+  "youcom_free",
+  "firecrawl_keyless",
+  "parallel_keyless",
+  "brave",
+  "exa",
+  "youcom",
+  "tavily",
+  "firecrawl",
+  "parallel",
+] as const
+
+export const WEB_SEARCH_BYO_ROUTE_IDS = ["brave", "exa", "youcom", "tavily", "firecrawl", "parallel"] as const
 
 export const WebSearchRoute = Schema.Literals(WEB_SEARCH_ROUTE_IDS).annotate({
   identifier: "WebSearchRoute",
@@ -25,9 +46,20 @@ export const WebSearchRoute = Schema.Literals(WEB_SEARCH_ROUTE_IDS).annotate({
 })
 
 export const WebSearch = Schema.Struct({
+  querySharingConsent: Schema.optional(Schema.Literal("anonymous_free_v1")).annotate({
+    description:
+      "Records the explicit first-use disclosure acceptance for the built-in anonymous/free cascade. Authenticated routes require their own matching provider consent below.",
+  }),
+  byoConsents: Schema.optional(Schema.mutable(Schema.Array(Schema.Struct({
+    route: Schema.Literals(WEB_SEARCH_BYO_ROUTE_IDS),
+    consent: Schema.Literal("secret_broker_unknown_cost_v1"),
+  })).check(Schema.isMaxLength(WEB_SEARCH_BYO_ROUTE_IDS.length)))).annotate({
+    description:
+      "Versioned per-provider consent for authenticated SecretBroker routes whose current cost is unknown and may incur charges. A matching entry is required in addition to explicit route enablement.",
+  }),
   enabled: Schema.optional(Schema.mutable(Schema.Array(WebSearchRoute).check(Schema.isMaxLength(WEB_SEARCH_ROUTE_IDS.length)))).annotate({
     description:
-      "Explicitly enabled web-search routes. Enabling an authenticated route records consent for its auth and cost class.",
+      "Explicitly enabled web-search routes. Route enablement alone does not consent to authenticated use or possible charges.",
   }),
   order: Schema.optional(Schema.mutable(Schema.Array(WebSearchRoute).check(Schema.isMaxLength(WEB_SEARCH_ROUTE_IDS.length)))).annotate({
     description: "Ordered route preference for the web-search cascade.",
@@ -105,6 +137,9 @@ export const Info = Schema.Struct({
     description:
       "Default agent to use when none is specified. Must be a primary agent. Falls back to 'build' if not set or if the specified agent is invalid.",
   }),
+  harness: Schema.optional(HarnessProfileV1.BuiltinHarnessIdV1).annotate({
+    description: "Explicit built-in request-shaping harness selection, independent from provider/model routing. Defaults to native-rich.",
+  }),
   subagent_depth: Schema.optional(NonNegativeInt).annotate({
     description: "Maximum subagent nesting depth. Defaults to 1, which prevents subagents from launching subagents.",
   }),
@@ -147,6 +182,37 @@ export const Info = Schema.Struct({
   lsp: Schema.optional(ConfigLSPV1.Info).annotate({
     description:
       "Enable or configure LSP servers. Omit or set to false to disable, true to enable built-ins, or an object to enable built-ins with overrides.",
+  }),
+  dap: Schema.optional(ConfigDAPV1.Info).annotate({
+    description:
+      "Configure trusted global debug adapter launch profiles. Adapter executables are selected by HostKernel; project and plugin config cannot authorize adapter processes.",
+  }),
+  repo_intelligence: Schema.optional(ConfigRepoIntelligenceV1.Profile).annotate({
+    description:
+      "Requested RepoIntel analysis profile. This setting selects analysis depth only; it does not grant permissions or start background work.",
+  }),
+  resource_policy: Schema.optional(ConfigResourcePolicyV1.ConfigV1).annotate({
+    description:
+      "Requested exact resource limits. Effective limits remain unavailable unless the platform reports and enforces them.",
+  }),
+  workspace_command_profiles: Schema.optional(Schema.mutable(Schema.Array(
+    WorkspaceCommandProfileV1.WorkspaceCommandProfileDefinitionV1,
+  ).check(Schema.isMaxLength(256)))).annotate({
+    description:
+      "Append-only global user-owned immutable workspace build/test profiles. Profile revisions are persisted together; changing an existing revision or removing one through the API is rejected.",
+  }),
+  external_editor_profiles: Schema.optional(Schema.mutable(Schema.Array(
+    ExternalEditorProfileV1.ExternalEditorProfileDefinitionV1,
+  ).check(Schema.isMaxLength(128)))).annotate({
+    description:
+      "Append-only global user-owned immutable external editor profiles. Project, plugin, environment and model sources cannot authorize editor launch.",
+  }),
+  external_editor_selection: Schema.optional(Schema.NullOr(Schema.Struct({
+    profileId: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9._:-]{1,256}$/)),
+    revision: Schema.String.check(Schema.isPattern(/^[1-9][0-9]{0,19}$/)),
+  }))).annotate({
+    description:
+      "Selected immutable external editor profile revision. Core resolves it against global external_editor_profiles; selection does not authorize process launch.",
   }),
   instructions: Schema.optional(Schema.mutable(Schema.Array(Schema.String))).annotate({
     description: "Additional instruction files or patterns to include",

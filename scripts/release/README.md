@@ -1,0 +1,135 @@
+# HorizonCode Linux release tooling
+
+This directory contains fail-closed source preparation, distribution inventory,
+and install-evidence tooling. It does not publish packages, select a license,
+approve a signing root, or establish platform support on its own.
+
+## Local artifact boundary
+
+Generated release inputs and evidence belong under the ignored repository-local
+`kernel/target/horizoncode-release/` directory. Keep the copied source checkout,
+candidate binaries, and evidence roots as separate children. The source snapshot
+excludes every `target/` subtree, so prior local artifacts do not contaminate the
+next source digest or checkout. The runner rejects reused evidence directories,
+symlinked roots, dirty candidate checkouts, and candidate paths outside their
+checkout.
+
+Build preparation also puts its private HOME, Cargo home, and Rustup home inside
+this artifact subtree. It does not inherit the invoking user's Rustup state;
+it installs the stable Rust toolchain into that isolated Rustup home before
+building and records the resolved compiler version in the candidate manifest.
+
+The manually dispatched GitHub qualification workflow stores its build copy
+and reports in this same repository-local artifact subtree. Building that copy
+uses the pinned lockfiles with `cargo fetch --locked` and `bun install
+--frozen-lockfile`, so a future workflow run needs read access to the
+corresponding dependency registries. This is dependency acquisition only: the
+workflow has read-only repository permissions and does not sign, publish,
+upload, or activate an update.
+Its summary is written under the per-run artifact directory and printed to
+the job log; it does not write through the runner's external summary or
+environment-file paths.
+
+The pinned upstream snapshot under `opencode/.github/workflows/` is preserved
+for provenance. Root workflows with inherited VS Code, GitHub Action, container,
+and Nix hash publication behavior are HorizonCode-owned disabled overlays under
+`.github/workflows/`; each has only a manual trigger, read-only permissions,
+and an unconditional false job guard. `.gitignore` contains exact exceptions
+for these five files so the overlays are Git-visible and the pinned snapshot
+remains untouched. `packages/opencode/script/publish.ts` is a first-party
+fail-fast entrypoint; it does not import the upstream publisher. The container
+builder keeps host-architecture local image builds but rejects `--push` and
+`PUSH=1` before any Docker command. The distribution audit treats missing or
+enabled workflow overlays and missing direct-entrypoint guards as release
+blockers. Do not restore publication jobs or push behavior until the
+distribution grant, signing policy, product target and release acceptance are
+explicitly approved.
+
+Release source, candidate checkout, install fixtures, and JSON evidence outputs
+are constrained to paths inside this repository. The helpers reject external
+source/evidence paths before opening them and refuse to replace an existing
+evidence file. Evidence manifests are created with no-follow, exclusive file
+creation through pinned repository-local directory descriptors. Before the
+isolated upstream build removes generated output, it checks the marker, owner,
+permissions, symlink components, and ownership of the complete removal tree.
+
+The normal installer path intentionally accepts only a local executable via
+`install --binary`. Remote artifact download remains disabled until HorizonCode
+has an approved release signing trust policy. Automatic updates remain disabled;
+the CLI reports that state rather than starting a package-manager process.
+`horizoncode` and `hzcode` install from the same candidate entrypoint.
+
+## Platform status
+
+| Lane | Current source status |
+|---|---|
+| Native Linux | Acceptance pending; not verified |
+| WSL / WSL2 | Separate acceptance pending; not verified as native Windows |
+| Native Windows | Unavailable |
+| macOS | Outside V1 scope |
+
+An install-matrix result for one candidate is evidence for that exact checkout,
+artifact digest, and observed Linux/WSL lane. It does not establish the full
+platform capability matrix or a release. Native Windows cannot be promoted by
+WSL evidence.
+
+The matrix pins candidate and previous-binary SHA-256 digests before the first
+scenario. Each local install checks the input digest before invocation, the
+installed executable digest afterward, and the input digest again after the
+copy. A changed artifact fails that scenario instead of being attributed to
+the originally reported candidate. The release-gate tooling digest inventory
+includes the isolated build preparer as well as the audit, install runner, and
+gate entrypoint.
+
+Each isolated build writes a versioned `release-manifest.json` beside the
+candidate binary. Version 2 binds the candidate to the source commit and
+source-state digest, records pre/post-build source cleanliness, hashes both
+lockfiles, records the actual Bun/Cargo/Rust compiler versions and build host,
+and includes config migration IDs plus a digest of the V2 contract set. It also
+lists every generated candidate file except the manifest itself, with its size
+and SHA-256. Symlinks,
+non-regular members, and inventories above 10,000 files or 4 GiB fail closed.
+The manifest is provenance evidence; it does not claim byte-for-byte
+reproducibility, license clearance, a signature, or release approval.
+The distribution inspector accepts only schema 2, verifies the manifest's
+pre/post-build source digest is unchanged, and checks exact candidate membership,
+per-file sizes and hashes, and the named binary size before treating its
+provenance inventory as valid.
+
+The distribution audit bounds package-manifest reads to 2 MiB, each dependency
+manifest to 4,096 declared dependencies, dependency traversal to 10,000
+packages, each package legal-file scan to 8,192 directory entries, and those
+scans to 100,000 entries total. It refuses symlinked dependency-manifest paths
+and treats incomplete, oversized, or out-of-root inventory as an audit blocker
+rather than reporting a partial closure as complete. This remains a
+workspace-manifest inventory, not proof of the exact packaged dependency
+closure; final candidate inspection is required.
+
+The standalone installer prepares the candidate and command alias before it
+replaces the current installation. It preserves a local recovery copy of the
+previous canonical command until both public command names activate. If alias
+activation fails after canonical replacement, it restores the prior canonical
+command and reports a recovery path if that restoration itself fails. This is
+a local install recovery behavior; it does not define a signed update channel
+or a supported remote rollback policy.
+
+## Remaining release gates
+
+These are explicit decisions or evidence tasks, not decisions the release
+scripts can make:
+
+| Gate | Required decision/evidence | Current consequence |
+|---|---|---|
+| Distribution rights | Product owner/legal counsel selects and records the HorizonCode redistribution grant; complete first-party and transitive dependency/native-asset notices are assembled for the exact shipping artifact. Do not copy the vendor license as HorizonCode's license. | Distribution remains blocked; `UNLICENSED` metadata is retained. |
+| Product/package identity | Confirm the Linux V1 artifact identity and publication target. Architecture §18.16 already specifies canonical `horizoncode`, with `hzcode` as its alias, and says to retain vendor package identifiers until dependency/build/license/migration checks pass. The workspace is `horizoncode-workspace`; the derived CLI package remains private `opencode`. | No npm/public package identity or rename is inferred. Local candidate commands remain `horizoncode` and `hzcode`. |
+| Signing and updates | Approve artifact-signing trust root, metadata format, key custody/rotation/revocation, channel and rollback/version/schema policy, plus staged activation and recovery behavior. | Remote install and automatic update stay unavailable. |
+| Platform claims | Decide claimed Linux distributions/architectures and separately qualify native Linux and each WSL lane. Native Windows support requires its own implementation and acceptance; WSL is not evidence for it. | Linux/WSL are not verified; native Windows is unavailable; macOS remains out of scope. |
+| Exact candidate acceptance | Produce a clean exact-revision candidate and separately run Linux and WSL clean install, config migration, TUI, upgrade, rollback, platform-capability, and full V1 gates. Bind evidence to source revision and artifact digest. | No release or supported-platform claim. |
+
+The repository-only implementation session cannot contact a signing service,
+package registry, legal authority, or remote Git host. No release/build/test
+command has been run for this source revision. Update these gates only from
+explicit product/legal decisions or exact-candidate acceptance evidence.
+
+Current gate output is therefore readiness evidence or a blocker report, never
+publication authorization.

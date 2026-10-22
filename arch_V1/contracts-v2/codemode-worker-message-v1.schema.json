@@ -1,0 +1,427 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "horizon://schemas/codemode-worker-message-v1",
+  "title": "CodeModeWorkerMessageV1",
+  "description": "Private bounded stdio RPC between Core and the existing ExecutionHost-supervised CodeMode helper. Not a public endpoint or authority token. Rust CodeModeFrameV1 is the sole pre-launch framed byte/depth/node validator; strict receivers recompute UTF-8 and canonical serialized byte counts, validate frame order/correlation, and reject unknown fields.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/start"
+    },
+    {
+      "$ref": "#/$defs/waveRequest"
+    },
+    {
+      "$ref": "#/$defs/waveResult"
+    },
+    {
+      "$ref": "#/$defs/cancel"
+    },
+    {
+      "$ref": "#/$defs/completed"
+    }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^(sha256|blake3):[a-f0-9]{64}$"
+    },
+    "jsonValue": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "string",
+          "maxLength": 262144
+        },
+        {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "$ref": "#/$defs/jsonValue"
+          }
+        },
+        {
+          "type": "object",
+          "maxProperties": 4096,
+          "additionalProperties": {
+            "$ref": "#/$defs/jsonValue"
+          }
+        }
+      ]
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "toolName",
+        "capabilityId",
+        "description",
+        "inputSchema",
+        "inputSchemaDigest"
+      ],
+      "properties": {
+        "toolName": {
+          "$ref": "#/$defs/id"
+        },
+        "capabilityId": {
+          "$ref": "#/$defs/id"
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "inputSchema": {
+          "type": "object",
+          "maxProperties": 256
+        },
+        "inputSchemaDigest": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "call": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "callId",
+        "toolName",
+        "capabilityId",
+        "arguments",
+        "argumentBytes"
+      ],
+      "properties": {
+        "callId": {
+          "$ref": "#/$defs/id"
+        },
+        "toolName": {
+          "$ref": "#/$defs/id"
+        },
+        "capabilityId": {
+          "$ref": "#/$defs/id"
+        },
+        "arguments": {
+          "type": "object",
+          "maxProperties": 4096,
+          "additionalProperties": {
+            "$ref": "#/$defs/jsonValue"
+          }
+        },
+        "argumentBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 262144,
+          "title": "argumentBytes"
+        }
+      }
+    },
+    "start": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "frameType",
+        "requestId",
+        "sequence",
+        "code",
+        "toolSetDigest",
+        "toolDefinitionsBytes",
+        "tools"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "frameType": {
+          "const": "start"
+        },
+        "requestId": {
+          "$ref": "#/$defs/id"
+        },
+        "sequence": {
+          "const": "0"
+        },
+        "code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536
+        },
+        "toolSetDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "toolDefinitionsBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1048576,
+          "description": "Host-computed UTF-8 byte length of the canonical JSON serialization of the exact ordered tools array; receiver recomputes and compares it."
+        },
+        "tools": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 256,
+          "items": {
+            "$ref": "#/$defs/tool"
+          }
+        }
+      }
+    },
+    "callResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "callId",
+        "status"
+      ],
+      "properties": {
+        "callId": {
+          "$ref": "#/$defs/id"
+        },
+        "status": {
+          "enum": [
+            "settled",
+            "rejected",
+            "cancelled",
+            "unknown"
+          ]
+        },
+        "output": {
+          "type": "string",
+          "maxLength": 65536
+        },
+        "receiptRef": {
+          "$ref": "#/$defs/id"
+        },
+        "receiptKind": {
+          "enum": ["effect_receipt", "host_decision", "tool_result"]
+        },
+        "receiptDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "errorCode": {
+          "type": "string",
+          "maxLength": 128
+        }
+      },
+      "allOf": [
+        {"if": {"properties": {"status": {"enum": ["settled", "rejected", "cancelled"]}}, "required": ["status"]}, "then": {"required": ["receiptRef", "receiptKind", "receiptDigest"]}},
+        {"if": {"properties": {"status": {"const": "unknown"}}, "required": ["status"]}, "then": {"not": {"anyOf": [{"required": ["receiptRef"]}, {"required": ["receiptKind"]}, {"required": ["receiptDigest"]}, {"required": ["output"]}]}}},
+        {"if": {"properties": {"receiptKind": {"const": "host_decision"}}, "required": ["receiptKind"]}, "then": {"not": {"required": ["output"]}}}
+      ],
+      "description": "Receipt fields are mandatory for every known terminal outcome and forbidden for UNKNOWN. effect_receipt is Guard effect provenance; host_decision is a durable pre-dispatch decision with no output claim; tool_result is explicitly Core-reported output, not independent evidence. UTF-8 output byte caps are enforced by the receiver, not JSON Schema maxLength."
+    },
+    "waveResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "frameType",
+        "requestId",
+        "sequence",
+        "waveIndex",
+        "batchId",
+        "status",
+        "results"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "frameType": {
+          "const": "wave_result"
+        },
+        "requestId": {
+          "$ref": "#/$defs/id"
+        },
+        "sequence": {
+          "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64"
+        },
+        "waveIndex": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 63
+        },
+        "batchId": {
+          "$ref": "#/$defs/id"
+        },
+        "status": {
+          "enum": [
+            "settled",
+            "rejected",
+            "cancelled",
+            "unknown"
+          ]
+        },
+        "results": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "$ref": "#/$defs/callResult"
+          }
+        },
+        "receiptDigest": {
+          "$ref": "#/$defs/digest"
+        }
+      },
+      "allOf": [
+        {"if": {"properties": {"status": {"enum": ["settled", "rejected", "cancelled"]}}, "required": ["status"]}, "then": {"required": ["receiptDigest"]}},
+        {"if": {"properties": {"status": {"const": "unknown"}}, "required": ["status"]}, "then": {"not": {"required": ["receiptDigest"]}}}
+      ],
+      "description": "Stateful strict validation requires results to match the preceding dispatched calls exactly by count, order and callId; public wave digest is BLAKE3 over canonical MessagePack [waveIndex,callIndex,callId,status,receiptKind,receiptRef,receiptDigest] tuples under horizoncode.codemode-wave-receipts.v2\\0. The run aggregate uses horizoncode.codemode-receipts.v2\\0 in ascending wave/call order. UNKNOWN contains at least one unknown result and has no aggregate digest."
+    },
+    "cancel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "frameType",
+        "requestId",
+        "sequence",
+        "reason"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "frameType": {
+          "const": "cancel"
+        },
+        "requestId": {
+          "$ref": "#/$defs/id"
+        },
+        "sequence": {
+          "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64"
+        },
+        "reason": {
+          "enum": [
+            "user_abort",
+            "deadline",
+            "parent_failure",
+            "shutdown"
+          ]
+        }
+      }
+    },
+    "waveRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "frameType",
+        "requestId",
+        "sequence",
+        "waveIndex",
+        "calls"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "frameType": {
+          "const": "wave_request"
+        },
+        "requestId": {
+          "$ref": "#/$defs/id"
+        },
+        "sequence": {
+          "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64"
+        },
+        "waveIndex": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 63
+        },
+        "calls": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "$ref": "#/$defs/call"
+          }
+        }
+      }
+    },
+    "completed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "frameType",
+        "requestId",
+        "sequence",
+        "status"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "frameType": {
+          "const": "completed"
+        },
+        "requestId": {
+          "$ref": "#/$defs/id"
+        },
+        "sequence": {
+          "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64"
+        },
+        "status": {
+          "enum": [
+            "completed",
+            "failed",
+            "cancelled"
+          ]
+        },
+        "output": {
+          "type": "string",
+          "maxLength": 65536
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "errorCode": {
+          "type": "string",
+          "maxLength": 128
+        }
+      }
+    }
+  },
+  "x-horizon-validation": [
+    "stdio-only-private-channel-owned-by-existing-Rust-ExecutionHost-supervisor",
+    "host-starts-helper-under-authenticated-owner-scope-and-selected-cgroup-v2-ResourceProfile-before-first-instruction",
+    "runtime-path-comes-only-from-trusted-packaged-runtime-selector-never-from-message-or-model",
+    "strict-monotonic-frame-sequence-and-correlated-requestId-callId-waveIndex-batchId;reject-duplicates-gaps-reordering-and-unknown-fields",
+    "Rust-CodeModeFrameV1-is-the-sole-canonical-validator-for-serialized-frame-UTF8-byte-depth-and-node-bounds-before-helper-launch;no-second-validator-may-disagree",
+    "each-newline-terminated-serialized-frame-is-at-most-2097152-UTF8-bytes-before-parse;start-frame-canonical-JSON-tools-array-is-at-most-1048576-UTF8-bytes-and-entire-start-frame-remains-within-2097152",
+    "toolDefinitionsBytes-is-host-computed-canonical-JSON-UTF8-byte-count-for-tools-array;receiver-recomputes-and-exact-compares;schema-maxLength-is-character-count-only",
+    "start-tool-set-is-exact-current-authorized-projection-sorted-by-capabilityId-then-toolName",
+    "inputSchemaDigest-is-blake3-domain-horizon.tool-schema.v1-NUL-plus-canonical-JSON-of-schema-decoded-inputSchema",
+    "toolSetDigest-is-blake3-domain-horizoncode.codemode-toolset.v1-NUL-plus-canonical-MessagePack-of-schema-decoded-tools-array-with-exact-toolName-capabilityId-description-inputSchema-and-inputSchemaDigest-fields",
+    "toolSetDigest-canonical-MessagePack-map-keys-use-UTF8-byte-order-and-arrays-preserve-the-defined-capabilityId-then-toolName-sort",
+    "each-wave-is-complete-and-atomic-at-ToolBatch-admission-before-any-call-dispatch",
+    "receiver-recomputes-UTF8-source-output-and-canonical-argument-byte-counts;per-call-arguments-at-most-262144-bytes;aggregate-serialized-arguments-at-most-524288-bytes-per-wave-and-1048576-bytes-script-total-separate-from-tool-definitions-and-frame-cap",
+    "max-64-total-calls-in-at-most-64-waves-of-32;one-30000ms-monotonic-deadline-and-65536-aggregate-output-bytes",
+    "Core-dispatches-wave-using-authenticated-root-direct-Session-scope,an-actual-direct-child-DirectTurnScope-when-applicable,or-live-managed-Attempt-scope;never-synthesize-an-Attempt-for-a-root-Session",
+    "wave_result-results-match-the-exact-dispatched-callIds-count-and-order;every-known-terminal-result-carries-its-receiptRef-and-receiptDigest;UNKNOWN-carries-neither",
+    "settled-wave-receiptDigest-is-recomputed-from-ordered-callId-ref-digest-tuples;UNKNOWN-wave-has-at-least-one-unknown-result-and-no-wave-receiptDigest;helper-cannot-assert-settlement",
+    "a-wave-containing-UNKNOWN-terminates-CodeMode-and-is-never-presented-as-settled-or-resumed;outer-dispatch-remains-UNKNOWN-until-authoritative-reconciliation",
+    "cancel-frame-is-advisory;Guard-and-ExecutionHost-cancellation-and-reaping-are-authoritative",
+    "no-ambient-filesystem-process-network-credential-or-registry-API-in-helper",
+    "MCP-tool-calls-are-permitted-only-through-existing-Core-adapters-and-the-same-Guarded-ToolBatch-dispatcher-never-a-helper-MCP-client",
+    "fixed-runtime-selector-horizoncode:codemode:bun-no-Node-fallback",
+    "codemode-resource-profile-v1-cgroup-memory-max-536870912-cpu-max-100000-100000-pids-max-64-nofile-256-verified-before-first-instruction",
+    "unsupported-runtime-or-unverified-cgroup-v2-containment-keeps-CodeMode-unavailable",
+    "wave-index-is-contiguous-from-0-and-at-most-63;sequential-dependent-calls-may-use-later-waves"
+  ]
+}

@@ -1,4 +1,5 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { createHash } from "node:crypto"
 import { Location } from "@opencode-ai/core/location"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
@@ -26,6 +27,9 @@ import { MAX_STEPS_PROMPT } from "@opencode-ai/core/session/runner/max-steps"
 import { ToolRegistry } from "@/tool/registry"
 import { MCP } from "../mcp"
 import { LSP } from "@/lsp/lsp"
+import * as LSPServer from "@/lsp/server"
+import { createSupervisedLspClientV1 } from "@/lsp/supervised"
+import { projectGlobalLspConfigProfileV1 } from "@/lsp/launch-profile"
 import { ulid } from "ulid"
 import * as Stream from "effect/Stream"
 import { Command } from "../command"
@@ -45,8 +49,24 @@ import { Image } from "@/image/image"
 import { decodeDataUrl } from "@/util/data-url"
 import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option, Ref, Scope, Context, Schema, Types } from "effect"
 import { InstanceState } from "@/effect/instance-state"
-import { TaskTool, type TaskPromptOps } from "@/tool/task"
-import type { ManagedAttemptAuthority } from "./managed-control"
+import { InstanceRef, WorkspaceRef } from "@/effect/instance-ref"
+import { WorkspaceV2 } from "@opencode-ai/core/workspace"
+import { EffectBridge } from "@/effect/bridge"
+import { TaskTool, runManagedTaskPrompt, type ManagedTaskPromptInput, type TaskPromptOps } from "@/tool/task"
+import type { ManagedAttemptAuthority, ManagedProviderTurnCompletionV1 } from "./managed-control"
+import * as ManagedControl from "./managed-control"
+import type { ManagedReadyTaskSelectionV1, ManagedWorktreeTargetV1 } from "./managed-control"
+import type { TrustedPrincipal } from "@opencode-ai/core/trusted-principal"
+import {
+  compileManagedContextSelection,
+  sameManagedContextSelectionV1,
+  type ManagedPreparedRequestV1,
+  type ManagedProviderContextV1,
+  type ManagedProviderInputV1,
+} from "./llm"
+import { deriveSubagentSessionPermission } from "../agent/subagent-permissions"
+import { blake3 } from "@noble/hashes/blake3.js"
+import { bytesToHex } from "@noble/hashes/utils.js"
 import { SessionRunState } from "./run-state"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -54,12 +74,16 @@ import { Database } from "@opencode-ai/core/database/database"
 import { SessionSupervisor, SessionSupervisorError } from "@opencode-ai/core/session/supervisor"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
+import { ContextSelectionV1 } from "@opencode-ai/schema/context-selection-v1"
 import { eq } from "drizzle-orm"
 import { SessionTable } from "@opencode-ai/core/session/sql"
 import { SessionReminders } from "./reminders"
 import { SessionTools } from "./tools"
+import { builtinHarnessSystemPromptV1 } from "@opencode-ai/core/harness-profile"
 import { requireToolExecution } from "./tool-batch"
 import type { DirectAttemptAuthority } from "./tool-batch"
+import type { DirectTurnAuthority } from "./managed-control"
+import { consumptionAckDigest, consumingScopeDigest, digestText, type DirectInboxConsumptionProofV1 } from "./direct-subagent-inbox"
 
 import { LLMEvent } from "@opencode-ai/llm"
 
@@ -113,6 +137,19 @@ function sessionAgentProfilePin(metadata: Record<string, unknown> | undefined) {
   return { profileID: value.profileID, revision, harness: value.harness }
 }
 
+function managedPreflightProfilePin(metadata: Record<string, unknown> | undefined) {
+  const raw = metadata?.horizonManagedPreflightV1
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined
+  const value = raw as Record<string, unknown>
+  if (value.schemaVersion !== 1 || typeof value.profileID !== "string" ||
+    typeof value.profileRevision !== "string" || !/^[1-9][0-9]{0,15}$/.test(value.profileRevision) ||
+    typeof value.profileDigest !== "string" || !/^blake3:[0-9a-f]{64}$/.test(value.profileDigest) ||
+    typeof value.harness !== "string" || !/^[A-Za-z0-9._-]{1,256}$/.test(value.harness)) return undefined
+  const revision = Number(value.profileRevision)
+  if (!Number.isSafeInteger(revision) || revision < 1) return undefined
+  return { profileID: value.profileID, revision, profileDigest: value.profileDigest, harness: value.harness }
+}
+
 const AGENT_SPAWN_UNAVAILABLE_MESSAGE =
   "Agent delegation is unavailable until agents.spawn is mediated by Rust Guard and ExecutionHost."
 
@@ -154,7 +191,43 @@ export interface Interface {
   readonly promptManaged: (
     input: PromptInput,
     authority: ManagedAttemptAuthority,
+    followUpRunner?: ManagedFollowUpRunnerV1,
   ) => Effect.Effect<SessionV1.WithParts, Image.Error | Session.BusyError | SessionSupervisorError>
+  /** Internal Rust-selected child adapter; task selectors never come from model arguments. */
+  readonly runManagedTask: (
+    input: Omit<ManagedTaskPromptInput, "promptOps">,
+  ) => ReturnType<typeof runManagedTaskPrompt>
+  /** Compile the exact managed child provider request without dispatching it. */
+  readonly prepareManagedTaskRequest: (input: {
+    readonly selection: ManagedReadyTaskSelectionV1
+    readonly rootSessionID: string
+    readonly childSessionID: string
+    readonly preAdmissionTarget: ManagedWorktreeTargetV1
+    readonly requestID: string
+    readonly requestSequence: "1"
+    readonly trustedPrincipal: TrustedPrincipal
+  }) => Effect.Effect<ManagedPreparedRequestV1, ManagedControl.ManagedControlError | SessionSupervisorError>
+  /** Compile the next managed follow-up against the live transcript without persisting it or dispatching. */
+  readonly prepareManagedFollowUp: (input: {
+    readonly prompt: PromptInput
+    readonly authority: ManagedAttemptAuthority
+    readonly context: ManagedProviderContextV1
+    readonly requestID: string
+  }) => Effect.Effect<ManagedPreparedRequestV1, ManagedControl.ManagedControlError | SessionSupervisorError>
+  /** Compile the real SessionPrompt body without starting provider transport. */
+  readonly prepareManagedPrompt: (input: {
+    readonly prompt: PromptInput
+    readonly remainingTokens: string
+    readonly directory: string
+    readonly workspaceID: string
+  }) => Effect.Effect<ManagedProviderInputV1, Session.BusyError | SessionSupervisorError>
+  /** Internal safe-boundary wake for an already committed direct child follow-up. */
+  readonly followUpDirectChild: (input: {
+    readonly parentSessionID: string
+    readonly childSessionID: string
+    readonly messageID: string
+    readonly freshTurnAuthorization?: ManagedControl.FreshTurnAuthorizationV1
+  }) => Effect.Effect<void, Session.BusyError | SessionSupervisorError | ManagedControl.ManagedControlError>
   readonly loop: (input: LoopInput) => Effect.Effect<SessionV1.WithParts, Session.BusyError | SessionSupervisorError>
   readonly shell: (input: ShellInput) => Effect.Effect<
     SessionV1.WithParts,
@@ -172,6 +245,38 @@ export interface Interface {
   >
   readonly resolvePromptParts: (template: string) => Effect.Effect<PromptInput["parts"], SessionSupervisorError>
 }
+
+/**
+ * Internal serialized managed follow-up seam. The adapter must reconcile the
+ * exact committed inbox row, claim its one-use HostKernel wake, persist that
+ * claim, compile/advance the exact next ContextSelection and provider request,
+ * and return only after the next prompt has crossed its safe boundary. Queue
+ * rows are never eligible. An absent adapter leaves follow-up unavailable.
+ */
+export type ManagedFollowUpRunnerV1 = (input: {
+  readonly sessionID: string
+  readonly authority: ManagedAttemptAuthority
+  readonly completion: ManagedProviderTurnCompletionV1
+  readonly context: ManagedProviderContextV1
+}) => Effect.Effect<
+  | {
+      readonly prompt: PromptInput
+      readonly context: ManagedProviderContextV1
+      /** Called after the exact follow-up user message is durably appended, before provider dispatch. */
+      readonly onPromptCommitted: (input: { readonly promptMessageID: string }) => Effect.Effect<void, ManagedControl.ManagedControlError | SessionSupervisorError>
+    }
+  | undefined,
+  ManagedControl.ManagedControlError | SessionSupervisorError
+>
+
+/** Reconcile the exact persisted managed inbox/request boundary before provider dispatch. */
+export type ManagedPreDispatchRecoveryV1 = (input: {
+  readonly sessionID: string
+  readonly promptMessageID: string
+  readonly promptText: string
+  readonly authority: ManagedAttemptAuthority
+  readonly context: ManagedProviderContextV1
+}) => Effect.Effect<void, ManagedControl.ManagedControlError | SessionSupervisorError>
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SessionPrompt") {}
 
@@ -216,8 +321,12 @@ const layer = Layer.effect(
           input: PromptInput,
           directAttempt?: DirectAttemptAuthority,
           managedAttempt?: ManagedAttemptAuthority,
+          directTurn?: DirectTurnAuthority,
+          managedContext?: ManagedProviderContextV1,
+          managedFollowUpRunner?: ManagedFollowUpRunnerV1,
+          managedPreDispatchRecovery?: ManagedPreDispatchRecoveryV1,
         ): Effect.Effect<SessionV1.WithParts, Image.Error | Session.BusyError | SessionSupervisorError> =>
-          promptWithAttempt(input, directAttempt, managedAttempt),
+          promptWithAttempt(input, directAttempt, managedAttempt, directTurn, managedContext, managedFollowUpRunner, managedPreDispatchRecovery),
       } satisfies TaskPromptOps
     })
 
@@ -287,10 +396,13 @@ const layer = Layer.effect(
 
       const ag = yield* agents.get("title")
       if (!ag) return
+      // Session title generation is auxiliary work on the same Session route.
+      // Do not silently select a different small model when the title agent has
+      // no explicit model: use the exact provider/model already pinned to the
+      // Session. An explicit title-agent model remains an intentional override.
       const mdl = ag.model
         ? yield* provider.getModel(ag.model.providerID, ag.model.modelID)
-        : ((yield* provider.getSmallModel(input.providerID)) ??
-          (yield* provider.getModel(input.providerID, input.modelID)))
+        : yield* provider.getModel(input.providerID, input.modelID)
       const msgs = onlySubtasks
         ? [{ role: "user" as const, content: subtasks.map((p) => p.prompt).join("\n") }]
         : yield* MessageV2.toModelMessagesEffect(context, mdl)
@@ -416,7 +528,13 @@ const layer = Layer.effect(
 
     const createUserMessage = Effect.fn("SessionPrompt.createUserMessage")(function* (input: PromptInput) {
       const agentName = input.agent
-      const ag = agentName ? yield* agents.get(agentName) : yield* agents.defaultInfo()
+      const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+      const preflightProfile = managedPreflightProfilePin(session.metadata)
+      const ag = agentName
+        ? preflightProfile
+          ? yield* agents.getProfile(preflightProfile.profileID, preflightProfile.revision)
+          : yield* agents.get(agentName)
+        : yield* agents.defaultInfo()
       if (!ag) {
         const available = (yield* agents.list()).filter((a) => !a.hidden).map((a) => a.name)
         const hint = available.length ? ` Available agents: ${available.join(", ")}` : ""
@@ -451,7 +569,7 @@ const layer = Layer.effect(
         format: input.format,
       }
 
-      const current = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+      const current = session
       if (
         current.agent !== info.agent ||
         current.model?.providerID !== info.model.providerID ||
@@ -831,10 +949,14 @@ const layer = Layer.effect(
       return { info, parts }
     }, Effect.scoped)
 
-    const promptWork: TaskPromptOps["prompt"] = Effect.fn("SessionPrompt.prompt")(function* (
+    const promptWork = Effect.fn("SessionPrompt.prompt")(function* (
       input: PromptInput,
       directAttempt?: DirectAttemptAuthority,
       managedAttempt?: ManagedAttemptAuthority,
+      directTurn?: DirectTurnAuthority,
+      managedContext?: ManagedProviderContextV1,
+      managedFollowUpRunner?: ManagedFollowUpRunnerV1,
+      managedPreDispatchRecovery?: ManagedPreDispatchRecoveryV1,
     ) {
       const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
       // Apply settings queued at the next-turn boundary only for a new root
@@ -855,12 +977,20 @@ const layer = Layer.effect(
       }
 
       if (input.noReply === true) return message
-      return yield* loopWithAttempt({ sessionID: input.sessionID }, directAttempt, managedAttempt)
+      return yield* loopWithAttempt({ sessionID: input.sessionID }, directAttempt, managedAttempt, directTurn, managedContext, managedFollowUpRunner, managedPreDispatchRecovery)
     })
-    const promptWithAttempt: TaskPromptOps["prompt"] = (input, directAttempt, managedAttempt) =>
-      state.withExecutionOwner(input.sessionID, promptWork(input, directAttempt, managedAttempt))
+    const promptWithAttempt = (
+      input: PromptInput,
+      directAttempt?: DirectAttemptAuthority,
+      managedAttempt?: ManagedAttemptAuthority,
+      directTurn?: DirectTurnAuthority,
+      managedContext?: ManagedProviderContextV1,
+      managedFollowUpRunner?: ManagedFollowUpRunnerV1,
+      managedPreDispatchRecovery?: ManagedPreDispatchRecoveryV1,
+    ): Effect.Effect<SessionV1.WithParts, Image.Error | Session.BusyError | SessionSupervisorError> =>
+      state.withExecutionOwner(input.sessionID, promptWork(input, directAttempt, managedAttempt, directTurn, managedContext, managedFollowUpRunner, managedPreDispatchRecovery))
     const prompt: Interface["prompt"] = (input) => promptWithAttempt(input)
-    const promptManaged: Interface["promptManaged"] = (input, authority) => {
+    const promptManaged: Interface["promptManaged"] = (input, authority, followUpRunner) => {
       const scope = authority.currentScope()
       if (scope.sessionID !== input.sessionID) {
         return Effect.fail(new SessionSupervisorError({
@@ -868,8 +998,746 @@ const layer = Layer.effect(
           reason: "managed Attempt scope is bound to a different Session",
         }))
       }
-      return promptWithAttempt(input, undefined, authority)
+      return state.withExecutionOwner(input.sessionID, promptWork(input, undefined, authority, undefined, undefined, followUpRunner))
     }
+    const runManagedTask: Interface["runManagedTask"] = (input) =>
+      Effect.gen(function* () {
+        const promptOps = yield* ops()
+        return yield* runManagedTaskPrompt({ ...input, promptOps }).pipe(
+          Effect.provideService(SessionSupervisor.Service, supervisor),
+        )
+      })
+
+    const prepareManagedTaskRequest: Interface["prepareManagedTaskRequest"] = (input) =>
+      Effect.gen(function* () {
+        const task = input.selection.task
+        if (input.selection.status !== "READY_TASK" || !task ||
+          input.trustedPrincipal.kind !== "server_auth" ||
+          input.rootSessionID !== input.selection.sessionID ||
+          input.childSessionID !== ManagedControl.managedTaskSessionID(task.candidateAttemptID) ||
+          input.requestSequence !== "1" ||
+          input.requestID !== `req_managed_${task.candidateAttemptID}_1` ||
+          input.preAdmissionTarget.workspaceRef !== input.selection.workspaceRef) {
+          return yield* new ManagedControl.ManagedControlError({
+            operation: "managed_context.prepare",
+            code: "managed_conflict",
+            reason: "managed preflight identity or authenticated P8 target differs from the canonical READY_TASK selection",
+          })
+        }
+        if (input.trustedPrincipal.subject.length < 1 ||
+          input.preAdmissionTarget.worktreeID.length < 1 ||
+          !/^[1-9][0-9]{0,19}$/.test(task.taskRevision) ||
+          !/^blake3:[0-9a-f]{64}$/.test(task.contextDigest) ||
+          !/^blake3:[0-9a-f]{64}$/.test(input.selection.specDigest) ||
+          !/^blake3:[0-9a-f]{64}$/.test(task.profile.definitionDigest) ||
+          !/^[1-9][0-9]{0,15}$/.test(task.profile.revision)) {
+          return yield* new ManagedControl.ManagedControlError({
+            operation: "managed_context.prepare",
+            code: "managed_protocol",
+            reason: "managed Task, accepted Spec, profile, or trusted principal pins are malformed",
+          })
+        }
+        const root = yield* sessions.get(SessionID.make(input.rootSessionID))
+        const rootBinding = root.metadata?.horizonManagedRoot
+        if (root.parentID || root.id !== input.selection.sessionID || root.workspaceID !== input.selection.workspaceRef ||
+          typeof rootBinding !== "object" || rootBinding === null || Array.isArray(rootBinding) ||
+          rootBinding.goalID !== input.selection.goalID || rootBinding.runID !== input.selection.runID ||
+          rootBinding.specID !== input.selection.specID || rootBinding.specDigest !== input.selection.specDigest ||
+          rootBinding.workspaceID !== input.selection.workspaceRef) {
+          return yield* new ManagedControl.ManagedControlError({
+            operation: "managed_context.prepare",
+            code: "managed_conflict",
+            reason: "managed preflight root Session is not durably bound to the selected Goal, Run, Spec, and workspace",
+          })
+        }
+        const target = input.preAdmissionTarget
+        if (target.locationID !== input.selection.locationID || target.workspaceRef !== input.selection.workspaceRef ||
+          target.workspaceID.length < 1 || target.canonicalRoot.length < 1 ||
+          !/^blake3:[0-9a-f]{64}$/.test(target.workspaceRevision) ||
+          !/^(0|[1-9][0-9]{0,19})$/.test(target.worktreePoolRevision) || BigInt(target.worktreePoolRevision) === 0n ||
+          !target.worktreeBaseRevision) {
+          return yield* new ManagedControl.ManagedControlError({
+            operation: "managed_context.prepare",
+            code: "managed_conflict",
+            reason: "authenticated P8 target does not match the managed selection workspace and Location",
+          })
+        }
+        const targetWorkspaceID = WorkspaceV2.ID.make(target.workspaceID)
+        const targetDirectory = AbsolutePath.make(target.canonicalRoot)
+        const targetLocation = Location.Ref.make({ directory: targetDirectory, workspaceID: targetWorkspaceID })
+        const registeredLocationID = yield* supervisor.registerHostLocation(targetLocation).pipe(
+          Effect.provideService(TrustedPrincipalContext, { principal: input.trustedPrincipal }),
+          Effect.mapError((error) => new ManagedControl.ManagedControlError({
+            operation: "managed_context.prepare",
+            code: "managed_unavailable",
+            reason: `P8 target Location could not be registered: ${error.message}`,
+          })),
+        )
+        if (registeredLocationID !== target.locationID) {
+          return yield* new ManagedControl.ManagedControlError({
+            operation: "managed_context.prepare",
+            code: "managed_conflict",
+            reason: "Core resolved a different Location than the authenticated P8 worktree target",
+          })
+        }
+        const profileRevision = Number(task.profile.revision)
+        if (!Number.isSafeInteger(profileRevision) || profileRevision < 1) {
+          return yield* new ManagedControl.ManagedControlError({
+            operation: "managed_context.prepare",
+            code: "agent_profile_stale",
+            reason: "Task-pinned AgentProfileV2 revision is outside Core's supported range",
+          })
+        }
+        const profile = yield* agents.getProfile(task.profile.profileID, profileRevision)
+        const profileProjection = profile.options.horizonAgentProfile
+        if (typeof profileProjection !== "object" || profileProjection === null ||
+          !("profileId" in profileProjection) || profileProjection.profileId !== task.profile.profileID ||
+          !("revision" in profileProjection) || String(profileProjection.revision) !== task.profile.revision ||
+          !("harness" in profileProjection) || typeof profileProjection.harness !== "string" ||
+          profile.model === undefined) {
+          return yield* new ManagedControl.ManagedControlError({
+            operation: "managed_context.prepare",
+            code: "agent_profile_stale",
+            reason: "Core Config did not resolve the exact enabled Task-pinned AgentProfileV2 revision and model",
+          })
+        }
+        const profileLimits = "limits" in profileProjection && typeof profileProjection.limits === "object" && profileProjection.limits !== null
+          ? profileProjection.limits as Record<string, unknown>
+          : undefined
+        const maxMessageBytes = profileLimits?.maxMessageBytes
+        const maxPendingMessages = profileLimits?.maxPendingMessages
+        if (!Number.isSafeInteger(maxMessageBytes) || (maxMessageBytes as number) < 1 ||
+          !Number.isSafeInteger(maxPendingMessages) || (maxPendingMessages as number) < 1) {
+          return yield* new ManagedControl.ManagedControlError({
+            operation: "managed_context.prepare",
+            code: "agent_profile_stale",
+            reason: "Task-pinned AgentProfileV2 has no bounded pending-message and message-byte limits",
+          })
+        }
+        if (BigInt(task.effectiveMaxTokens) < 1n || BigInt(task.remainingTokens) < 1n ||
+          BigInt(task.remainingTokens) > BigInt(task.effectiveMaxTokens)) {
+          return yield* new ManagedControl.ManagedControlError({
+            operation: "managed_context.prepare",
+            code: "managed_conflict",
+            reason: "Rust-selected managed token remainder is malformed or exhausted",
+          })
+        }
+        const model = yield* provider.getModel(profile.model.providerID, profile.model.modelID)
+        if (!model) {
+          return yield* new ManagedControl.ManagedControlError({
+            operation: "managed_context.prepare",
+            code: "agent_profile_unavailable",
+            reason: "Task-pinned AgentProfileV2 provider/model is unavailable",
+          })
+        }
+        const parentAgent = yield* agents.get(root.agent ?? "build")
+        const childPermission = deriveSubagentSessionPermission({
+          parentAgentPermission: parentAgent.permission,
+          parentSessionPermission: root.permission ?? [],
+          subagent: profile,
+        })
+        const managedToolDenies = ["task", "todowrite"].map((permission) => ({
+          permission,
+          pattern: "*",
+          action: "deny" as const,
+        }))
+        const childPermissions = [
+          ...childPermission,
+          ...managedToolDenies.filter((deny) => !childPermission.some((rule) =>
+            rule.permission === deny.permission && rule.pattern === deny.pattern && rule.action === "deny")),
+        ]
+        const promptText = [
+          `Task: ${task.title}`,
+          task.purpose,
+          `Goal: ${input.selection.goalObjective}`,
+          input.selection.specConstraints.length > 0
+            ? `Accepted constraints:\n${input.selection.specConstraints.map((item) => `- ${item}`).join("\n")}`
+            : undefined,
+          `Acceptance criteria:\n${task.criteria.map((item) => `- ${item.criterionID}: ${item.description}`).join("\n")}`,
+          task.dependencies.length > 0 ? `Scheduler-satisfied dependency Task IDs: ${task.dependencies.join(", ")}` : undefined,
+        ].filter((part): part is string => typeof part === "string").join("\n\n")
+        if (Buffer.byteLength(promptText, "utf8") > (maxMessageBytes as number) || (maxPendingMessages as number) < 1) {
+          return yield* new ManagedControl.ManagedControlError({
+            operation: "managed_context.prepare",
+            code: "agent_profile_limit",
+            reason: "managed Task prompt exceeds its exact AgentProfileV2 message limits",
+          })
+        }
+        const promptMessageID = MessageID.make(`msg_managed_${createHash("sha256").update(`${input.requestID}\0${input.childSessionID}`).digest("hex").slice(0, 32)}`)
+        const promptDigest = `sha256:${createHash("sha256").update(promptText, "utf8").digest("hex")}`
+        const stage = {
+          schemaVersion: 1,
+          candidateAttemptID: task.candidateAttemptID,
+          taskID: task.taskID,
+          taskRevision: task.taskRevision,
+          taskContextDigest: task.contextDigest,
+          specID: input.selection.specID,
+          specDigest: input.selection.specDigest,
+          profileID: task.profile.profileID,
+          profileRevision: task.profile.revision,
+          profileDigest: task.profile.definitionDigest,
+          harness: profileProjection.harness,
+          worktreeTarget: target,
+          requestID: input.requestID,
+          requestSequence: input.requestSequence,
+          promptMessageID,
+          promptDigest,
+        }
+        const childID = SessionID.make(input.childSessionID)
+        const existing = yield* sessions.get(childID).pipe(
+          Effect.map(Option.some),
+          Effect.catchTag("NotFoundError", () => Effect.succeed(Option.none())),
+        )
+        let child: Session.Info
+        let persistedContextSelection: ContextSelectionV1 | undefined
+        if (Option.isSome(existing)) {
+          child = existing.value
+          const savedStage = child.metadata?.horizonManagedPreflightV1
+          const savedStageRecord = typeof savedStage === "object" && savedStage !== null && !Array.isArray(savedStage)
+            ? savedStage as Record<string, unknown>
+            : undefined
+          const savedContextSelection = savedStageRecord?.contextSelection
+          const savedStageBase = savedStageRecord
+            ? Object.fromEntries(Object.entries(savedStageRecord).filter(([key]) => key !== "contextSelection"))
+            : undefined
+          const savedKeys = savedStageRecord ? Object.keys(savedStageRecord).toSorted().join("\0") : ""
+          const expectedKeys = [Object.keys(stage), [...Object.keys(stage), "contextSelection"]]
+            .map((keys) => keys.toSorted().join("\0"))
+          if (child.parentID !== root.id || child.workspaceID !== target.workspaceID ||
+            child.agent !== profile.name || child.model?.providerID !== model.providerID || child.model?.id !== model.id ||
+            !expectedKeys.includes(savedKeys) || JSON.stringify(savedStageBase) !== JSON.stringify(stage)) {
+            return yield* new ManagedControl.ManagedControlError({
+              operation: "managed_context.prepare",
+              code: "managed_conflict",
+              reason: "candidate child Session already exists with conflicting preflight identity or prepared prompt",
+            })
+          }
+          if (savedContextSelection !== undefined) {
+            persistedContextSelection = yield* Effect.try({
+              try: () => Schema.decodeUnknownSync(ContextSelectionV1, { onExcessProperty: "error" })(savedContextSelection),
+              catch: () => new ManagedControl.ManagedControlError({
+                operation: "managed_context.prepare",
+                code: "managed_conflict",
+                reason: "persisted candidate ContextSelection is malformed",
+              }),
+            })
+          }
+        } else {
+          child = yield* sessions.create({
+            id: childID,
+            parentID: root.id,
+            title: task.title,
+            agent: profile.name,
+            model: { providerID: model.providerID, modelID: model.id },
+            permission: childPermissions,
+            workspaceID: targetWorkspaceID,
+            metadata: { horizonManagedPreflightV1: stage },
+          }).pipe(Effect.provideService(TrustedPrincipalContext, { principal: input.trustedPrincipal }))
+        }
+        const providerInput = yield* prepareManagedPrompt({
+          prompt: {
+            messageID: promptMessageID,
+            sessionID: childID,
+            model: { providerID: model.providerID, modelID: model.id },
+            agent: profile.name,
+            parts: [{ type: "text", text: promptText }],
+          },
+          remainingTokens: task.remainingTokens,
+          directory: target.canonicalRoot,
+          workspaceID: target.workspaceID,
+        }).pipe(
+          Effect.provideService(InstanceRef, { ...(yield* InstanceState.context), directory: targetDirectory }),
+          Effect.provideService(WorkspaceRef, targetWorkspaceID),
+        )
+        const cursor = yield* supervisor.sessionProjectionCursor(childID)
+        if (cursor.ownerKind !== "session" || cursor.ownerId !== childID ||
+          !/^[1-9][0-9]{0,19}$/.test(cursor.seq) ||
+          !/^blake3:[0-9a-f]{64}$/.test(cursor.eventDigest)) {
+          return yield* new ManagedControl.ManagedControlError({
+            operation: "managed_context.prepare",
+            code: "managed_unavailable",
+            reason: "SessionSupervisor did not return an exact child Session source cursor for context selection",
+          })
+        }
+        const sourceRevision = persistedContextSelection
+          ? persistedContextSelection.sourceRevision
+          : cursor.seq
+        if (persistedContextSelection && BigInt(cursor.seq) !== BigInt(sourceRevision) + 1n) {
+          return yield* new ManagedControl.ManagedControlError({
+            operation: "managed_context.prepare",
+            code: "managed_conflict",
+            reason: "child Session source advanced beyond the single known preflight-metadata event; exact context replay is unavailable",
+          })
+        }
+        const contextSelection = compileManagedContextSelection({
+          sessionID: childID,
+          requestID: input.requestID,
+          requestSequence: input.requestSequence,
+          sourceRevision,
+          attemptID: task.candidateAttemptID,
+          taskID: task.taskID,
+          taskRevision: task.taskRevision,
+          taskContextDigest: task.contextDigest,
+          specID: input.selection.specID,
+          specDigest: input.selection.specDigest,
+          profileID: task.profile.profileID,
+          profileRevision: task.profile.revision,
+          profileDigest: task.profile.definitionDigest,
+          toolSources: preflight.toolSources ?? [],
+          providerInput,
+        })
+        if (persistedContextSelection && !sameManagedContextSelectionV1(persistedContextSelection, contextSelection)) {
+          return yield* new ManagedControl.ManagedControlError({
+            operation: "managed_context.prepare",
+            code: "managed_conflict",
+            reason: "recompiled sequence-1 ContextSelection differs from the exact persisted pre-admission selection",
+          })
+        }
+        const exactContextSelection = persistedContextSelection ?? contextSelection
+        if (!persistedContextSelection) {
+          const completedStage = { ...stage, contextSelection: exactContextSelection }
+          yield* sessions.setMetadata({ sessionID: child.id, metadata: { ...(child.metadata ?? {}), horizonManagedPreflightV1: completedStage } })
+        }
+        return {
+          contextSelection: exactContextSelection,
+          providerInput,
+          toolSources: preflight.toolSources ?? [],
+          context: {
+            attemptID: task.candidateAttemptID,
+            taskID: task.taskID,
+            taskRevision: task.taskRevision,
+            taskContextDigest: task.contextDigest,
+            specID: input.selection.specID,
+            specDigest: input.selection.specDigest,
+            profileID: task.profile.profileID,
+            profileRevision: task.profile.revision,
+            profileDigest: task.profile.definitionDigest,
+            selectionSessionID: childID,
+            sourceRevision: exactContextSelection.sourceRevision,
+            requestID: input.requestID,
+            requestSequence: input.requestSequence,
+          },
+        } satisfies ManagedPreparedRequestV1
+      })
+
+    const prepareManagedPrompt: Interface["prepareManagedPrompt"] = (input) =>
+      state.withExecutionOwner(input.prompt.sessionID, Effect.gen(function* () {
+        if (!/^(0|[1-9][0-9]{0,19})$/.test(input.remainingTokens) || BigInt(input.remainingTokens) < 1n) {
+          return yield* new SessionSupervisorError({ stage: "managed_context", reason: "managed prompt preflight token remainder is malformed or exhausted" })
+        }
+        const sessionID = input.prompt.sessionID
+        const current = yield* sessions.get(sessionID).pipe(Effect.orDie)
+        const messages = yield* MessageV2.filterCompactedEffect(sessionID).pipe(Effect.provideService(Database.Service, database))
+        let staged: SessionV1.WithParts | undefined
+        if (messages.length === 0) {
+          staged = yield* createUserMessage(input.prompt)
+          yield* sessions.touch(sessionID)
+        } else {
+          const expectedID = input.prompt.messageID
+          const users = messages.filter((message) => message.info.role === "user")
+          if (messages.length !== 1 || users.length !== 1 || !expectedID || users[0]!.info.id !== expectedID) {
+            return yield* new SessionSupervisorError({ stage: "managed_context", reason: "managed preflight child Session already contains non-identical request history" })
+          }
+          staged = users[0]
+        }
+        const preflight: ManagedPromptPreflight = { remainingTokens: input.remainingTokens, user: staged }
+        const run = runLoop(sessionID, undefined, undefined, undefined, undefined, preflight)
+        const rootInstance = yield* InstanceState.context
+        const targetInstance = { ...rootInstance, directory: AbsolutePath.make(input.directory) }
+        yield* run.pipe(
+          Effect.provideService(InstanceRef, targetInstance),
+          Effect.provideService(WorkspaceRef, WorkspaceV2.ID.make(input.workspaceID)),
+          Effect.ensuring(status.set(sessionID, { type: "idle" })),
+        )
+        if (!preflight.providerInput) {
+          return yield* new SessionSupervisorError({ stage: "managed_context", reason: "SessionPrompt failed to compile a no-dispatch managed request" })
+        }
+        return preflight.providerInput
+      }))
+
+    const prepareManagedFollowUp: Interface["prepareManagedFollowUp"] = (input) =>
+      Effect.gen(function* () {
+        const promptInput = yield* Effect.try({
+          try: () => Schema.decodeUnknownSync(PromptInput, { onExcessProperty: "error" })(input.prompt),
+          catch: () => new SessionSupervisorError({ stage: "managed_follow_up", reason: "follow-up prompt is malformed" }),
+        })
+        const scope = input.authority.currentScope()
+        const context = input.context
+        const nextSequence = (BigInt(scope.requestSequence) + 1n).toString()
+        if (promptInput.sessionID !== scope.sessionID || promptInput.messageID === undefined ||
+          promptInput.agent !== undefined || promptInput.model !== undefined || promptInput.variant !== undefined ||
+          promptInput.tools !== undefined || promptInput.system !== undefined || promptInput.format !== undefined ||
+          promptInput.noReply === true || promptInput.parts.length !== 1 || promptInput.parts[0]?.type !== "text" ||
+          promptInput.parts[0].text.length === 0 || Buffer.byteLength(promptInput.parts[0].text, "utf8") > 16 * 1024 ||
+          context.attemptID !== scope.attemptID || context.taskID !== scope.taskID ||
+          context.selectionSessionID !== scope.sessionID || context.requestSequence !== scope.requestSequence ||
+          context.requestID !== scope.requestID || context.contextSelectionDigest !== scope.contextSelectionDigest ||
+          input.requestID !== `req_managed_${scope.attemptID}_${nextSequence}` ||
+          !/^blake3:[0-9a-f]{64}$/.test(context.contextSelectionDigest) ||
+          !/^[1-9][0-9]{0,19}$/.test(scope.requestSequence) || BigInt(scope.requestSequence) >= 1024n ||
+          !/^[1-9][0-9]{0,19}$/.test(input.authority.remainingTokens()) ||
+          context.profileID.length === 0 || context.taskRevision.length === 0 || context.specID.length === 0) {
+          return yield* new ManagedControl.ManagedControlError({
+            operation: "managed_context.prepare_follow_up",
+            code: "managed_conflict",
+            reason: "follow-up prompt does not name the exact live managed Attempt and successor request",
+          })
+        }
+        const sessionID = SessionID.make(scope.sessionID)
+        const session = yield* sessions.get(sessionID)
+        if (!session.parentID || session.workspaceID !== scope.worktreeTarget.workspaceID ||
+          session.directory !== scope.worktreeTarget.canonicalRoot || session.agent === undefined || !session.model ||
+          !managedPreflightProfilePin(session.metadata)) {
+          return yield* new ManagedControl.ManagedControlError({
+            operation: "managed_context.prepare_follow_up",
+            code: "managed_conflict",
+            reason: "follow-up target Session is not the exact managed child workspace and profile",
+          })
+        }
+        const model = yield* provider.getModel(session.model.providerID, session.model.id)
+        if (!model) return yield* new ManagedControl.ManagedControlError({
+          operation: "managed_context.prepare_follow_up",
+          code: "agent_profile_unavailable",
+          reason: "managed follow-up model is unavailable",
+        })
+        const user: SessionV1.WithParts = {
+          info: {
+            id: promptInput.messageID,
+            sessionID,
+            role: "user",
+            time: { created: Date.now() },
+            agent: session.agent,
+            model: {
+              providerID: ProviderV2.ID.make(model.providerID),
+              modelID: ModelV2.ID.make(model.id),
+              ...(session.model.variant && session.model.variant !== "default" ? { variant: session.model.variant } : {}),
+            },
+          },
+          parts: [{
+            id: PartID.make(`prt_${createHash("sha256").update(`${promptInput.messageID}\0follow-up`).digest("hex").slice(0, 32)}`),
+            sessionID,
+            messageID: promptInput.messageID,
+            type: "text",
+            text: promptInput.parts[0].text,
+          }],
+        }
+        const cursor = yield* supervisor.sessionProjectionCursor(sessionID)
+        if (cursor.ownerKind !== "session" || cursor.ownerId !== sessionID ||
+          !/^(0|[1-9][0-9]{0,19})$/.test(cursor.seq) || !/^blake3:[0-9a-f]{64}$/.test(cursor.eventDigest)) {
+          return yield* new ManagedControl.ManagedControlError({
+            operation: "managed_context.prepare_follow_up",
+            code: "managed_unavailable",
+            reason: "child Session projection cursor is unavailable or malformed",
+          })
+        }
+        const preflight: ManagedPromptPreflight = { remainingTokens: input.authority.remainingTokens(), user, appendUser: user }
+        yield* runLoop(sessionID, input.authority, undefined, undefined, undefined, preflight).pipe(
+          Effect.provideService(InstanceRef, { ...(yield* InstanceState.context), directory: AbsolutePath.make(scope.worktreeTarget.canonicalRoot) }),
+          Effect.provideService(WorkspaceRef, WorkspaceV2.ID.make(scope.worktreeTarget.workspaceID)),
+          Effect.ensuring(status.set(sessionID, { type: "idle" })),
+        )
+        if (!preflight.providerInput) return yield* new ManagedControl.ManagedControlError({
+          operation: "managed_context.prepare_follow_up",
+          code: "managed_unavailable",
+          reason: "Core prompt pipeline did not produce a no-dispatch provider input",
+        })
+        const sequence = nextSequence
+        const requestID = input.requestID
+        const contextSelection = compileManagedContextSelection({
+          sessionID: scope.sessionID,
+          requestID,
+          requestSequence: sequence,
+          sourceRevision: cursor.seq,
+          attemptID: context.attemptID,
+          taskID: context.taskID,
+          taskRevision: context.taskRevision,
+          taskContextDigest: context.taskContextDigest,
+          specID: context.specID,
+          specDigest: context.specDigest,
+          profileID: context.profileID,
+          profileRevision: context.profileRevision,
+          profileDigest: context.profileDigest,
+          toolSources: preflight.toolSources ?? [],
+          providerInput: preflight.providerInput,
+        })
+        return {
+          contextSelection,
+          providerInput: preflight.providerInput,
+          toolSources: preflight.toolSources ?? [],
+          context: {
+            attemptID: context.attemptID,
+            taskID: context.taskID,
+            taskRevision: context.taskRevision,
+            taskContextDigest: context.taskContextDigest,
+            specID: context.specID,
+            specDigest: context.specDigest,
+            profileID: context.profileID,
+            profileRevision: context.profileRevision,
+            profileDigest: context.profileDigest,
+            selectionSessionID: scope.sessionID,
+            sourceRevision: cursor.seq,
+            requestID,
+            requestSequence: sequence,
+          },
+        } satisfies ManagedPreparedRequestV1
+      })
+
+    const followUpDirectChild: Interface["followUpDirectChild"] = (input) =>
+      state.withExecutionOwner(SessionID.make(input.childSessionID), Effect.gen(function* () {
+        const parent = yield* sessions.get(SessionID.make(input.parentSessionID))
+        const child = yield* sessions.get(SessionID.make(input.childSessionID))
+        const delivery = child.metadata?.horizonSubagentDelivery
+        const profile = child.metadata?.horizonAgentProfileV2
+        const attemptID = child.metadata?.horizonDirectAttemptID
+        if (child.parentID !== parent.id || child.directory !== parent.directory || child.workspaceID !== parent.workspaceID ||
+          typeof delivery !== "object" || delivery === null || Array.isArray(delivery) ||
+          (delivery as Record<string, unknown>).lane !== "direct_session" ||
+          typeof profile !== "object" || profile === null || Array.isArray(profile) ||
+          typeof attemptID !== "string" || !/^att_[a-z0-9]{16,64}$/.test(attemptID)) {
+          return yield* new ManagedControl.ManagedControlError({ operation: "direct_follow_up", code: "managed_forbidden", reason: "follow-up target is not an authenticated direct child Session" })
+        }
+        const pin = profile as Record<string, unknown>
+        if (typeof pin.profileID !== "string" || typeof pin.profileRevision !== "string" ||
+          typeof pin.profileDigest !== "string" || typeof pin.permissionsDigest !== "string" ||
+          typeof pin.harness !== "string") {
+          return yield* new ManagedControl.ManagedControlError({ operation: "direct_follow_up", code: "agent_profile_stale", reason: "child AgentProfileV2 pin is malformed" })
+        }
+        const attempt = yield* ManagedControl.snapshotDirectAttempt(attemptID)
+        const directAttempt = attempt.directAttempt
+        if (attempt.phase !== "EXECUTING" || !directAttempt || directAttempt.parentSessionID !== parent.id ||
+          directAttempt.childSessionID !== child.id || directAttempt.profileID !== pin.profileID ||
+          directAttempt.profileRevision !== pin.profileRevision || directAttempt.profileDigest !== pin.profileDigest ||
+          directAttempt.permissionsDigest !== pin.permissionsDigest || child.metadata?.horizonDirectAttemptScope !== undefined &&
+            !ManagedControl.sameDirectAttemptScope(directAttempt, child.metadata.horizonDirectAttemptScope as ManagedControl.DirectAttemptScopeV1)) {
+          return yield* new ManagedControl.ManagedControlError({ operation: "direct_follow_up", code: "managed_conflict", reason: "HostKernel live Attempt differs from the child profile or persisted scope" })
+        }
+        const row = yield* sessions.directInboxGet(input.messageID)
+        if (row?.state === "consumed" && row.host_consumed_ack_digest === null) {
+          const live = yield* ManagedControl.snapshotDirectAttempt(attemptID)
+          const scope = live.directAttempt
+          if (!scope || live.phase !== "EXECUTING" || row.delivery_attempt_id !== attemptID ||
+            row.delivery_owner_epoch !== scope.ownerEpoch || row.child_owner_epoch !== scope.ownerEpoch ||
+            row.delivery_scope_digest === null || row.delivery_prompt_message_id === null ||
+            row.consumption_ack_digest === null || row.inbox_receipt_digest === null ||
+            row.profile_id !== scope.profileID || row.profile_revision !== scope.profileRevision ||
+            row.profile_digest !== scope.profileDigest || row.permission_scope_digest !== scope.permissionsDigest ||
+            row.delivery_workspace_id !== scope.workspaceID) {
+            return yield* new ManagedControl.ManagedControlError({ operation: "direct_follow_up_reconcile", code: "managed_unknown", reason: "consumed inbox row cannot be reconciled against the current authenticated child Attempt" })
+          }
+          const proof: DirectInboxConsumptionProofV1 = {
+            messageID: row.message_id, parentSessionID: row.parent_session_id, childSessionID: row.child_session_id,
+            mailboxSequence: row.mailbox_sequence, inboxReceiptDigest: row.inbox_receipt_digest,
+            promptMessageID: row.delivery_prompt_message_id, consumingAttemptID: attemptID,
+            consumingOwnerEpoch: row.delivery_owner_epoch, consumingScopeDigest: row.delivery_scope_digest,
+            consumedPayloadDigest: row.payload_digest,
+          }
+          if (consumptionAckDigest(proof) !== row.consumption_ack_digest) {
+            return yield* new ManagedControl.ManagedControlError({ operation: "direct_follow_up_reconcile", code: "managed_conflict", reason: "stored consumption proof digest is inconsistent" })
+          }
+          const pins: ManagedControl.DirectMessagePinsV1 = {
+            parentSessionID: row.parent_session_id, childSessionID: row.child_session_id,
+            childOwnerEpoch: row.child_owner_epoch, profileID: row.profile_id, profileRevision: row.profile_revision,
+            profileDigest: row.profile_digest, permissionScopeDigest: row.permission_scope_digest,
+            directAttemptID: row.child_attempt_id, messageID: row.message_id, deliveryMode: "follow_up",
+            payloadDigest: row.payload_digest, payloadBytes: row.payload_bytes,
+            mailboxSequence: row.mailbox_sequence, mailboxCapacity: row.mailbox_capacity,
+          }
+          const response = yield* supervisor.requestHostKernel("direct.message.v1", "acknowledge_consumed", {
+            authorityPins: pins, inboxReceiptDigest: row.inbox_receipt_digest,
+            consumption: {
+              promptMessageID: row.delivery_prompt_message_id, consumingAttemptID: attemptID,
+              consumingOwnerEpoch: row.delivery_owner_epoch, consumingScopeDigest: row.delivery_scope_digest,
+              consumedPayloadDigest: row.payload_digest,
+            },
+            consumptionAckDigest: row.consumption_ack_digest,
+            currentConsumer: {
+              attemptID: scope.attemptID, parentSessionID: scope.parentSessionID, childSessionID: scope.childSessionID,
+              ownerEpoch: BigInt(scope.ownerEpoch), expectedRevision: BigInt(scope.expectedRevision),
+              profileID: scope.profileID, profileRevision: scope.profileRevision, profileDigest: scope.profileDigest,
+              locationID: scope.locationID, workspaceID: scope.workspaceID, workspaceRevision: scope.workspaceRevision,
+              capabilityDigest: scope.capabilityDigest, permissionsDigest: scope.permissionsDigest,
+              budgetDigest: scope.budgetDigest, scopeDigest: scope.scopeDigest,
+            },
+          }, { deliveryID: `direct_message_consume_${row.consumption_ack_digest.slice("sha256:".length)}` })
+          const ack = response as Record<string, unknown>
+          if (ack.status !== "CONSUMED" || ack.messageID !== row.message_id || typeof ack.consumptionReceiptDigest !== "string") {
+            return yield* new ManagedControl.ManagedControlError({ operation: "direct_follow_up_reconcile", code: "managed_unknown", reason: "HostKernel consumption acknowledgement remains unresolved" })
+          }
+          yield* sessions.directInboxMarkHostConsumed({ messageID: row.message_id, consumptionAckDigest: row.consumption_ack_digest, hostConsumedAckDigest: ack.consumptionReceiptDigest })
+          return undefined
+        }
+        if (row?.state === "consumed" && row.host_consumed_ack_digest !== null) return undefined
+        yield* ManagedControl.requireDirectTurnLifecycle()
+        if (!row || row.state !== "committed" || row.delivery_mode !== "follow_up" || row.child_session_id !== child.id ||
+          row.parent_session_id !== parent.id || row.child_attempt_id !== attemptID || row.child_owner_epoch !== directAttempt.ownerEpoch ||
+          row.profile_id !== pin.profileID || row.profile_revision !== pin.profileRevision || row.profile_digest !== pin.profileDigest ||
+          row.permission_scope_digest !== pin.permissionsDigest || !row.payload || Buffer.byteLength(row.payload, "utf8") !== row.payload_bytes ||
+          digestText(row.payload) !== row.payload_digest) {
+          return yield* new ManagedControl.ManagedControlError({ operation: "direct_follow_up", code: "managed_conflict", reason: "only the exact committed follow-up for the live child Attempt can be woken" })
+        }
+        const turnCompletion = child.metadata?.horizonDirectTurnCompletion
+        const completedScope = ManagedControl.decodeDirectTurnScopeCandidate(child.metadata?.horizonDirectTurnScope)
+        if (typeof turnCompletion !== "object" || turnCompletion === null || Array.isArray(turnCompletion) ||
+          (turnCompletion as Record<string, unknown>).state !== "completed" ||
+          !ManagedControl.sameDirectAttemptScope(completedScope.directAttempt, directAttempt)) {
+          return yield* new ManagedControl.ManagedControlError({ operation: "direct_follow_up", code: "managed_conflict", reason: "follow-up is not bound to the latest completed child turn" })
+        }
+        const pins: ManagedControl.DirectMessagePinsV1 = {
+          parentSessionID: parent.id, childSessionID: child.id, childOwnerEpoch: row.child_owner_epoch,
+          profileID: row.profile_id, profileRevision: row.profile_revision, profileDigest: row.profile_digest,
+          permissionScopeDigest: row.permission_scope_digest, directAttemptID: row.child_attempt_id,
+          messageID: row.message_id, deliveryMode: "follow_up", payloadDigest: row.payload_digest,
+          payloadBytes: row.payload_bytes, mailboxSequence: row.mailbox_sequence, mailboxCapacity: row.mailbox_capacity,
+        }
+        if (!input.freshTurnAuthorization) {
+          return yield* new ManagedControl.ManagedControlError({ operation: "direct_follow_up", code: "managed_unavailable", reason: "new child turns require a HostKernel fresh-turn authorization" })
+        }
+        const freshTurnAuthorization = input.freshTurnAuthorization
+        const authorizedPins = freshTurnAuthorization.authorityPins
+        const pinKeys = Object.keys(pins).toSorted()
+        if (Object.keys(authorizedPins).toSorted().join("\0") !== pinKeys.join("\0") ||
+          pinKeys.some((key) => authorizedPins[key as keyof typeof authorizedPins] !== pins[key as keyof typeof pins]) ||
+          freshTurnAuthorization.completedTurnScope.runnerCycleID !== completedScope.runnerCycleID ||
+          freshTurnAuthorization.completedTurnScope.turnSequence !== completedScope.turnSequence ||
+          freshTurnAuthorization.completedTurnScope.cycleDigest !== completedScope.cycleDigest) {
+          return yield* new ManagedControl.ManagedControlError({ operation: "direct_follow_up", code: "managed_conflict", reason: "fresh-turn authorization does not match the committed mailbox row and completed turn" })
+        }
+        const hostReceipt = yield* ManagedControl.inspectDirectMessage({ pins })
+        if (hostReceipt.status !== "FOLLOW_UP_SCHEDULED" || hostReceipt.receiptDigest !== row.host_receipt_digest) {
+          return yield* new ManagedControl.ManagedControlError({ operation: "direct_follow_up", code: "managed_unknown", reason: "HostKernel has not confirmed the exact committed follow-up receipt" })
+        }
+        const claimed = yield* sessions.directInboxClaim({
+          childSessionID: child.id, attemptID, ownerEpoch: directAttempt.ownerEpoch,
+          profileID: pin.profileID, profileRevision: pin.profileRevision, profileDigest: pin.profileDigest,
+          permissionScopeDigest: pin.permissionsDigest, deliveryMode: "follow_up", triggerMessageID: row.message_id,
+        })
+        if (claimed.length !== 1 || claimed[0].message_id !== row.message_id) {
+          return yield* new ManagedControl.ManagedControlError({ operation: "direct_follow_up", code: "managed_conflict", reason: "safe-boundary claim did not own exactly the committed follow-up" })
+        }
+        const begun = yield* ManagedControl.beginDirectTurn({ directAttempt, freshTurnAuthorization })
+        if (!ManagedControl.sameDirectAttemptScope(begun.directAttempt, directAttempt)) {
+          yield* sessions.directInboxTransition({ messageID: row.message_id, expected: ["delivering"], state: "unknown" }).pipe(Effect.ignore)
+          return yield* new ManagedControl.ManagedControlError({ operation: "turn_begin", code: "managed_conflict", reason: "HostKernel began a turn for a changed DirectAttempt" })
+        }
+        const bridge = yield* EffectBridge.make()
+        const persistTurn = async (scope: ManagedControl.DirectTurnScopeV1) => {
+          const current = await bridge.promise(sessions.get(child.id))
+          if (current.metadata?.horizonDirectAttemptID !== attemptID ||
+            JSON.stringify(current.metadata?.horizonSubagentDelivery) !== JSON.stringify(delivery)) throw new Error("child authority changed while persisting turn scope")
+          await bridge.promise(sessions.setMetadata({ sessionID: child.id, metadata: {
+            ...(current.metadata ?? {}), horizonDirectTurnScope: scope, horizonDirectAttemptScope: scope.directAttempt,
+          } }))
+        }
+        const directTurn = ManagedControl.createDirectTurnAuthority(begun, persistTurn)
+        let currentDirectAttempt = directAttempt
+        const directAttemptAuthority: DirectAttemptAuthority = {
+          currentScope: () => currentDirectAttempt,
+          acceptRefreshedScope: ({ previous, refreshed, transition }) => {
+            if (!ManagedControl.sameDirectAttemptScope(currentDirectAttempt, previous) ||
+              !(ManagedControl.sameDirectAttemptScope(previous, refreshed) ||
+                (transition === "batch_bind" ? ManagedControl.isNextDirectAttemptScope(previous, refreshed) : ManagedControl.isReceiptAdvancedDirectAttemptScope(previous, refreshed)))) {
+              throw new Error("HostKernel returned a stale or mismatched DirectAttempt scope")
+            }
+            currentDirectAttempt = refreshed
+          },
+        }
+        const childAgent = yield* agents.getProfile(pin.profileID, Number(pin.profileRevision))
+        const profileValue = childAgent.options.horizonAgentProfile
+        const profileProjection = typeof profileValue === "object" && profileValue !== null && !Array.isArray(profileValue)
+          ? profileValue as Record<string, unknown>
+          : undefined
+        if (!profileProjection ||
+          profileProjection.profileId !== pin.profileID || String(profileProjection.revision) !== pin.profileRevision ||
+          profileProjection.harness !== pin.harness) {
+          yield* sessions.directInboxTransition({ messageID: row.message_id, expected: ["delivering"], state: "unknown" }).pipe(Effect.ignore)
+          return yield* new ManagedControl.ManagedControlError({ operation: "direct_follow_up", code: "agent_profile_stale", reason: "resolved runtime profile differs from the immutable child Session pin" })
+        }
+        const selectedModel = childAgent.model
+        if (!selectedModel || !childAgent.permission.length) {
+          yield* sessions.directInboxTransition({ messageID: row.message_id, expected: ["delivering"], state: "unknown" }).pipe(Effect.ignore)
+          return yield* new ManagedControl.ManagedControlError({ operation: "direct_follow_up", code: "agent_profile_unavailable", reason: "pinned AgentProfileV2 has no executable model or permission projection" })
+        }
+        const model = yield* provider.getModel(selectedModel.providerID, selectedModel.modelID)
+        if (!model) return yield* new ManagedControl.ManagedControlError({ operation: "direct_follow_up", code: "agent_profile_unavailable", reason: "pinned AgentProfileV2 model is unavailable" })
+        const promptMessageID = MessageID.ascending()
+        const run = promptWork({
+          messageID: promptMessageID,
+          sessionID: child.id,
+          model: { providerID: model.providerID, modelID: model.modelID },
+          agent: childAgent.name,
+          parts: [{ type: "text", text: row.payload }],
+        }, directAttemptAuthority, undefined, directTurn)
+        const limits = typeof profileProjection.limits === "object" && profileProjection.limits !== null
+          ? profileProjection.limits as Record<string, unknown>
+          : undefined
+        const wallTimeMs = limits?.wallTimeMs
+        const result = typeof wallTimeMs === "number" && Number.isSafeInteger(wallTimeMs) && wallTimeMs > 0
+          ? yield* run.pipe(Effect.timeout(`${wallTimeMs} millis`), Effect.flatMap((timed) =>
+              Option.isSome(timed)
+                ? Effect.succeed(timed.value)
+                : Effect.fail(new ManagedControl.ManagedControlError({ operation: "direct_follow_up", code: "agent_profile_limit", reason: "AgentProfileV2 wall-time limit was reached; turn outcome requires reconciliation" })),
+            ))
+          : yield* run
+        const output = result.parts.findLast((part) => part.type === "text")
+        const resultDigest = ManagedControl.resultDigest({
+          childSessionID: child.id, agent: childAgent.name, state: "completed",
+          outputDigest: ManagedControl.outputDigest(output?.type === "text" ? output.text : ""),
+          outputBytes: Buffer.byteLength(output?.type === "text" ? output.text : "", "utf8"),
+        })
+        const completionScope = directTurn.currentScope()
+        const completionIntent = {
+          runnerCycleID: completionScope.runnerCycleID, turnSequence: completionScope.turnSequence,
+          cycleDigest: completionScope.cycleDigest, resultDigest, state: "pending" as const,
+        }
+        const beforeComplete = yield* sessions.get(child.id)
+        yield* sessions.setMetadata({ sessionID: child.id, metadata: { ...(beforeComplete.metadata ?? {}),
+          horizonDirectTurnScope: completionScope, horizonDirectAttemptScope: completionScope.directAttempt,
+          horizonDirectTurnCompletion: completionIntent,
+        } })
+        const completed = yield* ManagedControl.completeDirectTurn({ directTurnScope: completionScope, resultDigest })
+        const afterComplete = yield* sessions.get(child.id)
+        yield* sessions.setMetadata({ sessionID: child.id, metadata: { ...(afterComplete.metadata ?? {}),
+          horizonDirectTurnScope: completionScope, horizonDirectAttemptScope: completionScope.directAttempt,
+          horizonDirectTurnCompletion: { ...completionIntent, state: "completed", nextTurnSequence: completed.nextTurnSequence, receiptDigest: completed.receiptDigest },
+        } })
+        const proof: DirectInboxConsumptionProofV1 = {
+          messageID: row.message_id, parentSessionID: row.parent_session_id, childSessionID: row.child_session_id,
+          mailboxSequence: row.mailbox_sequence, inboxReceiptDigest: row.inbox_receipt_digest,
+          promptMessageID, consumingAttemptID: attemptID, consumingOwnerEpoch: directAttempt.ownerEpoch,
+          consumingScopeDigest: consumingScopeDigest(currentDirectAttempt), consumedPayloadDigest: row.payload_digest,
+        }
+        const ackDigest = consumptionAckDigest(proof)
+        const consumed = yield* sessions.directInboxConsume({ rows: [{ messageID: row.message_id, consumptionAckDigest: ackDigest }],
+          promptMessageID, consumingAttemptID: attemptID, consumingOwnerEpoch: directAttempt.ownerEpoch,
+          consumingScopeDigest: proof.consumingScopeDigest, consumingWorkspaceID: currentDirectAttempt.workspaceID,
+        })
+        const consumedRow = consumed[0]
+        if (!consumedRow) return yield* new ManagedControl.ManagedControlError({ operation: "direct_follow_up", code: "managed_unknown", reason: "child completed but Core consumption receipt is unresolved" })
+        const consumeAck = yield* supervisor.requestHostKernel("direct.message.v1", "acknowledge_consumed", {
+          authorityPins: pins,
+          inboxReceiptDigest: row.inbox_receipt_digest,
+          consumption: {
+            promptMessageID, consumingAttemptID: attemptID, consumingOwnerEpoch: directAttempt.ownerEpoch,
+            consumingScopeDigest: proof.consumingScopeDigest, consumedPayloadDigest: row.payload_digest,
+          },
+          consumptionAckDigest: ackDigest,
+          currentConsumer: {
+            attemptID: currentDirectAttempt.attemptID, parentSessionID: currentDirectAttempt.parentSessionID,
+            childSessionID: currentDirectAttempt.childSessionID, ownerEpoch: BigInt(currentDirectAttempt.ownerEpoch),
+            expectedRevision: BigInt(currentDirectAttempt.expectedRevision), profileID: currentDirectAttempt.profileID,
+            profileRevision: currentDirectAttempt.profileRevision, profileDigest: currentDirectAttempt.profileDigest,
+            locationID: currentDirectAttempt.locationID, workspaceID: currentDirectAttempt.workspaceID,
+            workspaceRevision: currentDirectAttempt.workspaceRevision, capabilityDigest: currentDirectAttempt.capabilityDigest,
+            permissionsDigest: currentDirectAttempt.permissionsDigest, budgetDigest: currentDirectAttempt.budgetDigest, scopeDigest: currentDirectAttempt.scopeDigest,
+          },
+        }, { deliveryID: `direct_message_consume_${ackDigest.slice("sha256:".length)}` })
+        const ack = consumeAck as Record<string, unknown>
+        if (ack.status !== "CONSUMED" || ack.messageID !== row.message_id || typeof ack.consumptionReceiptDigest !== "string") {
+          return yield* new ManagedControl.ManagedControlError({ operation: "direct_follow_up", code: "managed_unknown", reason: "HostKernel consume acknowledgement is unresolved" })
+        }
+        yield* sessions.directInboxMarkHostConsumed({ messageID: row.message_id, consumptionAckDigest: ackDigest, hostConsumedAckDigest: ack.consumptionReceiptDigest })
+        return undefined
+      }))
 
     const lastAssistant = Effect.fnUntraced(function* (sessionID: SessionID) {
       const match = yield* sessions.findMessage(sessionID, (m) => m.info.role !== "user").pipe(Effect.orDie)
@@ -879,10 +1747,24 @@ const layer = Layer.effect(
       throw new Error("Impossible")
     })
 
+    type ManagedPromptPreflight = {
+      readonly remainingTokens: string
+      user?: SessionV1.WithParts
+      /** A next-turn user entry visible only to this no-dispatch compiler. */
+      appendUser?: SessionV1.WithParts
+      providerInput?: ManagedProviderInputV1
+      toolSources?: readonly import("@/tool/discovery").ToolsetSourceRefV1[]
+    }
+
     const runLoop: (
       sessionID: SessionID,
       directAttempt?: DirectAttemptAuthority,
       managedAttempt?: ManagedAttemptAuthority,
+      directTurn?: DirectTurnAuthority,
+      managedContext?: ManagedProviderContextV1,
+      preflight?: ManagedPromptPreflight,
+      managedFollowUpRunner?: ManagedFollowUpRunnerV1,
+      managedPreDispatchRecovery?: ManagedPreDispatchRecoveryV1,
     ) => Effect.Effect<
       SessionV1.WithParts,
       SessionSupervisorError
@@ -891,6 +1773,11 @@ const layer = Layer.effect(
         sessionID: SessionID,
         directAttempt?: DirectAttemptAuthority,
         managedAttempt?: ManagedAttemptAuthority,
+        directTurn?: DirectTurnAuthority,
+        managedContext?: ManagedProviderContextV1,
+        preflight?: ManagedPromptPreflight,
+      managedFollowUpRunner?: ManagedFollowUpRunnerV1,
+      managedPreDispatchRecovery?: ManagedPreDispatchRecoveryV1,
       ) {
         const ctx = yield* InstanceState.context
         let structured: unknown
@@ -904,6 +1791,7 @@ const layer = Layer.effect(
           let msgs = yield* MessageV2.filterCompactedEffect(sessionID).pipe(
             Effect.provideService(Database.Service, database),
           )
+          if (preflight?.appendUser) msgs = [...msgs, preflight.appendUser]
 
           const { user: lastUser, assistant: lastAssistant, finished: lastFinished, tasks } = MessageV2.latest(msgs)
 
@@ -917,7 +1805,9 @@ const layer = Layer.effect(
           // the model, but ignore cleanup-marked interrupted orphans.
           const hasToolCalls =
             lastAssistantMsg?.parts.some(
-              (part) => part.type === "tool" && !part.metadata?.providerExecuted && !isOrphanedInterruptedTool(part),
+              (part) => part.type === "tool" &&
+                (part.state.status === "pending" || part.state.status === "running") &&
+                !isOrphanedInterruptedTool(part),
             ) ?? false
 
           if (
@@ -926,6 +1816,99 @@ const layer = Layer.effect(
             !hasToolCalls &&
             lastAssistant.parentID === lastUser.id
           ) {
+            // Final managed completion is a separate durable HostKernel fact
+            // from settling any one provider request. This point is reached
+            // only after the complete assistant entry was reloaded from the
+            // Session store and the loop has ruled out further tool work.
+            // The managed-control authority supplies the exact latest settled
+            // request/response/usage pins; this layer passes no caller hashes.
+            let completedTurn: ManagedProviderTurnCompletionV1 | undefined
+            if (managedAttempt) {
+              completedTurn = yield* ManagedControl.completeManagedProviderTurn({
+                authority: managedAttempt,
+                assistantEntryID: lastAssistant.id,
+              }).pipe(
+                Effect.catchTag("ManagedControlError", (error) =>
+                  Effect.fail(new SessionSupervisorError({
+                    stage: "managed_completion",
+                    reason: error.reason,
+                    hostCode: error.code,
+                  })),
+                ),
+              )
+            }
+            if (managedAttempt && completedTurn && managedFollowUpRunner && managedContext) {
+              const continuation = yield* managedFollowUpRunner({
+                sessionID,
+                authority: managedAttempt,
+                completion: completedTurn,
+                context: managedContext,
+              }).pipe(
+                Effect.catchTag("ManagedControlError", (error) =>
+                  Effect.fail(new SessionSupervisorError({
+                    stage: "managed_follow_up",
+                    reason: error.reason,
+                    hostCode: error.code,
+                  })),
+                ),
+              )
+              if (continuation) {
+                const nextScope = managedAttempt.currentScope()
+                const nextContext = continuation.context
+                const selection = nextContext.initialSelection
+                const nextPrompt = yield* Effect.try({
+                  try: () => Schema.decodeUnknownSync(PromptInput, { onExcessProperty: "error" })(continuation.prompt),
+                  catch: () => new SessionSupervisorError({
+                    stage: "managed_follow_up",
+                    reason: "next managed prompt is malformed",
+                  }),
+                })
+                const nextModel = nextPrompt.model
+                const nextParts = nextPrompt.parts
+                let decodedSelection: ContextSelectionV1 | undefined
+                if (selection) {
+                  decodedSelection = yield* Effect.try({
+                    try: () => Schema.decodeUnknownSync(ContextSelectionV1, { onExcessProperty: "error" })(selection),
+                    catch: () => new SessionSupervisorError({
+                      stage: "managed_follow_up",
+                      reason: "next managed ContextSelection is malformed",
+                    }),
+                  })
+                }
+                const currentSession = yield* sessions.get(sessionID).pipe(Effect.orDie)
+                if (nextPrompt.sessionID !== sessionID || nextContext.selectionSessionID !== sessionID ||
+                  nextContext.attemptID !== nextScope.attemptID || nextContext.taskID !== nextScope.taskID ||
+                  nextContext.requestID !== nextScope.requestID || nextContext.requestSequence !== nextScope.requestSequence ||
+                  nextContext.contextSelectionDigest !== nextScope.contextSelectionDigest ||
+                  !nextContext.initialProviderInput || !nextModel || nextPrompt.agent !== currentSession.agent ||
+                  nextModel.providerID !== currentSession.model?.providerID ||
+                  nextModel.modelID !== currentSession.model?.id ||
+                  !nextPrompt.messageID || !/^msg[A-Za-z0-9._-]{1,256}$/.test(nextPrompt.messageID) ||
+                  nextPrompt.tools !== undefined || nextPrompt.system !== undefined || nextPrompt.format !== undefined ||
+                  nextPrompt.noReply === true || nextParts.length !== 1 || nextParts[0]?.type !== "text" ||
+                  Buffer.byteLength(nextParts[0].text, "utf8") < 1 || Buffer.byteLength(nextParts[0].text, "utf8") > 1024 * 1024 ||
+                  !decodedSelection || decodedSelection.sessionID !== sessionID || decodedSelection.attemptID !== nextScope.attemptID ||
+                  decodedSelection.requestID !== nextScope.requestID || decodedSelection.requestSequence !== nextScope.requestSequence ||
+                  decodedSelection.mode !== "fresh") {
+                  return yield* new SessionSupervisorError({
+                    stage: "managed_follow_up",
+                    reason: "next managed prompt is not bound to the live HostKernel request and ContextSelection pins",
+                  })
+                }
+                yield* createUserMessage(nextPrompt)
+                yield* continuation.onPromptCommitted({ promptMessageID: nextPrompt.messageID! }).pipe(
+                  Effect.catchTag("ManagedControlError", (error) =>
+                    Effect.fail(new SessionSupervisorError({
+                      stage: "managed_follow_up",
+                      reason: error.reason,
+                      hostCode: error.code,
+                    })),
+                  ),
+                )
+                managedContext = nextContext
+                continue
+              }
+            }
             const orphan = lastAssistantMsg?.parts.find(
               (part): part is SessionV1.ToolPart => part.type === "tool" && isOrphanedInterruptedTool(part),
             )
@@ -942,7 +1925,7 @@ const layer = Layer.effect(
           }
 
           step++
-          if (step === 1)
+          if (step === 1 && !preflight)
             yield* title({
               session,
               modelID: lastUser.model.modelID,
@@ -971,6 +1954,7 @@ const layer = Layer.effect(
           }
 
           if (
+            !preflight &&
             lastFinished &&
             lastFinished.summary !== true &&
             (yield* compaction.isOverflow({ tokens: lastFinished.tokens, model }))
@@ -980,16 +1964,20 @@ const layer = Layer.effect(
           }
 
           const profilePin = sessionAgentProfilePin(session.metadata)
+          const preflightProfile = preflight ? managedPreflightProfilePin(session.metadata) : undefined
           const agent = yield* (profilePin
             ? agents.getProfile(profilePin.profileID, profilePin.revision)
-            : agents.get(lastUser.agent))
-          if (profilePin) {
+            : preflightProfile
+              ? agents.getProfile(preflightProfile.profileID, preflightProfile.revision)
+              : agents.get(lastUser.agent))
+          if (profilePin || preflightProfile) {
             const projection = agent?.options.horizonAgentProfile
+            const expectedHarness = profilePin?.harness ?? preflightProfile?.harness
             if (
               typeof projection !== "object" ||
               projection === null ||
               !("harness" in projection) ||
-              projection.harness !== profilePin.harness
+              projection.harness !== expectedHarness
             ) {
               return yield* new SessionSupervisorError({
                 stage: "agent-profile",
@@ -1027,8 +2015,6 @@ const layer = Layer.effect(
             time: { created: Date.now() },
             sessionID,
           }
-          yield* sessions.updateMessage(msg)
-
           const finalizeInterruptedAssistant = Effect.gen(function* () {
             if (msg.time.completed) return
             msg.error ??= MessageV2.fromError(new DOMException("Aborted", "AbortError"), {
@@ -1062,6 +2048,8 @@ const layer = Layer.effect(
               promptOps,
               directAttempt,
               managedAttempt,
+              managedContext,
+              directTurn,
             }).pipe(
               Effect.provideService(Permission.Service, permission),
               Effect.provideService(ToolRegistry.Service, registry),
@@ -1070,6 +2058,7 @@ const layer = Layer.effect(
             )
             const tools = resolvedTools.tools
             const toolDefinitions = resolvedTools.definitions
+            if (preflight) preflight.toolSources = resolvedTools.toolDiscovery.sourceRefs
 
             if (lastUser.format?.type === "json_schema") {
               tools["StructuredOutput"] = createStructuredOutputTool({
@@ -1085,10 +2074,14 @@ const layer = Layer.effect(
                 validate: async (value) => value,
               }
             }
-            if (step === 1)
+            if (step === 1 && !preflight)
               yield* summary.summarize({ sessionID, messageID: lastUser.id }).pipe(Effect.ignore, Effect.forkIn(scope))
 
-            yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
+            // Managed request context is pinned by Core before provider dispatch.
+            // Do not let a post-pin extension hook silently rewrite that transcript.
+            if (managedAttempt === undefined && !preflight) {
+              yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
+            }
 
             const [skills, env, instructions, mcpInstructions, modelMsgs] = yield* Effect.all([
               sys.skills(agent),
@@ -1097,7 +2090,12 @@ const layer = Layer.effect(
               sys.mcp(agent, session.permission),
               MessageV2.toModelMessagesEffect(msgs, model),
             ])
+            const harnessPrompt = builtinHarnessSystemPromptV1(agent.options.horizonHarness ?? "native-rich")
+            if (harnessPrompt === undefined) {
+              throw new SessionSupervisorError({ stage: "agent-profile", reason: "selected HarnessProfileV1 system prompt is unavailable" })
+            }
             const system = [
+              harnessPrompt,
               ...env,
               ...instructions,
               ...(mcpInstructions ? [mcpInstructions] : []),
@@ -1105,7 +2103,7 @@ const layer = Layer.effect(
             ]
             const format = lastUser.format ?? { type: "text" as const }
             if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
-            const result = yield* handle.process({
+            const streamInput: LLM.StreamInput = {
               user: lastUser,
               agent,
               permission: session.permission,
@@ -1113,6 +2111,7 @@ const layer = Layer.effect(
               parentSessionID: session.parentID,
               directAttempt,
               managedAttempt,
+              directTurn,
               system,
               messages: [
                 ...modelMsgs,
@@ -1120,9 +2119,50 @@ const layer = Layer.effect(
               ],
               tools,
               toolDefinitions,
+              toolDiscovery: resolvedTools.toolDiscovery,
               model,
               toolChoice: format.type === "json_schema" ? "required" : undefined,
-            })
+              ...(preflight ? { managedRemainingTokens: preflight.remainingTokens } : {}),
+            }
+            if (preflight) {
+              preflight.user = lastUser
+              preflight.providerInput = yield* handle.prepareManagedRequest(streamInput)
+              return "break" as const
+            }
+            if (managedAttempt && lastUser.info.role === "user") {
+              if (!managedContext || !managedPreDispatchRecovery) {
+                return yield* new SessionSupervisorError({
+                  stage: "managed_pre_dispatch_recovery",
+                  reason: "managed provider dispatch requires the authenticated ContextSelection and durable inbox recovery callback",
+                })
+              }
+              const liveScope = managedAttempt.currentScope()
+              if (managedContext.selectionSessionID !== sessionID ||
+                managedContext.attemptID !== liveScope.attemptID ||
+                managedContext.taskID !== liveScope.taskID ||
+                managedContext.requestID !== liveScope.requestID ||
+                managedContext.requestSequence !== liveScope.requestSequence ||
+                managedContext.contextSelectionDigest !== liveScope.contextSelectionDigest) {
+                return yield* new SessionSupervisorError({
+                  stage: "managed_pre_dispatch_recovery",
+                  reason: "managed provider dispatch ContextSelection differs from the live HostKernel Attempt scope",
+                  hostCode: "managed_conflict",
+                })
+              }
+              const textParts = lastUser.parts.filter((part): part is SessionV1.TextPart => part.type === "text")
+              if (textParts.length !== 1 || lastUser.parts.length !== 1) {
+                return yield* new SessionSupervisorError({ stage: "managed_pre_dispatch_recovery", reason: "managed request lacks one exact persisted user text message" })
+              }
+              yield* managedPreDispatchRecovery({
+                sessionID, promptMessageID: lastUser.id, promptText: textParts[0]!.text,
+                authority: managedAttempt, context: managedContext,
+              }).pipe(Effect.catchTag("ManagedControlError", (error) => Effect.fail(new SessionSupervisorError({
+                stage: "managed_pre_dispatch_recovery", reason: error.reason, hostCode: error.code,
+              }))))
+            }
+            // Persist the assistant placeholder only for an actual dispatch.
+            yield* sessions.updateMessage(msg)
+            const result = yield* handle.process(streamInput)
 
             if (structured !== undefined) {
               handle.message.structured = structured
@@ -1174,6 +2214,7 @@ const layer = Layer.effect(
           continue
         }
 
+        if (preflight?.providerInput && preflight.user) return preflight.user
         yield* compaction.prune({ sessionID }).pipe(Effect.ignore, Effect.forkIn(scope))
         return yield* lastAssistant(sessionID)
       },
@@ -1183,12 +2224,20 @@ const layer = Layer.effect(
       input: LoopInput,
       directAttempt?: DirectAttemptAuthority,
       managedAttempt?: ManagedAttemptAuthority,
+      directTurn?: DirectTurnAuthority,
+      managedContext?: ManagedProviderContextV1,
+      managedFollowUpRunner?: ManagedFollowUpRunnerV1,
+      managedPreDispatchRecovery?: ManagedPreDispatchRecoveryV1,
     ) => Effect.Effect<SessionV1.WithParts, Session.BusyError | SessionSupervisorError> = Effect.fn(
       "SessionPrompt.loop",
     )(function* (
       input: LoopInput,
       directAttempt?: DirectAttemptAuthority,
       managedAttempt?: ManagedAttemptAuthority,
+      directTurn?: DirectTurnAuthority,
+      managedContext?: ManagedProviderContextV1,
+      managedFollowUpRunner?: ManagedFollowUpRunnerV1,
+      managedPreDispatchRecovery?: ManagedPreDispatchRecoveryV1,
     ) {
       const observedRun = Effect.scoped(
         Effect.gen(function* () {
@@ -1199,7 +2248,194 @@ const layer = Layer.effect(
             .watchSession(input.sessionID, database.path, session.directory, turnComplete, supervisorReady)
             .pipe(Effect.forkScoped({ startImmediately: true }))
           yield* Deferred.await(supervisorReady)
-          const result = yield* runLoop(input.sessionID, directAttempt, managedAttempt).pipe(
+          let promptRun = runLoop(input.sessionID, directAttempt, managedAttempt, directTurn, managedContext, undefined, managedFollowUpRunner, managedPreDispatchRecovery)
+          if (directAttempt !== undefined && managedAttempt !== undefined) {
+            promptRun = Effect.fail(new SessionSupervisorError({
+              stage: "lsp-scope",
+              reason: "prompt cannot carry both managed and direct editor Attempt authority",
+            }))
+          }
+          // Direct root Sessions use an authenticated, read-only HostKernel
+          // workspace snapshot. Child and managed Sessions keep their existing
+          // Attempt authority; no synthetic Attempt is created for a root.
+          const rootDirectSession = directAttempt === undefined && managedAttempt === undefined &&
+            directTurn === undefined && managedContext === undefined
+          if ((directAttempt === undefined) !== (managedAttempt === undefined) || rootDirectSession) {
+            const instance = yield* InstanceState.context
+            const sessionWorkspaceID = yield* InstanceState.workspaceID
+            const managedScope = managedAttempt?.currentScope()
+            const directScope = directAttempt?.currentScope()
+            const trustedAttempt = managedScope ?? directScope
+            if (trustedAttempt || rootDirectSession) {
+              const workspaceID = managedScope?.worktreeTarget.workspaceID ?? directScope?.workspaceID ??
+                (rootDirectSession ? sessionWorkspaceID : undefined)
+              const directory = managedScope?.worktreeTarget.canonicalRoot ?? instance.directory
+              if (!workspaceID) {
+                promptRun = Effect.fail(new SessionSupervisorError({
+                  stage: "lsp-scope",
+                  reason: "authenticated editor Session has no trusted workspace ID",
+                }))
+              } else {
+                const locationRef = Location.Ref.make({
+                  directory: AbsolutePath.make(directory),
+                  workspaceID,
+                })
+                const bridge = yield* EffectBridge.make()
+                const rootWorkspaceSnapshot = rootDirectSession
+                  ? yield* supervisor.directSessionWorkspaceSnapshot({ sessionID: input.sessionID, locationRef }).pipe(
+                      Effect.catchAll(() => Effect.succeed(undefined)),
+                    )
+                  : undefined
+                if (rootDirectSession && !rootWorkspaceSnapshot) {
+                  // RepoIntel/LSP context is optional. HostKernel projection
+                  // failure must not prevent an ordinary direct model turn.
+                } else {
+                const trustedPins = trustedAttempt ?? (rootWorkspaceSnapshot && {
+                  attemptID: input.sessionID,
+                  ownerEpoch: rootWorkspaceSnapshot.ownerEpoch,
+                  locationID: rootWorkspaceSnapshot.locationID,
+                  workspaceRevision: rootWorkspaceSnapshot.workspaceRevision,
+                })
+                const rootOwnerScopeDigest = rootWorkspaceSnapshot
+                  ? createHash("sha256").update(JSON.stringify([
+                      "direct-root-session-lsp-v1",
+                      input.sessionID,
+                      rootWorkspaceSnapshot.ownerEpoch,
+                      rootWorkspaceSnapshot.locationID,
+                      rootWorkspaceSnapshot.workspaceRootDigest,
+                      rootWorkspaceSnapshot.workspaceRevision,
+                    ])).digest("hex")
+                  : undefined
+                const clientJobs = new Map<string, Promise<import("@/lsp/client").Info | undefined>>()
+                let disposed = false
+                const dispose = async () => {
+                  if (disposed) return
+                  disposed = true
+                  const clients = await Promise.all([...clientJobs.values()])
+                  await Promise.all(clients.flatMap((client) => client ? [client.shutdown()] : []))
+                }
+                const getExistingClients = async () =>
+                  (await Promise.all([...clientJobs.values()])).filter((client): client is import("@/lsp/client").Info => Boolean(client))
+                const getClients = async (file?: string) => {
+                  const live = managedAttempt?.currentScope() ?? directAttempt?.currentScope()
+                  const unchanged = managedScope
+                    ? live && ManagedControl.sameManagedAttemptScope(live as ManagedControl.ManagedAttemptScopeV1, managedScope)
+                    : directScope
+                      ? live && ManagedControl.sameDirectAttemptScope(live as ManagedControl.DirectAttemptScopeV1, directScope)
+                      : rootWorkspaceSnapshot && await bridge.promise(supervisor.directSessionWorkspaceSnapshot({
+                          sessionID: input.sessionID,
+                          locationRef,
+                        })).then((current) =>
+                          current.ownerEpoch === rootWorkspaceSnapshot.ownerEpoch &&
+                          current.locationID === rootWorkspaceSnapshot.locationID &&
+                          current.workspaceRevision === rootWorkspaceSnapshot.workspaceRevision &&
+                          current.workspaceRootDigest === rootWorkspaceSnapshot.workspaceRootDigest,
+                        ).catch(() => false)
+                  if (disposed || !unchanged || !config.getGlobalLaunchProfiles) {
+                    await dispose()
+                    return []
+                  }
+                  if (file) {
+                    const fileRelative = path.relative(directory, path.resolve(file))
+                    if (fileRelative === ".." || fileRelative.startsWith(`..${path.sep}`) || path.isAbsolute(fileRelative)) return []
+                  }
+                  const globalConfig = await bridge.promise(config.getGlobalLaunchProfiles())
+                  const configured = globalConfig.lsp && typeof globalConfig.lsp === "object"
+                    ? Object.entries(globalConfig.lsp)
+                    : []
+                  const selected = LSPServer.builtins.filter((server) =>
+                    (!file || server.extensions.some((extension) => file.endsWith(extension))) &&
+                    configured.some(([serverID, configEntry]) =>
+                      serverID === server.id && projectGlobalLspConfigProfileV1({ serverID, configEntry }) !== undefined,
+                    ),
+                  )
+                  const result: import("@/lsp/client").Info[] = []
+                  for (const server of selected) {
+                    // Keep LSP project scope at the authenticated workspace root.
+                    // Upstream marker-based root discovery reads arbitrary project
+                    // files through Core's ambient filesystem; it is not an
+                    // authorization source and can escape the HostKernel snapshot.
+                    const root = directory
+                    const profile = configured.find(([serverID]) => serverID === server.id)?.[1]
+                    const launchProfile = projectGlobalLspConfigProfileV1({ serverID: server.id, configEntry: profile })
+                    const ownerScopeDigest = managedScope?.delegationBindingDigest ?? directScope?.scopeDigest ?? rootOwnerScopeDigest
+                    if (!ownerScopeDigest || !launchProfile) continue
+                    // Cache identity includes the complete trusted projection. HostKernel's
+                    // minted HostProcessRef remains authoritative for the resolved profile
+                    // digest; this local digest prevents config projections with a reused
+                    // profile ID/revision from sharing a prompt-local client entry.
+                    const launchProfileDefinitionDigest = createHash("sha256")
+                      .update(JSON.stringify(launchProfile))
+                      .digest("hex")
+                    const initialization = profile && typeof profile === "object" && "initialization" in profile
+                      ? profile.initialization
+                      : undefined
+                    const key = JSON.stringify([
+                      server.id,
+                      path.resolve(root),
+                      input.sessionID,
+                      trustedPins?.attemptID,
+                      trustedPins?.ownerEpoch,
+                      trustedPins?.locationID,
+                      trustedPins?.workspaceRevision,
+                      ownerScopeDigest,
+                      launchProfile.profileId,
+                      launchProfile.revision,
+                      launchProfileDefinitionDigest,
+                      JSON.stringify(initialization ?? null),
+                    ])
+                    let pending = clientJobs.get(key)
+                    if (!pending) {
+                      pending = (async () => {
+                        const approvalConfig = await bridge.promise(config.getGlobalLaunchProfiles())
+                        const configuredEntry = configured.find(([serverID]) => serverID === server.id)?.[1]
+                        const initialization = configuredEntry && typeof configuredEntry === "object" &&
+                          "initialization" in configuredEntry ? configuredEntry.initialization : undefined
+                        const composed = await createSupervisedLspClientV1({
+                          config: approvalConfig,
+                          serverID: server.id,
+                          sessionID: input.sessionID,
+                          locationID: trustedPins!.locationID,
+                          locationRef,
+                          workspaceRevision: trustedPins!.workspaceRevision,
+                          ...(managedScope === undefined ? { workspaceID } : {}),
+                          ...(managedScope === undefined ? {} : { managedAttempt: managedScope }),
+                          ...(directScope === undefined ? {} : { directAttempt: directScope }),
+                          root: path.resolve(root),
+                          directory,
+                          instance: { ...instance, directory, worktree: directory },
+                          initialization,
+                          supervisor,
+                          runTrustedEffect: (effect) => bridge.promise(effect),
+                          requestHostKernel: (serviceID, operation, body) =>
+                            bridge.promise(supervisor.requestHostKernel(serviceID, operation, body)),
+                        })
+                        return composed.client
+                      })()
+                      clientJobs.set(key, pending)
+                    }
+                    const client = await pending
+                    if (client) result.push(client)
+                  }
+                  return result
+                }
+                promptRun = lsp.withExecutionScope({
+                  sessionID: input.sessionID,
+                  locationID: trustedPins!.locationID,
+                  locationRef,
+                  workspaceID,
+                  workspaceRevision: trustedPins!.workspaceRevision,
+                  getClients,
+                  getExistingClients,
+                  dispose,
+                  ...(managedScope === undefined ? {} : { managedAttempt: managedScope }),
+                  ...(directScope === undefined ? {} : { directAttempt: directScope }),
+                }, promptRun)
+                }
+              }
+            }
+          }
+          const result = yield* promptRun.pipe(
             Effect.onExit(() => Ref.set(turnComplete, true)),
           )
           yield* Fiber.join(watcher)
@@ -1223,6 +2459,7 @@ const layer = Layer.effect(
 
     const shell: Interface["shell"] = Effect.fn("SessionPrompt.shell")(function* (input) {
       const instance = yield* InstanceState.context
+      const workspaceID = yield* InstanceState.workspaceID
       const message = yield* createUserMessage({
         sessionID: input.sessionID,
         messageID: input.messageID,
@@ -1230,7 +2467,7 @@ const layer = Layer.effect(
         model: input.model,
         parts: [{ type: "text", text: `! ${input.command}` }],
       })
-      const result = yield* runTerminal(Location.Ref.make({ directory: AbsolutePath.make(instance.directory) }), {
+      const result = yield* runTerminal(Location.Ref.make({ directory: AbsolutePath.make(instance.directory), workspaceID }), {
         sessionID: input.sessionID,
         command: input.command,
         cwd: instance.directory,
@@ -1298,11 +2535,12 @@ const layer = Layer.effect(
           })
         }
         const instance = yield* InstanceState.context
+        const workspaceID = yield* InstanceState.workspaceID
         let rendered = ""
         let offset = 0
         for (const block of shellBlocks) {
           rendered += template.slice(offset, block.index)
-          const result = yield* runTerminal(Location.Ref.make({ directory: AbsolutePath.make(instance.directory) }), {
+          const result = yield* runTerminal(Location.Ref.make({ directory: AbsolutePath.make(instance.directory), workspaceID }), {
             sessionID: input.sessionID,
             command: block[1],
             cwd: instance.directory,
@@ -1392,6 +2630,10 @@ const layer = Layer.effect(
       cancel,
       prompt,
       promptManaged,
+      runManagedTask,
+      prepareManagedTaskRequest,
+      prepareManagedPrompt,
+      followUpDirectChild,
       loop,
       shell,
       command,

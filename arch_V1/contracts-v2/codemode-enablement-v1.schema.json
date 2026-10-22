@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "horizon://schemas/codemode-enablement-v1",
+  "title": "CodeModeEnablementV1",
+  "description": "Host-authenticated lane proof for exposing and launching the fixed CodeMode helper. This contract is never model input. Direct enablement is an explicit user grant; managed enablement is derived from the accepted SpecVersion and Task-pinned profile and must be revalidated against the live Attempt by HostKernel.",
+  "oneOf": [
+    { "$ref": "#/$defs/direct" },
+    { "$ref": "#/$defs/managed" }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "blake3": {
+      "type": "string",
+      "pattern": "^blake3:[a-f0-9]{64}$"
+    },
+    "counter": {
+      "$ref": "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64"
+    },
+    "direct": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion", "lane", "grantId", "principalDigest", "sessionID",
+        "ownerEpoch", "capabilityId", "helperSelector", "helperDigest",
+        "resourceProfileId", "resourceProfileDigest", "backend",
+        "guaranteeDigest", "policyDigest", "issuedAtMs", "expiresAtMs",
+        "revocationGeneration", "enablementDigest"
+      ],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "lane": { "const": "direct_session" },
+        "grantId": { "$ref": "#/$defs/id" },
+        "principalDigest": { "$ref": "#/$defs/sha256" },
+        "sessionID": {
+          "type": "string",
+          "maxLength": 132,
+          "pattern": "^ses_[A-Za-z0-9_-]{1,128}$"
+        },
+        "ownerEpoch": { "$ref": "#/$defs/counter" },
+        "capabilityId": { "const": "codemode.execute" },
+        "helperSelector": { "const": "horizoncode:codemode:bun" },
+        "helperDigest": { "$ref": "#/$defs/sha256" },
+        "resourceProfileId": { "const": "codemode.v1" },
+        "resourceProfileDigest": { "$ref": "#/$defs/blake3" },
+        "backend": { "const": "linux-cgroup-v2" },
+        "guaranteeDigest": { "$ref": "#/$defs/blake3" },
+        "policyDigest": { "$ref": "#/$defs/blake3" },
+        "issuedAtMs": { "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64" },
+        "expiresAtMs": { "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64" },
+        "revocationGeneration": { "$ref": "#/$defs/counter" },
+        "enablementDigest": { "$ref": "#/$defs/blake3" }
+      }
+    },
+    "managed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion", "lane", "runID", "taskID", "attemptID", "ownerEpoch",
+        "acceptedSpecVersionID", "acceptedSpecDigest", "profileID",
+        "profileRevision", "profileDigest", "capabilityId", "helperSelector",
+        "helperDigest", "resourceProfileId", "resourceProfileDigest"
+      ],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "lane": { "const": "managed_attempt" },
+        "runID": { "$ref": "#/$defs/id" },
+        "taskID": { "$ref": "#/$defs/id" },
+        "attemptID": { "$ref": "#/$defs/id" },
+        "ownerEpoch": { "$ref": "#/$defs/counter" },
+        "acceptedSpecVersionID": { "$ref": "#/$defs/id" },
+        "acceptedSpecDigest": { "$ref": "#/$defs/sha256" },
+        "profileID": { "$ref": "#/$defs/id" },
+        "profileRevision": { "$ref": "#/$defs/counter" },
+        "profileDigest": { "$ref": "#/$defs/blake3" },
+        "capabilityId": { "const": "codemode.execute" },
+        "helperSelector": { "const": "horizoncode:codemode:bun" },
+        "helperDigest": { "$ref": "#/$defs/sha256" },
+        "resourceProfileId": { "const": "codemode.v1" },
+        "resourceProfileDigest": { "$ref": "#/$defs/blake3" }
+      }
+    }
+  },
+  "x-horizon-validation": [
+    "direct-user-explicit-enablement-only; principal/session/owner-epoch are authenticated out-of-body bindings",
+    "direct-enable-claims-only-codemode.execute-fixed-helper-and-resource-profile; nested-effects-require-normal-Guard-or-exact-allow_once",
+    "enablement-digest-is-BLAKE3-domain-separated-canonical-MessagePack-of-immutable-fields-excluding-the-digest-itself-and-mutable-revocation-generation",
+    "direct-grant-revocation-expiry-session-close-principal-owner-backend-guarantee-policy-or-helper-profile-drift-fences-before-spawn",
+    "managed-proof-derived-from-accepted-SpecVersion-capability-Task-pinned-AgentProfileV2-ceiling-and-exact-resource-profile",
+    "HostKernel-reloads-live-Run-Task-Attempt-and-owner-epoch-and-recomputes-all-managed-pins-before-each-helper-launch",
+    "managed-Spec-or-profile-revision-drift-requires-new-accepted-authority-and-never-uses-a-direct-grant",
+    "fixed-runtime-and-CodeModeResourceProfileV1-digest-are-verified-by-the-existing-ExecutionHost-before-first-instruction",
+    "no-grant-or-enablement-token-is-in-model-arguments-or-helper-script"
+  ]
+}

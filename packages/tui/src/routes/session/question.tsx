@@ -5,13 +5,14 @@ import type { TextareaRenderable } from "@opentui/core"
 import { selectedForeground, tint, useTheme } from "../../context/theme"
 import type { QuestionAnswer, QuestionV2Request } from "@opencode-ai/sdk/v2"
 import { useSDK } from "../../context/sdk"
+import type { SessionQuestionRequest } from "../../context/data"
 import { SplitBorder } from "../../ui/border"
 import { useTuiConfig } from "../../config"
 import { useBindings, useOpencodeModeStack } from "../../keymap"
 
 const QUESTION_MODE = "question"
 
-export function QuestionPrompt(props: { request: QuestionV2Request }) {
+export function QuestionPrompt(props: { request: SessionQuestionRequest | QuestionV2Request }) {
   const sdk = useSDK()
   const { theme } = useTheme()
   const renderer = useRenderer()
@@ -19,7 +20,8 @@ export function QuestionPrompt(props: { request: QuestionV2Request }) {
   const modeStack = useOpencodeModeStack()
   const [submissionError, setSubmissionError] = createSignal<string>()
 
-  const questions = createMemo(() => props.request.questions)
+  const request = createMemo(() => "lane" in props.request ? props.request.request : props.request)
+  const questions = createMemo(() => request().questions)
   const single = createMemo(() => questions().length === 1 && questions()[0]?.multiple !== true)
   const tabs = createMemo(() => (single() ? 1 : questions().length + 1)) // questions + confirm tab (no confirm for single select)
   const [tabHover, setTabHover] = createSignal<number | "confirm" | null>(null)
@@ -58,11 +60,16 @@ export function QuestionPrompt(props: { request: QuestionV2Request }) {
   async function reply(answers: QuestionAnswer[]) {
     setSubmissionError(undefined)
     try {
-      const result = await sdk.client.v2.session.question.reply({
-        sessionID: props.request.sessionID,
-        requestID: props.request.id,
-        questionV2Reply: { answers },
-      })
+      const current = props.request
+      const lane = "lane" in current ? current.lane : "v2"
+      const source = "lane" in current ? current.request : current
+      const result = lane === "v2"
+        ? await sdk.client.v2.session.question.reply({
+            sessionID: source.sessionID,
+            requestID: source.id,
+            questionV2Reply: { answers },
+          })
+        : await sdk.client.question.reply({ requestID: source.id, answers })
       if (!result.error) return
     } catch {
       // Keep transport details out of the TUI; server error bodies can contain sensitive data.
@@ -73,10 +80,15 @@ export function QuestionPrompt(props: { request: QuestionV2Request }) {
   async function dismiss() {
     setSubmissionError(undefined)
     try {
-      const result = await sdk.client.v2.session.question.reject({
-        sessionID: props.request.sessionID,
-        requestID: props.request.id,
-      })
+      const current = props.request
+      const lane = "lane" in current ? current.lane : "v2"
+      const source = "lane" in current ? current.request : current
+      const result = lane === "v2"
+        ? await sdk.client.v2.session.question.reject({
+            sessionID: source.sessionID,
+            requestID: source.id,
+          })
+        : await sdk.client.question.reject({ requestID: source.id })
       if (!result.error) return
     } catch {
       // Keep transport details out of the TUI; server error bodies can contain sensitive data.

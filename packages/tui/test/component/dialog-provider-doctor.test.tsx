@@ -65,6 +65,7 @@ test("offline Doctor TUI entry makes no provider or credential request", async (
           tier: "offline",
           selection: { providerRef: "provider:unselected", configurationStatus: "UNKNOWN" },
           localReadiness: "UNKNOWN",
+          catalogFreshness: "UNKNOWN",
           remoteChecks: { entitlement: "UNCHECKED", quota: "UNCHECKED", service: "UNCHECKED" },
           credentialAccess: "NOT_READ",
           networkRequestCount: 0,
@@ -116,10 +117,14 @@ test("offline Doctor TUI entry makes no provider or credential request", async (
     expect(frame).toContain("Provider Doctor")
     expect(frame).toContain("Offline")
     expect(frame).toContain("Configuration: UNKNOWN")
+    expect(frame).toContain("Local catalog snapshot: UNKNOWN")
     expect(frame).toContain("Credentials: NOT_READ")
     expect(frame).toContain("Remote entitlement, quota, and service: UNCHECKED")
     expect(frame).toContain("Provider requests: 0")
-    expect(frame).toContain("Catalog and full probes are unavailable until guarded network and consent support is verified.")
+    expect(frame).toContain("Offline tier: available · zero provider requests · credentials not read · no charge.")
+    expect(frame).toContain("Catalog tier: unavailable · requires an authenticated network grant and Guarded dispatch; no requests are sent.")
+    expect(frame).toContain("Full tier: unavailable · selected-model inference may incur cost; it requires a separate network grant, explicit spend consent, and Guarded dispatch. No provider fallback is used.")
+    expect(frame).toContain("Consent alone cannot enable a probe.")
     expect(requests.filter((request) => request.endsWith("/provider/doctor/offline")).length).toBe(1)
     expect(requests.some((request) => request.includes("/auth/") || request.includes("/oauth/"))).toBe(false)
   } finally {

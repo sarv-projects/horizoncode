@@ -6,7 +6,11 @@ import { AbsolutePath } from "@opencode-ai/core/schema"
 const digest = (content: string) => createHash("sha256").update(content).digest("hex")
 
 describe("SkillV2 identity", () => {
-  test("pins the reserved Horizon docs identity to the canonical built asset", () => {
+  test("pins sealed built-in skills to canonical assets", () => {
+    const integration = SkillV2.horizonCode()
+    expect(integration.identity.id).toBe("builtin.horizoncode")
+    expect(integration.location).toContain("horizon/skills/horizoncode/SKILL.md")
+
     const skill = SkillV2.horizonDocs()
 
     expect(skill.identity).toEqual({

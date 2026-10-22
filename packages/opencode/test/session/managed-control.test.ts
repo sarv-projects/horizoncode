@@ -149,6 +149,8 @@ class FakeHostKernel {
           locationID: String(body.locationID),
           sessionID: String(body.sessionID),
           workspaceRevision: `blake3:${"f".repeat(64)}`,
+          effectiveMaxTokens: "5000",
+          remainingTokens: "5000",
           delegationBindingDigest: `blake3:${"a".repeat(64)}`,
         }
         return {
@@ -556,6 +558,121 @@ const scopeFacts = {
 }
 
 describe("managed control client", () => {
+  it.instance("goal.start refuses a SessionLink bound to another Session or workspace before HostKernel dispatch", () =>
+    Effect.gen(function* () {
+      const kernel = freshKernel()
+      const exit = yield* Effect.exit(ManagedControl.startPlannedRun({
+        trustedPrincipal: REVIEWER,
+        goalID: "goal-start",
+        runID: "run-start",
+        specID: "spec-start",
+        specDigest: RECEIPT,
+        expectedGoalRevision: "4",
+        idempotencyKey: "start-delivery-1",
+        sessionID: "ses_root000000000000000000000001",
+        projectRef: "project-one",
+        workspaceRef: "workspace-one",
+        sessionLink: {
+          sessionID: "ses_root000000000000000000000002",
+          sourceStoreID: "store-one",
+          sourceInstanceID: "instance-one",
+          sourceCursor: {
+            ownerKind: "session",
+            ownerId: "ses_root000000000000000000000001",
+            seq: "1",
+            eventDigest: RECEIPT,
+          },
+          sourceEpoch: "1",
+          latestObservedMessageID: null,
+          latestObservedPartID: null,
+          sourceDigest: SCOPE,
+          redactionProfile: "horizon.session-link.ids-only.v1",
+          protocolVersion: 1,
+          goalID: "goal-start",
+          projectID: "project-one",
+          workspaceID: "workspace-one",
+        },
+      }))
+      expect(exit._tag).toBe("Failure")
+      expect(kernel.calls).toHaveLength(0)
+    }),
+  )
+
+  it.instance("direct follow-up rejects ordinary DirectAttempt scopes before HostKernel dispatch", () =>
+    Effect.gen(function* () {
+      const kernel = freshKernel()
+      const pins = {
+        parentSessionID: "ses_parent00000000000000000000000",
+        childSessionID: "ses_child000000000000000000000001",
+        childOwnerEpoch: "7",
+        profileID: DIRECT_PROFILE_SELECTION.profileId,
+        profileRevision: DIRECT_PROFILE_SELECTION.revision,
+        profileDigest: DIRECT_PROFILE_DIGEST,
+        permissionScopeDigest: DIRECT_FACTS.permissionsDigest,
+        directAttemptID: "att_0123456789abcdef",
+        messageID: "msg_0123456789abcdef",
+        deliveryMode: "follow_up" as const,
+      }
+      const missingProof = yield* Effect.exit(ManagedControl.prepareDirectMessage({
+        pins,
+        content: "Continue from the queued message",
+        mailboxCapacity: 1,
+      }))
+      expect(missingProof._tag).toBe("Failure")
+      expect(kernel.calls).toHaveLength(0)
+
+      const ordinaryScope = yield* Effect.exit(ManagedControl.prepareDirectMessage({
+        pins,
+        content: "Continue from the queued message",
+        mailboxCapacity: 1,
+        directAttempt: {
+          attemptID: pins.directAttemptID,
+          parentSessionID: pins.parentSessionID,
+          childSessionID: pins.childSessionID,
+          profileID: pins.profileID,
+          profileRevision: pins.profileRevision,
+          profileDigest: pins.profileDigest,
+          ownerEpoch: pins.childOwnerEpoch,
+          expectedRevision: "1",
+          locationID: DIRECT_FACTS.locationID,
+          workspaceID: DIRECT_FACTS.workspaceID,
+          workspaceRevision: DIRECT_FACTS.workspaceRevision,
+          capabilityDigest: DIRECT_FACTS.capabilityDigest,
+          permissionsDigest: DIRECT_FACTS.permissionsDigest,
+          budgetDigest: DIRECT_FACTS.budgetDigest,
+          scopeDigest: SCOPE,
+        },
+      }))
+      expect(ordinaryScope._tag).toBe("Failure")
+      expect(kernel.calls).toHaveLength(0)
+
+      const queuedWithUnusedProof = yield* Effect.exit(ManagedControl.prepareDirectMessage({
+        pins: { ...pins, deliveryMode: "queued" as const },
+        content: "Queue only",
+        mailboxCapacity: 1,
+        directAttempt: {
+          attemptID: pins.directAttemptID,
+          parentSessionID: pins.parentSessionID,
+          childSessionID: pins.childSessionID,
+          profileID: pins.profileID,
+          profileRevision: pins.profileRevision,
+          profileDigest: pins.profileDigest,
+          ownerEpoch: pins.childOwnerEpoch,
+          expectedRevision: "1",
+          locationID: DIRECT_FACTS.locationID,
+          workspaceID: DIRECT_FACTS.workspaceID,
+          workspaceRevision: DIRECT_FACTS.workspaceRevision,
+          capabilityDigest: DIRECT_FACTS.capabilityDigest,
+          permissionsDigest: DIRECT_FACTS.permissionsDigest,
+          budgetDigest: DIRECT_FACTS.budgetDigest,
+          scopeDigest: SCOPE,
+        },
+      }))
+      expect(queuedWithUnusedProof._tag).toBe("Failure")
+      expect(kernel.calls).toHaveLength(0)
+    }),
+  )
+
   it.instance("scope and result digests are canonical and sensitive to the intersected facts", () =>
     Effect.gen(function* () {
       const digest = ManagedControl.scopeDigest(scopeFacts)
@@ -576,6 +693,9 @@ describe("managed control client", () => {
 
       const outputDigest = ManagedControl.outputDigest("child output")
       expect(outputDigest).toMatch(/^sha256:[0-9a-f]{64}$/)
+      const managedOutputDigest = ManagedControl.managedOutputDigest("child output")
+      expect(managedOutputDigest).toMatch(/^blake3:[0-9a-f]{64}$/)
+      expect(ManagedControl.managedOutputDigest("child output")).toBe(managedOutputDigest)
       const result = ManagedControl.resultDigest({
         childSessionID: scopeFacts.childSessionID,
         agent: "general",
@@ -1280,6 +1400,8 @@ describe("managed control client", () => {
           locationID: "location-1",
           sessionID: "ses_child",
           workspaceRevision: `blake3:${"f".repeat(64)}`,
+          effectiveMaxTokens: "5000",
+          remainingTokens: "5000",
           delegationBindingDigest: `blake3:${"a".repeat(64)}`,
         },
         revision: "5",
@@ -1328,6 +1450,8 @@ describe("managed control client", () => {
           locationID: "location-1",
           sessionID: "ses_child",
           workspaceRevision: `blake3:${"f".repeat(64)}`,
+          effectiveMaxTokens: "5000",
+          remainingTokens: "5000",
           delegationBindingDigest: `blake3:${"a".repeat(64)}`,
         },
       }
@@ -1364,6 +1488,8 @@ describe("managed control client", () => {
           locationID: "location-1",
           sessionID: "ses_child",
           workspaceRevision: `blake3:${"f".repeat(64)}`,
+          effectiveMaxTokens: "5000",
+          remainingTokens: "5000",
           delegationBindingDigest: `blake3:${"a".repeat(64)}`,
         },
       }
@@ -1418,6 +1544,8 @@ describe("managed control client", () => {
           locationID: "location-1",
           sessionID: "ses_child",
           workspaceRevision: `blake3:${"f".repeat(64)}`,
+          effectiveMaxTokens: "5000",
+          remainingTokens: "5000",
           delegationBindingDigest: `blake3:${"a".repeat(64)}`,
         },
         effectID: "effect-1",
@@ -1481,6 +1609,8 @@ describe("managed control client", () => {
             locationID: "location-1",
             sessionID: "ses_child",
             workspaceRevision: `blake3:${"f".repeat(64)}`,
+            effectiveMaxTokens: "5000",
+            remainingTokens: "5000",
             delegationBindingDigest: `blake3:${"a".repeat(64)}`,
           },
           effectID: "effect-1",
@@ -1589,7 +1719,7 @@ describe("managed control client", () => {
   it.instance("pause, resume and cancel stay on the exact durable Run phase", () =>
     Effect.gen(function* () {
       const kernel = freshKernel()
-      const input = { goalID: "goal-client", runID: "run-client", expectedRevision: 3 }
+      const input = { trustedPrincipal: REVIEWER, goalID: "goal-client", runID: "run-client", expectedRevision: 3 }
 
       const paused = yield* ManagedControl.pauseRun(input)
       expect(paused).toEqual({
@@ -1649,14 +1779,14 @@ describe("managed control client", () => {
       const goalID = "g".repeat(256)
       const runID = "r".repeat(256)
 
-      yield* ManagedControl.pauseRun({ goalID, runID, expectedRevision: 3 })
+      yield* ManagedControl.pauseRun({ trustedPrincipal: REVIEWER, goalID, runID, expectedRevision: 3 })
 
       const deliveryID = kernel.calls[0]!.deliveryID!
       expect(deliveryID).toMatch(/^key\.[a-f0-9]{64}$/)
       expect(Buffer.byteLength(deliveryID, "utf8")).toBeLessThanOrEqual(256)
 
       const invalid = yield* Effect.flip(
-        ManagedControl.pauseRun({ goalID, runID: `${"r".repeat(255)}💥`, expectedRevision: 3 }),
+        ManagedControl.pauseRun({ trustedPrincipal: REVIEWER, goalID, runID: `${"r".repeat(255)}💥`, expectedRevision: 3 }),
       )
       expect(invalid).toBeInstanceOf(ManagedControlError)
       expect(invalid.code).toBe("managed_protocol")
@@ -1782,6 +1912,202 @@ describe("managed control client", () => {
       expect(result).not.toHaveProperty("artifacts")
       expect(kernel.calls[0]!.body).toEqual({ goalID: "goal-client", runID: "run-client" })
       expect(kernel.calls[0]!.trustedPrincipal).toEqual(REVIEWER)
+    }),
+  )
+
+  it.instance("a token-exhaustion usage receipt returns an exhausted authenticated scope and never authorizes another step", () =>
+    Effect.gen(function* () {
+      const kernel = freshKernel()
+      const workspaceRevision = `blake3:${"d".repeat(64)}`
+      const scope = {
+        goalID: "goal-client",
+        runID: "run-client",
+        taskID: "task-client",
+        attemptID: "attempt-client",
+        ownerEpoch: "7",
+        expectedManagedRevision: "5",
+        locationID: "location-1",
+        sessionID: "ses_child",
+        workspaceRevision,
+        effectiveMaxTokens: "5000",
+        remainingTokens: "12",
+        delegationBindingDigest: RECEIPT,
+        worktreeTarget: {
+          worktreeID: "worktree-1",
+          worktreeBaseRevision: "base-1",
+          worktreePoolRevision: "3",
+          locationID: "location-1",
+          workspaceID: "workspace-1",
+          workspaceRef: "refs/heads/managed",
+          canonicalRoot: "/workspace/managed",
+          workspaceRevision,
+        },
+      }
+      const exhaustedScope = { ...scope, expectedManagedRevision: "6", remainingTokens: "0" }
+      kernel.managedResponses.record_usage = {
+        status: "STOPPED",
+        goalID: scope.goalID,
+        attemptID: scope.attemptID,
+        operationKey: `managed_usage_${"a".repeat(64)}`,
+        usageDigest: RECEIPT,
+        managedRevision: "6",
+        accountingCursor: "6",
+        tokenTotal: "5000",
+        costMicrosTotal: "0",
+        providerID: "test",
+        modelID: "test-model",
+        operationID: null,
+        requestID: null,
+        costStatus: "provider-reported",
+        metricStatuses: {
+          input: "provider-reported",
+          output: "provider-reported",
+          reasoning: "provider-reported",
+          "cache.read": "provider-reported",
+          "cache.write": "provider-reported",
+        },
+        usageState: "KNOWN",
+        stopReason: "TOKEN_CEILING",
+        ceilingDigest: RECEIPT,
+        receiptDigest: RECEIPT,
+        managedAttempt: exhaustedScope,
+      }
+      const result = yield* ManagedControl.recordAttemptUsage({
+        scope,
+        assistantMessageID: "message-assistant",
+        stepFinishIndex: 0,
+        usageProvenance: {
+          providerID: "test",
+          modelID: "test-model",
+          cost: { status: "provider-reported", value: 0 },
+          tokens: {
+            input: { status: "provider-reported", value: 12 },
+            output: { status: "provider-reported", value: 0 },
+            reasoning: { status: "provider-reported", value: 0 },
+            cache: {
+              read: { status: "provider-reported", value: 0 },
+              write: { status: "provider-reported", value: 0 },
+            },
+          },
+        },
+      })
+      expect(result.status).toBe("STOPPED")
+      expect(result.managedAttempt.remainingTokens).toBe("0")
+      expect(kernel.calls[0]!.body.managedAttempt).toEqual(scope)
+    }),
+  )
+
+  it.instance("settlement recovery finalizes a verified Run before releasing its P8 reservation", () =>
+    Effect.gen(function* () {
+      const kernel = freshKernel()
+      const terminalSnapshot = {
+        goalID: "goal-client",
+        runID: "run-client",
+        taskID: "task-client",
+        attemptID: "attempt-client",
+        taskRevision: "20",
+        attemptRevision: "19",
+        managedRevision: "20",
+        admissionWorkspaceRevision: RECEIPT,
+        observedWorkspaceHead: RECEIPT,
+        finalRevision: RECEIPT,
+        evidenceRefs: [{ artifactId: "artifact-verifier", digest: RECEIPT, byteLength: "12", mediaType: "text/plain", classification: "workspace" }],
+        specID: "spec-client",
+        specDigest: RECEIPT,
+        runPhase: "Verifying",
+        taskState: "Verified",
+        attemptState: "Succeeded",
+        childPromptState: "Quiesced",
+        childPromptQuiescenceDigest: RECEIPT,
+        bindingDigest: RECEIPT,
+        ownerLogID: "owner-log-client",
+        ownerLogSequence: "42",
+        ownerLogEventDigest: RECEIPT,
+        attemptStateDigest: RECEIPT,
+        effectChainState: "AllSettled",
+        effectChainDigest: RECEIPT,
+        evidenceDigest: RECEIPT,
+        usageAccounting: {
+          accountingCursor: "18",
+          tokenKnownSubtotal: "120",
+          costKnownSubtotalMicros: "45",
+          tokenRemainderStatus: "UNKNOWN",
+          costRemainderStatus: "KNOWN",
+          usageState: "UNKNOWN",
+          stopReason: "USAGE_UNCERTAIN",
+          ceilingDigest: RECEIPT,
+          costStatus: "provider-reported",
+          metricStatuses: {
+            input: "provider-reported",
+            output: "unknown",
+            reasoning: "unknown",
+            "cache.read": "unknown",
+            "cache.write": "unknown",
+          },
+          receiptCount: "2",
+          receiptChainDigest: RECEIPT,
+        },
+      }
+      kernel.managedResponses.settlement_recovery = {
+        status: "SETTLEMENT_PENDING",
+        goalID: "goal-client",
+        runID: "run-client",
+        terminalSnapshot,
+        verificationRunID: "verification-client",
+        challengeSetDigest: RECEIPT,
+      }
+      kernel.managedResponses.settle_dispatch = {
+        status: "SETTLED",
+        goalID: "goal-client",
+        runID: "run-client",
+        taskID: "task-client",
+        attemptID: "attempt-client",
+        workerExecutionID: "worker-client",
+        disposition: "RELEASED",
+        proofDigest: RECEIPT,
+        ownerLogID: "pool-log-client",
+        ownerLogSequence: "8",
+        ownerLogEventDigest: RECEIPT,
+        workerPoolRevision: "9",
+        receiptDigest: RECEIPT,
+        worktreeDisposition: {
+          ownerEpoch: "2",
+          disposition: "REUSABLE",
+          settlementReceiptDigest: RECEIPT,
+          finalWorktreeOperationID: "worktree-inspect-op",
+          finalWorktreeHostReceiptRef: RECEIPT,
+          observedWorkspaceRevision: RECEIPT,
+          inspectReceiptDigest: RECEIPT,
+          ownerLogID: "worktree-log-client",
+          ownerLogSequence: "27",
+          ownerLogEventDigest: RECEIPT,
+          workerPoolRevision: "10",
+          receiptDigest: `blake3:${"a".repeat(64)}`,
+        },
+      }
+
+      const result = yield* ManagedControl.runVerification({ goalID: "goal-client", runID: "run-client" })
+
+      expect(result.status).toBe("SUCCEEDED")
+      expect(result.usageAccounting).toMatchObject({
+        accountingCursor: "18",
+        tokenKnownSubtotal: "120",
+        tokenRemainderStatus: "UNKNOWN",
+        usageState: "UNKNOWN",
+        costKnownSubtotalMicros: "45",
+      })
+      expect(result.dispatchSettlement?.worktreeDisposition).toMatchObject({
+        disposition: "REUSABLE",
+        observedWorkspaceRevision: terminalSnapshot.finalRevision,
+        ownerLogSequence: "27",
+      })
+      expect(kernel.calls.map((call) => call.operation)).toEqual([
+        "settlement_recovery",
+        "finalize_run",
+        "settle_dispatch",
+      ])
+      expect(kernel.calls[1]!.trustedPrincipal).toEqual(REVIEWER)
+      expect(kernel.calls[2]!.deliveryID).toBe("managed_settle_attempt-client")
     }),
   )
 

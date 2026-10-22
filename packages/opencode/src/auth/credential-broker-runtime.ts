@@ -98,6 +98,13 @@ export function createCredentialBrokerRuntime(options: {
         throw safeError(error)
       }
     },
+    async listByProviderIds(providerIds: readonly string[]) {
+      try {
+        return await run((broker) => broker.listByProviderIds(providerIds))
+      } catch (error) {
+        throw safeError(error)
+      }
+    },
     async revoke(secretRef: SecretBrokerV1.SecretRef, expectedVersion?: number) {
       try {
         return await run((broker) => broker.revoke(secretRef, expectedVersion))
@@ -109,6 +116,18 @@ export function createCredentialBrokerRuntime(options: {
     async authorizeUse(input: SecretBrokerV1.UseRequestV1, trusted: TrustedSecretUseContext) {
       try {
         return await run((broker) => broker.authorizeUse(input, trusted))
+      } catch (error) {
+        throw safeError(error)
+      }
+    },
+    /** Consume an existing one-use lease only inside the caller's in-process transport callback. */
+    async withUse<Value>(
+      lease: SecretBrokerV1.UseLeaseV1,
+      trusted: TrustedSecretUseContext,
+      use: (bytes: Uint8Array) => Promise<Value>,
+    ) {
+      try {
+        return await run((broker) => broker.withUse(lease, trusted, use))
       } catch (error) {
         throw safeError(error)
       }

@@ -9,6 +9,8 @@ import { InstanceDisposed } from "@/server/event"
 import { Question } from "@/question"
 import { ConfigApi } from "./groups/config"
 import { AutomationApi } from "./groups/automation"
+import { CheckpointApi } from "./groups/checkpoint"
+import { ArtifactApi } from "./groups/artifact"
 import { ControlApi } from "./groups/control"
 import { ControlPlaneApi, GoalReviewApi } from "./groups/control-plane"
 import { EventApi } from "./groups/event"
@@ -27,6 +29,8 @@ import { SessionApi } from "./groups/session"
 import { SyncApi } from "./groups/sync"
 import { TuiApi } from "./groups/tui"
 import { WorkspaceApi } from "./groups/workspace"
+import { WebSearchApi } from "./groups/websearch"
+import { RepoExplorerApi } from "./groups/repo-explorer"
 import { makeApi } from "@opencode-ai/protocol/api"
 import { LocationMiddleware } from "@opencode-ai/server/location"
 import { SessionLocationMiddleware } from "@opencode-ai/server/middleware/session-location"
@@ -63,6 +67,8 @@ export const RootHttpApi = HttpApi.make("opencode-root")
 export const InstanceHttpApi = HttpApi.make("opencode-instance")
   .addHttpApi(ConfigApi)
   .addHttpApi(AutomationApi)
+  .addHttpApi(CheckpointApi)
+  .addHttpApi(ArtifactApi)
   .addHttpApi(ExperimentalApi)
   .addHttpApi(FileApi)
   .addHttpApi(InstanceApi)
@@ -78,6 +84,8 @@ export const InstanceHttpApi = HttpApi.make("opencode-instance")
   .addHttpApi(SyncApi)
   .addHttpApi(TuiApi)
   .addHttpApi(WorkspaceApi)
+  .addHttpApi(WebSearchApi)
+  .addHttpApi(RepoExplorerApi)
   .addHttpApi(GoalReviewApi)
   .middleware(SchemaErrorMiddleware)
 

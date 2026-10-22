@@ -1,0 +1,309 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://horizoncode.dev/contracts/execution-repl-callback-reply-v1.schema.json",
+  "title": "ExecutionReplCallbackReplyV1",
+  "description": "Receipt-bound callback result to the exact pending callback event in one interpreter generation. It consumes no second Guard lease; the referenced tool action already passed Guard and settled.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/request"
+    },
+    {
+      "$ref": "#/$defs/receipt"
+    }
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^blake3:[a-f0-9]{64}$"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9._-]+$"
+    },
+    "positiveDecimal": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]{0,19}$"
+    },
+    "hostProcessRef": {
+      "type": "object",
+      "description": "Strict StdioProcessRefV1 of kind interpreter, with exact retained owner epoch and process generation."
+    },
+    "scope": {
+      "oneOf": [
+        {
+          "required": [
+            "managedAttempt"
+          ],
+          "not": {
+            "required": [
+              "directAttempt"
+            ]
+          }
+        },
+        {
+          "required": [
+            "directAttempt"
+          ],
+          "not": {
+            "required": [
+              "managedAttempt"
+            ]
+          }
+        }
+      ]
+    },
+    "result": {
+      "type": "object",
+      "required": [
+        "generation",
+        "callbackID",
+        "status"
+      ],
+      "properties": {
+        "generation": {
+          "$ref": "#/$defs/positiveDecimal"
+        },
+        "callbackID": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "denied",
+            "error"
+          ]
+        },
+        "result": {},
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "status": {
+              "const": "ok"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "not": {
+            "required": [
+              "message"
+            ]
+          }
+        },
+        {
+          "properties": {
+            "status": {
+              "enum": [
+                "denied",
+                "error"
+              ]
+            }
+          },
+          "required": [
+            "message"
+          ],
+          "not": {
+            "required": [
+              "result"
+            ]
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "request": {
+      "type": "object",
+      "required": [
+        "schemaVersion",
+        "hostProcessRef",
+        "sessionID",
+        "locationID",
+        "workspaceRevision",
+        "eventSequence",
+        "requestSequence",
+        "callbackID",
+        "capabilityID",
+        "effectID",
+        "challengeID",
+        "effectReceiptDigest",
+        "result",
+        "operationDigest"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "hostProcessRef": {
+          "$ref": "#/$defs/hostProcessRef"
+        },
+        "sessionID": {
+          "$ref": "#/$defs/id"
+        },
+        "locationID": {
+          "$ref": "#/$defs/id"
+        },
+        "workspaceRevision": {
+          "$ref": "#/$defs/digest"
+        },
+        "eventSequence": {
+          "$ref": "#/$defs/positiveDecimal"
+        },
+        "requestSequence": {
+          "$ref": "#/$defs/positiveDecimal"
+        },
+        "callbackID": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "capabilityID": {
+          "$ref": "#/$defs/id"
+        },
+        "effectID": {
+          "$ref": "#/$defs/id"
+        },
+        "challengeID": {
+          "$ref": "#/$defs/id"
+        },
+        "capabilityLeaseDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "effectReceiptDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "result": {
+          "$ref": "#/$defs/result"
+        },
+        "operationDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "managedAttempt": {
+          "type": "object"
+        },
+        "directAttempt": {
+          "type": "object"
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "managedAttempt"
+          ],
+          "not": {
+            "required": [
+              "directAttempt"
+            ]
+          }
+        },
+        {
+          "required": [
+            "directAttempt"
+          ],
+          "not": {
+            "required": [
+              "managedAttempt"
+            ]
+          }
+        }
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "result": {
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "ok",
+                      "error"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "capabilityLeaseDigest"
+            ]
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "receipt": {
+      "type": "object",
+      "required": [
+        "schemaVersion",
+        "status",
+        "hostProcessRef",
+        "eventSequence",
+        "requestSequence",
+        "callbackID",
+        "capabilityID",
+        "effectID",
+        "challengeID",
+        "effectReceiptDigest",
+        "operationDigest",
+        "dispatchReceiptDigest"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "status": {
+          "const": "DISPATCHED"
+        },
+        "hostProcessRef": {
+          "$ref": "#/$defs/hostProcessRef"
+        },
+        "eventSequence": {
+          "$ref": "#/$defs/positiveDecimal"
+        },
+        "requestSequence": {
+          "$ref": "#/$defs/positiveDecimal"
+        },
+        "callbackID": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "capabilityID": {
+          "$ref": "#/$defs/id"
+        },
+        "effectID": {
+          "$ref": "#/$defs/id"
+        },
+        "challengeID": {
+          "$ref": "#/$defs/id"
+        },
+        "capabilityLeaseDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "effectReceiptDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "operationDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "dispatchReceiptDigest": {
+          "$ref": "#/$defs/digest"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

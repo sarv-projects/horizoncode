@@ -246,7 +246,11 @@ const layer = Layer.effect(
         }
       }
       const bundled = yield* loadSnapshot
-      if (bundled) return { providers: bundled, source: "bundled" as const, freshness: "fresh" as const }
+      // A build-time embedded snapshot has no signed upstream revision or
+      // retrieval timestamp in this contract. Its availability is known, but
+      // catalog and pricing freshness are not. Do not turn "bundled" into a
+      // false assertion that the provider metadata is current.
+      if (bundled) return { providers: bundled, source: "bundled" as const, freshness: "unknown" as const }
       return { providers: {}, source: "unavailable" as const, freshness: "unknown" as const }
     })
 

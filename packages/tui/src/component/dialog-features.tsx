@@ -1,4 +1,4 @@
-import { createMemo, createSignal, onMount } from "solid-js"
+import { createMemo, createSignal, onMount, Show } from "solid-js"
 import { FeatureExposure } from "@opencode-ai/core/v1/config/feature-exposure"
 import { DialogSelect, type DialogSelectOption } from "../ui/dialog-select"
 import { useSDK } from "../context/sdk"
@@ -7,7 +7,7 @@ import { useToast } from "../ui/toast"
 
 export function featureSettingIsMutable(feature: FeatureExposure.Feature) {
   return (
-    feature.state.policyLock !== "locked" &&
+    feature.state.policyLock === "unlocked" &&
     feature.state.effectiveState !== "unavailable" &&
     feature.state.effectiveState !== "blocked"
   )
@@ -24,10 +24,17 @@ export function DialogFeatures() {
   const toast = useToast()
   const [busy, setBusy] = createSignal(false)
   const [features, setFeatures] = createSignal<FeatureExposure.Feature[]>([])
+  const [activeFeatureId, setActiveFeatureId] = createSignal<FeatureExposure.FeatureId>()
+  const activeFeature = createMemo(() =>
+    features().find((feature) => feature.featureId === activeFeatureId()) ?? features()[0],
+  )
   onMount(() => {
     void sdk.client.config
       .features({ workspace: project.workspace.current() }, { throwOnError: true })
-      .then((response) => setFeatures(response.data))
+      .then((response) => {
+        setFeatures(response.data)
+        setActiveFeatureId(response.data[0]?.featureId)
+      })
       .catch((error) =>
         toast.show({
           message: `Could not load feature settings: ${error instanceof Error ? error.message : String(error)}`,
@@ -96,6 +103,7 @@ export function DialogFeatures() {
         { throwOnError: true },
       )
       setFeatures(response.data)
+      setActiveFeatureId(feature.featureId)
       toast.show({ message: `${feature.title}: saved.`, variant: "info" })
     } catch (error) {
       toast.show({
@@ -111,6 +119,19 @@ export function DialogFeatures() {
     <DialogSelect
       title="Settings · Features / Experimental"
       options={options()}
+      onMove={(option) => setActiveFeatureId(option.value)}
+      footer={
+        <Show when={activeFeature()} keyed>
+          {(feature) => (
+            <box flexDirection="column" paddingLeft={2} paddingRight={2}>
+              <text wrapMode="word">Owner: {feature.owner.config} / {feature.owner.runtime} · Platforms: {feature.supportedPlatforms.join(", ")}{feature.supportedPlatforms.includes("linux") ? " (includes WSL)" : ""}</text>
+              <text wrapMode="word">Models: {feature.supportedModelRefs.length ? feature.supportedModelRefs.join(", ") : "any compatible"} · Harnesses: {feature.supportedHarnessRefs.length ? feature.supportedHarnessRefs.join(", ") : "any compatible"}</text>
+              <text wrapMode="word">Prerequisites: {feature.prerequisites.length ? feature.prerequisites.join(", ") : "none"}</text>
+              <text wrapMode="word">Risk: {feature.riskNotes ?? "unspecified"} · Cost: {feature.costNotes ?? "unknown"}</text>
+            </box>
+          )}
+        </Show>
+      }
       onSelect={(option) => void select(option)}
     />
   )

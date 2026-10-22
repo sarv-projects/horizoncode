@@ -1,5 +1,6 @@
 import { Config } from "@/config/config"
 import { emptyConsoleState } from "@opencode-ai/core/v1/config/console-state"
+import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { Effect, Layer } from "effect"
 
 export function make(overrides: Partial<Config.Interface> = {}) {
@@ -7,6 +8,7 @@ export function make(overrides: Partial<Config.Interface> = {}) {
     get: () => Effect.succeed({}),
     getGlobal: () => Effect.succeed({}),
     getConsoleState: () => Effect.succeed(emptyConsoleState),
+    getResourcePolicy: () => Effect.succeed(ConfigV1.ConfigResourcePolicyV1.project({})),
     getFeatures: () => Effect.succeed([]),
     updateFeature: () => Effect.succeed([]),
     applyPendingFeatures: () => Effect.void,

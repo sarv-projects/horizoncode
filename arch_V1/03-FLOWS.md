@@ -18,14 +18,15 @@ Status: normative V1 flows.
 2. ContextService compiles bounded context.
 3. User-selected provider/model/harness is pinned for the turn.
 4. The configured provider transport (current OpenCode-derived host; future A-V2-27 adapter when verified) streams canonical Message/Parts.
-5. Local tool calls are collected through response completion.
-6. Entire batch validates.
-7. Read-only calls execute through scoped adapters.
-8. Effectful calls cross kernel Guard/ExecutionHost.
-9. Results are recorded in OpenCode.
-10. UI renders derived status/evidence.
+5. As each local tool call becomes structurally valid, classify read vs mutation (`DEC-V1-36`, §14.3.1).
+6. **Read-class** calls in direct Sessions may execute immediately through scoped adapters + batched kernel read admission (warm IPC).
+7. Provider response completes; entire batch validates; **mutation-class** calls admit through Guard/ExecutionHost (closed batch).
+8. Results are recorded in OpenCode; dependent tools respect batch ordering (reads may already be in flight).
+9. UI renders derived status/evidence.
 
-No Goal required.
+No Goal required. Managed coding Attempts may disable read streaming and use strict wave admission.
+
+**Migration parity:** steps 1–4 and 9 match OpenCode/Cursor/Claude Code direct chat; steps 5–8 add Guard only where competitors would already enforce workspace scope—reads are not artificially delayed to the end of the stream.
 
 ## 3.3 Effectful action
 
@@ -81,9 +82,12 @@ HostKernel separately pins measured workspace content revision.
 
 ## 3.5 Subagent
 
-HorizonCode has two subagent entry paths. They share profile resolution, bounded context,
-resource admission, child lifecycle reporting and the universal Guard/ExecutionHost effect
-path, but they do not share a transcript or task-state owner.
+HorizonCode has two subagent entry paths. Direct Core child-Session fan-out is a V1 goal
+without requiring a Goal or managed verifier. It is bounded by the authenticated profile,
+parent direct-session grant, resource admission, and child limits. Managed Task fan-out remains
+behind the aggregate settlement and independent-verification gate. Both paths share profile
+resolution, bounded context, child lifecycle reporting and the universal Guard/ExecutionHost
+effect path, but they do not share a transcript or task-state owner.
 
 **Direct-session delegation (no Goal required):**
 
@@ -95,10 +99,13 @@ path, but they do not share a transcript or task-state owner.
    resources. The parent grant is intersected with profile, current policy and platform
    support. Child effects still require ordinary Guard/ExecutionHost admission; child identity
    or completion text is never authority.
-3. The parent may submit a message, queue a follow-up that triggers a child turn, wait for
-   activity/completion, inspect/list the tree, or cancel an owned child. Delivery is bounded,
-   correlated and consumed at a safe Core input boundary. A timeout or lost reply does not
-   imply that the child stopped.
+3. The parent may submit a message, queue input, wait for activity/completion, inspect/list the
+   tree, or cancel an owned child. A queued message is consumed only at a later safe Core input
+   boundary. Direct-lane `follow_up` is a supported V1 operation that requests exactly one fresh
+   child turn, only after its one-use fresh-turn proof and recovery prerequisites are implemented
+   and verified; until then it remains unavailable. It is not an arbitrary append or managed DAG
+   operation. Delivery is bounded
+   and correlated. A timeout or lost reply does not imply that the child stopped.
 4. The child keeps its own canonical Core Session history and returns a bounded result plus
    artifact/evidence references. Core projects lifecycle/activity into the parent TUI; the
    Rust kernel does not become a second transcript store.
@@ -203,9 +210,17 @@ Unsupported OS feature reports unavailable.
 
 ## 3.12 Web search
 
-validate query/privacy -> select explicitly allowed provider route -> show auth/cost class -> request -> return bounded source-provenance results -> optional extraction with network policy.
-
-No hidden paid fallback.
+After first-use search consent, Core submits only query intent, bounded filters and authenticated
+Session/tool-call correlation. HostKernel resolves and pins the trusted ordered route plan from
+current consent, Settings and fixed provider profiles, beginning with the default-enabled
+free-anonymous built-in cascade; BYO authenticated routes join only when the user explicitly
+enables/configures them in Settings. HostKernel returns the trusted plan projection and digest to
+Core; Core cannot synthesize or change provider IDs, accounts, credentials, route order, retry
+policy or cost class. Grounded-model search is separate and explicit-only. Guard admits the
+aggregate request against that HostKernel-pinned plan before dispatch. Record each attempted
+route's order, auth/cost class, response status, retry and bounded failure; return bounded
+citations/results and truthful exhaustion. An auth 4xx can advance only to another explicitly
+enabled route. Do not silently enter a paid or authenticated route.
 
 ## 3.13 Artifact rendering
 
@@ -296,6 +311,27 @@ Managed delegation extends §3.4–3.5 without creating child authority:
 5. A distinct authenticated reviewer decides the accepted criteria; an independent verifier checks the actual current revision and source-bound artifacts. Missing, contradictory, stale or UNKNOWN evidence prevents PASS.
 6. Cancellation fences new dispatch first. Restart/disconnect reconciles receipts and owner epoch; a lost child response never authorizes replay or fabricates a result.
 
+Managed child messages use a Core inbox separate from the direct Session inbox. Core derives the
+Attempt and authority pins from HostKernel, commits the bounded payload before prepare, and
+acknowledges the append with its durable inbox receipt. `queued` only persists input. Managed
+`follow_up` remains unavailable until the P7 managed child prompt callback accepts the exact live
+Attempt scope and inspected HostKernel receipt, including the completed-turn receipt, one-use wake
+receipt and next-request sequence. At the next safe input boundary, that callback must revalidate
+the current workspace revision, atomically claim the inbox row once, then persist the HostKernel
+claim receipt in the Core row before advancing. A completed provider turn can advance only with
+that exact `CLAIMED` receipt: `managed_context.advance` binds the new `ContextSelectionV1` request
+ID and sequence to it and persists the selection in the managed OwnerLog before provider request
+preparation. Provider dispatch still needs its separate route/Guard authorization. The callback
+then runs the existing serialized Attempt pipeline. Consumption and HostKernel ACK must be durable
+before the row becomes consumed. The consumption proof keeps the claim-time delivery scope digest
+separate from the post-advance live consuming scope digest; follow_up ACK also names the exact
+wake-claim receipt and next request ID/sequence. Queue ACKs carry no wake proof.
+The transitions are `preparing -> approval_required/admitted -> appended -> committed ->
+delivering -> consumed`, with uncertain outcomes moving to `unknown`. On restart a `delivering`
+row is inspection-only and cannot be reinjected without exact owner and consumption proof. P2 owns
+the managed inbox and its admission/recovery; P7 owns the managed prompt callback. This source
+contract does not enable managed follow-up or establish acceptance.
+
 Direct-session delegation may use the existing direct-mode contract without Goal/Attempt, but cannot settle a managed Task. Effects still require P1 Guard/ExecutionHost. Field constraints are §12.18; runtime bounds are §37.22; acceptance is §32.38.
 
 ## 3.22 Single-Attempt independent-verification lifecycle (V1)
@@ -311,3 +347,44 @@ The first managed V1 vertical contains one coding Task and one Attempt. Keep tha
 The verifier's durable immutable intent (Attempt edge, trusted profile/executable, criterion, arguments and current chain head) is written before Guard issues its one-use lease. Refresh the aggregate managed revision after that append. The lease is bound to the exact Attempt edge and immutable intent digest; its digest is recorded in the HostKernel-authenticated settled receipt, not written back into the managed log before dispatch. Guard approval uses the distinct authenticated reviewer principal, while the supervised process uses the trusted verifier profile principal. Revision/workspace changes while approval is pending invalidate the authorization.
 
 The verifier EffectIntent has its own bounded Attempt edge and lease; the coding receipt, reviewer decision, challenge digest and Attempt binding alone do not authorize it. This reuses canonical managed, effect and evidence stores; it adds no event bus, worker runtime or public verification authority. Typed records and transitions are owned by §§12.19 and 37.22; acceptance is VEO-001, VEO-002, VEO-012 and the managed lifecycle cases in §32.
+
+## 3.23 Direct workspace grant and CodeMode orchestration (V1, DEC-V1-28/29)
+
+1. The authenticated user selects sandbox scope and approval policy independently through `DirectSessionPermissionModeV1`; missing state defaults to `workspace-write` + `on-request` (Ask for approval). Normal reads, edits and supported commands inside the selected workspace proceed without repeated prompts; crossing the sandbox boundary opens a Guard challenge with the normalized action, exact resource and backend guarantees. `always` prompts before each effect; `on-request` prompts at the boundary; `never` does not prompt within the selected sandbox. Full access is `danger-full-access` + `never`, explicitly selected for the current Session, with no HorizonCode filesystem or network sandbox. All modes still use the same Guard, leases, receipts and recovery.
+2. The protected Core-to-HostKernel grant route takes only grant class and bounded user-selected scope. HostKernel derives principal from out-of-body authentication and derives Session/owner epoch, registered Location/workspace/root, backend, guarantee-set and current policy digests, issue/expiry, and grant identity from trusted state. Rust persists the immutable grant and separate revocation transition in the canonical Guard/EffectHost authority journal, not managed Attempt OwnerLog. Grant issuance does not dispatch the pending effect; it is freshly prepared under current state and follows normal Guard/intent/lease/ExecutionHost/receipt lifecycle. Legacy permission state and model output cannot create or answer grants.
+3. Before presenting a batch prompt, Core asks HostKernel for a non-consuming preflight over the exact authenticated scope and complete challenge set. An exact active grant makes an effect prompt-free only for action classes whose boundary passed backend acceptance; preflight returns only candidate versus prompt-required and never authorizes dispatch. The existing atomic Guard approval resolution revalidates the full set, reserves grant usage and issues one-use leases before any dispatch. Current baseline is bounded workspace read/edit; build/test/process classes are added only with their own accepted process/filesystem/network enforcement. Every complete batch still passes Guard, budget, durable intent, one-use lease and ExecutionHost. Crossing scope raises one exact batch approval; denial or lost guarantees prevents dispatch.
+4. Direct CodeMode requires explicit `CodeModeEnablementV1` for the user's current Session, bound to authenticated principal/owner epoch, `codemode.execute`, fixed selector and resolved helper digest, resource-profile ID/digest, backend/guarantee and policy digests, expiry and revocation generation. This is separate from DirectSessionGrant and is not arbitrary process authority. Matching helper launches do not repeat the enablement prompt. Managed CodeMode instead requires accepted SpecVersion capability plus Task-pinned AgentProfileV2 authority, revalidated against the live Attempt; it does not accept a direct grant. After the canonical nested dispatcher and wave admission are wired, the existing interpreter runs under the existing Rust ExecutionHost and receives only the current authorized tool tree. Core dispatches each complete nested wave through SessionSupervisor ToolBatch; every call is admitted by Guard and settled by receipts before results return. One script shares a 30-second deadline, 64 KiB source/output cap, 64-call cap across up to 64 sequential waves of at most 32 each, and 1 MiB aggregate payload bound. ExecutionHost applies cgroup-v2 limits; unsupported containment means unavailable. Cancellation terminates/reaps only the supervised helper. A settled prior wave and fresh authority check are prerequisites to the next; UNKNOWN stops the script and is reconciled without replay. Revocation or Session/selector/profile/backend drift fences the next direct helper launch. §32.41 is integrated release acceptance.
+
+Grant state and CodeMode activity are projections of their canonical persisted records; reconnect resnapshots and never re-dispatches. Direct flow has no managed Run. Managed CodeMode calls remain bound to the live Attempt. The UI choices are §16.10; event provenance is §4.16; machine shapes are §12.21 and `contracts-v2`; detailed service behavior is §37.24.
+### Direct workspace grant and trusted command-profile flow (DEC-V1-28)
+
+This is the low-friction direct coding path. A user grants exact workspace read/edit
+scope and, when desired, one or more selected build/test profiles. Subsequent matching
+effects still receive fresh Guard admission, EffectIntent, one-use lease, ExecutionHost
+dispatch and receipt. The grant suppresses repeated dialogs only for exact active scope.
+Profile resolution, argv construction and hard OS guarantees are defined in §§12.21 and
+37.25–37.27. A stale/missing profile or any out-of-scope action goes to ordinary Guard
+ASK/DENY before dispatch; model-provided shell text never becomes a trusted profile.
+
+### Managed DAG delivery and aggregate settlement (DEC-V1-31)
+
+After the accepted one-Task managed vertical proves the complete guarded Attempt and
+independent-verification loop, V1 expands to bounded Rust-owned Task DAGs. Rust commits
+one graph revision, derives READY only from independently verified prerequisites, and
+binds each child Attempt to the exact SpecVersion, Task, profile, workspace revision,
+budget and live Guard authority. Each Task is independently verified against its actual
+final workspace revision; Run SUCCEEDED requires every required Task terminal-successful,
+all receipts settled, no UNKNOWN, and aggregate criteria verified. Conflicting write
+scopes serialize or fail admission. The current one-Task source gate remains until this
+entire aggregate path passes its acceptance; it is an implementation gate, not final V1
+scope. Direct Core child Sessions remain a distinct, non-managed lane.
+
+## 3.24 Direct-session Git workspace inspection (V1, §17.31)
+
+1. Core receives a model or user-initiated read for bounded Git facts inside the authenticated workspace.
+2. Core normalizes the request to one of the fixed operations in `§14.28` and checks current `files.read` / workspace-grant scope and workspace revision pins.
+3. Core calls HostKernel `GitWorkspaceReadServiceV1` (`§37.29`) with authenticated principal, Location, operation ID, bounded paths/object IDs, and deadline.
+4. HostKernel validates scope, prepares Guard read admission if required by permission mode, issues a one-use lease when policy demands it, launches the fixed `git` argv template through ExecutionHost, captures bounded output, and persists receipt or artifact ref.
+5. Core surfaces typed partial/truncated results to the model; replay returns the same receipt only when every pin matches. Ambiguous dispatch remains `UNKNOWN` without automatic retry.
+6. Mutating Git tools (`git.commit`, branch create/switch) use separate guarded flows and are not satisfied by this read path.
+

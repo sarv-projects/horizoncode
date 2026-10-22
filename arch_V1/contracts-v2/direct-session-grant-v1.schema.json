@@ -1,0 +1,461 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "horizon://schemas/direct-session-grant-v1",
+  "title": "DirectSessionGrantV1",
+  "description": "Persisted explicit user consent input to Guard for direct Core Sessions. grantDigest is BLAKE3 over domain horizoncode.direct-session-grant.v1 NUL plus canonical MessagePack of immutable grant claims, excluding grantDigest and mutable revocation. Not created by model, profile, plugin, folder-open, legacy permission, or caller request. It does not bypass Guard, leases, ExecutionHost, receipts, or UNKNOWN reconciliation.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/sessionGrant"
+    },
+    {
+      "$ref": "#/$defs/workspaceGrant"
+    },
+    {
+      "$ref": "#/$defs/networkEgressGrant"
+    }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^blake3:[a-f0-9]{64}$"
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile",
+        "actions",
+        "resourceScope",
+        "limits"
+      ],
+      "properties": {
+        "profile": {
+          "const": "workspace-code"
+        },
+        "actions": {
+          "type": "array",
+          "uniqueItems": true,
+          "minItems": 1,
+          "items": {
+            "enum": [
+              "read",
+              "edit",
+              "build",
+              "test"
+            ]
+          },
+          "description": "Routine workspace-code operations only.",
+          "maxItems": 4
+        },
+        "resourceScope": {
+          "const": "registered_workspace_and_isolated_temp_cache_roots"
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "maxEffectCount",
+            "maxPayloadBytes",
+            "maxWallTimeMs"
+          ],
+          "properties": {
+            "maxEffectCount": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 4096
+            },
+            "maxPayloadBytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 16777216
+            },
+            "maxWallTimeMs": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 600000
+            }
+          }
+        },
+        "commandProfiles": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 32,
+          "items": {
+            "$ref": "horizon://schemas/workspace-command-profile-v1#/$defs/grantRef"
+          },
+          "description": "Exact user-owned immutable command profiles. Required action/profile matching is enforced semantically; no command string or executable path is accepted here."
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"actions": {"contains": {"const": "build"}}}},
+          "then": {"required": ["commandProfiles"], "properties": {"commandProfiles": {"contains": {"properties": {"action": {"const": "build"}}, "required": ["action"]}}}}
+        },
+        {
+          "if": {"properties": {"actions": {"contains": {"const": "test"}}}},
+          "then": {"required": ["commandProfiles"], "properties": {"commandProfiles": {"contains": {"properties": {"action": {"const": "test"}}, "required": ["action"]}}}}
+        }
+      ]
+    },
+    "sessionGrant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "grantId",
+        "scopeKind",
+        "principalId",
+        "sessionId",
+        "ownerEpoch",
+        "locationId",
+        "workspaceId",
+        "workspaceRootDigest",
+        "executionBackendId",
+        "guaranteeSetDigest",
+        "policyDigest",
+        "scope",
+        "issuedAtUnixMs",
+        "consentSource",
+        "grantDigest",
+        "revocation"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "grantId": {
+          "$ref": "#/$defs/id"
+        },
+        "scopeKind": {
+          "const": "session"
+        },
+        "principalId": {
+          "$ref": "#/$defs/id"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/id"
+        },
+        "ownerEpoch": {
+          "$ref": "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64"
+        },
+        "locationId": {
+          "$ref": "#/$defs/id"
+        },
+        "workspaceId": {
+          "$ref": "#/$defs/id"
+        },
+        "workspaceRootDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "executionBackendId": {
+          "$ref": "#/$defs/id"
+        },
+        "guaranteeSetDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "policyDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "issuedAtUnixMs": {
+          "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64"
+        },
+        "consentSource": {
+          "const": "explicit_user_interaction"
+        },
+        "grantDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "revocation": {
+          "$ref": "#/$defs/revocation"
+        }
+      }
+    },
+    "workspaceGrant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "grantId",
+        "scopeKind",
+        "principalId",
+        "locationId",
+        "workspaceId",
+        "workspaceRootDigest",
+        "executionBackendId",
+        "guaranteeSetDigest",
+        "policyDigest",
+        "scope",
+        "issuedAtUnixMs",
+        "expiresAtUnixMs",
+        "consentSource",
+        "grantDigest",
+        "revocation"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "grantId": {
+          "$ref": "#/$defs/id"
+        },
+        "scopeKind": {
+          "const": "workspace"
+        },
+        "principalId": {
+          "$ref": "#/$defs/id"
+        },
+        "locationId": {
+          "$ref": "#/$defs/id"
+        },
+        "workspaceId": {
+          "$ref": "#/$defs/id"
+        },
+        "workspaceRootDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "executionBackendId": {
+          "$ref": "#/$defs/id"
+        },
+        "guaranteeSetDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "policyDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "issuedAtUnixMs": {
+          "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64"
+        },
+        "expiresAtUnixMs": {
+          "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64"
+        },
+        "consentSource": {
+          "const": "explicit_user_interaction"
+        },
+        "grantDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "revocation": {
+          "$ref": "#/$defs/revocation"
+        }
+      }
+    },
+    "destination": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "host",
+        "protocol",
+        "port"
+      ],
+      "properties": {
+        "host": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253,
+          "pattern": "^(?!\\*\\.)(?!.*[/*?#@\\s])[A-Za-z0-9.:-]+$",
+          "description": "Exact canonical DNS name or IP address; wildcard, URL path, query, user-info, and suffix matching are forbidden."
+        },
+        "protocol": {
+          "enum": [
+            "http",
+            "https"
+          ]
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        }
+      }
+    },
+    "revocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "active",
+            "revoked"
+          ]
+        },
+        "revokedAtUnixMs": {
+          "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64"
+        },
+        "revokedByPrincipalId": {
+          "$ref": "#/$defs/id"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "revoked"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "revokedAtUnixMs",
+              "revokedByPrincipalId"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "active"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "revokedAtUnixMs"
+                  ]
+                },
+                {
+                  "required": [
+                    "revokedByPrincipalId"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "networkEgressGrant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "grantId",
+        "scopeKind",
+        "principalId",
+        "locationId",
+        "workspaceId",
+        "workspaceRootDigest",
+        "executionBackendId",
+        "guaranteeSetDigest",
+        "policyDigest",
+        "destinations",
+        "maxRequests",
+        "maxBytes",
+        "issuedAtUnixMs",
+        "expiresAtUnixMs",
+        "consentSource",
+        "grantDigest",
+        "revocation"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "grantId": {
+          "$ref": "#/$defs/id"
+        },
+        "principalId": {
+          "$ref": "#/$defs/id"
+        },
+        "locationId": {
+          "$ref": "#/$defs/id"
+        },
+        "workspaceId": {
+          "$ref": "#/$defs/id"
+        },
+        "workspaceRootDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "executionBackendId": {
+          "$ref": "#/$defs/id"
+        },
+        "guaranteeSetDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "policyDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "issuedAtUnixMs": {
+          "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64"
+        },
+        "consentSource": {
+          "const": "explicit_user_interaction"
+        },
+        "grantDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "scopeKind": {
+          "const": "network_egress"
+        },
+        "destinations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/destination"
+          }
+        },
+        "maxRequests": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "maxBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1073741824
+        },
+        "expiresAtUnixMs": {
+          "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64"
+        },
+        "revocation": {
+          "$ref": "#/$defs/revocation"
+        }
+      }
+    }
+  },
+  "x-horizon-validation": [
+    "workspace-expiry-is-after-issued-at-and-no-more-than-30-days-later",
+    "session-grant-bound-to-session-owner-epoch-location-workspace-root-backend-guarantees-and-policy-digest-and-invalidated-on-any-binding-change-close-or-revoke",
+    "workspace-grant-invalidated-before-dispatch-on-root-location-backend-guarantee-policy-digest-expiry-owner-loss-or-revoke-change",
+    "workspace-grant-requires-passed-os-workspace-write-confinement-acceptance",
+    "build-or-test-action-requires-a-matching-enabled-user-owned-immutable-workspace-command-profile-id-revision-digest-and-declared-action",
+    "command-profile-digest-is-host-verified-from-authenticated-core-config-projection-before-grant-issuance-and-every-dispatch",
+    "command-profile-never-authorizes-model-selected-shell-text-executable-path-or-arbitrary-argv",
+    "network-secret-credential-publication-destructive-reset-and-out-of-workspace-operations-are-never-in-this-grant-scope",
+    "every-effect-still-uses-fresh-Guard-resolution-budget-EffectIntent-one-use-lease-ExecutionHost-receipt-and-reconciliation",
+    "grant-is-created-extended-renewed-or-revoked-only-by-authenticated-user-interaction-not-model-or-agent-profile",
+    "network-egress-is-a-separate-explicit-grant-not-inherited-from-workspace-code",
+    "network-egress-grant-requires-exact-host-protocol-and-port-destinations-never-wildcards",
+    "network-egress-request-and-byte-budgets-are-finite-and-aggregate-across-grant-lifetime",
+    "network-egress-grant-is-bound-to-authenticated-principal-location-workspace-root-backend-guarantees-policy-and-maximum-30-day-expiry",
+    "revocation-state-is-durable-and-checked-before-every-dispatch; revoked-grants-cannot-be-reissued-by-model-or-caller",
+    "destination-host-is-canonical-exact-dns-or-ip-literal-normalized-before-pin-and-resolved-at-dispatch"
+  ]
+}

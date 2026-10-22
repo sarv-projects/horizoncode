@@ -3,8 +3,12 @@ import {
   EditValidationError,
   MAX_EDIT_DOCUMENTS,
   MAX_EDITS_PER_DOCUMENT,
+  validateCodeActionProposalsV1,
+  validateCodeActionParamsV1,
   validateGuardedEditBatch,
   validatePreparedEdits,
+  validateRenameEditV1,
+  validateRenameParamsV1,
 } from "@/lsp/edits"
 import { makeLedger, refOf, type SnapshotInput } from "@/lsp/broker"
 
@@ -85,6 +89,28 @@ function reason(input: unknown) {
 }
 
 describe("lsp guarded edit batch contract", () => {
+  test("validates bounded code-action and rename DTOs while rejecting command effects", () => {
+    const params = {
+      textDocument: { uri: "file:///workspace/src/main.ts" },
+      range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+      context: { diagnostics: [] },
+    }
+    expect(validateCodeActionParamsV1(params)).toEqual(params)
+    expect(validateRenameParamsV1({
+      textDocument: params.textDocument,
+      position: { line: 0, character: 0 },
+      newName: "renamed",
+    })).toMatchObject({ newName: "renamed" })
+    expect(validateRenameEditV1(null)).toBeUndefined()
+    expect(() => validateCodeActionProposalsV1([{ title: "run command", command: "workspace.executeCommand" }])).toThrow(
+      EditValidationError,
+    )
+    expect(() => validateRenameEditV1({ changes: { "file:///workspace/src/main.ts": [] } })).toThrow(EditValidationError)
+    expect(validateCodeActionProposalsV1([{ title: "rename", edit: workspaceEdit() }])).toMatchObject([
+      { title: "rename", edit: workspaceEdit() },
+    ])
+  })
+
   test("accepts bounded, versioned edits in the current workspace and generation", () => {
     expect(validateGuardedEditBatch(batch(), expected).documents[0]?.version).toBe(4)
   })

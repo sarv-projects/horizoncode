@@ -1,4 +1,4 @@
-import type { GlobalEvent, QuestionV2Request } from "@opencode-ai/sdk/v2"
+import type { GlobalEvent, QuestionRequest, QuestionV2Request } from "@opencode-ai/sdk/v2"
 import { testRender } from "@opentui/solid"
 import { expect, test } from "bun:test"
 import { onMount } from "solid-js"
@@ -31,7 +31,13 @@ async function waitForState(predicate: () => boolean, timeout = 2000) {
 }
 
 function questionEvent(
-  type: "question.v2.asked" | "question.v2.replied" | "question.v2.rejected",
+  type:
+    | "question.v2.asked"
+    | "question.v2.replied"
+    | "question.v2.rejected"
+    | "question.asked"
+    | "question.replied"
+    | "question.rejected",
   properties: Record<string, unknown>,
 ): GlobalEvent {
   return {
@@ -39,6 +45,63 @@ function questionEvent(
     payload: { id: `evt_${type}`, type, properties },
   } as GlobalEvent
 }
+
+test("legacy questions hydrate and project callbacks through their separate lane", async () => {
+  await using tmp = await tmpdir()
+  const events = createEventSource()
+  const legacy: QuestionRequest = {
+    id: "que_legacy_hydrated",
+    sessionID,
+    questions: [{ question: "Choose a route", header: "Route", options: [{ label: "Local", description: "" }] }],
+  }
+  const callsApi = createFetch((url) => {
+    if (url.pathname === `/api/session/${sessionID}/question`) return json({ data: [] })
+    if (url.pathname === "/question") return json([legacy])
+  }, events)
+
+  let data: ReturnType<typeof useData> | undefined
+  let hydratedOnce = false
+  function Probe() {
+    data = useData()
+    onMount(async () => {
+      await data!.session.question.refresh(sessionID)
+      hydratedOnce = true
+    })
+    return null
+  }
+
+  const app = await testRender(
+    () => (
+      <TestTuiContexts directory={tmp.path} paths={{ home: tmp.path, state: tmp.path, worktree: tmp.path }}>
+        <SDKProvider url="http://test" directory={tmp.path} events={events.source} fetch={callsApi.fetch}>
+          <DataProvider>
+            <Probe />
+          </DataProvider>
+        </SDKProvider>
+      </TestTuiContexts>
+    ),
+    { kittyKeyboard: true },
+  )
+
+  try {
+    await app.waitFor(() => hydratedOnce)
+    expect(data!.session.question.list(sessionID)).toEqual([legacy])
+    expect(data!.session.question.prompts(sessionID)).toEqual([{ lane: "legacy", request: legacy }])
+
+    const asked: QuestionRequest = {
+      ...legacy,
+      id: "que_legacy_event",
+      questions: [{ question: "Continue?", header: "Continue", options: [] }],
+    }
+    events.emit(questionEvent("question.asked", asked as unknown as Record<string, unknown>))
+    await waitForState(() => data!.session.question.prompts(sessionID).some((item) => item.request.id === asked.id))
+    events.emit(questionEvent("question.replied", { sessionID, requestID: asked.id, answers: [[]] }))
+    await waitForState(() => !data!.session.question.prompts(sessionID).some((item) => item.request.id === asked.id))
+    expect(data!.session.question.list(sessionID)).toEqual([legacy])
+  } finally {
+    await app.cleanup()
+  }
+})
 
 test("V2 session question hydration and asked/replied/rejected events update the session list", async () => {
   await using tmp = await tmpdir()

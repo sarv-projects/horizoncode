@@ -1,4 +1,765 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+
+use crate::resource_budget::PressureState;
+
+/// RepoIntel's bounded resource projection. This is configuration metadata
+/// only: it can narrow a requested analysis profile under measured pressure,
+/// but it never starts indexing, an LSP, a worker, or a provider request.
+///
+/// The wire names intentionally match Core's `RepoIntelProfileProjectionV1`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RepoIntelAnalysisProfileV1 {
+    Lightweight,
+    Adaptive,
+    Full,
+}
+
+impl RepoIntelAnalysisProfileV1 {
+    fn wire_name(self) -> &'static str {
+        match self {
+            Self::Lightweight => "lightweight",
+            Self::Adaptive => "adaptive",
+            Self::Full => "full",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RepoIntelConfigurationSourceV1 {
+    Default,
+    User,
+    Project,
+    SystemPolicy,
+    Unknown,
+}
+
+impl RepoIntelConfigurationSourceV1 {
+    fn wire_name(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::User => "user",
+            Self::Project => "project",
+            Self::SystemPolicy => "system_policy",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    fn effective_source(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::SystemPolicy => "policy",
+            Self::User | Self::Project | Self::Unknown => "settings",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RepoIntelPolicyLockV1 {
+    Locked,
+    Unlocked,
+    Unknown,
+}
+
+impl RepoIntelPolicyLockV1 {
+    fn wire_name(self) -> &'static str {
+        match self {
+            Self::Locked => "locked",
+            Self::Unlocked => "unlocked",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RepoIntelEffectiveSourceV1 {
+    Default,
+    Settings,
+    Platform,
+    Policy,
+    Resource,
+}
+
+impl RepoIntelEffectiveSourceV1 {
+    fn wire_name(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Settings => "settings",
+            Self::Platform => "platform",
+            Self::Policy => "policy",
+            Self::Resource => "resource",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RepoIntelProjectionReasonV1 {
+    ResourcePressure,
+}
+
+impl RepoIntelProjectionReasonV1 {
+    fn wire_name(self) -> &'static str {
+        match self {
+            Self::ResourcePressure => "resource_pressure",
+        }
+    }
+}
+
+/// Typed counterpart of Core's `RepoIntelProfileProjectionV1`. P3 can encode
+/// this value at the established Core/Rust boundary without interpreting
+/// caller-supplied resource claims.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RepoIntelProfileProjectionV1 {
+    pub requested: RepoIntelAnalysisProfileV1,
+    pub requested_value: Option<String>,
+    pub effective: RepoIntelAnalysisProfileV1,
+    pub configuration_source: RepoIntelConfigurationSourceV1,
+    pub effective_source: RepoIntelEffectiveSourceV1,
+    pub policy_lock: RepoIntelPolicyLockV1,
+    pub reason: Option<RepoIntelProjectionReasonV1>,
+}
+
+impl RepoIntelProfileProjectionV1 {
+    pub(crate) fn to_wire_value(&self) -> serde_json::Value {
+        let mut value = serde_json::json!({
+            "requested": self.requested.wire_name(),
+            "requestedValue": self.requested_value,
+            "effective": self.effective.wire_name(),
+            "configurationSource": self.configuration_source.wire_name(),
+            "effectiveSource": self.effective_source.wire_name(),
+            "policyLock": self.policy_lock.wire_name(),
+        });
+        if let Some(reason) = self.reason {
+            value["reason"] = serde_json::Value::String(reason.wire_name().to_owned());
+        }
+        value
+    }
+}
+
+/// Strict projection for P3/Core to compose with the trusted Config profile.
+/// `resource_pressure` is true for SOFT_PRESSURE, HARD_PRESSURE, and
+/// RECOVERING; only NORMAL may preserve a richer requested profile. The
+/// profile can only be narrowed to Lightweight and never upgraded.
+pub(crate) fn repo_intel_profile_projection_under_pressure(
+    requested: RepoIntelAnalysisProfileV1,
+    requested_value: Option<&str>,
+    configuration_source: RepoIntelConfigurationSourceV1,
+    policy_lock: RepoIntelPolicyLockV1,
+    pressure: PressureState,
+) -> Result<RepoIntelProfileProjectionV1, RepoIntelProjectionErrorV1> {
+    if requested_value.is_some_and(|value| value.len() > 64) {
+        return Err(RepoIntelProjectionErrorV1::InvalidRequestedValue);
+    }
+    let resource_pressure = pressure != PressureState::Normal;
+    let effective = if resource_pressure {
+        RepoIntelAnalysisProfileV1::Lightweight
+    } else {
+        requested
+    };
+    let effective_source = if resource_pressure {
+        RepoIntelEffectiveSourceV1::Resource
+    } else {
+        match configuration_source.effective_source() {
+            "settings" => RepoIntelEffectiveSourceV1::Settings,
+            "policy" => RepoIntelEffectiveSourceV1::Policy,
+            _ => RepoIntelEffectiveSourceV1::Default,
+        }
+    };
+    Ok(RepoIntelProfileProjectionV1 {
+        requested,
+        requested_value: requested_value.map(str::to_owned),
+        effective,
+        configuration_source,
+        effective_source,
+        policy_lock,
+        reason: resource_pressure.then_some(RepoIntelProjectionReasonV1::ResourcePressure),
+    })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RepoIntelProjectionErrorV1 {
+    InvalidRequestedValue,
+}
+
+/// Hard bound for the runtime registry itself. Per-cache byte/count limits are
+/// supplied by the cache owner and are retained as observations, never inferred.
+const MAX_CACHE_REGISTRY_ENTRIES: usize = 4096;
+const MAX_CACHE_PINS_PER_ENTRY: usize = 64;
+const MAX_CACHE_KEY_FIELD_BYTES: usize = 256;
+
+/// Canonical cache identity from §18.18. These strings identify an owner and
+/// build generation; they are not filesystem paths or permission grants.
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub(crate) struct CacheKeyV1 {
+    pub family: String,
+    pub principal: String,
+    pub workspace: String,
+    pub source_generation: String,
+    pub build_version: String,
+}
+
+/// Cache classes that may be safely considered for rebuildable eviction.
+/// Canonical mutable state is representable for accounting but is never a
+/// candidate. In-use immutable generations are pinned and likewise excluded.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CacheProtectionV1 {
+    DerivedReadOnly,
+    ReplaceableUiPaint,
+    ImmutableIndex,
+    CanonicalState,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CacheObservationV1 {
+    pub allocated_bytes: Option<u64>,
+    /// Source bytes attributed by the owner. This is useful for cache
+    /// accounting, but is never a physical allocation or freed-memory claim.
+    pub accounted_source_bytes: Option<u64>,
+    pub entry_count: Option<u64>,
+    /// Live RepoIntel generation users reported by the authenticated cache
+    /// owner. This is advisory for candidate selection; HostKernel must still
+    /// revalidate the retained generation's live pin count before retirement.
+    pub owner_pin_count: u64,
+    pub max_bytes: u64,
+    pub max_accounted_source_bytes: u64,
+    pub max_entries: u64,
+    pub ttl_ms: u64,
+    pub last_used_ms: u64,
+    pub protection: CacheProtectionV1,
+}
+
+/// Distinguishes physical allocation evidence from an owner's logical/source
+/// byte accounting. Only `Measured` may populate `allocated_bytes` in the
+/// authenticated registry projection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CacheAllocationEvidenceV1 {
+    Measured(u64),
+    AccountedOnly,
+}
+
+/// Opaque cache-owner event minted only by HostKernel after it resolves the
+/// authenticated Core peer and revalidates the exact retained generation.
+/// Raw Core telemetry is not itself a registry input. `allocated_bytes` must
+/// be `None` for source-accounting observations; only an independently
+/// measured allocation may contribute byte estimates to eviction planning.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct HostAuthenticatedCacheObservationV1 {
+    key: CacheKeyV1,
+    observation: CacheObservationV1,
+    owner_epoch: u64,
+    observation_sequence: u64,
+    observed_at_ms: u64,
+}
+
+impl HostAuthenticatedCacheObservationV1 {
+    /// HostKernel calls this only after validating the exact source generation,
+    /// principal, workspace and current Core peer. This constructor performs
+    /// shape checks; it does not authenticate caller-provided values itself.
+    pub(crate) fn from_host_kernel(
+        key: CacheKeyV1,
+        observation: CacheObservationV1,
+        allocation: CacheAllocationEvidenceV1,
+        owner_epoch: u64,
+        observation_sequence: u64,
+        observed_at_ms: u64,
+    ) -> Result<Self, CacheRegistryErrorV1> {
+        validate_cache_key(&key)?;
+        let mut observation = observation;
+        observation.allocated_bytes = match allocation {
+            CacheAllocationEvidenceV1::Measured(bytes) => Some(bytes),
+            CacheAllocationEvidenceV1::AccountedOnly => None,
+        };
+        validate_cache_observation(&observation)?;
+        if owner_epoch == 0 || observation_sequence == 0 || observed_at_ms == 0 {
+            return Err(CacheRegistryErrorV1::InvalidAuthority);
+        }
+        Ok(Self { key, observation, owner_epoch, observation_sequence, observed_at_ms })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CacheRecordV1 {
+    generation: u64,
+    observation: CacheObservationV1,
+    pins: BTreeSet<u64>,
+    pending_plan: Option<u64>,
+    callback_complete: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CachePinV1 {
+    key: CacheKeyV1,
+    generation: u64,
+    pin_id: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CacheEvictionCandidateV1 {
+    pub plan_id: u64,
+    pub key: CacheKeyV1,
+    pub generation: u64,
+    /// Unknown measurement remains `None`; it is never reported as zero bytes.
+    pub observed_bytes: Option<u64>,
+    pub observed_accounted_source_bytes: Option<u64>,
+    pub observed_entries: Option<u64>,
+}
+
+/// Opaque acknowledgment minted only after HostKernel has revalidated the
+/// exact generation, observed zero live query pins and retired its retained
+/// Arc. This proves retirement identity only; physical reclaimed bytes remain
+/// unknown until the next authenticated cache observation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CacheRetirementAckV1 {
+    candidate: CacheEvictionCandidateV1,
+    retired_source_generation: String,
+}
+
+impl CacheRetirementAckV1 {
+    pub(crate) fn from_host_kernel_retirement(
+        candidate: CacheEvictionCandidateV1,
+        retired_source_generation: String,
+    ) -> Result<Self, CacheRegistryErrorV1> {
+        if retired_source_generation != candidate.key.source_generation {
+            return Err(CacheRegistryErrorV1::StaleGeneration);
+        }
+        Ok(Self { candidate, retired_source_generation })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CacheEvictionPlanV1 {
+    pub plan_id: u64,
+    /// `None` when a candidate size is unknown or checked summation overflows.
+    pub expected_freed_bytes: Option<u64>,
+    pub candidates: Vec<CacheEvictionCandidateV1>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CacheRegistryRowV1 {
+    pub key: CacheKeyV1,
+    pub generation: u64,
+    pub observation: CacheObservationV1,
+    pub pinned: bool,
+    pub eviction_pending: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CacheRegistrySnapshotV1 {
+    pub rows: Vec<CacheRegistryRowV1>,
+    /// `None` if any row has unknown size or checked summation overflows.
+    pub measured_bytes: Option<u64>,
+    /// `None` if any row has unknown count or checked summation overflows.
+    pub measured_entries: Option<u64>,
+    /// Owner-accounted source bytes; deliberately separate from physical RAM.
+    pub accounted_source_bytes: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CacheRegistryErrorV1 {
+    InvalidAuthority,
+    StaleAuthority,
+    InvalidKey,
+    InvalidBounds,
+    RegistryFull,
+    NotFound,
+    StaleGeneration,
+    Pinned,
+    EvictionPending,
+    PinLimitExceeded,
+    InvalidPin,
+    CounterExhausted,
+}
+
+/// Bounded owner table for cache metadata and eviction planning. It never
+/// invokes deletion callbacks itself. A runtime executes a candidate through
+/// the cache owner's safe eviction callback and must then submit a fresh
+/// measured observation before reclaimed bytes can be reflected here.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CacheRegistryV1 {
+    records: BTreeMap<CacheKeyV1, CacheRecordV1>,
+    plans: HashMap<u64, BTreeSet<CacheKeyV1>>,
+    authenticated_watermarks: BTreeMap<CacheKeyV1, (u64, u64, u64)>,
+    next_generation: u64,
+    next_pin_id: u64,
+    next_plan_id: u64,
+}
+
+impl Default for CacheRegistryV1 {
+    fn default() -> Self {
+        Self {
+            records: BTreeMap::new(),
+            plans: HashMap::new(),
+            authenticated_watermarks: BTreeMap::new(),
+            next_generation: 1,
+            next_pin_id: 1,
+            next_plan_id: 1,
+        }
+    }
+}
+
+impl CacheRegistryV1 {
+    /// Applies one HostKernel-minted observation with strict owner-epoch and
+    /// per-generation sequence fencing. Core event payloads must first pass
+    /// through HostKernel; they cannot be decoded directly into this type.
+    pub(crate) fn apply_authenticated_observation(
+        &mut self,
+        event: HostAuthenticatedCacheObservationV1,
+        now_ms: u64,
+        max_age_ms: u64,
+    ) -> Result<u64, CacheRegistryErrorV1> {
+        let HostAuthenticatedCacheObservationV1 {
+            key, observation, owner_epoch, observation_sequence, observed_at_ms,
+        } = event;
+        if max_age_ms == 0 || max_age_ms > 60_000
+            || observed_at_ms == 0 || now_ms < observed_at_ms
+            || now_ms - observed_at_ms > max_age_ms
+        {
+            return Err(CacheRegistryErrorV1::StaleAuthority);
+        }
+        if self.authenticated_watermarks.values().any(|(_, _, prior_at_ms)| now_ms < *prior_at_ms) {
+            return Err(CacheRegistryErrorV1::StaleAuthority);
+        }
+        self.authenticated_watermarks.retain(|_, (_, _, prior_at_ms)| {
+            now_ms - *prior_at_ms <= max_age_ms
+        });
+        if let Some((prior_epoch, prior_sequence, _)) = self.authenticated_watermarks.get(&key) {
+            if owner_epoch < *prior_epoch
+                || (owner_epoch == *prior_epoch && observation_sequence <= *prior_sequence)
+            {
+                return Err(CacheRegistryErrorV1::StaleAuthority);
+            }
+        } else if self.authenticated_watermarks.len() >= MAX_CACHE_REGISTRY_ENTRIES {
+            return Err(CacheRegistryErrorV1::RegistryFull);
+        }
+        let generation = if let Some(record) = self.records.get(&key) {
+            let generation = record.generation;
+            self.observe(&key, generation, observation)?;
+            generation
+        } else {
+            self.register(key.clone(), observation)?
+        };
+        self.authenticated_watermarks.insert(key, (owner_epoch, observation_sequence, observed_at_ms));
+        Ok(generation)
+    }
+
+    pub(crate) fn snapshot(&self) -> CacheRegistrySnapshotV1 {
+        let rows = self.records.iter().map(|(key, record)| CacheRegistryRowV1 {
+            key: key.clone(),
+            generation: record.generation,
+            observation: record.observation.clone(),
+            pinned: !record.pins.is_empty(),
+            eviction_pending: record.pending_plan.is_some(),
+        }).collect::<Vec<_>>();
+        let measured_bytes = self.records.values().try_fold(0u64, |total, record| {
+            total.checked_add(record.observation.allocated_bytes?)
+        });
+        let measured_entries = self.records.values().try_fold(0u64, |total, record| {
+            total.checked_add(record.observation.entry_count?)
+        });
+        let accounted_source_bytes = self.records.values().try_fold(0u64, |total, record| {
+            total.checked_add(record.observation.accounted_source_bytes?)
+        });
+        CacheRegistrySnapshotV1 { rows, measured_bytes, measured_entries, accounted_source_bytes }
+    }
+
+    fn register(
+        &mut self,
+        key: CacheKeyV1,
+        observation: CacheObservationV1,
+    ) -> Result<u64, CacheRegistryErrorV1> {
+        validate_cache_key(&key)?;
+        validate_cache_observation(&observation)?;
+        if self.records.get(&key).is_some_and(|record| {
+            !record.pins.is_empty() || record.pending_plan.is_some()
+        }) {
+            return Err(CacheRegistryErrorV1::Pinned);
+        }
+        if !self.records.contains_key(&key) && self.records.len() >= MAX_CACHE_REGISTRY_ENTRIES {
+            return Err(CacheRegistryErrorV1::RegistryFull);
+        }
+        let generation = self.next_generation;
+        self.next_generation = generation.checked_add(1).ok_or(CacheRegistryErrorV1::CounterExhausted)?;
+        self.records.insert(key, CacheRecordV1 {
+            generation,
+            observation,
+            pins: BTreeSet::new(),
+            pending_plan: None,
+            callback_complete: false,
+        });
+        Ok(generation)
+    }
+
+    fn unregister(
+        &mut self,
+        key: &CacheKeyV1,
+        generation: u64,
+    ) -> Result<(), CacheRegistryErrorV1> {
+        let record = self.records.get(key).ok_or(CacheRegistryErrorV1::NotFound)?;
+        if record.generation != generation {
+            return Err(CacheRegistryErrorV1::StaleGeneration);
+        }
+        if !record.pins.is_empty() || record.pending_plan.is_some() {
+            return Err(CacheRegistryErrorV1::Pinned);
+        }
+        self.records.remove(key);
+        Ok(())
+    }
+
+    /// Forget an exact HostKernel-retired/invalidated source generation. This
+    /// removes stale accounting only; it does not claim physical memory was
+    /// reclaimed. HostKernel is the only caller and must first drop the exact
+    /// retained generation leases or prove the generation was invalidated.
+    pub(crate) fn invalidate_host_generation(
+        &mut self,
+        key: &CacheKeyV1,
+    ) -> Result<(), CacheRegistryErrorV1> {
+        let Some(record) = self.records.get(key) else {
+            self.authenticated_watermarks.remove(key);
+            return Ok(());
+        };
+        if !record.pins.is_empty() {
+            return Err(CacheRegistryErrorV1::Pinned);
+        }
+        if let Some(plan_id) = record.pending_plan {
+            self.remove_plan_candidate(plan_id, key);
+        }
+        self.records.remove(key);
+        self.authenticated_watermarks.remove(key);
+        Ok(())
+    }
+
+    fn observe(
+        &mut self,
+        key: &CacheKeyV1,
+        generation: u64,
+        observation: CacheObservationV1,
+    ) -> Result<(), CacheRegistryErrorV1> {
+        validate_cache_observation(&observation)?;
+        let plan_to_finish = {
+            let record = self.records.get_mut(key).ok_or(CacheRegistryErrorV1::NotFound)?;
+            if record.generation != generation {
+                return Err(CacheRegistryErrorV1::StaleGeneration);
+            }
+            if record.pending_plan.is_some() && !record.callback_complete {
+                return Err(CacheRegistryErrorV1::EvictionPending);
+            }
+            let plan = record.pending_plan.take();
+            record.callback_complete = false;
+            record.observation = observation;
+            plan
+        };
+        if let Some(plan_id) = plan_to_finish {
+            // The callback must have completed before its post-eviction sample.
+            // The plan's exact candidate identity remains pinned until observed.
+            self.remove_plan_candidate(plan_id, key);
+        }
+        Ok(())
+    }
+
+    fn mark_used(
+        &mut self,
+        key: &CacheKeyV1,
+        generation: u64,
+        observed_at_ms: u64,
+    ) -> Result<(), CacheRegistryErrorV1> {
+        let record = self.records.get_mut(key).ok_or(CacheRegistryErrorV1::NotFound)?;
+        if record.generation != generation {
+            return Err(CacheRegistryErrorV1::StaleGeneration);
+        }
+        if record.pending_plan.is_some() {
+            return Err(CacheRegistryErrorV1::EvictionPending);
+        }
+        record.observation.last_used_ms = observed_at_ms;
+        Ok(())
+    }
+
+    pub(crate) fn pin(
+        &mut self,
+        key: &CacheKeyV1,
+        generation: u64,
+    ) -> Result<CachePinV1, CacheRegistryErrorV1> {
+        let record = self.records.get_mut(key).ok_or(CacheRegistryErrorV1::NotFound)?;
+        if record.generation != generation {
+            return Err(CacheRegistryErrorV1::StaleGeneration);
+        }
+        if record.pending_plan.is_some() {
+            return Err(CacheRegistryErrorV1::EvictionPending);
+        }
+        if record.pins.len() >= MAX_CACHE_PINS_PER_ENTRY {
+            return Err(CacheRegistryErrorV1::PinLimitExceeded);
+        }
+        let pin_id = self.next_pin_id;
+        self.next_pin_id = pin_id.checked_add(1).ok_or(CacheRegistryErrorV1::CounterExhausted)?;
+        record.pins.insert(pin_id);
+        Ok(CachePinV1 { key: key.clone(), generation, pin_id })
+    }
+
+    pub(crate) fn unpin(&mut self, pin: CachePinV1) -> Result<(), CacheRegistryErrorV1> {
+        let record = self.records.get_mut(&pin.key).ok_or(CacheRegistryErrorV1::NotFound)?;
+        if record.generation != pin.generation {
+            return Err(CacheRegistryErrorV1::StaleGeneration);
+        }
+        if !record.pins.remove(&pin.pin_id) {
+            return Err(CacheRegistryErrorV1::InvalidPin);
+        }
+        Ok(())
+    }
+
+    /// Select LRU candidates in safe class order. This reserves each selected
+    /// key against new pins until `finish_eviction` receives either a blocked
+    /// result or a post-callback measurement. The requested byte target is a
+    /// caller policy input and is not guessed by the registry.
+    pub(crate) fn plan_eviction(
+        &mut self,
+        now_ms: u64,
+        target_bytes: u64,
+        max_candidates: usize,
+    ) -> Result<CacheEvictionPlanV1, CacheRegistryErrorV1> {
+        if target_bytes == 0 || max_candidates == 0 {
+            return Ok(CacheEvictionPlanV1 {
+                plan_id: 0,
+                expected_freed_bytes: Some(0),
+                candidates: Vec::new(),
+            });
+        }
+        let mut eligible = self.records.iter()
+            .filter(|(_, record)| record.pins.is_empty()
+                && record.pending_plan.is_none()
+                && record.observation.owner_pin_count == 0
+                && record.observation.protection != CacheProtectionV1::CanonicalState)
+            .map(|(key, record)| {
+                let priority = match record.observation.protection {
+                    CacheProtectionV1::DerivedReadOnly | CacheProtectionV1::ReplaceableUiPaint => 0,
+                    CacheProtectionV1::ImmutableIndex => 1,
+                    CacheProtectionV1::CanonicalState => 2,
+                };
+                let expired = record.observation.ttl_ms > 0
+                    && now_ms.saturating_sub(record.observation.last_used_ms) >= record.observation.ttl_ms;
+                (priority, !expired, record.observation.last_used_ms, key.clone(), record.clone())
+            })
+            .collect::<Vec<_>>();
+        eligible.sort_by(|a, b| (&a.0, &a.1, &a.2, &a.3).cmp(&(&b.0, &b.1, &b.2, &b.3)));
+        let plan_id = self.next_plan_id;
+        self.next_plan_id = plan_id.checked_add(1).ok_or(CacheRegistryErrorV1::CounterExhausted)?;
+        let mut candidates = Vec::new();
+        let mut keys = BTreeSet::new();
+        let mut expected_freed_bytes = Some(0u64);
+        for (_, _, _, key, record) in eligible.into_iter().take(max_candidates) {
+            if expected_freed_bytes.is_some_and(|bytes| bytes >= target_bytes) && !candidates.is_empty() { break; }
+            if let Some(current) = self.records.get_mut(&key) {
+                current.pending_plan = Some(plan_id);
+                current.callback_complete = false;
+            }
+            expected_freed_bytes = match (expected_freed_bytes, record.observation.allocated_bytes) {
+                (Some(total), Some(bytes)) => total.checked_add(bytes),
+                _ => None,
+            };
+            candidates.push(CacheEvictionCandidateV1 {
+                plan_id, key: key.clone(), generation: record.generation,
+                observed_bytes: record.observation.allocated_bytes,
+                observed_accounted_source_bytes: record.observation.accounted_source_bytes,
+                observed_entries: record.observation.entry_count,
+            });
+            keys.insert(key);
+        }
+        if candidates.is_empty() {
+            return Ok(CacheEvictionPlanV1 {
+                plan_id: 0,
+                expected_freed_bytes: Some(0),
+                candidates,
+            });
+        }
+        self.plans.insert(plan_id, keys);
+        Ok(CacheEvictionPlanV1 { plan_id, expected_freed_bytes, candidates })
+    }
+
+    /// `blocked=true` clears the pending fence without changing measured
+    /// allocation. Otherwise the exact candidate remains pinned until a fresh
+    /// `observe` call updates its allocated bytes and count.
+    fn finish_eviction_callback(
+        &mut self,
+        plan_id: u64,
+        key: &CacheKeyV1,
+        generation: u64,
+        blocked: bool,
+    ) -> Result<(), CacheRegistryErrorV1> {
+        let planned = self.plans.get(&plan_id).ok_or(CacheRegistryErrorV1::NotFound)?;
+        if !planned.contains(key) {
+            return Err(CacheRegistryErrorV1::InvalidKey);
+        }
+        let record = self.records.get_mut(key).ok_or(CacheRegistryErrorV1::NotFound)?;
+        if record.generation != generation || record.pending_plan != Some(plan_id) {
+            return Err(CacheRegistryErrorV1::StaleGeneration);
+        }
+        if blocked {
+            record.pending_plan = None;
+            record.callback_complete = false;
+            self.remove_plan_candidate(plan_id, key);
+        } else {
+            record.callback_complete = true;
+        }
+        Ok(())
+    }
+
+    /// Abandon a candidate after HostKernel reports that the generation is
+    /// pinned, stale or otherwise unsafe to retire. This only clears the
+    /// planning fence and never updates measured allocation.
+    pub(crate) fn finish_eviction_blocked(
+        &mut self,
+        plan_id: u64,
+        key: &CacheKeyV1,
+        generation: u64,
+    ) -> Result<(), CacheRegistryErrorV1> {
+        self.finish_eviction_callback(plan_id, key, generation, true)
+    }
+
+    /// Complete a selected candidate only from the exact HostKernel retirement
+    /// acknowledgment. This does not update observed allocation: a fresh
+    /// observation remains mandatory before reclaimed bytes change.
+    pub(crate) fn finish_eviction_after_host_retirement(
+        &mut self,
+        ack: CacheRetirementAckV1,
+    ) -> Result<(), CacheRegistryErrorV1> {
+        if ack.retired_source_generation != ack.candidate.key.source_generation {
+            return Err(CacheRegistryErrorV1::StaleGeneration);
+        }
+        self.finish_eviction_callback(
+            ack.candidate.plan_id,
+            &ack.candidate.key,
+            ack.candidate.generation,
+            false,
+        )
+    }
+
+    fn remove_plan_candidate(&mut self, plan_id: u64, key: &CacheKeyV1) {
+        if let Some(planned) = self.plans.get_mut(&plan_id) {
+            planned.remove(key);
+            if planned.is_empty() { self.plans.remove(&plan_id); }
+        }
+    }
+}
+
+fn validate_cache_key(key: &CacheKeyV1) -> Result<(), CacheRegistryErrorV1> {
+    for field in [&key.family, &key.principal, &key.workspace, &key.source_generation, &key.build_version] {
+        if field.is_empty() || field.len() > MAX_CACHE_KEY_FIELD_BYTES
+            || field.bytes().any(|byte| byte.is_ascii_control())
+        {
+            return Err(CacheRegistryErrorV1::InvalidKey);
+        }
+    }
+    Ok(())
+}
+
+fn validate_cache_observation(observation: &CacheObservationV1) -> Result<(), CacheRegistryErrorV1> {
+    if observation.max_bytes == 0
+        || observation.max_entries == 0
+        || observation.allocated_bytes.is_some_and(|bytes| bytes > observation.max_bytes)
+        || observation.accounted_source_bytes.is_some_and(|bytes| bytes > observation.max_accounted_source_bytes)
+        || observation.entry_count.is_some_and(|count| count > observation.max_entries)
+    {
+        return Err(CacheRegistryErrorV1::InvalidBounds);
+    }
+    Ok(())
+}
 
 const DEFAULT_MAX_PROCESSES: usize = 256;
 const DEFAULT_MAX_WORK: usize = 4096;
@@ -21,6 +782,7 @@ pub struct ProcessIdentity {
 pub(crate) struct OwnedProcessLeaseV1 {
     worker_execution_id: String,
     owner: crate::resource_budget::AuthenticatedOwnerContext,
+    source_revision: String,
     process_identity: ProcessIdentity,
     state: crate::resource_budget::ReservationState,
 }
@@ -29,6 +791,7 @@ impl OwnedProcessLeaseV1 {
     pub(crate) fn from_durable_owner(
         worker_execution_id: String,
         owner: crate::resource_budget::AuthenticatedOwnerContext,
+        source_revision: String,
         process_identity: ProcessIdentity,
         state: crate::resource_budget::ReservationState,
     ) -> Result<Self, ResourceLeaseAttributionError> {
@@ -36,6 +799,9 @@ impl OwnedProcessLeaseV1 {
             || worker_execution_id.len() > 128
             || process_identity.pid == 0
             || process_identity.start_identity == 0
+            || !source_revision.starts_with("blake3:")
+            || source_revision.len() != 71
+            || !source_revision[7..].bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
             || !matches!(
                 state,
                 crate::resource_budget::ReservationState::Claimed
@@ -48,6 +814,7 @@ impl OwnedProcessLeaseV1 {
         Ok(Self {
             worker_execution_id,
             owner,
+            source_revision,
             process_identity,
             state,
         })
@@ -58,6 +825,9 @@ impl OwnedProcessLeaseV1 {
     }
     pub(crate) fn owner(&self) -> &crate::resource_budget::AuthenticatedOwnerContext {
         &self.owner
+    }
+    pub(crate) fn source_revision(&self) -> &str {
+        &self.source_revision
     }
     pub(crate) fn process_identity(&self) -> &ProcessIdentity {
         &self.process_identity
@@ -251,6 +1021,115 @@ pub struct SampleBudget {
     pub max_processes: usize,
     pub max_work: usize,
     pub max_bytes: usize,
+}
+
+/// A resource limit may be requested by configuration while the host only has
+/// monitoring available. Keep that distinction explicit so a sampled counter
+/// can never be presented as an OS-enforced limit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResourceLimitDimensionV1 {
+    CpuTime,
+    Memory,
+    ProcessCount,
+    FileDescriptors,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ResourceLimitEnforcementV1 {
+    /// The OS backend installed and verified this exact per-execution limit.
+    Enforced { limit: u64 },
+    /// The host can observe usage, but cannot stop the process at this limit.
+    MonitoringOnly { observed: Option<u64> },
+    /// The selected platform/runtime has no accepted enforcement backend.
+    Unsupported { reason: &'static str },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResourceLimitStatusV1 {
+    pub dimension: ResourceLimitDimensionV1,
+    pub enforcement: ResourceLimitEnforcementV1,
+}
+
+impl ResourceLimitDimensionV1 {
+    fn wire_name(self) -> &'static str {
+        match self {
+            Self::CpuTime => "cpuTime",
+            Self::Memory => "memory",
+            Self::ProcessCount => "processCount",
+            Self::FileDescriptors => "fileDescriptors",
+        }
+    }
+}
+
+impl ResourceLimitStatusV1 {
+    fn to_wire_value(&self) -> serde_json::Value {
+        match &self.enforcement {
+            ResourceLimitEnforcementV1::Enforced { limit } => serde_json::json!({
+                "dimension": self.dimension.wire_name(),
+                "status": "ENFORCED",
+                "enforced": true,
+                "limit": limit.to_string(),
+                "reason": null,
+            }),
+            ResourceLimitEnforcementV1::MonitoringOnly { observed } => serde_json::json!({
+                "dimension": self.dimension.wire_name(),
+                "status": "MONITORING_ONLY",
+                "enforced": false,
+                "observed": observed.map(|value| value.to_string()),
+                "reason": null,
+            }),
+            ResourceLimitEnforcementV1::Unsupported { reason } => serde_json::json!({
+                "dimension": self.dimension.wire_name(),
+                "status": "UNSUPPORTED",
+                "enforced": false,
+                "reason": reason,
+            }),
+        }
+    }
+}
+
+/// Truthful V1 status for the current worker path. The Linux sandbox and the
+/// Windows process adapter currently expose monitoring/containment primitives
+/// but do not install per-worker CPU, memory, process-count, or FD quotas. This
+/// projection intentionally remains unavailable until a supervisor actually
+/// applies and verifies those limits; WSL uses this same conservative status.
+pub fn worker_resource_limit_status_v1() -> [ResourceLimitStatusV1; 4] {
+    let reason = "worker OS quota backend is not integrated";
+    [
+        ResourceLimitStatusV1 {
+            dimension: ResourceLimitDimensionV1::CpuTime,
+            enforcement: ResourceLimitEnforcementV1::Unsupported { reason },
+        },
+        ResourceLimitStatusV1 {
+            dimension: ResourceLimitDimensionV1::Memory,
+            enforcement: ResourceLimitEnforcementV1::Unsupported { reason },
+        },
+        ResourceLimitStatusV1 {
+            dimension: ResourceLimitDimensionV1::ProcessCount,
+            enforcement: ResourceLimitEnforcementV1::Unsupported { reason },
+        },
+        ResourceLimitStatusV1 {
+            dimension: ResourceLimitDimensionV1::FileDescriptors,
+            enforcement: ResourceLimitEnforcementV1::Unsupported { reason },
+        },
+    ]
+}
+
+/// Whether the status projection proves every required OS control is active.
+/// Monitoring-only and unsupported rows both return false.
+pub fn worker_os_limits_enforced_v1(status: &[ResourceLimitStatusV1]) -> bool {
+    use ResourceLimitEnforcementV1::Enforced;
+    let required = [
+        ResourceLimitDimensionV1::CpuTime,
+        ResourceLimitDimensionV1::Memory,
+        ResourceLimitDimensionV1::ProcessCount,
+        ResourceLimitDimensionV1::FileDescriptors,
+    ];
+    required.iter().all(|dimension| {
+        let mut rows = status.iter().filter(|row| row.dimension == *dimension);
+        matches!(rows.next().map(|row| &row.enforcement), Some(Enforced { limit }) if *limit > 0)
+            && rows.next().is_none()
+    }) && status.len() == required.len()
 }
 
 impl Default for SampleBudget {
@@ -497,6 +1376,7 @@ pub(crate) struct AttributedProcessTreeSampleV1 {
     worker_execution_id: String,
     task_id: String,
     attempt_id: String,
+    source_revision: String,
     state: crate::resource_budget::ReservationState,
     sample: TreeSample,
 }
@@ -549,20 +1429,22 @@ impl DurableOwnedResourceSnapshotV1 {
         self.owner == *owner
     }
 
-    /// Stable RC0 ingestion shape. Values are decimal strings so counters above
+    /// RC0 v3 ingestion shape. Values are decimal strings so counters above
     /// JavaScript's exact integer range remain exact. This sample is not a
     /// Session/Run completion attestation; P2 must independently bind its
     /// verifier result and P1 must bind the live HostKernel process owner.
     pub(crate) fn to_rc0_owner_sample_json(&self) -> serde_json::Value {
         use serde_json::json;
         json!({
-            "schemaVersion": 1,
+            "schemaVersion": 3,
             "producer": "horizoncode.worker-owner.resource-sampler",
             "owner": {
                 "principalRef": self.owner.principal_ref(),
                 "workspaceBinding": self.owner.workspace_binding(),
                 "sessionId": self.owner.session_id(),
                 "runId": self.owner.run_id(),
+                "taskId": self.owner.task_id(),
+                "attemptId": self.owner.attempt_id(),
                 "ownerEpoch": self.owner.owner_epoch().to_string(),
             },
             "ownerLog": {
@@ -590,31 +1472,36 @@ impl DurableOwnedResourceSnapshotV1 {
                     "fdCount": metric_json(&sample.metrics.fd_count),
                     "privateBytes": metric_json(&sample.metrics.private_bytes),
                 })),
-                "source": "authenticated HostKernel Core peer sampled as one process; descendants belong to worker samples",
+                "source": "authenticated HostKernel Core peer sampled as one process; only separately durable process-backed P8 worker leases contribute worker trees; V1 logical child Sessions have no worker PID and are not attributed as separate processes",
             },
             "workers": self.trees.iter().map(|tree| json!({
                 "workerExecutionId": tree.worker_execution_id,
                 "taskId": tree.task_id,
                 "attemptId": tree.attempt_id,
+                "sourceRevision": tree.source_revision,
                 "reservationState": reservation_state_label(tree.state),
                 "quality": tree_quality(&tree.sample),
+                // Keep per-worker counters beside the exact process tree. The
+                // run aggregate alone cannot support attribution or explain a
+                // single worker's contribution in RC0 evidence.
+                "metrics": aggregate_counters_json(&tree.sample.metrics),
                 "processes": tree.sample.processes.iter().map(|process| json!({
                     "pid": process.pid,
                     "startIdentity": process.start_identity.to_string(),
                 })).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),
-            "aggregate": {
-                "pssBytes": metric_json(&self.aggregate.pss_bytes),
-                "rssBytes": metric_json(&self.aggregate.rss_bytes),
-                "cpuNs": metric_json(&self.aggregate.cpu_ns),
-                "threadCount": metric_json(&self.aggregate.thread_count),
-                "fdCount": metric_json(&self.aggregate.fd_count),
-                "privateBytes": metric_json(&self.aggregate.private_bytes),
-            },
+            "aggregate": aggregate_counters_json(&self.aggregate),
+            // RC0 keeps this separate from sampled counters: observing a value
+            // does not prove that the OS can enforce a ceiling.
+            "resourceLimits": worker_resource_limit_status_v1()
+                .iter()
+                .map(ResourceLimitStatusV1::to_wire_value)
+                .collect::<Vec<_>>(),
             "productAttestation": {
                 "status": "NOT_ATTESTED",
                 "hostRunReceiptRef": null,
                 "independentVerifierEvidenceRef": null,
+                "sourceCommit": null,
                 "required": ["hostRunReceiptRef", "independentVerifierEvidenceRef", "sourceCommit"],
             },
         })
@@ -831,14 +1718,19 @@ pub(crate) fn sample_durable_owned_process_leases<B: ProcessBackend>(
             });
         }
     }
+    let mut aggregate = empty_aggregate();
     let sample_count = selected.len() + usize::from(session_process_owner.is_some());
+    if sample_count == 0 {
+        // No owned process was supplied for this Run. A measured zero here
+        // would be a fabricated allocation result, not an empty observed set.
+        set_all_unknown(&mut aggregate, UnknownReason::Unavailable);
+    }
     if sample_count > budget.max_processes {
         return Err(SampleError::LeaseSetTooLarge);
     }
     if sample_count > 0 && (budget.max_work < sample_count || budget.max_bytes < sample_count) {
         return Err(SampleError::InvalidBudget);
     }
-    let mut aggregate = empty_aggregate();
     let mut trees = Vec::with_capacity(selected.len());
     let mut seen = HashSet::new();
     if !selected.is_empty() {
@@ -869,6 +1761,7 @@ pub(crate) fn sample_durable_owned_process_leases<B: ProcessBackend>(
                 worker_execution_id: lease.worker_execution_id.clone(),
                 task_id: lease.owner.task_id().to_owned(),
                 attempt_id: lease.owner.attempt_id().to_owned(),
+                source_revision: lease.source_revision.clone(),
                 state: lease.state,
                 sample,
             });
@@ -903,6 +1796,13 @@ pub(crate) fn sample_durable_owned_process_leases<B: ProcessBackend>(
         if trees.iter().any(|tree| tree.sample.processes.contains(session_sample.identity.process_identity())) {
             set_all_unknown(&mut aggregate, UnknownReason::AttributionConflict);
             set_all_unknown(&mut session_sample.metrics, UnknownReason::AttributionConflict);
+        } else {
+            // The authenticated Core session peer is part of the same owned
+            // resource snapshot as worker trees. Include it in totals; leaving
+            // the accumulator at its empty measured-zero value would report a
+            // false zero whenever there are no workers (or omit Core usage
+            // when there are workers).
+            merge_aggregate(&mut aggregate, &session_sample.metrics);
         }
     }
     Ok(DurableOwnedResourceSnapshotV1 {
@@ -938,6 +1838,18 @@ fn metric_json(metric: &Metric<u128>) -> serde_json::Value {
             json!({"quality":"UNKNOWN","reason":unknown_reason_label(reason)})
         }
     }
+}
+
+fn aggregate_counters_json(counters: &AggregateCounters) -> serde_json::Value {
+    use serde_json::json;
+    json!({
+        "pssBytes": metric_json(&counters.pss_bytes),
+        "rssBytes": metric_json(&counters.rss_bytes),
+        "cpuNs": metric_json(&counters.cpu_ns),
+        "threadCount": metric_json(&counters.thread_count),
+        "fdCount": metric_json(&counters.fd_count),
+        "privateBytes": metric_json(&counters.private_bytes),
+    })
 }
 
 fn unknown_reason_label(reason: &UnknownReason) -> &'static str {
@@ -1051,6 +1963,273 @@ fn add_metric(target: &mut Metric<u128>, source: Metric<u128>) {
             .unwrap_or(Metric::Unknown(UnknownReason::Malformed)),
         (Metric::Unknown(reason), _) | (_, Metric::Unknown(reason)) => Metric::Unknown(reason),
     };
+}
+
+#[cfg(test)]
+mod aggregate_tests {
+    use super::{
+        AggregateCounters, CacheAllocationEvidenceV1, CacheEvictionPlanV1, CacheKeyV1,
+        CacheObservationV1, CacheProtectionV1, CacheRegistryErrorV1, CacheRegistryV1,
+        HostAuthenticatedCacheObservationV1, Metric,
+        RepoIntelAnalysisProfileV1,
+        RepoIntelConfigurationSourceV1, RepoIntelEffectiveSourceV1,
+        RepoIntelPolicyLockV1, RepoIntelProjectionReasonV1, UnknownReason,
+        empty_aggregate, merge_aggregate, repo_intel_profile_projection_under_pressure,
+    };
+    use crate::resource_budget::PressureState;
+
+    #[test]
+    fn resource_pressure_projection_only_narrows_and_never_starts_work() {
+        for pressure in [
+            PressureState::SoftPressure,
+            PressureState::HardPressure,
+            PressureState::Recovering,
+        ] {
+            let projection = repo_intel_profile_projection_under_pressure(
+                RepoIntelAnalysisProfileV1::Full,
+                Some("full"),
+                RepoIntelConfigurationSourceV1::User,
+                RepoIntelPolicyLockV1::Unlocked,
+                pressure,
+            )
+            .expect("bounded profile projection");
+            assert_eq!(projection.requested, RepoIntelAnalysisProfileV1::Full);
+            assert_eq!(projection.effective, RepoIntelAnalysisProfileV1::Lightweight);
+            assert_eq!(projection.effective_source, RepoIntelEffectiveSourceV1::Resource);
+            assert_eq!(projection.reason, Some(RepoIntelProjectionReasonV1::ResourcePressure));
+            let wire = projection.to_wire_value();
+            assert_eq!(wire["effective"], "lightweight");
+            assert_eq!(wire["effectiveSource"], "resource");
+            assert_eq!(wire["reason"], "resource_pressure");
+            assert!(wire.get("startWork").is_none());
+        }
+    }
+
+    #[test]
+    fn normal_projection_preserves_lightweight_and_does_not_upgrade() {
+        let projection = repo_intel_profile_projection_under_pressure(
+            RepoIntelAnalysisProfileV1::Lightweight,
+            Some("lightweight"),
+            RepoIntelConfigurationSourceV1::Project,
+            RepoIntelPolicyLockV1::Unlocked,
+            PressureState::Normal,
+        )
+        .expect("bounded profile projection");
+        assert_eq!(projection.effective, RepoIntelAnalysisProfileV1::Lightweight);
+        assert_eq!(projection.effective_source, RepoIntelEffectiveSourceV1::Settings);
+        assert_eq!(projection.reason, None);
+        assert!(projection.to_wire_value().get("reason").is_none());
+    }
+
+    #[test]
+    fn resource_profile_projection_rejects_unbounded_requested_value() {
+        let oversized = "x".repeat(65);
+        assert!(repo_intel_profile_projection_under_pressure(
+            RepoIntelAnalysisProfileV1::Adaptive,
+            Some(&oversized),
+            RepoIntelConfigurationSourceV1::User,
+            RepoIntelPolicyLockV1::Unknown,
+            PressureState::Normal,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn worker_quota_projection_keeps_all_unimplemented_controls_unavailable() {
+        let status = super::worker_resource_limit_status_v1();
+        assert!(!super::worker_os_limits_enforced_v1(&status));
+        assert_eq!(status.len(), 4);
+        assert!(status.iter().all(|row| matches!(
+            &row.enforcement,
+            super::ResourceLimitEnforcementV1::Unsupported { .. }
+        )));
+        let encoded = status.iter().map(super::ResourceLimitStatusV1::to_wire_value)
+            .collect::<Vec<_>>();
+        assert!(encoded.iter().all(|row| row["enforced"] == false));
+        assert!(encoded.iter().all(|row| row["status"] == "UNSUPPORTED"));
+    }
+
+    #[test]
+    fn worker_quota_projection_requires_exact_positive_enforcement_for_every_dimension() {
+        let status = [
+            ResourceLimitDimensionV1::CpuTime,
+            ResourceLimitDimensionV1::Memory,
+            ResourceLimitDimensionV1::ProcessCount,
+            ResourceLimitDimensionV1::FileDescriptors,
+        ].map(|dimension| ResourceLimitStatusV1 {
+            dimension,
+            enforcement: ResourceLimitEnforcementV1::Enforced { limit: 1 },
+        });
+        assert!(super::worker_os_limits_enforced_v1(&status));
+        assert!(!super::worker_os_limits_enforced_v1(&status[..3]));
+        let duplicate = [status[0].clone(), status[0].clone(), status[2].clone(), status[3].clone()];
+        assert!(!super::worker_os_limits_enforced_v1(&duplicate));
+    }
+
+    #[test]
+    fn session_process_metrics_contribute_to_run_aggregate_and_unknown_is_preserved() {
+        let mut aggregate = empty_aggregate();
+        let session = AggregateCounters {
+            pss_bytes: Metric::measured(17),
+            rss_bytes: Metric::measured(23),
+            cpu_ns: Metric::measured(29),
+            thread_count: Metric::measured(3),
+            fd_count: Metric::measured(5),
+            private_bytes: Metric::unknown(UnknownReason::Unsupported),
+        };
+        merge_aggregate(&mut aggregate, &session);
+
+        assert_eq!(aggregate.pss_bytes, Metric::measured(17));
+        assert_eq!(aggregate.rss_bytes, Metric::measured(23));
+        assert_eq!(aggregate.cpu_ns, Metric::measured(29));
+        assert_eq!(aggregate.thread_count, Metric::measured(3));
+        assert_eq!(aggregate.fd_count, Metric::measured(5));
+        assert_eq!(aggregate.private_bytes, Metric::unknown(UnknownReason::Unsupported));
+    }
+
+    fn cache_key(family: &str) -> CacheKeyV1 {
+        CacheKeyV1 {
+            family: family.to_owned(), principal: "principal-a".to_owned(),
+            workspace: "workspace-a".to_owned(), source_generation: "gen-1".to_owned(),
+            build_version: "build-1".to_owned(),
+        }
+    }
+
+    fn cache_observation(bytes: Option<u64>, used: u64, protection: CacheProtectionV1) -> CacheObservationV1 {
+        CacheObservationV1 {
+            allocated_bytes: bytes,
+            accounted_source_bytes: None,
+            entry_count: bytes.map(|value| if value > 0 { 1 } else { 0 }),
+            owner_pin_count: 0,
+            max_bytes: 1024, max_accounted_source_bytes: 1024, max_entries: 128, ttl_ms: 100, last_used_ms: used,
+            protection,
+        }
+    }
+
+    #[test]
+    fn cache_eviction_is_lru_pinned_aware_and_never_claims_unknown_as_zero() {
+        let mut registry = CacheRegistryV1::default();
+        let old = cache_key("syntax");
+        let recent = cache_key("paint");
+        let unknown = cache_key("index");
+        let old_generation = registry.register(old.clone(), cache_observation(Some(30), 5, CacheProtectionV1::DerivedReadOnly)).unwrap();
+        registry.register(recent.clone(), cache_observation(Some(70), 40, CacheProtectionV1::ReplaceableUiPaint)).unwrap();
+        registry.register(unknown.clone(), cache_observation(None, 1, CacheProtectionV1::ImmutableIndex)).unwrap();
+        assert_eq!(registry.snapshot().measured_bytes, None);
+        let pin = registry.pin(&old, old_generation).unwrap();
+
+        let plan = registry.plan_eviction(1000, 100, 3).unwrap();
+        assert_eq!(plan.candidates.len(), 2);
+        assert_eq!(plan.candidates[0].key, recent);
+        assert_eq!(plan.candidates[1].key, unknown);
+        assert_eq!(plan.expected_freed_bytes, None);
+        assert!(plan.candidates[1].observed_bytes.is_none());
+        assert_eq!(registry.pin(&unknown, plan.candidates[1].generation), Err(CacheRegistryErrorV1::EvictionPending));
+
+        let host_ack = CacheRetirementAckV1::from_host_kernel_retirement(
+            plan.candidates[1].clone(), unknown.source_generation.clone(),
+        ).unwrap();
+        registry.finish_eviction_after_host_retirement(host_ack).unwrap();
+        assert_eq!(registry.pin(&unknown, plan.candidates[1].generation), Err(CacheRegistryErrorV1::EvictionPending));
+        registry.observe(&unknown, plan.candidates[1].generation, cache_observation(Some(0), 1000, CacheProtectionV1::ImmutableIndex)).unwrap();
+        assert_eq!(registry.snapshot().measured_bytes, Some(100));
+        registry.unpin(pin).unwrap();
+    }
+
+    #[test]
+    fn cache_registry_rejects_stale_generation_and_preserves_protected_state() {
+        let mut registry = CacheRegistryV1::default();
+        let key = cache_key("owner-log");
+        let generation = registry.register(key.clone(), cache_observation(Some(10), 0, CacheProtectionV1::CanonicalState)).unwrap();
+        let plan: CacheEvictionPlanV1 = registry.plan_eviction(1000, 1, 10).unwrap();
+        assert!(plan.candidates.is_empty());
+        assert_eq!(plan.plan_id, 0);
+        assert!(registry.plans.is_empty());
+        for _ in 0..32 {
+            assert_eq!(registry.plan_eviction(1000, 1, 10).unwrap().plan_id, 0);
+        }
+        assert!(registry.plans.is_empty());
+        assert_eq!(registry.mark_used(&key, generation + 1, 2), Err(CacheRegistryErrorV1::StaleGeneration));
+    }
+
+    #[test]
+    fn authenticated_cache_events_fence_epoch_sequence_and_logical_size_claims() {
+        let key = cache_key("repo-intel-generation");
+        let mut registry = CacheRegistryV1::default();
+        assert!(HostAuthenticatedCacheObservationV1::from_host_kernel(
+            key.clone(), cache_observation(Some(1025), 10, CacheProtectionV1::DerivedReadOnly),
+            CacheAllocationEvidenceV1::Measured(1025), 4, 1, 100,
+        ).is_err(), "measured allocation cannot exceed its declared cache bound");
+        let event = HostAuthenticatedCacheObservationV1::from_host_kernel(
+            key.clone(), cache_observation(Some(40), 10, CacheProtectionV1::DerivedReadOnly),
+            CacheAllocationEvidenceV1::AccountedOnly, 4, 1, 100,
+        ).expect("HostKernel shape-checked cache observation");
+        let generation = registry.apply_authenticated_observation(event, 100, 10)
+            .expect("fresh authenticated observation");
+        let snapshot = registry.snapshot();
+        assert_eq!(snapshot.rows[0].generation, generation);
+        assert_eq!(snapshot.measured_bytes, None, "source-byte accounting is not physical allocation");
+
+        let stale = HostAuthenticatedCacheObservationV1::from_host_kernel(
+            key.clone(), cache_observation(Some(80), 20, CacheProtectionV1::DerivedReadOnly),
+            CacheAllocationEvidenceV1::Measured(80), 4, 1, 110,
+        ).expect("valid shape, stale authority sequence");
+        assert_eq!(registry.apply_authenticated_observation(stale, 110, 10), Err(CacheRegistryErrorV1::StaleAuthority));
+
+        let new_epoch = HostAuthenticatedCacheObservationV1::from_host_kernel(
+            key, cache_observation(Some(80), 20, CacheProtectionV1::DerivedReadOnly),
+            CacheAllocationEvidenceV1::Measured(80), 5, 1, 110,
+        ).expect("new owner epoch");
+        registry.apply_authenticated_observation(new_epoch, 110, 10)
+            .expect("new owner epoch may restart its sequence");
+        assert_eq!(registry.snapshot().measured_bytes, Some(80));
+    }
+
+    #[test]
+    fn cache_source_accounting_never_becomes_physical_or_freed_bytes() {
+        let key = cache_key("source-accounted-generation");
+        let mut observation = cache_observation(None, 10, CacheProtectionV1::DerivedReadOnly);
+        observation.accounted_source_bytes = Some(80);
+        let event = HostAuthenticatedCacheObservationV1::from_host_kernel(
+            key, observation, CacheAllocationEvidenceV1::AccountedOnly, 1, 1, 100,
+        ).unwrap();
+        let mut registry = CacheRegistryV1::default();
+        registry.apply_authenticated_observation(event, 100, 10).unwrap();
+        let snapshot = registry.snapshot();
+        assert_eq!(snapshot.measured_bytes, None);
+        assert_eq!(snapshot.accounted_source_bytes, Some(80));
+        let plan = registry.plan_eviction(1000, 1, 1).unwrap();
+        assert_eq!(plan.expected_freed_bytes, None);
+        assert_eq!(plan.candidates[0].observed_bytes, None);
+        assert_eq!(plan.candidates[0].observed_accounted_source_bytes, Some(80));
+    }
+
+    #[test]
+    fn cache_eviction_planner_excludes_owner_reported_live_generation_pins() {
+        let mut registry = CacheRegistryV1::default();
+        let key = cache_key("live-query-pin");
+        let mut observation = cache_observation(Some(100), 1, CacheProtectionV1::DerivedReadOnly);
+        observation.owner_pin_count = 2;
+        let event = HostAuthenticatedCacheObservationV1::from_host_kernel(
+            key, observation, CacheAllocationEvidenceV1::Measured(100), 1, 1, 10,
+        ).unwrap();
+        registry.apply_authenticated_observation(event, 10, 10).unwrap();
+        let plan = registry.plan_eviction(1000, 1, 10).unwrap();
+        assert!(plan.candidates.is_empty(), "live owner query pins exclude candidate selection");
+    }
+
+    #[test]
+    fn cache_registry_bounds_consumer_pin_growth_per_entry() {
+        let mut registry = CacheRegistryV1::default();
+        let key = cache_key("bounded-pins");
+        let generation = registry.register(key.clone(), cache_observation(Some(1), 1, CacheProtectionV1::DerivedReadOnly)).unwrap();
+        let mut pins = Vec::new();
+        for _ in 0..MAX_CACHE_PINS_PER_ENTRY {
+            pins.push(registry.pin(&key, generation).unwrap());
+        }
+        assert_eq!(registry.pin(&key, generation), Err(CacheRegistryErrorV1::PinLimitExceeded));
+        for pin in pins { registry.unpin(pin).unwrap(); }
+    }
 }
 
 fn merge(target: &mut AggregateCounters, source: CounterSet) {

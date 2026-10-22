@@ -7,18 +7,20 @@
 //! session leader and a child subreaper, so owner loss (including a SIGKILLed owner) is
 //! detected through a keepalive pipe and triggers a bounded process-tree kill and sweep
 //! before the supervisor exits. The leader's exit status is relayed only when the
-//! supervisor itself observed it.
+//! supervisor itself observed it and then proved the complete session tree empty.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::time::{Duration, Instant};
 
-pub const MAX_INPUT_BYTES: usize = 16 * 1024;
+/// Maximum private stdio frame; enough for the complete bounded 1 MiB CodeMode
+/// call wave plus framing overhead. Aggregate process input remains separately capped.
+pub const MAX_INPUT_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_OUTPUT_BYTES: usize = 64 * 1024;
 pub const MAX_STDIO_ARGUMENTS: usize = 128;
 pub const MAX_STDIO_ARGUMENT_BYTES: usize = 64 * 1024;
@@ -26,6 +28,8 @@ pub const MAX_STDIO_ENV_ITEMS: usize = 32;
 pub const MAX_STDIO_ENV_VALUE_BYTES: usize = 4 * 1024;
 pub const MAX_STDIO_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_STDIO_OUTPUT_PAGE_BYTES: usize = 256 * 1024;
+/// Maximum prompt-scratch document that the editor service will open or import.
+pub const MAX_EXTERNAL_EDITOR_SCRATCH_BYTES: u64 = 1024 * 1024;
 
 /// Establish that the current OS has the same enforcing backend guarantees that
 /// every guarded process launch requires. This preflight creates no child and is
@@ -63,6 +67,162 @@ pub const MAX_STDIO_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const STDIO_OUTPUT_CHUNK_BYTES: usize = 16 * 1024;
 const MAX_STDIO_INPUT_TOTAL_BYTES: usize = 16 * 1024 * 1024;
 
+/// Fixed host-owned CodeMode containment policy. This is not caller input or a
+/// general managed ResourcePolicy projection; changing any value requires a new
+/// schema version and digest domain.
+pub(crate) struct CodeModeResourceProfileV1;
+
+impl CodeModeResourceProfileV1 {
+    pub(crate) const MEMORY_MAX: &'static str = "536870912";
+    pub(crate) const CPU_MAX: &'static str = "100000 100000";
+    pub(crate) const PIDS_MAX: &'static str = "64";
+    pub(crate) const MEMORY_MAX_BYTES: u64 = 536_870_912;
+    pub(crate) const CPU_MAX_QUOTA: u64 = 100_000;
+    pub(crate) const CPU_MAX_PERIOD: u64 = 100_000;
+    pub(crate) const PIDS_MAX_COUNT: u64 = 64;
+    pub(crate) const NOFILE_MAX: u64 = 256;
+
+    pub(crate) fn digest() -> String {
+        use crate::protocol::Value;
+        let value = Value::Map(BTreeMap::from([
+            ("cpuMaxPeriod".to_owned(), Value::Unsigned(Self::CPU_MAX_PERIOD)),
+            ("cpuMaxQuota".to_owned(), Value::Unsigned(Self::CPU_MAX_QUOTA)),
+            ("memoryMaxBytes".to_owned(), Value::Unsigned(Self::MEMORY_MAX_BYTES)),
+            ("nofileMax".to_owned(), Value::Unsigned(Self::NOFILE_MAX)),
+            ("pidsMax".to_owned(), Value::Unsigned(Self::PIDS_MAX_COUNT)),
+            ("profileId".to_owned(), Value::String("codemode.v1".to_owned())),
+            ("schemaVersion".to_owned(), Value::Unsigned(1)),
+        ]));
+        let encoded = crate::messagepack::encode(&value, crate::messagepack::FRAME_LIMITS)
+            .expect("fixed CodeMode resource profile fits the canonical frame");
+        let mut preimage = b"horizoncode.codemode-resource-profile.v1\0".to_vec();
+        preimage.extend_from_slice(&encoded);
+        format!("blake3:{}", blake3::hash(&preimage).to_hex())
+    }
+}
+
+/// Fixed packaged CodeMode helper artifact resolved only from trusted HostKernel
+/// installation roots. The model and private frame never choose these paths.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CodeModeHelperPackageV1 {
+    pub(crate) executable: PathBuf,
+    pub(crate) executable_digest: String,
+    pub(crate) package_root: PathBuf,
+    pub(crate) entrypoint: PathBuf,
+    pub(crate) entrypoint_relative: PathBuf,
+    pub(crate) helper_digest: String,
+}
+
+impl CodeModeHelperPackageV1 {
+    pub(crate) const SELECTOR: &'static str = "horizoncode:codemode:bun";
+    pub(crate) const PROFILE_ID: &'static str = "codemode.v1";
+    pub(crate) const PROFILE_REVISION: u64 = 1;
+
+    /// Resolve the fixed selector plus the bundled, self-contained helper asset.
+    /// `trusted_asset_root` and `relative_entrypoint` are HostKernel installation
+    /// metadata, never request fields. Every path component is checked without
+    /// following a symlink and the exact SHA-256 asset digest is compared to the
+    /// authenticated CodeMode enablement/Attempt projection.
+    pub(crate) fn resolve(
+        trusted_selectors: &BTreeMap<String, PathBuf>,
+        trusted_asset_root: &Path,
+        relative_entrypoint: &Path,
+        expected_helper_digest: &str,
+    ) -> io::Result<Self> {
+        if !crate::guard::is_sha256_digest(expected_helper_digest)
+            || relative_entrypoint.as_os_str().is_empty()
+            || relative_entrypoint.to_str().is_none_or(|value| value.is_empty() || value.len() > 1024)
+            || relative_entrypoint.is_absolute()
+            || relative_entrypoint.components().any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            return Err(invalid_launch_profile());
+        }
+        let executable_candidate = trusted_selectors.get(Self::SELECTOR).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, "fixed CodeMode Bun selector is unavailable")
+        })?;
+        let executable = std::fs::canonicalize(executable_candidate)?;
+        let executable_metadata = std::fs::metadata(&executable)?;
+        if !executable_candidate.is_absolute() || !executable_metadata.is_file() {
+            return Err(invalid_launch_profile());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if executable_metadata.permissions().mode() & 0o111 == 0 {
+                return Err(invalid_launch_profile());
+            }
+        }
+        let package_root = std::fs::canonicalize(trusted_asset_root)?;
+        if !package_root.is_absolute() || !std::fs::metadata(&package_root)?.is_dir() {
+            return Err(invalid_launch_profile());
+        }
+        let mut candidate = package_root.clone();
+        for component in relative_entrypoint.components() {
+            let std::path::Component::Normal(segment) = component else { return Err(invalid_launch_profile()) };
+            candidate.push(segment);
+            let metadata = std::fs::symlink_metadata(&candidate)?;
+            if metadata.file_type().is_symlink() {
+                return Err(io::Error::new(io::ErrorKind::PermissionDenied, "CodeMode helper asset contains a symlink"));
+            }
+        }
+        let entrypoint = std::fs::canonicalize(candidate)?;
+        let metadata = std::fs::metadata(&entrypoint)?;
+        if !entrypoint.starts_with(&package_root) || !metadata.is_file() || metadata.len() == 0 || metadata.len() > 16 * 1024 * 1024 {
+            return Err(invalid_launch_profile());
+        }
+        let bytes = read_fixed_helper(&entrypoint)?;
+        let actual_helper_digest = format!("sha256:{}", ring::digest::digest(&ring::digest::SHA256, &bytes).as_ref().iter().map(|byte| format!("{byte:02x}")).collect::<String>());
+        if actual_helper_digest != expected_helper_digest {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "packaged CodeMode helper digest changed"));
+        }
+        Ok(Self {
+            executable_digest: executable_digest(&executable)?,
+            executable,
+            package_root,
+            entrypoint,
+            entrypoint_relative: relative_entrypoint.to_path_buf(),
+            helper_digest: actual_helper_digest,
+        })
+    }
+
+    pub(crate) fn launch_profile_digest(&self) -> io::Result<String> {
+        use crate::protocol::Value;
+        let value = Value::Map(BTreeMap::from([
+            ("executableDigest".to_owned(), Value::String(self.executable_digest.clone())),
+            ("helperDigest".to_owned(), Value::String(self.helper_digest.clone())),
+            ("helperSelector".to_owned(), Value::String(Self::SELECTOR.to_owned())),
+            ("relativeEntrypoint".to_owned(), Value::String(self.entrypoint_relative.to_string_lossy().into_owned())),
+            ("resourceProfileDigest".to_owned(), Value::String(CodeModeResourceProfileV1::digest())),
+            ("schemaVersion".to_owned(), Value::Unsigned(1)),
+        ]));
+        let encoded = crate::messagepack::encode(&value, crate::messagepack::FRAME_LIMITS)
+            .map_err(|_| invalid_launch_profile())?;
+        let mut preimage = b"horizoncode.codemode-launch-profile.v1\0".to_vec();
+        preimage.extend_from_slice(&encoded);
+        Ok(format!("blake3:{}", blake3::hash(&preimage).to_hex()))
+    }
+}
+
+fn read_fixed_helper(path: &Path) -> io::Result<Vec<u8>> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    }
+    let file = options.open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(invalid_launch_profile());
+    }
+    let mut bytes = Vec::new();
+    file.take(16 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
+    if bytes.is_empty() || bytes.len() > 16 * 1024 * 1024 {
+        return Err(invalid_launch_profile());
+    }
+    Ok(bytes)
+}
+
 #[derive(Clone, Debug)]
 pub struct TerminalLaunchSpec {
     pub executable: PathBuf,
@@ -84,7 +244,8 @@ pub enum TerminalBackend {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProcessGuarantees {
-    /// A successful `try_wait` is the only indication that exit was observed.
+    /// A successful `try_wait` observes the leader exit. The Linux PTY backend also
+    /// withholds that result until its complete process-tree sweep proves quiescence.
     pub observed_exit: bool,
     /// Owner/process-handle close is configured to kill the process tree.
     pub tree_kill_on_owner_close: bool,
@@ -109,15 +270,21 @@ pub struct TerminalProcess {
     inner: platform::Process,
     // Drop order is significant: reap the process tree before removing mount targets.
     _confinement: Option<horizoncode_sandbox::ExternalLaunch>,
+    #[cfg(target_os = "linux")]
+    cgroup: Option<crate::cgroup_v2::ExecutionCgroupV2>,
 }
 
 pub struct PreparedTerminalLaunch {
     spec: TerminalLaunchSpec,
-    confinement: horizoncode_sandbox::ExternalLaunch,
+    confinement: Option<horizoncode_sandbox::ExternalLaunch>,
     guarantee_record: String,
     launch_digest: String,
     executable_path: PathBuf,
     executable_digest: String,
+    cgroup_hierarchy_hidden: bool,
+    #[cfg(target_os = "linux")]
+    cgroup: Option<crate::cgroup_v2::ExecutionCgroupV2>,
+    cgroup_required: bool,
 }
 
 /// A host-resolved, bounded request for a non-PTY process. Callers must resolve the
@@ -127,6 +294,8 @@ pub struct PreparedTerminalLaunch {
 pub struct StdioLaunchSpec {
     pub executable: PathBuf,
     pub executable_digest: String,
+    /// Present only for the fixed packaged CodeMode helper launch.
+    pub(crate) code_mode_helper: Option<CodeModeHelperPackageV1>,
     pub profile_digest: String,
     pub workspace_revision: String,
     pub argv: Vec<OsString>,
@@ -142,18 +311,191 @@ pub struct StdioLaunchSpec {
     /// Ordinary processes keep Git metadata protected. Only the HostKernel-minted
     /// Git worktree profile may opt into the exact `.git/worktrees` exception.
     filesystem_policy: StdioFilesystemPolicyV1,
+    /// Set only by the fixed Git read-spec constructor. `files.read` cannot be
+    /// repurposed by another in-crate caller as arbitrary process execution.
+    fixed_git_read: bool,
     /// Retain bytes for a crate-internal evidence producer. Ordinary terminal
     /// processes keep this off to avoid a second in-memory output copy.
     capture_output_for_host: bool,
+}
+
+/// Fixed, structured operations accepted by the HostKernel's authenticated Git-read
+/// route. These values cannot name an executable, cwd, environment, or arbitrary argv.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum GitReadOperationV1 {
+    Status { include_untracked: bool },
+    Diff {
+        base_oid: Option<String>,
+        target_oid: Option<String>,
+        paths: Vec<String>,
+        context_lines: u8,
+    },
+    Log { revision: String, limit: u8 },
+    Show { revision: String, path: String },
+    BranchList,
+}
+
+const MAX_GIT_READ_PATHS: usize = 128;
+pub(crate) const MAX_GIT_READ_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
+
+fn valid_stdio_blake3(value: &str) -> bool {
+    value.strip_prefix("blake3:").is_some_and(|digest| {
+        digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+    })
+}
+
+fn invalid_stdio_launch() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, "fixed Git read launch is invalid")
+}
+
+fn valid_git_object_id(value: &str) -> bool {
+    matches!(value.len(), 40 | 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn valid_git_relative_path(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 4096
+        && !value.starts_with('/')
+        && !value.starts_with('\\')
+        && !value.contains('\\')
+        && !value.chars().any(char::is_control)
+        && value.split('/').all(|part| !part.is_empty() && part != "." && part != "..")
+}
+
+/// Build a bounded, read-only Git process spec for a host-selected executable and
+/// authenticated registered Location. The caller still performs normal Guard lease
+/// admission, preflight, dispatch, and receipt settlement before launch.
+pub(crate) fn prepare_git_read_spec(
+    executable: PathBuf,
+    executable_digest: String,
+    profile_digest: String,
+    workspace_revision: String,
+    root: PathBuf,
+    operation: GitReadOperationV1,
+    output_limit: usize,
+) -> io::Result<StdioLaunchSpec> {
+    if !executable.is_absolute()
+        || !root.is_absolute()
+        || !valid_stdio_blake3(&profile_digest)
+        || !valid_stdio_blake3(&workspace_revision)
+        || !valid_stdio_blake3(&executable_digest)
+        || !(1..=MAX_GIT_READ_OUTPUT_BYTES).contains(&output_limit)
+    {
+        return Err(invalid_stdio_launch());
+    }
+
+    let mut argv = vec![
+        OsString::from("--no-optional-locks"),
+        OsString::from("-c"),
+        OsString::from("core.fsmonitor=false"),
+        OsString::from("-c"),
+        OsString::from("core.hooksPath=/dev/null"),
+        OsString::from("-c"),
+        OsString::from("core.pager=cat"),
+        OsString::from("-c"),
+        OsString::from("diff.external="),
+    ];
+    match operation {
+        GitReadOperationV1::Status { include_untracked } => {
+            argv.extend(["status", "--porcelain=v1", "-z", "--untracked-files=all"]
+                .into_iter().map(OsString::from));
+            if !include_untracked {
+                argv.pop();
+                argv.push(OsString::from("--untracked-files=no"));
+            }
+        }
+        GitReadOperationV1::Diff { base_oid, target_oid, paths, context_lines } => {
+            if context_lines > 20 || paths.len() > MAX_GIT_READ_PATHS
+                || base_oid.as_deref().is_some_and(|oid| !valid_git_object_id(oid))
+                || target_oid.as_deref().is_some_and(|oid| !valid_git_object_id(oid))
+                || paths.iter().any(|path| !valid_git_relative_path(path))
+            {
+                return Err(invalid_stdio_launch());
+            }
+            argv.extend([
+                "diff", "--no-ext-diff", "--no-textconv", "--no-color",
+                "--no-renames",
+            ].into_iter().map(OsString::from));
+            argv.push(OsString::from(format!("--unified={context_lines}")));
+            if let Some(base) = base_oid { argv.push(OsString::from(base)); }
+            if let Some(target) = target_oid { argv.push(OsString::from(target)); }
+            argv.push(OsString::from("--"));
+            argv.extend(paths.into_iter().map(|path| OsString::from(format!(":(literal){path}"))));
+        }
+        GitReadOperationV1::Log { revision, limit } => {
+            if !valid_git_object_id(&revision) || !(1..=100).contains(&limit) {
+                return Err(invalid_stdio_launch());
+            }
+            argv.extend([
+                "log", "--no-color", "--no-show-signature",
+                "--format=%H%x00%P%x00%an%x00%ae%x00%at%x00%s%x00",
+                "-n",
+            ].into_iter().map(OsString::from));
+            argv.push(OsString::from(limit.to_string()));
+            argv.push(OsString::from(revision));
+        }
+        GitReadOperationV1::Show { revision, path } => {
+            if !valid_git_object_id(&revision) || !valid_git_relative_path(&path) {
+                return Err(invalid_stdio_launch());
+            }
+            argv.extend([
+                "show", "--no-color", "--no-ext-diff", "--no-textconv",
+                "--format=",
+            ].into_iter().map(OsString::from));
+            argv.push(OsString::from(format!("{revision}:{path}")));
+        }
+        GitReadOperationV1::BranchList => {
+            argv.extend([
+                "for-each-ref", "--sort=refname",
+                "--format=%(refname:short)%00%(objectname)%00%(objecttype)%00",
+                "refs/heads/",
+            ].into_iter().map(OsString::from));
+        }
+    }
+    if argv.len() > 140 {
+        return Err(invalid_stdio_launch());
+    }
+    let mut spec = StdioLaunchSpec::new(executable, executable_digest, argv, root.clone());
+    spec.workspace_root = root;
+    spec.profile_digest = profile_digest;
+    spec.workspace_revision = workspace_revision;
+    spec.timeout = Duration::from_secs(10);
+    spec.max_output_bytes = output_limit;
+    spec.use_readonly_workspace();
+    spec.fixed_git_read = true;
+    spec.retain_output_for_host();
+    // Replace inherited variables; Git sees no HOME/config search path or prompts.
+    spec.env.insert(OsString::from("HOME"), OsString::from("/nonexistent"));
+    spec.env.insert(OsString::from("GIT_CONFIG_NOSYSTEM"), OsString::from("1"));
+    spec.env.insert(OsString::from("GIT_CONFIG_GLOBAL"), OsString::from("/dev/null"));
+    spec.env.insert(OsString::from("GIT_CONFIG_SYSTEM"), OsString::from("/dev/null"));
+    spec.env.insert(OsString::from("GIT_TERMINAL_PROMPT"), OsString::from("0"));
+    spec.env.insert(OsString::from("GIT_OPTIONAL_LOCKS"), OsString::from("0"));
+    spec.env.insert(OsString::from("GIT_NO_REPLACE_OBJECTS"), OsString::from("1"));
+    Ok(spec)
 }
 
 #[derive(Clone, Debug, Default)]
 enum StdioFilesystemPolicyV1 {
     #[default]
     WorkspaceWrite,
+    /// LSP/DAP adapter profile: workspace is readable but never writable.
+    /// Network and undeclared filesystem access remain denied by the OS profile.
+    ReadOnlyWorkspace,
+    /// Managed Inspect reads one exact child worktree and one authenticated Git
+    /// metadata directory. Both roots remain read-only and separately scoped.
+    ReadOnlyGitWorktreeMetadata { metadata_root: PathBuf },
     GitWorktreeLifecycle {
         metadata_root: PathBuf,
         destination_parent: PathBuf,
+    },
+    /// CodeMode receives only the sandbox's private temporary root and the
+    /// platform runtime/library roots. The caller's registered workspace is
+    /// authenticated but is never mounted into the helper view.
+    CodeModeIsolated {
+        package_root: PathBuf,
+        entrypoint: PathBuf,
+        helper_digest: String,
     },
 }
 
@@ -167,6 +509,414 @@ pub struct ExecutionLaunchProfileV1 {
     pub kind: StdioProcessKindV1,
     pub executable_selector: String,
     pub argv: Vec<OsString>,
+    /// Explicit DAP policy; omitted on the wire means default-deny. The optional
+    /// representation is retained so profile digest canonicalization preserves the
+    /// exact Core Config definition.
+    pub dap_policy_allow_evaluate: Option<bool>,
+}
+
+/// Canonical reference to the exact Core Config launch definition projected for one
+/// HostKernel launch. The definition and reference must arrive together on the
+/// authenticated private RPC; this value is not a selector or launch authority on its
+/// own.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExecutionLaunchProfileRefV1 {
+    pub profile_id: String,
+    pub revision: u64,
+    pub profile_digest: String,
+}
+
+/// Strict immutable Core Config projection for a user-selected external editor.
+/// This definition is configuration only; HostKernel must resolve its executable
+/// selector from trusted Core state and bind the resulting process to an authenticated
+/// root Session user action before constructing any launch binding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExternalEditorProfileV1 {
+    pub profile_id: String,
+    pub revision: u64,
+    pub executable_selector: String,
+    pub argv: Vec<OsString>,
+    pub target_arg_index: usize,
+    pub launch_mode: ExternalEditorLaunchModeV1,
+    pub target_kinds: Vec<ExternalEditorTargetKindV1>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExternalEditorProfileRefV1 {
+    pub profile_id: String,
+    pub revision: u64,
+    pub profile_digest: String,
+}
+
+/// Authenticated HostKernel handoff for the P1 editor preflight. This is an
+/// in-process Rust value, never a public RPC payload; HostKernel must mint it
+/// after deriving the principal, owner epoch, target and normal Guard lease.
+/// Constructing it does not itself authorize dispatch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ExternalEditorLaunchBindingV1 {
+    pub(crate) execution_id: String,
+    pub(crate) session_id: String,
+    pub(crate) principal: String,
+    pub(crate) location_id: String,
+    pub(crate) owner_epoch: u64,
+    pub(crate) generation: u64,
+    pub(crate) user_action_id: String,
+    pub(crate) call_id: String,
+    pub(crate) profile_ref: ExternalEditorProfileRefV1,
+    pub(crate) profile: ExternalEditorProfileV1,
+    pub(crate) executable_path: PathBuf,
+    pub(crate) executable_digest: String,
+    pub(crate) target: ExternalEditorTargetBindingV1,
+    pub(crate) workspace_root: PathBuf,
+    pub(crate) workspace_root_binding: String,
+    pub(crate) permission_mode: crate::guard::DirectSessionPermissionModeProjectionV1,
+    pub(crate) capability_lease_digest: String,
+    pub(crate) effect_id: String,
+    pub(crate) challenge_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ExternalEditorTargetBindingV1 {
+    pub(crate) kind: ExternalEditorTargetKindV1,
+    /// One literal argv value naming the host-created private scratch file. The
+    /// original workspace path is never passed to the editor.
+    pub(crate) canonical_target_token: String,
+    /// Exact user-selected root-relative source path for workspace editing; empty
+    /// for prompt scratch. This is retained as a digest in the durable journal.
+    pub(crate) source_relative_path: String,
+    /// Exact preview source revision and source content digest. For workspace
+    /// editing these are checked before launch and again before result settlement.
+    pub(crate) base_workspace_revision: String,
+    pub(crate) expected_file_digest: Option<String>,
+    /// Host-created owner-only directory containing the scratch target.
+    pub(crate) scratch_root: PathBuf,
+}
+
+impl ExternalEditorProfileRefV1 {
+    pub fn from_value(value: &crate::protocol::Value) -> io::Result<Self> {
+        use crate::protocol::Value;
+        let Value::Map(fields) = value else { return Err(invalid_external_editor_profile()); };
+        if fields.len() != 3 || !fields.contains_key("profileId") || !fields.contains_key("revision")
+            || !fields.contains_key("profileDigest") { return Err(invalid_external_editor_profile()); }
+        let profile_id = match fields.get("profileId") {
+            Some(Value::String(value)) if value.len() <= 256 && is_profile_identifier(value) => value.clone(),
+            _ => return Err(invalid_external_editor_profile()),
+        };
+        let revision = match fields.get("revision") {
+            Some(Value::String(value)) => parse_profile_revision(value).ok_or_else(invalid_external_editor_profile)?,
+            _ => return Err(invalid_external_editor_profile()),
+        };
+        let profile_digest = match fields.get("profileDigest") {
+            Some(Value::String(value)) if is_blake3_digest(value) => value.clone(),
+            _ => return Err(invalid_external_editor_profile()),
+        };
+        Ok(Self { profile_id, revision, profile_digest })
+    }
+
+    pub fn matches_definition(&self, definition: &ExternalEditorProfileV1) -> io::Result<bool> {
+        Ok(self.profile_id == definition.profile_id && self.revision == definition.revision
+            && self.profile_digest == definition.definition_digest()?)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExternalEditorLaunchModeV1 {
+    ForegroundTty,
+    Wait,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExternalEditorTargetKindV1 {
+    PromptScratch,
+    WorkspaceFile,
+}
+
+impl ExternalEditorProfileV1 {
+    pub fn from_value(value: &crate::protocol::Value) -> io::Result<Self> {
+        use crate::protocol::Value;
+        let Value::Map(fields) = value else { return Err(invalid_external_editor_profile()); };
+        const KEYS: [&str; 9] = [
+            "schemaVersion", "profileId", "revision", "executableSelector", "argv",
+            "targetArgIndex", "launchMode", "targetKinds", "environmentPolicy",
+        ];
+        if fields.len() != KEYS.len() || KEYS.iter().any(|key| !fields.contains_key(*key)) {
+            return Err(invalid_external_editor_profile());
+        }
+        let text = |key: &str| match fields.get(key) {
+            Some(Value::String(value)) if !value.is_empty() && !value.chars().any(char::is_control) => Ok(value.as_str()),
+            _ => Err(invalid_external_editor_profile()),
+        };
+        if !matches!(fields.get("schemaVersion"), Some(Value::Unsigned(1)))
+            || text("environmentPolicy")? != "sanitized_host"
+        { return Err(invalid_external_editor_profile()); }
+        let profile_id = text("profileId")?;
+        if profile_id.len() > 256 || !is_profile_identifier(profile_id) { return Err(invalid_external_editor_profile()); }
+        let revision = parse_profile_revision(text("revision")?).ok_or_else(invalid_external_editor_profile)?;
+        let executable_selector = text("executableSelector")?;
+        if executable_selector.len() > 4096 { return Err(invalid_external_editor_profile()); }
+        let Value::Array(raw_argv) = fields.get("argv").ok_or_else(invalid_external_editor_profile)? else {
+            return Err(invalid_external_editor_profile());
+        };
+        if raw_argv.len() > 127 { return Err(invalid_external_editor_profile()); }
+        let mut argv = Vec::with_capacity(raw_argv.len());
+        let mut total = 0usize;
+        for value in raw_argv {
+            let Value::String(argument) = value else { return Err(invalid_external_editor_profile()); };
+            if argument.len() > 4096 || argument.chars().any(char::is_control) { return Err(invalid_external_editor_profile()); }
+            total = total.checked_add(argument.len()).ok_or_else(invalid_external_editor_profile)?;
+            if total > 512 * 1024 { return Err(invalid_external_editor_profile()); }
+            argv.push(OsString::from(argument));
+        }
+        let target_arg_index = match fields.get("targetArgIndex") {
+            Some(Value::Unsigned(value)) if *value <= argv.len() as u64 => *value as usize,
+            _ => return Err(invalid_external_editor_profile()),
+        };
+        let launch_mode = match text("launchMode")? {
+            "foreground_tty" => ExternalEditorLaunchModeV1::ForegroundTty,
+            "wait" => ExternalEditorLaunchModeV1::Wait,
+            _ => return Err(invalid_external_editor_profile()),
+        };
+        let Value::Array(raw_targets) = fields.get("targetKinds").ok_or_else(invalid_external_editor_profile)? else {
+            return Err(invalid_external_editor_profile());
+        };
+        if raw_targets.is_empty() || raw_targets.len() > 2 { return Err(invalid_external_editor_profile()); }
+        let mut target_kinds = Vec::with_capacity(raw_targets.len());
+        for raw in raw_targets {
+            let Value::String(kind) = raw else { return Err(invalid_external_editor_profile()); };
+            let kind = match kind.as_str() {
+                "prompt_scratch" => ExternalEditorTargetKindV1::PromptScratch,
+                "workspace_file" => ExternalEditorTargetKindV1::WorkspaceFile,
+                _ => return Err(invalid_external_editor_profile()),
+            };
+            if target_kinds.contains(&kind) { return Err(invalid_external_editor_profile()); }
+            target_kinds.push(kind);
+        }
+        Ok(Self { profile_id: profile_id.to_owned(), revision, executable_selector: executable_selector.to_owned(),
+            argv, target_arg_index, launch_mode, target_kinds })
+    }
+
+    pub fn to_value(&self) -> crate::protocol::Value {
+        use crate::protocol::Value;
+        Value::Map(BTreeMap::from([
+            ("schemaVersion".to_owned(), Value::Unsigned(1)),
+            ("profileId".to_owned(), Value::String(self.profile_id.clone())),
+            ("revision".to_owned(), Value::String(self.revision.to_string())),
+            ("executableSelector".to_owned(), Value::String(self.executable_selector.clone())),
+            ("argv".to_owned(), Value::Array(self.argv.iter().map(|arg| Value::String(arg.to_string_lossy().into_owned())).collect())),
+            ("targetArgIndex".to_owned(), Value::Unsigned(self.target_arg_index as u64)),
+            ("launchMode".to_owned(), Value::String(match self.launch_mode { ExternalEditorLaunchModeV1::ForegroundTty => "foreground_tty", ExternalEditorLaunchModeV1::Wait => "wait" }.to_owned())),
+            ("targetKinds".to_owned(), Value::Array(self.target_kinds.iter().map(|kind| Value::String(match kind { ExternalEditorTargetKindV1::PromptScratch => "prompt_scratch", ExternalEditorTargetKindV1::WorkspaceFile => "workspace_file" }.to_owned())).collect())),
+            ("environmentPolicy".to_owned(), Value::String("sanitized_host".to_owned())),
+        ]))
+    }
+
+    pub fn definition_digest(&self) -> io::Result<String> {
+        let encoded = crate::messagepack::encode(&self.to_value(), crate::messagepack::FRAME_LIMITS)
+            .map_err(|_| invalid_external_editor_profile())?;
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"horizoncode.external-editor-profile.v1\0");
+        hasher.update(&encoded);
+        Ok(format!("blake3:{}", hasher.finalize().to_hex()))
+    }
+
+    pub fn resolve_executable_with_trusted_map(
+        &self,
+        trusted_selectors: &BTreeMap<String, PathBuf>,
+    ) -> io::Result<(PathBuf, String)> {
+        let candidate = trusted_selectors.get(&self.executable_selector).ok_or_else(||
+            io::Error::new(io::ErrorKind::NotFound, "trusted editor executable selector is not configured"))?;
+        if !candidate.is_absolute() { return Err(invalid_external_editor_profile()); }
+        let executable = std::fs::canonicalize(candidate)?;
+        let metadata = std::fs::metadata(&executable)?;
+        if !metadata.is_file() { return Err(invalid_external_editor_profile()); }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if metadata.permissions().mode() & 0o111 == 0 { return Err(invalid_external_editor_profile()); }
+        }
+        let digest = executable_digest(&executable)?;
+        Ok((executable, digest))
+    }
+
+    /// Insert the exact host-created scratch target as one argv token. For both
+    /// prompt and workspace editing the editor receives only a private scratch path.
+    pub fn argv_for_target(&self, target: &str, kind: ExternalEditorTargetKindV1) -> io::Result<Vec<OsString>> {
+        if !self.target_kinds.contains(&kind) || target.is_empty() || target.len() > 4096
+            || target.chars().any(char::is_control) || self.argv.len() >= 128
+        { return Err(invalid_external_editor_profile()); }
+        if !Path::new(target).is_absolute() {
+            return Err(invalid_external_editor_profile());
+        }
+        let mut result = self.argv.clone();
+        result.insert(self.target_arg_index, OsString::from(target));
+        Ok(result)
+    }
+}
+
+/// Read one host-owned editor scratch file through a descriptor-relative
+/// O_NOFOLLOW open. The directory must be private, the file a single-link regular
+/// file, and the result stays within the editor's bounded document limit.
+pub(crate) fn inspect_external_editor_scratch(
+    scratch_root: &Path,
+    scratch_file: &Path,
+) -> io::Result<(String, u64)> {
+    let bytes = read_external_editor_scratch(scratch_root, scratch_file)?;
+    Ok((format!("blake3:{}", blake3::hash(&bytes).to_hex()), bytes.len() as u64))
+}
+
+pub(crate) fn read_external_editor_scratch(
+    scratch_root: &Path,
+    scratch_file: &Path,
+) -> io::Result<Vec<u8>> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::io::Read;
+        use std::os::fd::{AsRawFd, FromRawFd};
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let root = std::fs::canonicalize(scratch_root)?;
+        let target = std::fs::canonicalize(scratch_file)?;
+        if root != scratch_root || target != scratch_file || target.parent() != Some(root.as_path()) {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied,
+                "editor scratch target is not a direct child of its canonical host directory"));
+        }
+        let root_metadata = std::fs::symlink_metadata(&root)?;
+        let effective_uid = unsafe { libc::geteuid() };
+        if !root_metadata.is_dir() || root_metadata.uid() != effective_uid
+            || root_metadata.permissions().mode() & 0o077 != 0
+        {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied,
+                "editor scratch directory is not private"));
+        }
+        let directory = std::fs::File::open(&root)?;
+        let name = target.file_name().ok_or_else(invalid_external_editor_profile)?;
+        let name = std::ffi::CString::new(name.as_bytes()).map_err(|_| invalid_external_editor_profile())?;
+        // SAFETY: the pinned directory descriptor and NUL-terminated direct-child
+        // filename remain valid for the duration of openat.
+        let fd = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK) };
+        if fd < 0 { return Err(io::Error::last_os_error()); }
+        // SAFETY: openat returned a fresh owned descriptor.
+        let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
+        let before = file.metadata()?;
+        if !before.is_file() || before.uid() != effective_uid || before.nlink() != 1
+            || before.len() > MAX_EXTERNAL_EDITOR_SCRATCH_BYTES
+            || before.permissions().mode() & 0o077 != 0
+        {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied,
+                "editor scratch target is not a bounded private regular file"));
+        }
+        let mut bytes = Vec::with_capacity(before.len() as usize);
+        (&mut file).take(MAX_EXTERNAL_EDITOR_SCRATCH_BYTES + 1).read_to_end(&mut bytes)?;
+        let after = file.metadata()?;
+        if bytes.len() as u64 != before.len() || after.dev() != before.dev()
+            || after.ino() != before.ino() || after.nlink() != 1
+            || after.len() != before.len() || after.mtime() != before.mtime()
+            || after.mtime_nsec() != before.mtime_nsec()
+        {
+            return Err(io::Error::new(io::ErrorKind::WouldBlock,
+                "editor scratch target changed while being read"));
+        }
+        Ok(bytes)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (scratch_root, scratch_file);
+        Err(io::Error::new(io::ErrorKind::Unsupported,
+            "external editor scratch inspection requires the accepted Linux backend"))
+    }
+}
+
+fn is_profile_identifier(value: &str) -> bool {
+    value.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b':'))
+}
+
+fn valid_editor_binding_id(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 256 && is_profile_identifier(value)
+}
+
+pub(crate) fn valid_editor_source_relative_path(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 4096 && !value.starts_with('/')
+        && !value.contains('\\') && !value.chars().any(char::is_control)
+        && value.split('/').all(|component| !component.is_empty() && component != "." && component != "..")
+}
+
+fn invalid_external_editor_profile() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, "external editor profile is invalid")
+}
+
+fn validate_editor_environment(environment: &BTreeMap<OsString, OsString>) -> io::Result<()> {
+    if environment.len() > 8 { return Err(invalid_external_editor_profile()); }
+    let mut total = 0usize;
+    for (key, value) in environment {
+        let key = key.as_encoded_bytes();
+        let value = value.as_encoded_bytes();
+        if !matches!(key, b"PATH" | b"HOME" | b"LANG" | b"LC_ALL" | b"LC_CTYPE" | b"TMPDIR" | b"XDG_CACHE_HOME")
+            || key.is_empty() || key.contains(&0) || value.contains(&0) || value.len() > 8192
+        { return Err(invalid_external_editor_profile()); }
+        total = total.checked_add(key.len() + value.len()).ok_or_else(invalid_external_editor_profile)?;
+        if total > 32 * 1024 { return Err(invalid_external_editor_profile()); }
+    }
+    Ok(())
+}
+
+impl ExecutionLaunchProfileRefV1 {
+    pub fn from_value(value: &crate::protocol::Value) -> io::Result<Self> {
+        use crate::protocol::Value;
+        let Value::Map(fields) = value else {
+            return Err(invalid_launch_profile());
+        };
+        if fields.len() != 3
+            || !fields.contains_key("profileId")
+            || !fields.contains_key("revision")
+            || !fields.contains_key("profileDigest")
+        {
+            return Err(invalid_launch_profile());
+        }
+        let profile_id = match fields.get("profileId") {
+            Some(Value::String(value))
+                if !value.is_empty()
+                    && value.len() <= 128
+                    && value.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')
+                    }) => value.clone(),
+            _ => return Err(invalid_launch_profile()),
+        };
+        let revision = match fields.get("revision") {
+            Some(Value::String(value)) => {
+                parse_profile_revision(value).ok_or_else(invalid_launch_profile)?
+            }
+            _ => return Err(invalid_launch_profile()),
+        };
+        let profile_digest = match fields.get("profileDigest") {
+            Some(Value::String(value))
+                if value.len() == 71
+                    && value.starts_with("blake3:")
+                    && value[7..].bytes().all(|byte| byte.is_ascii_hexdigit())
+                    && value[7..].bytes().all(|byte| !byte.is_ascii_uppercase()) =>
+            {
+                value.clone()
+            }
+            _ => return Err(invalid_launch_profile()),
+        };
+        Ok(Self { profile_id, revision, profile_digest })
+    }
+
+    pub fn to_value(&self) -> crate::protocol::Value {
+        use crate::protocol::Value;
+        Value::Map(BTreeMap::from([
+            ("profileId".to_owned(), Value::String(self.profile_id.clone())),
+            ("revision".to_owned(), Value::String(self.revision.to_string())),
+            ("profileDigest".to_owned(), Value::String(self.profile_digest.clone())),
+        ]))
+    }
+
+    pub fn matches_definition(&self, definition: &ExecutionLaunchProfileV1) -> io::Result<bool> {
+        Ok(self.profile_id == definition.profile_id
+            && self.revision == definition.revision
+            && self.profile_digest == definition.definition_digest()?)
+    }
 }
 
 impl ExecutionLaunchProfileV1 {
@@ -175,7 +925,7 @@ impl ExecutionLaunchProfileV1 {
         let Value::Map(fields) = value else {
             return Err(invalid_launch_profile());
         };
-        const KEYS: [&str; 8] = [
+        const REQUIRED_KEYS: [&str; 8] = [
             "schemaVersion",
             "profileId",
             "revision",
@@ -185,7 +935,9 @@ impl ExecutionLaunchProfileV1 {
             "workingDirectoryPolicy",
             "environmentPolicy",
         ];
-        if fields.len() != KEYS.len() || KEYS.iter().any(|key| !fields.contains_key(*key)) {
+        if REQUIRED_KEYS.iter().any(|key| !fields.contains_key(*key))
+            || fields.keys().any(|key| !REQUIRED_KEYS.contains(&key.as_str()) && key != "dapPolicy")
+        {
             return Err(invalid_launch_profile());
         }
         let text = |key: &str| match fields.get(key) {
@@ -214,6 +966,21 @@ impl ExecutionLaunchProfileV1 {
             Some("lsp") => StdioProcessKindV1::LanguageServer,
             Some("dap") => StdioProcessKindV1::DebugAdapter,
             Some("repl") => StdioProcessKindV1::Interpreter,
+            Some("codemode") => StdioProcessKindV1::CodeModeHelper,
+            _ => return Err(invalid_launch_profile()),
+        };
+        let dap_policy_allow_evaluate = match fields.get("dapPolicy") {
+            None => None,
+            Some(Value::Map(policy))
+                if kind == StdioProcessKindV1::DebugAdapter
+                    && policy.len() == 1
+                    && policy.contains_key("allowEvaluate") =>
+            {
+                match policy.get("allowEvaluate") {
+                    Some(Value::Bool(value)) => Some(*value),
+                    _ => return Err(invalid_launch_profile()),
+                }
+            }
             _ => return Err(invalid_launch_profile()),
         };
         let executable_selector = text("executableSelector")
@@ -257,12 +1024,13 @@ impl ExecutionLaunchProfileV1 {
             kind,
             executable_selector,
             argv,
+            dap_policy_allow_evaluate,
         })
     }
 
     pub fn to_value(&self) -> crate::protocol::Value {
         use crate::protocol::Value;
-        Value::Map(BTreeMap::from([
+        let mut fields = BTreeMap::from([
             ("schemaVersion".to_owned(), Value::Unsigned(1)),
             ("profileId".to_owned(), Value::String(self.profile_id.clone())),
             ("revision".to_owned(), Value::String(self.revision.to_string())),
@@ -272,6 +1040,7 @@ impl ExecutionLaunchProfileV1 {
                     StdioProcessKindV1::LanguageServer => "lsp",
                     StdioProcessKindV1::DebugAdapter => "dap",
                     StdioProcessKindV1::Interpreter => "repl",
+                    StdioProcessKindV1::CodeModeHelper => "codemode",
                     _ => "invalid",
                 }.to_owned()),
             ),
@@ -293,7 +1062,17 @@ impl ExecutionLaunchProfileV1 {
                 "environmentPolicy".to_owned(),
                 Value::String("sanitized_host".to_owned()),
             ),
-        ]))
+        ]);
+        if let Some(allow_evaluate) = self.dap_policy_allow_evaluate {
+            fields.insert(
+                "dapPolicy".to_owned(),
+                Value::Map(BTreeMap::from([(
+                    "allowEvaluate".to_owned(),
+                    Value::Bool(allow_evaluate),
+                )])),
+            );
+        }
+        Value::Map(fields)
     }
 
     pub fn definition_digest(&self) -> io::Result<String> {
@@ -356,6 +1135,7 @@ fn trusted_selector_name(value: &str, kind: StdioProcessKindV1) -> bool {
         StdioProcessKindV1::LanguageServer => ("horizoncode:lsp:", &["typescript-language-server", "rust-analyzer", "pyright-langserver", "pylsp"][..]),
         StdioProcessKindV1::DebugAdapter => ("horizoncode:dap:", &["debugpy-adapter", "lldb-dap"][..]),
         StdioProcessKindV1::Interpreter => ("horizoncode:repl:", &["python3", "node"][..]),
+        StdioProcessKindV1::CodeModeHelper => ("horizoncode:codemode:", &["bun"][..]),
         _ => return false,
     };
     value.strip_prefix(expected_prefix).is_some_and(|name| allowed.contains(&name))
@@ -397,6 +1177,7 @@ impl StdioLaunchSpec {
         Self {
             executable: executable.into(),
             executable_digest: executable_digest.into(),
+            code_mode_helper: None,
             profile_digest: String::new(),
             workspace_revision: String::new(),
             argv: argv
@@ -410,8 +1191,20 @@ impl StdioLaunchSpec {
             timeout: Duration::from_secs(60),
             max_output_bytes: MAX_STDIO_OUTPUT_BYTES,
             filesystem_policy: StdioFilesystemPolicyV1::WorkspaceWrite,
+            fixed_git_read: false,
             capture_output_for_host: false,
         }
+    }
+
+    /// Restrict a trusted editor/debug adapter to read-only access to the registered
+    /// workspace. This is a HostKernel-selected profile policy; no Core or project field
+    /// can widen it to workspace write access.
+    pub(crate) fn use_readonly_workspace(&mut self) {
+        self.filesystem_policy = StdioFilesystemPolicyV1::ReadOnlyWorkspace;
+    }
+
+    pub(crate) fn use_readonly_git_worktree_metadata(&mut self, metadata_root: PathBuf) {
+        self.filesystem_policy = StdioFilesystemPolicyV1::ReadOnlyGitWorktreeMetadata { metadata_root };
     }
 
     /// Select the broker-only nested-write exception. Inputs are supplied from the
@@ -430,6 +1223,43 @@ impl StdioLaunchSpec {
 
     pub(crate) fn retain_output_for_host(&mut self) {
         self.capture_output_for_host = true;
+    }
+
+    pub(crate) fn use_codemode_isolation(&mut self, package: &CodeModeHelperPackageV1) {
+        self.code_mode_helper = Some(package.clone());
+        self.filesystem_policy = StdioFilesystemPolicyV1::CodeModeIsolated {
+            package_root: package.package_root.clone(),
+            entrypoint: package.entrypoint.clone(),
+            helper_digest: package.helper_digest.clone(),
+        };
+        self.cwd = PathBuf::from("/tmp");
+        self.writable_roots.clear();
+    }
+
+    /// Construct the only supported CodeMode helper launch. Every executable,
+    /// package, entrypoint and digest value comes from the HostKernel-owned install
+    /// manifest; helper frames can never select argv, cwd, environment or roots.
+    pub(crate) fn code_mode(
+        package: &CodeModeHelperPackageV1,
+        workspace_root: impl Into<PathBuf>,
+        workspace_revision: impl Into<String>,
+        timeout: Duration,
+    ) -> io::Result<Self> {
+        if timeout.is_zero() || timeout > Duration::from_millis(30_000) {
+            return Err(invalid_launch_profile());
+        }
+        let mut spec = Self::new(
+            package.executable.clone(),
+            package.executable_digest.clone(),
+            [OsString::from("run"), package.entrypoint.as_os_str().to_owned()],
+            "/tmp",
+        );
+        spec.workspace_root = workspace_root.into();
+        spec.workspace_revision = workspace_revision.into();
+        spec.profile_digest = package.launch_profile_digest()?;
+        spec.timeout = timeout;
+        spec.use_codemode_isolation(package);
+        Ok(spec)
     }
 }
 
@@ -451,6 +1281,11 @@ impl PreparedStdioLaunch {
     pub fn guarantee_record(&self) -> &str {
         &self.guarantee_record
     }
+    pub(crate) fn guarantee_assessments(
+        &self,
+    ) -> &[horizoncode_sandbox::GuaranteeAssessment] {
+        self.prepared.guarantees()
+    }
     pub fn execution_digest(&self) -> &str {
         &self.execution_digest
     }
@@ -459,12 +1294,123 @@ impl PreparedStdioLaunch {
     }
 }
 
+/// Host-only, no-child assessment of one exact immutable process launch. It is
+/// useful for constructing an informed Guard challenge before approval; it carries
+/// no process handle or dispatch authority. Execution must recompute and match its
+/// digest after approval before spending the one-use lease.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StdioLaunchAssessmentV1 {
+    execution_digest: String,
+    guarantee_record: String,
+    guarantees: Vec<horizoncode_sandbox::GuaranteeAssessment>,
+}
+
+/// User-consent-safe guarantee projection. Residual prose comes from the fixed
+/// sandbox backend; any backtick-delimited path/detail is replaced with `<detail>`
+/// before it crosses the approval UI boundary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StdioGuaranteeAssessmentProjectionV1 {
+    pub dimension: &'static str,
+    pub level: &'static str,
+    pub backend: &'static str,
+    pub residuals: Vec<String>,
+}
+
+impl StdioLaunchAssessmentV1 {
+    pub(crate) fn execution_digest(&self) -> &str {
+        &self.execution_digest
+    }
+
+    pub(crate) fn guarantee_record(&self) -> &str {
+        &self.guarantee_record
+    }
+
+    pub(crate) fn guarantees(&self) -> &[horizoncode_sandbox::GuaranteeAssessment] {
+        &self.guarantees
+    }
+
+    pub(crate) fn guarantee_digest(&self) -> String {
+        guarantee_record_digest(&self.guarantee_record)
+    }
+
+    pub(crate) fn approval_projection(
+        &self,
+    ) -> io::Result<Vec<StdioGuaranteeAssessmentProjectionV1>> {
+        use horizoncode_sandbox::GuaranteeDimension;
+        if self.guarantees.len() != GuaranteeDimension::ALL.len() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "incomplete sandbox guarantee vector"));
+        }
+        let mut by_dimension = std::collections::BTreeMap::new();
+        for assessment in &self.guarantees {
+            let mut residual_bytes = 0usize;
+            let residuals = assessment.residuals.iter().map(|residual| {
+                if residual.len() > 1024 || residual.chars().any(char::is_control) {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "sandbox residual is unsafe to project"));
+                }
+                residual_bytes = residual_bytes.saturating_add(residual.len());
+                if residual_bytes > 4096 {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "sandbox residual projection exceeds bound"));
+                }
+                Ok(redact_sandbox_residual(residual))
+            }).collect::<io::Result<Vec<_>>>()?;
+            if by_dimension.insert(assessment.dimension, StdioGuaranteeAssessmentProjectionV1 {
+                dimension: assessment.dimension.as_str(),
+                level: assessment.level.as_str(),
+                backend: assessment.backend,
+                residuals,
+            }).is_some() {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "duplicate sandbox guarantee dimension"));
+            }
+        }
+        if GuaranteeDimension::ALL.iter().any(|dimension| !by_dimension.contains_key(dimension)) {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "sandbox guarantee dimension is missing"));
+        }
+        Ok(GuaranteeDimension::ALL.iter().filter_map(|dimension| by_dimension.remove(dimension)).collect())
+    }
+}
+
+fn redact_sandbox_residual(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut in_opaque_detail = false;
+    for character in value.chars() {
+        if character == '`' {
+            if in_opaque_detail {
+                output.push_str("<detail>");
+                in_opaque_detail = false;
+            } else {
+                in_opaque_detail = true;
+            }
+        } else if !in_opaque_detail {
+            output.push(character);
+        }
+    }
+    if in_opaque_detail {
+        output.push_str("<detail>");
+    }
+    output
+}
+
+fn guarantee_record_digest(record: &str) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"horizoncode.stdio.guarantee-assessment.v1\0");
+    hasher.update(&(record.len() as u64).to_be_bytes());
+    hasher.update(record.as_bytes());
+    format!("blake3:{}", hasher.finalize().to_hex())
+}
+
+pub(crate) fn stdio_guarantee_record_digest(record: &str) -> String {
+    guarantee_record_digest(record)
+}
+
 /// A non-PTY child launched through horizoncode-sandbox. Output capture and RPC framing
 /// remain bounded by the owner; this handle only exposes the three requested pipes and
 /// observed process lifecycle.
 pub struct StdioProcess {
     child: horizoncode_sandbox::RunningChild,
     timeout: Duration,
+    /// One wall-time deadline measured from actual spawn. Preflight may wait on an
+    /// approval indefinitely within its own expiry and must not consume execution time.
+    deadline: Instant,
     stdin: Option<std::process::ChildStdin>,
     stdout: Option<std::process::ChildStdout>,
     stderr: Option<std::process::ChildStderr>,
@@ -522,6 +1468,13 @@ pub struct StdioExecutionBindingV1 {
     pub effect_id: String,
     pub challenge_id: String,
     pub principal: String,
+    /// Principal whose trusted execution profile owns the child process. This is
+    /// distinct from `principal` for managed verification: the latter remains the
+    /// authenticated reviewer who approved the Guard challenge.
+    pub execution_principal: String,
+    /// Explicit authority subject. ProjectRead is Location/workspace scoped and
+    /// intentionally carries no fabricated Session identity.
+    pub scope: StdioExecutionScopeV1,
     pub session_id: String,
     pub location_id: String,
     pub capability_id: String,
@@ -540,6 +1493,16 @@ pub struct StdioExecutionBindingV1 {
     pub profile_revision: u64,
     pub profile_digest: String,
     pub executable_digest: String,
+    /// Retained from the immutable DAP launch-profile definition. Other process
+    /// kinds must always carry false. This is only one required condition; each
+    /// evaluate operation still needs a fresh debug.evaluate Guard lease.
+    pub dap_allow_evaluate: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StdioExecutionScopeV1 {
+    Session { session_id: String },
+    ProjectRead { workspace_id: String },
 }
 
 /// Host-minted identity for a supervised process. This is a lookup reference, never
@@ -548,20 +1511,30 @@ pub struct StdioExecutionBindingV1 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StdioProcessKindV1 {
     TerminalRun,
+    GitRead,
+    /// User-selected editor resolved from immutable Core Config. This is an
+    /// identity label only; HostKernel remains the authority for profile and
+    /// root-Session user-action admission.
+    ExternalEditor,
     LanguageServer,
     DebugAdapter,
     Interpreter,
     ManagedVerifier,
+    /// Fixed packaged CodeMode helper; nested calls return through bounded stdio RPC.
+    CodeModeHelper,
 }
 
 impl StdioProcessKindV1 {
     pub fn wire_name(self) -> &'static str {
         match self {
             Self::TerminalRun => "terminal_run",
+            Self::GitRead => "git_read",
+            Self::ExternalEditor => "external_editor",
             Self::LanguageServer => "language_server",
             Self::DebugAdapter => "debug_adapter",
             Self::Interpreter => "interpreter",
             Self::ManagedVerifier => "managed_verifier",
+            Self::CodeModeHelper => "codemode_helper",
         }
     }
 }
@@ -597,10 +1570,13 @@ impl StdioProcessRefV1 {
         };
         let kind = match text("kind") {
             Some("terminal_run") => StdioProcessKindV1::TerminalRun,
+            Some("git_read") => StdioProcessKindV1::GitRead,
+            Some("external_editor") => StdioProcessKindV1::ExternalEditor,
             Some("language_server") => StdioProcessKindV1::LanguageServer,
             Some("debug_adapter") => StdioProcessKindV1::DebugAdapter,
             Some("interpreter") => StdioProcessKindV1::Interpreter,
             Some("managed_verifier") => StdioProcessKindV1::ManagedVerifier,
+            Some("codemode_helper") => StdioProcessKindV1::CodeModeHelper,
             _ => return Err(invalid_process_ref()),
         };
         Self::from_claims(
@@ -752,12 +1728,19 @@ fn invalid_process_ref() -> io::Error {
 pub struct StdioExecutionPreparedV1 {
     pub execution_id: String,
     pub generation: u64,
+    /// Digest of the exact sandbox-prepared caller-side launch, including the
+    /// host-observed guarantee record. Comparable to a pre-approval assessment.
+    pub launch_digest: String,
+    pub guarantee_digest: String,
     pub execution_digest: String,
     pub approved_arguments_digest: String,
     pub confinement_record: String,
     pub capability_lease_digest: String,
-    /// OS-enforced resource dimensions of the selected backend. This backend currently
-    /// proves none of the V1 worker CPU/memory/process-count/FD limits.
+    /// Exact cgroup-v2 containment identity to persist in the EffectHost PREPARED
+    /// transaction before this one-use launch can reach spawn.
+    pub cgroup_identity: Option<crate::protocol::Value>,
+    /// OS-enforced resource dimensions of the selected process profile. Default worker
+    /// effects prove none; the fixed Linux CodeMode profile proves these four dimensions.
     pub resource_guarantees: ProcessResourceGuaranteesV1,
 }
 
@@ -777,6 +1760,11 @@ impl ProcessResourceGuaranteesV1 {
             process_count_enforced: false,
             file_descriptors_enforced: false,
         }
+    }
+
+    pub const fn for_code_mode_linux() -> Self {
+        Self { cpu_time_enforced: true, memory_enforced: true,
+            process_count_enforced: true, file_descriptors_enforced: true }
     }
 }
 
@@ -816,6 +1804,15 @@ pub struct StdioExecutionRecoveryV1 {
     pub status: StdioExecutionStatusV1,
 }
 
+/// HostKernel-selected managed process effect plus the exact per-effect Attempt
+/// scope that was current when that effect was admitted. Managed scopes may be
+/// refreshed between effects in one Attempt, so a batch cannot share one digest.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ManagedStdioEffectRecoveryPinV1 {
+    pub effect_id: String,
+    pub attempt_scope_digest: String,
+}
+
 /// Durable receipt facts emitted only after the supervisor observes process exit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StdioExecutionReceiptV1 {
@@ -826,6 +1823,8 @@ pub struct StdioExecutionReceiptV1 {
     pub profile_revision: u64,
     pub profile_digest: String,
     pub executable_digest: String,
+    /// Trusted process principal captured by the HostKernel launch binding.
+    pub execution_principal: String,
     pub exit_code: Option<i32>,
     pub stdout_sequence: u64,
     pub stderr_sequence: u64,
@@ -834,6 +1833,25 @@ pub struct StdioExecutionReceiptV1 {
     pub output_bytes: u64,
     pub truncated: bool,
     pub receipt_digest: String,
+}
+
+/// Exact read-only Git settlement facts. The process receipt is bound to both
+/// the workspace revision pinned before launch and the revision observed after
+/// process exit; callers must not return result bytes when these differ.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StdioGitReadReceiptV1 {
+    pub(crate) process: StdioExecutionReceiptV1,
+    pub(crate) workspace_revision_before: String,
+    pub(crate) workspace_revision_after: String,
+    pub(crate) operation_digest: String,
+    pub(crate) grant_digest: String,
+}
+
+/// Replay projection for a settled fixed Git read. Output bytes are returned only
+/// after the durable receipt and both workspace revision pins are revalidated.
+pub(crate) struct StdioGitReadReplayV1 {
+    pub(crate) receipt: StdioGitReadReceiptV1,
+    pub(crate) output: StdioObservedOutputV1,
 }
 
 /// Internal token returned only after EffectHost has durably recorded the process intent.
@@ -882,6 +1900,8 @@ struct StdioExecutionRecord {
     execution_digest: String,
     started_at: Option<Instant>,
     finished_at: Option<Instant>,
+    #[cfg(target_os = "linux")]
+    cgroup: Option<crate::cgroup_v2::ExecutionCgroupV2>,
 }
 
 /// One process owner for non-PTY Guarded executions. Durable intent and receipts remain
@@ -906,6 +1926,101 @@ impl PreparedTerminalLaunch {
     pub fn executable_digest(&self) -> &str {
         &self.executable_digest
     }
+
+    /// Exact host-created cgroup identity to include in EffectHost PREPARED before
+    /// `spawn_prepared` can put the supervisor and its descendants in the group.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn cgroup_identity(&self) -> Option<crate::protocol::Value> {
+        self.cgroup.as_ref().map(|cgroup| cgroup.identity().to_value())
+    }
+
+    /// Prove the exact prepared cgroup is empty when cancellation wins before spawn.
+    /// This does not settle the effect; the caller must persist the proof before
+    /// returning a known pre-dispatch cancellation.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn quiesce_unstarted_process_tree(&self) -> io::Result<String> {
+        let cgroup = self.cgroup.as_ref().ok_or_else(|| io::Error::new(
+            io::ErrorKind::Unsupported,
+            "prepared terminal launch has no cgroup-v2 containment identity",
+        ))?;
+        let proof = crate::cgroup_v2::ExecutionCgroupV2::kill_and_confirm_empty(cgroup.identity())?;
+        crate::cgroup_v2::ExecutionCgroupV2::retain_if_empty(cgroup.identity())?;
+        Ok(proof)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub(crate) fn quiesce_unstarted_process_tree(&self) -> io::Result<String> {
+        Err(io::Error::new(io::ErrorKind::Unsupported,
+            "terminal process-tree containment is unavailable on this platform"))
+    }
+
+    /// Attach the exact cgroup-v2 identity to an already Guard-prepared terminal
+    /// launch. The caller supplies only authority facts resolved by HostKernel after
+    /// approval/lease admission; no process starts here. Linux process-tree containment
+    /// is mandatory for durable terminal dispatch.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn bind_effect_cgroup(
+        &mut self,
+        effect_id: &str,
+        capability_lease_digest: &str,
+        execution_principal: &str,
+        attempt_scope_digest: Option<&str>,
+        owner_epoch: u64,
+        process_generation: u64,
+        process_kind: &str,
+        profile_id: &str,
+        profile_revision: u64,
+        profile_digest: &str,
+    ) -> io::Result<crate::protocol::Value> {
+        if self.cgroup.is_some() || process_generation == 0 {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                "terminal launch already has containment or an invalid generation"));
+        }
+        let mut identity_preimage = b"horizoncode.terminal-execution-id.v1\0".to_vec();
+        identity_preimage.extend_from_slice(effect_id.as_bytes());
+        identity_preimage.push(0);
+        identity_preimage.extend_from_slice(capability_lease_digest.as_bytes());
+        let execution_id = format!("termexec_{}", blake3::hash(&identity_preimage).to_hex());
+        let cgroup = crate::cgroup_v2::ExecutionCgroupV2::create(
+            &execution_id,
+            effect_id,
+            capability_lease_digest,
+            execution_principal,
+            attempt_scope_digest,
+            owner_epoch,
+            process_generation,
+            process_kind,
+            profile_id,
+            profile_revision,
+            profile_digest,
+            &self.executable_digest,
+            "none",
+            self.cgroup_hierarchy_hidden,
+        )?;
+        crate::cgroup_v2::ExecutionCgroupV2::confirm_empty_before_dispatch(cgroup.identity())?;
+        let value = cgroup.identity().to_value();
+        self.cgroup = Some(cgroup);
+        self.cgroup_required = true;
+        Ok(value)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub(crate) fn bind_effect_cgroup(
+        &mut self,
+        _effect_id: &str,
+        _capability_lease_digest: &str,
+        _execution_principal: &str,
+        _attempt_scope_digest: Option<&str>,
+        _owner_epoch: u64,
+        _process_generation: u64,
+        _process_kind: &str,
+        _profile_id: &str,
+        _profile_revision: u64,
+        _profile_digest: &str,
+    ) -> io::Result<crate::protocol::Value> {
+        Err(io::Error::new(io::ErrorKind::Unsupported,
+            "durable terminal process-tree containment is unavailable on this platform"))
+    }
 }
 
 impl StdioProcess {
@@ -929,11 +2044,13 @@ impl StdioProcess {
             };
             validate_stdio_limits(&spec)?;
             let workspace = std::fs::canonicalize(&spec.workspace_root)?;
-            let cwd = std::fs::canonicalize(&spec.cwd)?;
+            let isolated_codemode = matches!(&spec.filesystem_policy, StdioFilesystemPolicyV1::CodeModeIsolated { .. });
+            let cwd = if isolated_codemode { PathBuf::from("/tmp") } else { std::fs::canonicalize(&spec.cwd)? };
             if !workspace.is_absolute()
                 || !std::fs::metadata(&workspace)?.is_dir()
-                || !cwd.starts_with(&workspace)
-                || !std::fs::metadata(&cwd)?.is_dir()
+                || (isolated_codemode && (spec.cwd != Path::new("/tmp") || !spec.writable_roots.is_empty()))
+                || (!isolated_codemode && !cwd.starts_with(&workspace))
+                || (!isolated_codemode && !std::fs::metadata(&cwd)?.is_dir())
             {
                 return Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
@@ -952,6 +2069,37 @@ impl StdioProcess {
             }
             let mut profile = ConfinedProfile::default();
             match &spec.filesystem_policy {
+                StdioFilesystemPolicyV1::ReadOnlyWorkspace => {
+                    if !spec.writable_roots.is_empty() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::PermissionDenied,
+                            "read-only process profiles cannot accept writable roots",
+                        ));
+                    }
+                    profile.scoped_roots.push(ScopedRoot::read(workspace.clone()));
+                }
+                StdioFilesystemPolicyV1::ReadOnlyGitWorktreeMetadata { metadata_root } => {
+                    if !spec.writable_roots.is_empty() {
+                        return Err(io::Error::new(io::ErrorKind::PermissionDenied,
+                            "read-only Git Inspect cannot accept writable roots"));
+                    }
+                    let metadata = std::fs::symlink_metadata(metadata_root)?;
+                    let metadata_canonical = std::fs::canonicalize(metadata_root)?;
+                    let child_git_marker = workspace.join(".git");
+                    let marker = std::fs::symlink_metadata(&child_git_marker)?;
+                    if metadata.file_type().is_symlink() || !metadata.is_dir()
+                        || metadata_canonical.starts_with(&workspace)
+                        || workspace.starts_with(&metadata_canonical)
+                        || marker.file_type().is_symlink() || !marker.is_file()
+                    {
+                        return Err(io::Error::new(io::ErrorKind::PermissionDenied,
+                            "Git Inspect metadata must be a separate authenticated directory and child .git marker a regular file"));
+                    }
+                    profile.scoped_roots = vec![
+                        ScopedRoot::read(workspace.clone()),
+                        ScopedRoot::read(metadata_canonical),
+                    ];
+                }
                 StdioFilesystemPolicyV1::WorkspaceWrite => {
                     let mut writable_roots = Vec::with_capacity(spec.writable_roots.len());
                     for requested in &spec.writable_roots {
@@ -1032,6 +2180,42 @@ impl StdioProcess {
                         .map(|name| ProtectedSubpath::directory(workspace.join(name)))
                         .collect();
                 }
+                StdioFilesystemPolicyV1::CodeModeIsolated { package_root, entrypoint, helper_digest } => {
+                    if !spec.writable_roots.is_empty() {
+                        return Err(io::Error::new(io::ErrorKind::PermissionDenied,
+                            "CodeMode cannot receive writable host roots"));
+                    }
+                    let package = spec.code_mode_helper.as_ref().ok_or_else(invalid_launch_profile)?;
+                    let package_canonical = std::fs::canonicalize(package_root)?;
+                    let entrypoint_canonical = std::fs::canonicalize(entrypoint)?;
+                    let metadata = std::fs::symlink_metadata(entrypoint)?;
+                    let bytes = read_fixed_helper(entrypoint)?;
+                    let actual_digest = format!("sha256:{}", ring::digest::digest(&ring::digest::SHA256, &bytes).as_ref().iter().map(|byte| format!("{byte:02x}")).collect::<String>());
+                    if package.package_root != package_canonical
+                        || package.entrypoint != entrypoint_canonical
+                        || package.helper_digest != *helper_digest
+                        || actual_digest != *helper_digest
+                        || metadata.file_type().is_symlink()
+                        || !metadata.is_file()
+                        || metadata.len() == 0
+                        || metadata.len() > 16 * 1024 * 1024
+                        || !entrypoint_canonical.starts_with(&package_canonical)
+                        || package_canonical.starts_with(&workspace)
+                        || workspace.starts_with(&package_canonical)
+                        || spec.executable != package.executable
+                        || spec.executable_digest != package.executable_digest
+                        || spec.profile_digest != package.launch_profile_digest()?
+                        || spec.argv != [OsString::from("run"), package.entrypoint.as_os_str().to_owned()]
+                        || !spec.env.is_empty()
+                    {
+                        return Err(io::Error::new(io::ErrorKind::PermissionDenied,
+                            "CodeMode fixed helper package binding changed"));
+                    }
+                    // The helper is a self-contained installed artifact and is
+                    // mounted read-only. Its current workspace is deliberately not
+                    // visible; effects return through authenticated ToolBatch waves.
+                    profile.scoped_roots.push(ScopedRoot::read(package_canonical));
+                }
             }
             let profile = SandboxProfile::Confined(profile);
             static SANDBOX: std::sync::OnceLock<Sandbox> = std::sync::OnceLock::new();
@@ -1065,6 +2249,7 @@ impl StdioProcess {
             request.stdout = StdioPolicy::Piped;
             request.stderr = StdioPolicy::Piped;
             let profile_digest = blake3::hash(profile.canonical_descriptor().as_bytes()).to_hex();
+            let guarantee_record = prepared.guarantee_record();
             let mut hasher = blake3::Hasher::new();
             for part in [
                 b"horizoncode.stdio.execution.v1".as_slice(),
@@ -1098,8 +2283,10 @@ impl StdioProcess {
             hasher.update(&(spec.timeout.as_millis() as u64).to_be_bytes());
             hasher.update(&(spec.max_output_bytes as u64).to_be_bytes());
             hasher.update(&[u8::from(spec.capture_output_for_host)]);
+            hasher.update(&(guarantee_record.len() as u64).to_be_bytes());
+            hasher.update(guarantee_record.as_bytes());
             Ok(PreparedStdioLaunch {
-                guarantee_record: prepared.guarantee_record(),
+                guarantee_record,
                 prepared,
                 request,
                 executable_path: executable,
@@ -1114,6 +2301,22 @@ impl StdioProcess {
 
     /// Consume a successful preflight only after durable intent and Guard lease admission.
     pub fn spawn_prepared(prepared: PreparedStdioLaunch) -> io::Result<Self> {
+        Self::spawn_prepared_inner(prepared, None, None)
+    }
+
+    fn spawn_prepared_in_cgroup(
+        prepared: PreparedStdioLaunch,
+        cgroup_procs_fd: i32,
+        max_open_files: Option<u64>,
+    ) -> io::Result<Self> {
+        Self::spawn_prepared_inner(prepared, Some(cgroup_procs_fd), max_open_files)
+    }
+
+    fn spawn_prepared_inner(
+        prepared: PreparedStdioLaunch,
+        cgroup_procs_fd: Option<i32>,
+        max_open_files: Option<u64>,
+    ) -> io::Result<Self> {
         // The profile may sit in an approval queue after confinement preflight.
         // Re-resolve and hash it again immediately before the sandbox launcher
         // receives the executable path; a replaced binary never starts under the
@@ -1127,16 +2330,19 @@ impl StdioProcess {
                 "trusted executable changed after preflight and before spawn",
             ));
         }
-        let mut child = prepared
-            .prepared
-            .spawn(&prepared.request)
-            .map_err(|error| io::Error::other(error.to_string()))?;
+        let mut child = match cgroup_procs_fd {
+            Some(fd) => prepared.prepared.spawn_in_cgroup(&prepared.request, fd, max_open_files),
+            None => prepared.prepared.spawn(&prepared.request),
+        }
+        .map_err(|error| io::Error::other(error.to_string()))?;
+        let deadline = Instant::now() + prepared.timeout;
         let stdin = child.take_stdin();
         let stdout = child.take_stdout();
         let stderr = child.take_stderr();
-        #[cfg(unix)]
+        #[cfg(target_os = "linux")]
         {
             for fd in [
+                stdin.as_ref().map(AsRawFd::as_raw_fd),
                 stdout.as_ref().map(AsRawFd::as_raw_fd),
                 stderr.as_ref().map(AsRawFd::as_raw_fd),
             ]
@@ -1155,6 +2361,7 @@ impl StdioProcess {
         Ok(Self {
             child,
             timeout: prepared.timeout,
+            deadline,
             stdin,
             stdout,
             stderr,
@@ -1205,7 +2412,8 @@ impl StdioProcess {
     /// Write one bounded input frame to the child. This confirms only local pipe
     /// delivery; it does not claim the child processed the request.
     pub fn write_stdin(&mut self, bytes: &[u8]) -> io::Result<()> {
-        if bytes.len() > MAX_INPUT_BYTES
+        if bytes.is_empty()
+            || bytes.len() > MAX_INPUT_BYTES
             || self
                 .input_bytes
                 .checked_add(bytes.len())
@@ -1220,8 +2428,20 @@ impl StdioProcess {
             .stdin
             .as_mut()
             .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "process stdin is closed"))?;
-        stdin.write_all(bytes)?;
-        stdin.flush()?;
+        #[cfg(target_os = "linux")]
+        let written = write_pipe_until(stdin, bytes, self.deadline);
+        #[cfg(not(target_os = "linux"))]
+        let written = Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "confined process stdin is unavailable on this platform",
+        ));
+        if let Err(error) = written {
+            // A partial frame can already have reached the child. Stop this exact
+            // process and let the caller persist UNKNOWN/reconcile; never continue
+            // sending the suffix or treat the failed write as absent.
+            let _ = self.child.kill();
+            return Err(error);
+        }
         self.input_bytes = self.input_bytes.saturating_add(bytes.len());
         Ok(())
     }
@@ -1391,13 +2611,52 @@ impl StdioProcess {
 }
 
 impl StdioExecutionSupervisor {
+    /// Produce a no-child assessment for Guard's pre-approval projection. The same
+    /// immutable launch inputs are prepared again after approval; callers must bind
+    /// this record to the challenge and require the later digest to match.
+    pub(crate) fn assess_launch(
+        spec: StdioLaunchSpec,
+    ) -> io::Result<StdioLaunchAssessmentV1> {
+        let prepared = StdioProcess::prepare_confined(spec)?;
+        Ok(StdioLaunchAssessmentV1 {
+            execution_digest: prepared.execution_digest.clone(),
+            guarantee_record: prepared.guarantee_record.clone(),
+            guarantees: prepared.prepared.guarantees().to_vec(),
+        })
+    }
+
     /// Run sandbox/executable preflight and retain the prepared object for exactly one
     /// later dispatch. This method creates no durable intent and consumes no Guard lease.
     pub fn preflight(
         &mut self,
         binding: StdioExecutionBindingV1,
-        spec: StdioLaunchSpec,
+        mut spec: StdioLaunchSpec,
     ) -> io::Result<StdioExecutionPreparedV1> {
+        let process_kind = stdio_process_kind_for_capability(&binding.capability_id)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported,
+                "process capability has no supervised ExecutionHost adapter"))?;
+        if (binding.capability_id == crate::guard::FILES_READ_ID) != spec.fixed_git_read {
+            return Err(io::Error::new(io::ErrorKind::Unsupported,
+                "files.read is available only through the fixed Git read adapter"));
+        }
+        let is_code_mode = binding.capability_id == crate::guard::CODE_MODE_EXECUTE_ID;
+        if is_code_mode {
+            let package = spec.code_mode_helper.clone().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::Unsupported,
+                    "fixed CodeMode helper package is unavailable")
+            })?;
+            spec.use_codemode_isolation(&package);
+            if binding.profile_id != CodeModeHelperPackageV1::PROFILE_ID
+                || binding.profile_revision != CodeModeHelperPackageV1::PROFILE_REVISION
+                || binding.profile_digest != package.launch_profile_digest()?
+                || binding.executable_digest != package.executable_digest
+                || spec.timeout > Duration::from_secs(30)
+                || spec.max_output_bytes > MAX_OUTPUT_BYTES
+            {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                    "CodeMode binding differs from its fixed helper profile or bounded execution budget"));
+            }
+        }
         validate_stdio_binding(&binding, &spec)?;
         if self.executions.contains_key(&binding.execution_id)
             || self.executions.len() >= MAX_ACTIVE_STDIO_EXECUTIONS
@@ -1411,15 +2670,57 @@ impl StdioExecutionSupervisor {
         let execution_digest = bind_stdio_execution_digest(
             prepared.execution_digest(),
             &binding.approved_arguments_digest,
+            &binding.execution_principal,
         );
+        #[cfg(not(target_os = "linux"))]
+        if is_code_mode {
+            return Err(io::Error::new(io::ErrorKind::Unsupported,
+                "CodeMode OS resource profile is unavailable on this platform"));
+        }
+        #[cfg(target_os = "linux")]
+        let resource_profile = if is_code_mode {
+            "codemode.v1"
+        } else {
+            "none"
+        };
+        #[cfg(target_os = "linux")]
+        let cgroup = Some(crate::cgroup_v2::ExecutionCgroupV2::create(
+            &binding.execution_id,
+            &binding.effect_id,
+            &binding.capability_lease_digest,
+            &binding.execution_principal,
+            binding.attempt_scope_digest.as_deref(),
+            binding.owner_epoch,
+            binding.generation,
+            process_kind.wire_name(),
+            &binding.profile_id,
+            binding.profile_revision,
+            &binding.profile_digest,
+            &binding.executable_digest,
+            resource_profile,
+            prepared.prepared.proves_cgroup_hierarchy_hidden(),
+        )?);
+        #[cfg(not(target_os = "linux"))]
+        let cgroup: Option<()> = None;
+        #[cfg(target_os = "linux")]
+        let cgroup_identity = cgroup.as_ref().map(|cgroup| cgroup.identity().to_value());
+        #[cfg(not(target_os = "linux"))]
+        let cgroup_identity = None;
         let response = StdioExecutionPreparedV1 {
             execution_id: binding.execution_id.clone(),
             generation: binding.generation,
+            launch_digest: prepared.execution_digest.clone(),
+            guarantee_digest: guarantee_record_digest(&prepared.guarantee_record),
             execution_digest: execution_digest.clone(),
             approved_arguments_digest: binding.approved_arguments_digest.clone(),
             confinement_record: prepared.guarantee_record().to_owned(),
             capability_lease_digest: binding.capability_lease_digest.clone(),
-            resource_guarantees: ProcessResourceGuaranteesV1::for_current_backend(),
+            cgroup_identity,
+            resource_guarantees: if is_code_mode {
+                ProcessResourceGuaranteesV1::for_code_mode_linux()
+            } else {
+                ProcessResourceGuaranteesV1::for_current_backend()
+            },
         };
         let timeout = prepared.timeout;
         self.executions.insert(
@@ -1435,6 +2736,8 @@ impl StdioExecutionSupervisor {
                 execution_digest,
                 started_at: None,
                 finished_at: None,
+                #[cfg(target_os = "linux")]
+                cgroup,
             },
         );
         Ok(response)
@@ -1463,7 +2766,22 @@ impl StdioExecutionSupervisor {
                 "durable intent does not match the prepared execution",
             ));
         }
+        #[cfg(target_os = "linux")]
+        let process = {
+            let cgroup = record.cgroup.as_ref().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::Unsupported, "execution cgroup is unavailable")
+            })?;
+            StdioProcess::spawn_prepared_in_cgroup(
+                prepared,
+                cgroup.placement_fd(),
+                (record.binding.capability_id == crate::guard::CODE_MODE_EXECUTE_ID)
+                    .then_some(CodeModeResourceProfileV1::NOFILE_MAX),
+            )?
+        };
+        #[cfg(not(target_os = "linux"))]
         let process = StdioProcess::spawn_prepared(prepared)?;
+        // Process time starts at dispatch, never at preflight/approval.
+        record.deadline = process.deadline;
         record.state = StdioExecutionStateV1::Running;
         record.process = Some(process);
         record.started_at = Some(Instant::now());
@@ -1485,8 +2803,26 @@ impl StdioExecutionSupervisor {
                 "only an exact unstarted preflight can be discarded",
             ));
         }
+        #[cfg(target_os = "linux")]
+        if let Some(cgroup) = record.cgroup.as_ref() {
+            crate::cgroup_v2::ExecutionCgroupV2::retain_if_empty(cgroup.identity())?;
+        }
         self.executions.remove(&binding.execution_id);
         Ok(())
+    }
+
+    /// Resolve a process id only for internal HostKernel-to-adapter translation.
+    /// The id is never serialized to Core and is available only for the exact live
+    /// generation binding.
+    pub(crate) fn process_pid(&self, binding: &StdioExecutionBindingV1) -> io::Result<u32> {
+        let record = self.executions.get(&binding.execution_id).ok_or_else(||
+            io::Error::new(io::ErrorKind::NotFound, "execution identifier is unknown"))?;
+        if record.binding != *binding || record.state != StdioExecutionStateV1::Running {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied,
+                "process PID is unavailable for a stale or non-running binding"));
+        }
+        record.process.as_ref().map(StdioProcess::pid).ok_or_else(||
+            io::Error::new(io::ErrorKind::NotFound, "live process handle is unavailable"))
     }
 
     /// Transfer internally retained bytes for a verifier only after the bound process
@@ -1522,11 +2858,27 @@ impl StdioExecutionSupervisor {
                 "execution is not running",
             ));
         }
-        record
+        if Instant::now() >= record.deadline {
+            if let Some(process) = record.process.as_mut() {
+                let _ = process.request_terminate();
+            }
+            record.state = StdioExecutionStateV1::Cancelling;
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "process stdin delivery exceeded the execution deadline",
+            ));
+        }
+        let result = record
             .process
             .as_mut()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "execution process is absent"))?
-            .write_stdin(bytes)
+            .write_stdin(bytes);
+        if result.is_err() {
+            // Input delivery may have been partial. The process handle attempts a
+            // best-effort kill; keep the lifecycle fenced until exit is observed.
+            record.state = StdioExecutionStateV1::Cancelling;
+        }
+        result
     }
 
     pub fn read_output(
@@ -1588,15 +2940,16 @@ impl StdioExecutionSupervisor {
         Ok(stdio_status(&binding.execution_id, record))
     }
 
-    /// Fence an unresolved process after owner loss. The process handle is dropped and
-    /// killed; the caller must persist UNKNOWN and must never call launch again.
+    /// Fence an unresolved process after owner loss. This records UNKNOWN and prevents
+    /// redispatch. It does not establish process-tree exit: dropping the wrapper handle
+    /// is not proof that descendants have stopped. The caller must persist UNKNOWN,
+    /// retain the durable capacity reservation, and never call launch again.
     pub fn mark_unknown(
         &mut self,
         binding: &StdioExecutionBindingV1,
     ) -> io::Result<StdioExecutionStatusV1> {
         let record = self.record_mut(binding)?;
         record.prepared = None;
-        record.process = None;
         record.state = StdioExecutionStateV1::Unknown;
         Ok(stdio_status(&binding.execution_id, record))
     }
@@ -1637,14 +2990,29 @@ fn validate_stdio_binding(
             && value.starts_with("blake3:")
             && value[7..].bytes().all(|byte| byte.is_ascii_hexdigit())
     };
-    if !valid_id(&binding.execution_id)
+    let scope_valid = match &binding.scope {
+        StdioExecutionScopeV1::Session { session_id } => {
+            valid_id(session_id) && session_id == &binding.session_id
+        }
+        StdioExecutionScopeV1::ProjectRead { workspace_id } => {
+            valid_id(workspace_id)
+                && binding.session_id.is_empty()
+                && binding.capability_id == crate::guard::FILES_READ_ID
+                && binding.attempt_scope_digest.is_none()
+        }
+    };
+    if stdio_process_kind_for_capability(&binding.capability_id).is_none()
+        || !scope_valid
+        || (binding.capability_id == crate::guard::FILES_READ_ID) != spec.fixed_git_read
+        || !valid_id(&binding.execution_id)
         || !valid_id(&binding.effect_id)
         || !valid_id(&binding.challenge_id)
         || !valid_id(&binding.location_id)
         || !valid_id(&binding.capability_id)
         || !valid_id(&binding.profile_ref)
         || !valid_id(&binding.profile_id)
-        || binding.principal.is_empty()
+        || !valid_id(&binding.principal)
+        || !valid_id(&binding.execution_principal)
         || binding.session_id.len() > 256
         || binding.owner_epoch == 0
         || binding.generation == 0
@@ -1671,10 +3039,24 @@ fn validate_stdio_binding(
     Ok(())
 }
 
-fn bind_stdio_execution_digest(spec_digest: &str, approved_arguments_digest: &str) -> String {
+pub(crate) fn stdio_process_kind_for_capability(capability_id: &str) -> Option<StdioProcessKindV1> {
+    match capability_id {
+        crate::guard::TERMINAL_RUN_ID | crate::guard::TERMINAL_START_ID => Some(StdioProcessKindV1::TerminalRun),
+        crate::guard::FILES_READ_ID => Some(StdioProcessKindV1::GitRead),
+        crate::guard::LANGUAGE_SERVER_START_ID => Some(StdioProcessKindV1::LanguageServer),
+        crate::guard::DEBUG_START_ID => Some(StdioProcessKindV1::DebugAdapter),
+        crate::guard::REPL_START_ID => Some(StdioProcessKindV1::Interpreter),
+        crate::guard::CODE_MODE_EXECUTE_ID => Some(StdioProcessKindV1::CodeModeHelper),
+        crate::guard::EDITOR_LAUNCH_ID => Some(StdioProcessKindV1::ExternalEditor),
+        crate::guard::BUILTIN_VERIFIER_ID => Some(StdioProcessKindV1::ManagedVerifier),
+        _ => None,
+    }
+}
+
+pub(crate) fn bind_stdio_execution_digest(spec_digest: &str, approved_arguments_digest: &str, execution_principal: &str) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"horizoncode.stdio.approved-execution.v1\0");
-    for value in [spec_digest.as_bytes(), approved_arguments_digest.as_bytes()] {
+    for value in [spec_digest.as_bytes(), approved_arguments_digest.as_bytes(), execution_principal.as_bytes()] {
         hasher.update(&(value.len() as u64).to_be_bytes());
         hasher.update(value);
     }
@@ -1834,6 +3216,82 @@ fn validate_stdio_limits(spec: &StdioLaunchSpec) -> io::Result<()> {
     Ok(())
 }
 
+/// Write a single bounded pipe frame without blocking the HostKernel request
+/// thread. The deadline is the process's original wall-time budget, not a fresh
+/// timeout per frame. A caller that sees an error must treat a partial write as
+/// uncertain and stop/reconcile the child.
+#[cfg(target_os = "linux")]
+fn write_pipe_until(
+    pipe: &mut std::process::ChildStdin,
+    bytes: &[u8],
+    deadline: Instant,
+) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    let fd = pipe.as_raw_fd();
+    let mut offset = 0usize;
+    while offset < bytes.len() {
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "process stdin delivery exceeded the execution deadline",
+            ));
+        }
+        // SAFETY: `bytes[offset..]` is a valid readable range for the duration
+        // of this call, and `fd` is the live child stdin pipe owned by `pipe`.
+        let result = unsafe {
+            libc::write(
+                fd,
+                bytes[offset..].as_ptr().cast(),
+                bytes.len() - offset,
+            )
+        };
+        if result > 0 {
+            offset = offset.saturating_add(result as usize);
+            continue;
+        }
+        if result == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "process stdin pipe accepted no bytes",
+            ));
+        }
+        let error = io::Error::last_os_error();
+        match error.raw_os_error() {
+            Some(libc::EINTR) => continue,
+            Some(libc::EAGAIN) => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    continue;
+                }
+                let timeout_ms = remaining.as_millis().clamp(1, 50) as libc::c_int;
+                let mut descriptor = libc::pollfd {
+                    fd,
+                    events: libc::POLLOUT,
+                    revents: 0,
+                };
+                // SAFETY: `descriptor` is a valid single-element poll array.
+                let polled = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
+                if polled < 0 {
+                    let poll_error = io::Error::last_os_error();
+                    if poll_error.raw_os_error() == Some(libc::EINTR) {
+                        continue;
+                    }
+                    return Err(poll_error);
+                }
+                if descriptor.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "child closed process stdin",
+                    ));
+                }
+            }
+            _ => return Err(error),
+        }
+    }
+    Ok(())
+}
+
 fn is_protected_workspace_path(workspace: &Path, candidate: &Path) -> bool {
     [".git", ".agents", ".codex", ".horizoncode"]
         .into_iter()
@@ -1841,6 +3299,35 @@ fn is_protected_workspace_path(workspace: &Path, candidate: &Path) -> bool {
 }
 
 impl TerminalProcess {
+    pub(crate) fn prepared_launch_digest(prepared: &PreparedTerminalLaunch) -> &str {
+        &prepared.launch_digest
+    }
+
+    pub(crate) fn prepared_executable_digest(prepared: &PreparedTerminalLaunch) -> &str {
+        &prepared.executable_digest
+    }
+
+    /// Terminate every remaining descendant in this launch's exact cgroup and prove
+    /// the kernel reports it empty. A PTY leader exiting is not enough: it may have
+    /// left children behind. The returned digest is containment evidence, not a
+    /// successful command/effect receipt.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn quiesce_process_tree(&self) -> io::Result<String> {
+        let cgroup = self.cgroup.as_ref().ok_or_else(|| io::Error::new(
+            io::ErrorKind::Unsupported,
+            "terminal process has no durable cgroup-v2 containment identity",
+        ))?;
+        let proof = crate::cgroup_v2::ExecutionCgroupV2::kill_and_confirm_empty(cgroup.identity())?;
+        crate::cgroup_v2::ExecutionCgroupV2::retain_if_empty(cgroup.identity())?;
+        Ok(proof)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub(crate) fn quiesce_process_tree(&self) -> io::Result<String> {
+        Err(io::Error::new(io::ErrorKind::Unsupported,
+            "terminal process-tree containment is unavailable on this platform"))
+    }
+
     /// Compute the digest used by the consent preflight for an exact caller-side launch
     /// specification, before wrapping it with the selected sandbox command.
     pub fn launch_digest_for(
@@ -1895,6 +3382,7 @@ impl TerminalProcess {
         let launch_digest = terminal_launch_digest(&spec, &workspace)?;
         let executable_path = std::fs::canonicalize(&spec.executable)?;
         let executable_digest = executable_digest(&executable_path)?;
+        let cgroup_hierarchy_hidden = prepared.proves_cgroup_hierarchy_hidden();
         let confinement = prepared.prepare_external(&request).map_err(unavailable)?;
         let argv = confinement.argv();
         spec.executable = PathBuf::from(&argv[0]);
@@ -1902,12 +3390,266 @@ impl TerminalProcess {
         spec.cwd = cwd;
         Ok(PreparedTerminalLaunch {
             spec,
-            confinement,
+            confinement: Some(confinement),
             guarantee_record: prepared.guarantee_record(),
             launch_digest,
             executable_path,
             executable_digest,
+            cgroup_hierarchy_hidden,
+            #[cfg(target_os = "linux")]
+            cgroup: None,
+            cgroup_required: true,
         })
+    }
+
+    /// Confine a workspace editor to the registered workspace plus one unique
+    /// private scratch directory. The extra writable root is deliberately a
+    /// host-created per-invocation directory, never a profile-selected path.
+    #[cfg(target_os = "linux")]
+    fn prepare_confined_with_private_scratch(
+        mut spec: TerminalLaunchSpec,
+        workspace_root: &Path,
+        scratch_root: &Path,
+        workspace_write: bool,
+    ) -> io::Result<PreparedTerminalLaunch> {
+        use horizoncode_sandbox::{
+            ExpectedLevel, GuaranteeDimension, RootAccess, Sandbox,
+            SandboxProfile, ScopedRoot, SpawnRequest,
+        };
+        validate_size(spec.cols, spec.rows)?;
+        let workspace = std::fs::canonicalize(workspace_root)?;
+        let scratch = std::fs::canonicalize(scratch_root)?;
+        let cwd = std::fs::canonicalize(&spec.cwd)?;
+        let scratch_metadata = std::fs::metadata(&scratch)?;
+        if workspace.parent().is_none() || !cwd.starts_with(&workspace)
+            || !scratch_metadata.is_dir() || scratch.starts_with(&workspace)
+        {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied,
+                "editor scratch root must be a private directory outside the workspace"));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if scratch_metadata.permissions().mode() & 0o077 != 0 {
+                return Err(io::Error::new(io::ErrorKind::PermissionDenied,
+                    "editor scratch root permissions are not private"));
+            }
+        }
+        static SANDBOX: std::sync::OnceLock<Sandbox> = std::sync::OnceLock::new();
+        let sandbox = SANDBOX.get_or_init(Sandbox::probe);
+        let mut profile = match if workspace_write {
+            SandboxProfile::workspace_write(&workspace)
+        } else {
+            SandboxProfile::readonly([workspace.clone()])
+        } {
+            SandboxProfile::Confined(profile) => profile,
+            SandboxProfile::FullAccess => unreachable!("editor confined profiles are not full access"),
+        };
+        profile.scoped_roots.push(ScopedRoot {
+            path: scratch.clone(),
+            access: RootAccess::ReadWrite,
+        });
+        let profile = SandboxProfile::Confined(profile);
+        let unavailable = |error| io::Error::new(io::ErrorKind::Unsupported,
+            format!("external editor confinement unavailable: {error}"));
+        let prepared = sandbox.prepare(&profile).map_err(unavailable)?;
+        for dimension in [GuaranteeDimension::FilesystemRead, GuaranteeDimension::FilesystemWrite,
+            GuaranteeDimension::NetworkEgress, GuaranteeDimension::ProcessTree] {
+            prepared.require(dimension, ExpectedLevel::ENFORCED).map_err(unavailable)?;
+        }
+        let mut request = SpawnRequest::new(&spec.executable).cwd(&cwd);
+        request.args = spec.argv.clone();
+        request.preserve_controlling_terminal = true;
+        let launch_digest = terminal_launch_digest(&spec, &workspace)?;
+        let executable_path = std::fs::canonicalize(&spec.executable)?;
+        let executable_digest = executable_digest(&executable_path)?;
+        let cgroup_hierarchy_hidden = prepared.proves_cgroup_hierarchy_hidden();
+        let confinement = prepared.prepare_external(&request).map_err(unavailable)?;
+        let argv = confinement.argv();
+        spec.executable = PathBuf::from(&argv[0]);
+        spec.argv = argv[1..].to_vec();
+        spec.cwd = cwd;
+        Ok(PreparedTerminalLaunch {
+            spec,
+            confinement: Some(confinement),
+            guarantee_record: prepared.guarantee_record(),
+            launch_digest,
+            executable_path,
+            executable_digest,
+            cgroup_hierarchy_hidden,
+            #[cfg(target_os = "linux")]
+            cgroup: None,
+            cgroup_required: true,
+        })
+    }
+
+    /// Prepare the exact user-selected external editor through the existing PTY
+    /// ExecutionHost. This performs no spawn and creates no Guard lease or durable
+    /// intent. HostKernel must verify the profile reference, authenticated root Session,
+    /// one user action, target file identity/revision and exclusive write fence before
+    /// calling this; dispatch remains behind the ordinary durable intent + lease.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn prepare_external_editor(
+        binding: &ExternalEditorLaunchBindingV1,
+        trusted_selectors: &BTreeMap<String, PathBuf>,
+        environment: BTreeMap<OsString, OsString>,
+        cols: u16,
+        rows: u16,
+    ) -> io::Result<PreparedTerminalLaunch> {
+        let profile = &binding.profile;
+        let permission_mode = &binding.permission_mode;
+        let target = &binding.target;
+        if !binding.profile_ref.matches_definition(profile)?
+            || !permission_mode.validate()
+            || binding.session_id != permission_mode.session_id
+            || binding.owner_epoch != permission_mode.owner_epoch
+            || permission_mode.workspace_root_digest != binding.workspace_root_binding
+            || binding.owner_epoch == 0
+            || binding.generation == 0
+            || !valid_editor_binding_id(&binding.execution_id)
+            || !valid_editor_binding_id(&binding.session_id)
+            || !valid_editor_binding_id(&binding.principal)
+            || !valid_editor_binding_id(&binding.location_id)
+            || !valid_editor_binding_id(&binding.user_action_id)
+            || !valid_editor_binding_id(&binding.call_id)
+            || !valid_editor_binding_id(&binding.effect_id)
+            || !valid_editor_binding_id(&binding.challenge_id)
+            || !is_blake3_digest(&binding.workspace_root_binding)
+            || !is_blake3_digest(&binding.capability_lease_digest)
+            || !is_blake3_digest(&binding.executable_digest)
+            || (permission_mode.sandbox_mode == crate::guard::DirectSandboxModeV1::ReadOnly
+                && target.kind != ExternalEditorTargetKindV1::PromptScratch)
+            // A Full access editor can write the original workspace despite only
+            // receiving the private scratch pathname. Keep workspace-file editing
+            // unavailable unless the kernel can enforce the read-only workspace
+            // boundary and separate Guarded patch flow.
+            || (permission_mode.sandbox_mode == crate::guard::DirectSandboxModeV1::DangerFullAccess
+                && target.kind == ExternalEditorTargetKindV1::WorkspaceFile)
+            || (permission_mode.sandbox_mode == crate::guard::DirectSandboxModeV1::DangerFullAccess
+                && permission_mode.approval_policy != crate::guard::DirectApprovalPolicyV1::Never)
+        {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied,
+                "editor launch profile or direct-session mode is stale or unavailable"));
+        }
+        let workspace_root = &binding.workspace_root;
+        if !is_blake3_digest(&target.base_workspace_revision)
+            || match target.kind {
+                ExternalEditorTargetKindV1::WorkspaceFile => {
+                    target.expected_file_digest.as_deref().is_none_or(|d| !is_blake3_digest(d))
+                        || !valid_editor_source_relative_path(&target.source_relative_path)
+                }
+                ExternalEditorTargetKindV1::PromptScratch => {
+                    target.expected_file_digest.is_some() || !target.source_relative_path.is_empty()
+                }
+            }
+        {
+            return Err(invalid_external_editor_profile());
+        }
+        let scratch_path = Path::new(&target.canonical_target_token);
+        if !scratch_path.is_absolute() {
+            return Err(invalid_external_editor_profile());
+        }
+        let workspace_canonical = std::fs::canonicalize(workspace_root)?;
+        let scratch_root_canonical = std::fs::canonicalize(&target.scratch_root)?;
+        if scratch_root_canonical.starts_with(&workspace_canonical) {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied,
+                "editor scratch directory must be outside the workspace"));
+        }
+        let (initial_scratch_digest, _) = inspect_external_editor_scratch(&target.scratch_root, scratch_path)?;
+        if target.kind == ExternalEditorTargetKindV1::WorkspaceFile
+            && target.expected_file_digest.as_deref() != Some(initial_scratch_digest.as_str())
+        {
+            return Err(io::Error::new(io::ErrorKind::InvalidData,
+                "workspace editor scratch does not match the selected source preview"));
+        }
+        validate_editor_environment(&environment)?;
+        let (executable, digest) = profile.resolve_executable_with_trusted_map(trusted_selectors)?;
+        let expected_path = std::fs::canonicalize(&binding.executable_path)?;
+        if digest != binding.executable_digest || digest != executable_digest(&expected_path)?
+            || executable != expected_path
+        {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied,
+                "editor executable does not match the authenticated HostKernel pin"));
+        }
+        let argv = profile.argv_for_target(&target.canonical_target_token, target.kind)?;
+        let launch_spec = TerminalLaunchSpec {
+            executable,
+            argv,
+            cwd: workspace_root.to_path_buf(),
+            env: environment,
+            cols,
+            rows,
+        };
+        let mut prepared = if permission_mode.sandbox_mode == crate::guard::DirectSandboxModeV1::DangerFullAccess {
+            Self::prepare_full_access(launch_spec, workspace_root, &binding.session_id, binding.owner_epoch,
+                &binding.workspace_root_binding, permission_mode)?
+        } else {
+            // The editor only mutates the private copy. Even in WorkspaceWrite
+            // mode the workspace stays read-only until a separate Guarded
+            // files.patch applies the result after revalidating its source pins.
+            Self::prepare_confined_with_private_scratch(
+                launch_spec, workspace_root, &target.scratch_root, false,
+            )?
+        };
+        if prepared.executable_digest != digest {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied,
+                "trusted editor executable changed during preflight"));
+        }
+        let cgroup = crate::cgroup_v2::ExecutionCgroupV2::create(
+            &binding.execution_id,
+            &binding.effect_id,
+            &binding.capability_lease_digest,
+            &binding.profile_ref.profile_id,
+            None,
+            binding.owner_epoch,
+            binding.generation,
+            "external_editor",
+            &binding.profile_ref.profile_id,
+            binding.profile_ref.revision,
+            &binding.profile_ref.profile_digest,
+            &binding.executable_digest,
+            "none",
+            prepared.cgroup_hierarchy_hidden,
+        )?;
+        crate::cgroup_v2::ExecutionCgroupV2::confirm_empty_before_dispatch(cgroup.identity())?;
+        prepared.cgroup = Some(cgroup);
+        prepared.cgroup_required = true;
+        let profile_digest = profile.definition_digest()?;
+        let target_kind_name = match target.kind {
+            ExternalEditorTargetKindV1::PromptScratch => "prompt_scratch",
+            ExternalEditorTargetKindV1::WorkspaceFile => "workspace_file",
+        };
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"horizoncode.external-editor-launch.v1\0");
+        let owner_epoch = binding.owner_epoch.to_string();
+        let generation = binding.generation.to_string();
+        let revision = target.base_workspace_revision.as_bytes();
+        let file_digest = target.expected_file_digest.as_deref().unwrap_or("").as_bytes();
+        for value in [binding.execution_id.as_bytes(), binding.session_id.as_bytes(), binding.principal.as_bytes(),
+            binding.location_id.as_bytes(), owner_epoch.as_bytes(), generation.as_bytes(),
+            binding.user_action_id.as_bytes(), binding.call_id.as_bytes(), profile_digest.as_bytes(),
+            binding.profile_ref.profile_digest.as_bytes(), binding.executable_digest.as_bytes(),
+            target_kind_name.as_bytes(), target.canonical_target_token.as_bytes(),
+            target.source_relative_path.as_bytes(), revision,
+            file_digest, binding.capability_lease_digest.as_bytes(), binding.effect_id.as_bytes(),
+            binding.challenge_id.as_bytes(), prepared.launch_digest.as_bytes(), permission_mode.digest.as_bytes()] {
+            hasher.update(&(value.len() as u64).to_be_bytes());
+            hasher.update(value);
+        }
+        prepared.launch_digest = format!("blake3:{}", hasher.finalize().to_hex());
+        Ok(prepared)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub(crate) fn prepare_external_editor(
+        _binding: &ExternalEditorLaunchBindingV1,
+        _trusted_selectors: &BTreeMap<String, PathBuf>,
+        _environment: BTreeMap<OsString, OsString>,
+        _cols: u16,
+        _rows: u16,
+    ) -> io::Result<PreparedTerminalLaunch> {
+        Err(io::Error::new(io::ErrorKind::Unsupported,
+            "external editor launch requires an accepted Linux process-tree containment backend"))
     }
 
     /// Dispatch only after Guard, durable PREPARE and one-use lease admission.
@@ -1918,14 +3660,96 @@ impl TerminalProcess {
                 "terminal executable changed after confined preflight",
             ));
         }
-        prepared
-            .confinement
-            .activate()
-            .map_err(|error| io::Error::new(io::ErrorKind::PermissionDenied, error.to_string()))?;
+        if let Some(confinement) = prepared.confinement.as_mut() {
+            confinement
+                .activate()
+                .map_err(|error| io::Error::new(io::ErrorKind::PermissionDenied, error.to_string()))?;
+        }
+        #[cfg(target_os = "linux")]
+        let cgroup = prepared.cgroup.take();
+        #[cfg(target_os = "linux")]
+        let inner = match cgroup.as_ref() {
+            Some(cgroup) => platform::Process::spawn_in_cgroup(prepared.spec, cgroup.placement_fd())?,
+            None if !prepared.cgroup_required => platform::Process::spawn(prepared.spec)?,
+            None => return Err(io::Error::new(io::ErrorKind::Unsupported,
+                "editor process cgroup was not prepared before durable dispatch")),
+        };
+        #[cfg(not(target_os = "linux"))]
+        let inner = platform::Process::spawn(prepared.spec)?;
         Ok(Self {
-            inner: platform::Process::spawn(prepared.spec)?,
-            _confinement: Some(prepared.confinement),
+            inner,
+            _confinement: prepared.confinement,
+            #[cfg(target_os = "linux")]
+            cgroup,
         })
+    }
+
+    /// Prepare a direct-session Full Access PTY launch. The only product caller is
+    /// HostKernel after it has authenticated the live root Session, verified the
+    /// explicit `danger-full-access + never` projection and obtained the normal
+    /// Guard approval/one-use lease. This deliberately skips the HorizonCode
+    /// filesystem/network sandbox while retaining the existing supervised process
+    /// tree lifecycle. Platforms without that process-tree guarantee stay unavailable.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn prepare_full_access(
+        mut spec: TerminalLaunchSpec,
+        workspace_root: &Path,
+        session_id: &str,
+        owner_epoch: u64,
+        workspace_binding: &str,
+        permission_mode: &crate::guard::DirectSessionPermissionModeProjectionV1,
+    ) -> io::Result<PreparedTerminalLaunch> {
+        validate_size(spec.cols, spec.rows)?;
+        if !permission_mode.validate()
+            || permission_mode.session_id != session_id
+            || permission_mode.owner_epoch != owner_epoch
+            || permission_mode.workspace_root_digest != workspace_binding
+            || permission_mode.sandbox_mode != crate::guard::DirectSandboxModeV1::DangerFullAccess
+            || permission_mode.approval_policy != crate::guard::DirectApprovalPolicyV1::Never
+        {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied,
+                "Full Access launch requires the exact authenticated direct-session mode"));
+        }
+        if !Self::owner_loss_tree_cleanup_supported() {
+            return Err(io::Error::new(io::ErrorKind::Unsupported,
+                "Full Access terminal launch requires supervised process-tree cleanup"));
+        }
+        let workspace = std::fs::canonicalize(workspace_root)?;
+        let cwd = std::fs::canonicalize(&spec.cwd)?;
+        if workspace.parent().is_none() || !cwd.starts_with(&workspace) {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied,
+                "terminal initial cwd must be within the authenticated workspace"));
+        }
+        let launch_digest = terminal_launch_digest(&spec, &workspace)?;
+        let executable_path = std::fs::canonicalize(&spec.executable)?;
+        let executable_digest = executable_digest(&executable_path)?;
+        spec.executable = executable_path.clone();
+        spec.cwd = cwd;
+        Ok(PreparedTerminalLaunch {
+            spec,
+            confinement: None,
+            guarantee_record: "explicit direct-session Full Access; no HorizonCode filesystem/network sandbox; Linux cgroup-v2 process-tree containment required before dispatch".to_owned(),
+            launch_digest,
+            executable_path,
+            executable_digest,
+            cgroup_hierarchy_hidden: false,
+            #[cfg(target_os = "linux")]
+            cgroup: None,
+            cgroup_required: true,
+        })
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub(crate) fn prepare_full_access(
+        _spec: TerminalLaunchSpec,
+        _workspace_root: &Path,
+        _session_id: &str,
+        _owner_epoch: u64,
+        _workspace_binding: &str,
+        _permission_mode: &crate::guard::DirectSessionPermissionModeProjectionV1,
+    ) -> io::Result<PreparedTerminalLaunch> {
+        Err(io::Error::new(io::ErrorKind::Unsupported,
+            "Full Access terminal launch is unavailable without verified process-tree containment"))
     }
 
     /// Unconfined process launch retained for isolated unit fixtures only. Product callers
@@ -1967,7 +3791,7 @@ impl TerminalProcess {
         if bytes.len() > MAX_INPUT_BYTES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "input exceeds 16 KiB",
+                "input exceeds 2 MiB",
             ));
         }
         self.inner.write_input(bytes)
@@ -2076,7 +3900,10 @@ mod platform {
 
     /// Bounded cleanup budget for the supervisor's process-tree sweep.
     const SWEEP_MAX_ROUNDS: usize = 8;
-    const SWEEP_MAX_ENTRIES: usize = 512;
+    // Process enumeration includes unrelated host PIDs before the supervisor's
+    // descendants are known. Keep a hard allocation/work bound, but leave enough
+    // headroom for busy development machines; a truncated scan still fails closed.
+    const SWEEP_MAX_ENTRIES: usize = 8_192;
     const SWEEP_ROUND_DELAY_MS: u64 = 15;
 
     /// Supervisor keepalive poll interval; bounds observed-exit relay latency.
@@ -2105,6 +3932,17 @@ mod platform {
 
     impl Process {
         pub fn spawn(spec: TerminalLaunchSpec) -> io::Result<Self> {
+            Self::spawn_inner(spec, -1)
+        }
+
+        pub fn spawn_in_cgroup(spec: TerminalLaunchSpec, cgroup_procs_fd: RawFd) -> io::Result<Self> {
+            if cgroup_procs_fd < 0 {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid cgroup.procs descriptor"));
+            }
+            Self::spawn_inner(spec, cgroup_procs_fd)
+        }
+
+        fn spawn_inner(spec: TerminalLaunchSpec, cgroup_procs_fd: RawFd) -> io::Result<Self> {
             // Everything the post-fork child needs is prepared before the fork; the
             // child then runs only async-signal-safe raw syscalls and never allocates.
             let executable = cstring(spec.executable.as_os_str().as_bytes(), "executable")?;
@@ -2187,6 +4025,7 @@ mod platform {
                         relay_write.as_raw_fd(),
                         exec_write.as_raw_fd(),
                         slave_fd.as_raw_fd(),
+                        cgroup_procs_fd,
                         executable.as_ptr(),
                         argv_ptrs.as_ptr(),
                         environment_ptrs.as_ptr(),
@@ -2437,8 +4276,9 @@ mod platform {
     /// the only process that terminates and reaps the session tree: holding the
     /// keepalive pipe open is the owner's liveness lease. EOF means owner loss (normal
     /// owner exit, crash, or SIGKILL) and triggers a bounded kill and sweep of the whole
-    /// tree. On a normal leader exit the supervisor relays the observed wait status to
-    /// the owner and then sweeps escaped descendants, keeping one-terminal-one-tree.
+    /// tree. On a normal leader exit the supervisor sweeps escaped descendants first
+    /// and relays the observed wait status only after a complete scan proves the
+    /// process tree is empty. A bounded or incomplete sweep therefore stays UNKNOWN.
     ///
     /// SAFETY: this function runs in the forked child of a possibly multi-threaded
     /// owner, so it never returns and performs only async-signal-safe raw syscalls; all
@@ -2448,15 +4288,26 @@ mod platform {
         relay_write: RawFd,
         exec_write: RawFd,
         slave: RawFd,
+        cgroup_procs_fd: RawFd,
         executable: *const libc::c_char,
         argv: *const *const libc::c_char,
         envp: *const *const libc::c_char,
         cwd: *const libc::c_char,
     ) -> ! {
         unsafe {
+            // The HostKernel parent retains the cgroup.procs descriptor and passes
+            // it only to this forked supervisor. Place the supervisor before it
+            // creates any child; descendants inherit the cgroup membership.
+            if cgroup_procs_fd >= 0 && !write_current_pid_to_cgroup(cgroup_procs_fd) {
+                report_exec_error(exec_write);
+            }
             // The supervisor owns no stdio and only the descriptors its contract needs.
             libc::close_range(0, 2, 0);
-            close_except(&mut [keepalive_read, relay_write, exec_write, slave]);
+            if cgroup_procs_fd >= 0 {
+                close_except(&mut [keepalive_read, relay_write, exec_write, slave, cgroup_procs_fd]);
+            } else {
+                close_except(&mut [keepalive_read, relay_write, exec_write, slave]);
+            }
             // Detach from the owner's session so a Ctrl-C or SIGHUP sent to the owner's
             // foreground process group cannot end tree cleanup.
             libc::setsid();
@@ -2537,16 +4388,46 @@ mod platform {
                 break;
             }
         }
-        if let Some(status) = observed_status {
-            let mut frame = [0u8; FRAME_EXIT_LEN];
-            frame[0] = FRAME_EXIT;
-            frame[1..5].copy_from_slice(&status.to_le_bytes());
-            write_full(relay_write, &frame);
+        let tree_quiesced = unsafe {
+            supervisor_cleanup(leader, leader_start, observed_status.is_some())
+        };
+        if tree_quiesced {
+            if let Some(status) = observed_status {
+                let mut frame = [0u8; FRAME_EXIT_LEN];
+                frame[0] = FRAME_EXIT;
+                frame[1..5].copy_from_slice(&status.to_le_bytes());
+                write_full(relay_write, &frame);
+            }
         }
-        unsafe {
-            supervisor_cleanup(leader, leader_start, observed_status.is_some());
-            libc::_exit(0);
+        // Closing the relay without FRAME_EXIT turns an unprovable sweep into
+        // BrokenPipe/UNKNOWN at the owner boundary.
+        unsafe { libc::_exit(0) }
+    }
+
+    /// Write this forked supervisor's PID to the already-open cgroup.procs file.
+    /// Uses a fixed stack buffer and raw `write`, so it remains safe between fork
+    /// and the point where process creation is allowed to proceed.
+    unsafe fn write_current_pid_to_cgroup(fd: RawFd) -> bool {
+        let mut value = unsafe { libc::getpid() as u32 };
+        let mut reversed = [0u8; 16];
+        let mut count = 0usize;
+        loop {
+            reversed[count] = b'0' + (value % 10) as u8;
+            count += 1;
+            value /= 10;
+            if value == 0 { break; }
         }
+        let mut bytes = [0u8; 17];
+        for index in 0..count { bytes[index] = reversed[count - index - 1]; }
+        bytes[count] = b'\n';
+        let mut offset = 0usize;
+        while offset <= count {
+            let wrote = unsafe { libc::write(fd, bytes[offset..=count].as_ptr().cast(), count + 1 - offset) };
+            if wrote > 0 { offset += wrote as usize; continue; }
+            if wrote < 0 && unsafe { *libc::__errno_location() } == libc::EINTR { continue; }
+            return false;
+        }
+        true
     }
 
     /// Installs the controlling terminal and execs the requested program.
@@ -2621,12 +4502,18 @@ mod platform {
     }
 
     /// Terminates and reaps every remaining session descendant within a bounded budget.
+    /// Returns true only after a complete `/proc` scan proves no descendants remain.
+    /// Truncation, inspection failure, and budget exhaustion fail closed.
     ///
     /// The supervisor is a child subreaper, so the session tree is exactly the set of
     /// processes rooted at the supervisor's direct children (`ppid == supervisor`)
     /// extended transitively. Each group signal is verified against the scanned
     /// `/proc` generation immediately beforehand so a reused PID is never signalled.
-    unsafe fn supervisor_cleanup(leader: libc::pid_t, leader_start: u64, leader_reaped: bool) {
+    unsafe fn supervisor_cleanup(
+        leader: libc::pid_t,
+        leader_start: u64,
+        leader_reaped: bool,
+    ) -> bool {
         let me = unsafe { libc::getpid() };
         let my_group = unsafe { libc::getpgrp() };
         if !leader_reaped && leader_start != 0 {
@@ -2640,28 +4527,40 @@ mod platform {
         let mut round = 0;
         while round < SWEEP_MAX_ROUNDS {
             let mut entries = [(0i32, 0i32, 0i32, 0u64); SWEEP_MAX_ENTRIES];
-            let count = scan_proc(&mut entries);
+            let Some((count, complete)) = scan_proc(&mut entries) else {
+                return false;
+            };
             let mut marked = [false; SWEEP_MAX_ENTRIES];
-            let mut changed = true;
-            while changed {
-                changed = false;
-                for index in 0..count {
+            // Build an index sorted by parent PID, then walk outward from the
+            // supervisor. This keeps the bounded 8,192-entry scan O(n log n)
+            // instead of repeatedly comparing every process pair.
+            entries[..count].sort_unstable_by_key(|entry| entry.0);
+            let mut parent_order = [0usize; SWEEP_MAX_ENTRIES];
+            for (index, slot) in parent_order.iter_mut().take(count).enumerate() {
+                *slot = index;
+            }
+            parent_order[..count].sort_unstable_by_key(|index| entries[*index].1);
+            let mut queue = [0i32; SWEEP_MAX_ENTRIES];
+            let (mut head, mut tail) = (0usize, 1usize);
+            queue[0] = me;
+            while head < tail {
+                let parent = queue[head];
+                head += 1;
+                let first = parent_order[..count]
+                    .partition_point(|index| entries[*index].1 < parent);
+                for &index in &parent_order[first..count] {
+                    if entries[index].1 != parent {
+                        break;
+                    }
                     if marked[index] {
                         continue;
                     }
-                    let parent = entries[index].1;
-                    if parent == me {
-                        marked[index] = true;
-                        changed = true;
-                        continue;
+                    marked[index] = true;
+                    if tail == queue.len() {
+                        return false;
                     }
-                    for candidate in 0..count {
-                        if marked[candidate] && entries[candidate].0 == parent {
-                            marked[index] = true;
-                            changed = true;
-                            break;
-                        }
-                    }
+                    queue[tail] = entries[index].0;
+                    tail += 1;
                 }
             }
             let mut marked_count = 0usize;
@@ -2678,8 +4577,9 @@ mod platform {
                     // Only signal a group whose leader is a verified member of this
                     // scan: the group id is a PID and may otherwise name a reused,
                     // unrelated process group.
-                    let verified = (0..count)
-                        .find(|candidate| entries[*candidate].0 == group)
+                    let verified = entries[..count]
+                        .binary_search_by_key(&group, |entry| entry.0)
+                        .ok()
                         .is_some_and(|candidate| {
                             marked[candidate]
                                 && read_starttime(group as u32) == Some(entries[candidate].3)
@@ -2703,17 +4603,20 @@ mod platform {
                 }
             }
             if marked_count == 0 {
-                break;
+                return complete;
             }
             round += 1;
             if round < SWEEP_MAX_ROUNDS {
                 sleep_millis(SWEEP_ROUND_DELAY_MS);
             }
         }
+        false
     }
 
     /// Enumerates `/proc` into bounded `(pid, ppid, pgrp, starttime)` entries.
-    fn scan_proc(entries: &mut [(i32, i32, i32, u64); SWEEP_MAX_ENTRIES]) -> usize {
+    fn scan_proc(
+        entries: &mut [(i32, i32, i32, u64); SWEEP_MAX_ENTRIES],
+    ) -> Option<(usize, bool)> {
         // SAFETY: the path literal is NUL-terminated and the buffer is valid.
         let descriptor = unsafe {
             libc::open(
@@ -2722,9 +4625,10 @@ mod platform {
             )
         };
         if descriptor < 0 {
-            return 0;
+            return None;
         }
         let mut count = 0usize;
+        let mut complete = true;
         let mut buffer = [0u8; 4096];
         loop {
             // SAFETY: getdents64 writes at most `buffer.len()` bytes to the buffer.
@@ -2736,7 +4640,15 @@ mod platform {
                     buffer.len(),
                 )
             };
-            if got <= 0 {
+            if got == 0 {
+                break;
+            }
+            if got < 0 {
+                let error = unsafe { *libc::__errno_location() };
+                if error == libc::EINTR {
+                    continue;
+                }
+                complete = false;
                 break;
             }
             let end = got as usize;
@@ -2746,6 +4658,7 @@ mod platform {
                 let record_length =
                     u16::from_ne_bytes([buffer[offset + 16], buffer[offset + 17]]) as usize;
                 if record_length < 20 || offset + record_length > end {
+                    complete = false;
                     break;
                 }
                 let record = &buffer[offset + 19..offset + record_length];
@@ -2755,21 +4668,33 @@ mod platform {
                     .unwrap_or(record.len());
                 if let Some(pid) = parse_uint(&record[..name_length])
                     && let Ok(pid) = u32::try_from(pid)
-                    && let Some((parent, group, start)) = read_proc_fields(pid)
                 {
-                    entries[count] = (pid as i32, parent, group, start);
-                    count += 1;
+                    if let Some((parent, group, start)) = read_proc_fields(pid) {
+                        entries[count] = (pid as i32, parent, group, start);
+                        count += 1;
+                    } else if process_still_exists(pid) {
+                        // A live process with unreadable identity may be a descendant;
+                        // never certify a sweep from an incomplete ancestry snapshot.
+                        complete = false;
+                    }
                 }
                 offset += record_length;
             }
             if count >= entries.len() {
+                complete = false;
                 break;
             }
         }
         unsafe {
             libc::close(descriptor);
         }
-        count
+        Some((count, complete))
+    }
+
+    fn process_still_exists(pid: u32) -> bool {
+        let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
+        result == 0
+            || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
     }
 
     /// Reads the `/proc/<pid>/stat` fields the supervisor needs: `(ppid, pgrp, starttime)`.
@@ -3841,6 +5766,67 @@ mod tests {
     use std::thread;
     use std::time::Instant;
 
+    #[test]
+    fn external_editor_profile_is_strict_and_inserts_target_as_one_literal_arg() {
+        use crate::protocol::Value;
+        let definition = Value::Map(BTreeMap::from([
+            ("schemaVersion".to_owned(), Value::Unsigned(1)),
+            ("profileId".to_owned(), Value::String("editor.vim".to_owned())),
+            ("revision".to_owned(), Value::String("7".to_owned())),
+            ("executableSelector".to_owned(), Value::String("horizoncode:editor:vim".to_owned())),
+            ("argv".to_owned(), Value::Array(vec![Value::String("--".to_owned())])),
+            ("targetArgIndex".to_owned(), Value::Unsigned(1)),
+            ("launchMode".to_owned(), Value::String("foreground_tty".to_owned())),
+            ("targetKinds".to_owned(), Value::Array(vec![Value::String("workspace_file".to_owned())])),
+            ("environmentPolicy".to_owned(), Value::String("sanitized_host".to_owned())),
+        ]));
+        let profile = ExternalEditorProfileV1::from_value(&definition).unwrap();
+        assert_eq!(profile.argv_for_target("src/file with spaces.rs", ExternalEditorTargetKindV1::WorkspaceFile).unwrap(),
+            vec![OsString::from("--"), OsString::from("src/file with spaces.rs")]);
+        assert!(profile.argv_for_target("../outside.rs", ExternalEditorTargetKindV1::WorkspaceFile).is_err());
+        assert!(profile.argv_for_target("src\\outside.rs", ExternalEditorTargetKindV1::WorkspaceFile).is_err());
+        let base = profile.definition_digest().unwrap();
+        let mut changed = definition.clone();
+        let Value::Map(fields) = &mut changed else { unreachable!() };
+        fields.insert("argv".to_owned(), Value::Array(vec![Value::String("--readonly".to_owned())]));
+        assert_ne!(base, ExternalEditorProfileV1::from_value(&changed).unwrap().definition_digest().unwrap());
+        fields.insert("argv".to_owned(), Value::Array(vec![Value::String("--".to_owned())]));
+        fields.insert("unexpected".to_owned(), Value::Bool(true));
+        assert!(ExternalEditorProfileV1::from_value(&changed).is_err());
+    }
+
+    #[test]
+    fn dap_profile_policy_is_strict_default_denied_and_digest_bound() {
+        use crate::protocol::Value;
+        let mut definition = BTreeMap::from([
+            ("schemaVersion".to_owned(), Value::Unsigned(1)),
+            ("profileId".to_owned(), Value::String("dap-test".to_owned())),
+            ("revision".to_owned(), Value::String("1".to_owned())),
+            ("kind".to_owned(), Value::String("dap".to_owned())),
+            ("executableSelector".to_owned(), Value::String("horizoncode:dap:debugpy-adapter".to_owned())),
+            ("argv".to_owned(), Value::Array(Vec::new())),
+            ("workingDirectoryPolicy".to_owned(), Value::String("registered_location_root".to_owned())),
+            ("environmentPolicy".to_owned(), Value::String("sanitized_host".to_owned())),
+        ]);
+        let base = ExecutionLaunchProfileV1::from_value(&Value::Map(definition.clone())).unwrap();
+        assert_eq!(base.dap_policy_allow_evaluate, None);
+        let digest_without_policy = base.definition_digest().unwrap();
+        definition.insert("dapPolicy".to_owned(), Value::Map(BTreeMap::from([
+            ("allowEvaluate".to_owned(), Value::Bool(false)),
+        ])));
+        let disabled = ExecutionLaunchProfileV1::from_value(&Value::Map(definition.clone())).unwrap();
+        assert_eq!(disabled.dap_policy_allow_evaluate, Some(false));
+        assert_ne!(disabled.definition_digest().unwrap(), digest_without_policy);
+        definition.insert("dapPolicy".to_owned(), Value::Map(BTreeMap::from([
+            ("allowEvaluate".to_owned(), Value::Bool(true)),
+        ])));
+        let enabled = ExecutionLaunchProfileV1::from_value(&Value::Map(definition.clone())).unwrap();
+        assert_eq!(enabled.dap_policy_allow_evaluate, Some(true));
+        assert_ne!(enabled.definition_digest().unwrap(), disabled.definition_digest().unwrap());
+        definition.insert("kind".to_owned(), Value::String("lsp".to_owned()));
+        assert!(ExecutionLaunchProfileV1::from_value(&Value::Map(definition)).is_err());
+    }
+
     fn launch(command: &str) -> TerminalLaunchSpec {
         TerminalLaunchSpec {
             executable: PathBuf::from("/bin/sh"),
@@ -4148,6 +6134,111 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    fn repository_test_workspace(label: &str) -> PathBuf {
+        let root = std::env::current_dir()
+            .expect("repository root")
+            .join("target")
+            .join(format!("hz-p1-{label}-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("repository-local test workspace");
+        root
+    }
+
+    #[test]
+    fn stdio_stdin_delivery_to_nonreading_child_is_deadline_bounded() {
+        let workspace = repository_test_workspace("stdin-deadline");
+        let mut spec = StdioLaunchSpec::new(
+            "/bin/sh",
+            executable_digest("/bin/sh").unwrap(),
+            ["-c", "/bin/sleep 30"],
+            &workspace,
+        );
+        spec.timeout = Duration::from_millis(300);
+        spec.use_readonly_workspace();
+        let prepared = StdioProcess::prepare_confined(spec).expect("confined preflight");
+        let mut process = StdioProcess::spawn_prepared(prepared).expect("confined spawn");
+        let frame = vec![b'x'; MAX_INPUT_BYTES];
+        let started = Instant::now();
+        let error = loop {
+            match process.write_stdin(&frame) {
+                Ok(()) => {}
+                Err(error) => break error,
+            }
+        };
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while process.try_wait().expect("observe terminated child").is_none() {
+            assert!(Instant::now() < deadline, "timed-out stdin child remained live");
+            thread::sleep(Duration::from_millis(5));
+        }
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn stdio_execution_deadline_starts_at_launch_not_guard_preflight() {
+        let workspace = repository_test_workspace("preflight-deadline");
+        let workspace_revision = format!("blake3:{}", "a".repeat(64));
+        let profile_digest = format!("blake3:{}", "d".repeat(64));
+        let executable_digest = executable_digest("/bin/sh").unwrap();
+        let binding = StdioExecutionBindingV1 {
+            execution_id: "execution_deadline_start_test".to_owned(),
+            effect_id: "effect_deadline_start_test".to_owned(),
+            challenge_id: "challenge_deadline_start_test".to_owned(),
+            principal: "host_os_uid:1000".to_owned(),
+            execution_principal: "host_os_uid:1000".to_owned(),
+            scope: StdioExecutionScopeV1::Session { session_id: "session_deadline_start_test".to_owned() },
+            session_id: "session_deadline_start_test".to_owned(),
+            location_id: "location_deadline_start_test".to_owned(),
+            capability_id: crate::guard::TERMINAL_RUN_ID.to_owned(),
+            capability_lease_digest: format!("blake3:{}", "c".repeat(64)),
+            approved_arguments_digest: format!("blake3:{}", "b".repeat(64)),
+            attempt_scope_digest: None,
+            owner_epoch: 1,
+            generation: 1,
+            workspace_revision,
+            profile_ref: "profile_deadline_start_test".to_owned(),
+            profile_id: "profile_deadline_start_test".to_owned(),
+            profile_revision: 1,
+            profile_digest: profile_digest.clone(),
+            executable_digest: executable_digest.clone(),
+        };
+        let mut spec = StdioLaunchSpec::new(
+            "/bin/sh",
+            executable_digest,
+            ["-c", "/bin/sleep 30"],
+            &workspace,
+        );
+        spec.timeout = Duration::from_secs(2);
+        spec.use_readonly_workspace();
+        spec.profile_digest = profile_digest;
+        spec.workspace_revision = binding.workspace_revision.clone();
+        let mut supervisor = StdioExecutionSupervisor::default();
+        let prepared = supervisor
+            .preflight(binding.clone(), spec)
+            .expect("confined preflight");
+        thread::sleep(Duration::from_millis(2_100));
+        let intent = StdioExecutionDispatchIntentV1::new(
+            binding.clone(),
+            prepared.execution_digest,
+            "dispatch_deadline_start_test".to_owned(),
+        );
+        supervisor.launch(intent).expect("dispatch after approval delay");
+        let page = supervisor.read_output(&binding, 0, 0, 1024).expect("read output");
+        assert!(!page.eof, "fresh process must not inherit expired preflight time");
+        assert_eq!(
+            supervisor.status(&binding).unwrap().state,
+            StdioExecutionStateV1::Running
+        );
+        supervisor.cancel(&binding).expect("cancel fixture child");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while supervisor.status(&binding).unwrap().state != StdioExecutionStateV1::Exited {
+            assert!(Instant::now() < deadline, "fixture child did not exit after cancel");
+            thread::sleep(Duration::from_millis(5));
+        }
+        drop(supervisor);
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+
     #[test]
     fn stdio_preflight_digest_is_bound_to_the_exact_guard_approved_arguments() {
         let spec_digest = format!("blake3:{}", "a".repeat(64));
@@ -4181,6 +6272,8 @@ mod tests {
             effect_id: "effect_discard_test".to_owned(),
             challenge_id: "challenge_discard_test".to_owned(),
             principal: "host_os_uid:1000".to_owned(),
+            execution_principal: "host_os_uid:1000".to_owned(),
+            scope: StdioExecutionScopeV1::Session { session_id: "session_discard_test".to_owned() },
             session_id: "session_discard_test".to_owned(),
             location_id: "location_discard_test".to_owned(),
             capability_id: crate::guard::TERMINAL_RUN_ID.to_owned(),
@@ -4364,6 +6457,25 @@ mod tests {
         assert!(
             wait_dead(escapee, std::time::Duration::from_secs(10)),
             "owner close must terminate escaped session descendants"
+        );
+    }
+
+    #[test]
+    fn observed_exit_waits_for_escaped_descendant_quiescence() {
+        let mut process = TerminalProcess::spawn(launch(
+            "/usr/bin/setsid /bin/sh -c 'echo escapee=$$; exec sleep 300' & sleep 1; exit 0",
+        ))
+        .expect("spawn shell");
+        let output = read_for(&mut process, b"escapee=");
+        let escapee = marker_pid(&output, b"escapee=");
+        assert!(alive(escapee), "the escaped descendant must start alive");
+        assert!(matches!(
+            process.wait_timeout(std::time::Duration::from_secs(5)).unwrap(),
+            WaitOutcome::Exited(_)
+        ));
+        assert!(
+            !alive(escapee),
+            "an observed exit must follow successful process-tree cleanup"
         );
     }
 }

@@ -12,11 +12,15 @@ export type ReleaseClass = "stable" | "beta" | "experimental"
 export type ImplementationStatus = "designed" | "code_present" | "wired" | "tested" | "verified" | "released"
 export type EffectiveState = "on" | "off" | "blocked" | "pending_apply" | "unavailable"
 export type FeatureId = "compaction.auto" | "compaction.prune" | "native_search" | "hashline_edit" | "cow_worktrees"
+const FeatureRef = Schema.String.check(Schema.isNonEmpty()).check(Schema.isMaxLength(256))
+const PrerequisiteRef = Schema.String.check(Schema.isNonEmpty()).check(Schema.isMaxLength(128))
 
 export type CatalogIssue =
   | { code: "duplicate_feature_id"; featureId: FeatureId }
   | { code: "duplicate_setting_key"; featureId: FeatureId; settingKey: string }
   | { code: "duplicate_capability_ref"; featureId: FeatureId; capabilityId: string }
+  | { code: "duplicate_prerequisite"; featureId: FeatureId; prerequisite: string }
+  | { code: "duplicate_supported_target"; featureId: FeatureId; target: string }
   | { code: "unknown_capability"; featureId: FeatureId; capabilityId: string }
   | { code: "unwired_feature_enabled"; featureId: FeatureId }
   | { code: "default_enabled_experiment"; featureId: FeatureId }
@@ -26,6 +30,8 @@ export interface Feature {
   schemaVersion: 1
   featureId: FeatureId
   settingKey: string
+  /** Existing owner that persists requested state and owns effective resolution. */
+  owner: { config: string; runtime: string }
   title: string
   description: string
   releaseClass: ReleaseClass
@@ -33,6 +39,12 @@ export interface Feature {
   audience: "public" | "developer"
   defaultEnabled: boolean
   supportedScopes: Array<"user" | "project" | "session">
+  /** Runtime prerequisites are descriptive gates; they never grant authority. */
+  prerequisites: string[]
+  /** Empty model/harness lists mean there is no additional restriction. */
+  supportedPlatforms: Array<"linux" | "windows" | "darwin">
+  supportedModelRefs: string[]
+  supportedHarnessRefs: string[]
   applyBoundary: "live" | "next_turn" | "next_session" | "restart"
   capabilityIds: string[]
   riskNotes?: string
@@ -51,7 +63,8 @@ export interface Feature {
 export const FeatureSchema = Schema.Struct({
   schemaVersion: Schema.Literal(1),
   featureId: Schema.Literals(["compaction.auto", "compaction.prune", "native_search", "hashline_edit", "cow_worktrees"]),
-  settingKey: Schema.String,
+  settingKey: FeatureRef,
+  owner: Schema.Struct({ config: FeatureRef, runtime: FeatureRef }),
   title: Schema.String,
   description: Schema.String,
   releaseClass: Schema.Literals(["stable", "beta", "experimental"]),
@@ -59,6 +72,10 @@ export const FeatureSchema = Schema.Struct({
   audience: Schema.Literals(["public", "developer"]),
   defaultEnabled: Schema.Boolean,
   supportedScopes: Schema.Array(Schema.Literals(["user", "project", "session"])),
+  prerequisites: Schema.Array(PrerequisiteRef),
+  supportedPlatforms: Schema.Array(Schema.Literals(["linux", "windows", "darwin"])).check(Schema.isMinLength(1)),
+  supportedModelRefs: Schema.Array(FeatureRef),
+  supportedHarnessRefs: Schema.Array(FeatureRef),
   applyBoundary: Schema.Literals(["live", "next_turn", "next_session", "restart"]),
   capabilityIds: Schema.Array(Schema.String),
   riskNotes: Schema.optional(Schema.String),
@@ -103,6 +120,14 @@ export function validateCatalog(features: readonly Feature[], canonicalCapabilit
       if (!canonicalCapabilityIds.has(capabilityId)) {
         issues.push({ code: "unknown_capability", featureId: feature.featureId, capabilityId })
       }
+    }
+
+    const duplicate = (values: readonly string[]) => values.find((value, index) => values.indexOf(value) !== index)
+    const duplicatePrerequisite = duplicate(feature.prerequisites)
+    if (duplicatePrerequisite) issues.push({ code: "duplicate_prerequisite", featureId: feature.featureId, prerequisite: duplicatePrerequisite })
+    for (const values of [feature.supportedPlatforms, feature.supportedModelRefs, feature.supportedHarnessRefs]) {
+      const repeated = duplicate(values)
+      if (repeated) issues.push({ code: "duplicate_supported_target", featureId: feature.featureId, target: repeated })
     }
 
     if (
@@ -208,12 +233,16 @@ export function list(config: SourceConfig, effective: SourceConfig = config): Fe
     const wanted = requested ?? option.defaultEnabled
     const enabled = effective.compaction?.[option.key] ?? option.defaultEnabled
     const origin = config.origins?.[option.key]
-    const pending = origin?.policyLock !== "locked" && origin?.pendingApplyAt && requested !== null && requested !== enabled
-    const blocked = wanted && !enabled && (origin?.policyLock === "locked" || !pending)
+    // A pending apply is only authoritative when the winning policy state is
+    // known to permit it. Unknown lock state must not be projected as an
+    // accepted deferred write.
+    const pending = origin?.policyLock === "unlocked" && origin.pendingApplyAt && requested !== null && requested !== enabled
+    const blocked = wanted !== enabled && !pending
     return {
       schemaVersion: 1,
       featureId: option.id,
       settingKey: `compaction.${option.key}`,
+      owner: { config: "HorizonCode Config", runtime: "Session Compaction" },
       title: option.title,
       description: option.description,
       releaseClass: "stable",
@@ -221,8 +250,18 @@ export function list(config: SourceConfig, effective: SourceConfig = config): Fe
       audience: "public",
       defaultEnabled: option.defaultEnabled,
       supportedScopes: ["project"],
+      prerequisites: option.key === "auto" ? ["session.state", "selected.provider.model"] : ["session.state", "eligible.tool_output"],
+      supportedPlatforms: ["linux"],
+      supportedModelRefs: [],
+      supportedHarnessRefs: [],
       applyBoundary: "next_turn",
       capabilityIds: [],
+      riskNotes: option.key === "auto"
+        ? "May summarize active prompt context using the selected model; canonical Session history remains unchanged."
+        : "Removes eligible older tool output from active model context; canonical Session history remains unchanged.",
+      costNotes: option.key === "auto"
+        ? "May use the selected provider/model and its published or unknown price; never changes routes."
+        : "No separate provider request; reduces context supplied to a later selected-model request.",
       state: {
         implementationStatus: "wired",
         requestedEnabled: requested,
@@ -231,8 +270,20 @@ export function list(config: SourceConfig, effective: SourceConfig = config): Fe
         // Merged ConfigV1 does not expose the winning file or policy source.
         // Never invent "user" or "project" from a merged value.
         valueSource: requested === null ? "default" : (origin?.valueSource ?? "unknown"),
-        policyLock: origin?.policyLock ?? "unknown",
-        ...((blocked || origin?.blockedReason) ? { blockedReason: origin?.blockedReason ?? "A runtime disable override is active" } : {}),
+        // An absent requested value is the known built-in default, with no
+        // user/project/system override to lock. An explicit value without a
+        // captured winning source remains unknown and must not be presented as
+        // safely mutable.
+        policyLock: origin?.policyLock ?? (requested === null ? "unlocked" : "unknown"),
+        ...((blocked || origin?.blockedReason) ? {
+          blockedReason: origin?.blockedReason ?? (origin?.policyLock === "locked"
+            ? "Effective state is constrained by policy"
+            : origin?.policyLock === "unknown" && requested !== null
+              ? "Effective state differs from the request; policy status is unknown"
+              : wanted && !enabled
+                ? "A runtime disable override is active"
+                : "Effective state differs from the requested setting"),
+        } : {}),
         ...(pending ? { pendingApplyAt: origin.pendingApplyAt } : {}),
       },
     }
@@ -244,6 +295,14 @@ export function list(config: SourceConfig, effective: SourceConfig = config): Fe
         schemaVersion: 1,
         featureId: option.id,
         settingKey: `horizon.experimental.${option.id}`,
+        owner: {
+          config: "HorizonCode Config",
+          runtime: option.id === "native_search"
+            ? "HostKernel RepoIntel"
+            : option.id === "hashline_edit"
+              ? "Guarded Files Patch"
+              : "Leased Workspace",
+        },
         title: option.title,
         description: option.description,
         releaseClass: "experimental",
@@ -251,9 +310,18 @@ export function list(config: SourceConfig, effective: SourceConfig = config): Fe
         audience: "public",
         defaultEnabled: false,
         supportedScopes: ["user", "project"],
+        prerequisites: option.id === "native_search"
+          ? ["hostkernel.guard", "repo_intel.authenticated_query"]
+          : option.id === "hashline_edit"
+            ? ["files.patch", "workspace.revision_guard"]
+            : ["workspace.lease", "hostkernel.guard"],
+        supportedPlatforms: ["linux"],
+        supportedModelRefs: [],
+        supportedHarnessRefs: [],
         applyBoundary: "next_session",
         capabilityIds: [],
         riskNotes: "Experimental: not enabled in this build.",
+        costNotes: "No effect while unavailable. Any future provider or workspace cost requires its existing explicit approval path.",
         state: {
           implementationStatus: "designed",
           requestedEnabled: null,

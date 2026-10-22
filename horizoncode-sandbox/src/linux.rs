@@ -1057,9 +1057,9 @@ pub(crate) fn guarantees(
                     level: GuaranteeLevel::Enforced,
                     backend: "bubblewrap",
                     residuals: vec![
-                        "child runs in a fresh user/pid/ipc/uts/cgroup namespace with --cap-drop ALL and --die-with-parent"
+                        "child runs in a fresh user/pid/ipc/uts/cgroup namespace with --cap-drop ALL and --die-with-parent; the direct sandbox child is also armed with PR_SET_PDEATHSIG and a parent-PID race check"
                             .to_string(),
-                        "terminating the whole descendant tree and reconciling UNKNOWN remain ExecutionHost responsibilities"
+                        "ExecutionHost still owns explicit cancellation, observed exit, and durable UNKNOWN reconciliation; abrupt owner death is fenced by the kernel parent-death signal plus the PID namespace lifetime"
                             .to_string(),
                     ],
                 };
@@ -1268,6 +1268,18 @@ fn normalized_roots(
         }
         let path = root.path.clone();
         require_absolute(&path, "scoped root")?;
+        // A confined child must never be able to inspect or mutate the host's
+        // delegated cgroup tree. This also prevents a workspace rooted at `/`
+        // or `/sys` from making name-based cgroup cleanup raceable by the child.
+        let canonical = std::fs::canonicalize(&path).map_err(|_| SandboxError::ProfileInvalid {
+            reason: format!("scoped root `{}` cannot be canonicalized", path.display()),
+        })?;
+        let cgroup_mount = Path::new("/sys/fs/cgroup");
+        if canonical.starts_with(cgroup_mount) || cgroup_mount.starts_with(&canonical) {
+            return Err(SandboxError::ProfileInvalid {
+                reason: format!("scoped root `{}` overlaps the host cgroup hierarchy", path.display()),
+            });
+        }
         if is_wslg_distro(&path) {
             return Err(SandboxError::ProfileInvalid {
                 reason: format!(

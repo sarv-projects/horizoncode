@@ -14,6 +14,7 @@ import { createToolBatchContext } from "@/session/tool-batch"
 import { Tool } from "@/tool/tool"
 import { ToolRegistry } from "@/tool/registry"
 import { Truncate } from "@/tool/truncate"
+import { WebSearchRuntime } from "@/tool/websearch-runtime"
 import { Plugin } from "@/plugin"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Effect, Layer, Schema } from "effect"
@@ -66,6 +67,7 @@ const fakeTruncate = Truncate.Service.of({
 
 const layer = Layer.mergeAll(
   LayerNode.compile(FSUtil.node),
+  LayerNode.compile(WebSearchRuntime.node),
   Layer.succeed(Plugin.Service, fakePlugin),
   Layer.succeed(Permission.Service, fakePermission),
   Layer.succeed(MCP.Service, fakeMcp()),

@@ -181,6 +181,17 @@ Always release agent-owned processes, ports, test databases and temporary resour
 
 Do not kill unrelated active builds/processes.
 
+## Repository-local filesystem boundary; network research allowed
+
+The user's boundary is about local files: do not read, write, inspect, execute against, or otherwise touch filesystem paths outside this repository. This applies to the parent and every phase agent. In particular, do not access host paths such as home directories, Downloads, C:, `/mnt/c`, `/tmp`, global configuration, or external checkouts. This restriction does not prohibit web search, remote read-only research, or fetching source references.
+
+- Keep local reads/writes, temporary files, test databases, logs, build outputs, and cleanup inside this repository. Do not pass paths outside the repository to tools or commands.
+- Web search and remote read-only research are allowed. External reference repositories may be cloned or downloaded only into repository-contained paths (for example, `repo_take/`). Record source provenance and honor the source's license and attribution requirements.
+- Remote mutation, publication, credential export, paid API calls, or other destructive external actions still require explicit user authorization. Previously authorized exact task-owned Git commit/push may be used only at the release boundary after verifying the exact diff, excluding unrelated work, and confirming the target.
+- Do not run a tool whose normal operation writes files outside the repository. If a required tool cannot be configured to keep its local outputs here, record the exact limitation and leave that operation unavailable.
+- For process checks, inspect only task-owned processes launched with a repository-contained working directory and repository-contained outputs. Do not inspect or terminate unrelated host processes.
+- Disk checks may inspect repository-contained directories only.
+
 ## Subagents — one implementation owner per entire phase; maximum safe concurrency
 
 Primary policy: For a request covering P1 through P9, assign phase-specific implementation agents for P1, P2, P3, P4, P5, P6, P7, P8 and P9 (or exactly the phases included by the user's latest explicit V1 scope). The phase name is the ownership/acceptance unit, not necessarily the executable unit: dependencies can make parts wait, but the agent retains responsibility until all applicable phase acceptance tests pass. Prefer one dedicated phase owner per phase; if fewer child slots are supported, admit phase owners in critical-path order and fill every safe available slot. Do not claim all nine are running if they are not.

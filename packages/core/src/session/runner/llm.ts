@@ -6,11 +6,15 @@ import {
   LLMEvent,
   Message,
   SystemPart,
+  ToolFailure,
   isContextOverflowFailure,
   type ToolCall,
   type ProviderErrorEvent,
 } from "@opencode-ai/llm"
+import type { DirectProviderJournalBindingV1 } from "@opencode-ai/llm/route"
 import { Cause, DateTime, Effect, FiberSet, Layer, Option, Semaphore, Stream } from "effect"
+import { blake3 } from "@noble/hashes/blake3.js"
+import { bytesToHex } from "@noble/hashes/utils.js"
 import { AgentV2 } from "../../agent"
 import { Config } from "../../config"
 import { Database } from "../../database/database"
@@ -32,18 +36,23 @@ import { SessionEvent } from "../event"
 import { SessionHistory } from "../history"
 import { SessionInput } from "../input"
 import { SessionSchema } from "../schema"
+import { SessionMessage } from "../message"
 import { SessionStore } from "../store"
+import * as ContextSelection from "../context-selection"
+import { compileContextLedgerV2 } from "../context-ledger"
 import { type RunError, Service } from "./index"
 import { SessionRunnerModel } from "./model"
 import { createLLMEventPublisher } from "./publish-llm-event"
 import { toLLMMessages } from "./to-llm-message"
 import { MAX_STEPS_PROMPT } from "./max-steps"
 import { SessionSupervisor, SessionSupervisorError } from "../../session/supervisor"
+import { Pty } from "../../pty"
 import { TrustedPrincipalContext } from "../../trusted-principal"
 import type { EffectAdmission, EffectLease } from "../../session/supervisor"
 import { Snapshot } from "../../snapshot"
 import { makeLocationNode } from "../../effect/app-node"
 import { llmClient } from "../../effect/app-node-platform"
+import { builtinHarnessProfileV1 } from "../../harness-profile"
 
 /**
  * Runs one durable coding-agent Session until it settles.
@@ -104,6 +113,7 @@ const layer = Layer.effect(
     const tools = yield* ToolRegistry.Service
     const permission = yield* PermissionV2.Service
     const supervisor = yield* SessionSupervisor.Service
+    const pty = yield* Pty.Service
     const models = yield* SessionRunnerModel.Service
     const store = yield* SessionStore.Service
     const location = yield* Location.Service
@@ -111,6 +121,7 @@ const layer = Layer.effect(
     const skillGuidance = yield* SkillGuidance.Service
     const referenceGuidance = yield* ReferenceGuidance.Service
     const config = yield* Config.Service
+    const agentProfiles = yield* Config.AgentProfileService
     const snapshots = yield* Snapshot.Service
     const db = (yield* Database.Service).db
     const configEntries = yield* config.entries()
@@ -181,6 +192,230 @@ const layer = Layer.effect(
         concurrency: "unbounded",
       }).pipe(Effect.map(SystemContext.combine))
 
+    /** Compile one immutable, Core-owned request context before the transport can dispatch. */
+    const prepareDirectProviderContext = Effect.fn("SessionRunner.prepareDirectProviderContext")(function* (input: {
+      readonly session: SessionSchema.Info
+      readonly requestID: string
+      readonly sourceRevision: string
+      readonly request: ReturnType<typeof LLM.request>
+      readonly messages: readonly SessionMessage.Message[]
+      readonly principal: import("../../trusted-principal").TrustedPrincipal
+      readonly policyDigest: string
+      readonly selectedRoute?: {
+        readonly providerID: string
+        readonly modelID: string
+        readonly routeID: string
+        readonly routeRevision: string
+        readonly endpointRevision: string
+      }
+      /** Supplied only by the authenticated HostKernel projection; never inferred from Core policy. */
+      readonly authority?: {
+        readonly permissionScopeDigest: string
+      }
+    }) {
+      if (!input.authority || !input.selectedRoute ||
+        input.selectedRoute.providerID !== input.request.model.provider ||
+        input.selectedRoute.modelID !== input.request.model.id ||
+        !input.selectedRoute.routeID || !input.selectedRoute.routeRevision || !input.selectedRoute.endpointRevision) return undefined
+      const authority = input.authority
+      const selectedRoute = input.selectedRoute
+      const profile = yield* agentProfiles.primaryAgentProfile().pipe(Effect.catch(() => Effect.succeed(undefined)))
+      if (!profile || profile.model.providerId !== input.request.model.provider || profile.model.modelId !== input.request.model.id) return undefined
+      const harness = builtinHarnessProfileV1(profile.harness)
+      if (!harness) return undefined
+      const generation = input.messages.filter((message) => message.type === "user").at(-1)
+      if (!generation || generation.type !== "user") return undefined
+
+      const requestID = input.requestID
+      const providerInput: ContextSelection.ProviderInputV1 = {
+        system: input.request.system,
+        messages: input.request.messages,
+        tools: input.request.tools,
+        ...(input.request.toolChoice === undefined ? {} : { toolChoice: input.request.toolChoice.type }),
+        ...(input.request.generation?.maxTokens === undefined ? {} : { maxOutputTokens: input.request.generation.maxTokens }),
+        ...(input.request.generation?.temperature === undefined ? {} : { temperature: input.request.generation.temperature }),
+        ...(input.request.generation?.topP === undefined ? {} : { topP: input.request.generation.topP }),
+        ...(input.request.generation?.topK === undefined ? {} : { topK: input.request.generation.topK }),
+        ...(input.request.providerOptions === undefined ? {} : { providerOptions: input.request.providerOptions }),
+      }
+      let frozenContext: import("@opencode-ai/llm/route").DirectProviderRequestContextV1 | undefined
+      let providerJournal: DirectProviderJournalBindingV1 | undefined
+      let providerDispatchStarted = false
+      const pin = (pinInput: { readonly endpointRevision: string; readonly transportRequestDigest: string }) =>
+        Effect.gen(function* () {
+          const context = frozenContext
+          if (!context) return yield* Effect.die(new Error("Direct provider context was not frozen before transport admission"))
+          if (pinInput.endpointRevision !== context.route.endpointRevision) {
+            return yield* Effect.die(new Error("Direct provider endpoint differs from the trusted route projection"))
+          }
+          const normalizedInputDigest = context.contextSelection.sources.find(
+            (source) => source.kind === "provider-input" && source.sourceID === context.requestID,
+          )?.contentDigest
+          if (!normalizedInputDigest) return yield* Effect.die(new Error("Direct ContextSelection lacks its exact provider-input digest"))
+          const pinned = yield* store.pinProviderRequest({
+            principal: input.principal,
+            pins: {
+              sessionID: context.sessionID as SessionSchema.ID,
+              requestID: context.requestID,
+              sourceRevision: context.sourceRevision,
+              profileID: context.profile.profileID,
+              profileRevision: context.profile.revision,
+              profileDigest: context.profile.profileDigest,
+              permissionScopeDigest: context.permissionScopeDigest,
+              contextSelection: context.contextSelection,
+              providerID: context.providerID,
+              modelID: context.modelID,
+              harnessID: context.harnessID,
+              harnessRevision: context.harnessRevision,
+              routeRevision: context.route.routeRevision,
+              endpointRevision: pinInput.endpointRevision,
+              policyDigest: input.policyDigest,
+              normalizedInputDigest,
+              transportRequestDigest: pinInput.transportRequestDigest,
+            },
+          })
+          if (pinned.state !== "PINNED" || pinned.sessionID !== context.sessionID || pinned.requestID !== context.requestID ||
+            pinned.transportRequestDigest !== pinInput.transportRequestDigest || pinned.endpointRevision !== pinInput.endpointRevision ||
+            pinned.routeRevision !== context.route.routeRevision || pinned.providerID !== context.providerID ||
+            pinned.modelID !== context.modelID || pinned.harnessID !== context.harnessID) {
+            return yield* Effect.die(new Error("Direct provider journal returned a mismatched immutable pin"))
+          }
+          const binding = {
+            sessionID: pinned.sessionID,
+            requestID: pinned.requestID,
+            state: "PINNED" as const,
+            pinDigest: pinned.pinDigest,
+            providerID: pinned.providerID,
+            modelID: pinned.modelID,
+            harnessID: pinned.harnessID,
+            routeRevision: pinned.routeRevision,
+            endpointRevision: pinned.endpointRevision,
+            transportRequestDigest: pinned.transportRequestDigest,
+            beginDispatch: () => store.markProviderDispatching({
+              principal: input.principal,
+              sessionID: context.sessionID as SessionSchema.ID,
+              requestID: context.requestID,
+              pinDigest: pinned.pinDigest,
+            }).pipe(Effect.flatMap((row) => row.state === "DISPATCHING" && row.pinDigest === pinned.pinDigest
+              ? Effect.sync(() => {
+                  providerDispatchStarted = true
+                  return { state: "DISPATCHING" as const, pinDigest: row.pinDigest, transportRequestDigest: row.transportRequestDigest }
+                })
+              : Effect.die(new Error("Direct provider dispatch compare-and-set did not bind the pinned request")))),
+            markUnknown: (_reason: string) => store.markProviderRequestUnknown({
+              principal: input.principal,
+              sessionID: context.sessionID as SessionSchema.ID,
+              requestID: context.requestID,
+              pinDigest: pinned.pinDigest,
+            }).pipe(Effect.asVoid),
+          } satisfies DirectProviderJournalBindingV1
+          providerJournal = binding
+          return binding
+        })
+      const directContext = yield* Effect.try({
+        try: () => ContextSelection.compileDirectProviderRequestContextV1({
+          sessionID: input.session.id,
+          requestID,
+          mode: profile.context.isolation,
+          agentProfile: profile,
+          sourceRevision: input.sourceRevision,
+          messages: input.messages,
+          providerInput,
+          authority: {
+            permissionScopeDigest: authority.permissionScopeDigest,
+            policyDigest: input.policyDigest,
+            providerID: input.request.model.provider,
+            modelID: input.request.model.id,
+            harnessID: harness.harnessId,
+            harnessRevision: harness.revision,
+            routeID: selectedRoute.routeID,
+            routeRevision: selectedRoute.routeRevision,
+            endpointRevision: selectedRoute.endpointRevision,
+          },
+          pin,
+        }),
+        catch: () => undefined,
+      }).pipe(Effect.catch(() => Effect.succeed(undefined)))
+      if (!directContext) return undefined
+      frozenContext = directContext
+      const selection = directContext.contextSelection
+
+      const canonical = ContextSelection.canonicalProviderInputJson(providerInput)
+      const entries = selection.sources.map((source) => {
+        const message = source.kind === "session-message" ? input.messages.find((item) => item.id === source.sourceID) : undefined
+        const kind = source.kind === "session-message"
+          ? message?.type === "user" ? "user" as const : message?.type === "system" ? "system" as const : "assistant" as const
+          : source.kind === "agent-profile" ? "system" as const : "environment" as const
+        const bytes = source.kind === "session-message" && message
+          ? ContextSelection.sessionMessageSourceBytesV1(message)
+          : source.kind === "agent-profile"
+            ? ContextSelection.agentProfileSourceBytesV1(profile)
+            : undefined
+        const bytesKind = bytes === undefined ? "unknown" as const : "exact" as const
+        return {
+          entryID: `${source.kind}:${source.sourceID}`,
+          kind,
+          sourceRef: `${source.kind}:${source.sourceID}`,
+          sourceRevision: source.sourceRevision,
+          trust: source.trust,
+          ...(bytes === undefined ? {} : { bytes }),
+          bytesKind,
+          tokens: { kind: "unknown" as const },
+          included: true,
+          inclusionReason: source.inclusionReason,
+          protected: source.kind === "agent-profile",
+          cacheClass: source.kind === "agent-profile" ? "static" as const : source.kind === "provider-input" ? "turn" as const : "history" as const,
+          digest: source.contentDigest.startsWith("blake3:")
+            ? source.contentDigest
+            : `blake3:${bytesToHex(blake3(new TextEncoder().encode(`${source.kind}:${source.contentDigest}`)))}`,
+        }
+      })
+      const projection = yield* Effect.try({
+        try: () => compileContextLedgerV2({
+          lane: "direct",
+          sessionID: input.session.id,
+          requestID,
+          sourceRevision: input.sourceRevision,
+          providerID: input.request.model.provider,
+          modelID: input.request.model.id,
+          harnessID: harness.harnessId,
+          harnessRevision: harness.revision,
+          requestPayloadDigest: `blake3:${bytesToHex(blake3(Buffer.from(canonical, "utf8")))}`,
+          requestBytes: Buffer.byteLength(canonical, "utf8"),
+          contextSelection: selection,
+          entries,
+        }),
+        catch: () => undefined,
+      }).pipe(Effect.catch(() => Effect.succeed(undefined)))
+      if (projection) {
+        const timestamp = yield* DateTime.now
+        const event = {
+          timestamp,
+          sessionID: input.session.id,
+          requestID,
+          sourceRevision: input.sourceRevision,
+          sourceGeneration: generation.id,
+          ledger: projection.ledger,
+          ledgerDigest: projection.ledgerDigest,
+        } satisfies SessionEvent.ContextLedger["data"]
+        if (Buffer.byteLength(JSON.stringify(event), "utf8") <= 48 * 1024) {
+          // Attempt delivery before the provider stream starts so the context
+          // projection is ordered ahead of this request's streamed response.
+          // It is a best-effort UI event: publication failure never authorizes
+          // or blocks the provider request.
+          yield* events.publish(SessionEvent.ContextLedger, event, { location: input.session.location })
+            .pipe(Effect.catch(() => Effect.void))
+        }
+      }
+      return {
+        directContext,
+        profile,
+        harness,
+        providerJournal: () => providerJournal,
+        providerDispatchStarted: () => providerDispatchStarted,
+      }
+    })
+
     const runTurnAttempt = Effect.fn("SessionRunner.runTurn")(function* (
       sessionID: SessionSchema.ID,
       promotion: SessionInput.Delivery | undefined,
@@ -212,13 +447,26 @@ const layer = Layer.effect(
       }
       const system =
         initialized ?? (yield* SessionContextEpoch.prepare(db, events, loadSystemContext(agent), session.id))
-      const model = yield* models.resolve(session)
+      // The direct-provider route must come from the trusted catalog selection.
+      // Do not infer routing from the model request or the SDK's normalized route.
+      const selectedModel = models.resolveSelection
+        ? yield* models.resolveSelection(session)
+        : undefined
+      if (!selectedModel?.directProviderRoute) {
+        return yield* Effect.fail(new Error("Direct provider route is unavailable for the selected model"))
+      }
+      const model = selectedModel.model
       const entries = yield* SessionHistory.entriesForRunner(db, session.id, system.baselineSeq)
       const context = entries.map((entry) => entry.message)
       const isLastStep = agent.info?.steps !== undefined && currentStep >= agent.info.steps
       const toolMaterialization = isLastStep ? undefined : yield* tools.materialize(agent.info?.permissions)
       const promptCacheKey = /^ses_[0-9a-f]{64}$/.test(session.id) ? session.id.slice(4) : session.id
+      // `LLMRequest.id` survives prepare/stream and is consumed by P6's
+      // protected RequestExecutor journal seam. The same ID binds the
+      // ContextSelection and subsequent PINNED/DISPATCHING/SETTLED lifecycle.
+      const providerRequestID = `req_${randomUUID().replaceAll("-", "")}`
       const request = LLM.request({
+        id: providerRequestID,
         model,
         http: {
           headers: {
@@ -239,10 +487,48 @@ const layer = Layer.effect(
       })
       if (yield* compaction.compactIfNeeded({ sessionID: session.id, entries, model, request }))
         return yield* Effect.die(continueAfterCompaction(currentStep))
+      const contextSourceRevision = yield* EventV2.latestSequence(db, session.id)
+        .pipe(Effect.map((sequence) => Math.max(0, sequence).toString()))
+      const providerPermissionScope = yield* supervisor.directProviderPermissionScope({
+        sessionID: session.id,
+        locationRef: session.location,
+      }).pipe(Effect.map((scope) => ({
+        permissionScopeDigest: scope.permissionScopeDigest,
+        policyDigest: scope.policyDigest,
+      })), Effect.catch(() => Effect.succeed(undefined)))
+      const directProviderContext = yield* prepareDirectProviderContext({
+        session,
+        requestID: providerRequestID,
+        sourceRevision: contextSourceRevision,
+        request,
+        messages: context,
+        principal: trustedPrincipal,
+        policyDigest: policySnapshotDigest,
+        selectedRoute: {
+          providerID: selectedModel.directProviderRoute.providerID,
+          modelID: selectedModel.directProviderRoute.modelID,
+          routeID: selectedModel.directProviderRoute.routeID,
+          routeRevision: selectedModel.directProviderRoute.routeRevision,
+          endpointRevision: selectedModel.directProviderRoute.endpointRevision,
+        },
+        ...(providerPermissionScope ? {
+          authority: {
+            permissionScopeDigest: providerPermissionScope.permissionScopeDigest,
+          },
+        } : {}),
+      })
+      if (!directProviderContext) {
+        return yield* Effect.fail(new Error("Direct provider request lacks authenticated permission scope, selected-route, AgentProfileV2, or ContextSelection pins"))
+      }
+      const requestExecutorContext = {
+        requestID: providerRequestID,
+        directContext: directProviderContext.directContext,
+      } as const
       const startSnapshot = yield* snapshots.capture()
       const publisher = createLLMEventPublisher(events, {
         sessionID: session.id,
         agent: agent.id,
+        requestID: providerRequestID,
         model: {
           id: ModelV2.ID.make(model.id),
           providerID: ProviderV2.ID.make(model.provider),
@@ -253,8 +539,29 @@ const layer = Layer.effect(
       const withPublication = Semaphore.makeUnsafe(1).withPermit
       const publish = (event: LLMEvent, outputPaths: ReadonlyArray<string> = []) =>
         withPublication(publisher.publish(event, outputPaths))
+      // The only valid nested CodeMode path is the HostKernel-owned lifecycle
+      // that starts/binds the helper, admits the complete wave, settles each
+      // ordinary ToolBatch call, and returns authenticated per-call receipts.
+      // P2 has not yet exposed that typed supervisor API. Do not substitute a
+      // plain prepareToolBatch call here: without the CodeMode execution/wave
+      // binding it cannot supply the exact receipt projection required by
+      // §§12.21/37.24. Keep this callback fail-closed until that API is wired.
+      const dispatchPreparedToolBatch = toolMaterialization
+        ? Effect.fn("SessionRunner.dispatchPreparedToolBatch")(function* (_input: {
+            readonly calls: ReadonlyArray<{
+              readonly callID: string
+              readonly toolName: string
+              readonly capabilityID: string
+              readonly arguments: Readonly<Record<string, unknown>>
+            }>
+          }) {
+            return yield* Effect.fail(new ToolFailure({
+              message: "CodeMode nested dispatch is unavailable until HostKernel owns the execution and receipt lifecycle",
+            }))
+          })
+        : undefined
       let overflowFailure: ProviderErrorEvent | undefined
-      const providerStream = llm.stream(request).pipe(
+      const providerStream = llm.stream(request, requestExecutorContext).pipe(
         Stream.runForEach((event) =>
           Effect.gen(function* () {
             if (overflowFailure || publisher.hasProviderError()) return
@@ -308,13 +615,15 @@ const layer = Layer.effect(
               const invalid = validation.some((message) => message !== undefined)
               let admission: EffectAdmission | undefined
               const leasesByCallID = new Map<string, EffectLease>()
+              const normalizedCallsByCallID = new Map<string, import("../../session/supervisor").GuardedToolCall>()
+              const workspaceCommandProfilesByCallID = new Map<string, import("../../pty").WorkspaceCommandProfileBindingV1>()
               if (!invalid) {
                 const capabilities = localToolCalls.map((call) => materialization.classify(call))
                 const guarded = capabilities.some(
                   (capability) => capability.effectClass === "effect" || capability.effectClass === "unknown",
                 )
                 if (guarded) {
-                  admission = yield* supervisor
+                  const prepared = yield* pty
                     .prepareToolBatch({
                       sessionID: session.id,
                       locationRef: session.location,
@@ -347,15 +656,20 @@ const layer = Layer.effect(
                             ? [error.hostCode, error.reason].filter(Boolean).join(": ")
                             : "Rust Guard is unavailable"
                         return Effect.succeed({
-                          status: "denied" as const,
-                          reason: reason.slice(0, 512),
+                          admission: { status: "denied" as const, reason: reason.slice(0, 512) },
+                          calls: [],
+                          workspaceCommandProfiles: [],
                         })
                       }),
                     )
+                  admission = prepared.admission
+                  for (const call of prepared.calls) normalizedCallsByCallID.set(call.callID, call)
+                  for (const binding of prepared.workspaceCommandProfiles)
+                    workspaceCommandProfilesByCallID.set(binding.callID, binding)
                   if (admission.status === "prepared") {
                     if (
                       localToolCalls.length !== 1 ||
-                      capabilities[0]?.id !== "files.write" ||
+                      (capabilities[0]?.id !== "files.write" && capabilities[0]?.id !== "terminal.run") ||
                       !admission.lease.effectID ||
                       !/^blake3:[0-9a-f]{64}$/.test(admission.lease.capabilityLeaseDigest)
                     ) {
@@ -456,6 +770,10 @@ const layer = Layer.effect(
                       assistantMessageID,
                       call,
                       trustedPrincipal,
+                      ...(dispatchPreparedToolBatch ? { dispatchPreparedToolBatch } : {}),
+                      ...(normalizedCallsByCallID.get(call.id) ? { guardedCall: normalizedCallsByCallID.get(call.id)! } : {}),
+                      ...(workspaceCommandProfilesByCallID.get(call.id) ? { workspaceCommandProfile: workspaceCommandProfilesByCallID.get(call.id)! } : {}),
+                      locationRef: session.location,
                       ...(effect ? { effect } : {}),
                     }),
                   ).pipe(
@@ -515,21 +833,42 @@ const layer = Layer.effect(
                     .pipe(Effect.catch(() => Effect.succeed(undefined)))
                 : undefined
             const assistantMessageID = yield* publisher.startAssistant()
+            const usageProvenance = {
+              providerID: ProviderV2.ID.make(model.provider),
+              modelID: ModelV2.ID.make(model.id),
+              operationID: assistantMessageID,
+              requestID: providerRequestID,
+              cost: { status: "unknown" as const },
+              tokens: stepSettlement.tokens,
+            }
+            const journal = directProviderContext.providerJournal()
             yield* withPublication(
               events.publish(SessionEvent.Step.Ended, {
                 sessionID: session.id,
                 timestamp: yield* DateTime.now,
                 assistantMessageID,
                 finish: stepSettlement.finish,
-                usageProvenance: {
-                  providerID: ProviderV2.ID.make(model.provider),
-                  modelID: ModelV2.ID.make(model.id),
-                  operationID: assistantMessageID,
-                  cost: { status: "unknown" },
-                  tokens: stepSettlement.tokens,
-                },
+                usageProvenance,
                 snapshot: endSnapshot,
                 files,
+              }, {
+                // EventV2 commits the assistant projection first, then settles
+                // the provider journal in the same database transaction. A
+                // lost/ambiguous dispatch cannot be made successful by a later
+                // best-effort usage event.
+                commit: () => {
+                  if (!journal || !directProviderContext.providerDispatchStarted()) {
+                    return Effect.die(new Error("Provider result has no exact durable DISPATCHING journal binding"))
+                  }
+                  return store.settleProviderRequest({
+                    principal: trustedPrincipal,
+                    sessionID: session.id,
+                    requestID: providerRequestID,
+                    pinDigest: journal.pinDigest,
+                    assistantMessageID,
+                    usage: usageProvenance,
+                  }).pipe(Effect.asVoid)
+                },
               }),
             )
           }
@@ -579,6 +918,10 @@ const layer = Layer.effect(
       )
     })
 
+    // UNKNOWN model outcomes are reported once per process/session. The
+    // unresolved request is never replayed; a later explicit prompt creates a
+    // fresh request ID and follows the normal selected-route admission path.
+    const surfacedUnknownProviderSessions = new Set<string>()
     const run = Effect.fn("SessionRunner.run")(function* (input: {
       readonly sessionID: SessionSchema.ID
       readonly force: boolean
@@ -586,6 +929,19 @@ const layer = Layer.effect(
       const hasSteer = yield* SessionInput.hasPending(db, input.sessionID, "steer")
       const hasQueue = hasSteer ? false : yield* SessionInput.hasPending(db, input.sessionID, "queue")
       if (!input.force && !hasSteer && !hasQueue) return
+      const principal = (yield* TrustedPrincipalContext).principal
+      const providerRequests = yield* store.recoverProviderRequests({
+        principal,
+        sessionID: input.sessionID,
+      })
+      const unknownRequests = providerRequests.filter((request) => request.state === "UNKNOWN")
+      if (unknownRequests.length > 0 && !surfacedUnknownProviderSessions.has(input.sessionID)) {
+        surfacedUnknownProviderSessions.add(input.sessionID)
+        const requestIDs = unknownRequests.map((request) => request.requestID).slice(0, 8).join(", ")
+        return yield* Effect.fail(new Error(
+          `A previous provider request has an UNKNOWN outcome (${requestIDs}). HorizonCode will not replay it; submit an explicit new continuation to start a fresh request.`,
+        ))
+      }
       yield* failInterruptedTools(input.sessionID)
       let promotion: SessionInput.Delivery | undefined = hasSteer ? "steer" : hasQueue ? "queue" : undefined
       let shouldRun = input.force || hasSteer || hasQueue
@@ -627,8 +983,10 @@ export const node = makeLocationNode({
     SkillGuidance.node,
     ReferenceGuidance.node,
     Config.node,
+    Config.agentProfileNode,
     Snapshot.node,
     Database.node,
     SessionSupervisor.node,
+    Pty.node,
   ],
 })

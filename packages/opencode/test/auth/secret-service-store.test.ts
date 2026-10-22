@@ -96,6 +96,17 @@ describe("durable Linux Secret Service broker store", () => {
     expect((await stat(path.join(directory, SECRET_STORE_DIRECTORY))).mode & 0o077).toBe(0)
   })
 
+  test("lists only bounded provider metadata without returning credential bytes", async () => {
+    const f = fixture()
+    const directory = await f.directory()
+    active.push(directory)
+    const store = await createLinuxSecretServiceStore({ directory, backend: f.backend, now: () => new Date(timestamp) })
+    await store.put(metadata, new TextEncoder().encode("test-only-secret"), "put_test_1")
+    await expect(store.listByProviderIds(["example-provider"])).resolves.toEqual([metadata])
+    expect(JSON.stringify(await store.listByProviderIds(["example-provider"]))).not.toContain("test-only-secret")
+    await expect(store.listByProviderIds(Array.from({ length: 17 }, (_, index) => `provider-${index}`))).rejects.toThrow()
+  })
+
   test("reopens durable metadata and commits a one-use lease before delivering bytes", async () => {
     const f = fixture()
     const directory = await f.directory()

@@ -1,0 +1,14 @@
+name: HorizonCode Nix hash update (disabled)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hash-update-disabled:
+    if: ${{ false }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Automated Nix hash commits are disabled for HorizonCode."

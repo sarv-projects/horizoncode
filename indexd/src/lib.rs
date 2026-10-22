@@ -24,10 +24,11 @@ pub use repo_intel::{
 pub use repo_structure::{
     RepoNodeRefV1, RepoStructureCompletenessV1, RepoStructureCoverageV1, RepoStructureError,
     RepoStructureFallbackReasonV1, RepoStructureFallbackV1, RepoStructureFreshnessV1,
-    RepoStructurePageV1, RepoStructureProvenanceV1, RepoStructureQueryV1, RepoStructureSelectorV1,
+    RepoStructurePageV1, RepoStructurePositionV1, RepoStructureProvenanceV1,
+    RepoStructureQueryV1, RepoStructureSelectorV1,
     RepoStructureSourceKindV1, RepoStructureStatusV1, StructureByteRangeV1, MAX_STRUCTURE_BYTES,
     MAX_STRUCTURE_CURSOR_BYTES, MAX_STRUCTURE_DEPTH, MAX_STRUCTURE_IDENTIFIER_BYTES,
-    MAX_STRUCTURE_NODES, MAX_STRUCTURE_SYMBOL_BYTES,
+    MAX_STRUCTURE_NODES, MAX_STRUCTURE_SYMBOL_BYTES, MAX_STRUCTURE_WORK_UNITS,
 };
 pub use transport::{
     operation_from_tag, operation_tag, peek_request_frame, peek_response_frame, FrameHeader,
@@ -358,6 +359,14 @@ impl BaseGeneration {
 
     pub fn content_bytes(&self) -> usize {
         self.content_bytes
+    }
+
+    /// Iterate immutable file observations in canonical path order. This is used by
+    /// RepoIntel's lexical structural projection; callers receive no mutable access.
+    pub fn file_entries(&self) -> impl Iterator<Item = (&str, &str, Digest)> {
+        self.files.iter().map(|(path, file)| {
+            (path.as_str(), file.contents.as_str(), file.content_digest)
+        })
     }
 
     /// Search the base generation only.

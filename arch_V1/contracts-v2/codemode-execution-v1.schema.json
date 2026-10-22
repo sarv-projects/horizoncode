@@ -1,0 +1,437 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "horizon://schemas/codemode-execution-v1",
+  "title": "CodeModeExecutionV1",
+  "description": "V1 CodeMode contract. The model argument contains only bounded orchestration code/input. Session/request/Attempt correlation, enablement, accepted Spec/profile and runtime pins come from authenticated host state and never appear in model arguments or helper script. Canonical capability is codemode.execute; the OpenCode-derived model-facing function name is execute. Host-owned packaged-runtime selection, OS containment, helper lifecycle, deadline, cancellation, output and ToolBatch limits are not model-selected. Direct exposure requires explicit Session-bound CodeModeEnablementV1; managed exposure requires the accepted SpecVersion capability and Task-pinned AgentProfileV2 ceiling checked against a live Attempt. Neither enablement grants nested effects, which still use normal Guard. Private stdio frames are defined by codemode-worker-message-v1.schema.json. Production exposure requires the nested Guard/ExecutionHost dispatcher to be wired; \u00a732.41 is integrated release acceptance.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/request"
+    },
+    {
+      "$ref": "#/$defs/result"
+    }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^(sha256|blake3):[a-f0-9]{64}$"
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "requestId",
+        "capabilityId",
+        "toolName",
+        "input",
+        "deadlineMs",
+        "cancellationId",
+        "maxOutputBytes"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "requestId": {
+          "$ref": "#/$defs/id",
+          "description": "Host-assigned request identity tied to the exact Session turn/tool call."
+        },
+        "capabilityId": {
+          "const": "codemode.execute"
+        },
+        "toolName": {
+          "const": "execute",
+          "description": "Registry projection name; distinct from the canonical machine capability ID."
+        },
+        "input": {
+          "$ref": "#/$defs/modelInput"
+        },
+        "deadlineMs": {
+          "const": 30000,
+          "description": "Host-selected monotonic aggregate limit; not a model argument."
+        },
+        "cancellationId": {
+          "$ref": "#/$defs/id",
+          "description": "Host-issued cancellation identity bound to the parent ToolBatch/turn."
+        },
+        "maxOutputBytes": {
+          "const": 65536,
+          "description": "Host-selected aggregate output cap in bytes; not model-selected."
+        }
+      }
+    },
+    "call": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "callId",
+        "capabilityId",
+        "argumentsDigest",
+        "argumentsBytes"
+      ],
+      "properties": {
+        "callId": {
+          "$ref": "#/$defs/id"
+        },
+        "capabilityId": {
+          "$ref": "#/$defs/id"
+        },
+        "argumentsDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "argumentsBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 262144
+        }
+      }
+    },
+    "callOutcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["callId", "status"],
+      "properties": {
+        "callId": {"$ref": "#/$defs/id"},
+        "status": {"enum": ["settled", "rejected", "cancelled", "unknown"]},
+        "receiptRef": {"$ref": "#/$defs/id"},
+        "receiptDigest": {"$ref": "#/$defs/digest"}
+      },
+      "allOf": [
+        {"if": {"properties": {"status": {"enum": ["settled", "rejected", "cancelled"]}}, "required": ["status"]}, "then": {"required": ["receiptRef", "receiptDigest"]}},
+        {"if": {"properties": {"status": {"const": "unknown"}}, "required": ["status"]}, "then": {"not": {"anyOf": [{"required": ["receiptRef"]}, {"required": ["receiptDigest"]}]}}}
+      ]
+    },
+    "wave": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "waveIndex",
+        "batchId",
+        "calls",
+        "callOutcomes",
+        "batchStatus",
+        "payloadBytes"
+      ],
+      "properties": {
+        "waveIndex": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 63
+        },
+        "batchId": {
+          "$ref": "#/$defs/id"
+        },
+        "calls": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "$ref": "#/$defs/call"
+          }
+        },
+        "callOutcomes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {"$ref": "#/$defs/callOutcome"},
+          "description": "Exact one-to-one ordered settlement projection of calls. The strict validator requires the same count and callId at every index."
+        },
+        "batchStatus": {
+          "enum": [
+            "settled",
+            "rejected",
+            "cancelled",
+            "unknown"
+          ]
+        },
+        "receiptDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "waveOutputBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65536
+        },
+        "payloadBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1048576
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "batchStatus": {
+                "enum": ["settled", "rejected", "cancelled"]
+              }
+            },
+            "required": [
+              "batchStatus"
+            ]
+          },
+          "then": {
+            "required": [
+              "receiptDigest"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "batchStatus": {"const": "unknown"}
+            },
+            "required": [
+              "batchStatus"
+            ]
+          },
+          "then": {
+            "not": {
+              "required": [
+                "receiptDigest"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "requestId",
+        "capabilityId",
+        "status",
+        "waves",
+        "totalCalls",
+        "outputBytes",
+        "payloadBytes",
+        "truncated"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "requestId": {
+          "$ref": "#/$defs/id"
+        },
+        "capabilityId": {
+          "const": "codemode.execute"
+        },
+        "status": {
+          "enum": [
+            "completed",
+            "failed",
+            "cancelled",
+            "unknown"
+          ]
+        },
+        "waves": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/wave"
+          }
+        },
+        "totalCalls": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 64
+        },
+        "outputBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65536
+        },
+        "error": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "receiptDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "payloadBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1048576
+        },
+        "truncated": {
+          "type": "boolean",
+          "description": "True when output was cut to the aggregate output cap; never infer complete output from a truncated value."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "completed"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "waves": {
+                      "minItems": 1
+                    }
+                  },
+                  "required": [
+                    "waves"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "totalCalls": {
+                      "minimum": 1
+                    },
+                    "waves": {
+                      "items": {
+                        "properties": {
+                          "batchStatus": {
+                            "const": "settled"
+                          }
+                        },
+                        "required": [
+                          "batchStatus"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "receiptDigest"
+                  ]
+                },
+                "else": {
+                  "properties": {
+                    "totalCalls": {
+                      "const": 0
+                    }
+                  },
+                  "not": {
+                    "required": [
+                      "receiptDigest"
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "unknown"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "waves": {
+                "items": {
+                  "contains": {
+                    "properties": {
+                      "batchStatus": {
+                        "const": "unknown"
+                      }
+                    },
+                    "required": [
+                      "batchStatus"
+                    ]
+                  },
+                  "minContains": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"status": {"const": "unknown"}},
+            "required": ["status"]
+          },
+          "then": {"not": {"required": ["receiptDigest"]}}
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {"enum": ["completed", "failed", "cancelled"]},
+              "waves": {"minItems": 1}
+            },
+            "required": ["status", "waves"]
+          },
+          "then": {"required": ["receiptDigest"]}
+        }
+      ]
+    },
+    "modelInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536,
+          "description": "Model-authored orchestration source; it can call only the authorized registered tool tree."
+        }
+      }
+    }
+  },
+  "x-horizon-validation": [
+    "canonical-capability-id-is-codemode.execute-model-facing-tool-name-is-execute",
+    "model-input-contains-only-code; host-supplies-authenticated-session-request-attempt-enablements-and-runtime-pins-out-of-band",
+    "direct-lane-requires-CodeModeEnablementV1-bound-to-principal-session-owner-epoch-helper-and-resource-profile-digests",
+    "managed-lane-requires-accepted-SpecVersion-codemode.execute-and-Task-pinned-AgentProfileV2-capability-ceiling-matched-to-live-Attempt",
+    "model-facing-exposure-after-nested-Guard-ExecutionHost-dispatcher-is-wired-and-integrated-acceptance-passes",
+    "each-wave-is-one-atomic-toolbatch-of-1..32-nested-calls",
+    "callOutcomes-count-and-order-exactly-match-calls;each-outcome-callId-equals-the-callId-at-the-same-index",
+    "each-settled-rejected-or-cancelled-callOutcome-carries-its-exact-receiptRef-and-receiptDigest;unknown-carries-neither",
+    "batchStatus-is-derived-from-callOutcomes:unknown-if-any-unknown,otherwise-rejected-if-any-rejected,otherwise-cancelled-if-any-cancelled,otherwise-settled",
+    "unknown-wave-has-at-least-one-unknown-callOutcome-and-no-wave-or-run-aggregate-receiptDigest;never-label-unknown-as-settled",
+    "when-no-call-is-unknown-wave-receiptDigest-is-derived-from-ordered-callOutcomes;result-receiptDigest-is-derived-from-wave-index-and-call-order",
+    "aggregate-nested-calls-across-all-waves-is-at-most-64",
+    "at-most-64-waves-and-wave-1-requires-wave-0-settled-with-verified-receipt-digest-and-no-unknown-member",
+    "each-call-uses-the-existing-registered-capability-tree-and-normal-Guard-ExecutionHost-path",
+    "no-ambient-filesystem-process-network-credential-or-tool-registry-authority",
+    "single-trusted-30-second-deadline-includes-all-waves-and-cancellation-stops-later-waves",
+    "execute-existing-interpreter-in-short-lived-helper-under-existing-Rust-ExecutionHost-and-selected-cgroup-v2-ResourceProfile",
+    "helper-has-no-ambient-filesystem-process-network-credential-or-registry-api-and-all-tool-rpc-is-executed-by-Core-through-existing-SessionSupervisor-and-Guard",
+    "existing-ExecutionHost-supervisor-terminates-and-reaps-helper-before-outer-tool-settlement",
+    "PREPARED-lease-receipt-and-UNKNOWN-reconciliation-boundary-applies-per-wave",
+    "unknown-receipt-stops-execution-and-returns-UNKNOWN-never-replays-unsettled-effect",
+    "totalCalls-equals-sum-of-wave-call-counts-and-outputBytes-equals-sum-of-wave-output-bytes",
+    "sum-of-wave-payloadBytes-is-at-most-1048576",
+    "wave-payloadBytes-equals-sum-of-call-argumentsBytes",
+    "completed-result-has-all-waves-settled-with-receipts",
+    "completed-zero-call-pure-computation-has-no-waves-totalCalls-zero-and-no-nested-receiptDigest;outer-helper-process-retains-its-ordinary-Guarded-process-effect-receipt",
+    "every-nonempty-result-with-only-known-terminal-call-outcomes-has-exact-per-call-receipts-and-ordered-aggregate-nested-receiptDigest-defined-in-12.21-as-BLAKE3-domain-horizoncode.codemode-receipts.v1-NUL-over-canonical-MessagePack-of-wave-call-ordered-callId-receiptRef-receiptDigest-tuples",
+    "execution-status-unknown-requires-an-unknown-callOutcome;completed-or-failed-or-cancelled-never-contains-an-unknown-callOutcome",
+    "failed-or-cancelled-result-has-no-later-wave-after-first-non-settled-wave",
+    "truncated-is-true-if-any-output-was-omitted-to-respect-aggregate-output-cap",
+    "host-imposes-one-trusted-30-second-deadline-and-cancellation-token; model cannot extend or replace them",
+    "aggregate-output-is-at-most-65536-bytes-and-truncation-is-explicit",
+    "model-input-contains-code-only-no-trusted-identity-budget-capability-or-route-field; helper-message-schema-is-private-and-strict",
+    "rejection-cancellation-and-settlement-have-durable-batch-outcome-receipts;-unknown-is-reconciled-exactly-before-any-resume",
+    "wave-index-is-contiguous-from-0-and-number-of-waves-is-at-most-totalCalls-and-64;sequential-dependent-tool-calls-use-later-waves"
+  ]
+}

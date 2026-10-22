@@ -56,7 +56,7 @@ export const OfflineRequestV1 = Schema.Struct({
     ),
   )
 
-const CatalogRequestV1 = Schema.Struct({
+export const CatalogRequestV1 = Schema.Struct({
   ...RequestBase,
   tier: Schema.Literal("catalog"),
   maxNetworkRequests: NetworkRequestLimit,
@@ -70,7 +70,7 @@ const CatalogRequestV1 = Schema.Struct({
     ),
   )
 
-const FullRequestV1 = Schema.Struct({
+export const FullRequestV1 = Schema.Struct({
   ...RequestBase,
   tier: Schema.Literal("full"),
   maxNetworkRequests: NetworkRequestLimit,
@@ -108,6 +108,7 @@ export const ResultV1 = Schema.Struct({
   tier: Schema.Literals(["offline", "catalog", "full"]),
   selection: SelectionV1,
   localReadiness: Schema.Literals(["READY", "INCOMPLETE", "INVALID", "UNKNOWN"]),
+  catalogFreshness: Schema.Literals(["FRESH", "STALE", "UNKNOWN"]),
   remoteChecks: RemoteChecksV1,
   credentialAccess: Schema.Literals(["NOT_READ", "METADATA_ONLY", "CREDENTIAL_USED"]),
   networkRequestCount: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 5 })),

@@ -580,3 +580,11 @@ export const JuliaLS: Info = {
     return refuseLanguageServiceProcess("server.spawn")
   },
 }
+
+/** Built-in definitions only; executable identity still comes from trusted global Config + HostKernel. */
+export const builtins: readonly Info[] = Object.freeze([
+  Deno, Typescript, Vue, ESLint, Oxlint, Biome, Gopls, Rubocop, Ty, Pyright, ElixirLS, Zls,
+  CSharp, Razor, FSharp, SourceKit, RustAnalyzer, Clangd, Svelte, Astro, JDTLS, KotlinLS,
+  YamlLS, LuaLS, PHPIntelephense, Prisma, Dart, Ocaml, BashLS, TerraformLS, TexLab,
+  DockerfileLS, Gleam, Clojure, Nixd, Tinymist, HLS, JuliaLS,
+])

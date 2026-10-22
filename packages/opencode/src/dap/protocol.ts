@@ -1,7 +1,16 @@
 import { Schema } from "effect"
 import type { DirectAttemptScopeV1, ManagedAttemptScopeV1 } from "@/session/managed-control"
-import { validateHostProcessRef, validateHostProcessScope, type HostProcessRefV1 } from "@/lsp/process-scope"
 import {
+  freezeDirectAttemptScope,
+  freezeManagedAttemptScope,
+  validateHostProcessRef,
+  validateHostProcessScope,
+  type HostProcessRefV1,
+} from "@/lsp/process-scope"
+import { assertHostProtocolAllowed } from "@/lsp/launch"
+import { guardActionID, operationForCommand } from "./session"
+import {
+  ProtocolDispatchUncertainError,
   validateDispatchReceiptV1,
   type HostProtocolDispatchReceiptV1,
 } from "@/lsp/protocol"
@@ -166,21 +175,102 @@ export type HostEventPageV1 = {
   readonly events: readonly HostEventV1[]
 }
 
+export type HostDapEventReadRequestV1 = {
+  readonly hostProcessRef: HostProcessRefV1
+  readonly sessionID: string
+  readonly locationID: string
+  readonly workspaceRevision: string
+  readonly managedAttempt?: ManagedAttemptScopeV1
+  readonly directAttempt?: DirectAttemptScopeV1
+  readonly afterEventSequence: string
+  readonly maxEvents: 64
+  readonly maxBytes: 1048576
+}
+
 export interface HostDapProtocolAdapter {
   /** Resolves only after HostKernel has durably receipted dispatch. The DAP
    * response itself arrives later through protocolRead's retained event page. */
   protocolOp(request: HostOperationRequestV1): Promise<HostProtocolDispatchReceiptV1>
-  protocolRead(request: {
-    readonly hostProcessRef: HostProcessRefV1
-    readonly sessionID: string
-    readonly locationID: string
-    readonly workspaceRevision: string
-    readonly managedAttempt?: ManagedAttemptScopeV1
-    readonly directAttempt?: DirectAttemptScopeV1
-    readonly afterEventSequence: string
-    readonly maxEvents: 64
-    readonly maxBytes: 1048576
-  }): Promise<HostEventPageV1>
+  protocolRead(request: HostDapEventReadRequestV1): Promise<HostEventPageV1>
+}
+
+/** Narrow adapter for the existing SessionSupervisor authenticated HostKernel RPC. */
+export type ExecutionHostProtocolRequestV1 = (
+  serviceID: "execution.v1",
+  operation: "protocol_op" | "protocol_read",
+  body: Readonly<Record<string, unknown>>,
+) => Promise<unknown>
+
+export function validateHostDapEventReadRequestV1(input: unknown): HostDapEventReadRequestV1 {
+  if (!isRecord(input) || !hasExactKeys(input, [
+    "hostProcessRef", "sessionID", "locationID", "workspaceRevision", "afterEventSequence", "maxEvents", "maxBytes",
+  ], ["managedAttempt", "directAttempt"]) ||
+    (input.managedAttempt !== undefined && input.directAttempt !== undefined)) {
+    throw new ProtocolError({ detail: "malformed HostKernel DAP event read request" })
+  }
+  let processRef: HostProcessRefV1
+  try {
+    processRef = validateHostProcessRef(input.hostProcessRef)
+  } catch {
+    throw new ProtocolError({ detail: "invalid HostKernel DAP event read process reference" })
+  }
+  if (processRef.kind !== "debug_adapter" ||
+    typeof input.sessionID !== "string" || !input.sessionID || input.sessionID.length > 160 ||
+    typeof input.locationID !== "string" || !input.locationID || input.locationID.length > 160 ||
+    typeof input.workspaceRevision !== "string" || !/^blake3:[0-9a-f]{64}$/.test(input.workspaceRevision) ||
+    !isCanonicalU64(input.afterEventSequence) ||
+    input.maxEvents !== 64 || input.maxBytes !== MAX_FRAME_BYTES) {
+    throw new ProtocolError({ detail: "invalid HostKernel DAP event read fields" })
+  }
+  try {
+    validateHostProcessScope({
+      sessionID: input.sessionID,
+      locationID: input.locationID,
+      ownerEpoch: processRef.ownerEpoch,
+      workspaceRevision: input.workspaceRevision,
+      managedAttemptScope: input.managedAttempt as ManagedAttemptScopeV1 | undefined,
+      directAttemptScope: input.directAttempt as DirectAttemptScopeV1 | undefined,
+      workspaceID: (input.directAttempt as DirectAttemptScopeV1 | undefined)?.workspaceID,
+    })
+  } catch {
+    throw new ProtocolError({ detail: "DAP event read Attempt scope does not match its process reference" })
+  }
+  return Object.freeze({
+    hostProcessRef: Object.freeze({ ...processRef }),
+    sessionID: input.sessionID,
+    locationID: input.locationID,
+    workspaceRevision: input.workspaceRevision,
+    afterEventSequence: input.afterEventSequence,
+    maxEvents: 64 as const,
+    maxBytes: MAX_FRAME_BYTES as 1048576,
+    ...(input.managedAttempt === undefined ? {} : { managedAttempt: freezeManagedAttemptScope(input.managedAttempt as ManagedAttemptScopeV1) }),
+    ...(input.directAttempt === undefined ? {} : { directAttempt: freezeDirectAttemptScope(input.directAttempt as DirectAttemptScopeV1) }),
+  })
+}
+
+/**
+ * Bind DAP's strict DTOs to the shared HostKernel execution dispatcher. The
+ * returned adapter does not own a process or retry uncertain dispatches.
+ */
+export function createHostKernelDapProtocolAdapterV1(requestHostKernel: ExecutionHostProtocolRequestV1): HostDapProtocolAdapter {
+  return Object.freeze({
+    protocolOp: async (input: HostOperationRequestV1) => {
+      assertHostProtocolAllowed()
+      const request = validateHostOperationRequestV1(input)
+      const response = await requestHostKernel("execution.v1", "protocol_op", request)
+      try {
+        return validateHostDapDispatchReceiptV1(request, response)
+      } catch {
+        throw new ProtocolDispatchUncertainError({ operation: request.operation.command })
+      }
+    },
+    protocolRead: async (request) => {
+      assertHostProtocolAllowed()
+      const validated = validateHostDapEventReadRequestV1(request)
+      const response = await requestHostKernel("execution.v1", "protocol_read", validated)
+      return validateHostEventPageV1(validated, response)
+    },
+  })
 }
 
 /** Bind a DAP dispatch acknowledgement to the exact adapter generation and
@@ -204,6 +294,7 @@ export async function dispatchHostDapOperationV1(
   input: unknown,
   dispatch: (request: HostOperationRequestV1) => Promise<unknown>,
 ): Promise<HostProtocolDispatchReceiptV1> {
+  assertHostProtocolAllowed()
   const request = validateHostOperationRequestV1(input)
   const receipt = await dispatch(request)
   return validateHostDapDispatchReceiptV1(request, receipt)
@@ -222,36 +313,55 @@ function isCanonicalU64(value: unknown, allowZero = true): value is string {
   }
 }
 
-function assertBoundedJson(value: unknown, depth = 0, count = { value: 0 }): void {
-  count.value++
-  if (count.value > 16_384 || depth > 24) throw new ProtocolError({ detail: "DAP operation payload exceeds bounds" })
+function assertBoundedJson(value: unknown, depth = 0, budget = { nodes: 0, bytes: 0 }): void {
+  budget.nodes++
+  if (budget.nodes > 16_384 || depth > 24) throw new ProtocolError({ detail: "DAP operation payload exceeds bounds" })
   if (value === null || typeof value === "boolean") return
   if (typeof value === "string") {
     if (value.includes("\0")) throw new ProtocolError({ detail: "DAP operation payload contains an invalid string" })
+    if (value.length > MAX_FRAME_BYTES) throw new ProtocolError({ detail: "DAP operation payload exceeds bounds" })
+    budget.bytes += encoder.encode(value).byteLength
+    if (budget.bytes > MAX_FRAME_BYTES) throw new ProtocolError({ detail: "DAP operation payload exceeds bounds" })
     return
   }
   if (typeof value === "number") {
     if (!Number.isFinite(value)) throw new ProtocolError({ detail: "DAP operation payload is not JSON" })
+    budget.bytes += 16
+    if (budget.bytes > MAX_FRAME_BYTES) throw new ProtocolError({ detail: "DAP operation payload exceeds bounds" })
     return
   }
   if (Array.isArray(value)) {
-    for (const item of value) assertBoundedJson(item, depth + 1, count)
+    if (Object.getPrototypeOf(value) !== Array.prototype || Reflect.ownKeys(value).some((key) => {
+      if (key === "length") return false
+      if (typeof key !== "string" || !/^(0|[1-9][0-9]*)$/.test(key)) return true
+      const index = Number(key)
+      return !Number.isSafeInteger(index) || index >= value.length
+    })) throw new ProtocolError({ detail: "DAP operation payload is not plain JSON" })
+    for (let index = 0; index < value.length; index++) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index))
+      if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, "value")) {
+        throw new ProtocolError({ detail: "DAP operation payload is not plain JSON" })
+      }
+      assertBoundedJson(descriptor.value, depth + 1, budget)
+    }
     return
   }
   if (typeof value !== "object") throw new ProtocolError({ detail: "DAP operation payload is not JSON" })
-  const prototype = Object.getPrototypeOf(value)
-  if (prototype !== Object.prototype && prototype !== null) {
+  if (!isPlainDataRecord(value)) {
     throw new ProtocolError({ detail: "DAP operation payload is not a plain JSON object" })
   }
-  for (const [key, item] of Object.entries(value)) {
+  for (const key of Object.keys(value)) {
     if (key.includes("\0")) throw new ProtocolError({ detail: "DAP operation payload contains an invalid field" })
-    assertBoundedJson(item, depth + 1, count)
+    if (key.length > MAX_FRAME_BYTES) throw new ProtocolError({ detail: "DAP operation payload exceeds bounds" })
+    budget.bytes += encoder.encode(key).byteLength
+    if (budget.bytes > MAX_FRAME_BYTES) throw new ProtocolError({ detail: "DAP operation payload exceeds bounds" })
+    assertBoundedJson(value[key], depth + 1, budget)
   }
 }
 
 /** Validate the method-tagged private HostKernel request before adapter dispatch. */
 export function validateHostOperationRequestV1(input: unknown): HostOperationRequestV1 {
-  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+  if (!isPlainDataRecord(input)) {
     throw new ProtocolError({ detail: "malformed HostKernel DAP operation" })
   }
   const record = input as Record<string, unknown>
@@ -270,11 +380,11 @@ export function validateHostOperationRequestV1(input: unknown): HostOperationReq
   if (
     required.some((key) => !Object.hasOwn(record, key)) ||
     Object.keys(record).some((key) => !allowed.has(key)) ||
-    (Object.hasOwn(record, "managedAttempt") && Object.hasOwn(record, "directAttempt"))
+    (record.managedAttempt !== undefined && record.directAttempt !== undefined)
   ) {
     throw new ProtocolError({ detail: "malformed HostKernel DAP operation" })
   }
-  if (typeof record.operation !== "object" || record.operation === null || Array.isArray(record.operation)) {
+  if (!isPlainDataRecord(record.operation)) {
     throw new ProtocolError({ detail: "malformed HostKernel DAP operation payload" })
   }
   const operation = record.operation as Record<string, unknown>
@@ -295,9 +405,9 @@ export function validateHostOperationRequestV1(input: unknown): HostOperationReq
     typeof record.locationID !== "string" || !record.locationID || record.locationID.length > 160 ||
     typeof record.workspaceRevision !== "string" ||
     !/^blake3:[0-9a-f]{64}$/.test(record.workspaceRevision) ||
-    typeof record.effectID !== "string" || !record.effectID ||
-    typeof record.challengeID !== "string" || !record.challengeID ||
-    typeof record.capabilityID !== "string" || !record.capabilityID ||
+    typeof record.effectID !== "string" || !record.effectID || record.effectID.length > 160 || record.effectID.trim() !== record.effectID ||
+    typeof record.challengeID !== "string" || !record.challengeID || record.challengeID.length > 160 || record.challengeID.trim() !== record.challengeID ||
+    typeof record.capabilityID !== "string" || !record.capabilityID || record.capabilityID.length > 160 || record.capabilityID.trim() !== record.capabilityID ||
     typeof record.capabilityLeaseDigest !== "string" ||
     !/^blake3:[0-9a-f]{64}$/.test(record.capabilityLeaseDigest) ||
     !isCanonicalU64(operation.requestSequence, false) ||
@@ -306,6 +416,14 @@ export function validateHostOperationRequestV1(input: unknown): HostOperationReq
     !Schema.is(HostCommand)(operation.command)
   ) {
     throw new ProtocolError({ detail: "invalid HostKernel DAP operation fields" })
+  }
+  const classified = operationForCommand(operation.command as string)
+  const expectedCapability = classified && guardActionID(classified)
+  // A typed evaluate operation may reach HostKernel only after the trusted
+  // launch profile and a fresh debug.evaluate Guard lease authorize it.
+  // Attach carries only a HostKernel-minted terminal target ref.
+  if (!classified || !expectedCapability || record.capabilityID !== expectedCapability) {
+    throw new ProtocolError({ detail: "DAP command is unavailable or its canonical Guard capability does not match" })
   }
   try {
     validateHostProcessScope({
@@ -324,10 +442,29 @@ export function validateHostOperationRequestV1(input: unknown): HostOperationReq
     throw new ProtocolError({ detail: "DAP operation arguments must be an object" })
   }
   assertBoundedJson(operation.arguments)
+  validateCommandArguments(operation.command as HostCommand, operation.arguments as Record<string, unknown>)
+  if (operation.command === "attach") {
+    const args = operation.arguments as Record<string, unknown>
+    try {
+      const target = validateHostProcessRef(args.targetHostProcessRef)
+      if (target.kind !== "terminal_run" || target.ownerEpoch !== hostProcessRef.ownerEpoch) throw new Error("scope mismatch")
+      validateHostProcessScope({
+        sessionID: record.sessionID as string,
+        locationID: record.locationID as string,
+        ownerEpoch: target.ownerEpoch,
+        workspaceRevision: record.workspaceRevision as string,
+        managedAttemptScope: record.managedAttempt as ManagedAttemptScopeV1 | undefined,
+        directAttemptScope: record.directAttempt as DirectAttemptScopeV1 | undefined,
+        workspaceID: (record.directAttempt as DirectAttemptScopeV1 | undefined)?.workspaceID,
+      })
+    } catch {
+      throw new ProtocolError({ detail: "DAP attach requires a same-scope HostKernel terminal target" })
+    }
+  }
   const encoded = encoder.encode(JSON.stringify(operation.arguments))
   if (encoded.byteLength > MAX_FRAME_BYTES) throw new ProtocolError({ detail: "DAP operation payload exceeds bounds" })
   return Object.freeze({
-    hostProcessRef,
+    hostProcessRef: Object.freeze({ ...hostProcessRef }),
     sessionID: record.sessionID,
     locationID: record.locationID,
     workspaceRevision: record.workspaceRevision,
@@ -335,14 +472,14 @@ export function validateHostOperationRequestV1(input: unknown): HostOperationReq
     challengeID: record.challengeID,
     capabilityID: record.capabilityID,
     capabilityLeaseDigest: record.capabilityLeaseDigest,
-    ...(record.managedAttempt === undefined ? {} : { managedAttempt: record.managedAttempt }),
-    ...(record.directAttempt === undefined ? {} : { directAttempt: record.directAttempt }),
-    operation: {
+    ...(record.managedAttempt === undefined ? {} : { managedAttempt: freezeManagedAttemptScope(record.managedAttempt as ManagedAttemptScopeV1) }),
+    ...(record.directAttempt === undefined ? {} : { directAttempt: freezeDirectAttemptScope(record.directAttempt as DirectAttemptScopeV1) }),
+    operation: Object.freeze({
       requestSequence: operation.requestSequence as string,
       requestID: operation.requestID as number,
       command: operation.command as HostCommand,
-      arguments: operation.arguments as Record<string, unknown>,
-    },
+      arguments: freezeProtocolJson(operation.arguments) as Record<string, unknown>,
+    }),
   })
 }
 
@@ -361,6 +498,140 @@ function sameHostProcessRef(left: HostProcessRefV1, right: HostProcessRefV1): bo
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function isPlainDataRecord(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value)) return false
+  const prototype = Object.getPrototypeOf(value)
+  if (prototype !== Object.prototype && prototype !== null) return false
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== "string") return false
+    const descriptor = Object.getOwnPropertyDescriptor(value, key)
+    if (!descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) return false
+  }
+  return true
+}
+
+function freezeProtocolJson(value: unknown): unknown {
+  if (Array.isArray(value)) return Object.freeze(value.map(freezeProtocolJson))
+  if (!isRecord(value)) return value
+  return Object.freeze(Object.fromEntries(Object.entries(value).map(([key, item]) => [key, freezeProtocolJson(item)])))
+}
+
+function exactArgumentKeys(value: unknown, required: readonly string[], optional: readonly string[] = []): value is Record<string, unknown> {
+  return isPlainDataRecord(value) && required.every((key) => Object.hasOwn(value, key)) &&
+    Object.keys(value).every((key) => required.includes(key) || optional.includes(key))
+}
+
+function validExceptionOption(value: unknown): boolean {
+  if (!exactArgumentKeys(value, ["path", "breakMode"]) || !Array.isArray(value.path) || value.path.length > 128 ||
+    !["never", "always", "unhandled", "userUnhandled"].includes(String(value.breakMode))) return false
+  return value.path.every((segment) => {
+    if (!exactArgumentKeys(segment, ["names"], ["negate"]) || !Array.isArray(segment.names) || segment.names.length > 128) return false
+    return (segment.negate === undefined || typeof segment.negate === "boolean") &&
+      segment.names.every((name) => typeof name === "string" && encoder.encode(name).byteLength <= 512 && !name.includes("\0"))
+  })
+}
+
+function validateCommandArguments(command: HostCommand, args: Record<string, unknown>): void {
+  const reject = (): never => { throw new ProtocolError({ detail: `invalid DAP ${command} arguments` }) }
+  const id = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value > 0
+  const str = (value: unknown, max = 16 * 1024) => typeof value === "string" && encoder.encode(value).byteLength <= max && !value.includes("\0")
+  const optionalBool = (key: string) => args[key] === undefined || typeof args[key] === "boolean"
+  const optionalText = (record: Record<string, unknown>, key: string) => record[key] === undefined || str(record[key])
+  switch (command) {
+    case "initialize": {
+      const known = ["clientID", "adapterID", "locale", "linesStartAt1", "columnsStartAt1", "pathFormat", "supportsVariableType", "supportsVariablePaging", "supportsRunInTerminalRequest", "supportsMemoryReferences", "supportsProgressReporting", "supportsInvalidatedEvent", "supportsMemoryEvent", "supportsStartDebuggingRequest", "supportsANSIStyling"]
+      if (!exactArgumentKeys(args, [], known)) reject()
+      for (const key of known) {
+        const value = args[key]
+        if (value === undefined) continue
+        if (["linesStartAt1", "columnsStartAt1", "supportsVariableType", "supportsVariablePaging", "supportsRunInTerminalRequest", "supportsMemoryReferences", "supportsProgressReporting", "supportsInvalidatedEvent", "supportsMemoryEvent", "supportsStartDebuggingRequest", "supportsANSIStyling"].includes(key)) {
+          if (typeof value !== "boolean") reject()
+        } else if (key === "pathFormat" ? value !== "path" && value !== "uri" : !str(value, 256)) reject()
+      }
+      return
+    }
+    case "configurationDone":
+    case "threads":
+      if (Object.keys(args).length) reject()
+      return
+    case "attach":
+      if (!exactArgumentKeys(args, ["targetHostProcessRef"])) reject()
+      try {
+        if (validateHostProcessRef(args.targetHostProcessRef).kind !== "terminal_run") reject()
+      } catch {
+        reject()
+      }
+      return
+    case "setBreakpoints":
+      if (!exactArgumentKeys(args, ["source"], ["breakpoints", "sourceModified"]) ||
+        !exactArgumentKeys(args.source, ["name", "path"]) || !str(args.source.name, 4096) || !str(args.source.path) ||
+        !optionalBool("sourceModified") || (args.breakpoints !== undefined && (!Array.isArray(args.breakpoints) || args.breakpoints.length > 2048 || args.breakpoints.some((bp) =>
+          !exactArgumentKeys(bp, ["line"], ["column", "condition", "hitCondition", "logMessage"]) || !id(bp.line) ||
+          (bp.column !== undefined && !id(bp.column)) || !optionalText(bp, "condition") || !optionalText(bp, "hitCondition") || !optionalText(bp, "logMessage")))) reject()
+      return
+    case "setFunctionBreakpoints":
+      if (!exactArgumentKeys(args, ["breakpoints"]) || !Array.isArray(args.breakpoints) || args.breakpoints.length > 512 || args.breakpoints.some((bp) =>
+        !exactArgumentKeys(bp, ["name"], ["condition"]) || !str(bp.name, 4096) || !optionalText(bp, "condition"))) reject()
+      return
+    case "setExceptionBreakpoints":
+      if (!exactArgumentKeys(args, ["filters"], ["filterOptions", "exceptionOptions"]) || !Array.isArray(args.filters) || args.filters.length > 256 || args.filters.some((x) => !str(x, 512)) ||
+        (args.filterOptions !== undefined && (!Array.isArray(args.filterOptions) || args.filterOptions.length > 256 || args.filterOptions.some((item) =>
+          !exactArgumentKeys(item, ["filterId"], ["condition"]) || !str(item.filterId, 512) || !optionalText(item, "condition")))) ||
+        (args.exceptionOptions !== undefined && (!Array.isArray(args.exceptionOptions) || args.exceptionOptions.length > 256 || args.exceptionOptions.some((option) => !validExceptionOption(option)))) reject()
+      return
+    case "continue":
+    case "next":
+    case "stepIn":
+    case "stepOut":
+      if (!exactArgumentKeys(args, ["threadId"], ["singleThread", "granularity"]) || !id(args.threadId) || !optionalBool("singleThread") ||
+        (args.granularity !== undefined && !["statement", "line", "instruction"].includes(String(args.granularity)))) reject()
+      return
+    case "pause":
+      if (!exactArgumentKeys(args, ["threadId"]) || !id(args.threadId)) reject()
+      return
+    case "stackTrace":
+      if (!exactArgumentKeys(args, ["threadId"], ["startFrame", "levels", "format"]) || !id(args.threadId) ||
+        (args.startFrame !== undefined && (!Number.isSafeInteger(args.startFrame) || Number(args.startFrame) < 0)) ||
+        (args.levels !== undefined && (!Number.isSafeInteger(args.levels) || Number(args.levels) < 0 || Number(args.levels) > 10000)) ||
+        (args.format !== undefined && (!exactArgumentKeys(args.format, [], ["parameters", "parameterNames", "parameterTypes", "parameterValues", "line", "module", "includeAll"]) || Object.values(args.format).some((x) => typeof x !== "boolean")))) reject()
+      return
+    case "scopes":
+      if (!exactArgumentKeys(args, ["frameId"]) || !id(args.frameId)) reject()
+      return
+    case "evaluate":
+      if (!exactArgumentKeys(args, ["expression", "deadlineMs", "maxOutputBytes"], ["frameID", "context"]) ||
+        !str(args.expression, 16 * 1024) ||
+        (args.frameID !== undefined && !id(args.frameID)) ||
+        (args.context !== undefined && !["watch", "repl", "hover", "clipboard"].includes(String(args.context))) ||
+        !Number.isSafeInteger(args.deadlineMs) || Number(args.deadlineMs) < 1 || Number(args.deadlineMs) > 30_000 ||
+        !Number.isSafeInteger(args.maxOutputBytes) || Number(args.maxOutputBytes) < 1 || Number(args.maxOutputBytes) > 64 * 1024) reject()
+      return
+    case "disconnect":
+    case "terminate":
+      if (!exactArgumentKeys(args, [], ["restart", "terminateDebuggee", "suspendDebuggee"]) ||
+        !optionalBool("restart") || !optionalBool("terminateDebuggee") || !optionalBool("suspendDebuggee")) reject()
+      return
+  }
+}
+
+/** Bound and classify a DAP request before Core opens a Guard approval.
+ * Evaluate additionally requires the trusted launch profile's retained policy;
+ * the lease-bearing HostKernel envelope is validated again after approval. */
+export function validateDapAuthorizationArgumentsV1(
+  command: string,
+  input: unknown,
+  dapPolicy?: { readonly allowEvaluate: boolean },
+): Readonly<Record<string, unknown>> {
+  if (!Schema.is(HostCommand)(command) || !operationForCommand(command) ||
+    (command === "evaluate" && dapPolicy?.allowEvaluate !== true)) {
+    throw new ProtocolError({ detail: "DAP command is unavailable for Guard authorization" })
+  }
+  if (!isPlainDataRecord(input)) throw new ProtocolError({ detail: "DAP arguments must be a plain JSON object" })
+  assertBoundedJson(input)
+  validateCommandArguments(command, input)
+  return freezeProtocolJson(input) as Readonly<Record<string, unknown>>
 }
 
 /** Check bounded event pages and strict cursor/process/workspace fencing. */
@@ -490,7 +761,7 @@ export function validateHostEventPageV1(
     previous = current
   }
   if (input.status === "UNKNOWN") throw new ResnapshotRequiredError({ reason: "unknown_process" })
-  return input as HostEventPageV1
+  return freezeProtocolJson(input) as HostEventPageV1
 }
 
 /** A per-process event cursor. Any replay conflict quarantines the projection;
@@ -711,7 +982,7 @@ function sameDapReceipt(left: HostProtocolDispatchReceiptV1, right: HostProtocol
 const decodeEnvelope = Schema.decodeUnknownSync(Envelope)
 
 function hasExactKeys(input: unknown, required: readonly string[], optional: readonly string[] = []): boolean {
-  if (typeof input !== "object" || input === null || Array.isArray(input)) return false
+  if (!isPlainDataRecord(input)) return false
   const record = input as Record<string, unknown>
   const allowed = new Set([...required, ...optional])
   const keys = Object.keys(record)

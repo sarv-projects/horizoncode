@@ -2,20 +2,35 @@ import { describe, expect, test } from "bun:test"
 import { Schema } from "effect"
 import { Skill } from "../src/skill"
 
-const revision = "sha256:83d9a8e079486da8b673158cf2c2527ddb690eb55e56147c75b4d6489b3bb74e"
+const docsRevision = "sha256:83d9a8e079486da8b673158cf2c2527ddb690eb55e56147c75b4d6489b3bb74e"
+const horizoncodeRevision = "sha256:b784cb02d1655c7606bfc6548d17de2b237ca28e02c7e58b0f57c1c5ffece90f"
 
 describe("SkillV2.Identity", () => {
-  test("accepts the one canonical sealed builtin identity", () => {
-    expect(
-      Schema.decodeUnknownSync(Skill.Identity)({
+  test("accepts canonical sealed builtin identities", () => {
+    for (const identity of [
+      {
         schemaVersion: 1,
         id: "builtin.horizon-docs",
         alias: "horizon-docs",
         source: "builtin",
         trust: "sealed_builtin",
-        revision,
-      }),
-    ).toMatchObject({ id: "builtin.horizon-docs", source: "builtin", trust: "sealed_builtin" })
+        revision: docsRevision,
+      },
+      {
+        schemaVersion: 1,
+        id: "builtin.horizoncode",
+        alias: "horizoncode",
+        source: "builtin",
+        trust: "sealed_builtin",
+        revision: horizoncodeRevision,
+      },
+    ]) {
+      expect(Schema.decodeUnknownSync(Skill.Identity)(identity)).toMatchObject({
+        id: identity.id,
+        source: "builtin",
+        trust: "sealed_builtin",
+      })
+    }
   })
 
   test("rejects shadowed builtin IDs, noncanonical sealed builtins, and sealed project skills", () => {
@@ -26,7 +41,7 @@ describe("SkillV2.Identity", () => {
         alias: "horizon-docs",
         source: "project",
         trust: "untrusted",
-        revision,
+        revision: docsRevision,
       },
       {
         schemaVersion: 1,
@@ -34,7 +49,7 @@ describe("SkillV2.Identity", () => {
         alias: "other",
         source: "builtin",
         trust: "sealed_builtin",
-        revision,
+        revision: docsRevision,
       },
       {
         schemaVersion: 1,
@@ -42,7 +57,7 @@ describe("SkillV2.Identity", () => {
         alias: "review",
         source: "project",
         trust: "sealed_builtin",
-        revision,
+        revision: docsRevision,
       },
       {
         schemaVersion: 1,
@@ -50,7 +65,7 @@ describe("SkillV2.Identity", () => {
         alias: "renamed-horizon-docs",
         source: "builtin",
         trust: "sealed_builtin",
-        revision,
+        revision: docsRevision,
       },
       {
         schemaVersion: 1,
@@ -74,7 +89,7 @@ describe("SkillV2.Identity", () => {
           alias: "review",
           source,
           trust: "untrusted",
-          revision,
+          revision: docsRevision,
         }),
       ).toMatchObject({ source, trust: "untrusted" })
     }

@@ -1,11 +1,34 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { FSUtil } from "@opencode-ai/core/fs-util"
 import * as LSPClient from "./client"
 import { pathToFileURL, fileURLToPath } from "url"
-import { Effect, Layer, Context, Schema } from "effect"
+import { Effect, Layer, Context, Option, Schema } from "effect"
+import { Location } from "@opencode-ai/schema"
 import { InstanceState } from "@/effect/instance-state"
 import { NonNegativeInt } from "@opencode-ai/core/schema"
 import { LspEvent } from "@opencode-ai/schema/lsp-event"
+import type { CodeActionEditProposalV1, VersionedWorkspaceEditV1 } from "./edits"
+import type { DirectAttemptScopeV1, ManagedAttemptScopeV1 } from "@/session/managed-control"
+import type { Info as SupervisedClientInfo } from "./client"
+import { assertLanguageServiceProcessAllowed, hostProtocolRouteAvailable, languageServiceProcessRouteAvailable } from "./launch"
+
+/** Attempt-pinned context made available only inside the authenticated prompt fiber. */
+export type ExecutionScopeV1 = {
+  readonly sessionID: string
+  readonly locationID: string
+  readonly locationRef: typeof Location.Ref.Type
+  readonly workspaceRevision: string
+  readonly workspaceID: string
+  readonly managedAttempt?: ManagedAttemptScopeV1
+  readonly directAttempt?: DirectAttemptScopeV1
+  /** Trusted Prompt-owned lazy creator; its closure retains current authority and host runtime. */
+  readonly getClients: (file?: string) => Promise<readonly SupervisedClientInfo[]>
+  /** Snapshot only; status must never start a process. */
+  readonly getExistingClients: () => Promise<readonly SupervisedClientInfo[]>
+  /** Prompt-scope finalizer for exactly the clients created above. */
+  readonly dispose: () => Promise<void>
+}
+
+export class ExecutionScope extends Context.Service<ExecutionScope, ExecutionScopeV1>()("@opencode/LSPExecutionScope") {}
 
 export const Event = LspEvent
 
@@ -94,6 +117,8 @@ interface State {
 }
 
 export interface Interface {
+  /** Run prompt work with the exact authenticated Attempt/workspace binding. */
+  readonly withExecutionScope: <A, E, R>(input: ExecutionScopeV1, effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
   readonly init: () => Effect.Effect<void>
   readonly status: () => Effect.Effect<Status[]>
   readonly hasClients: (file: string) => Effect.Effect<boolean>
@@ -105,6 +130,10 @@ export interface Interface {
   readonly implementation: (input: LocInput) => Effect.Effect<any[]>
   readonly documentSymbol: (uri: string) => Effect.Effect<(DocumentSymbol | Symbol)[]>
   readonly workspaceSymbol: (query: string) => Effect.Effect<Symbol[]>
+  /** Return user-reviewable edits only; application remains a files.patch effect. */
+  readonly codeAction: (input: LocInput) => Effect.Effect<CodeActionEditProposalV1[]>
+  /** Return a rename proposal only; this service never applies WorkspaceEdit. */
+  readonly rename: (input: LocInput & { readonly newName: string }) => Effect.Effect<VersionedWorkspaceEditV1[]>
   readonly prepareCallHierarchy: (input: LocInput) => Effect.Effect<any[]>
   readonly incomingCalls: (input: LocInput) => Effect.Effect<any[]>
   readonly outgoingCalls: (input: LocInput) => Effect.Effect<any[]>
@@ -129,10 +158,40 @@ const layer = Layer.effect(
       }),
     )
 
-    const getClients = Effect.fnUntraced(function* (_file: string) {
-      yield* InstanceState.get(state)
-      return [] as LSPClient.Info[]
+    const scopedClients = Effect.fnUntraced(function* (file?: string) {
+      const scoped = yield* Effect.serviceOption(ExecutionScope)
+      if (Option.isNone(scoped)) return [] as LSPClient.Info[]
+      // Keep the first-party route dormant until both shared HostKernel gates
+      // are accepted. A future enabled route always resolves clients through
+      // this fiber's exact Attempt-bound installer, never shared service state.
+      if (!languageServiceProcessRouteAvailable() || !hostProtocolRouteAvailable()) return [] as LSPClient.Info[]
+      try {
+        assertLanguageServiceProcessAllowed("server.spawn")
+      } catch {
+        return [] as LSPClient.Info[]
+      }
+      const clients = yield* Effect.promise(() => scoped.value.getClients(file))
+      return [...clients]
     })
+
+    const getClients = Effect.fnUntraced(function* (file: string) {
+      yield* InstanceState.get(state)
+      return yield* scopedClients(file)
+    })
+
+    const existingScopedClients = Effect.fnUntraced(function* () {
+      const scoped = yield* Effect.serviceOption(ExecutionScope)
+      if (Option.isNone(scoped)) return [] as LSPClient.Info[]
+      const clients = yield* Effect.promise(() => scoped.value.getExistingClients())
+      return [...clients]
+    })
+
+    const withExecutionScope: Interface["withExecutionScope"] = (input, effect) => {
+      const scope = validateExecutionScopeV1(input)
+      return Effect.provideService(effect, ExecutionScope, scope).pipe(
+        Effect.ensuring(Effect.promise(() => scope.dispose())),
+      )
+    }
 
     const run = Effect.fnUntraced(function* <T>(file: string, fn: (client: LSPClient.Info) => Promise<T>) {
       const clients = yield* getClients(file)
@@ -140,8 +199,9 @@ const layer = Layer.effect(
     })
 
     const runAll = Effect.fnUntraced(function* <T>(fn: (client: LSPClient.Info) => Promise<T>) {
-      const s = yield* InstanceState.get(state)
-      return yield* Effect.promise(() => Promise.all(s.clients.map((x) => fn(x))))
+      yield* InstanceState.get(state)
+      const clients = yield* scopedClients()
+      return yield* Effect.promise(() => Promise.all(clients.map((x) => fn(x))))
     })
 
     const init = Effect.fn("LSP.init")(function* () {
@@ -150,12 +210,27 @@ const layer = Layer.effect(
 
     const status = Effect.fn("LSP.status")(function* () {
       yield* InstanceState.get(state)
-      return [] as Status[]
+      const clients = yield* existingScopedClients()
+      return yield* Effect.promise(() => Promise.all(clients.map(async (client) => {
+        let connected = true
+        try {
+          const process = await client.readProcessStatus()
+          if (process && process.state !== "RUNNING") connected = false
+        } catch {
+          connected = false
+        }
+        return {
+          id: client.serverID,
+          name: client.serverID,
+          root: client.root,
+          status: connected ? "connected" as const : "error" as const,
+        }
+      })))
     })
 
-    const hasClients = Effect.fn("LSP.hasClients")(function* (_file: string) {
+    const hasClients = Effect.fn("LSP.hasClients")(function* (file: string) {
       yield* InstanceState.get(state)
-      return false
+      return (yield* scopedClients(file)).length > 0
     })
 
     const touchFile = Effect.fn("LSP.touchFile")(function* (input: string, diagnostics?: "document" | "full") {
@@ -257,6 +332,29 @@ const layer = Layer.effect(
       return results.flat()
     })
 
+    const codeAction = Effect.fn("LSP.codeAction")(function* (input: LocInput) {
+      const uri = pathToFileURL(input.file).href
+      const results = yield* run(input.file, (client) => client.prepareCodeAction({
+        textDocument: { uri },
+        range: {
+          start: { line: input.line, character: input.character },
+          end: { line: input.line, character: input.character },
+        },
+        context: { diagnostics: [] },
+      }).catch(() => [] as CodeActionEditProposalV1[]))
+      return results.flat()
+    })
+
+    const rename = Effect.fn("LSP.rename")(function* (input: LocInput & { readonly newName: string }) {
+      const uri = pathToFileURL(input.file).href
+      const results = yield* run(input.file, (client) => client.prepareRename({
+        textDocument: { uri },
+        position: { line: input.line, character: input.character },
+        newName: input.newName,
+      }).catch(() => undefined))
+      return results.filter((result) => result !== undefined)
+    })
+
     const prepareCallHierarchy = Effect.fn("LSP.prepareCallHierarchy")(function* (input: LocInput) {
       const results = yield* run(input.file, (client) =>
         client.connection
@@ -295,6 +393,7 @@ const layer = Layer.effect(
     })
 
     return Service.of({
+      withExecutionScope,
       init,
       status,
       hasClients,
@@ -306,6 +405,8 @@ const layer = Layer.effect(
       implementation,
       documentSymbol,
       workspaceSymbol,
+      codeAction,
+      rename,
       prepareCallHierarchy,
       incomingCalls,
       outgoingCalls,
@@ -313,13 +414,37 @@ const layer = Layer.effect(
   }),
 )
 
+function validateExecutionScopeV1(input: ExecutionScopeV1): ExecutionScopeV1 {
+  if (input.managedAttempt !== undefined && input.directAttempt !== undefined) {
+    throw new TypeError("LSP execution scope cannot combine managed and direct Attempt authority")
+  }
+  const attempt = input.managedAttempt ?? input.directAttempt
+  const workspaceID = input.managedAttempt?.worktreeTarget.workspaceID ?? input.directAttempt?.workspaceID ?? input.workspaceID
+  if ((attempt !== undefined && (input.sessionID !== (input.managedAttempt?.sessionID ?? input.directAttempt?.childSessionID) ||
+      input.locationID !== attempt.locationID || input.workspaceRevision !== attempt.workspaceRevision ||
+      workspaceID !== input.workspaceID)) || input.locationRef.workspaceID !== workspaceID ||
+      !/^blake3:[0-9a-f]{64}$/.test(input.workspaceRevision) ||
+      typeof input.getClients !== "function" || typeof input.dispose !== "function" ||
+      typeof input.getExistingClients !== "function" ||
+      (input.managedAttempt && (input.managedAttempt.worktreeTarget.locationID !== input.locationID ||
+        input.managedAttempt.worktreeTarget.workspaceRevision !== input.workspaceRevision ||
+        input.managedAttempt.worktreeTarget.canonicalRoot !== input.locationRef.directory))) {
+    throw new TypeError("LSP execution scope does not match its authenticated Attempt workspace pins")
+  }
+  return Object.freeze({
+    ...input,
+    locationRef: Object.freeze({ ...input.locationRef }),
+    ...(input.managedAttempt === undefined ? {} : { managedAttempt: Object.freeze({ ...input.managedAttempt }) }),
+    ...(input.directAttempt === undefined ? {} : { directAttempt: Object.freeze({ ...input.directAttempt }) }),
+  })
+}
+
 export * as Broker from "./broker"
 export * as Diagnostic from "./diagnostic"
 
 export const node = LayerNode.make({
   service: Service,
   layer: layer,
-  deps: [FSUtil.node],
 })
 
 export * as LSP from "./lsp"

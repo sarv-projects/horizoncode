@@ -27,15 +27,112 @@ fn is_blake3_digest(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
+/// Canonical HostKernel permission-scope digest for a managed Attempt.
+/// `effective_capabilities` must be the concrete sorted/unique intersection
+/// produced from accepted Task/Spec capability scope, the pinned profile, and
+/// the current Guard policy. The remaining inputs bind the provenance and live
+/// Attempt epoch. This function never infers or widens permissions.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn managed_effective_permission_scope_digest_v1(
+    attempt_id: &str,
+    owner_epoch: u64,
+    run_id: &str,
+    task_id: &str,
+    accepted_scope_digest: &str,
+    profile_id: &str,
+    profile_revision: u64,
+    profile_digest: &str,
+    profile_owner_binding_digest: &str,
+    profile_permission_digest: &str,
+    guard_policy_revision: &str,
+    effective_capabilities: &[String],
+) -> Option<String> {
+    let valid_id = |value: &str| {
+        !value.is_empty()
+            && value.len() <= MAX_IDENTIFIER_BYTES
+            && !value
+                .bytes()
+                .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
+    };
+    if !valid_id(attempt_id)
+        || owner_epoch == 0
+        || !valid_id(run_id)
+        || !valid_id(task_id)
+        || !is_blake3_digest(accepted_scope_digest)
+        || !valid_id(profile_id)
+        || profile_revision == 0
+        || !is_blake3_digest(profile_digest)
+        || !is_blake3_digest(profile_owner_binding_digest)
+        || !is_blake3_digest(profile_permission_digest)
+        || !is_blake3_digest(guard_policy_revision)
+        || effective_capabilities.len() > 256
+        || effective_capabilities.iter().any(|value| !valid_binding_id(value))
+        || effective_capabilities.windows(2).any(|pair| pair[0] >= pair[1])
+    {
+        return None;
+    }
+    let value = Value::Map(BTreeMap::from([
+        (
+            "acceptedScopeDigest".into(),
+            Value::String(accepted_scope_digest.into()),
+        ),
+        ("attemptID".into(), Value::String(attempt_id.into())),
+        (
+            "effectiveCapabilities".into(),
+            Value::Array(
+                effective_capabilities
+                    .iter()
+                    .cloned()
+                    .map(Value::String)
+                    .collect(),
+            ),
+        ),
+        (
+            "guardPolicyRevision".into(),
+            Value::String(guard_policy_revision.into()),
+        ),
+        ("ownerEpoch".into(), Value::String(owner_epoch.to_string())),
+        ("profileDigest".into(), Value::String(profile_digest.into())),
+        ("profileID".into(), Value::String(profile_id.into())),
+        (
+            "profileOwnerBindingDigest".into(),
+            Value::String(profile_owner_binding_digest.into()),
+        ),
+        (
+            "profilePermissionDigest".into(),
+            Value::String(profile_permission_digest.into()),
+        ),
+        ("profileRevision".into(), Value::String(profile_revision.to_string())),
+        ("runID".into(), Value::String(run_id.into())),
+        ("schemaVersion".into(), Value::Unsigned(1)),
+        ("taskID".into(), Value::String(task_id.into())),
+    ]));
+    let encoded = messagepack::encode(&value, FRAME_LIMITS).ok()?;
+    let mut preimage = b"horizoncode.effective-permission-scope.v1\0".to_vec();
+    preimage.extend_from_slice(&encoded);
+    Some(format!("blake3:{}", blake3::hash(&preimage).to_hex()))
+}
+
 pub const PROTOCOL_V1: u16 = 1;
 pub const FEATURE_SESSION_PAGE_CONTROL_V1: &str = "session.events.page-control.v1";
 pub const FEATURE_EFFECTS_V2: &str = "effects.v2";
 /// Authenticated requests may carry an out-of-body Session/Location binding for
 /// read-only RepoIntel queries. RepoIntel remains unavailable unless negotiated.
 pub const FEATURE_REPO_INTEL_READ_CONTEXT_V1: &str = "repo-intel.read-context-v1";
+/// Optional owner-bound RepoIntel continuation leases. Keep unadvertised until
+/// the complete P3 page producer and HostKernel cursor adapter are accepted.
+pub const FEATURE_REPO_INTEL_CURSOR_LEASE_V1: &str = "repo-intel.cursor-lease-v1";
+/// Authenticated one-reference artifact reads; listing remains unavailable.
+pub const FEATURE_ARTIFACT_READ_CONTEXT_V1: &str = "artifact.read-context-v1";
+/// Authenticated Config-owned effective resource-policy projection ingress.
+/// It creates a scoped policy pin only; it does not claim OS enforcement.
+pub const FEATURE_RESOURCE_POLICY_INGRESS_V1: &str = "resource-policy.ingress-v1";
 /// Host atomically prepares complete bounded multi-call effect batches and supports
 /// per-batch cancellation before dispatch.
 pub const FEATURE_EFFECTS_MULTI_CALL: &str = "effects.v2.multi-call";
+/// HostKernel can execute the bounded built-in no-key web-search route cascade
+/// under one Guard lease with durable route receipts and cancellation recovery.
+pub const FEATURE_WEB_SEARCH_CASCADE_V1: &str = "execution.v1.web-search-cascade";
 pub const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 /// Bounded for the largest base64-encoded `files.patch` preimage/postimage batch
 /// while remaining below the 8 MiB transport frame ceiling.
@@ -85,15 +182,79 @@ pub struct DelegationBindingV1 {
     pub profile_id: String,
     pub profile_revision: u64,
     pub profile_digest: String,
+    pub provider_id: String,
+    pub model_id: String,
+    /// Secret-free route resolved by Core's canonical provider owner at
+    /// admission. Absent only on historical bindings, which cannot authorize
+    /// managed provider dispatch.
+    pub managed_provider_route: Option<ManagedProviderRouteBindingV1>,
+    pub profile_token_budget: Option<u64>,
     pub criteria_ids: Vec<String>,
     pub workspace_lease_id: String,
     pub source_revision: String,
     pub capability_ceiling_digest: String,
+    /// Attempt-bound effective permission scope after the accepted Task/Spec,
+    /// pinned profile and current Guard policy have been intersected. This is
+    /// distinct from the profile ceiling and capability-lease digests.
+    pub permission_scope_digest: String,
     pub context_selection_digest: String,
     pub budget_lease_id: String,
     pub resource_lease_ids: Vec<String>,
     pub owner_epoch: u64,
     pub admitted_managed_revision: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ManagedProviderRouteBindingV1 {
+    pub provider_id: String,
+    pub model_id: String,
+    pub harness_id: String,
+    pub route_id: String,
+    pub endpoint_revision: String,
+    pub credential_lease_ref: Option<String>,
+}
+
+impl ManagedProviderRouteBindingV1 {
+    pub fn from_value(value: &Value) -> Option<Self> {
+        let Value::Map(fields) = value else { return None };
+        const KEYS: [&str; 6] = ["providerID", "modelID", "harnessID", "routeID", "endpointRevision", "credentialLeaseRef"];
+        if fields.len() != KEYS.len() || KEYS.iter().any(|key| !fields.contains_key(*key)) { return None; }
+        let text = |key: &str| match fields.get(key) {
+            Some(Value::String(value)) if valid_binding_id(value) => Some(value.clone()),
+            _ => None,
+        };
+        let provider_id = match fields.get("providerID") {
+            Some(Value::String(value)) if valid_profile_id(value) => value.clone(),
+            _ => return None,
+        };
+        let model_id = match fields.get("modelID") {
+            Some(Value::String(value)) if valid_profile_id(value) => value.clone(),
+            _ => return None,
+        };
+        let harness_id = text("harnessID")?;
+        let route_id = text("routeID")?;
+        let endpoint_revision = match fields.get("endpointRevision")? {
+            Value::String(value) if is_blake3_digest(value) => value.clone(),
+            _ => return None,
+        };
+        let credential_lease_ref = match fields.get("credentialLeaseRef")? {
+            Value::Nil => None,
+            Value::String(value) if valid_binding_id(value) => Some(value.clone()),
+            _ => return None,
+        };
+        Some(Self { provider_id, model_id, harness_id, route_id, endpoint_revision, credential_lease_ref })
+    }
+
+    pub fn to_value(&self) -> Value {
+        Value::Map(BTreeMap::from([
+            ("providerID".to_owned(), Value::String(self.provider_id.clone())),
+            ("modelID".to_owned(), Value::String(self.model_id.clone())),
+            ("harnessID".to_owned(), Value::String(self.harness_id.clone())),
+            ("routeID".to_owned(), Value::String(self.route_id.clone())),
+            ("endpointRevision".to_owned(), Value::String(self.endpoint_revision.clone())),
+            ("credentialLeaseRef".to_owned(), self.credential_lease_ref.clone().map(Value::String).unwrap_or(Value::Nil)),
+        ]))
+    }
 }
 
 impl DelegationBindingV1 {
@@ -105,7 +266,7 @@ impl DelegationBindingV1 {
         let Value::Map(fields) = value else {
             return None;
         };
-        const KEYS: [&str; 19] = [
+        const KEYS: [&str; 23] = [
             "schemaVersion",
             "runID",
             "taskID",
@@ -116,17 +277,25 @@ impl DelegationBindingV1 {
             "profileID",
             "profileRevision",
             "profileDigest",
+            "providerID",
+            "modelID",
+            "profileTokenBudget",
             "criteriaIDs",
             "workspaceLeaseID",
             "sourceRevision",
             "capabilityCeilingDigest",
+            "permissionScopeDigest",
             "contextSelectionDigest",
             "budgetLeaseID",
             "resourceLeaseIDs",
             "ownerEpoch",
             "admittedManagedRevision",
         ];
-        if fields.len() != KEYS.len() || KEYS.iter().any(|key| !fields.contains_key(*key)) {
+        let has_route = fields.contains_key("managedProviderRoute");
+        if (fields.len() != KEYS.len() && fields.len() != KEYS.len() + 1)
+            || KEYS.iter().any(|key| !fields.contains_key(*key))
+            || (fields.len() == KEYS.len() + 1 && !has_route)
+        {
             return None;
         }
         if fields.get("schemaVersion") != Some(&Value::Unsigned(1)) {
@@ -134,6 +303,10 @@ impl DelegationBindingV1 {
         }
         let text = |key: &str| match fields.get(key) {
             Some(Value::String(value)) if valid_binding_id(value) => Some(value.clone()),
+            _ => None,
+        };
+        let provider_model = |key: &str| match fields.get(key) {
+            Some(Value::String(value)) if valid_profile_id(value) => Some(value.clone()),
             _ => None,
         };
         let digest = |key: &str, valid: fn(&str) -> bool| match fields.get(key) {
@@ -156,10 +329,28 @@ impl DelegationBindingV1 {
             profile_id: text("profileID")?,
             profile_revision: decimal("profileRevision")?,
             profile_digest: digest("profileDigest", is_blake3_digest)?,
+            provider_id: provider_model("providerID")?,
+            model_id: provider_model("modelID")?,
+            managed_provider_route: if has_route {
+                match fields.get("managedProviderRoute")? {
+                    Value::Nil => None,
+                    value => Some(ManagedProviderRouteBindingV1::from_value(value)?),
+                }
+            } else { None },
+            profile_token_budget: match fields.get("profileTokenBudget")? {
+                Value::Nil => None,
+                Value::String(value) => {
+                    let budget = parse_canonical_u64(value)?;
+                    if budget == 0 { return None; }
+                    Some(budget)
+                }
+                _ => return None,
+            },
             criteria_ids,
             workspace_lease_id: text("workspaceLeaseID")?,
             source_revision: digest("sourceRevision", is_blake3_digest)?,
             capability_ceiling_digest: digest("capabilityCeilingDigest", is_sha256_digest)?,
+            permission_scope_digest: digest("permissionScopeDigest", is_blake3_digest)?,
             context_selection_digest: digest("contextSelectionDigest", is_blake3_digest)?,
             budget_lease_id: text("budgetLeaseID")?,
             resource_lease_ids,
@@ -177,7 +368,7 @@ impl DelegationBindingV1 {
     }
 
     pub fn to_value(&self) -> Value {
-        Value::Map(BTreeMap::from([
+        let mut fields = BTreeMap::from([
             ("schemaVersion".to_owned(), Value::Unsigned(1)),
             ("runID".to_owned(), Value::String(self.run_id.clone())),
             ("taskID".to_owned(), Value::String(self.task_id.clone())),
@@ -209,6 +400,9 @@ impl DelegationBindingV1 {
                 "profileDigest".to_owned(),
                 Value::String(self.profile_digest.clone()),
             ),
+            ("providerID".to_owned(), Value::String(self.provider_id.clone())),
+            ("modelID".to_owned(), Value::String(self.model_id.clone())),
+            ("profileTokenBudget".to_owned(), self.profile_token_budget.map(|value| Value::String(value.to_string())).unwrap_or(Value::Nil)),
             (
                 "criteriaIDs".to_owned(),
                 Value::Array(
@@ -230,6 +424,10 @@ impl DelegationBindingV1 {
             (
                 "capabilityCeilingDigest".to_owned(),
                 Value::String(self.capability_ceiling_digest.clone()),
+            ),
+            (
+                "permissionScopeDigest".to_owned(),
+                Value::String(self.permission_scope_digest.clone()),
             ),
             (
                 "contextSelectionDigest".to_owned(),
@@ -257,7 +455,13 @@ impl DelegationBindingV1 {
                 "admittedManagedRevision".to_owned(),
                 Value::String(self.admitted_managed_revision.to_string()),
             ),
-        ]))
+        ]);
+        // Omit absent legacy route pins to preserve their historical binding
+        // digest; all new admissions must include a resolved route.
+        if let Some(route) = &self.managed_provider_route {
+            fields.insert("managedProviderRoute".to_owned(), route.to_value());
+        }
+        Value::Map(fields)
     }
 
     /// Strict serde projection used only inside the durable managed OwnerLog.
@@ -336,6 +540,33 @@ fn valid_binding_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
+fn valid_repl_callback_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value.is_ascii()
+        && value.as_bytes()[0].is_ascii_alphanumeric()
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-')
+        })
+}
+
+fn valid_repl_json_value(value: &Value, depth: usize) -> bool {
+    if depth > 16 { return false; }
+    match value {
+        Value::Nil | Value::Bool(_) | Value::Unsigned(_) | Value::Signed(_) => true,
+        Value::Float(bits) => f64::from_bits(*bits).is_finite(),
+        Value::String(value) => !value.contains('\0') && value.len() <= 64 * 1024,
+        Value::Array(values) => values.len() <= 4096
+            && values.iter().all(|value| valid_repl_json_value(value, depth + 1)),
+        Value::Map(values) => values.len() <= 4096
+            && values.iter().all(|(key, value)| {
+                !key.is_empty() && key.len() <= 128 && !key.contains('\0')
+                    && valid_repl_json_value(value, depth + 1)
+            }),
+        Value::Binary(_) => false,
+    }
+}
+
 fn valid_profile_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_IDENTIFIER_BYTES
@@ -401,6 +632,72 @@ pub struct ManagedAttemptScopeV1 {
     /// IDs in this envelope are lookup hints; no managed effect is authorized
     /// unless HostKernel resolves and compares this digest to the durable Attempt.
     pub delegation_binding_digest: String,
+    /// Exact immutable effective permission scope digest from the binding.
+    /// HostKernel resolves and compares it; a caller-provided value is not authority.
+    pub permission_scope_digest: String,
+    /// Effective immutable token ceiling derived from the accepted SpecVersion
+    /// and Task-pinned AgentProfileV2.
+    pub effective_max_tokens: u64,
+    /// Durable known token remainder at this managed revision. Zero/exhausted or
+    /// uncertain usage cannot carry live effect authority.
+    pub remaining_tokens: u64,
+    /// Current provider-request identity pinned by managed OwnerLog. Legacy and
+    /// read-only projections may omit all three fields together.
+    pub request_id: Option<String>,
+    pub request_sequence: Option<u64>,
+    pub context_selection_digest: Option<String>,
+    /// HostKernel projection of the exact P8 leased child Location. Run-level
+    /// verification scopes may omit it; active managed coding effects may not.
+    pub worktree_target: Option<ManagedWorktreeTargetV1>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ManagedWorktreeTargetV1 {
+    pub worktree_id: String,
+    pub worktree_base_revision: String,
+    pub worktree_pool_revision: u64,
+    pub location_id: String,
+    pub workspace_id: String,
+    pub workspace_ref: String,
+    pub canonical_root: String,
+    pub workspace_revision: String,
+}
+
+impl ManagedWorktreeTargetV1 {
+    pub fn from_value(value: &Value) -> Option<Self> {
+        let Value::Map(fields) = value else { return None };
+        if fields.len() != 8 || ["worktreeID", "worktreeBaseRevision", "worktreePoolRevision", "locationID", "workspaceID", "workspaceRef", "canonicalRoot", "workspaceRevision"].iter().any(|key| !fields.contains_key(*key)) {
+            return None;
+        }
+        let text = |key: &str| match fields.get(key) {
+            Some(Value::String(value)) if !value.is_empty() && !value.contains('\0') => Some(value.clone()),
+            _ => None,
+        };
+        Some(Self {
+            worktree_id: text("worktreeID")?,
+            worktree_base_revision: text("worktreeBaseRevision")?,
+            worktree_pool_revision: match fields.get("worktreePoolRevision") { Some(Value::String(value)) => parse_canonical_u64(value)?, _ => return None },
+            location_id: text("locationID")?,
+            workspace_id: text("workspaceID")?,
+            workspace_ref: text("workspaceRef")?,
+            canonical_root: text("canonicalRoot")?,
+            workspace_revision: text("workspaceRevision")?,
+        })
+    }
+
+    pub fn to_value(&self) -> Value {
+        Value::Map(BTreeMap::from([
+            ("worktreeID".to_owned(), Value::String(self.worktree_id.clone())),
+            ("worktreeBaseRevision".to_owned(), Value::String(self.worktree_base_revision.clone())),
+            ("worktreePoolRevision".to_owned(), Value::String(self.worktree_pool_revision.to_string())),
+            ("locationID".to_owned(), Value::String(self.location_id.clone())),
+            ("workspaceID".to_owned(), Value::String(self.workspace_id.clone())),
+            ("workspaceRef".to_owned(), Value::String(self.workspace_ref.clone())),
+            ("canonicalRoot".to_owned(), Value::String(self.canonical_root.clone())),
+            ("workspaceRevision".to_owned(), Value::String(self.workspace_revision.clone())),
+        ]))
+    }
+
 }
 
 impl ManagedAttemptScopeV1 {
@@ -410,7 +707,7 @@ impl ManagedAttemptScopeV1 {
         let Value::Map(fields) = value else {
             return None;
         };
-        if fields.len() != 10
+        if ![13, 14, 16, 17].contains(&fields.len())
             || [
                 "goalID",
                 "runID",
@@ -422,9 +719,13 @@ impl ManagedAttemptScopeV1 {
                 "sessionID",
                 "workspaceRevision",
                 "delegationBindingDigest",
+                "permissionScopeDigest",
+                "effectiveMaxTokens",
+                "remainingTokens",
             ]
             .iter()
             .any(|key| !fields.contains_key(*key))
+            || fields.keys().any(|key| !matches!(key.as_str(), "goalID" | "runID" | "taskID" | "attemptID" | "ownerEpoch" | "expectedManagedRevision" | "locationID" | "sessionID" | "workspaceRevision" | "delegationBindingDigest" | "permissionScopeDigest" | "effectiveMaxTokens" | "remainingTokens" | "requestID" | "requestSequence" | "contextSelectionDigest" | "worktreeTarget"))
         {
             return None;
         }
@@ -449,9 +750,42 @@ impl ManagedAttemptScopeV1 {
             session_id: text("sessionID")?,
             workspace_revision: text("workspaceRevision")?,
             delegation_binding_digest: text("delegationBindingDigest")?,
+            permission_scope_digest: match fields.get("permissionScopeDigest") {
+                Some(Value::String(value)) if is_blake3_digest(value) => value.clone(),
+                _ => return None,
+            },
+            effective_max_tokens: unsigned("effectiveMaxTokens")?,
+            remaining_tokens: unsigned("remainingTokens")?,
+            request_id: match fields.get("requestID") {
+                None | Some(Value::Nil) => None,
+                Some(Value::String(value)) if !value.is_empty() && !value.contains('\0') => Some(value.clone()),
+                _ => return None,
+            },
+            request_sequence: match fields.get("requestSequence") {
+                None | Some(Value::Nil) => None,
+                Some(Value::String(value)) => parse_canonical_u64(value).filter(|value| (1..=1024).contains(value)),
+                _ => return None,
+            },
+            context_selection_digest: match fields.get("contextSelectionDigest") {
+                None | Some(Value::Nil) => None,
+                Some(Value::String(value)) if is_blake3_digest(value) => Some(value.clone()),
+                _ => return None,
+            },
+            worktree_target: match fields.get("worktreeTarget") {
+                Some(value) => Some(ManagedWorktreeTargetV1::from_value(value)?),
+                None => None,
+            },
         };
+        if scope.request_id.is_some() != scope.request_sequence.is_some()
+            || scope.request_id.is_some() != scope.context_selection_digest.is_some()
+            || (scope.request_id.is_some() && ![16, 17].contains(&fields.len()))
+            || (scope.request_id.is_none() && ![13, 14].contains(&fields.len()))
+        { return None }
         if !is_blake3_digest(&scope.workspace_revision)
             || !is_blake3_digest(&scope.delegation_binding_digest)
+            || !is_blake3_digest(&scope.permission_scope_digest)
+            || scope.effective_max_tokens == 0
+            || scope.remaining_tokens > scope.effective_max_tokens
         {
             return None;
         }
@@ -461,7 +795,7 @@ impl ManagedAttemptScopeV1 {
     /// Deterministic wire object used for the Guard challenge/one-use lease digest.
     /// The key set is exact and map order is canonicalized by `Value::Map`.
     pub fn to_value(&self) -> Value {
-        Value::Map(BTreeMap::from([
+        let mut fields = BTreeMap::from([
             ("goalID".to_owned(), Value::String(self.goal_id.clone())),
             ("runID".to_owned(), Value::String(self.run_id.clone())),
             ("taskID".to_owned(), Value::String(self.task_id.clone())),
@@ -493,7 +827,30 @@ impl ManagedAttemptScopeV1 {
                 "delegationBindingDigest".to_owned(),
                 Value::String(self.delegation_binding_digest.clone()),
             ),
-        ]))
+            (
+                "permissionScopeDigest".to_owned(),
+                Value::String(self.permission_scope_digest.clone()),
+            ),
+            (
+                "effectiveMaxTokens".to_owned(),
+                Value::String(self.effective_max_tokens.to_string()),
+            ),
+            (
+                "remainingTokens".to_owned(),
+                Value::String(self.remaining_tokens.to_string()),
+            ),
+        ]);
+        if let (Some(request_id), Some(request_sequence), Some(digest)) =
+            (&self.request_id, self.request_sequence, &self.context_selection_digest)
+        {
+            fields.insert("requestID".to_owned(), Value::String(request_id.clone()));
+            fields.insert("requestSequence".to_owned(), Value::String(request_sequence.to_string()));
+            fields.insert("contextSelectionDigest".to_owned(), Value::String(digest.clone()));
+        }
+        if let Some(target) = &self.worktree_target {
+            fields.insert("worktreeTarget".to_owned(), target.to_value());
+        }
+        Value::Map(fields)
     }
 
     /// Stable `blake3:<hex>` digest of the exact MessagePack wire object. Guard
@@ -587,7 +944,16 @@ impl DirectAttemptScopeV1 {
             budget_digest: text("budgetDigest")?,
             scope_digest: text("scopeDigest")?,
         };
-        if scope.owner_epoch == 0
+        if [
+            scope.attempt_id.as_str(),
+            scope.parent_session_id.as_str(),
+            scope.child_session_id.as_str(),
+            scope.location_id.as_str(),
+            scope.workspace_id.as_str(),
+        ]
+        .iter()
+        .any(|value| !valid_binding_id(value))
+            || scope.owner_epoch == 0
             || scope.expected_revision == 0
             || !valid_profile_id(&scope.profile_id)
             || scope.profile_revision == 0
@@ -667,6 +1033,1060 @@ impl DirectAttemptScopeV1 {
 
     pub fn digest(&self) -> Result<String, messagepack::MessagePackError> {
         scope_digest(&self.to_value())
+    }
+}
+
+/// HostKernel-minted scope for one serialized provider turn. The reusable
+/// DirectAttempt is retained as identity context, while runnerCycleID and
+/// turnSequence fence effects to this one provider request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectTurnScopeV1 {
+    pub direct_attempt: DirectAttemptScopeV1,
+    pub runner_cycle_id: String,
+    pub turn_sequence: u64,
+    pub cycle_digest: String,
+}
+
+impl DirectTurnScopeV1 {
+    pub fn from_value(value: &Value) -> Option<Self> {
+        let Value::Map(fields) = value else { return None };
+        if fields.len() != 4 || fields.keys().any(|key| !matches!(key.as_str(),
+            "directAttempt" | "runnerCycleID" | "turnSequence" | "cycleDigest"))
+            || !["directAttempt", "runnerCycleID", "turnSequence", "cycleDigest"]
+                .iter().all(|key| fields.contains_key(*key))
+        { return None; }
+        let scope = Self {
+            direct_attempt: DirectAttemptScopeV1::from_value(fields.get("directAttempt")?)?,
+            runner_cycle_id: match fields.get("runnerCycleID") {
+                Some(Value::String(value)) if valid_binding_id(value) => value.clone(), _ => return None,
+            },
+            turn_sequence: match fields.get("turnSequence") {
+                Some(Value::String(value)) => parse_canonical_positive_u64(value)?, _ => return None,
+            },
+            cycle_digest: match fields.get("cycleDigest") {
+                Some(Value::String(value)) if is_blake3_digest(value) => value.clone(), _ => return None,
+            },
+        };
+        if scope.cycle_digest().ok().as_deref() != Some(scope.cycle_digest.as_str()) {
+            return None;
+        }
+        Some(scope)
+    }
+
+    pub fn to_value(&self) -> Value {
+        Value::Map(BTreeMap::from([
+            ("directAttempt".to_owned(), self.direct_attempt.to_value()),
+            ("runnerCycleID".to_owned(), Value::String(self.runner_cycle_id.clone())),
+            ("turnSequence".to_owned(), Value::String(self.turn_sequence.to_string())),
+            ("cycleDigest".to_owned(), Value::String(self.cycle_digest.clone())),
+        ]))
+    }
+
+    pub fn cycle_digest(&self) -> Result<String, messagepack::MessagePackError> {
+        let value = Value::Map(BTreeMap::from([
+            ("directAttempt".to_owned(), self.direct_attempt.to_value()),
+            ("runnerCycleID".to_owned(), Value::String(self.runner_cycle_id.clone())),
+            ("turnSequence".to_owned(), Value::String(self.turn_sequence.to_string())),
+        ]));
+        let encoded = messagepack::encode(&value, FRAME_LIMITS)?;
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"horizoncode.direct.runner-cycle.v1\0");
+        hasher.update(&encoded);
+        Ok(format!("blake3:{}", hasher.finalize().to_hex()))
+    }
+}
+
+/// One-use proof issued by HostKernel after the exact preceding child turn is
+/// durably complete. Its nested pins make it impossible to transplant a wake to
+/// another Attempt, profile, permission scope, payload or mailbox position.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FreshTurnAuthorizationV1 {
+    pub authority_pins: DirectMessageAuthorityPinsV1,
+    pub completed_turn: DirectTurnScopeV1,
+    pub next_turn_sequence: u64,
+    pub issuance_id: String,
+    pub expires_at_unix_ms: u64,
+    pub authorization_digest: String,
+}
+
+impl FreshTurnAuthorizationV1 {
+    pub fn from_value(value: &Value) -> Option<Self> {
+        let Value::Map(fields) = value else { return None };
+        const KEYS: [&str; 6] = ["authorityPins", "completedTurnScope", "nextTurnSequence", "issuanceID", "expiresAtUnixMs", "authorizationDigest"];
+        if fields.len() != KEYS.len() || KEYS.iter().any(|key| !fields.contains_key(*key))
+            || fields.keys().any(|key| !KEYS.contains(&key.as_str())) { return None; }
+        let authorization = Self {
+            authority_pins: DirectMessageAuthorityPinsV1::from_value(fields.get("authorityPins")?)?,
+            completed_turn: DirectTurnScopeV1::from_value(fields.get("completedTurnScope")?)?,
+            next_turn_sequence: match fields.get("nextTurnSequence") {
+                Some(Value::String(value)) => parse_canonical_positive_u64(value)?, _ => return None,
+            },
+            issuance_id: match fields.get("issuanceID") {
+                Some(Value::String(value)) if valid_binding_id(value) => value.clone(), _ => return None,
+            },
+            expires_at_unix_ms: match fields.get("expiresAtUnixMs") {
+                Some(Value::String(value)) => parse_canonical_positive_u64(value)?, _ => return None,
+            },
+            authorization_digest: match fields.get("authorizationDigest") {
+                Some(Value::String(value)) if is_blake3_digest(value) => value.clone(), _ => return None,
+            },
+        };
+        let attempt = &authorization.completed_turn.direct_attempt;
+        let pins = &authorization.authority_pins;
+        if pins.delivery_mode != DirectMessageDeliveryModeV1::FollowUp
+            || pins.direct_attempt_id != attempt.attempt_id
+            || pins.parent_session_id != attempt.parent_session_id
+            || pins.child_session_id != attempt.child_session_id
+            || pins.child_owner_epoch != attempt.owner_epoch
+            || pins.profile_id != attempt.profile_id
+            || pins.profile_revision != attempt.profile_revision
+            || pins.profile_digest != attempt.profile_digest
+            || pins.permission_scope_digest != attempt.permissions_digest
+            || authorization.next_turn_sequence != authorization.completed_turn.turn_sequence.checked_add(1)?
+            || authorization.authorization_digest().ok().as_deref()
+                != Some(authorization.authorization_digest.as_str())
+        { return None; }
+        Some(authorization)
+    }
+
+    pub fn to_value(&self) -> Value {
+        Value::Map(BTreeMap::from([
+            ("authorityPins".to_owned(), self.authority_pins.to_value()),
+            ("completedTurnScope".to_owned(), self.completed_turn.to_value()),
+            ("nextTurnSequence".to_owned(), Value::String(self.next_turn_sequence.to_string())),
+            ("issuanceID".to_owned(), Value::String(self.issuance_id.clone())),
+            ("expiresAtUnixMs".to_owned(), Value::String(self.expires_at_unix_ms.to_string())),
+            ("authorizationDigest".to_owned(), Value::String(self.authorization_digest.clone())),
+        ]))
+    }
+
+    /// Stable HostKernel proof digest over every authority pin except the digest
+    /// field itself. Core treats this as opaque and echoes the exact object.
+    pub fn authorization_digest(&self) -> Result<String, messagepack::MessagePackError> {
+        let value = Value::Map(BTreeMap::from([
+            ("authorityPins".to_owned(), self.authority_pins.to_value()),
+            ("completedTurnScope".to_owned(), self.completed_turn.to_value()),
+            ("nextTurnSequence".to_owned(), Value::String(self.next_turn_sequence.to_string())),
+            ("issuanceID".to_owned(), Value::String(self.issuance_id.clone())),
+            ("expiresAtUnixMs".to_owned(), Value::String(self.expires_at_unix_ms.to_string())),
+        ]));
+        let encoded = messagepack::encode(&value, FRAME_LIMITS)?;
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"horizoncode.direct.fresh-turn-authorization.v1\0");
+        hasher.update(&encoded);
+        Ok(format!("blake3:{}", hasher.finalize().to_hex()))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectTurnBeginRequestV1 {
+    pub direct_attempt: DirectAttemptScopeV1,
+    pub fresh_turn_authorization: Option<FreshTurnAuthorizationV1>,
+}
+
+impl DirectTurnBeginRequestV1 {
+    pub fn from_value(value: &Value) -> Option<Self> {
+        let Value::Map(fields) = value else { return None };
+        if !(fields.len() == 1 || fields.len() == 2)
+            || !fields.contains_key("directAttempt")
+            || fields.keys().any(|key| !matches!(key.as_str(), "directAttempt" | "freshTurnAuthorization"))
+        { return None; }
+        let direct_attempt = DirectAttemptScopeV1::from_value(fields.get("directAttempt")?)?;
+        let fresh_turn_authorization = match fields.get("freshTurnAuthorization") {
+            Some(value) => Some(FreshTurnAuthorizationV1::from_value(value)?),
+            None => None,
+        };
+        if fresh_turn_authorization.as_ref().is_some_and(|proof|
+            proof.completed_turn.direct_attempt.attempt_id != direct_attempt.attempt_id
+                || proof.completed_turn.direct_attempt.parent_session_id != direct_attempt.parent_session_id
+                || proof.completed_turn.direct_attempt.child_session_id != direct_attempt.child_session_id
+                || proof.completed_turn.direct_attempt.owner_epoch != direct_attempt.owner_epoch
+                || proof.completed_turn.direct_attempt.profile_id != direct_attempt.profile_id
+                || proof.completed_turn.direct_attempt.profile_revision != direct_attempt.profile_revision
+                || proof.completed_turn.direct_attempt.profile_digest != direct_attempt.profile_digest
+                || proof.completed_turn.direct_attempt.permissions_digest != direct_attempt.permissions_digest)
+        { return None; }
+        Some(Self { direct_attempt, fresh_turn_authorization })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectTurnBeginReplyV1 { pub turn_scope: DirectTurnScopeV1 }
+
+impl DirectTurnBeginReplyV1 {
+    pub fn from_value(value: &Value) -> Option<Self> {
+        let Value::Map(fields) = value else { return None };
+        if fields.len() != 2 || fields.get("status") != Some(&Value::String("ACTIVE".to_owned()))
+            || fields.keys().any(|key| !matches!(key.as_str(), "status" | "directTurnScope"))
+        { return None; }
+        Some(Self { turn_scope: DirectTurnScopeV1::from_value(fields.get("directTurnScope")?)? })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectTurnCompleteRequestV1 {
+    pub turn_scope: DirectTurnScopeV1,
+    pub result_digest: String,
+}
+
+impl DirectTurnCompleteRequestV1 {
+    pub fn from_value(value: &Value) -> Option<Self> {
+        let Value::Map(fields) = value else { return None };
+        if fields.len() != 2 || fields.keys().any(|key| !matches!(key.as_str(), "directTurnScope" | "resultDigest"))
+            || !fields.contains_key("directTurnScope") || !fields.contains_key("resultDigest")
+        { return None; }
+        Some(Self {
+            turn_scope: DirectTurnScopeV1::from_value(fields.get("directTurnScope")?)?,
+            result_digest: match fields.get("resultDigest") {
+                Some(Value::String(value)) if is_sha256_digest(value) => value.clone(), _ => return None,
+            },
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectTurnCompleteReplyV1 { pub next_turn_sequence: u64, pub receipt_digest: String }
+
+impl DirectTurnCompleteReplyV1 {
+    pub fn from_value(value: &Value) -> Option<Self> {
+        let Value::Map(fields) = value else { return None };
+        if fields.len() != 3 || fields.get("status") != Some(&Value::String("COMPLETED".to_owned()))
+            || fields.keys().any(|key| !matches!(key.as_str(), "status" | "nextTurnSequence" | "receiptDigest"))
+        { return None; }
+        Some(Self {
+            next_turn_sequence: match fields.get("nextTurnSequence") {
+                Some(Value::String(value)) => parse_canonical_positive_u64(value)?, _ => return None,
+            },
+            receipt_digest: match fields.get("receiptDigest") {
+                Some(Value::String(value)) if is_blake3_digest(value) => value.clone(), _ => return None,
+            },
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FreshTurnAuthorizationRequestV1 {
+    pub authority_pins: DirectMessageAuthorityPinsV1,
+    pub completed_turn: DirectTurnScopeV1,
+}
+
+impl FreshTurnAuthorizationRequestV1 {
+    pub fn from_value(value: &Value) -> Option<Self> {
+        let Value::Map(fields) = value else { return None };
+        if fields.len() != 2 || fields.keys().any(|key| !matches!(key.as_str(), "authorityPins" | "completedTurnScope"))
+            || !fields.contains_key("authorityPins") || !fields.contains_key("completedTurnScope")
+        { return None; }
+        let request = Self {
+            authority_pins: DirectMessageAuthorityPinsV1::from_value(fields.get("authorityPins")?)?,
+            completed_turn: DirectTurnScopeV1::from_value(fields.get("completedTurnScope")?)?,
+        };
+        let pins = &request.authority_pins;
+        let attempt = &request.completed_turn.direct_attempt;
+        if pins.delivery_mode != DirectMessageDeliveryModeV1::FollowUp
+            || pins.direct_attempt_id != attempt.attempt_id
+            || pins.parent_session_id != attempt.parent_session_id
+            || pins.child_session_id != attempt.child_session_id
+            || pins.child_owner_epoch != attempt.owner_epoch
+            || pins.profile_id != attempt.profile_id
+            || pins.profile_revision != attempt.profile_revision
+            || pins.profile_digest != attempt.profile_digest
+            || pins.permission_scope_digest != attempt.permissions_digest
+        { return None; }
+        Some(request)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FreshTurnAuthorizationReplyV1 { pub authorization: FreshTurnAuthorizationV1 }
+
+impl FreshTurnAuthorizationReplyV1 {
+    pub fn from_value(value: &Value) -> Option<Self> {
+        let Value::Map(fields) = value else { return None };
+        if fields.len() != 1 || !fields.contains_key("freshTurnAuthorization") { return None; }
+        Some(Self { authorization: FreshTurnAuthorizationV1::from_value(fields.get("freshTurnAuthorization")?)? })
+    }
+}
+
+/// Private direct child mailbox delivery mode. Public `queued` is translated by
+/// Core to `Queue`; this private value cannot authorize a child turn by itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DirectMessageDeliveryModeV1 { Queue, FollowUp }
+
+impl DirectMessageDeliveryModeV1 {
+    fn from_value(value: &Value) -> Option<Self> {
+        match value {
+            Value::String(value) if value == "queue" => Some(Self::Queue),
+            Value::String(value) if value == "follow_up" => Some(Self::FollowUp),
+            _ => None,
+        }
+    }
+    pub fn name(self) -> &'static str { match self { Self::Queue => "queue", Self::FollowUp => "follow_up" } }
+}
+
+/// Authenticated Core claims for one mailbox append. HostKernel must re-resolve
+/// every identity/profile/session/capacity fact before Guard admission.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectMessageAuthorityPinsV1 {
+    pub direct_attempt_id: String,
+    pub parent_session_id: String,
+    pub child_session_id: String,
+    pub child_owner_epoch: u64,
+    pub profile_id: String,
+    pub profile_revision: u64,
+    pub profile_digest: String,
+    pub permission_scope_digest: String,
+    pub message_id: String,
+    pub delivery_mode: DirectMessageDeliveryModeV1,
+    pub payload_digest: String,
+    pub payload_bytes: u64,
+    pub mailbox_sequence: u64,
+    pub mailbox_capacity: u64,
+}
+
+impl DirectMessageAuthorityPinsV1 {
+    pub fn from_value(value: &Value) -> Option<Self> {
+        let Value::Map(fields) = value else { return None };
+        const KEYS: [&str; 14] = ["directAttemptID","parentSessionID","childSessionID","childOwnerEpoch","profileID",
+            "profileRevision","profileDigest","permissionScopeDigest","messageID","deliveryMode",
+            "payloadDigest","payloadBytes","mailboxSequence","mailboxCapacity"];
+        if fields.len() != KEYS.len() || KEYS.iter().any(|key| !fields.contains_key(*key)) { return None; }
+        let text = |key: &str| match fields.get(key) {
+            Some(Value::String(value)) if valid_binding_id(value) => Some(value.clone()), _ => None,
+        };
+        let positive = |key: &str| match fields.get(key) { Some(Value::String(value)) => parse_canonical_positive_u64(value), _ => None };
+        let payload_bytes = match fields.get("payloadBytes") { Some(Value::Unsigned(value)) => Some(*value), _ => None }?;
+        let mailbox_capacity = match fields.get("mailboxCapacity") { Some(Value::Unsigned(value)) => Some(*value), _ => None }?;
+        let pins = Self {
+            direct_attempt_id: text("directAttemptID")?,
+            parent_session_id: text("parentSessionID")?, child_session_id: text("childSessionID")?,
+            child_owner_epoch: positive("childOwnerEpoch")?, profile_id: text("profileID")?,
+            profile_revision: positive("profileRevision")?, profile_digest: text("profileDigest")?,
+            permission_scope_digest: text("permissionScopeDigest")?, message_id: text("messageID")?,
+            delivery_mode: DirectMessageDeliveryModeV1::from_value(fields.get("deliveryMode")?)?,
+            payload_digest: text("payloadDigest")?, payload_bytes,
+            mailbox_sequence: positive("mailboxSequence")?, mailbox_capacity,
+        };
+        if pins.payload_bytes == 0 || pins.payload_bytes > 16_384
+            || pins.mailbox_capacity == 0 || pins.mailbox_capacity > 32
+            || !valid_profile_id(&pins.profile_id) || !is_blake3_digest(&pins.profile_digest)
+            || !(is_sha256_digest(&pins.permission_scope_digest) || is_blake3_digest(&pins.permission_scope_digest))
+            || !is_sha256_digest(&pins.payload_digest)
+        { return None; }
+        Some(pins)
+    }
+
+    pub fn to_value(&self) -> Value {
+        Value::Map(BTreeMap::from([
+            ("directAttemptID".into(), Value::String(self.direct_attempt_id.clone())),
+            ("parentSessionID".into(), Value::String(self.parent_session_id.clone())),
+            ("childSessionID".into(), Value::String(self.child_session_id.clone())),
+            ("childOwnerEpoch".into(), Value::String(self.child_owner_epoch.to_string())),
+            ("profileID".into(), Value::String(self.profile_id.clone())),
+            ("profileRevision".into(), Value::String(self.profile_revision.to_string())),
+            ("profileDigest".into(), Value::String(self.profile_digest.clone())),
+            ("permissionScopeDigest".into(), Value::String(self.permission_scope_digest.clone())),
+            ("messageID".into(), Value::String(self.message_id.clone())),
+            ("deliveryMode".into(), Value::String(self.delivery_mode.name().into())),
+            ("payloadDigest".into(), Value::String(self.payload_digest.clone())),
+            ("payloadBytes".into(), Value::Unsigned(self.payload_bytes)),
+            ("mailboxSequence".into(), Value::String(self.mailbox_sequence.to_string())),
+            ("mailboxCapacity".into(), Value::Unsigned(self.mailbox_capacity)),
+        ]))
+    }
+
+    pub fn authority_digest(&self) -> Result<String, messagepack::MessagePackError> {
+        let encoded = messagepack::encode(&self.to_value(), messagepack::FRAME_LIMITS)?;
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"horizoncode.direct-message-authority.v1\0");
+        hasher.update(&encoded);
+        Ok(format!("blake3:{}", hasher.finalize().to_hex()))
+    }
+
+    /// Core's exact authenticated inbox receipt projection. The field order is part of
+    /// the cross-language SHA-256 contract; raw payload bytes are deliberately absent.
+    pub fn inbox_receipt_digest(&self) -> Result<String, serde_json::Error> {
+        fn quoted(value: &str) -> Result<String, serde_json::Error> {
+            serde_json::to_string(value)
+        }
+        let canonical = format!(
+            "{{\"messageID\":{},\"parentSessionID\":{},\"childSessionID\":{},\"deliveryMode\":{},\"directAttemptID\":{},\"childOwnerEpoch\":{},\"profileID\":{},\"profileRevision\":{},\"profileDigest\":{},\"permissionScopeDigest\":{},\"payloadDigest\":{},\"payloadBytes\":{},\"mailboxSequence\":{},\"mailboxCapacity\":{}}}",
+            quoted(&self.message_id)?, quoted(&self.parent_session_id)?,
+            quoted(&self.child_session_id)?, quoted(self.delivery_mode.name())?,
+            quoted(&self.direct_attempt_id)?, quoted(&self.child_owner_epoch.to_string())?,
+            quoted(&self.profile_id)?, quoted(&self.profile_revision.to_string())?,
+            quoted(&self.profile_digest)?, quoted(&self.permission_scope_digest)?,
+            quoted(&self.payload_digest)?, self.payload_bytes,
+            quoted(&self.mailbox_sequence.to_string())?, self.mailbox_capacity,
+        );
+        let digest = ring::digest::digest(&ring::digest::SHA256, canonical.as_bytes());
+        let mut hex = String::with_capacity(64);
+        for byte in digest.as_ref() {
+            use std::fmt::Write as _;
+            let _ = write!(&mut hex, "{byte:02x}");
+        }
+        Ok(format!("sha256:{hex}"))
+    }
+}
+
+/// Authenticated Core comparison pins for a message delivered to a managed
+/// Goal/Run/Task/Attempt child. These never mint managed authority: HostKernel
+/// re-resolves the live Attempt and DelegationBinding before Guard admission.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ManagedMessageAuthorityPinsV1 {
+    pub goal_id: String,
+    pub run_id: String,
+    pub task_id: String,
+    pub attempt_id: String,
+    pub parent_session_id: String,
+    pub child_session_id: String,
+    pub owner_epoch: u64,
+    pub binding_digest: String,
+    pub profile_id: String,
+    pub profile_revision: u64,
+    pub profile_digest: String,
+    pub permission_scope_digest: String,
+    pub message_id: String,
+    pub delivery_mode: DirectMessageDeliveryModeV1,
+    pub payload_digest: String,
+    pub payload_bytes: u64,
+    pub mailbox_sequence: u64,
+    pub mailbox_capacity: u64,
+}
+
+impl ManagedMessageAuthorityPinsV1 {
+    pub fn from_value(value: &Value) -> Option<Self> {
+        let Value::Map(fields) = value else { return None };
+        const KEYS: [&str; 19] = [
+            "goalID", "runID", "taskID", "attemptID", "parentSessionID", "childSessionID",
+            "ownerEpoch", "bindingDigest", "profileID", "profileRevision", "profileDigest",
+            "permissionScopeDigest", "messageID", "deliveryMode", "payloadDigest", "payloadBytes",
+            "mailboxSequence", "mailboxCapacity", "lane",
+        ];
+        if fields.len() != KEYS.len() || KEYS.iter().any(|key| !fields.contains_key(*key))
+            || !matches!(fields.get("lane"), Some(Value::String(lane)) if lane == "managed_attempt")
+        { return None; }
+        let text = |key: &str| match fields.get(key) {
+            Some(Value::String(value)) if valid_binding_id(value) => Some(value.clone()), _ => None,
+        };
+        let positive = |key: &str| match fields.get(key) {
+            Some(Value::String(value)) => parse_canonical_positive_u64(value), _ => None,
+        };
+        let payload_bytes = match fields.get("payloadBytes") { Some(Value::Unsigned(value)) => Some(*value), _ => None }?;
+        let mailbox_capacity = match fields.get("mailboxCapacity") { Some(Value::Unsigned(value)) => Some(*value), _ => None }?;
+        let pins = Self {
+            goal_id: text("goalID")?, run_id: text("runID")?, task_id: text("taskID")?,
+            attempt_id: text("attemptID")?, parent_session_id: text("parentSessionID")?,
+            child_session_id: text("childSessionID")?, owner_epoch: positive("ownerEpoch")?,
+            binding_digest: text("bindingDigest")?, profile_id: text("profileID")?,
+            profile_revision: positive("profileRevision")?, profile_digest: text("profileDigest")?,
+            permission_scope_digest: text("permissionScopeDigest")?, message_id: text("messageID")?,
+            delivery_mode: DirectMessageDeliveryModeV1::from_value(fields.get("deliveryMode")?)?,
+            payload_digest: text("payloadDigest")?, payload_bytes, mailbox_sequence: positive("mailboxSequence")?, mailbox_capacity,
+        };
+        if pins.attempt_id.len() != "attempt_".len() + 64
+            || !pins.attempt_id.starts_with("attempt_")
+            || !pins.attempt_id["attempt_".len()..].bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            || !is_blake3_digest(&pins.binding_digest)
+            || !valid_profile_id(&pins.profile_id) || !is_blake3_digest(&pins.profile_digest)
+            || !(is_sha256_digest(&pins.permission_scope_digest) || is_blake3_digest(&pins.permission_scope_digest))
+            || !is_sha256_digest(&pins.payload_digest) || pins.payload_bytes == 0 || pins.payload_bytes > 16_384
+            || pins.mailbox_capacity == 0 || pins.mailbox_capacity > 32
+        { return None; }
+        Some(pins)
+    }
+
+    pub fn to_value(&self) -> Value {
+        Value::Map(BTreeMap::from([
+            ("lane".into(), Value::String("managed_attempt".into())),
+            ("goalID".into(), Value::String(self.goal_id.clone())),
+            ("runID".into(), Value::String(self.run_id.clone())),
+            ("taskID".into(), Value::String(self.task_id.clone())),
+            ("attemptID".into(), Value::String(self.attempt_id.clone())),
+            ("parentSessionID".into(), Value::String(self.parent_session_id.clone())),
+            ("childSessionID".into(), Value::String(self.child_session_id.clone())),
+            ("ownerEpoch".into(), Value::String(self.owner_epoch.to_string())),
+            ("bindingDigest".into(), Value::String(self.binding_digest.clone())),
+            ("profileID".into(), Value::String(self.profile_id.clone())),
+            ("profileRevision".into(), Value::String(self.profile_revision.to_string())),
+            ("profileDigest".into(), Value::String(self.profile_digest.clone())),
+            ("permissionScopeDigest".into(), Value::String(self.permission_scope_digest.clone())),
+            ("messageID".into(), Value::String(self.message_id.clone())),
+            ("deliveryMode".into(), Value::String(self.delivery_mode.name().into())),
+            ("payloadDigest".into(), Value::String(self.payload_digest.clone())),
+            ("payloadBytes".into(), Value::Unsigned(self.payload_bytes)),
+            ("mailboxSequence".into(), Value::String(self.mailbox_sequence.to_string())),
+            ("mailboxCapacity".into(), Value::Unsigned(self.mailbox_capacity)),
+        ]))
+    }
+
+    pub fn authority_digest(&self) -> Result<String, messagepack::MessagePackError> {
+        let encoded = messagepack::encode(&self.to_value(), messagepack::FRAME_LIMITS)?;
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"horizoncode.managed-message-authority.v1\0");
+        hasher.update(&encoded);
+        Ok(format!("blake3:{}", hasher.finalize().to_hex()))
+    }
+
+    pub fn inbox_receipt_digest(&self) -> Result<String, serde_json::Error> {
+        fn q(value: &str) -> Result<String, serde_json::Error> { serde_json::to_string(value) }
+        let canonical = format!(
+            "{{\"lane\":\"managed_attempt\",\"messageID\":{},\"parentSessionID\":{},\"childSessionID\":{},\"deliveryMode\":{},\"goalID\":{},\"runID\":{},\"taskID\":{},\"attemptID\":{},\"ownerEpoch\":{},\"bindingDigest\":{},\"profileID\":{},\"profileRevision\":{},\"profileDigest\":{},\"permissionScopeDigest\":{},\"payloadDigest\":{},\"payloadBytes\":{},\"mailboxSequence\":{},\"mailboxCapacity\":{}}}",
+            q(&self.message_id)?, q(&self.parent_session_id)?, q(&self.child_session_id)?,
+            q(self.delivery_mode.name())?, q(&self.goal_id)?, q(&self.run_id)?, q(&self.task_id)?,
+            q(&self.attempt_id)?, q(&self.owner_epoch.to_string())?, q(&self.binding_digest)?,
+            q(&self.profile_id)?, q(&self.profile_revision.to_string())?, q(&self.profile_digest)?,
+            q(&self.permission_scope_digest)?, q(&self.payload_digest)?, self.payload_bytes,
+            q(&self.mailbox_sequence.to_string())?, self.mailbox_capacity,
+        );
+        let digest = ring::digest::digest(&ring::digest::SHA256, canonical.as_bytes());
+        let mut hex = String::with_capacity(64);
+        for byte in digest.as_ref() { use std::fmt::Write as _; let _ = write!(&mut hex, "{byte:02x}"); }
+        Ok(format!("sha256:{hex}"))
+    }
+}
+
+/// Core's durable acknowledgement that a committed managed inbox row was
+/// consumed at the child's safe input boundary. This releases mailbox capacity
+/// only; it does not grant authority to replay the message or start a turn.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ManagedMessageConsumptionAckV1 {
+    pub pins: ManagedMessageAuthorityPinsV1,
+    pub inbox_receipt_digest: String,
+    pub prompt_message_id: String,
+    pub consuming_attempt_id: String,
+    pub consuming_owner_epoch: u64,
+    pub delivery_scope_digest: String,
+    pub consuming_scope_digest: String,
+    pub consumed_payload_digest: String,
+    pub completed_turn_receipt_digest: Option<String>,
+    pub wake_receipt_digest: Option<String>,
+    pub wake_claim_receipt_digest: Option<String>,
+    pub next_request_sequence: Option<u64>,
+    pub consumption_ack_digest: String,
+    pub current_consumer: ManagedAttemptScopeV1,
+}
+
+impl ManagedMessageConsumptionAckV1 {
+    pub fn from_value(value: &Value) -> Option<Self> {
+        let Value::Map(fields) = value else { return None };
+        if fields.len() != 5 || fields.keys().any(|key| !matches!(key.as_str(),
+            "authorityPins" | "inboxReceiptDigest" | "consumption" | "consumptionAckDigest" | "currentConsumer"))
+            || ["authorityPins", "inboxReceiptDigest", "consumption", "consumptionAckDigest", "currentConsumer"]
+                .iter().any(|key| !fields.contains_key(*key))
+        { return None; }
+        let pins = ManagedMessageAuthorityPinsV1::from_value(fields.get("authorityPins")?)?;
+        let inbox_receipt_digest = match fields.get("inboxReceiptDigest") {
+            Some(Value::String(value)) if is_sha256_digest(value) => value.clone(), _ => return None,
+        };
+        let consumption_ack_digest = match fields.get("consumptionAckDigest") {
+            Some(Value::String(value)) if is_sha256_digest(value) => value.clone(), _ => return None,
+        };
+        let Value::Map(consumption) = fields.get("consumption")? else { return None };
+        const QUEUE: [&str; 6] = ["promptMessageID", "consumingAttemptID", "consumingOwnerEpoch",
+            "deliveryScopeDigest", "consumingScopeDigest", "consumedPayloadDigest"];
+        const FOLLOW_UP: [&str; 10] = ["promptMessageID", "consumingAttemptID", "consumingOwnerEpoch",
+            "deliveryScopeDigest", "consumingScopeDigest", "consumedPayloadDigest", "completedTurnReceiptDigest",
+            "wakeReceiptDigest", "wakeClaimReceiptDigest", "nextRequestSequence"];
+        let expected: &[&str] = match pins.delivery_mode {
+            DirectMessageDeliveryModeV1::Queue => &QUEUE,
+            DirectMessageDeliveryModeV1::FollowUp => &FOLLOW_UP,
+        };
+        if consumption.len() != expected.len() || consumption.keys().any(|key| !expected.contains(&key.as_str()))
+            || expected.iter().any(|key| !consumption.contains_key(*key))
+        { return None; }
+        let id = |key: &str| match consumption.get(key) {
+            Some(Value::String(value)) if valid_binding_id(value) => Some(value.clone()), _ => None,
+        };
+        let consuming_owner_epoch = match consumption.get("consumingOwnerEpoch") {
+            Some(Value::String(value)) => parse_canonical_positive_u64(value)?, _ => return None,
+        };
+        let delivery_scope_digest = match consumption.get("deliveryScopeDigest") {
+            Some(Value::String(value)) if is_sha256_digest(value) || is_blake3_digest(value) => value.clone(), _ => return None,
+        };
+        let consuming_scope_digest = match consumption.get("consumingScopeDigest") {
+            Some(Value::String(value)) if is_sha256_digest(value) || is_blake3_digest(value) => value.clone(), _ => return None,
+        };
+        let consumed_payload_digest = match consumption.get("consumedPayloadDigest") {
+            Some(Value::String(value)) if is_sha256_digest(value) => value.clone(), _ => return None,
+        };
+        let (completed_turn_receipt_digest, wake_receipt_digest, wake_claim_receipt_digest, next_request_sequence) = match pins.delivery_mode {
+            DirectMessageDeliveryModeV1::Queue => (None, None, None, None),
+            DirectMessageDeliveryModeV1::FollowUp => (
+                match consumption.get("completedTurnReceiptDigest") {
+                    Some(Value::String(value)) if is_blake3_digest(value) => Some(value.clone()), _ => return None,
+                },
+                match consumption.get("wakeReceiptDigest") {
+                    Some(Value::String(value)) if is_blake3_digest(value) => Some(value.clone()), _ => return None,
+                },
+                match consumption.get("wakeClaimReceiptDigest") {
+                    Some(Value::String(value)) if is_blake3_digest(value) => Some(value.clone()), _ => return None,
+                },
+                match consumption.get("nextRequestSequence") {
+                    Some(Value::String(value)) => Some(parse_canonical_positive_u64(value)?), _ => return None,
+                },
+            ),
+        };
+        let ack = Self {
+            pins, inbox_receipt_digest, prompt_message_id: id("promptMessageID")?,
+            consuming_attempt_id: id("consumingAttemptID")?, consuming_owner_epoch,
+            delivery_scope_digest, consuming_scope_digest, consumed_payload_digest, completed_turn_receipt_digest,
+            wake_receipt_digest, wake_claim_receipt_digest, next_request_sequence, consumption_ack_digest,
+            current_consumer: ManagedAttemptScopeV1::from_value(fields.get("currentConsumer")?)?,
+        };
+        if ack.consuming_attempt_id != ack.pins.attempt_id
+            || ack.pins.inbox_receipt_digest().ok().as_deref() != Some(ack.inbox_receipt_digest.as_str())
+            || ack.consuming_owner_epoch != ack.pins.owner_epoch
+            || ack.consumed_payload_digest != ack.pins.payload_digest
+            || ack.current_consumer.attempt_id != ack.pins.attempt_id
+            || ack.current_consumer.goal_id != ack.pins.goal_id
+            || ack.current_consumer.run_id != ack.pins.run_id
+            || ack.current_consumer.task_id != ack.pins.task_id
+            || ack.current_consumer.owner_epoch != ack.pins.owner_epoch
+            || ack.current_consumer.session_id != ack.pins.child_session_id
+            || ack.current_consumer.delegation_binding_digest != ack.pins.binding_digest
+            || ack.current_consumer.permission_scope_digest != ack.pins.permission_scope_digest
+            || (ack.pins.delivery_mode == DirectMessageDeliveryModeV1::FollowUp
+                && (ack.current_consumer.request_sequence != ack.next_request_sequence
+                    || ack.current_consumer.request_id.is_none()))
+            || ack.consumption_ack_digest().ok().as_deref() != Some(ack.consumption_ack_digest.as_str())
+        { return None; }
+        Some(ack)
+    }
+
+    pub fn to_value(&self) -> Value {
+        let mut consumption = BTreeMap::from([
+            ("promptMessageID".into(), Value::String(self.prompt_message_id.clone())),
+            ("consumingAttemptID".into(), Value::String(self.consuming_attempt_id.clone())),
+            ("consumingOwnerEpoch".into(), Value::String(self.consuming_owner_epoch.to_string())),
+            ("deliveryScopeDigest".into(), Value::String(self.delivery_scope_digest.clone())),
+            ("consumingScopeDigest".into(), Value::String(self.consuming_scope_digest.clone())),
+            ("consumedPayloadDigest".into(), Value::String(self.consumed_payload_digest.clone())),
+        ]);
+        if let Some(value) = &self.completed_turn_receipt_digest {
+            consumption.insert("completedTurnReceiptDigest".into(), Value::String(value.clone()));
+        }
+        if let Some(value) = &self.wake_receipt_digest {
+            consumption.insert("wakeReceiptDigest".into(), Value::String(value.clone()));
+        }
+        if let Some(value) = &self.wake_claim_receipt_digest {
+            consumption.insert("wakeClaimReceiptDigest".into(), Value::String(value.clone()));
+        }
+        if let Some(value) = self.next_request_sequence {
+            consumption.insert("nextRequestSequence".into(), Value::String(value.to_string()));
+        }
+        Value::Map(BTreeMap::from([
+            ("authorityPins".into(), self.pins.to_value()),
+            ("inboxReceiptDigest".into(), Value::String(self.inbox_receipt_digest.clone())),
+            ("consumption".into(), Value::Map(consumption)),
+            ("consumptionAckDigest".into(), Value::String(self.consumption_ack_digest.clone())),
+            ("currentConsumer".into(), self.current_consumer.to_value()),
+        ]))
+    }
+
+    /// Ordered SHA-256 preimage shared with Core. Optional follow-up facts are
+    /// included only for follow_up; queue ACKs cannot carry wake authority.
+    pub fn consumption_ack_digest(&self) -> Result<String, serde_json::Error> {
+        fn q(value: &str) -> Result<String, serde_json::Error> { serde_json::to_string(value) }
+        let mut canonical = format!(
+            "{{\"lane\":\"managed_attempt\",\"messageID\":{},\"parentSessionID\":{},\"childSessionID\":{},\"deliveryMode\":{},\"goalID\":{},\"runID\":{},\"taskID\":{},\"attemptID\":{},\"mailboxSequence\":{},\"inboxReceiptDigest\":{},\"promptMessageID\":{},\"consumingAttemptID\":{},\"consumingOwnerEpoch\":{},\"deliveryScopeDigest\":{},\"consumingScopeDigest\":{},\"consumedPayloadDigest\":{}",
+            q(&self.pins.message_id)?, q(&self.pins.parent_session_id)?, q(&self.pins.child_session_id)?,
+            q(self.pins.delivery_mode.name())?, q(&self.pins.goal_id)?, q(&self.pins.run_id)?,
+            q(&self.pins.task_id)?, q(&self.pins.attempt_id)?, q(&self.pins.mailbox_sequence.to_string())?,
+            q(&self.inbox_receipt_digest)?, q(&self.prompt_message_id)?, q(&self.consuming_attempt_id)?,
+            q(&self.consuming_owner_epoch.to_string())?, q(&self.delivery_scope_digest)?,
+            q(&self.consuming_scope_digest)?, q(&self.consumed_payload_digest)?,
+        );
+        if let (Some(completion), Some(wake), Some(claim), Some(sequence)) = (
+            &self.completed_turn_receipt_digest, &self.wake_receipt_digest,
+            &self.wake_claim_receipt_digest, self.next_request_sequence,
+        ) {
+            canonical.push_str(&format!(",\"completedTurnReceiptDigest\":{},\"wakeReceiptDigest\":{},\"wakeClaimReceiptDigest\":{},\"nextRequestSequence\":{}",
+                q(completion)?, q(wake)?, q(claim)?, q(&sequence.to_string())?));
+        }
+        canonical.push('}');
+        let digest = ring::digest::digest(&ring::digest::SHA256, canonical.as_bytes());
+        let mut hex = String::with_capacity(64);
+        for byte in digest.as_ref() { use std::fmt::Write as _; let _ = write!(&mut hex, "{byte:02x}"); }
+        Ok(format!("sha256:{hex}"))
+    }
+}
+
+/// Host-owned durable acknowledgement receipt for a Core consumption proof.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ManagedMessageConsumptionAckReceiptV1 {
+    pub ack: ManagedMessageConsumptionAckV1,
+    pub receipt_digest: String,
+}
+
+impl ManagedMessageConsumptionAckReceiptV1 {
+    pub fn new(ack: ManagedMessageConsumptionAckV1) -> Result<Self, messagepack::MessagePackError> {
+        let encoded = messagepack::encode(&ack.to_value(), FRAME_LIMITS)?;
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"horizoncode.managed-message-consumption-ack-receipt.v1\0");
+        hasher.update(&encoded);
+        Ok(Self { ack, receipt_digest: format!("blake3:{}", hasher.finalize().to_hex()) })
+    }
+
+    pub fn from_value(value: &Value) -> Option<Self> {
+        let Value::Map(fields) = value else { return None };
+        if fields.len() != 3 || fields.keys().any(|key| !matches!(key.as_str(), "status" | "ack" | "receiptDigest"))
+            || fields.get("status") != Some(&Value::String("ACKNOWLEDGED".into()))
+        { return None; }
+        let ack = ManagedMessageConsumptionAckV1::from_value(fields.get("ack")?)?;
+        let receipt = match fields.get("receiptDigest") {
+            Some(Value::String(value)) if is_blake3_digest(value) => value.clone(), _ => return None,
+        };
+        let expected = Self::new(ack.clone()).ok()?;
+        (expected.receipt_digest == receipt).then_some(Self { ack, receipt_digest: receipt })
+    }
+
+    pub fn to_value(&self) -> Value {
+        Value::Map(BTreeMap::from([
+            ("status".into(), Value::String("ACKNOWLEDGED".into())),
+            ("ack".into(), self.ack.to_value()),
+            ("receiptDigest".into(), Value::String(self.receipt_digest.clone())),
+        ]))
+    }
+}
+
+/// Request to consume exactly one managed follow-up wake at a live child
+/// provider-turn boundary. This is a durable queue claim, not provider-send
+/// authority; a later provider permit remains independently required.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ManagedMessageWakeClaimRequestV1 {
+    pub pins: ManagedMessageAuthorityPinsV1,
+    pub inbox_receipt_digest: String,
+    pub completed_turn_receipt_digest: String,
+    pub wake_receipt_digest: String,
+    pub next_request_sequence: u64,
+    pub request_id: String,
+    pub current_consumer: ManagedAttemptScopeV1,
+    pub wake_claim_digest: String,
+}
+
+impl ManagedMessageWakeClaimRequestV1 {
+    pub fn from_value(value: &Value) -> Option<Self> {
+        let Value::Map(fields) = value else { return None };
+        const KEYS: [&str; 8] = ["authorityPins", "inboxReceiptDigest", "completedTurnReceiptDigest",
+            "wakeReceiptDigest", "nextRequestSequence", "requestID", "currentConsumer", "wakeClaimDigest"];
+        if fields.len() != KEYS.len() || KEYS.iter().any(|key| !fields.contains_key(*key))
+            || fields.keys().any(|key| !KEYS.contains(&key.as_str()))
+        { return None; }
+        let pins = ManagedMessageAuthorityPinsV1::from_value(fields.get("authorityPins")?)?;
+        if pins.delivery_mode != DirectMessageDeliveryModeV1::FollowUp { return None; }
+        let digest = |key: &str| match fields.get(key) {
+            Some(Value::String(value)) if is_blake3_digest(value) => Some(value.clone()), _ => None,
+        };
+        let inbox_receipt_digest = match fields.get("inboxReceiptDigest") {
+            Some(Value::String(value)) if is_sha256_digest(value) => value.clone(), _ => return None,
+        };
+        let next_request_sequence = match fields.get("nextRequestSequence") {
+            Some(Value::String(value)) => parse_canonical_positive_u64(value)?, _ => return None,
+        };
+        let request_id = match fields.get("requestID") {
+            Some(Value::String(value)) if valid_binding_id(value) => value.clone(), _ => return None,
+        };
+        let request = Self {
+            pins,
+            inbox_receipt_digest,
+            completed_turn_receipt_digest: digest("completedTurnReceiptDigest")?,
+            wake_receipt_digest: digest("wakeReceiptDigest")?,
+            next_request_sequence,
+            request_id,
+            current_consumer: ManagedAttemptScopeV1::from_value(fields.get("currentConsumer")?)?,
+            wake_claim_digest: digest("wakeClaimDigest")?,
+        };
+        if request.pins.inbox_receipt_digest().ok().as_deref() != Some(request.inbox_receipt_digest.as_str())
+            || !managed_consumer_matches_message_pins(&request.current_consumer, &request.pins)
+            || request.compute_wake_claim_digest().ok().as_deref() != Some(request.wake_claim_digest.as_str())
+        { return None; }
+        Some(request)
+    }
+
+    /// Strict serde projection used by the durable managed OwnerLog. MessagePack
+    /// remains the canonical authority for the request digest.
+    pub fn from_json_value(value: &serde_json::Value) -> Option<Self> {
+        fn convert(value: &serde_json::Value) -> Option<Value> {
+            Some(match value {
+                serde_json::Value::Null => Value::Nil,
+                serde_json::Value::Bool(value) => Value::Bool(*value),
+                serde_json::Value::Number(value) if value.is_u64() => Value::Unsigned(value.as_u64()?),
+                serde_json::Value::Number(value) if value.is_i64() => Value::Signed(value.as_i64()?),
+                serde_json::Value::Number(value) => Value::Float(value.as_f64()?.to_bits()),
+                serde_json::Value::String(value) => Value::String(value.clone()),
+                serde_json::Value::Array(values) => Value::Array(
+                    values.iter().map(convert).collect::<Option<_>>()?,
+                ),
+                serde_json::Value::Object(values) => Value::Map(values.iter()
+                    .map(|(key, value)| Some((key.clone(), convert(value)?)))
+                    .collect::<Option<_>>()?),
+            })
+        }
+        Self::from_value(&convert(value)?)
+    }
+
+    pub fn to_json_value(&self) -> Result<serde_json::Value, messagepack::MessagePackError> {
+        fn convert(value: Value) -> serde_json::Value {
+            match value {
+                Value::Nil => serde_json::Value::Null,
+                Value::Bool(value) => serde_json::Value::Bool(value),
+                Value::Unsigned(value) => serde_json::Value::Number(value.into()),
+                Value::Signed(value) => serde_json::Value::Number(value.into()),
+                Value::Float(bits) => serde_json::Number::from_f64(f64::from_bits(bits))
+                    .map(serde_json::Value::Number).unwrap_or(serde_json::Value::Null),
+                Value::String(value) => serde_json::Value::String(value),
+                Value::Array(values) => serde_json::Value::Array(values.into_iter().map(convert).collect()),
+                Value::Map(values) => serde_json::Value::Object(values.into_iter()
+                    .map(|(key, value)| (key, convert(value))).collect()),
+                Value::Binary(_) => serde_json::Value::Null,
+            }
+        }
+        Ok(convert(self.to_value()))
+    }
+
+    pub fn compute_wake_claim_digest(&self) -> Result<String, ()> {
+        fn q(value: &str) -> Result<String, ()> { serde_json::to_string(value).map_err(|_| ()) }
+        let current_consumer_digest = self.current_consumer.digest()
+            .map_err(|_| ())?;
+        let canonical = format!(
+            "{{\"lane\":\"managed_attempt\",\"messageID\":{},\"parentSessionID\":{},\"childSessionID\":{},\"deliveryMode\":{},\"goalID\":{},\"runID\":{},\"taskID\":{},\"attemptID\":{},\"mailboxSequence\":{},\"inboxReceiptDigest\":{},\"completedTurnReceiptDigest\":{},\"wakeReceiptDigest\":{},\"nextRequestSequence\":{},\"requestID\":{},\"currentConsumerDigest\":{}}}",
+            q(&self.pins.message_id)?, q(&self.pins.parent_session_id)?, q(&self.pins.child_session_id)?,
+            q(self.pins.delivery_mode.name())?, q(&self.pins.goal_id)?, q(&self.pins.run_id)?,
+            q(&self.pins.task_id)?, q(&self.pins.attempt_id)?, q(&self.pins.mailbox_sequence.to_string())?,
+            q(&self.inbox_receipt_digest)?, q(&self.completed_turn_receipt_digest)?,
+            q(&self.wake_receipt_digest)?, q(&self.next_request_sequence.to_string())?,
+            q(&self.request_id)?, q(&current_consumer_digest)?,
+        );
+        let digest = ring::digest::digest(&ring::digest::SHA256, canonical.as_bytes());
+        let mut hex = String::with_capacity(64);
+        for byte in digest.as_ref() { use std::fmt::Write as _; let _ = write!(&mut hex, "{byte:02x}"); }
+        Ok(format!("sha256:{hex}"))
+    }
+
+    pub fn to_value(&self) -> Value {
+        Value::Map(BTreeMap::from([
+            ("authorityPins".into(), self.pins.to_value()),
+            ("inboxReceiptDigest".into(), Value::String(self.inbox_receipt_digest.clone())),
+            ("completedTurnReceiptDigest".into(), Value::String(self.completed_turn_receipt_digest.clone())),
+            ("wakeReceiptDigest".into(), Value::String(self.wake_receipt_digest.clone())),
+            ("nextRequestSequence".into(), Value::String(self.next_request_sequence.to_string())),
+            ("requestID".into(), Value::String(self.request_id.clone())),
+            ("currentConsumer".into(), self.current_consumer.to_value()),
+            ("wakeClaimDigest".into(), Value::String(self.wake_claim_digest.clone())),
+        ]))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ManagedMessageWakeClaimReceiptV1 {
+    pub request: ManagedMessageWakeClaimRequestV1,
+    pub status: String,
+    pub wake_claim_receipt_digest: String,
+}
+
+impl ManagedMessageWakeClaimReceiptV1 {
+    pub fn new(request: ManagedMessageWakeClaimRequestV1, status: &str) -> Option<Self> {
+        if !matches!(status, "CLAIMED" | "REPLAY") {
+            return None;
+        }
+        if ManagedMessageWakeClaimRequestV1::from_value(&request.to_value()).as_ref() != Some(&request) {
+            return None;
+        }
+        let mut value = request.to_value();
+        let Value::Map(fields) = &mut value else { unreachable!() };
+        fields.insert("status".into(), Value::String(status.into()));
+        let encoded = messagepack::encode(&value, FRAME_LIMITS).ok()?;
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"horizoncode.managed-message-wake-claim-receipt.v1\0");
+        hasher.update(&encoded);
+        Some(Self { request, status: status.into(), wake_claim_receipt_digest: format!("blake3:{}", hasher.finalize().to_hex()) })
+    }
+
+    pub fn from_value(value: &Value) -> Option<Self> {
+        let Value::Map(fields) = value else { return None };
+        if fields.len() != 10 || fields.keys().any(|key| !matches!(key.as_str(),
+            "authorityPins" | "inboxReceiptDigest" | "completedTurnReceiptDigest" | "wakeReceiptDigest"
+            | "nextRequestSequence" | "requestID" | "currentConsumer" | "wakeClaimDigest" | "status" | "wakeClaimReceiptDigest"))
+        { return None; }
+        let status = match fields.get("status") {
+            Some(Value::String(value)) if matches!(value.as_str(), "CLAIMED" | "REPLAY") => value.clone(), _ => return None,
+        };
+        let mut request_fields = fields.clone();
+        request_fields.remove("status");
+        request_fields.remove("wakeClaimReceiptDigest");
+        let request = ManagedMessageWakeClaimRequestV1::from_value(&Value::Map(request_fields))?;
+        let receipt = match fields.get("wakeClaimReceiptDigest") {
+            Some(Value::String(value)) if is_blake3_digest(value) => value.clone(), _ => return None,
+        };
+        let expected = Self::new(request.clone(), &status)?;
+        (expected.wake_claim_receipt_digest == receipt).then_some(Self { request, status, wake_claim_receipt_digest: receipt })
+    }
+
+    pub fn to_value(&self) -> Value {
+        let mut value = self.request.to_value();
+        let Value::Map(fields) = &mut value else { unreachable!() };
+        fields.insert("status".into(), Value::String(self.status.clone()));
+        fields.insert("wakeClaimReceiptDigest".into(), Value::String(self.wake_claim_receipt_digest.clone()));
+        value
+    }
+}
+
+fn managed_consumer_matches_message_pins(
+    consumer: &ManagedAttemptScopeV1,
+    pins: &ManagedMessageAuthorityPinsV1,
+) -> bool {
+    consumer.goal_id == pins.goal_id && consumer.run_id == pins.run_id
+        && consumer.task_id == pins.task_id && consumer.attempt_id == pins.attempt_id
+        && consumer.owner_epoch == pins.owner_epoch && consumer.session_id == pins.child_session_id
+        && consumer.delegation_binding_digest == pins.binding_digest
+        && consumer.permission_scope_digest == pins.permission_scope_digest
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectMessagePrepareRequestV1 {
+    pub pins: DirectMessageAuthorityPinsV1,
+    pub fresh_turn_authorization: Option<FreshTurnAuthorizationV1>,
+}
+
+impl DirectMessagePrepareRequestV1 {
+    pub fn from_value(value: &Value) -> Option<Self> {
+        let Value::Map(fields) = value else { return None };
+        if !(fields.len() == 1 || fields.len() == 2)
+            || !fields.contains_key("authorityPins")
+            || fields.keys().any(|key| !matches!(key.as_str(), "authorityPins" | "freshTurnAuthorization"))
+        { return None; }
+        let pins = DirectMessageAuthorityPinsV1::from_value(fields.get("authorityPins")?)?;
+        let fresh_turn_authorization = match fields.get("freshTurnAuthorization") {
+            Some(value) => Some(FreshTurnAuthorizationV1::from_value(value)?),
+            None => None,
+        };
+        if (pins.delivery_mode == DirectMessageDeliveryModeV1::FollowUp) != fresh_turn_authorization.is_some()
+            || fresh_turn_authorization.as_ref().is_some_and(|proof| proof.authority_pins != pins)
+        { return None; }
+        Some(Self { pins, fresh_turn_authorization })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectMessageCommitRequestV1 {
+    pub pins: DirectMessageAuthorityPinsV1,
+    pub capability_lease_digest: String,
+    pub inbox_receipt_digest: String,
+}
+
+impl DirectMessageCommitRequestV1 {
+    pub fn from_value(value: &Value) -> Option<Self> {
+        let Value::Map(fields) = value else { return None };
+        if fields.len() != 3 || fields.keys().any(|key| !matches!(key.as_str(), "authorityPins" | "capabilityLeaseDigest" | "inboxReceiptDigest")) { return None; }
+        let pins = DirectMessageAuthorityPinsV1::from_value(fields.get("authorityPins")?)?;
+        let lease = match fields.get("capabilityLeaseDigest") {
+            Some(Value::String(value)) if is_blake3_digest(value) => value.clone(), _ => return None,
+        };
+        let receipt = match fields.get("inboxReceiptDigest") {
+            Some(Value::String(value)) if is_blake3_digest(value) || is_sha256_digest(value) => value.clone(), _ => return None,
+        };
+        Some(Self { pins, capability_lease_digest: lease, inbox_receipt_digest: receipt })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectMessageInspectRequestV1 { pub pins: DirectMessageAuthorityPinsV1 }
+
+impl DirectMessageInspectRequestV1 {
+    pub fn from_value(value: &Value) -> Option<Self> {
+        let Value::Map(fields) = value else { return None };
+        if fields.len() != 1 || !fields.contains_key("authorityPins") { return None; }
+        Some(Self { pins: DirectMessageAuthorityPinsV1::from_value(fields.get("authorityPins")?)? })
+    }
+}
+
+/// Core's durable acknowledgement that a committed mailbox row was consumed at
+/// the child's next safe model-input boundary. This only frees pending capacity;
+/// it does not settle, replay, or grant authority to the original message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectMessageConsumptionAckV1 {
+    pub pins: DirectMessageAuthorityPinsV1,
+    pub inbox_receipt_digest: String,
+    pub prompt_message_id: String,
+    pub consuming_attempt_id: String,
+    pub consuming_owner_epoch: u64,
+    pub consuming_scope_digest: String,
+    pub consumed_payload_digest: String,
+    pub consumption_ack_digest: String,
+    pub current_consumer: DirectAttemptScopeV1,
+}
+
+impl DirectMessageConsumptionAckV1 {
+    pub fn from_value(value: &Value) -> Option<Self> {
+        let Value::Map(fields) = value else { return None };
+        if fields.len() != 5 || fields.keys().any(|key| !matches!(key.as_str(),
+            "authorityPins" | "inboxReceiptDigest" | "consumption" | "consumptionAckDigest" | "currentConsumer"))
+            || !fields.contains_key("authorityPins") || !fields.contains_key("inboxReceiptDigest")
+            || !fields.contains_key("consumption") || !fields.contains_key("consumptionAckDigest")
+            || !fields.contains_key("currentConsumer")
+        { return None; }
+        let pins = DirectMessageAuthorityPinsV1::from_value(fields.get("authorityPins")?)?;
+        let inbox_receipt_digest = match fields.get("inboxReceiptDigest") {
+            Some(Value::String(value)) if is_sha256_digest(value) => value.clone(), _ => return None,
+        };
+        let ack = match fields.get("consumptionAckDigest") {
+            Some(Value::String(value)) if is_sha256_digest(value) => value.clone(), _ => return None,
+        };
+        let Value::Map(consumption) = fields.get("consumption")? else { return None };
+        const KEYS: [&str; 5] = ["promptMessageID", "consumingAttemptID", "consumingOwnerEpoch",
+            "consumingScopeDigest", "consumedPayloadDigest"];
+        if consumption.len() != KEYS.len() || KEYS.iter().any(|key| !consumption.contains_key(*key))
+            || consumption.keys().any(|key| !KEYS.contains(&key.as_str()))
+        { return None; }
+        let text = |key: &str| match consumption.get(key) {
+            Some(Value::String(value)) if valid_binding_id(value) => Some(value.clone()), _ => None,
+        };
+        let consuming_owner_epoch = match consumption.get("consumingOwnerEpoch") {
+            Some(Value::String(value)) => parse_canonical_positive_u64(value)?, _ => return None,
+        };
+        let consuming_scope_digest = match consumption.get("consumingScopeDigest") {
+            Some(Value::String(value)) if is_sha256_digest(value) => value.clone(), _ => return None,
+        };
+        let consumed_payload_digest = match consumption.get("consumedPayloadDigest") {
+            Some(Value::String(value)) if is_sha256_digest(value) => value.clone(), _ => return None,
+        };
+        let ack = Self { pins, inbox_receipt_digest, prompt_message_id: text("promptMessageID")?,
+            consuming_attempt_id: text("consumingAttemptID")?, consuming_owner_epoch,
+            consuming_scope_digest, consumed_payload_digest, consumption_ack_digest: ack,
+            current_consumer: DirectAttemptScopeV1::from_value(fields.get("currentConsumer")?)? };
+        if ack.consuming_owner_epoch != ack.pins.child_owner_epoch
+            || ack.consumed_payload_digest != ack.pins.payload_digest
+            || ack.current_consumer.owner_epoch != ack.pins.child_owner_epoch
+            || ack.current_consumer.parent_session_id != ack.pins.parent_session_id
+            || ack.current_consumer.child_session_id != ack.pins.child_session_id
+            || ack.current_consumer.profile_id != ack.pins.profile_id
+            || ack.current_consumer.profile_revision != ack.pins.profile_revision
+            || ack.current_consumer.profile_digest != ack.pins.profile_digest
+            || ack.current_consumer.permissions_digest != ack.pins.permission_scope_digest
+            || ack.consumption_ack_digest().ok().as_deref() != Some(ack.consumption_ack_digest.as_str())
+        { return None; }
+        Some(ack)
+    }
+
+    /// Ordered SHA-256 preimage shared with Core. All integer fields are canonical
+    /// decimal strings so JavaScript never hashes lossy JSON numbers.
+    pub fn consumption_ack_digest(&self) -> Result<String, serde_json::Error> {
+        fn quoted(value: &str) -> Result<String, serde_json::Error> { serde_json::to_string(value) }
+        let canonical = format!(
+            "{{\"messageID\":{},\"parentSessionID\":{},\"childSessionID\":{},\"mailboxSequence\":{},\"inboxReceiptDigest\":{},\"promptMessageID\":{},\"consumingAttemptID\":{},\"consumingOwnerEpoch\":{},\"consumingScopeDigest\":{},\"consumedPayloadDigest\":{}}}",
+            quoted(&self.pins.message_id)?, quoted(&self.pins.parent_session_id)?,
+            quoted(&self.pins.child_session_id)?, quoted(&self.pins.mailbox_sequence.to_string())?,
+            quoted(&self.inbox_receipt_digest)?, quoted(&self.prompt_message_id)?,
+            quoted(&self.consuming_attempt_id)?, quoted(&self.consuming_owner_epoch.to_string())?,
+            quoted(&self.consuming_scope_digest)?, quoted(&self.consumed_payload_digest)?,
+        );
+        let digest = ring::digest::digest(&ring::digest::SHA256, canonical.as_bytes());
+        let mut hex = String::with_capacity(64);
+        for byte in digest.as_ref() {
+            use std::fmt::Write as _;
+            let _ = write!(&mut hex, "{byte:02x}");
+        }
+        Ok(format!("sha256:{hex}"))
     }
 }
 
@@ -820,6 +2240,650 @@ pub struct RpcRequestV1 {
     pub body: Value,
 }
 
+/// Strict private contract for one REPL input/reset operation. This envelope is
+/// authorization context only; HostKernel resolves every reference against its
+/// retained interpreter generation and Guard challenge.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExecutionReplOperationRequestV1 {
+    pub execution_id: String,
+    pub host_process_ref: crate::terminal_process::StdioProcessRefV1,
+    pub session_id: String,
+    pub location_id: String,
+    pub workspace_revision: String,
+    pub request_sequence: u64,
+    pub effect_id: String,
+    pub challenge_id: String,
+    pub capability_id: String,
+    pub capability_lease_digest: String,
+    pub managed_attempt: Option<Value>,
+    pub direct_attempt: Option<Value>,
+    pub operation: ExecutionReplOperationV1,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ExecutionReplOperationV1 {
+    Execute { code: String, deadline_ms: u64, max_output_bytes: u64 },
+    Reset { profile_ref: crate::terminal_process::ExecutionLaunchProfileRefV1 },
+}
+
+impl ExecutionReplOperationV1 {
+    pub fn capability_id(&self) -> &'static str {
+        match self {
+            Self::Execute { .. } => crate::guard::REPL_EXECUTE_ID,
+            Self::Reset { .. } => crate::guard::REPL_RESET_ID,
+        }
+    }
+
+    pub fn to_value(&self) -> Value {
+        match self {
+            Self::Execute { code, deadline_ms, max_output_bytes } => Value::Map(BTreeMap::from([
+                ("kind".to_owned(), Value::String("execute".to_owned())),
+                ("code".to_owned(), Value::String(code.clone())),
+                ("deadlineMs".to_owned(), Value::Unsigned(*deadline_ms)),
+                ("maxOutputBytes".to_owned(), Value::Unsigned(*max_output_bytes)),
+            ])),
+            Self::Reset { profile_ref } => Value::Map(BTreeMap::from([
+                ("kind".to_owned(), Value::String("reset".to_owned())),
+                ("profileRef".to_owned(), profile_ref.to_value()),
+            ])),
+        }
+    }
+
+    pub fn digest(&self, sequence: u64) -> Result<String, crate::messagepack::MessagePackError> {
+        let preimage = Value::Array(vec![
+            Value::String("ExecutionReplOperationV1".to_owned()),
+            Value::String(self.capability_id().to_owned()),
+            Value::String(sequence.to_string()),
+            self.to_value(),
+        ]);
+        let encoded = messagepack::encode(&preimage, FRAME_LIMITS)?;
+        Ok(format!("blake3:{}", blake3::hash(&encoded).to_hex()))
+    }
+}
+
+impl ExecutionReplOperationRequestV1 {
+    pub const MAX_CODE_BYTES: usize = 64 * 1024;
+    pub const MAX_OUTPUT_BYTES: u64 = 64 * 1024;
+    pub const MAX_DEADLINE_MS: u64 = 30_000;
+
+    pub fn from_value(value: &Value) -> Option<Self> {
+        let Value::Map(fields) = value else { return None };
+        const REQUIRED: [&str; 12] = [
+            "schemaVersion", "executionID", "hostProcessRef", "sessionID", "locationID",
+            "workspaceRevision", "requestSequence", "effectID", "challengeID", "capabilityID",
+            "capabilityLeaseDigest", "operation",
+        ];
+        if fields.len() < REQUIRED.len() + 1 || fields.len() > REQUIRED.len() + 2
+            || REQUIRED.iter().any(|key| !fields.contains_key(*key))
+            || fields.keys().any(|key| !REQUIRED.contains(&key.as_str())
+                && !matches!(key.as_str(), "managedAttempt" | "directAttempt"))
+            || fields.contains_key("managedAttempt") == fields.contains_key("directAttempt")
+            || !matches!(fields.get("schemaVersion"), Some(Value::Unsigned(1)))
+        { return None; }
+        let host_process_ref = crate::terminal_process::StdioProcessRefV1::from_value(fields.get("hostProcessRef")?).ok()?;
+        if host_process_ref.kind() != crate::terminal_process::StdioProcessKindV1::Interpreter { return None; }
+        let id = |key: &str| match fields.get(key) {
+            Some(Value::String(value)) if valid_binding_id(value) => Some(value.clone()),
+            _ => None,
+        };
+        let execution_id = id("executionID")?;
+        if execution_id != host_process_ref.execution_id() { return None; }
+        let workspace_revision = match fields.get("workspaceRevision") {
+            Some(Value::String(value)) if is_blake3_digest(value) => value.clone(), _ => return None,
+        };
+        let capability_lease_digest = match fields.get("capabilityLeaseDigest") {
+            Some(Value::String(value)) if is_blake3_digest(value) => value.clone(), _ => return None,
+        };
+        let request_sequence = match fields.get("requestSequence") {
+            Some(Value::String(value)) => parse_canonical_positive_u64(value)?, _ => return None,
+        };
+        let operation_value = fields.get("operation")?;
+        let Value::Map(operation_fields) = operation_value else { return None };
+        let operation = match operation_fields.get("kind") {
+            Some(Value::String(kind)) if kind == "execute" => {
+                if operation_fields.len() != 4 || ["kind", "code", "deadlineMs", "maxOutputBytes"]
+                    .iter().any(|key| !operation_fields.contains_key(*key)) { return None; }
+                let code = match operation_fields.get("code") {
+                    Some(Value::String(code)) if !code.is_empty() && code.len() <= Self::MAX_CODE_BYTES && !code.contains('\0') => code.clone(), _ => return None,
+                };
+                let deadline_ms = match operation_fields.get("deadlineMs") { Some(Value::Unsigned(value)) if (1..=Self::MAX_DEADLINE_MS).contains(value) => *value, _ => return None };
+                let max_output_bytes = match operation_fields.get("maxOutputBytes") { Some(Value::Unsigned(value)) if (1..=Self::MAX_OUTPUT_BYTES).contains(value) => *value, _ => return None };
+                ExecutionReplOperationV1::Execute { code, deadline_ms, max_output_bytes }
+            }
+            Some(Value::String(kind)) if kind == "reset" => {
+                if operation_fields.len() != 2 || !operation_fields.contains_key("profileRef") { return None; }
+                let profile_ref = crate::terminal_process::ExecutionLaunchProfileRefV1::from_value(operation_fields.get("profileRef")?).ok()?;
+                ExecutionReplOperationV1::Reset { profile_ref }
+            }
+            _ => return None,
+        };
+        let capability_id = id("capabilityID")?;
+        if capability_id != operation.capability_id() { return None; }
+        Some(Self {
+            execution_id, host_process_ref, session_id: id("sessionID")?, location_id: id("locationID")?,
+            workspace_revision, request_sequence, effect_id: id("effectID")?, challenge_id: id("challengeID")?,
+            capability_id, capability_lease_digest,
+            managed_attempt: fields.get("managedAttempt").cloned(), direct_attempt: fields.get("directAttempt").cloned(),
+            operation,
+        })
+    }
+}
+
+/// Durable ACK for a complete bounded REPL operation dispatch. Reset returns the
+/// replacement interpreter reference minted by HostKernel; it never accepts one
+/// from Core. This does not claim an execution result from interpreter output.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExecutionReplOperationReceiptV1 {
+    pub schema_version: u64,
+    pub status: String,
+    pub host_process_ref: crate::terminal_process::StdioProcessRefV1,
+    pub request_sequence: u64,
+    pub effect_id: String,
+    pub challenge_id: String,
+    pub capability_id: String,
+    pub capability_lease_digest: String,
+    pub operation_digest: String,
+    pub dispatch_receipt_digest: String,
+    pub replacement_host_process_ref: Option<crate::terminal_process::StdioProcessRefV1>,
+}
+
+/// Read-only projection of the HostKernel-owned next sequence for a live
+/// interpreter generation. It does not reserve a sequence or authorize IO.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExecutionReplNextSequenceRequestV1 {
+    pub host_process_ref: crate::terminal_process::StdioProcessRefV1,
+    pub session_id: String,
+    pub location_id: String,
+    pub workspace_revision: String,
+    pub managed_attempt: Option<Value>,
+    pub direct_attempt: Option<Value>,
+}
+
+impl ExecutionReplNextSequenceRequestV1 {
+    pub fn from_value(value: &Value) -> Option<Self> {
+        let Value::Map(fields) = value else { return None };
+        const REQUIRED: [&str; 5] = ["schemaVersion", "hostProcessRef", "sessionID", "locationID", "workspaceRevision"];
+        if fields.len() != 6
+            || REQUIRED.iter().any(|key| !fields.contains_key(*key))
+            || fields.keys().any(|key| !REQUIRED.contains(&key.as_str()) && !matches!(key.as_str(), "managedAttempt" | "directAttempt"))
+            || fields.contains_key("managedAttempt") == fields.contains_key("directAttempt")
+            || fields.get("schemaVersion") != Some(&Value::Unsigned(1))
+        { return None; }
+        let host_process_ref = crate::terminal_process::StdioProcessRefV1::from_value(fields.get("hostProcessRef")?).ok()?;
+        if host_process_ref.kind() != crate::terminal_process::StdioProcessKindV1::Interpreter { return None; }
+        let text = |key: &str| match fields.get(key) {
+            Some(Value::String(value)) if valid_binding_id(value) => Some(value.clone()), _ => None,
+        };
+        let workspace_revision = match fields.get("workspaceRevision") {
+            Some(Value::String(value)) if is_blake3_digest(value) => value.clone(), _ => return None,
+        };
+        Some(Self {
+            host_process_ref,
+            session_id: text("sessionID")?,
+            location_id: text("locationID")?,
+            workspace_revision,
+            managed_attempt: fields.get("managedAttempt").cloned(),
+            direct_attempt: fields.get("directAttempt").cloned(),
+        })
+    }
+}
+
+/// Authenticated bounded read of callback events produced by the exact live
+/// HostKernel interpreter generation. The event cursor is a read cursor only;
+/// it cannot authorize a tool callback or advance the durable reply sequence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExecutionReplCallbackReadRequestV1 {
+    pub host_process_ref: crate::terminal_process::StdioProcessRefV1,
+    pub session_id: String,
+    pub location_id: String,
+    pub workspace_revision: String,
+    pub after_event_sequence: u64,
+    pub max_events: u64,
+    pub max_bytes: u64,
+    pub managed_attempt: Option<Value>,
+    pub direct_attempt: Option<Value>,
+}
+
+impl ExecutionReplCallbackReadRequestV1 {
+    pub const MAX_EVENTS: u64 = 16;
+    pub const MAX_BYTES: u64 = 256 * 1024;
+
+    pub fn from_value(value: &Value) -> Option<Self> {
+        let Value::Map(fields) = value else { return None };
+        const REQUIRED: [&str; 8] = [
+            "schemaVersion", "hostProcessRef", "sessionID", "locationID",
+            "workspaceRevision", "afterEventSequence", "maxEvents", "maxBytes",
+        ];
+        if fields.len() < REQUIRED.len()
+            || fields.len() > REQUIRED.len() + 2
+            || REQUIRED.iter().any(|key| !fields.contains_key(*key))
+            || fields.keys().any(|key| !REQUIRED.contains(&key.as_str())
+                && !matches!(key.as_str(), "managedAttempt" | "directAttempt"))
+            || fields.contains_key("managedAttempt") == fields.contains_key("directAttempt")
+            || fields.get("schemaVersion") != Some(&Value::Unsigned(1))
+        { return None; }
+        let host_process_ref = crate::terminal_process::StdioProcessRefV1::from_value(fields.get("hostProcessRef")?).ok()?;
+        if host_process_ref.kind() != crate::terminal_process::StdioProcessKindV1::Interpreter { return None; }
+        let id = |key: &str| match fields.get(key) {
+            Some(Value::String(value)) if valid_binding_id(value) => Some(value.clone()),
+            _ => None,
+        };
+        let digest = match fields.get("workspaceRevision")? {
+            Value::String(value) if is_blake3_digest(value) => value.clone(), _ => return None,
+        };
+        let decimal = |key: &str| match fields.get(key) {
+            Some(Value::String(value)) => parse_canonical_u64(value), _ => None,
+        };
+        let after_event_sequence = decimal("afterEventSequence")?;
+        let max_events = match fields.get("maxEvents")? { Value::Unsigned(value) => *value, _ => return None };
+        let max_bytes = match fields.get("maxBytes")? { Value::Unsigned(value) => *value, _ => return None };
+        if !(1..=Self::MAX_EVENTS).contains(&max_events) || !(1..=Self::MAX_BYTES).contains(&max_bytes) { return None; }
+        Some(Self {
+            host_process_ref, session_id: id("sessionID")?, location_id: id("locationID")?,
+            workspace_revision: digest, after_event_sequence, max_events, max_bytes,
+            managed_attempt: fields.get("managedAttempt").cloned(),
+            direct_attempt: fields.get("directAttempt").cloned(),
+        })
+    }
+
+    pub fn to_value(&self) -> Value {
+        let mut fields = BTreeMap::from([
+            ("schemaVersion".into(), Value::Unsigned(1)),
+            ("hostProcessRef".into(), self.host_process_ref.to_value()),
+            ("sessionID".into(), Value::String(self.session_id.clone())),
+            ("locationID".into(), Value::String(self.location_id.clone())),
+            ("workspaceRevision".into(), Value::String(self.workspace_revision.clone())),
+            ("afterEventSequence".into(), Value::String(self.after_event_sequence.to_string())),
+            ("maxEvents".into(), Value::Unsigned(self.max_events)),
+            ("maxBytes".into(), Value::Unsigned(self.max_bytes)),
+        ]);
+        if let Some(value) = &self.managed_attempt { fields.insert("managedAttempt".into(), value.clone()); }
+        if let Some(value) = &self.direct_attempt { fields.insert("directAttempt".into(), value.clone()); }
+        Value::Map(fields)
+    }
+}
+
+/// One callback notification from the bounded REPL protocol. Callback names are
+/// never supplied: the capability ID must resolve through the canonical action
+/// registry and the active interpreter capability ceiling before dispatch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExecutionReplCallbackEventV1 {
+    pub event_sequence: u64,
+    pub generation: u64,
+    pub callback_id: String,
+    pub capability_id: String,
+    pub arguments: Value,
+}
+
+impl ExecutionReplCallbackEventV1 {
+    pub const MAX_CALLBACK_VALUE_BYTES: usize = 64 * 1024;
+    pub const MAX_CALLBACK_VALUE_NODES: usize = 4096;
+    pub const MAX_CALLBACK_VALUE_DEPTH: usize = 16;
+
+    pub fn from_value(value: &Value) -> Option<Self> {
+        let Value::Map(fields) = value else { return None };
+        if fields.len() != 2 || !fields.contains_key("eventSequence") || !fields.contains_key("callback") { return None; }
+        let event_sequence = match fields.get("eventSequence") {
+            Some(Value::String(value)) => parse_canonical_positive_u64(value)?, _ => return None,
+        };
+        let Value::Map(callback) = fields.get("callback")? else { return None };
+        const CALLBACK_KEYS: [&str; 4] = ["generation", "callbackID", "capabilityID", "arguments"];
+        if callback.len() != CALLBACK_KEYS.len() || CALLBACK_KEYS.iter().any(|key| !callback.contains_key(*key)) { return None; }
+        let generation = match callback.get("generation") {
+            Some(Value::String(value)) => parse_canonical_positive_u64(value)?, _ => return None,
+        };
+        let callback_id = match callback.get("callbackID") {
+            Some(Value::String(value)) if valid_repl_callback_id(value) => value.clone(), _ => return None,
+        };
+        let capability_id = match callback.get("capabilityID") {
+            Some(Value::String(value)) if valid_binding_id(value) => value.clone(), _ => return None,
+        };
+        let arguments = callback.get("arguments")?.clone();
+        if !matches!(arguments, Value::Map(_)) || !valid_repl_json_value(&arguments, 0) { return None; }
+        messagepack::encoded_len(&arguments, Limits {
+            max_encoded_bytes: Self::MAX_CALLBACK_VALUE_BYTES,
+            max_nodes: Self::MAX_CALLBACK_VALUE_NODES,
+            max_depth: Self::MAX_CALLBACK_VALUE_DEPTH,
+            max_collection_items: Self::MAX_CALLBACK_VALUE_NODES,
+            max_scalar_bytes: Self::MAX_CALLBACK_VALUE_BYTES,
+        }).ok()?;
+        Some(Self { event_sequence, generation, callback_id, capability_id, arguments })
+    }
+
+    pub fn to_value(&self) -> Value {
+        let callback = Value::Map(BTreeMap::from([
+            ("generation".into(), Value::String(self.generation.to_string())),
+            ("callbackID".into(), Value::String(self.callback_id.clone())),
+            ("capabilityID".into(), Value::String(self.capability_id.clone())),
+            ("arguments".into(), self.arguments.clone()),
+        ]));
+        Value::Map(BTreeMap::from([
+            ("eventSequence".into(), Value::String(self.event_sequence.to_string())),
+            ("callback".into(), callback),
+        ]))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExecutionReplCallbackReadPageV1 {
+    pub host_process_ref: crate::terminal_process::StdioProcessRefV1,
+    pub after_event_sequence: u64,
+    /// Last event returned, or the caller's cursor if no event was available.
+    pub next_event_sequence: u64,
+    pub process_io_sequence: u64,
+    pub workspace_revision: String,
+    pub status: ExecutionProtocolProcessStatusV1,
+    pub resnapshot_required: bool,
+    pub events: Vec<ExecutionReplCallbackEventV1>,
+}
+
+impl ExecutionReplCallbackReadPageV1 {
+    pub fn from_value(value: &Value, max_events: usize, max_bytes: usize) -> Option<Self> {
+        let Value::Map(fields) = value else { return None };
+        const KEYS: [&str; 9] = ["schemaVersion", "hostProcessRef", "afterEventSequence", "nextEventSequence", "processIOSequence", "workspaceRevision", "status", "resnapshotRequired", "events"];
+        if fields.len() != KEYS.len() || KEYS.iter().any(|key| !fields.contains_key(*key))
+            || fields.get("schemaVersion") != Some(&Value::Unsigned(1)) { return None; }
+        let host_process_ref = crate::terminal_process::StdioProcessRefV1::from_value(fields.get("hostProcessRef")?).ok()?;
+        if host_process_ref.kind() != crate::terminal_process::StdioProcessKindV1::Interpreter { return None; }
+        let decimal = |key: &str| match fields.get(key) {
+            Some(Value::String(value)) => parse_canonical_u64(value), _ => None,
+        };
+        let workspace_revision = match fields.get("workspaceRevision")? {
+            Value::String(value) if is_blake3_digest(value) => value.clone(), _ => return None,
+        };
+        let status = match fields.get("status")? {
+            Value::String(value) if value == "RUNNING" => ExecutionProtocolProcessStatusV1::Running,
+            Value::String(value) if value == "EXITED" => ExecutionProtocolProcessStatusV1::Exited,
+            Value::String(value) if value == "UNKNOWN" => ExecutionProtocolProcessStatusV1::Unknown,
+            _ => return None,
+        };
+        let resnapshot_required = match fields.get("resnapshotRequired")? { Value::Bool(value) => *value, _ => return None };
+        let Value::Array(raw_events) = fields.get("events")? else { return None };
+        let after_event_sequence = decimal("afterEventSequence")?;
+        let next_event_sequence = decimal("nextEventSequence")?;
+        let process_io_sequence = decimal("processIOSequence")?;
+        if raw_events.len() > max_events.min(ExecutionReplCallbackReadRequestV1::MAX_EVENTS as usize) { return None; }
+        let mut events = Vec::with_capacity(raw_events.len());
+        for raw in raw_events {
+            let event = ExecutionReplCallbackEventV1::from_value(raw)?;
+            if event.generation != host_process_ref.generation()
+                || event.event_sequence <= after_event_sequence
+                || events.last().is_some_and(|prior: &ExecutionReplCallbackEventV1| prior.event_sequence >= event.event_sequence)
+            { return None; }
+            events.push(event);
+        }
+        let expected_next = events.last().map_or(after_event_sequence, |event| event.event_sequence);
+        if next_event_sequence != expected_next || next_event_sequence < after_event_sequence
+            || (status == ExecutionProtocolProcessStatusV1::Unknown && !resnapshot_required)
+            || (resnapshot_required && (!events.is_empty() || next_event_sequence != after_event_sequence))
+            || (!resnapshot_required && events.first().is_some_and(|event| event.event_sequence != after_event_sequence.saturating_add(1)))
+            || (!resnapshot_required && events.windows(2).any(|pair| pair[1].event_sequence != pair[0].event_sequence.saturating_add(1)))
+            || messagepack::encoded_len(value, Limits { max_encoded_bytes: max_bytes.min(ExecutionReplCallbackReadRequestV1::MAX_BYTES as usize), ..FRAME_LIMITS }).is_err()
+        { return None; }
+        Some(Self { host_process_ref, after_event_sequence, next_event_sequence, process_io_sequence, workspace_revision, status, resnapshot_required, events })
+    }
+
+    pub fn to_value(&self) -> Value {
+        let status = match self.status {
+            ExecutionProtocolProcessStatusV1::Running => "RUNNING",
+            ExecutionProtocolProcessStatusV1::Exited => "EXITED",
+            ExecutionProtocolProcessStatusV1::Unknown => "UNKNOWN",
+        };
+        Value::Map(BTreeMap::from([
+            ("schemaVersion".into(), Value::Unsigned(1)),
+            ("hostProcessRef".into(), self.host_process_ref.to_value()),
+            ("afterEventSequence".into(), Value::String(self.after_event_sequence.to_string())),
+            ("nextEventSequence".into(), Value::String(self.next_event_sequence.to_string())),
+            ("processIOSequence".into(), Value::String(self.process_io_sequence.to_string())),
+            ("workspaceRevision".into(), Value::String(self.workspace_revision.clone())),
+            ("status".into(), Value::String(status.into())),
+            ("resnapshotRequired".into(), Value::Bool(self.resnapshot_required)),
+            ("events".into(), Value::Array(self.events.iter().map(ExecutionReplCallbackEventV1::to_value).collect())),
+        ]))
+    }
+}
+
+/// Result returned to one retained callback after its tool action traversed the
+/// canonical ActionDescriptor/Guard route. UNKNOWN is intentionally absent: an
+/// ambiguous action must quarantine the interpreter and cannot receive a reply.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExecutionReplCallbackResultV1 {
+    pub generation: u64,
+    pub callback_id: String,
+    pub status: String,
+    pub result: Option<Value>,
+    pub message: Option<String>,
+}
+
+impl ExecutionReplCallbackResultV1 {
+    pub fn from_value(value: &Value) -> Option<Self> {
+        let Value::Map(fields) = value else { return None };
+        let status = match fields.get("status") { Some(Value::String(value)) if matches!(value.as_str(), "ok" | "denied" | "error") => value.clone(), _ => return None };
+        let generation = match fields.get("generation") { Some(Value::String(value)) => parse_canonical_positive_u64(value)?, _ => return None };
+        let callback_id = match fields.get("callbackID") { Some(Value::String(value)) if valid_repl_callback_id(value) => value.clone(), _ => return None };
+        let result = fields.get("result").cloned();
+        let message = match fields.get("message") { Some(Value::String(value)) if !value.is_empty() && value.len() <= 64 * 1024 && !value.contains('\0') => Some(value.clone()), Some(_) => return None, None => None };
+        let valid_shape = match status.as_str() {
+            "ok" => fields.len() == 3 && result.is_some() && message.is_none(),
+            "denied" | "error" => fields.len() == 4 && result.is_none() && message.is_some(),
+            _ => false,
+        };
+        if !valid_shape || result.as_ref().is_some_and(|value| !valid_repl_json_value(value, 0)) { return None; }
+        if let Some(value) = &result {
+            messagepack::encoded_len(value, Limits { max_encoded_bytes: 64 * 1024, max_nodes: 4096, max_depth: 16, max_collection_items: 4096, max_scalar_bytes: 64 * 1024 }).ok()?;
+        }
+        Some(Self { generation, callback_id, status, result, message })
+    }
+
+    pub fn to_value(&self) -> Value {
+        let mut fields = BTreeMap::from([
+            ("generation".into(), Value::String(self.generation.to_string())),
+            ("callbackID".into(), Value::String(self.callback_id.clone())),
+            ("status".into(), Value::String(self.status.clone())),
+        ]);
+        if let Some(result) = &self.result { fields.insert("result".into(), result.clone()); }
+        if let Some(message) = &self.message { fields.insert("message".into(), Value::String(message.clone())); }
+        Value::Map(fields)
+    }
+}
+
+/// Guarded callback reply request. HostKernel must resolve the action effect and
+/// receipt from trusted durable state, then persist the callback ACK before reply
+/// bytes can be acknowledged to Core. Caller-provided digests are equality pins.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExecutionReplCallbackReplyRequestV1 {
+    pub host_process_ref: crate::terminal_process::StdioProcessRefV1,
+    pub session_id: String,
+    pub location_id: String,
+    pub workspace_revision: String,
+    pub event_sequence: u64,
+    pub request_sequence: u64,
+    pub callback_id: String,
+    pub capability_id: String,
+    pub effect_id: String,
+    pub challenge_id: String,
+    pub capability_lease_digest: Option<String>,
+    pub effect_receipt_digest: String,
+    pub managed_attempt: Option<Value>,
+    pub direct_attempt: Option<Value>,
+    pub result: ExecutionReplCallbackResultV1,
+    pub operation_digest: String,
+}
+
+impl ExecutionReplCallbackReplyRequestV1 {
+    pub fn from_value(value: &Value) -> Option<Self> {
+        let Value::Map(fields) = value else { return None };
+        const REQUIRED: [&str; 14] = ["schemaVersion", "hostProcessRef", "sessionID", "locationID", "workspaceRevision", "eventSequence", "requestSequence", "callbackID", "capabilityID", "effectID", "challengeID", "effectReceiptDigest", "result", "operationDigest"];
+        // Exactly one Attempt scope is required; a lease is additionally optional
+        // for a Guard denial that has a durable decision receipt but no dispatch.
+        if fields.len() < REQUIRED.len() + 1 || fields.len() > REQUIRED.len() + 2
+            || ["schemaVersion", "hostProcessRef", "sessionID", "locationID", "workspaceRevision", "eventSequence", "requestSequence", "callbackID", "capabilityID", "effectID", "challengeID", "effectReceiptDigest", "result", "operationDigest"].iter().any(|key| !fields.contains_key(*key))
+            || fields.keys().any(|key| !matches!(key.as_str(), "schemaVersion" | "hostProcessRef" | "sessionID" | "locationID" | "workspaceRevision" | "eventSequence" | "requestSequence" | "callbackID" | "capabilityID" | "effectID" | "challengeID" | "capabilityLeaseDigest" | "effectReceiptDigest" | "result" | "operationDigest" | "managedAttempt" | "directAttempt"))
+            || fields.contains_key("managedAttempt") == fields.contains_key("directAttempt")
+            || fields.get("schemaVersion") != Some(&Value::Unsigned(1))
+        { return None; }
+        let host_process_ref = crate::terminal_process::StdioProcessRefV1::from_value(fields.get("hostProcessRef")?).ok()?;
+        if host_process_ref.kind() != crate::terminal_process::StdioProcessKindV1::Interpreter { return None; }
+        let id = |key: &str| match fields.get(key) { Some(Value::String(value)) if valid_binding_id(value) => Some(value.clone()), _ => None };
+        let digest = |key: &str| match fields.get(key) { Some(Value::String(value)) if is_blake3_digest(value) => Some(value.clone()), _ => None };
+        let workspace_revision = digest("workspaceRevision")?;
+        let event_sequence = match fields.get("eventSequence") { Some(Value::String(value)) => parse_canonical_positive_u64(value)?, _ => return None };
+        let request_sequence = match fields.get("requestSequence") { Some(Value::String(value)) => parse_canonical_positive_u64(value)?, _ => return None };
+        let result = ExecutionReplCallbackResultV1::from_value(fields.get("result")?)?;
+        let callback_id = id("callbackID")?;
+        let capability_id = id("capabilityID")?;
+        if result.callback_id != callback_id || result.generation != host_process_ref.generation() { return None; }
+        let capability_lease_digest = match fields.get("capabilityLeaseDigest") { Some(Value::String(value)) if is_blake3_digest(value) => Some(value.clone()), None => None, _ => return None };
+        // A Guard denial is decision-only evidence: it must not carry a lease
+        // that could be mistaken for dispatch authority. Success/error replies
+        // have crossed the Guarded action boundary and therefore require the
+        // exact one-use lease alongside the settled action receipt.
+        if (result.status == "denied" && capability_lease_digest.is_some())
+            || (result.status != "denied" && capability_lease_digest.is_none())
+        { return None; }
+        let effect_receipt_digest = digest("effectReceiptDigest")?;
+        let mut request = Self {
+            host_process_ref, session_id: id("sessionID")?, location_id: id("locationID")?, workspace_revision,
+            event_sequence, request_sequence, callback_id, capability_id, effect_id: id("effectID")?, challenge_id: id("challengeID")?,
+            capability_lease_digest, effect_receipt_digest, managed_attempt: fields.get("managedAttempt").cloned(),
+            direct_attempt: fields.get("directAttempt").cloned(), result, operation_digest: digest("operationDigest")?,
+        };
+        let expected = request.compute_operation_digest().ok()?;
+        if request.operation_digest != expected { return None; }
+        request.operation_digest = expected;
+        Some(request)
+    }
+
+    pub fn compute_operation_digest(&self) -> Result<String, messagepack::MessagePackError> {
+        let mut value = self.to_value();
+        if let Value::Map(fields) = &mut value { fields.remove("operationDigest"); }
+        let encoded = messagepack::encode(&value, FRAME_LIMITS)?;
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"horizoncode.repl-callback-reply.v1\0");
+        hasher.update(&encoded);
+        Ok(format!("blake3:{}", hasher.finalize().to_hex()))
+    }
+
+    pub fn to_value(&self) -> Value {
+        let mut fields = BTreeMap::from([
+            ("schemaVersion".into(), Value::Unsigned(1)), ("hostProcessRef".into(), self.host_process_ref.to_value()),
+            ("sessionID".into(), Value::String(self.session_id.clone())), ("locationID".into(), Value::String(self.location_id.clone())),
+            ("workspaceRevision".into(), Value::String(self.workspace_revision.clone())), ("eventSequence".into(), Value::String(self.event_sequence.to_string())),
+            ("requestSequence".into(), Value::String(self.request_sequence.to_string())), ("callbackID".into(), Value::String(self.callback_id.clone())),
+            ("capabilityID".into(), Value::String(self.capability_id.clone())), ("effectID".into(), Value::String(self.effect_id.clone())),
+            ("challengeID".into(), Value::String(self.challenge_id.clone())), ("effectReceiptDigest".into(), Value::String(self.effect_receipt_digest.clone())),
+            ("result".into(), self.result.to_value()), ("operationDigest".into(), Value::String(self.operation_digest.clone())),
+        ]);
+        if let Some(value) = &self.capability_lease_digest { fields.insert("capabilityLeaseDigest".into(), Value::String(value.clone())); }
+        if let Some(value) = &self.managed_attempt { fields.insert("managedAttempt".into(), value.clone()); }
+        if let Some(value) = &self.direct_attempt { fields.insert("directAttempt".into(), value.clone()); }
+        Value::Map(fields)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExecutionReplCallbackReplyReceiptV1 {
+    pub host_process_ref: crate::terminal_process::StdioProcessRefV1,
+    pub event_sequence: u64,
+    pub request_sequence: u64,
+    pub callback_id: String,
+    pub capability_id: String,
+    pub effect_id: String,
+    pub challenge_id: String,
+    pub capability_lease_digest: Option<String>,
+    pub effect_receipt_digest: String,
+    pub operation_digest: String,
+    pub dispatch_receipt_digest: String,
+}
+
+impl ExecutionReplCallbackReplyReceiptV1 {
+    pub fn from_value(value: &Value) -> Option<Self> {
+        let Value::Map(fields) = value else { return None };
+        const REQUIRED: [&str; 12] = ["schemaVersion", "status", "hostProcessRef", "eventSequence", "requestSequence", "callbackID", "capabilityID", "effectID", "challengeID", "effectReceiptDigest", "operationDigest", "dispatchReceiptDigest"];
+        if fields.len() < REQUIRED.len() || fields.len() > REQUIRED.len() + 1
+            || REQUIRED.iter().any(|key| !fields.contains_key(*key))
+            || fields.keys().any(|key| !REQUIRED.contains(&key.as_str()) && key != "capabilityLeaseDigest")
+            || fields.get("schemaVersion") != Some(&Value::Unsigned(1))
+            || fields.get("status") != Some(&Value::String("DISPATCHED".into()))
+        { return None; }
+        let host_process_ref = crate::terminal_process::StdioProcessRefV1::from_value(fields.get("hostProcessRef")?).ok()?;
+        if host_process_ref.kind() != crate::terminal_process::StdioProcessKindV1::Interpreter { return None; }
+        let id = |key: &str| match fields.get(key) { Some(Value::String(value)) if valid_binding_id(value) => Some(value.clone()), _ => None };
+        let digest = |key: &str| match fields.get(key) { Some(Value::String(value)) if is_blake3_digest(value) => Some(value.clone()), _ => None };
+        let decimal = |key: &str| match fields.get(key) { Some(Value::String(value)) => parse_canonical_positive_u64(value), _ => None };
+        let capability_lease_digest = match fields.get("capabilityLeaseDigest") {
+            Some(Value::String(value)) if is_blake3_digest(value) => Some(value.clone()),
+            None => None,
+            _ => return None,
+        };
+        Some(Self {
+            host_process_ref,
+            event_sequence: decimal("eventSequence")?,
+            request_sequence: decimal("requestSequence")?,
+            callback_id: match fields.get("callbackID") { Some(Value::String(value)) if valid_repl_callback_id(value) => value.clone(), _ => return None },
+            capability_id: id("capabilityID")?, effect_id: id("effectID")?, challenge_id: id("challengeID")?,
+            capability_lease_digest, effect_receipt_digest: digest("effectReceiptDigest")?,
+            operation_digest: digest("operationDigest")?, dispatch_receipt_digest: digest("dispatchReceiptDigest")?,
+        })
+    }
+
+    pub fn to_value(&self) -> Value {
+        let mut fields = BTreeMap::from([
+            ("schemaVersion".into(), Value::Unsigned(1)), ("status".into(), Value::String("DISPATCHED".into())),
+            ("hostProcessRef".into(), self.host_process_ref.to_value()), ("eventSequence".into(), Value::String(self.event_sequence.to_string())),
+            ("requestSequence".into(), Value::String(self.request_sequence.to_string())), ("callbackID".into(), Value::String(self.callback_id.clone())),
+            ("capabilityID".into(), Value::String(self.capability_id.clone())), ("effectID".into(), Value::String(self.effect_id.clone())),
+            ("challengeID".into(), Value::String(self.challenge_id.clone())), ("effectReceiptDigest".into(), Value::String(self.effect_receipt_digest.clone())),
+            ("operationDigest".into(), Value::String(self.operation_digest.clone())), ("dispatchReceiptDigest".into(), Value::String(self.dispatch_receipt_digest.clone())),
+        ]);
+        if let Some(value) = &self.capability_lease_digest { fields.insert("capabilityLeaseDigest".into(), Value::String(value.clone())); }
+        Value::Map(fields)
+    }
+}
+
+impl ExecutionReplOperationRequestV1 {
+    pub fn to_value(&self) -> Value {
+        let mut fields = BTreeMap::from([
+            ("schemaVersion".to_owned(), Value::Unsigned(1)),
+            ("executionID".to_owned(), Value::String(self.execution_id.clone())),
+            ("hostProcessRef".to_owned(), self.host_process_ref.to_value()),
+            ("sessionID".to_owned(), Value::String(self.session_id.clone())),
+            ("locationID".to_owned(), Value::String(self.location_id.clone())),
+            ("workspaceRevision".to_owned(), Value::String(self.workspace_revision.clone())),
+            ("requestSequence".to_owned(), Value::String(self.request_sequence.to_string())),
+            ("effectID".to_owned(), Value::String(self.effect_id.clone())),
+            ("challengeID".to_owned(), Value::String(self.challenge_id.clone())),
+            ("capabilityID".to_owned(), Value::String(self.capability_id.clone())),
+            ("capabilityLeaseDigest".to_owned(), Value::String(self.capability_lease_digest.clone())),
+            ("operation".to_owned(), self.operation.to_value()),
+        ]);
+        if let Some(scope) = &self.managed_attempt { fields.insert("managedAttempt".to_owned(), scope.clone()); }
+        if let Some(scope) = &self.direct_attempt { fields.insert("directAttempt".to_owned(), scope.clone()); }
+        Value::Map(fields)
+    }
+}
+
+impl ExecutionReplOperationReceiptV1 {
+    pub fn to_value(&self) -> Value {
+        let mut fields = BTreeMap::from([
+            ("schemaVersion".to_owned(), Value::Unsigned(1)),
+            ("status".to_owned(), Value::String(self.status.clone())),
+            ("hostProcessRef".to_owned(), self.host_process_ref.to_value()),
+            ("requestSequence".to_owned(), Value::String(self.request_sequence.to_string())),
+            ("effectID".to_owned(), Value::String(self.effect_id.clone())),
+            ("challengeID".to_owned(), Value::String(self.challenge_id.clone())),
+            ("capabilityID".to_owned(), Value::String(self.capability_id.clone())),
+            ("capabilityLeaseDigest".to_owned(), Value::String(self.capability_lease_digest.clone())),
+            ("operationDigest".to_owned(), Value::String(self.operation_digest.clone())),
+            ("dispatchReceiptDigest".to_owned(), Value::String(self.dispatch_receipt_digest.clone())),
+        ]);
+        if let Some(replacement) = &self.replacement_host_process_ref {
+            fields.insert("replacementHostProcessRef".to_owned(), replacement.to_value());
+        }
+        Value::Map(fields)
+    }
+}
+
 /// Exact outer fence for one typed adapter operation. HostKernel must resolve the
 /// process ref against its own live supervisor record before examining `operation`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -840,13 +2904,16 @@ pub struct ExecutionProtocolOperationRequestV1 {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExecutionProtocolOperationV1 {
     Lsp(LanguageProtocolOperationV1),
+    /// Method-scoped server-request callback response. The server event cursor
+    /// is correlated internally by HostKernel and is not part of this subject.
+    LspReply(LanguageProtocolReplyV1),
     Dap(DebugProtocolOperationV1),
 }
 
 impl ExecutionProtocolOperationV1 {
     pub fn protocol_name(&self) -> &'static str {
         match self {
-            Self::Lsp(_) => "lsp",
+            Self::Lsp(_) | Self::LspReply(_) => "lsp",
             Self::Dap(_) => "dap",
         }
     }
@@ -854,6 +2921,7 @@ impl ExecutionProtocolOperationV1 {
     pub fn request_sequence(&self) -> u64 {
         match self {
             Self::Lsp(operation) => operation.request_sequence,
+            Self::LspReply(reply) => reply.request_sequence,
             Self::Dap(operation) => operation.request_sequence,
         }
     }
@@ -861,6 +2929,7 @@ impl ExecutionProtocolOperationV1 {
     pub fn to_value(&self) -> Value {
         match self {
             Self::Lsp(operation) => operation.to_value(),
+            Self::LspReply(reply) => reply.to_value(),
             Self::Dap(operation) => operation.to_value(),
         }
     }
@@ -876,6 +2945,125 @@ impl ExecutionProtocolOperationV1 {
         ]);
         let packed = messagepack::encode(&preimage, FRAME_LIMITS)?;
         Ok(format!("blake3:{}", blake3::hash(&packed).to_hex()))
+    }
+}
+
+/// Canonical Guard admission subject for one outbound LSP/DAP operation. It is
+/// separate from the dispatch envelope because effect/challenge/lease authority
+/// does not exist until Guard has returned it. Callback event sequence is pinned
+/// at admission and checked against HostKernel's retained server-request row.
+/// HostKernel derives the canonical BLAKE3 operation digest from the typed
+/// operation; an optional caller digest is accepted only as an equality check.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExecutionProtocolAuthorizationV1 {
+    pub host_process_ref: crate::terminal_process::StdioProcessRefV1,
+    pub session_id: String,
+    pub location_id: String,
+    pub workspace_revision: String,
+    pub operation: ExecutionProtocolOperationV1,
+    pub operation_digest: String,
+    pub callback_event_sequence: Option<u64>,
+}
+
+impl ExecutionProtocolAuthorizationV1 {
+    pub fn from_value(value: &Value) -> Option<Self> {
+        let Value::Map(fields) = value else { return None };
+        const REQUIRED: [&str; 7] = [
+            "hostProcessRef", "sessionID", "locationID", "workspaceRevision",
+            "protocol", "requestSequence", "operation",
+        ];
+        if fields.len() < REQUIRED.len()
+            || fields.len() > REQUIRED.len() + 2
+            || REQUIRED.iter().any(|key| !fields.contains_key(*key))
+            || fields.keys().any(|key| !REQUIRED.contains(&key.as_str())
+                && key != "callbackEventSequence" && key != "operationDigest")
+        { return None; }
+        let host_process_ref = crate::terminal_process::StdioProcessRefV1::from_value(fields.get("hostProcessRef")?).ok()?;
+        let text = |key: &str| match fields.get(key) {
+            Some(Value::String(value)) if valid_binding_id(value) => Some(value.clone()),
+            _ => None,
+        };
+        let session_id = text("sessionID")?;
+        let location_id = text("locationID")?;
+        let workspace_revision = match fields.get("workspaceRevision")? {
+            Value::String(value) if is_blake3_digest(value) => value.clone(),
+            _ => return None,
+        };
+        let protocol = match fields.get("protocol")? {
+            Value::String(value) => value.as_str(),
+            _ => return None,
+        };
+        let request_sequence = match fields.get("requestSequence")? {
+            Value::String(value) => parse_canonical_positive_u64(value)?,
+            _ => return None,
+        };
+        let operation_value = fields.get("operation")?;
+        let operation = match (protocol, host_process_ref.kind()) {
+            ("lsp", crate::terminal_process::StdioProcessKindV1::LanguageServer) => {
+                let Value::Map(operation_fields) = operation_value else { return None };
+                if operation_fields.contains_key("serverRequestID") {
+                    let reply = LanguageProtocolReplyV1::from_value(operation_value)?;
+                    if reply.request_sequence != request_sequence { return None; }
+                    ExecutionProtocolOperationV1::LspReply(reply)
+                } else {
+                    let operation = LanguageProtocolOperationV1::from_value(operation_value)?;
+                    if operation.request_sequence != request_sequence { return None; }
+                    ExecutionProtocolOperationV1::Lsp(operation)
+                }
+            }
+            ("dap", crate::terminal_process::StdioProcessKindV1::DebugAdapter) => {
+                let operation = DebugProtocolOperationV1::from_value(operation_value)?;
+                if operation.request_sequence != request_sequence { return None; }
+                ExecutionProtocolOperationV1::Dap(operation)
+            }
+            _ => return None,
+        };
+        let callback_event_sequence = match fields.get("callbackEventSequence") {
+            Some(Value::String(value)) => Some(parse_canonical_positive_u64(value)?),
+            None => None,
+            _ => return None,
+        };
+        if matches!(operation, ExecutionProtocolOperationV1::LspReply(_))
+            != callback_event_sequence.is_some()
+        { return None; }
+        let operation_digest = operation.operation_digest().ok()?;
+        if fields.get("operationDigest").is_some_and(|value| {
+            !matches!(value, Value::String(supplied) if supplied == &operation_digest)
+        }) { return None; }
+        Some(Self {
+            host_process_ref,
+            session_id,
+            location_id,
+            workspace_revision,
+            operation,
+            operation_digest,
+            callback_event_sequence,
+        })
+    }
+
+    pub fn capability_id(&self) -> Option<&'static str> {
+        match &self.operation {
+            ExecutionProtocolOperationV1::Lsp(operation) => crate::guard::language_protocol_capability(&operation.method),
+            ExecutionProtocolOperationV1::LspReply(reply) => crate::guard::language_server_request_capability(&reply.method),
+            ExecutionProtocolOperationV1::Dap(operation) => crate::guard::debug_protocol_capability(&operation.command),
+        }
+    }
+
+    pub fn to_value(&self) -> Value {
+        let mut fields = BTreeMap::from([
+            ("hostProcessRef".to_owned(), self.host_process_ref.to_value()),
+            ("sessionID".to_owned(), Value::String(self.session_id.clone())),
+            ("locationID".to_owned(), Value::String(self.location_id.clone())),
+            ("workspaceRevision".to_owned(), Value::String(self.workspace_revision.clone())),
+            ("protocol".to_owned(), Value::String(self.operation.protocol_name().to_owned())),
+            ("requestSequence".to_owned(), Value::String(self.operation.request_sequence().to_string())),
+            ("operation".to_owned(), self.operation.to_value()),
+            ("operationDigest".to_owned(), Value::String(self.operation_digest.clone())),
+        ]);
+        if let Some(sequence) = self.callback_event_sequence {
+            fields.insert("callbackEventSequence".to_owned(), Value::String(sequence.to_string()));
+        }
+        Value::Map(fields)
     }
 }
 
@@ -1792,6 +3980,21 @@ impl LanguageProtocolReplyV1 {
     }
 }
 
+impl LanguageProtocolReplyV1 {
+    /// Canonical typed outbound dispatch subject used by the shared receipt
+    /// digest contract. `eventSequence` is deliberately excluded: the callback
+    /// is pinned internally to the retained server-request event.
+    pub fn to_value(&self) -> Value {
+        Value::Map(BTreeMap::from([
+            ("schemaVersion".to_owned(), Value::Unsigned(1)),
+            ("requestSequence".to_owned(), Value::String(self.request_sequence.to_string())),
+            ("serverRequestID".to_owned(), self.server_request_id.clone()),
+            ("method".to_owned(), Value::String(self.method.clone())),
+            ("result".to_owned(), self.result.clone()),
+        ]))
+    }
+}
+
 /// One bounded DAP request sent to a supervised adapter. `command` must have a
 /// canonical Guard mapping; launch and unknown commands are not decoded.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1840,6 +4043,42 @@ impl DebugProtocolOperationV1 {
             )
         {
             return None;
+        }
+        let Value::Map(argument_fields) = &arguments else { return None };
+        match command.as_str() {
+            "attach" => {
+                if argument_fields.len() != 1 || !argument_fields.contains_key("targetHostProcessRef") {
+                    return None;
+                }
+                let target = crate::terminal_process::StdioProcessRefV1::from_value(
+                    argument_fields.get("targetHostProcessRef")?,
+                ).ok()?;
+                if target.kind() != crate::terminal_process::StdioProcessKindV1::TerminalRun {
+                    return None;
+                }
+            }
+            "evaluate" => {
+                if !(3..=5).contains(&argument_fields.len())
+                    || argument_fields.keys().any(|key| !matches!(key.as_str(), "expression" | "frameID" | "context" | "deadlineMs" | "maxOutputBytes"))
+                { return None; }
+                match argument_fields.get("expression") {
+                    Some(Value::String(value)) if !value.is_empty() && value.len() <= 16 * 1024 && !value.contains('\0') => {},
+                    _ => return None,
+                }
+                match argument_fields.get("deadlineMs") {
+                    Some(Value::Unsigned(value)) if (1..=30_000).contains(value) => {}, _ => return None,
+                }
+                match argument_fields.get("maxOutputBytes") {
+                    Some(Value::Unsigned(value)) if (1..=64 * 1024).contains(value) => {}, _ => return None,
+                }
+                if let Some(frame_id) = argument_fields.get("frameID") {
+                    if !matches!(frame_id, Value::Unsigned(value) if (1..=MAX_SAFE_JSON_INTEGER).contains(value)) { return None; }
+                }
+                if let Some(context) = argument_fields.get("context") {
+                    if !matches!(context, Value::String(value) if matches!(value.as_str(), "watch" | "repl" | "hover" | "clipboard")) { return None; }
+                }
+            }
+            _ => {}
         }
         Some(Self {
             request_sequence,
@@ -2125,6 +4364,38 @@ pub enum AuthenticatedRequestContextV1 {
     RepoRead {
         session_id: String,
         location_id: String,
+    },
+    ArtifactRead {
+        session_id: String,
+        location_id: String,
+        artifact_ref: ArtifactRefV1,
+        managed_attempt: Option<Value>,
+        direct_attempt: Option<Value>,
+    },
+    /// Root DirectSession artifact read is authorized by the HostKernel's
+    /// receipt-verified root batch index, not by a child Attempt scope.
+    DirectSessionArtifactRead {
+        session_id: String,
+        location_id: String,
+        artifact_ref: ArtifactRefV1,
+    },
+    /// Authenticated transcript continuation may ask HostKernel to resolve an
+    /// exact verifier ArtifactRef to its durable managed Attempt. No Attempt
+    /// identity is accepted from this request context.
+    ArtifactScopeResolve {
+        session_id: String,
+        location_id: String,
+        artifact_ref: ArtifactRefV1,
+    },
+    /// Private correlation for the ordinary guarded `codemode.execute` tool call.
+    /// `call_id` is never accepted from the operation body as authority; HostKernel
+    /// matches it to the live EffectHost batch row and derives the challenge/lease.
+    CodeModeCall {
+        session_id: String,
+        location_id: String,
+        call_id: String,
+        lane: String,
+        managed_attempt: Option<Value>,
     },
 }
 
@@ -2699,7 +4970,89 @@ fn validate_authenticated_request_context(
             }
             Ok(())
         }
+        AuthenticatedRequestContextV1::ArtifactRead {
+            session_id,
+            location_id,
+            artifact_ref,
+            managed_attempt,
+            direct_attempt,
+        } => {
+            validate_context_session_location(session_id, location_id)?;
+            validate_artifact_ref(artifact_ref)?;
+            if managed_attempt.is_some() == direct_attempt.is_some()
+                || managed_attempt
+                    .as_ref()
+                    .is_some_and(|value| ManagedAttemptScopeV1::from_value(value).is_none())
+                || direct_attempt
+                    .as_ref()
+                    .is_some_and(|value| DirectAttemptScopeV1::from_value(value).is_none())
+            {
+                return Err(invalid(
+                    "authenticatedContext",
+                    "requires exactly one valid Attempt owner scope",
+                ));
+            }
+            Ok(())
+        }
+        AuthenticatedRequestContextV1::ArtifactScopeResolve { session_id, location_id, artifact_ref } => {
+            validate_context_session_location(session_id, location_id)?;
+            validate_artifact_ref(artifact_ref)
+        }
+        AuthenticatedRequestContextV1::DirectSessionArtifactRead { session_id, location_id, artifact_ref } => {
+            validate_context_session_location(session_id, location_id)?;
+            validate_artifact_ref(artifact_ref)
+        }
+        AuthenticatedRequestContextV1::CodeModeCall {
+            session_id, location_id, call_id, lane, managed_attempt,
+        } => {
+            validate_context_session_location(session_id, location_id)?;
+            text("authenticatedContext.callID", call_id, MAX_IDENTIFIER_BYTES)?;
+            if validate_identifier(call_id).is_err()
+                || !matches!(lane.as_str(), "direct_session" | "managed_attempt")
+                || (lane == "managed_attempt") != managed_attempt.is_some()
+                || managed_attempt.as_ref().is_some_and(|value| ManagedAttemptScopeV1::from_value(value).is_none())
+                || managed_attempt.as_ref().and_then(ManagedAttemptScopeV1::from_value)
+                    .is_some_and(|scope| scope.session_id != *session_id || scope.location_id != *location_id)
+            {
+                return Err(invalid("authenticatedContext", "has invalid CodeMode call correlation"));
+            }
+            Ok(())
+        }
     }
+}
+
+fn validate_context_session_location(
+    session_id: &str,
+    location_id: &str,
+) -> Result<(), ProtocolError> {
+    text(
+        "authenticatedContext.sessionID",
+        session_id,
+        MAX_IDENTIFIER_BYTES,
+    )?;
+    if !session_id.starts_with("ses_") || session_id.chars().any(char::is_control) {
+        return Err(invalid(
+            "authenticatedContext.sessionID",
+            "must be a bounded Session ID",
+        ));
+    }
+    text(
+        "authenticatedContext.locationID",
+        location_id,
+        MAX_IDENTIFIER_BYTES,
+    )?;
+    if location_id.len() != 68
+        || !location_id.starts_with("loc_")
+        || !location_id[4..]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(invalid(
+            "authenticatedContext.locationID",
+            "must be a registered Location ID",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_hello(hello: &KernelHelloV1) -> Result<(), ProtocolError> {
@@ -3653,6 +6006,46 @@ fn authenticated_context_to_value(context: &AuthenticatedRequestContextV1) -> Va
             ("sessionID".to_owned(), string(session_id)),
             ("locationID".to_owned(), string(location_id)),
         ])),
+        AuthenticatedRequestContextV1::ArtifactRead {
+            session_id,
+            location_id,
+            artifact_ref,
+            managed_attempt,
+            direct_attempt,
+        } => {
+            let mut map = BTreeMap::from([
+                ("kind".to_owned(), string("artifact_read")),
+                ("sessionID".to_owned(), string(session_id)),
+                ("locationID".to_owned(), string(location_id)),
+                ("artifactRef".to_owned(), artifact_ref_to_value(artifact_ref)),
+            ]);
+            put_optional(&mut map, "managedAttempt", managed_attempt.clone());
+            put_optional(&mut map, "directAttempt", direct_attempt.clone());
+            Value::Map(map)
+        }
+        AuthenticatedRequestContextV1::ArtifactScopeResolve { session_id, location_id, artifact_ref } => Value::Map(BTreeMap::from([
+            ("kind".to_owned(), string("artifact_scope_resolve")),
+            ("sessionID".to_owned(), string(session_id)),
+            ("locationID".to_owned(), string(location_id)),
+            ("artifactRef".to_owned(), artifact_ref_to_value(artifact_ref)),
+        ])),
+        AuthenticatedRequestContextV1::DirectSessionArtifactRead { session_id, location_id, artifact_ref } => Value::Map(BTreeMap::from([
+            ("kind".to_owned(), string("direct_session_artifact_read")),
+            ("sessionID".to_owned(), string(session_id)),
+            ("locationID".to_owned(), string(location_id)),
+            ("artifactRef".to_owned(), artifact_ref_to_value(artifact_ref)),
+        ])),
+        AuthenticatedRequestContextV1::CodeModeCall { session_id, location_id, call_id, lane, managed_attempt } => {
+            let mut map = BTreeMap::from([
+                ("kind".to_owned(), string("code_mode_call")),
+                ("sessionID".to_owned(), string(session_id)),
+                ("locationID".to_owned(), string(location_id)),
+                ("callID".to_owned(), string(call_id)),
+                ("lane".to_owned(), string(lane)),
+            ]);
+            put_optional(&mut map, "managedAttempt", managed_attempt.clone());
+            Value::Map(map)
+        }
     }
 }
 
@@ -3660,7 +6053,7 @@ fn value_to_authenticated_context(
     value: Value,
 ) -> Result<AuthenticatedRequestContextV1, ProtocolError> {
     let mut fields = into_map(value, "authenticatedContext")?;
-    if fields.len() != 3 {
+    if fields.len() < 3 || fields.len() > 6 {
         return Err(invalid("authenticatedContext", "has an invalid shape"));
     }
     let kind = take_string(&mut fields, "kind", 32)?;
@@ -3669,6 +6062,56 @@ fn value_to_authenticated_context(
             session_id: take_string(&mut fields, "sessionID", MAX_IDENTIFIER_BYTES)?,
             location_id: take_string(&mut fields, "locationID", MAX_IDENTIFIER_BYTES)?,
         },
+        "artifact_read" => {
+            if fields.len() < 3 || fields.len() > 5
+                || (fields.contains_key("managedAttempt") && fields.contains_key("directAttempt"))
+                || fields.keys().any(|key| !matches!(key.as_str(), "sessionID" | "locationID" | "artifactRef" | "managedAttempt" | "directAttempt"))
+            {
+                return Err(invalid("authenticatedContext", "has an invalid artifact-read shape"));
+            }
+            let artifact_ref = value_to_artifact_ref(fields.remove("artifactRef").ok_or_else(|| invalid("authenticatedContext.artifactRef", "is missing"))?)?;
+            AuthenticatedRequestContextV1::ArtifactRead {
+                session_id: take_string(&mut fields, "sessionID", MAX_IDENTIFIER_BYTES)?,
+                location_id: take_string(&mut fields, "locationID", MAX_IDENTIFIER_BYTES)?,
+                artifact_ref,
+                managed_attempt: fields.remove("managedAttempt"),
+                direct_attempt: fields.remove("directAttempt"),
+            }
+        }
+        "artifact_scope_resolve" => {
+            if fields.len() != 3 || fields.keys().any(|key| !matches!(key.as_str(), "sessionID" | "locationID" | "artifactRef")) {
+                return Err(invalid("authenticatedContext", "has an invalid artifact-scope shape"));
+            }
+            AuthenticatedRequestContextV1::ArtifactScopeResolve {
+                session_id: take_string(&mut fields, "sessionID", MAX_IDENTIFIER_BYTES)?,
+                location_id: take_string(&mut fields, "locationID", MAX_IDENTIFIER_BYTES)?,
+                artifact_ref: value_to_artifact_ref(fields.remove("artifactRef").ok_or_else(|| invalid("authenticatedContext.artifactRef", "is missing"))?)?,
+            }
+        }
+        "direct_session_artifact_read" => {
+            if fields.len() != 3 || fields.keys().any(|key| !matches!(key.as_str(), "sessionID" | "locationID" | "artifactRef")) {
+                return Err(invalid("authenticatedContext", "has an invalid root DirectSession artifact-read shape"));
+            }
+            AuthenticatedRequestContextV1::DirectSessionArtifactRead {
+                session_id: take_string(&mut fields, "sessionID", MAX_IDENTIFIER_BYTES)?,
+                location_id: take_string(&mut fields, "locationID", MAX_IDENTIFIER_BYTES)?,
+                artifact_ref: value_to_artifact_ref(fields.remove("artifactRef").ok_or_else(|| invalid("authenticatedContext.artifactRef", "is missing"))?)?,
+            }
+        }
+        "code_mode_call" => {
+            if fields.len() < 4 || fields.len() > 5
+                || fields.keys().any(|key| !matches!(key.as_str(), "sessionID" | "locationID" | "callID" | "lane" | "managedAttempt"))
+            {
+                return Err(invalid("authenticatedContext", "has an invalid CodeMode call shape"));
+            }
+            AuthenticatedRequestContextV1::CodeModeCall {
+                session_id: take_string(&mut fields, "sessionID", MAX_IDENTIFIER_BYTES)?,
+                location_id: take_string(&mut fields, "locationID", MAX_IDENTIFIER_BYTES)?,
+                call_id: take_string(&mut fields, "callID", MAX_IDENTIFIER_BYTES)?,
+                lane: take_string(&mut fields, "lane", 32)?,
+                managed_attempt: fields.remove("managedAttempt"),
+            }
+        }
         _ => return Err(invalid("authenticatedContext.kind", "is unsupported")),
     };
     if !fields.is_empty() {
@@ -4010,6 +6453,110 @@ mod tests {
         }
     }
 
+    fn process_ref_value(kind: crate::terminal_process::StdioProcessKindV1) -> Value {
+        crate::terminal_process::StdioProcessRefV1::from_claims(
+            "exec_test".to_owned(), 2, 3, kind, "profile.test".to_owned(), 4,
+            DIGEST.to_owned(), DIGEST.to_owned(),
+        ).unwrap().to_value()
+    }
+
+    #[test]
+    fn dap_attach_requires_only_a_minted_terminal_process_ref() {
+        let valid = Value::Map(BTreeMap::from([
+            ("requestSequence".to_owned(), Value::String("1".to_owned())),
+            ("requestID".to_owned(), Value::Unsigned(1)),
+            ("command".to_owned(), Value::String("attach".to_owned())),
+            ("arguments".to_owned(), Value::Map(BTreeMap::from([
+                ("targetHostProcessRef".to_owned(), process_ref_value(crate::terminal_process::StdioProcessKindV1::TerminalRun)),
+            ]))),
+        ]));
+        let parsed = DebugProtocolOperationV1::from_value(&valid).unwrap();
+        assert_eq!(crate::guard::debug_protocol_capability(&parsed.command), Some(crate::guard::DEBUG_ATTACH_ID));
+
+        let mut with_pid = valid.clone();
+        if let Value::Map(fields) = &mut with_pid {
+            if let Some(Value::Map(arguments)) = fields.get_mut("arguments") {
+                arguments.insert("processId".to_owned(), Value::Unsigned(99));
+            }
+        }
+        assert!(DebugProtocolOperationV1::from_value(&with_pid).is_none());
+
+        let mut wrong_kind = valid;
+        if let Value::Map(fields) = &mut wrong_kind {
+            if let Some(Value::Map(arguments)) = fields.get_mut("arguments") {
+                arguments.insert("targetHostProcessRef".to_owned(), process_ref_value(crate::terminal_process::StdioProcessKindV1::DebugAdapter));
+            }
+        }
+        assert!(DebugProtocolOperationV1::from_value(&wrong_kind).is_none());
+    }
+
+    #[test]
+    fn dap_evaluate_is_bounded_and_maps_to_its_effect_capability() {
+        let operation = Value::Map(BTreeMap::from([
+            ("requestSequence".to_owned(), Value::String("1".to_owned())),
+            ("requestID".to_owned(), Value::Unsigned(1)),
+            ("command".to_owned(), Value::String("evaluate".to_owned())),
+            ("arguments".to_owned(), Value::Map(BTreeMap::from([
+                ("expression".to_owned(), Value::String("x + 1".to_owned())),
+                ("deadlineMs".to_owned(), Value::Unsigned(1000)),
+                ("maxOutputBytes".to_owned(), Value::Unsigned(1024)),
+            ]))),
+        ]));
+        let parsed = DebugProtocolOperationV1::from_value(&operation).unwrap();
+        assert_eq!(crate::guard::debug_protocol_capability(&parsed.command), Some(crate::guard::DEBUG_EVALUATE_ID));
+
+        let mut oversized = operation;
+        if let Value::Map(fields) = &mut oversized {
+            if let Some(Value::Map(arguments)) = fields.get_mut("arguments") {
+                arguments.insert("expression".to_owned(), Value::String("x".repeat(16 * 1024 + 1)));
+            }
+        }
+        assert!(DebugProtocolOperationV1::from_value(&oversized).is_none());
+    }
+
+    #[test]
+    fn repl_next_sequence_request_requires_a_single_scoped_interpreter_ref() {
+        let mut request = BTreeMap::from([
+            ("schemaVersion".to_owned(), Value::Unsigned(1)),
+            ("hostProcessRef".to_owned(), process_ref_value(crate::terminal_process::StdioProcessKindV1::Interpreter)),
+            ("sessionID".to_owned(), Value::String("session_test".to_owned())),
+            ("locationID".to_owned(), Value::String("location_test".to_owned())),
+            ("workspaceRevision".to_owned(), Value::String(DIGEST.to_owned())),
+            ("directAttempt".to_owned(), Value::Map(BTreeMap::new())),
+        ]);
+        let parsed = ExecutionReplNextSequenceRequestV1::from_value(&Value::Map(request.clone())).unwrap();
+        assert_eq!(parsed.host_process_ref.kind(), crate::terminal_process::StdioProcessKindV1::Interpreter);
+        request.insert("managedAttempt".to_owned(), Value::Map(BTreeMap::new()));
+        assert!(ExecutionReplNextSequenceRequestV1::from_value(&Value::Map(request)).is_none());
+    }
+
+    #[test]
+    fn repl_execute_request_round_trips_only_bounded_typed_fields() {
+        let request = Value::Map(BTreeMap::from([
+            ("schemaVersion".to_owned(), Value::Unsigned(1)),
+            ("executionID".to_owned(), Value::String("exec_test".to_owned())),
+            ("hostProcessRef".to_owned(), process_ref_value(crate::terminal_process::StdioProcessKindV1::Interpreter)),
+            ("sessionID".to_owned(), Value::String("session_test".to_owned())),
+            ("locationID".to_owned(), Value::String("location_test".to_owned())),
+            ("workspaceRevision".to_owned(), Value::String(DIGEST.to_owned())),
+            ("requestSequence".to_owned(), Value::String("1".to_owned())),
+            ("effectID".to_owned(), Value::String("effect_test".to_owned())),
+            ("challengeID".to_owned(), Value::String("challenge_test".to_owned())),
+            ("capabilityID".to_owned(), Value::String(crate::guard::REPL_EXECUTE_ID.to_owned())),
+            ("capabilityLeaseDigest".to_owned(), Value::String(DIGEST.to_owned())),
+            ("directAttempt".to_owned(), Value::Map(BTreeMap::new())),
+            ("operation".to_owned(), Value::Map(BTreeMap::from([
+                ("kind".to_owned(), Value::String("execute".to_owned())),
+                ("code".to_owned(), Value::String("print(1)".to_owned())),
+                ("deadlineMs".to_owned(), Value::Unsigned(1000)),
+                ("maxOutputBytes".to_owned(), Value::Unsigned(1024)),
+            ]))),
+        ]));
+        let parsed = ExecutionReplOperationRequestV1::from_value(&request).unwrap();
+        assert_eq!(parsed.operation.capability_id(), crate::guard::REPL_EXECUTE_ID);
+        assert_eq!(parsed.to_value(), request);
+    }
+
     fn cursor() -> CursorV1 {
         CursorV1 {
             owner_kind: "thread".to_owned(),
@@ -4030,10 +6577,15 @@ mod tests {
             profile_id: "profile-review-1".to_owned(),
             profile_revision: 9_007_199_254_740_993,
             profile_digest: format!("blake3:{}", "b".repeat(64)),
+            provider_id: "provider-test".to_owned(),
+            model_id: "model-test".to_owned(),
+            managed_provider_route: None,
+            profile_token_budget: Some(42_000),
             criteria_ids: vec!["criterion-a".to_owned(), "criterion-b".to_owned()],
             workspace_lease_id: "workspace-lease-1".to_owned(),
             source_revision: format!("blake3:{}", "c".repeat(64)),
             capability_ceiling_digest: format!("sha256:{}", "d".repeat(64)),
+            permission_scope_digest: format!("blake3:{}", "f".repeat(64)),
             context_selection_digest: format!("blake3:{}", "e".repeat(64)),
             budget_lease_id: "budget-lease-1".to_owned(),
             resource_lease_ids: vec!["resource-lease-a".to_owned(), "resource-lease-b".to_owned()],
@@ -4160,6 +6712,11 @@ mod tests {
             session_id: "ses-1".to_owned(),
             workspace_revision: format!("blake3:{}", "a".repeat(64)),
             delegation_binding_digest: format!("blake3:{}", "b".repeat(64)),
+            permission_scope_digest: format!("blake3:{}", "f".repeat(64)),
+            effective_max_tokens: 100,
+            remaining_tokens: 100,
+            request_id: None, request_sequence: None, context_selection_digest: None,
+            worktree_target: None,
         };
         let wire = scope.to_value();
         assert_eq!(
@@ -4184,6 +6741,11 @@ mod tests {
             session_id: "ses-1".to_owned(),
             workspace_revision: format!("blake3:{}", "a".repeat(64)),
             delegation_binding_digest: format!("blake3:{}", "b".repeat(64)),
+            permission_scope_digest: format!("blake3:{}", "f".repeat(64)),
+            effective_max_tokens: 100,
+            remaining_tokens: 100,
+            request_id: None, request_sequence: None, context_selection_digest: None,
+            worktree_target: None,
         };
         let Value::Map(mut fields) = scope.to_value() else {
             unreachable!()
@@ -4270,6 +6832,11 @@ mod tests {
                 session_id: "ses_child".to_owned(),
                 workspace_revision: format!("blake3:{}", "a".repeat(64)),
                 delegation_binding_digest: format!("blake3:{}", "b".repeat(64)),
+                permission_scope_digest: format!("blake3:{}", "f".repeat(64)),
+                effective_max_tokens: 100,
+                remaining_tokens: 100,
+                request_id: None, request_sequence: None, context_selection_digest: None,
+                worktree_target: None,
             }
             .to_value(),
         );

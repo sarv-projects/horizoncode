@@ -88,10 +88,21 @@ No public kernel listener, no FFI authority shortcut.
 
 ## 1.7 Effect boundary
 
-Every mutation, regardless of origin, uses:
+Every **mutation**, regardless of origin, uses:
 resolve canonical action/target -> Guard/policy/approval -> durable prepare -> one-use lease -> ExecutionHost/worker -> observation -> receipt/reconciliation.
 
+**Read-class** direct-session tools may use the §14.3.1 read fast path (`DEC-V1-36`) after
+per-call validation so competitor-class agents are not slowed on exploration turns.
+
 Origins such as user, model, plugin, MCP, browser, automation, LSP, DAP or REPL do not grant authority.
+
+The direct coding path stays low friction through an explicit bounded DirectSessionGrant: matching
+workspace edits and accepted build/test classes do not repeat the prompt, while every operation
+still traverses Guard, durable intent, one-use lease and receipt. CodeMode is an orchestration
+front-end over the same authorized tool tree, never a new authority or executor. Its existing
+interpreter runs as a short-lived helper under the same Rust ExecutionHost and fixed cgroup-v2
+profile. Core receives nested calls and dispatches complete waves through the normal ToolBatch
+path. This preserves one direct Session runtime and one effect supervisor.
 
 ## 1.8 Provider/model/harness law
 

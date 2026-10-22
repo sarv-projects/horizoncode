@@ -42,6 +42,135 @@ const arrayItemType = (schema: Schema.Top, name: string) => {
 }
 
 describe("Horizon repository-intelligence v1 contracts", () => {
+  test("computes document content digests over exact UTF-8 text", () => {
+    expect(RepoIntel.repoDocumentContentDigest("")).toBe(
+      "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+    )
+    expect(RepoIntel.repoDocumentContentDigest("λ\n")).not.toBe(RepoIntel.repoDocumentContentDigest("λ"))
+  })
+
+  test("bounds authenticated document reads and requires a file-relative path", () => {
+    const request = {
+      schemaVersion: 1,
+      pathRef: "src/main.ts",
+      revisionKind: "workspace",
+      expectedWorkspaceRevision: digest,
+      maxBytes: 131_072,
+    } as const
+    const response = {
+      schemaVersion: 1,
+      status: "OK",
+      pathRef: request.pathRef,
+      revisionKind: request.revisionKind,
+      text: "export {}\n",
+      contentDigest: digest,
+      observedWorkspaceRevision: digest,
+    } as const
+    roundTrip(RepoIntel.RepoDocumentReadRequestV1, request)
+    roundTrip(RepoIntel.RepoDocumentReadResponseV1, response)
+    roundTrip(RepoIntel.RepoDocumentReadRequestV1, { ...request, revisionKind: "discovery_observation" })
+    roundTrip(RepoIntel.RepoDocumentReadResponseV1, { ...response, revisionKind: "discovery_observation" })
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoDocumentReadRequestV1)({
+      ...request,
+      pathRef: ".",
+    })).toThrow("document path must name a file")
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoDocumentReadRequestV1)({
+      ...request,
+      maxBytes: 131_073,
+    })).toThrow()
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoDocumentReadRequestV1)({
+      ...request,
+      revisionKind: "best_effort",
+    })).toThrow()
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoDocumentReadResponseV1)({
+      ...response,
+      text: "x".repeat(131_073),
+    })).toThrow()
+  })
+
+  test("pins bounded repository discovery to authenticated owner and source scope", () => {
+    const request = {
+      schemaVersion: 1,
+      messageType: "discover",
+      requestId: "repo-discovery-1",
+      rootRef: ".",
+      mode: "manifests",
+      maxEntries: 512,
+      maxBytes: 262_144,
+      maxDepth: 16,
+      deadline: "2026-10-21T12:00:00.000Z",
+    } as const
+    roundTrip(RepoIntel.RepoDiscoveryRequestV1, request)
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoDiscoveryRequestV1)({ ...request, maxEntries: 513 })).toThrow()
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoDiscoveryRequestV1)({ ...request, rootRef: "../outside" })).toThrow()
+
+    const page = {
+      schemaVersion: 1,
+      messageType: "discovery",
+      requestId: request.requestId,
+      status: "PARTIAL",
+      freshness: "current",
+      completeness: "partial",
+      partialReason: "entry_limit",
+      authority: {
+        principalBinding: digest,
+        sessionID: "ses_discovery",
+        locationID: "loc_discovery",
+        ownerEpoch: "4",
+        workspaceBinding: digest,
+        sourceRevision: digest,
+        readPolicyDigest: digest,
+        rootRef: request.rootRef,
+        mode: request.mode,
+        maxEntries: request.maxEntries,
+        maxBytes: request.maxBytes,
+        maxDepth: request.maxDepth,
+      },
+      coverage: { entries: 1, bytes: 72, depth: 1 },
+      entries: [{ pathRef: "package.json", kind: "file", depth: 1, sizeBytes: "42", manifestKind: "package_json", languageHint: "javascript" }],
+    } as const
+    roundTrip(RepoIntel.RepoDiscoveryPageV1, page)
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoDiscoveryPageV1)({
+      ...page,
+      coverage: { ...page.coverage, entries: 0 },
+    })).toThrow("discovery entry coverage must match returned entries")
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoDiscoveryPageV1)({
+      ...page,
+      entries: [{ ...page.entries[0], pathRef: "../outside/package.json" }],
+    })).toThrow()
+  })
+
+  test("keeps RepoIntel patch fences bounded and read-only", () => {
+    const fence = {
+      schemaVersion: 1,
+      queryID: "query-1",
+      sourceGeneration: digest,
+      sourceRevision: digest,
+      workspaceBinding: digest,
+      sourceRefs: [
+        { pathRef: "src/main.ts", fileDigest: digest },
+        { pathRef: "src/new.ts", expectedAbsent: true },
+      ],
+    } as const
+    roundTrip(RepoIntel.RepoIntelPatchFenceV1, fence)
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoIntelPatchFenceV1, { onExcessProperty: "error" })({
+      ...fence,
+      sourceRefs: [],
+    })).toThrow()
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoIntelPatchFenceV1)({
+      ...fence,
+      sourceRefs: [fence.sourceRefs[0], fence.sourceRefs[0]],
+    })).toThrow("RepoIntel source paths must be unique")
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoIntelPatchFenceV1)({
+      ...fence,
+      sourceRefs: [{ pathRef: "src/new.ts" }],
+    })).toThrow("RepoIntel source ref must name existing content or an expected-absent destination")
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoIntelPatchFenceV1, { onExcessProperty: "error" })({
+      ...fence,
+      authority: "write",
+    })).toThrow()
+  })
+
   test("round trips all normative record shapes and literals", () => {
     const revisionSet = {
       // Sorting/uniqueness are owner-validated because opaque IDs have no specified collation.
@@ -150,6 +279,9 @@ describe("Horizon repository-intelligence v1 contracts", () => {
       RepoIntel.RepoStructurePageV1,
       RepoIntel.RepoGenerationRequestV1,
       RepoIntel.RepoGenerationPinV1,
+      RepoIntel.RepoDocumentReadRequestV1,
+      RepoIntel.RepoDocumentReadResponseV1,
+      RepoIntel.RepoIntelPatchFenceV1,
     ]
     const identifiers = schemas.map((schema) => schema.ast.annotations?.identifier)
 
@@ -169,6 +301,9 @@ describe("Horizon repository-intelligence v1 contracts", () => {
       "Horizon.RepoIntelligenceV1.RepoStructurePageV1",
       "Horizon.RepoIntelligenceV1.RepoGenerationRequestV1",
       "Horizon.RepoIntelligenceV1.RepoGenerationPinV1",
+      "Horizon.RepoIntelligenceV1.RepoDocumentReadRequestV1",
+      "Horizon.RepoIntelligenceV1.RepoDocumentReadResponseV1",
+      "Horizon.RepoIntelligenceV1.RepoIntelPatchFenceV1",
     ])
     expect(new Set(identifiers).size).toBe(identifiers.length)
 
@@ -286,9 +421,9 @@ describe("Horizon repository-intelligence v1 contracts", () => {
       status: "CURRENT",
       freshness: "current",
       completeness: "complete",
-      coverage: { files: 12, nodes: 40, bytes: 32_768 },
+      coverage: { files: 12, nodes: 1, bytes: 32_768 },
       nodes: [nodeRef],
-      nextCursor: "opaque-owner-bound-cursor",
+      nextCursor: "repo_cur_0123456789abcdef",
     } as const
 
     roundTrip(RepoIntel.RepoNodeRefV1, nodeRef)
@@ -300,6 +435,10 @@ describe("Horizon repository-intelligence v1 contracts", () => {
     })
     expect(decodedWithForgedPrincipal).not.toHaveProperty("principal")
     expect(() => Schema.decodeUnknownSync(RepoIntel.RepoStructureQueryV1)({ ...query, maxBytes: 32_768 * 32 })).toThrow()
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoStructureQueryV1)({
+      ...query,
+      selector: { symbols: Array.from({ length: 100 }, (_, index) => `symbol-${index}`), nodeRefs: [nodeRef] },
+    })).toThrow("structure selector exceeds the combined symbol and node reference limit")
     expect(() => Schema.decodeUnknownSync(RepoIntel.RepoNodeRefV1)({
       ...nodeRef,
       byteRange: { start: 42, end: 4 },
@@ -309,6 +448,19 @@ describe("Horizon repository-intelligence v1 contracts", () => {
       freshness: "current",
       completeness: "unknown-value",
     })).toThrow()
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoStructurePageV1)({
+      ...page,
+      nodes: [{ ...nodeRef, sourceRevision: "blake3:" + "0".repeat(64) }],
+    })).toThrow("every node reference must match the page source revision")
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoStructurePageV1)({
+      ...page,
+      status: "STALE",
+      freshness: "current",
+    })).toThrow("STALE status must use stale freshness")
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoStructurePageV1)({
+      ...page,
+      coverage: { ...page.coverage, nodes: 0 },
+    })).toThrow("page node coverage must equal the returned node count")
 
     expect(Schema.decodeUnknownSync(RepoIntel.RepoStructureQueryV1)(repoStructureFixture.query)).toMatchObject({
       queryId: "query-1",

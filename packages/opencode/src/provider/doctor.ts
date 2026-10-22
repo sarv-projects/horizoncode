@@ -19,10 +19,19 @@ function skippedProbe(phase: ProviderDoctorV1.ProbeV1["phase"], code: string): P
   return { phase, outcome: "SKIPPED", code }
 }
 
+function catalogFreshness(facts?: OfflineProviderFacts): ProviderDoctorV1.ResultV1["catalogFreshness"] {
+  switch (facts?.catalogFreshness) {
+    case "fresh": return "FRESH"
+    case "stale": return "STALE"
+    default: return "UNKNOWN"
+  }
+}
+
 export type OfflineProviderFacts = {
   catalog: Record<string, { models: Record<string, unknown> }>
   catalogFreshness?: "fresh" | "stale" | "unknown"
-  config: {
+  /** Secret-free projection from already-loaded local config; absence stays UNKNOWN. */
+  config?: {
     enabled_providers?: string[]
     disabled_providers?: string[]
     provider?: Record<string, { models?: Record<string, unknown>; whitelist?: string[]; blacklist?: string[] }>
@@ -40,9 +49,12 @@ function inspectSelection(selection: ProviderDoctorV1.RequestV1["selection"], fa
   }
   if (selection.modelRef === undefined) {
     return {
-      configurationStatus: "UNKNOWN" as const,
+      // Missing a selected model is a local configuration failure, not an
+      // unknown provider-health result. Keep the diagnostic offline and avoid
+      // reading credentials or attempting to discover a replacement model.
+      configurationStatus: "INVALID" as const,
       localReadiness: "INCOMPLETE" as const,
-      probe: configProbe("UNKNOWN"),
+      probe: { phase: "config" as const, outcome: "FAIL" as const, code: "selected_model_missing" },
     }
   }
 
@@ -62,7 +74,7 @@ function inspectSelection(selection: ProviderDoctorV1.RequestV1["selection"], fa
     }
   }
   if (facts) {
-    const providerConfig = facts.config.provider?.[provider]
+    const providerConfig = facts.config?.provider?.[provider]
     const catalogProvider = facts.catalog[provider]
     const providerKnown = providerConfig !== undefined || catalogProvider !== undefined
     if (!providerKnown) {
@@ -73,8 +85,8 @@ function inspectSelection(selection: ProviderDoctorV1.RequestV1["selection"], fa
       }
     }
     if (
-      facts.config.disabled_providers?.includes(provider) ||
-      (facts.config.enabled_providers !== undefined && !facts.config.enabled_providers.includes(provider))
+      facts.config?.disabled_providers?.includes(provider) ||
+      (facts.config?.enabled_providers !== undefined && !facts.config.enabled_providers.includes(provider))
     ) {
       return {
         configurationStatus: "INVALID" as const,
@@ -97,12 +109,13 @@ function inspectSelection(selection: ProviderDoctorV1.RequestV1["selection"], fa
         probe: { phase: "config" as const, outcome: "FAIL" as const, code: "selected_model_unavailable" },
       }
     }
-    // A non-fresh catalog can neither confirm an old row nor prove absence.
-    // Only a model explicitly present in effective config is authoritative
-    // enough to resolve selection without a fresh catalog snapshot.
+    // Anything other than a fresh catalog can neither confirm an old row nor
+    // prove absence. Missing freshness metadata is UNKNOWN too; treating it as
+    // fresh would turn a cache miss into a false assertion that the selection
+    // is invalid. Only a model explicitly present in effective config is
+    // authoritative enough to resolve selection without a fresh snapshot.
     if (
       !configuredModelKnown &&
-      facts.catalogFreshness !== undefined &&
       facts.catalogFreshness !== "fresh"
     ) {
       return {
@@ -116,6 +129,13 @@ function inspectSelection(selection: ProviderDoctorV1.RequestV1["selection"], fa
         configurationStatus: "INVALID" as const,
         localReadiness: "INVALID" as const,
         probe: { phase: "config" as const, outcome: "FAIL" as const, code: "selected_model_unavailable" },
+      }
+    }
+    if (!facts.config) {
+      return {
+        configurationStatus: "UNKNOWN" as const,
+        localReadiness: "UNKNOWN" as const,
+        probe: { phase: "config" as const, outcome: "UNKNOWN" as const, code: "local_config_snapshot_unavailable" },
       }
     }
     return {
@@ -154,6 +174,7 @@ export function inspectOffline(
       tier: "offline",
       selection,
       localReadiness: local.localReadiness,
+      catalogFreshness: catalogFreshness(facts),
       remoteChecks: { entitlement: "UNCHECKED", quota: "UNCHECKED", service: "UNCHECKED" },
       credentialAccess: "NOT_READ",
       networkRequestCount: 0,
@@ -198,6 +219,7 @@ export function inspectCatalog(
       tier: "catalog",
       selection: { ...request.selection, configurationStatus: local.configurationStatus },
       localReadiness: local.localReadiness,
+      catalogFreshness: catalogFreshness(facts),
       remoteChecks: { entitlement: "UNKNOWN", quota: "UNKNOWN", service: "UNKNOWN" },
       credentialAccess: "NOT_READ",
       networkRequestCount: 0,
@@ -210,6 +232,48 @@ export function inspectCatalog(
         skippedProbe("stream", "catalog_probe_not_dispatched"),
         skippedProbe("tool_call", "catalog_probe_not_dispatched"),
         skippedProbe("cache", "catalog_probe_not_dispatched"),
+      ],
+    },
+    { onExcessProperty: "error" },
+  )
+}
+
+/**
+ * Full-tier request contract and truthful fail-closed result projection. The
+ * consent reference is not authority: live provider traffic stays unavailable
+ * until P1 supplies a Guard-owned probe grant and bounded dispatcher.
+ */
+export function inspectFull(
+  input: unknown,
+  auth: TrustedPrincipalContextValue,
+  facts?: OfflineProviderFacts,
+): ProviderDoctorV1.ResultV1 {
+  if (auth?.principal?.kind !== "host_os" && auth?.principal?.kind !== "server_auth") {
+    throw new TypeError("inspectFull requires a trusted authenticated principal")
+  }
+  const request = decodeRequest(input, { onExcessProperty: "error" })
+  if (request.tier !== "full") throw new TypeError("inspectFull only accepts full Doctor requests")
+  const local = inspectSelection(request.selection, facts)
+  return decodeResult(
+    {
+      schemaVersion: 1,
+      doctorRunId: request.doctorRunId,
+      tier: "full",
+      selection: { ...request.selection, configurationStatus: local.configurationStatus },
+      localReadiness: local.localReadiness,
+      catalogFreshness: catalogFreshness(facts),
+      remoteChecks: { entitlement: "UNKNOWN", quota: "UNKNOWN", service: "UNKNOWN" },
+      credentialAccess: "NOT_READ",
+      networkRequestCount: 0,
+      costStatus: "NOT_INCURRED",
+      probes: [
+        local.probe,
+        skippedProbe("auth", "full_guarded_provider_probe_unavailable"),
+        skippedProbe("catalog", "full_guarded_provider_probe_unavailable"),
+        skippedProbe("capability", "full_guarded_provider_probe_unavailable"),
+        skippedProbe("stream", "full_guarded_provider_probe_unavailable"),
+        skippedProbe("tool_call", "full_guarded_provider_probe_unavailable"),
+        skippedProbe("cache", "full_guarded_provider_probe_unavailable"),
       ],
     },
     { onExcessProperty: "error" },

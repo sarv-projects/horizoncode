@@ -192,7 +192,7 @@ export function createStreamEnvelopeGuard(input: { maxCursors?: number } = {}) {
     ? Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.floor(rawLimit)))
     : 0
   const cursors = new Map<string, EnvelopeState>()
-  const sealed = new Set<string>()
+  const sealed = new Map<string, string>()
 
   function touch(key: string, state: EnvelopeState) {
     cursors.delete(key)
@@ -204,11 +204,15 @@ export function createStreamEnvelopeGuard(input: { maxCursors?: number } = {}) {
       const oldest = cursors.keys().next().value
       if (oldest === undefined) break
       cursors.delete(oldest)
+      sealed.delete(oldest)
     }
     while (sealed.size > maxCursors) {
-      const oldest = sealed.values().next().value
+      const oldest = sealed.keys().next().value
       if (oldest === undefined) break
       sealed.delete(oldest)
+      // Losing the seal while retaining a cursor could reopen an ended stream.
+      // Forget both so the next delta requires an authoritative resnapshot.
+      cursors.delete(oldest)
     }
   }
 
@@ -220,6 +224,13 @@ export function createStreamEnvelopeGuard(input: { maxCursors?: number } = {}) {
       const envelope = { ...cursor, advance: 1 }
       if (maxCursors === 0 || !validEnvelope(envelope)) return false
       const key = JSON.stringify([cursor.sessionID, cursor.partID])
+      const previous = cursors.get(key)
+      // A durable `ended` marker seals only its source generation. Reusing the
+      // same Session/part identity in a replacement generation must admit the
+      // new stream after canonical resnapshot; otherwise the old seal would
+      // classify every first delta as a harmless duplicate forever.
+      if (previous && previous.sourceGeneration !== cursor.sourceGeneration) sealed.delete(key)
+      if (sealed.has(key) && sealed.get(key) !== cursor.sourceGeneration) sealed.delete(key)
       touch(key, {
         sourceGeneration: cursor.sourceGeneration,
         committed: cursor.sequence,
@@ -237,7 +248,7 @@ export function createStreamEnvelopeGuard(input: { maxCursors?: number } = {}) {
       if (!state || state.sourceGeneration !== cursor.sourceGeneration) return "resnapshot_required"
       touch(key, state)
       // An ended stream is final: a later delta for it can only be a replay.
-      if (sealed.has(key)) return "duplicate"
+      if (sealed.get(key) === cursor.sourceGeneration) return "duplicate"
       if (cursor.sequence < state.committed) return "duplicate"
       if (cursor.sequence < state.accepted) {
         return state.acceptedRanges.get(cursor.sequence) === cursor.advance ? "duplicate" : "resnapshot_required"
@@ -259,9 +270,11 @@ export function createStreamEnvelopeGuard(input: { maxCursors?: number } = {}) {
       const key = JSON.stringify([cursor.sessionID, cursor.partID])
       const state = cursors.get(key)
       if (!state || state.sourceGeneration !== cursor.sourceGeneration) return false
-      sealed.add(key)
+      sealed.delete(key)
+      sealed.set(key, cursor.sourceGeneration)
+      touch(key, state)
       evictOverLimit()
-      return sealed.has(key)
+      return sealed.get(key) === cursor.sourceGeneration
     },
     /** Advance committed state after the delta was delivered to canonical state. */
     commit(cursor: StreamDeltaEnvelopeV1) {
@@ -290,7 +303,7 @@ export function createStreamEnvelopeGuard(input: { maxCursors?: number } = {}) {
         const parsed = JSON.parse(key) as [string, string]
         if (parsed[0] === sessionID) cursors.delete(key)
       }
-      for (const key of sealed.values()) {
+      for (const key of sealed.keys()) {
         const parsed = JSON.parse(key) as [string, string]
         if (parsed[0] === sessionID) sealed.delete(key)
       }
@@ -321,9 +334,14 @@ export function createUiEventMux<T>(input: {
   flushAfterMs: number
   /**
    * Canonical envelope of a replayable event. `undefined` keeps the event on the
-   * legacy paint path, which is coalesced but never replay-gated.
+   * legacy paint path unless `requireCursor` is enabled for a source whose
+   * deltas must always carry sequence and generation authority.
    */
   cursor?: (event: T) => StreamDeltaEnvelopeV1 | undefined
+  /** Reject deltas for which the canonical cursor projection is unavailable. */
+  requireCursor?: boolean
+  /** Rebuild canonical state when a required cursor is missing or malformed. */
+  onInvalidCursor?: (sessionID: string) => void
   /** Called after the session queue was flushed because canonical state must be rebuilt. */
   onResnapshotRequired?: (cursor: StreamDeltaEnvelopeV1) => void
   maxStreamCursors?: number
@@ -348,13 +366,32 @@ export function createUiEventMux<T>(input: {
     return false
   }
 
+  function deliver(sessionID: string, events: readonly T[], runs: readonly (EnvelopeRun | undefined)[]) {
+    try {
+      input.deliver(events)
+    } catch {
+      // A consumer can fail after partially applying a batch. Its in-memory
+      // projection is then ambiguous, so never advance any accepted cursor;
+      // discard that session's replay authority and rebuild from canonical
+      // state before accepting another delta.
+      envelopes?.forget(sessionID)
+      input.onInvalidCursor?.(sessionID)
+      return false
+    }
+    for (const run of runs) commitRun(run)
+    return true
+  }
+
   function flushOne(sessionID: string) {
     const queue = pending.get(sessionID)
     if (!queue) return
     if (queue.timer) clearTimeout(queue.timer)
     pending.delete(sessionID)
-    input.deliver(queue.events.map((item) => item.event))
-    for (const item of queue.events) commitRun(item.run)
+    deliver(
+      sessionID,
+      queue.events.map((item) => item.event),
+      queue.events.map((item) => item.run),
+    )
   }
 
   function schedule(sessionID: string, queue: Queue<T>) {
@@ -398,6 +435,13 @@ export function createUiEventMux<T>(input: {
     push(event: T): StreamEnvelopeDecisionV1 | undefined {
       const sessionID = input.sessionID(event)
       const envelope = envelopes ? input.cursor!(event) : undefined
+      if (envelopes && input.requireCursor && !envelope) {
+        resnapshotsRequired++
+        flushOne(sessionID)
+        envelopes.forget(sessionID)
+        input.onInvalidCursor?.(sessionID)
+        return "resnapshot_required"
+      }
       if (envelope && validEnvelope(envelope) && envelope.sessionID !== sessionID) {
         resnapshotsRequired++
         flushOne(sessionID)
@@ -420,8 +464,9 @@ export function createUiEventMux<T>(input: {
           input.onResnapshotRequired?.(envelope)
         } else {
           // Invalid cursor fields cannot safely identify a stream to pass to the
-          // resnapshot callback. Forget this event's owning session instead.
+          // cursor callback. Forget this event's owning session and rebuild it.
           envelopes?.forget(sessionID)
+          input.onInvalidCursor?.(sessionID)
         }
         return decision
       }
@@ -437,8 +482,7 @@ export function createUiEventMux<T>(input: {
         : undefined
       if (closed) {
         directDeliveries++
-        input.deliver([event])
-        commitRun(run)
+        deliver(sessionID, [event], [run])
         return decision
       }
 
@@ -455,16 +499,14 @@ export function createUiEventMux<T>(input: {
       if (maxQueuedEvents === 0 || size > maxQueuedBytes) {
         directDeliveries++
         flushOne(sessionID)
-        input.deliver([event])
-        commitRun(run)
+        deliver(sessionID, [event], [run])
         return decision
       }
 
       let queue = pending.get(sessionID)
       if (!queue && (maxQueuedSessions === 0 || pending.size >= maxQueuedSessions)) {
         directDeliveries++
-        input.deliver([event])
-        commitRun(run)
+        deliver(sessionID, [event], [run])
         return decision
       }
       const key = input.key(event)

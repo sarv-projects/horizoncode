@@ -20,12 +20,14 @@
 //!   are only unique within one Goal, so an equal-looking binding for another
 //!   Goal fails as `GoalBindingMismatch` before any ticket, capacity, worktree
 //!   or worker-record change;
-//! - real process launch stays behind the [`IsolatedWorkerLauncher`] port owned
-//!   by the Guard/ExecutionHost boundary: this module records the claim and
-//!   binds the OS process generation, it never spawns a process itself;
-//! - capacity is released only after proven owned-process exit and effect
-//!   settlement; uncertain effects quarantine and keep their conservative
-//!   budget until reconciliation.
+//! - V1 managed WorkerExecution is a logical child Core Session/Attempt in the
+//!   shared Core process. It does not launch or claim a worker-specific PID;
+//!   effects still cross Guard/ExecutionHost under the Attempt lease;
+//! - the process-backed launcher and PID binding below are a disabled legacy/
+//!   future mode. V1 logical capacity is released only by opaque terminal,
+//!   effect-receipt and prompt-quiescence proof; any uncertainty quarantines
+//!   its conservative reservation. A future process-backed mode must also
+//!   prove exit of its exact OS process generation.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -111,7 +113,9 @@ pub enum WorkerClass {
     /// Read-only exploration that may attach to existing Core/provider
     /// infrastructure without allocating a worktree or a new transcript.
     ReadOnlyAttachment,
-    /// Untrusted effectful child that needs an isolated process and workspace.
+    /// Untrusted effectful child that needs an isolated workspace. V1 executes
+    /// it as a logical Core Session/Attempt; this class does not authorize an
+    /// additional process or runtime.
     IsolatedEffectful,
 }
 
@@ -688,6 +692,9 @@ struct WorkerRecord {
     state: ReservationState,
     reservation_id: String,
     attempt_revision: String,
+    /// P8's parent/root workspace head remains in `attempt_revision`; this
+    /// separate HostKernel-measured child head is attached with DelegationBound.
+    child_workspace_revision: Option<String>,
     accepted_spec_digest: String,
     worktree_lease_id: Option<String>,
     worktree_quarantined: bool,
@@ -1003,7 +1010,10 @@ impl WorkerPool {
         Ok(revision)
     }
 
-    pub fn update_capacity(
+    /// Internal telemetry primitive. External callers cannot nominate a
+    /// capacity limit or usage sample; authenticated HostKernel ingress must
+    /// validate owner policy and observation before this can be exposed.
+    pub(crate) fn update_capacity(
         &mut self,
         dimension: BudgetDimension,
         hard_limit: Option<u64>,
@@ -1279,7 +1289,8 @@ impl WorkerPool {
             return Err(WorkerPoolError::ScopeMismatch);
         }
         if pins.dimension() != BudgetDimension::ActiveWorkers || pins.amount() != 1
-            || pins.spec_max_workers() == 0
+            || pins.spec_max_workers() == 0 || pins.resource_policy_revision() == 0
+            || pins.resource_policy_digest().is_empty()
         {
             return Err(WorkerPoolError::InvalidRequest);
         }
@@ -1297,7 +1308,13 @@ impl WorkerPool {
                 && worker.owner.run_id == pins.run_id()
                 && is_capacity_holding(worker.state)
         }).count();
-        if active_for_run >= usize::try_from(pins.spec_max_workers()).unwrap_or(usize::MAX) {
+        // A HostKernel-authenticated ResourcePolicy pin can narrow this Run's
+        // Spec ceiling. It is stored in the immutable pre-admission pins and
+        // never applied to the global pool ceiling, which is independently
+        // enforced by reserve_inner below.
+        let run_limit = pins.resource_active_worker_limit()
+            .map_or(pins.spec_max_workers(), |limit| pins.spec_max_workers().min(limit));
+        if active_for_run >= usize::try_from(run_limit).unwrap_or(usize::MAX) {
             return Err(WorkerPoolError::LiveWorkerLimitReached);
         }
         let binding = VerifiedAttemptBinding::from_pre_admission_pins(pins)?;
@@ -1616,6 +1633,7 @@ impl WorkerPool {
                 state: ReservationState::Reserved,
                 reservation_id,
                 attempt_revision: source_revision.to_owned(),
+                child_workspace_revision: None,
                 accepted_spec_digest: binding.accepted_spec_digest().to_owned(),
                 worktree_lease_id: worktree_lease_id.clone(),
                 worktree_quarantined: false,
@@ -1897,6 +1915,40 @@ impl WorkerPool {
         Ok(())
     }
 
+    /// Rebinds the revision carried by a pre-admission reservation from its
+    /// parent-root admission observation to the HostKernel-measured child
+    /// worktree revision when P8 durably attaches the exact managed binding.
+    /// The OwnerLog adapter records the accompanying child Location projection
+    /// in the same event, so replay derives this value from that event only.
+    pub(crate) fn bind_managed_child_workspace_revision(
+        &mut self,
+        worker_execution_id: &str,
+        child_revision: &str,
+    ) -> Result<(), WorkerPoolError> {
+        if !child_revision.starts_with("blake3:") || child_revision.len() != 71
+            || !child_revision[7..].bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        {
+            return Err(WorkerPoolError::InvalidRequest);
+        }
+        let record = self.workers.get(worker_execution_id).ok_or(WorkerPoolError::WorkerNotFound)?;
+        if record.state != ReservationState::Reserved || record.cancellation_requested
+            || record.unknown_effect || record.process_identity.is_some()
+        {
+            return Err(WorkerPoolError::InvalidTransition);
+        }
+        if record.child_workspace_revision.as_deref() == Some(child_revision) {
+            return Ok(());
+        }
+        if record.child_workspace_revision.is_some() {
+            return Err(WorkerPoolError::AttemptBindingMismatch);
+        }
+        let revision = self.next_revision()?;
+        self.workers.get_mut(worker_execution_id).expect("worker checked")
+            .child_workspace_revision = Some(child_revision.to_owned());
+        self.revision = revision;
+        Ok(())
+    }
+
     /// Settles one worker. Capacity is released only on proven owned-process
     /// exit plus effect settlement; an UNKNOWN outcome quarantines and keeps
     /// its conservative budget until an explicit reconciliation.
@@ -2020,6 +2072,7 @@ impl WorkerPool {
         proof_digest: &str,
         observed_workspace_revision: Option<String>,
         reusable_worktree: bool,
+        defer_worktree_disposition: bool,
         reconciliation_owner_epoch: Option<u64>,
     ) -> Result<(), WorkerPoolError> {
         let record = self.workers.get(worker_execution_id)
@@ -2044,17 +2097,26 @@ impl WorkerPool {
         }
         let reservation_id = record.reservation_id.clone();
         let worktree_lease_id = record.worktree_lease_id.clone();
-        if let Some(lease_id) = worktree_lease_id.as_deref() {
-            if let Some(current_epoch) = reconciliation_owner_epoch {
-                self.worktrees.settle_logical_managed_reconciled(
-                    lease_id, &owner, current_epoch, observed_workspace_revision.clone(),
-                    reusable_worktree, !reusable_worktree, self.worktrees.revision(),
+        if defer_worktree_disposition {
+            if let Some(lease_id) = worktree_lease_id.as_deref() {
+                self.worktrees.quarantine_managed_disposition_pending(
+                    lease_id, &owner, reconciliation_owner_epoch, self.worktrees.revision(),
                 )?;
-            } else {
-                self.worktrees.settle_logical_managed(
-                    lease_id, &owner, observed_workspace_revision.clone(),
-                    reusable_worktree, !reusable_worktree, self.worktrees.revision(),
-                )?;
+            }
+        }
+        if !defer_worktree_disposition {
+            if let Some(lease_id) = worktree_lease_id.as_deref() {
+                if let Some(current_epoch) = reconciliation_owner_epoch {
+                    self.worktrees.settle_logical_managed_reconciled(
+                        lease_id, &owner, current_epoch, observed_workspace_revision.clone(),
+                        reusable_worktree, !reusable_worktree, self.worktrees.revision(),
+                    )?;
+                } else {
+                    self.worktrees.settle_logical_managed(
+                        lease_id, &owner, observed_workspace_revision.clone(),
+                        reusable_worktree, !reusable_worktree, self.worktrees.revision(),
+                    )?;
+                }
             }
         }
         if let Some(current_epoch) = reconciliation_owner_epoch {
@@ -2069,7 +2131,10 @@ impl WorkerPool {
         let next_revision = self.next_revision()?;
         let record = self.workers.get_mut(worker_execution_id).expect("worker checked");
         record.state = ReservationState::Released;
-        record.worktree_quarantined = worktree_lease_id.is_some() && !reusable_worktree;
+        // Worktree disposition is a separate OwnerLog transition. Until that
+        // event is committed, retain the active lease and mark it unavailable.
+        record.worktree_quarantined = worktree_lease_id.is_some()
+            && (defer_worktree_disposition || !reusable_worktree);
         record.reuse_key = None;
         record.settlement = Some(WorkerSettlement {
             outcome: WorkerSettlementOutcome::Settled,
@@ -2081,10 +2146,48 @@ impl WorkerPool {
             external_effect_refs: vec![proof_digest.to_owned()],
             worktree: observed_workspace_revision.map(|observed_revision| WorktreeSettlementFacts {
                 observed_revision: Some(observed_revision),
-                clean: Some(reusable_worktree),
-                has_untracked: Some(!reusable_worktree),
+                clean: (!defer_worktree_disposition).then_some(reusable_worktree),
+                has_untracked: (!defer_worktree_disposition).then_some(!reusable_worktree),
             }),
         });
+        self.revision = next_revision;
+        Ok(())
+    }
+
+    pub(crate) fn finalize_logical_managed_worktree_disposition(
+        &mut self,
+        worker_execution_id: &str,
+        attempt_id: &str,
+        observed_revision: &str,
+        reusable: bool,
+        reconciliation_owner_epoch: Option<u64>,
+    ) -> Result<(), WorkerPoolError> {
+        let record = self.workers.get(worker_execution_id)
+            .ok_or(WorkerPoolError::WorkerNotFound)?;
+        if record.owner.attempt_id != attempt_id || record.state != ReservationState::Released
+            || record.process_identity.is_some()
+        {
+            return Err(WorkerPoolError::AttemptBindingMismatch);
+        }
+        let owner = rehydrate(&record.owner).map_err(|_| WorkerPoolError::ScopeMismatch)?;
+        let lease_id = record.worktree_lease_id.as_deref().ok_or(WorkerPoolError::WorktreeRequired)?;
+        self.worktrees.finalize_logical_managed_worktree_disposition(
+            lease_id, &owner, reconciliation_owner_epoch, observed_revision, reusable,
+            self.worktrees.revision(),
+        )?;
+        let next_revision = self.next_revision()?;
+        let record = self.workers.get_mut(worker_execution_id).expect("worker checked");
+        record.worktree_quarantined = !reusable;
+        if let Some(settlement) = record.settlement.as_mut() {
+            settlement.worktree = Some(WorktreeSettlementFacts {
+                observed_revision: Some(observed_revision.to_owned()),
+                clean: Some(reusable),
+                // Inspect does not report an untracked-only count. Preserve
+                // unknown for quarantined trees instead of inferring it from
+                // the broader dirty disposition.
+                has_untracked: reusable.then_some(false),
+            });
+        }
         self.revision = next_revision;
         Ok(())
     }
@@ -2546,6 +2649,14 @@ impl WorkerPool {
             })
     }
 
+    pub(crate) fn worker_reservation_id(&self, worker_execution_id: &str) -> Option<&str> {
+        self.workers.get(worker_execution_id).map(|record| record.reservation_id.as_str())
+    }
+
+    pub(crate) fn worker_source_revision(&self, worker_execution_id: &str) -> Option<&str> {
+        self.workers.get(worker_execution_id).and_then(|record| record.child_workspace_revision.as_deref())
+    }
+
     /// Resolves P8's durable budget/worktree lease lineage for a current
     /// authenticated managed Attempt. The outer `WorkerPoolControl` exposes
     /// this only after OwnerLog open/replay and attaches the durable cursor.
@@ -2576,7 +2687,8 @@ impl WorkerPool {
             || record.owner.task_id != binding.task_id()
             || record.owner.attempt_id != binding.attempt_id()
             || record.owner.owner_epoch != binding.owner_epoch()
-            || record.attempt_revision != binding.source_revision()
+            || record.child_workspace_revision.as_deref().unwrap_or(&record.attempt_revision)
+                != binding.source_revision()
             || record.accepted_spec_digest != binding.accepted_spec_digest()
             || binding.phase() != BindingAttemptPhase::Executing
         {
@@ -2634,7 +2746,7 @@ impl WorkerPool {
             task_id: owner.task_id().to_owned(),
             attempt_id: owner.attempt_id().to_owned(),
             owner_epoch: owner.owner_epoch(),
-            source_revision: record.attempt_revision.clone(),
+            source_revision: record.child_workspace_revision.clone().unwrap_or_else(|| record.attempt_revision.clone()),
             accepted_spec_digest: record.accepted_spec_digest.clone(),
             workspace_lease_id: worktree_lease_id.to_owned(),
             budget_lease_id: record.reservation_id.clone(),
@@ -2788,7 +2900,8 @@ impl WorkerPool {
             || record.owner.task_id != binding.task_id()
             || record.owner.attempt_id != binding.attempt_id()
             || record.owner.owner_epoch != binding.owner_epoch()
-            || record.attempt_revision != binding.source_revision()
+            || record.child_workspace_revision.as_deref().unwrap_or(&record.attempt_revision)
+                != binding.source_revision()
             || record.accepted_spec_digest != binding.accepted_spec_digest()
             || binding.phase() != BindingAttemptPhase::Executing
         {
@@ -2798,7 +2911,7 @@ impl WorkerPool {
             worker_execution_id: worker_execution_id.to_owned(),
             goal_id: record.goal_id.clone(),
             owner: record.owner.clone(),
-            source_revision: record.attempt_revision.clone(),
+            source_revision: record.child_workspace_revision.clone().unwrap_or_else(|| record.attempt_revision.clone()),
             accepted_spec_digest: record.accepted_spec_digest.clone(),
             process_identity,
         })
@@ -2826,9 +2939,13 @@ impl WorkerPool {
             )
             .map_err(WorkerPoolError::Reservation)?;
             let state = record.state;
+            let source_revision = record.child_workspace_revision.clone().ok_or(
+                WorkerPoolError::AttemptBindingMismatch,
+            )?;
             let lease = crate::resource_sampler::OwnedProcessLeaseV1::from_durable_owner(
                 worker_execution_id.clone(),
                 owner,
+                source_revision,
                 process_identity,
                 state,
             )
@@ -2949,6 +3066,11 @@ impl WorkerPool {
             .workers
             .get(lineage.worker_execution_id())
             .ok_or(WorkerPoolError::WorkerNotFound)?;
+        // `lineage.owner` is the parent Attempt, while `child_owner` is the
+        // newly admitted child Attempt. Their logical Session IDs are distinct
+        // by contract; HostKernel's authenticated Attempt/parent-ID proof
+        // verifies the relationship. Keep the shared principal/workspace/Run
+        // and owner-epoch fences here without collapsing the two Session IDs.
         if !lineage
             .owner()
             .matches_owner(&rehydrate_parent_owner(record))
@@ -2961,7 +3083,6 @@ impl WorkerPool {
             || record.expires_at_ms == 0
             || record.owner.principal_ref != child_owner.principal_ref()
             || record.owner.workspace_binding != child_owner.workspace_binding()
-            || record.owner.session_id != child_owner.session_id()
             || record.owner.run_id != child_owner.run_id()
             || record.owner.owner_epoch != child_owner.owner_epoch()
             || record.goal_id != child_goal_id

@@ -24,13 +24,13 @@ describe("FeatureExposure derived Settings projection", () => {
       requestedEnabled: null,
       valueSource: "default",
       effectiveEnabled: true,
-      policyLock: "unknown",
+      policyLock: "unlocked",
     })
     expect(all.find((x) => x.featureId === "compaction.prune")?.state).toMatchObject({
       requestedEnabled: null,
       valueSource: "default",
       effectiveEnabled: false,
-      policyLock: "unknown",
+      policyLock: "unlocked",
     })
     for (const feature of all.filter((item) => item.releaseClass === "stable")) {
       expect(feature.supportedScopes).toEqual(["project"])
@@ -69,7 +69,7 @@ describe("FeatureExposure derived Settings projection", () => {
         requestedEnabled: true,
         effectiveEnabled: false,
         effectiveState: "blocked",
-        blockedReason: "A runtime disable override is active",
+        blockedReason: "Effective state differs from the request; policy status is unknown",
         valueSource: "unknown",
         policyLock: "unknown",
       })
@@ -167,6 +167,35 @@ describe("FeatureExposure derived Settings projection", () => {
     }, { compaction: { auto: false } })
     expect(auto?.state).toMatchObject({ effectiveEnabled: false, effectiveState: "blocked", blockedReason: "Disabled by policy" })
     expect(auto?.state.pendingApplyAt).toBeUndefined()
+  })
+
+  test("unknown policy state cannot claim an explicit change is pending", () => {
+    const [auto] = FeatureExposure.list({
+      compaction: { auto: true },
+      origins: { auto: { valueSource: "unknown", policyLock: "unknown", pendingApplyAt: "next_turn" } },
+    }, { compaction: { auto: false } })
+    expect(auto?.state).toMatchObject({
+      requestedEnabled: true,
+      effectiveEnabled: false,
+      effectiveState: "blocked",
+      valueSource: "unknown",
+      policyLock: "unknown",
+      blockedReason: "Effective state differs from the request; policy status is unknown",
+    })
+    expect(auto?.state.pendingApplyAt).toBeUndefined()
+
+    const [reverse] = FeatureExposure.list({
+      compaction: { auto: false },
+      origins: { auto: { valueSource: "unknown", policyLock: "unknown", pendingApplyAt: "next_turn" } },
+    }, { compaction: { auto: true } })
+    expect(reverse?.state).toMatchObject({
+      requestedEnabled: false,
+      effectiveEnabled: true,
+      effectiveState: "blocked",
+      policyLock: "unknown",
+      blockedReason: "Effective state differs from the request; policy status is unknown",
+    })
+    expect(reverse?.state.pendingApplyAt).toBeUndefined()
   })
 
 

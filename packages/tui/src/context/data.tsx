@@ -7,6 +7,7 @@ import type {
   PermissionSavedInfo,
   PermissionV2Request,
   ProviderV2Info,
+  QuestionRequest,
   QuestionV2Request,
   ReferenceInfo,
   SessionMessage,
@@ -39,14 +40,29 @@ type Data = {
   session: {
     info: Record<string, SessionV2Info>
     message: Record<string, SessionMessage[]>
+    contextLedger: Record<string, ContextLedgerSnapshotV1 | undefined>
     permission: Record<string, PermissionV2Request[]>
-    question: Record<string, QuestionV2Request[]>
+    question: Record<string, SessionQuestionRequest[]>
   }
   project: {
     permission: Record<string, PermissionSavedInfo[]>
   }
   location: Record<string, LocationData>
 }
+
+type ContextLedgerSnapshotV1 = {
+  readonly timestamp: number
+  readonly requestID: string
+  readonly requestSequence?: string
+  readonly sourceRevision: string
+  readonly sourceGeneration: string
+  readonly ledger: Record<string, unknown>
+  readonly ledgerDigest: string
+}
+
+export type SessionQuestionRequest =
+  | { lane: "legacy"; request: QuestionRequest }
+  | { lane: "v2"; request: QuestionV2Request }
 
 type StreamDeltaEvent =
   | Extract<V2Event, { type: "session.next.text.delta" }>
@@ -127,12 +143,19 @@ function eventSessionID(event: V2Event) {
   return typeof sessionID === "string" ? sessionID : undefined
 }
 
-const questionChanges = new Map<string, Map<string, QuestionV2Request | null>>()
+function questionKey(lane: SessionQuestionRequest["lane"], requestID: string) {
+  return `${lane}:${requestID}`
+}
 
-function rememberQuestionChange(sessionID: string, requestID: string, request: QuestionV2Request | null) {
-  let changes = questionChanges.get(sessionID)
-  if (!changes) questionChanges.set(sessionID, (changes = new Map()))
-  changes.set(requestID, request)
+function rememberQuestionChange(
+  changesBySession: Map<string, Map<string, SessionQuestionRequest | null>>,
+  sessionID: string,
+  key: string,
+  request: SessionQuestionRequest | null,
+) {
+  let changes = changesBySession.get(sessionID)
+  if (!changes) changesBySession.set(sessionID, (changes = new Map()))
+  changes.set(key, request)
 }
 
 function locationKey(location: LocationRef) {
@@ -150,6 +173,7 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
       session: {
         info: {},
         message: {},
+        contextLedger: {},
         permission: {},
         question: {},
       },
@@ -158,6 +182,19 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
       },
       location: {},
     })
+    // Resnapshot deltas belong to this Data owner. A module-global map can
+    // leak one TUI provider's owner-scoped question state into another.
+    const questionChanges = new Map<string, Map<string, SessionQuestionRequest | null>>()
+    const latestPromptBoundary = new Map<string, number>()
+    const latestPromptGeneration = new Map<string, string>()
+    const maxU64 = "18446744073709551615"
+    const isU64 = (value: string) => /^(0|[1-9][0-9]{0,19})$/.test(value) &&
+      (value.length < maxU64.length || (value.length === maxU64.length && value <= maxU64))
+
+    const compareDecimal = (left: string, right: string) => {
+      if (left.length !== right.length) return left.length - right.length
+      return left.localeCompare(right)
+    }
 
     const sdk = useSDK()
     const events = useEvent()
@@ -251,7 +288,71 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
           break
         }
         case "session.next.prompt.admitted":
+          latestPromptBoundary.set(event.data.sessionID, event.data.timestamp)
+          latestPromptGeneration.set(event.data.sessionID, event.data.messageID)
+          while (latestPromptBoundary.size > 4096) {
+            const oldest = latestPromptBoundary.keys().next().value
+            if (oldest === undefined) break
+            latestPromptBoundary.delete(oldest)
+            latestPromptGeneration.delete(oldest)
+          }
+          setStore("session", "contextLedger", event.data.sessionID, undefined)
           break
+        case "session.context_ledger": {
+          const data = event.data
+          const ledger = data.ledger
+          const cutoff = latestPromptBoundary.get(data.sessionID) ?? 0
+          const activeGeneration = latestPromptGeneration.get(data.sessionID)
+          const previous = store.session.contextLedger[data.sessionID]
+          const priorSequence = previous?.requestSequence
+          const selection = typeof ledger === "object" && ledger !== null && !Array.isArray(ledger)
+            ? (ledger as Record<string, unknown>).contextSelection
+            : undefined
+          const requestSequence = typeof selection === "object" && selection !== null && !Array.isArray(selection)
+            ? (selection as Record<string, unknown>).requestSequence
+            : undefined
+          const selectionRecord = typeof selection === "object" && selection !== null && !Array.isArray(selection)
+            ? selection as Record<string, unknown>
+            : undefined
+          let ledgerBytes = Number.POSITIVE_INFINITY
+          try {
+            ledgerBytes = Buffer.byteLength(JSON.stringify(ledger), "utf8")
+          } catch {
+            break
+          }
+          if (
+            !Number.isFinite(data.timestamp) || data.timestamp < cutoff ||
+            !activeGeneration || data.sourceGeneration !== activeGeneration ||
+            !/^[A-Za-z0-9._:-]{1,256}$/.test(data.requestID) ||
+            !isU64(data.sourceRevision) ||
+            !/^blake3:[0-9a-f]{64}$/.test(data.ledgerDigest) ||
+            typeof ledger !== "object" || ledger === null || Array.isArray(ledger) ||
+            ledger.sessionID !== data.sessionID || ledger.requestID !== data.requestID ||
+            ledger.sourceRevision !== data.sourceRevision ||
+            !selectionRecord || selectionRecord.sessionID !== data.sessionID ||
+            selectionRecord.requestID !== data.requestID || selectionRecord.sourceRevision !== data.sourceRevision ||
+            selectionRecord.lane !== ledger.lane ||
+            (ledger.lane === "managed" && (typeof requestSequence !== "string" || !isU64(requestSequence) ||
+              typeof selectionRecord.attemptID !== "string")) ||
+            (requestSequence !== undefined && (typeof requestSequence !== "string" || !isU64(requestSequence))) ||
+            (previous?.sourceGeneration === data.sourceGeneration && compareDecimal(data.sourceRevision, previous.sourceRevision) < 0) ||
+            (previous?.sourceGeneration === data.sourceGeneration && data.sourceRevision === previous.sourceRevision &&
+              (ledger.lane === "managed"
+                ? (typeof requestSequence !== "string" || (priorSequence !== undefined && compareDecimal(requestSequence, priorSequence) <= 0))
+                : (previous.requestID === data.requestID || data.timestamp < previous.timestamp))) ||
+            ledgerBytes > 48 * 1024
+          ) break
+          setStore("session", "contextLedger", data.sessionID, {
+            timestamp: data.timestamp,
+            requestID: data.requestID,
+            ...(typeof requestSequence === "string" ? { requestSequence } : {}),
+            sourceRevision: data.sourceRevision,
+            sourceGeneration: data.sourceGeneration,
+            ledger,
+            ledgerDigest: data.ledgerDigest,
+          })
+          break
+        }
         case "session.next.context.updated":
           message.update(event.data.sessionID, (draft) => {
             message.prepend(draft, {
@@ -514,9 +615,10 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
             questions: event.data.questions,
             ...(event.data.tool ? { tool: event.data.tool } : {}),
           }
-          rememberQuestionChange(request.sessionID, request.id, request)
+          const projected: SessionQuestionRequest = { lane: "v2", request }
+          rememberQuestionChange(questionChanges, request.sessionID, questionKey("v2", request.id), projected)
           if (!store.session.question[request.sessionID]) {
-            setStore("session", "question", request.sessionID, [request])
+            setStore("session", "question", request.sessionID, [projected])
             break
           }
           setStore(
@@ -524,9 +626,9 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
             "question",
             request.sessionID,
             produce((draft) => {
-              const index = draft.findIndex((item) => item.id === request.id)
-              if (index === -1) draft.push(request)
-              else draft[index] = request
+              const index = draft.findIndex((item) => item.lane === "v2" && item.request.id === request.id)
+              if (index === -1) draft.push(projected)
+              else draft[index] = projected
             }),
           )
           break
@@ -534,10 +636,53 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
         case "question.v2.replied":
         case "question.v2.rejected": {
           const { sessionID, requestID } = event.data
-          rememberQuestionChange(sessionID, requestID, null)
+          rememberQuestionChange(questionChanges, sessionID, questionKey("v2", requestID), null)
           const requests = store.session.question[sessionID]
           if (!requests) break
-          const index = requests.findIndex((item) => item.id === requestID)
+          const index = requests.findIndex((item) => item.lane === "v2" && item.request.id === requestID)
+          if (index === -1) break
+          setStore(
+            "session",
+            "question",
+            sessionID,
+            produce((draft) => {
+              draft.splice(index, 1)
+            }),
+          )
+          break
+        }
+        case "question.asked": {
+          const request: QuestionRequest = {
+            id: event.data.id,
+            sessionID: event.data.sessionID,
+            questions: event.data.questions,
+            ...(event.data.tool ? { tool: event.data.tool } : {}),
+          }
+          const projected: SessionQuestionRequest = { lane: "legacy", request }
+          rememberQuestionChange(questionChanges, request.sessionID, questionKey("legacy", request.id), projected)
+          if (!store.session.question[request.sessionID]) {
+            setStore("session", "question", request.sessionID, [projected])
+            break
+          }
+          setStore(
+            "session",
+            "question",
+            request.sessionID,
+            produce((draft) => {
+              const index = draft.findIndex((item) => item.lane === "legacy" && item.request.id === request.id)
+              if (index === -1) draft.push(projected)
+              else draft[index] = projected
+            }),
+          )
+          break
+        }
+        case "question.replied":
+        case "question.rejected": {
+          const { sessionID, requestID } = event.data
+          rememberQuestionChange(questionChanges, sessionID, questionKey("legacy", requestID), null)
+          const requests = store.session.question[sessionID]
+          if (!requests) break
+          const index = requests.findIndex((item) => item.lane === "legacy" && item.request.id === requestID)
           if (index === -1) break
           setStore(
             "session",
@@ -564,6 +709,25 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
 
     const seenDeltaEventIDs = new Map<string, true>()
     const replaySeeded = new Set<string>()
+    // A canonical page read can overlap live source deltas. Track arrivals
+    // independently of the paint queue so a stale page set is never allowed
+    // to replace a projection that advanced while pagination was in flight.
+    const liveDeltaGeneration = new Map<string, number>()
+    const refreshInFlight = new Map<string, Promise<void>>()
+    const refreshAgain = new Set<string>()
+
+    function markLiveSessionChange(sessionID: string) {
+      const next = (liveDeltaGeneration.get(sessionID) ?? 0) + 1
+      // Keep this recovery-only fence bounded even if a stream mentions many
+      // Sessions that are no longer loaded in this Data owner.
+      liveDeltaGeneration.delete(sessionID)
+      liveDeltaGeneration.set(sessionID, next)
+      while (liveDeltaGeneration.size > 4096) {
+        const oldest = [...liveDeltaGeneration.keys()].find((id) => !refreshInFlight.has(id))
+        if (oldest === undefined) break
+        liveDeltaGeneration.delete(oldest)
+      }
+    }
 
     function markReplaySeeded(key: string) {
       replaySeeded.delete(key)
@@ -587,39 +751,67 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
     }
 
     async function refreshSessionMessages(sessionID: string) {
-      const pageSize = 100
-      const historyLimit = 10_000
-      const pages: SessionMessage[][] = []
-      let result = await sdk.client.v2.session.messages(
-        { sessionID, limit: pageSize, order: "desc" },
-        { throwOnError: true },
-      )
-      pages.push(result.data.data)
-      let loaded = result.data.data.length
-      let older = result.data.cursor.previous
-      while (older && loaded < historyLimit) {
-        result = await sdk.client.v2.session.messages(
-          {
-            sessionID,
-            limit: Math.min(pageSize, historyLimit - loaded),
-            order: "desc",
-            cursor: older,
-          },
-          { throwOnError: true },
-        )
-        if (result.data.data.length === 0) break
-        pages.push(result.data.data)
-        loaded += result.data.data.length
-        older = result.data.cursor.previous
+      const existing = refreshInFlight.get(sessionID)
+      if (existing) {
+        refreshAgain.add(sessionID)
+        return existing
       }
-      const canonical = pages.reverse().flatMap((page) => page.toReversed())
-      streamMux.flush(sessionID)
-      streamMux.forgetStream(sessionID)
-      for (const key of replaySeeded) {
-        const [owner] = JSON.parse(key) as [string, string, string]
-        if (owner === sessionID) replaySeeded.delete(key)
+      const task = (async () => {
+        const pageSize = 100
+        const historyLimit = 10_000
+        // One retry handles a finite burst during pagination. If the source is
+        // still advancing, preserve the live projection and its cursor; the
+        // next gap/reconnect will request another canonical read.
+        for (let pass = 0; pass < 2; pass++) {
+          refreshAgain.delete(sessionID)
+          streamMux.flush(sessionID)
+          const generation = liveDeltaGeneration.get(sessionID) ?? 0
+          const pages: SessionMessage[][] = []
+          let result = await sdk.client.v2.session.messages(
+            { sessionID, limit: pageSize, order: "desc" },
+            { throwOnError: true },
+          )
+          pages.push(result.data.data)
+          let loaded = result.data.data.length
+          let older = result.data.cursor.previous
+          while (older && loaded < historyLimit) {
+            result = await sdk.client.v2.session.messages(
+              {
+                sessionID,
+                limit: Math.min(pageSize, historyLimit - loaded),
+                order: "desc",
+                cursor: older,
+              },
+              { throwOnError: true },
+            )
+            if (result.data.data.length === 0) break
+            pages.push(result.data.data)
+            loaded += result.data.data.length
+            older = result.data.cursor.previous
+          }
+          const canonical = pages.reverse().flatMap((page) => page.toReversed())
+          streamMux.flush(sessionID)
+          if ((liveDeltaGeneration.get(sessionID) ?? 0) !== generation || refreshAgain.has(sessionID)) {
+            if (pass === 0) continue
+            return
+          }
+          streamMux.forgetStream(sessionID)
+          for (const key of replaySeeded) {
+            const [owner] = JSON.parse(key) as [string, string, string]
+            if (owner === sessionID) replaySeeded.delete(key)
+          }
+          setStore("session", "message", sessionID, canonical)
+          liveDeltaGeneration.delete(sessionID)
+          return
+        }
+      })()
+      refreshInFlight.set(sessionID, task)
+      try {
+        await task
+      } finally {
+        refreshInFlight.delete(sessionID)
+        refreshAgain.delete(sessionID)
       }
-      setStore("session", "message", sessionID, canonical)
     }
 
     async function refreshSessionMessagesUntilSuccessful(sessionID: string, signal: AbortSignal) {
@@ -647,8 +839,17 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
 
     const resnapshotAbortController = new AbortController()
     const resnapshotSessions = new Set<string>()
+    const MAX_RESNAPSHOT_SESSIONS = 64
     function requestResnapshot(sessionID: string) {
-      if (resnapshotSessions.has(sessionID) || resnapshotAbortController.signal.aborted) return
+      // A malformed/off-scope event must not turn the recovery path into an
+      // unbounded set of HTTP refresh loops. Session IDs are owner-generated;
+      // cap both their accepted shape and concurrent recovery work.
+      if (
+        !/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/.test(sessionID) ||
+        resnapshotSessions.has(sessionID) ||
+        resnapshotSessions.size >= MAX_RESNAPSHOT_SESSIONS ||
+        resnapshotAbortController.signal.aborted
+      ) return
       resnapshotSessions.add(sessionID)
       void refreshSessionMessagesUntilSuccessful(sessionID, resnapshotAbortController.signal).finally(() => {
         resnapshotSessions.delete(sessionID)
@@ -662,6 +863,18 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
       size: (event) => new TextEncoder().encode(event.text).byteLength,
       sizeProvenance: "measured",
       cursor: (event) => {
+        if (
+          typeof event.sessionID !== "string" ||
+          event.sessionID.length === 0 ||
+          event.sessionID.length > 256 ||
+          !Number.isSafeInteger(event.sequence) ||
+          event.sequence < 0 ||
+          !Number.isSafeInteger(event.offset) ||
+          event.offset < 0 ||
+          typeof event.sourceGeneration !== "string" ||
+          event.sourceGeneration.length === 0 ||
+          event.sourceGeneration.length > 256
+        ) return
         const seedKey = replaySeedKey(event.sessionID, event.key, event.sourceGeneration)
         if (!replaySeeded.has(seedKey)) {
           const messages = store.session.message[event.sessionID] ?? []
@@ -691,6 +904,8 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
           advance: 1,
         }
       },
+      requireCursor: true,
+      onInvalidCursor: requestResnapshot,
       onResnapshotRequired: (cursor) => {
         requestResnapshot(cursor.sessionID)
       },
@@ -733,6 +948,11 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
       const unsubscribeReconnect = sdk.onReconnect(async (signal) => {
         streamMux.reconnect()
         replaySeeded.clear()
+        latestPromptBoundary.clear()
+        latestPromptGeneration.clear()
+        for (const sessionID of Object.keys(store.session.contextLedger)) {
+          setStore("session", "contextLedger", sessionID, undefined)
+        }
         const sessionIDs = Object.keys(store.session.message)
         const batchSize = 8
         for (let offset = 0; offset < sessionIDs.length; offset += batchSize) {
@@ -749,10 +969,13 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
         const delta = streamDelta(mapped)
         if (delta) {
           if (!rememberDeltaEventID(mapped.id)) return
+          markLiveSessionChange(delta.sessionID)
           streamMux.push(delta)
           return
         }
-        streamMux.flush(eventSessionID(mapped))
+        const sessionID = eventSessionID(mapped)
+        if (sessionID) markLiveSessionChange(sessionID)
+        streamMux.flush(sessionID)
         handleEvent(mapped)
       })
       onCleanup(() => {
@@ -784,6 +1007,9 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
         get(sessionID: string) {
           return store.session.info[sessionID]
         },
+        contextLedger(sessionID: string) {
+          return store.session.contextLedger[sessionID]
+        },
         async refresh(sessionID: string) {
           const result = await sdk.client.v2.session.get({ sessionID }, { throwOnError: true })
           setStore("session", "info", sessionID, result.data.data)
@@ -807,16 +1033,27 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
         },
         question: {
           list(sessionID: string) {
-            return store.session.question[sessionID]
+            return (store.session.question[sessionID] ?? []).map((item) => item.request)
+          },
+          prompts(sessionID: string) {
+            return store.session.question[sessionID] ?? []
           },
           async refresh(sessionID: string) {
-            const result = await sdk.client.v2.session.question.list({ sessionID }, { throwOnError: true })
-            const requests = [...result.data.data]
-            for (const [requestID, request] of questionChanges.get(sessionID) ?? []) {
-              const index = requests.findIndex((item) => item.id === requestID)
+            const [v2, legacy] = await Promise.all([
+              sdk.client.v2.session.question.list({ sessionID }, { throwOnError: true }),
+              sdk.client.question.list({}, { throwOnError: true }),
+            ])
+            const requests: SessionQuestionRequest[] = [
+              ...v2.data.data.map((request): SessionQuestionRequest => ({ lane: "v2", request })),
+              ...legacy.data.filter((request) => request.sessionID === sessionID)
+                .map((request): SessionQuestionRequest => ({ lane: "legacy", request })),
+            ]
+            for (const [key, request] of questionChanges.get(sessionID) ?? []) {
+              const index = requests.findIndex((item) => questionKey(item.lane, item.request.id) === key)
               if (index !== -1) requests.splice(index, 1)
               if (request) requests.splice(index === -1 ? requests.length : index, 0, request)
             }
+            questionChanges.delete(sessionID)
             setStore("session", "question", sessionID, requests)
           },
         },

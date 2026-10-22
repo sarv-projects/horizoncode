@@ -450,6 +450,32 @@ impl<A: ArtifactAuthorizer> ArtifactStore<A> {
         scan_store_usage(&self.root, &self.root_directory)
     }
 
+    /// Resolves metadata for a HostKernel-derived immutable artifact ID without
+    /// granting read access to arbitrary caller-selected references. Callers must
+    /// still compare the returned reference and owner metadata with their trusted
+    /// effect receipt before exposing it.
+    pub(crate) fn reference_for_host_id(
+        &self,
+        artifact_id: &str,
+    ) -> Result<(ArtifactRefV1, ArtifactMetadataV1), ArtifactError> {
+        if !valid_text(artifact_id) || artifact_id.len() > 256 {
+            return Err(ArtifactError::InvalidMetadata);
+        }
+        let bytes = read_private_file(
+            &self.root_directory,
+            &metadata_relative_path(artifact_id),
+            MAX_ARTIFACT_METADATA_BYTES,
+            true,
+        )?;
+        let metadata = decode_metadata(&bytes)?;
+        if metadata.artifact_id != artifact_id {
+            return Err(ArtifactError::CorruptMetadata);
+        }
+        let reference = metadata_reference(&metadata)
+            .map_err(|_| ArtifactError::CorruptMetadata)?;
+        Ok((reference, metadata))
+    }
+
     /// Persists host-generated, bounded verifier manifests after independently
     /// authorized verifier effects settled. Raw child output is validated against
     /// its observed digest and byte count, but is never stored or user-visible.
@@ -719,6 +745,53 @@ impl<A: ArtifactAuthorizer> ArtifactStore<A> {
         }
         let next_offset = offset + bytes_to_read as u64;
         state.next_offset = next_offset;
+        Ok(ArtifactChunkV1 {
+            artifact_ref: permit.artifact_ref.clone(),
+            offset,
+            next_offset,
+            complete: next_offset == total_length,
+            bytes,
+        })
+    }
+
+    /// Read one independently authorized range. Unlike `read`, this does not
+    /// rely on mutable per-permit cursor state: HTTP callers may issue each
+    /// bounded range as a separate RPC, and every RPC receives a fresh permit.
+    /// The exact permit, metadata/ref equality, no-follow object open and full
+    /// object digest verification are repeated for every range.
+    fn read_at(
+        &self,
+        permit: &ReadPermit,
+        offset: u64,
+        max_bytes: NonZeroUsize,
+    ) -> Result<ArtifactChunkV1, ArtifactError> {
+        self.validate_permit(permit)?;
+        let metadata = self.metadata(permit)?;
+        let total_length =
+            parse_decimal(&metadata.byte_length).map_err(|_| ArtifactError::CorruptMetadata)?;
+        if offset > total_length {
+            return Err(ArtifactError::InvalidOffset);
+        }
+        let path = blob_relative_path(&metadata.digest)?;
+        let mut file = open_private_object(
+            &self.root_directory,
+            &path,
+            total_length,
+            &metadata.digest,
+        )?;
+        file.seek(SeekFrom::Start(offset))
+            .map_err(|error| io_error("seek artifact object", error))?;
+        let requested = max_bytes.get().min(MAX_ARTIFACT_CHUNK_BYTES);
+        let bytes_to_read = (total_length - offset).min(requested as u64) as usize;
+        let mut bytes = vec![0; bytes_to_read];
+        if let Err(error) = file.read_exact(&mut bytes) {
+            return if error.kind() == io::ErrorKind::UnexpectedEof {
+                Err(ArtifactError::CorruptObject)
+            } else {
+                Err(io_error("read artifact object", error))
+            };
+        }
+        let next_offset = offset + bytes_to_read as u64;
         Ok(ArtifactChunkV1 {
             artifact_ref: permit.artifact_ref.clone(),
             offset,
@@ -1643,7 +1716,7 @@ fn validate_verifier_manifest_claims(
     Ok(())
 }
 
-fn timestamp_from_unix_millis(value: u64) -> Result<String, ArtifactError> {
+pub(crate) fn timestamp_from_unix_millis(value: u64) -> Result<String, ArtifactError> {
     let seconds = i64::try_from(value / 1000).map_err(|_| ArtifactError::InvalidMetadata)?;
     let days = seconds.div_euclid(86_400);
     let second_of_day = seconds.rem_euclid(86_400);
@@ -2297,6 +2370,17 @@ impl<A: ArtifactAuthorizer> GuardedArtifactIngressV1<A> {
         self.store.metadata(&permit)
     }
 
+    /// Resolves a deterministic HostKernel artifact ID. This does not authorize
+    /// the caller or expose bytes; the caller must validate the exact effect
+    /// receipt and metadata owner refs, then use the ordinary `inspect`/range
+    /// path with the resulting reference.
+    pub(crate) fn reference_for_host_id(
+        &self,
+        artifact_id: &str,
+    ) -> Result<(ArtifactRefV1, ArtifactMetadataV1), ArtifactError> {
+        self.store.reference_for_host_id(artifact_id)
+    }
+
     /// Verifies an authenticated owner's bounded artifact reference against the
     /// canonical metadata and the complete immutable content-addressed object.
     /// The returned metadata is read from disk; the caller-supplied digest is
@@ -2337,7 +2421,7 @@ impl<A: ArtifactAuthorizer> GuardedArtifactIngressV1<A> {
         Ok(metadata)
     }
 
-    /// One bounded sequential read after guard-mediated authorization.
+    /// One bounded, independently authorized range read.
     pub(crate) fn read_range(
         &self,
         principal: &str,
@@ -2345,8 +2429,8 @@ impl<A: ArtifactAuthorizer> GuardedArtifactIngressV1<A> {
         offset: u64,
         max_bytes: NonZeroUsize,
     ) -> Result<ArtifactChunkV1, ArtifactError> {
-        let mut permit = self.store.authorize_read(principal, artifact_ref)?;
-        self.store.read(&mut permit, offset, max_bytes)
+        let permit = self.store.authorize_read(principal, artifact_ref)?;
+        self.store.read_at(&permit, offset, max_bytes)
     }
 
     /// Bounded `artifacts.list`: scans at most `limit` digest-verified metadata
@@ -3490,6 +3574,49 @@ mod tests {
     }
 
     #[test]
+    fn ingress_range_reads_accept_fresh_permits_at_exact_prior_offsets() {
+        let root = TempRoot::new();
+        let owner = ArtifactOwnerScopeV1::new("session", "ses_artifact").unwrap();
+        let bytes = vec![b'r'; MAX_ARTIFACT_CHUNK_BYTES + 128];
+        let ingress = GuardedArtifactIngressV1::open(&root.0, Allow).unwrap();
+        let reference = ingress
+            .capture_after_guard_authorization(
+                &owner,
+                "artifact-range".to_owned(),
+                write_metadata(),
+                capture(&bytes),
+            )
+            .unwrap();
+
+        let first = ingress
+            .read_range(
+                "ses_artifact",
+                &reference,
+                0,
+                NonZeroUsize::new(usize::MAX).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(first.offset, 0);
+        assert_eq!(first.bytes.len(), MAX_ARTIFACT_CHUNK_BYTES);
+        assert!(!first.complete);
+
+        // This is a separate authorization/permit, as it is for each HostKernel
+        // RPC. Its offset must be validated against the immutable object, not a
+        // cursor stored in the previous RPC's permit.
+        let second = ingress
+            .read_range(
+                "ses_artifact",
+                &reference,
+                first.next_offset,
+                NonZeroUsize::new(usize::MAX).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(second.offset, first.next_offset);
+        assert_eq!(second.bytes, vec![b'r'; 128]);
+        assert!(second.complete);
+    }
+
+    #[test]
     fn retry_syncs_an_existing_entry_after_an_uncertain_publish() {
         use std::os::unix::fs::PermissionsExt;
         use std::sync::atomic::AtomicUsize;
@@ -3639,6 +3766,7 @@ mod tests {
                 session_id: "ses_artifact",
                 batch_id: "batch_artifact",
                 call_id: "call_artifact",
+                scope_digest: None,
             },
             argument_digest: EFFECT_ARGUMENT_DIGEST,
             turn_context_digest: EFFECT_TURN_DIGEST,

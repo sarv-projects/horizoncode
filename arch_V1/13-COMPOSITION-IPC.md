@@ -39,8 +39,11 @@ In direct mode, no second provider loop, Session database, effect engine or desk
 6. Session observer validates source cursor/snapshot/replay as required.
 7. Kernel reports READY with supported capabilities.
 8. Host exposes only capabilities whose required owners are READY.
+9. Core opens a **pooled, session-warm** authenticated IPC handle to the kernel for direct
+   Sessions (`DEC-V1-36`); provider-only turns do not pay per-turn handshake cost.
 
-Application/effect RPC is rejected before READY.
+Application/effect RPC is rejected before READY. **Provider inference and context compile**
+are not blocked on kernel READY; only effect RPC and managed control require READY.
 
 Shutdown:
 - stop new admissions;
@@ -101,9 +104,12 @@ No Bun/worker/plugin side-channel may perform the same effect outside this path.
 | Service | Owner/process |
 |---|---|
 | Direct Session/continuation runner | HorizonCode Core (OpenCode-derived) |
+| Normal direct CLI/TUI turn path | Core `SessionRunner`; ordinary pair-coding route |
+| Managed Attempt prompt entry | Core `SessionPrompt` adapter; distinct from direct turn ownership, subject to §15.21 shared behavior contract |
 | Provider/model/account registry/transport | HorizonCode host; current OpenCode-derived path, staged A-V2-27 migration |
 | Action/tool presentation catalog | Host projection from canonical capability registry |
-| ContextService | Host-facing service; canonical conversation remains OpenCode |
+| CodeMode | Existing OpenCode-derived interpreter over canonical progressive ToolRegistry; nested effects return through the same ToolBatch/Guard path |
+| ContextService compiler | Core compiles exact provider input for direct `SessionRunner` and managed `SessionPrompt`; direct selection/payload is pinned in Core SessionStore, while managed selection is bound by HostKernel to the live Attempt; canonical conversation remains Core/OpenCode |
 | RepoIntel | indexd/host derived service |
 | AgentProfile/Harness/Skill/Hook/MCP registries | Host config/registry with kernel effect enforcement |
 | Guard/EffectService/ExecutionHost | Rust kernel |
@@ -118,6 +124,18 @@ No Bun/worker/plugin side-channel may perform the same effect outside this path.
 | Artifact store | authorized durable service |
 | UiEventMux/rendering | derived host/TUI/app plane |
 | Automation scheduler/control | Rust durable owner plus host action invocation |
+
+CodeMode is a V1 capability in the existing Core tool layer, not a new service, interpreter or
+authority owner. Existing `$codemode.search` discovers only the current authorized capability tree;
+Core-owned MCP adapters can participate only through the same dispatcher. Its existing interpreter
+runs in a short-lived helper process launched and supervised by the existing Rust ExecutionHost.
+HostKernel applies and verifies fixed `CodeModeResourceProfileV1` before execution (512 MiB, one
+CPU, 64 PIDs, 256 FDs) under the fixed `horizoncode:codemode:bun` packaged runtime selector. A
+bounded private stdio protocol carries complete waves to Core; Core routes each wave through the
+existing SessionSupervisor and Guard/ExecutionHost path. Every nested effect re-enters the same
+Guard. Apply the common V1 limits: 64 total nested calls across up to 64 sequential waves of at
+most 32, 30 seconds, 64 KiB source/output and 1 MiB aggregate arguments. Without verified OS
+containment or the fixed runtime, the capability is unavailable.
 
 ## 13.7 Public API
 

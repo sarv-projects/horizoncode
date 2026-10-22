@@ -59,6 +59,19 @@ CODE_PRESENT source in the reducer, not evidence that HostKernel dispatch/lease 
 WIRED or accepted. The effect edges must be bound before lease issuance; a refreshed
 HostKernel-issued scope is required after every managed-owner mutation.
 
+**Normative V1 wave event (DEC-V1-30):** new managed ToolBatch waves append
+`attempt_effect_wave_bound` after approval and before any one-use lease is consumable. The
+versioned payload binds live Run/Task/Attempt, HostKernel batch ID, wave index, registered
+Session/Location, authenticated source-scope digest and ordered 1–32 edges
+`{callIndex,callId,effectId,capabilityId,argumentsDigest,intentDigest}`. The owner recomputes
+the domain-separated wave digest. `argumentsDigest` covers canonical tool arguments;
+`intentDigest` covers the complete immutable EffectIntent and must equal the Guard-retained
+intent digest. No arguments, secrets or caller-supplied identity are stored. All edges bind at
+one OwnerLog revision; HostKernel refreshes the Attempt scope and revalidates it before minting
+per-effect leases. Exact retries return the original append result; changed retries conflict.
+The legacy `attempt_effects_bound` remains replay-compatible but cannot authorize a new guarded
+wave. Direct Sessions continue to use DirectTurnJournal.
+
 Evidence:
 evidence_collected/accepted/rejected/stale;
 verification_started/passed/failed/needs_you.
@@ -86,6 +99,7 @@ It does not persist canonical prompt/answer/Message/Part content as a Rust conve
 
 Examples:
 - token/text/thinking deltas;
+- request-bound `session.context_ledger` projection emitted after provider parameter normalization and before send;
 - tool progress;
 - UI typing/hover/selection;
 - render frames;
@@ -95,6 +109,7 @@ Examples:
 - analytics samples.
 
 Ephemeral delivery can be coalesced/dropped according to UI policy. Durable owner transitions/receipts cannot.
+`session.context_ledger` carries the strict `ContextLedgerV2` plus its digest and is keyed by the exact Session request ID and source generation. It contains only bounded model-visible provenance, never raw provider parameters, prompt text, credentials or authority. It is derived in memory for the current request, is not a second transcript or ledger store, and may be dropped. The live TUI can show the most recent request ledger; a reconnect may restore it only from the active request's bounded projection, otherwise it reports the context view unavailable until a new request produces one. A missing ledger event never changes dispatch, permissions, or durable owner state.
 
 ## 4.6 Outbox and multi-store consistency
 
@@ -195,7 +210,132 @@ not durable effect evidence and does not form a new event bus. Each route attemp
 binds request correlation, route ID, configured order index, attempt number, status class,
 HTTP status when known, latency observation, bounded retry-after and route auth/cost class.
 Never project query text by default, SecretRef/lease identifiers, headers, response bodies or
-credential data. Per-route auth 401/403/407 failures remain visible and can advance only to
-the next route in the captured explicitly enabled/configured cascade; other non-rate-limit
+credential data. After first-use search consent, the captured route plan starts with the
+default-enabled free anonymous built-in cascade; BYO authenticated routes must be explicitly
+enabled/configured by the user, and grounded-model search is separate and explicit-only.
+Per-route auth 401/403/407 failures remain visible and can advance only to the next such enabled route;
+other non-rate-limit
 4xx terminates with a surfaced reason. Replay after a gap re-reads the current request
 snapshot or returns a typed unavailable result; it never re-dispatches a search request.
+
+The route plan is trusted broker/config state pinned before dispatch, never a provider or route
+selection supplied by model arguments. Each route attempt projection reports its own provenance
+and bounded error class; it omits raw query text and credentials.
+
+## 4.15 Managed provider request dispatch lifecycle (V1, 2026-10-21)
+
+ContextSelection admission/advance pins request provenance but is not permission to send a
+provider request. ManagedControl retains each request through `managed_provider_request_prepared`,
+`managed_provider_request_dispatching`, and exactly one terminal
+`managed_provider_request_settled` or `managed_provider_request_unknown` event. Each event is
+bound to the live Attempt, owner epoch, child Session, request ID/sequence, ContextSelection
+digest, selected provider/model/harness/route revision, and BLAKE3 of the exact normalized
+provider input. The immutable route projection also retains route ID and opaque
+credential-lease, consent, Guard-challenge and capability-lease references; it never stores
+credential bytes, arbitrary URLs or headers. Prepare replay must match all pins and grants no
+send authority. Begin is
+one-use and persists DISPATCHING before network I/O; only its fresh response carries the opaque
+send authorization. Settlement follows durable child assistant-entry commit and binds its ID,
+response digest and bounded usage provenance. A restart or ambiguous response while
+DISPATCHING becomes UNKNOWN and is never resent automatically.
+
+Current HostKernel RPC decoders validate these operation envelopes, but route resolution and
+the Guarded ExecutionHost provider transport are not yet available. All four operations
+therefore return `UNAVAILABLE` without appending provider lifecycle events; begin returns a
+null send authorization. The reducer/event contracts are not evidence that a provider request
+was sent.
+
+## 4.16 Direct-session grant and CodeMode projections (V1)
+
+The selected `DirectSessionPermissionModeV1` is projected from authenticated
+HostKernel state to Core/TUI with source generation and monotonic sequence. It
+contains sandbox mode, approval policy, effective source, revision and digest;
+it contains no caller-supplied principal or credential. Attach/reconnect obtains
+a fresh snapshot. A mode change advances the revision and fences any pending
+prepared effect whose policy digest was resolved under the previous mode.
+The projection is UI/config state, not a lease or dispatch authorization. Its
+schema is `contracts-v2/direct-session-permission-mode-v1.schema.json`.
+
+Grant creation and revocation are persisted by the canonical Rust Guard authority and
+projected to Core/TUI as `DirectSessionGrantChangedV1` with event ID, source generation,
+monotonic sequence, opaque grant ID/digest, bounded scope summary, expiry and active/revoked/
+stale status. Invalidation can be projected with a bounded reason code. The projection contains
+no caller-selected principal or credential. It is refreshed from the owner on attach,
+reconnect and every effect admission; a stale UI projection cannot authorize. Revocation,
+expiry, Session replacement, principal/epoch change, workspace-root change, policy-digest/backend
+or guarantee change fences later dispatch before a lease is issued. An approval
+event names the exact normalized action/resource or complete ToolBatch that crossed scope.
+
+Direct `codemode.execute` enablement is the distinct Guard-owned `CodeModeEnablementV1` record in
+`contracts-v2/codemode-enablement-v1.schema.json`, bound to authenticated principal, Session and
+owner epoch, fixed selector and resolved helper digest, exact resource-profile ID/digest,
+backend/guarantee and policy digests, expiry and revocation generation. It is not a
+DirectSessionGrant and cannot authorize nested tools. Core/TUI may project the canonical
+enablement's opaque identity/digest, Session/source generation, expiry and active/revoked/stale
+state; this is derived UI state, not a new OwnerLog kind, event bus or authorization input.
+Managed exposure is projected from accepted SpecVersion and Task-pinned AgentProfileV2 authority
+plus the live Attempt, never from a direct enablement. Both are refreshed from canonical owner
+state on attach/reconnect and checked before every helper launch. Session replacement/close,
+revocation, or selector/profile/backend drift fences the next direct launch. The helper launch still
+settles through its normal EffectIntent/lease/receipt; nested effects retain their own ToolBatch,
+DirectSessionGrant/approval, lease and receipt records.
+
+CodeMode `execute` streams redacted call lifecycle and bounded output under the outer direct
+turn or managed Attempt correlation. Each nested effect's PREPARED, approval, DISPATCHING,
+SETTLED or UNKNOWN facts remain the canonical ToolBatch/effect records; UI activity is derived
+and carries owner/source generation and sequence fences. After reconnect, Core resnapshots
+the outer call and exact nested receipts; a gap never causes script or effect replay. One shared 64-call/30-second/64-KiB source/output/1-MiB argument budget is represented by the
+authenticated outer execution and cannot reset at a wave boundary. The stdio helper protocol itself
+is private and non-authoritative; every call event correlates to the Core-owned ToolBatch and its
+Rust receipt. Helper exit or a terminal frame cannot stand in for effect settlement. Schema authority is §12.21 and service/flow
+authority is §§3.23/37.24.
+
+Direct artifact availability is projected from the Core Session tool-call/result part and the
+single canonical ArtifactStore record. The strict lane variants are defined by
+`contracts-v2/source-artifact-v1.schema.json`; direct requires `sessionId`, `producerRequestId`,
+`producerToolCallId`, `effectId` and settled `effectReceiptRef`, while managed requires `attemptId`
+and `evidenceRefs` and forbids direct-lane fields. The immutable `SourceArtifactV1` ref carries `lane: "direct"`
+and binds the authenticated Session, producer request/tool-call IDs, effect ID and settled effect
+receipt. Search/range notifications are derived and may be coalesced; they never create artifact
+ownership or durable evidence. Reconnect rereads the exact Session result and reauthorizes the ref
+against ArtifactStore; if its receipt, generation, digest or retention record cannot be resolved,
+the UI reports unavailable/stale/failed rather than retrying the producer effect. Managed artifact
+and evidence references remain Rust-owner projections; a direct ref is never promoted or attached
+as managed evidence, and managed refs never widen direct Session scope. There is no new Artifact OwnerLog event,
+and direct artifacts never imply managed verification or PASS.
+### Direct grants and immutable command-profile events
+
+Direct grant issuance/revocation lives in the existing Guard/EffectHost append-only
+authority journal. Each issued grant digest includes the exact
+`WorkspaceCommandProfileV1` refs `{profileId, revision, profileDigest, action}` for
+build/test scope. Profile edits are new immutable Core Config revisions; they do not
+rewrite an issued grant. A dispatch resolves and compares the live profile, binary
+identity, workspace root, policy and backend guarantee set before creating the ordinary
+EffectIntent/lease. Revocation is monotonic and checked before every dispatch. The
+journal event projections remain metadata-only; they contain no command body, argv,
+environment values, credential, output or secret.
+
+### Managed DAG events (DEC-V1-31)
+
+Managed DAG events use the existing Run/Task/Attempt OwnerLog and one authoritative graph
+revision. A graph proposal is validated for cycle, bounds, capability/profile ceilings,
+workspace and write conflicts before commit. Task readiness and terminal outcomes are
+derived from durable per-Task verifier/receipt events. Run aggregate success is derived
+only when all required Tasks pass at their exact current workspace revisions, all effect
+receipts settle, and no cancellation or UNKNOWN remains. Parent/child Core Session events
+are projections and do not replace Rust Task transitions. This describes final V1 target;
+multi-Task dispatch stays gated pending implementation and acceptance.
+
+## 4.17 External editor lifecycle projection (V1, DEC-V1-33)
+
+External editor UI activity is a derived Session projection over canonical Guard/EffectHost
+intent, HostKernel process state, execution receipt and resulting `files.patch`; it is not
+a second process/event authority. `ExternalEditorChangedV1` contains only event/source
+generation, sequence, Session ID, opaque launch ID, target kind, bounded target label,
+profile ID/revision/digest, lifecycle status (`starting`, `running`, `completed`,
+`cancelled`, `conflict`, `unavailable`, `unknown`), and optional typed reason. It never
+contains prompt text, file contents, executable path, argv, environment, or raw principal.
+Reconnect obtains fresh process status and current file revision; a stream gap cannot
+relaunch the editor. Successful workspace edit emits ordinary file-change/patch events
+after Guard settlement. UNKNOWN remains reconciliation-only.
+

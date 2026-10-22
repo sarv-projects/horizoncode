@@ -12,6 +12,8 @@ import {
   ProtocolError,
   parseExecuteRequest,
   parseExecuteResult,
+  parseCallbackRequest,
+  parseCallbackResult,
   parseStartRequest,
   validateIdleTtl,
 } from "@/repl/protocol"
@@ -265,6 +267,30 @@ describe("repl.protocol execute envelopes", () => {
     expect(() => validateIdleTtl(500)).toThrow(ProtocolError)
     expect(() => validateIdleTtl(MAX_IDLE_TTL_MS + 1)).toThrow(ProtocolError)
     expect(() => validateIdleTtl(1.5)).toThrow(ProtocolError)
+  })
+})
+
+describe("repl.protocol callback envelopes", () => {
+  test("bounds callback envelopes and binds results to exact callback identity", () => {
+    const request = parseCallbackRequest({
+      generation: 1,
+      callbackID: "cb-1",
+      capabilityID: "files.read",
+      arguments: { path: "src/main.ts" },
+    })
+    expect(parseCallbackResult({
+      generation: 1,
+      callbackID: "cb-1",
+      status: "ok",
+      result: { contents: "ok" },
+    }, request)).toMatchObject({ status: "ok", callbackID: "cb-1" })
+    expect(() => parseCallbackRequest({ ...request, callbackID: "bad id" })).toThrow(ProtocolError)
+    expect(() => parseCallbackResult({
+      generation: 1,
+      callbackID: "cb-other",
+      status: "ok",
+      result: null,
+    }, request)).toThrow(ProtocolError)
   })
 })
 

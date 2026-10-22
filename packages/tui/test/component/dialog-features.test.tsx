@@ -6,7 +6,7 @@ import { mkdir } from "node:fs/promises"
 import path from "node:path"
 import { createEffect, onCleanup, onMount } from "solid-js"
 import { FeatureExposure } from "@opencode-ai/core/v1/config/feature-exposure"
-import { DialogFeatures } from "../../src/component/dialog-features"
+import { DialogFeatures, featureSettingIsMutable } from "../../src/component/dialog-features"
 import { DialogProvider as DialogProviderList } from "../../src/component/dialog-provider"
 import { DialogModel } from "../../src/component/dialog-model"
 import { useLocal } from "../../src/context/local"
@@ -28,6 +28,20 @@ import { TestTuiContexts } from "../fixture/tui-environment"
 import { createFetch, eventSource, json } from "../fixture/tui-sdk"
 import { createTuiResolvedConfig } from "../fixture/tui-runtime"
 import { tmpdir } from "../fixture/fixture"
+
+test("feature settings are mutable only when the authoritative policy state is unlocked", () => {
+  const [feature] = FeatureExposure.list({})
+  expect(feature).toBeDefined()
+  expect(feature && featureSettingIsMutable(feature)).toBe(true)
+  expect(feature && featureSettingIsMutable({
+    ...feature,
+    state: { ...feature.state, policyLock: "unknown" },
+  })).toBe(false)
+  expect(feature && featureSettingIsMutable({
+    ...feature,
+    state: { ...feature.state, policyLock: "locked", blockedReason: "Managed by policy" },
+  })).toBe(false)
+})
 
 async function waitFor(fn: () => boolean, timeout = 2000) {
   const start = Date.now()
@@ -440,7 +454,7 @@ test("an unconnected provider does not prompt for or submit credentials", async 
 
     app.mockInput.pressEnter()
     const frame = await waitForFrame(app, (value) => value.includes("not connected"))
-    expect(containsPhrase(frame, "credential entry and OAuth are unavailable here")).toBe(true)
+    expect(containsPhrase(frame, "Guarded SecretBroker credential entry and OAuth transport are unavailable")).toBe(true)
     expect(frame).not.toContain("API key")
     expect(frame).not.toContain("Authorization code")
     expect(providerLists).toBe(1)
@@ -560,7 +574,7 @@ test("an environment-disabled feature is reported as blocked and performs no con
   }
 })
 
-test("console-managed providers are locked and env-connected providers report provenance", async () => {
+test("console-managed providers are locked and environment credentials do not enable dispatch", async () => {
   await using tmp = await tmpdir()
   const state = path.join(tmp.path, "state")
   await mkdir(state, { recursive: true })
@@ -686,7 +700,7 @@ test("console-managed providers are locked and env-connected providers report pr
     await waitFor(() => dialog?.stack.length === 1)
     await waitFor(() => syncStatus === "complete")
     const frame = await waitForFrame(app, (value) => value.includes("Env Provider"))
-    expect(frame).toContain("Environment: ENV_PROVIDER_KEY")
+    expect(frame).toContain("Legacy environment source detected (ENV_PROVIDER_KEY) · not used for dispatch")
     expect(frame).toContain("Managed Provider")
     expect(frame).toContain("Acme Org")
 
@@ -702,15 +716,16 @@ test("console-managed providers are locked and env-connected providers report pr
     expect(authWrites).toBe(0)
     expect(dialog?.stack.length).toBe(1)
 
-    // An environment-connected provider can be selected and its models can be
-    // switched without opening either credential or OAuth controls.
+    // The legacy environment source is visible as provenance, but it cannot
+    // enable HorizonCode dispatch or create auth state.
     app.mockInput.pressKey("ARROW_UP")
     app.mockInput.pressEnter()
     const modelFrame = await waitForFrame(app, (value) => value.includes("Environment Model"))
     expect(modelFrame).toContain("Environment Model")
+    expect(modelFrame).toContain("Dispatch unavailable in HorizonCode V1")
     app.mockInput.pressEnter()
-    await waitFor(() => selectedModel?.providerID === "env-provider" && selectedModel?.modelID === "env-model")
-    expect(selectedModel).toEqual({ providerID: "env-provider", modelID: "env-model" })
+    await Bun.sleep(50)
+    expect(selectedModel).toBeUndefined()
     expect(oauthCalls).toBe(0)
     expect(authWrites).toBe(0)
   } finally {
@@ -790,7 +805,10 @@ test("the model hub shows known input/output prices and marks incomplete pricing
           },
         ],
         default: {},
-        connected: ["opencode", "alternate"],
+        // Static catalog presence is not an access source. Keep the explicit
+        // zero-priced anonymous OpenCode offer selectable; the credentialed
+        // alternate remains visible but unavailable.
+        connected: ["alternate"],
       })
     if (url.pathname === "/auth/alternate") {
       authWrites++
@@ -877,8 +895,8 @@ test("the model hub shows known input/output prices and marks incomplete pricing
     expect(frame.split("Listed $0").length - 1).toBe(1)
     expect(frame).not.toContain("Zen Nano")
 
-    // Selecting a model from another provider updates only the local model
-    // selection. It does not try to create auth state.
+    // A credentialed alternative is visible with provenance but remains
+    // unavailable until its SecretBroker transport is Guarded.
     const alternateFrame = await waitForFrame(app, (value) => value.includes("Alternate Model"))
     expect(alternateFrame).toContain("Alternate Provider")
     const rendered = app.captureCharFrame()
@@ -887,7 +905,16 @@ test("the model hub shows known input/output prices and marks incomplete pricing
     await app.mockMouse.click(rows[row]!.indexOf("Alternate Model"), row)
     await app.renderOnce()
     await Bun.sleep(100)
-    expect(selectedModel).toEqual({ providerID: "alternate", modelID: "alternate-model" })
+    expect(selectedModel).toBeUndefined()
+    expect(authWrites).toBe(0)
+
+    // The explicitly zero-priced anonymous OpenCode offer can be selected.
+    const freeRows = app.captureCharFrame().split("\n")
+    const freeRow = freeRows.findIndex((line) => line.includes("Zen Free Model"))
+    await app.mockMouse.click(freeRows[freeRow]!.indexOf("Zen Free Model"), freeRow)
+    await app.renderOnce()
+    await Bun.sleep(50)
+    expect(selectedModel).toEqual({ providerID: "opencode", modelID: "zen-free" })
     expect(authWrites).toBe(0)
   } finally {
     app.renderer.destroy()

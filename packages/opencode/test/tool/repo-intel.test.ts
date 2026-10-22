@@ -377,9 +377,9 @@ const spyFs = (
           }
           return opened.readFile(rel, maxBytes)
         },
-        readDirectoryEntries: (rel) => {
+        readDirectoryEntriesBounded: (rel, maxEntries) => {
           counters.readdirs++
-          return opened.readDirectoryEntries(rel)
+          return opened.readDirectoryEntriesBounded!(rel, maxEntries)
         },
       })),
   }
@@ -685,6 +685,46 @@ describe("tool.repo-intel", () => {
     }),
   )
 
+  it.live("accepts structural continuation only after a full current page", () =>
+    Effect.gen(function* () {
+      const nodes = Array.from({ length: structureQuery.maxNodes }, (_, index) => ({
+        workspaceBinding: unavailableStructurePage.workspaceBinding,
+        sourceGeneration: structureGeneration,
+        sourceRevision: structureRevision,
+        pathRef: `src/${index}.ts`,
+        fileDigest: structureRevision,
+        nodeId: `node-${index}`,
+        nodeKind: "text_occurrence",
+        symbol: "entry",
+        byteRange: { start: 0, end: 5 },
+        parserId: "horizoncode.lexical",
+        parserVersion: "1",
+      }))
+      const page = {
+        ...unavailableStructurePage,
+        sourceKind: "lexical" as const,
+        status: "PARTIAL" as const,
+        freshness: "current" as const,
+        completeness: "partial" as const,
+        coverage: { files: nodes.length, nodes: nodes.length, bytes: nodes.length * 5 },
+        nodes,
+        fallback: { reason: "parse_partial" as const, sourceKind: "lexical" as const },
+        nextCursor: "repo_cur_0123456789abcdef",
+      }
+      const accepted = yield* RepoIntel.repoStructureClientFromTransport({
+        query: () => Effect.succeed(page),
+      }).query(structureRequest)
+      expect(accepted.nextCursor).toBe(page.nextCursor)
+
+      const shortPage = { ...page, nodes: nodes.slice(0, -1), coverage: { ...page.coverage, nodes: nodes.length - 1 } }
+      const rejected = yield* Effect.exit(
+        RepoIntel.repoStructureClientFromTransport({ query: () => Effect.succeed(shortPage) }).query(structureRequest),
+      )
+      expect(Exit.isFailure(rejected)).toBe(true)
+      if (Exit.isFailure(rejected)) expect(Cause.squash(rejected.cause)).toMatchObject({ code: "rejected" })
+    }),
+  )
+
   it.live("interrupts an in-flight structural query so its HostKernel transport can cancel it", () =>
     Effect.gen(function* () {
       let interrupted = false
@@ -958,6 +998,39 @@ describe("tool.repo-intel", () => {
         expect(state.queries).toBe(1)
       }),
     ),
+  )
+
+  it.live("caps directory enumeration and reports omitted entries as partial", () =>
+    Effect.gen(function* () {
+      const root = path.resolve(import.meta.dirname, "../../../..")
+      const base = yield* FSUtil.Service
+      let requestedEntryLimit = 0
+      const source: RepoIntel.RepoIntelSource = {
+        openRoot: (directory) =>
+          Effect.map(RepoIntel.nodeSource.openRoot(directory), (opened) => ({
+            ...opened,
+            readDirectoryEntriesBounded: (_rel, maxEntries) => {
+              requestedEntryLimit = maxEntries
+              return Effect.succeed({
+                entries: [{ name: "AGENTS.md", type: "file" as const }],
+                truncated: true,
+              })
+            },
+          })),
+      }
+      const { backend } = makeBackend()
+      const service = RepoIntel.make({ fs: base, source, backend })
+      const result = yield* service.searchText({
+        scope: scope(root),
+        query: "not present in the bounded fixture listing",
+        budget: { maxFiles: 1, maxDirectories: 1 },
+      })
+
+      expect(requestedEntryLimit).toBe(2)
+      expect(result.freshness).toBe("partial")
+      expect(result.truncation).toContain("entry_limit")
+      expect(result.scanned.files).toBe(1)
+    }),
   )
 
   it.live("reports partial results truthfully when files are skipped", () =>
@@ -1312,8 +1385,8 @@ describe("tool.repo-intel", () => {
           openRoot: (root) =>
             Effect.map(RepoIntel.nodeSource.openRoot(root), (opened) => ({
               ...opened,
-              readDirectoryEntries: (rel) =>
-                Effect.tap(opened.readDirectoryEntries(rel), () =>
+              readDirectoryEntriesBounded: (rel, maxEntries) =>
+                Effect.tap(opened.readDirectoryEntriesBounded!(rel, maxEntries), () =>
                   Effect.sync(() => {
                     directoryScans++
                     if (directoryScans >= 2) Deferred.doneUnsafe(bothCollected, Effect.void)
@@ -1425,8 +1498,8 @@ describe("tool.repo-intel", () => {
           openRoot: (root) =>
             Effect.map(RepoIntel.nodeSource.openRoot(root), (opened) => ({
               ...opened,
-              readDirectoryEntries: (rel) =>
-                Effect.tap(opened.readDirectoryEntries(rel), () =>
+              readDirectoryEntriesBounded: (rel, maxEntries) =>
+                Effect.tap(opened.readDirectoryEntriesBounded!(rel, maxEntries), () =>
                   Effect.sync(() => {
                     directoryScans++
                     if (directoryScans >= 2) Deferred.doneUnsafe(bothCollected, Effect.void)
@@ -1599,13 +1672,25 @@ describe("tool.repo-intel", () => {
         profileState = { requested: "lightweight", effective: "full" }
         const clamped = yield* service.searchText({ scope: scope(dir), query: "needle", maxResults: 10 })
         expect(clamped.analysisProfile).toEqual({ requested: "lightweight", effective: "lightweight" })
+        profileState = {
+          requested: "full",
+          effective: "lightweight",
+          effectiveSource: "resource",
+          reason: "resource_pressure",
+        }
+        const unauthenticatedPressure = yield* service.searchText({ scope: scope(dir), query: "needle", maxResults: 10 })
+        expect(unauthenticatedPressure.analysisProfile).toMatchObject({
+          requested: "full",
+          effective: "full",
+          effectiveSource: "unknown",
+        })
         expect(invalid.generationId).toBe(missing.generationId)
         expect(invalidEffective.generationId).toBe(missing.generationId)
         expect(failedResolution.generationId).toBe(missing.generationId)
         expect(adaptive.generationId).toBe(invalid.generationId)
         expect(clamped.generationId).toBe(invalid.generationId)
         expect(state.builds).toBe(1)
-        expect(state.queries).toBe(6)
+        expect(state.queries).toBe(7)
       }),
     ),
   )
@@ -1625,6 +1710,42 @@ describe("tool.repo-intel", () => {
 
         expect(yield* service.stats()).toEqual({ entries: 1, bytes: 8, inFlightBuilds: 0, buildWaiters: 0 })
         expect(state.released).toBe(1)
+      }),
+    ),
+  )
+
+  it.live("expires idle generations, reports owner pins, and never claims reclaimed RAM", () =>
+    withTmp((dir) =>
+      Effect.gen(function* () {
+        yield* write(dir, "a.txt", "needle\n")
+        const base = yield* FSUtil.Service
+        const { backend, state } = makeBackend()
+        let now = 1_000
+        const events: RepoIntel.RepoIntelCacheOwnerObservationV1[] = []
+        const service = RepoIntel.make({
+          fs: base,
+          backend,
+          ttlMs: 50,
+          now: () => now,
+          onCacheOwnerEvent: (event) => events.push(event),
+        })
+
+        const first = yield* service.searchText({ scope: scope(dir), query: "needle", maxResults: 10 })
+        expect(events.some((event) => event.event === "pin" && event.pinCount > 0 && event.protection === "pinned")).toBe(true)
+        expect(events.every((event) => event.reclaimedBytes === null)).toBe(true)
+        expect(events.some((event) => event.sourceGeneration === first.generationId && event.ownerScopeDigest.length > 0)).toBe(true)
+        now += 51
+        const second = yield* service.searchText({ scope: scope(dir), query: "needle", maxResults: 10 })
+
+        expect(state.builds).toBe(2)
+        expect(events.some((event) => event.event === "evict")).toBe(true)
+        expect(events.some((event) => event.event === "release")).toBe(true)
+        expect(events.every((event) => event.ttlMs === 50)).toBe(true)
+        expect(yield* service.evictGeneration("ws-1", second.generationId)).toEqual({
+          status: "evicted",
+          reclaimedBytes: null,
+        })
+        expect((yield* service.stats()).entries).toBe(0)
       }),
     ),
   )

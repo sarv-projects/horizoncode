@@ -1,4 +1,6 @@
 export * as Git from "./git"
+export { readGit } from "./git-host"
+export type { GitReadOperationV1, GitReadResultV1 } from "./git-host"
 
 import path from "path"
 import { Context, Effect, Layer, Schema, Stream } from "effect"

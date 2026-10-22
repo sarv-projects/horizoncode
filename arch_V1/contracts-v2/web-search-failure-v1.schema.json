@@ -1,0 +1,253 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://horizoncode.dev/contracts/web-search-failure-v1.schema.json",
+  "title": "WebSearchFailureV1",
+  "description": "Bounded typed non-result outcome for web.search. FAILED identifies a settled terminal non-authentication 4xx; per-route status/auth/cost and safe receipt refs remain visible. Unknown or exhausted dispatch is never represented as success or retried implicitly. Every attempt is bound to routePlanDigest; at most ten trusted direct route profiles and two attempts per route produce at most twenty entries.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "requestId": {
+      "$ref": "#/$defs/Identifier"
+    },
+    "status": {
+      "enum": [
+        "not_dispatched",
+        "failed",
+        "exhausted",
+        "cancelled",
+        "unknown",
+        "completed_result_unavailable"
+      ]
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "routeAttempts": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "$ref": "#/$defs/RouteAttemptV1"
+      }
+    },
+    "routePlanDigest": {
+      "$ref": "#/$defs/Digest",
+      "description": "Exact trusted HostKernel route plan provenance."
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "requestId",
+    "status",
+    "reason",
+    "routeAttempts"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "failed",
+              "exhausted",
+              "cancelled",
+              "unknown",
+              "completed_result_unavailable"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "required": [
+          "routePlanDigest"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "failed"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "routeAttempts": {
+            "contains": {
+              "properties": {
+                "status": {
+                  "const": "failed"
+                },
+                "statusCode": {
+                  "type": "integer",
+                  "minimum": 400,
+                  "maximum": 499,
+                  "not": {
+                    "enum": [
+                      401,
+                      403,
+                      407,
+                      408,
+                      425,
+                      429
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "status",
+                "statusCode"
+              ]
+            }
+          }
+        }
+      }
+    }
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "Identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+    },
+    "ProviderId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9._-]+$"
+    },
+    "CostClass": {
+      "enum": [
+        "free",
+        "paid",
+        "trial",
+        "unknown"
+      ]
+    },
+    "AuthSource": {
+      "enum": [
+        "none",
+        "saved_credential",
+        "secret_broker",
+        "environment",
+        "model_provider",
+        "unknown"
+      ]
+    },
+    "RouteAttemptV1": {
+      "type": "object",
+      "properties": {
+        "providerId": {
+          "$ref": "#/$defs/ProviderId"
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2
+        },
+        "status": {
+          "enum": [
+            "succeeded",
+            "failed",
+            "rate_limited",
+            "retryable_failure",
+            "not_dispatched",
+            "empty",
+            "unknown"
+          ]
+        },
+        "notDispatchedFailure": {
+          "enum": ["cancelled", "timed_out", "transport_failure"],
+          "description": "Trusted zero-send reason required for a known not_dispatched route receipt. Only timed_out/transport_failure permit one same-route retry."
+        },
+        "costClass": {
+          "$ref": "#/$defs/CostClass"
+        },
+        "authSource": {
+          "$ref": "#/$defs/AuthSource"
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "statusCode": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 599
+        },
+        "retryAfterMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 60000
+        },
+        "observedAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "receiptRef": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "routeId": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "routeIndex": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9
+        }
+      },
+      "required": [
+        "providerId",
+        "attempt",
+        "status",
+        "routeId",
+        "routeIndex"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": { "status": { "const": "not_dispatched" } },
+            "required": ["status"]
+          },
+          "then": { "required": ["notDispatchedFailure"] },
+          "else": { "not": { "required": ["notDispatchedFailure"] } }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": { "not": { "const": "unknown" } }
+            },
+            "required": ["status"]
+          },
+          "then": { "required": ["receiptRef"] }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": { "const": "unknown" }
+            },
+            "required": ["status"]
+          },
+          "then": { "not": { "required": ["receiptRef"] } }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "Digest": {
+      "type": "string",
+      "pattern": "^blake3:[a-f0-9]{64}$"
+    }
+  }
+}

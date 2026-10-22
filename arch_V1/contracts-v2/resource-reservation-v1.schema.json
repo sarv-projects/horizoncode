@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "horizon://schemas/resource-reservation-v1",
+  "title": "ResourceReservationV1",
+  "description": "Worker/resource reservation state (A-V2-30 §12.16; §11.20 states).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "reservationId",
+    "state",
+    "ownerEpoch",
+    "limits",
+    "expiresAt"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "reservationId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "state": {
+      "enum": [
+        "PROPOSED",
+        "RESERVED",
+        "CLAIMED",
+        "RELEASE_PENDING",
+        "QUARANTINED",
+        "RELEASED",
+        "EXPIRED"
+      ]
+    },
+    "ownerEpoch": { "$ref": "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64" },
+    "attemptRef": { "type": ["string", "null"], "maxLength": 256 },
+    "workerExecutionRef": { "type": ["string", "null"], "maxLength": 256 },
+    "leaseRef": { "type": ["string", "null"], "maxLength": 256 },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "memoryBytes": { "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64" },
+        "cpuWeight": { "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64" },
+        "maxPids": { "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64" }
+      }
+    },
+    "expiresAt": { "type": "string", "format": "date-time" },
+    "processStartIdentity": { "type": ["string", "null"], "maxLength": 256 }
+  }
+}

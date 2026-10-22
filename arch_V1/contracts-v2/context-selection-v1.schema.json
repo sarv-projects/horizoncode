@@ -2,43 +2,416 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "horizon://schemas/context-selection-v1",
   "title": "ContextSelectionV1",
+  "description": "Lane-discriminated request-bound Core-compiled context references. Core SessionStore pins direct selections; HostKernel validates and pins managed selections. Transcript or prompt content is never copied into managed state.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "sessionID", "mode", "sourceRevision", "sources"],
+  "required": [
+    "schemaVersion",
+    "lane",
+    "sessionID",
+    "requestID",
+    "mode",
+    "sourceRevision",
+    "sources"
+  ],
   "properties": {
-    "schemaVersion": { "const": 1 },
-    "sessionID": { "type": "string", "maxLength": 132, "pattern": "^ses_[A-Za-z0-9_-]{1,128}$" },
-    "mode": { "enum": ["fresh", "conversation_slice", "fork"] },
-    "sourceRevision": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "lane": {
+      "enum": ["direct", "managed"],
+      "description": "Direct pins are owned by Core SessionStore. Managed pins are bound by HostKernel to a live Attempt."
+    },
+    "sessionID": {
       "type": "string",
-      "pattern": "^(0|[1-9][0-9]{0,19})$",
-      "format": "horizon-u64-decimal",
-      "description": "Strict u64 upper-bound check is enforced by the decoder."
+      "maxLength": 132,
+      "pattern": "^ses_[A-Za-z0-9_-]{1,128}$"
+    },
+    "requestID": {
+      "$ref": "#/$defs/id",
+      "description": "Core-selected identity of the exact provider request this selection accompanies."
+    },
+    "attemptID": {
+      "$ref": "#/$defs/id",
+      "description": "Required with requestSequence for a managed Attempt request."
+    },
+    "requestSequence": {
+      "$ref": "#/$defs/positiveCounter",
+      "description": "1-based model-request sequence within the managed Attempt."
+    },
+    "mode": {
+      "enum": [
+        "fresh",
+        "conversation_slice",
+        "fork"
+      ]
+    },
+    "sourceRevision": {
+      "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64",
+      "description": "Canonical decimal-string Session event cursor observed by Core during compilation."
     },
     "sources": {
       "type": "array",
       "maxItems": 64,
+      "uniqueItems": false,
       "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["kind", "messageID", "contentDigest"],
-        "properties": {
-          "kind": { "const": "session-message" },
-          "messageID": { "type": "string", "pattern": "^msg_" },
-          "contentDigest": { "type": "string", "pattern": "^(sha256|blake3):[0-9a-f]{64}$" }
-        }
+        "$ref": "#/$defs/source"
       }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "revision": {
+      "$ref": "#/$defs/id",
+      "description": "Exact immutable revision token from the source owner."
+    },
+    "positiveCounter": {
+      "$ref": "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^(sha256|blake3):[0-9a-f]{64}$"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "sourceID",
+        "sourceRevision",
+        "contentDigest",
+        "sourceAuthority",
+        "trust",
+        "included",
+        "inclusionReason"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "session-message",
+            "agent-profile",
+            "managed-task",
+            "accepted-spec",
+            "provider-input",
+            "tool",
+            "instruction",
+            "skill",
+            "prompt-template",
+            "artifact"
+          ]
+        },
+        "sourceID": {
+          "$ref": "#/$defs/id"
+        },
+        "sourceRevision": {
+          "$ref": "#/$defs/revision",
+          "description": "Exact owner-issued revision. Session-message, provider-input and AgentProfileV2 revisions are canonical DecimalU64 strings."
+        },
+        "contentDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "sourceAuthority": {
+          "enum": [
+            "session-store",
+            "core-config",
+            "managed-control",
+            "core-prompt-compiler",
+            "tool-registry",
+            "instruction-resolver",
+            "skill-resolver",
+            "template-resolver",
+            "artifact-store"
+          ]
+        },
+        "trust": {
+          "enum": [
+            "system",
+            "user",
+            "workspace",
+            "external",
+            "mixed"
+          ]
+        },
+        "included": {
+          "const": true
+        },
+        "inclusionReason": {
+          "enum": [
+            "required",
+            "current_request",
+            "selected_tool",
+            "profile",
+            "instruction",
+            "skill",
+            "template",
+            "artifact",
+            "retrieval",
+            "context_anchor",
+            "history",
+            "summary"
+          ]
+        },
+        "harnessRevision": {
+          "$ref": "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64",
+          "description": "Toolset manifest generation encoded as exact positive u64 decimal string."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": ["session-message", "provider-input", "agent-profile"]
+              }
+            },
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": {
+              "sourceRevision": {
+                "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64"
+              }
+            }
+          }
+        }
+      ]
     }
   },
   "allOf": [
     {
-      "if": { "properties": { "mode": { "const": "fresh" } }, "required": ["mode"] },
-      "then": { "properties": { "sources": { "maxItems": 0 } } }
+      "if": {
+        "properties": {
+          "lane": {
+            "const": "direct"
+          }
+        },
+        "required": ["lane"]
+      },
+      "then": {
+        "not": {
+          "anyOf": [
+            { "required": ["attemptID"] },
+            { "required": ["requestSequence"] }
+          ]
+        },
+        "properties": {
+          "sources": {
+            "items": {
+              "not": {
+                "properties": {
+                  "kind": {
+                    "enum": ["managed-task", "accepted-spec"]
+                  }
+                },
+                "required": ["kind"]
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "required": ["attemptID", "requestSequence"]
+      }
     },
     {
-      "if": { "properties": { "mode": { "enum": ["conversation_slice", "fork"] } }, "required": ["mode"] },
-      "then": { "properties": { "sources": { "minItems": 1 } } }
+      "dependentRequired": {
+        "attemptID": [
+          "requestSequence"
+        ],
+        "requestSequence": [
+          "attemptID"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "lane": {"const": "direct"}
+        },
+        "required": ["lane"]
+      },
+      "then": {
+        "properties": {
+          "sources": {
+            "contains": {
+              "properties": {
+                "kind": {"const": "agent-profile"},
+                "sourceAuthority": {"const": "core-config"},
+                "inclusionReason": {"const": "profile"}
+              },
+              "required": ["kind", "sourceAuthority", "inclusionReason"]
+            },
+            "minContains": 1,
+            "maxContains": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "mode": {
+            "const": "fresh"
+          }
+        },
+        "required": [
+          "mode"
+        ]
+      },
+      "then": {
+        "properties": {
+          "sources": {
+            "items": {
+              "not": {
+                "properties": {
+                  "kind": {
+                    "const": "session-message"
+                  }
+                },
+                "required": [
+                  "kind"
+                ]
+              }
+            }
+          }
+        },
+        "properties": {
+          "sources": {
+            "contains": {
+              "properties": {
+                "kind": {"const": "agent-profile"},
+                "sourceAuthority": {"const": "core-config"},
+                "inclusionReason": {"const": "profile"}
+              },
+              "required": ["kind", "sourceAuthority", "inclusionReason"]
+            },
+            "minContains": 1,
+            "maxContains": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "mode": {
+            "enum": [
+              "conversation_slice",
+              "fork"
+            ]
+          }
+        },
+        "required": [
+          "mode"
+        ]
+      },
+      "then": {
+        "properties": {
+          "sources": {
+            "contains": {
+              "properties": {
+                "kind": {
+                  "const": "session-message"
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "sources": {
+          "contains": {
+            "properties": {
+              "kind": {
+                "const": "provider-input"
+              },
+              "sourceAuthority": {
+                "const": "core-prompt-compiler"
+              },
+              "trust": {
+                "const": "mixed"
+              },
+              "included": {
+                "const": true
+              },
+              "inclusionReason": {
+                "const": "current_request"
+              }
+            },
+            "required": [
+              "kind",
+              "sourceAuthority",
+              "trust",
+              "included",
+              "inclusionReason"
+            ]
+          },
+          "minContains": 1,
+          "maxContains": 1
+        }
+      }
+    },
+    {
+      "properties": {
+        "sources": {
+          "items": {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "tool"
+                },
+                "sourceID": {
+                  "pattern": "^toolset:"
+                }
+              },
+              "required": [
+                "kind",
+                "sourceID"
+              ]
+            },
+            "then": {
+              "required": [
+                "harnessRevision"
+              ]
+            },
+            "else": {
+              "not": {
+                "required": [
+                  "harnessRevision"
+                ]
+              }
+            }
+          }
+        }
+      }
     }
   ],
-  "x-horizon-validation": ["u64-sourceRevision", "unique-messageID-in-source-order"]
+  "x-horizon-validation": [
+    "lane-direct-core-sessionstore-or-lane-managed-hostkernel-attempt",
+    "decimal-u64-session-sourceRevision",
+    "requestSequence-in-1..1024",
+    "unique-kind-sourceID",
+    "authority-matches-kind",
+    "nonempty-included-sources",
+    "exactly-one-provider-input-sourceID-equals-requestID-and-revision-equals-direct-session-cursor-or-managed-requestSequence",
+    "provider-input-digest-is-core-blake3-of-exact-frozen-normalized-provider-visible-system-messages-tool-definitions",
+    "managed-selection-requires-exactly-one-managed-task-accepted-spec-agent-profile-and-provider-input",
+    "direct-selection-requires-exactly-one-current-core-config-agent-profile-pin",
+    "managed-task-ref-equals-current-taskRevision-and-rust-contextDigest",
+    "accepted-spec-ref-equals-current-accepted-spec-id-and-digest",
+    "agent-profile-ref-equals-task-pinned-profile-and-owner-trust",
+    "toolset-generation-recomputed-from-manifest-harnessID-revision-and-sorted-member-schema-digests",
+    "canonical-source-order-preserved",
+    "canonical-messagepack-domain-separated-blake3"
+  ]
 }

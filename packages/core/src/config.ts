@@ -6,6 +6,7 @@ import { type ParseError, parse } from "jsonc-parser"
 import { Context, Effect, Layer, Option, Schema } from "effect"
 import { Permission } from "@opencode-ai/schema/permission"
 import * as AgentProfileV2 from "@opencode-ai/schema/agent-profile-v2"
+import * as WorkspaceCommandProfileV1 from "@opencode-ai/schema/workspace-command-profile-v1"
 import { FSUtil } from "./fs-util"
 import { Global } from "./global"
 import { Location } from "./location"
@@ -80,6 +81,15 @@ export class Info extends Schema.Class<Info>("Config.Info")({
     description:
       "Explicit compatibility selectors for Task subagents. Each selector binds one immutable user-owned AgentProfileV2 ID and revision; names and newest-revision lookup are not authority.",
   }),
+  primary_agent_profile_selector: Schema.String.check(Schema.isNonEmpty()).check(Schema.isMaxLength(256))
+    .check(Schema.isPattern(/^[A-Za-z0-9._-]+$/)).pipe(Schema.optional).annotate({
+      description:
+        "Explicit global-user-config selector for the primary direct-session AgentProfileV2. The selected immutable profile must have the main role; legacy agent names are never resolved as profile authority.",
+    }),
+  workspace_command_profiles: Schema.Array(WorkspaceCommandProfileV1.WorkspaceCommandProfileDefinitionV1).pipe(Schema.optional).annotate({
+    description:
+      "Immutable, versioned user-owned workspace build/test profiles. Only global user config is authoritative; project, plugin and model sources are ignored. A profile never authorizes execution by itself.",
+  }),
   snapshots: Schema.Boolean.pipe(Schema.optional).annotate({
     description: "Enable snapshots used for undo and revert behavior",
   }),
@@ -151,6 +161,11 @@ export class AgentProfileSelectorConflictError extends Schema.TaggedErrorClass<A
   { selector: Schema.String },
 ) {}
 
+export class AgentProfileRoleError extends Schema.TaggedErrorClass<AgentProfileRoleError>()(
+  "Config.AgentProfileRoleError",
+  { profileID: Schema.String, revision: Schema.Number, role: Schema.String },
+) {}
+
 export class AgentProfileSelectorNotFoundError extends Schema.TaggedErrorClass<AgentProfileSelectorNotFoundError>()(
   "Config.AgentProfileSelectorNotFoundError",
   { selector: Schema.String },
@@ -207,6 +222,14 @@ export interface Interface {
   readonly entries: () => Effect.Effect<Entry[]>
   /** Returns the single global user-owned Git executable path, if explicitly configured. */
   readonly trustedGitExecutable: () => Effect.Effect<string | undefined>
+  /** Lists only verified immutable command profiles from global user config. */
+  readonly workspaceCommandProfiles: () => Effect.Effect<WorkspaceCommandProfileV1.WorkspaceCommandProfileDefinitionV1[], Error>
+  /** Resolves one exact enabled user-owned command profile revision and action from global config. */
+  readonly workspaceCommandProfile: (
+    profileID: string,
+    revision: string,
+    action: "build" | "test",
+  ) => Effect.Effect<WorkspaceCommandProfileV1.WorkspaceCommandProfileDefinitionV1, Error>
   /** Reads only the existing instance-local next-turn compaction toggles. */
   readonly turnSnapshot?: () => Effect.Effect<TurnSnapshot>
 }
@@ -218,6 +241,8 @@ export interface AgentProfileInterface {
   readonly agentProfileSelectors: () => Effect.Effect<AgentProfileSelector[], AgentProfileConflictError | AgentProfileNotFoundError | AgentProfileSelectorConflictError>
   readonly agentProfile: (profileID: string, revision: number) => Effect.Effect<AgentProfileV2.AgentProfileDefinitionV2, AgentProfileConflictError | AgentProfileNotFoundError>
   readonly agentProfileSelector: (selector: string) => Effect.Effect<AgentProfileV2.AgentProfileDefinitionV2, AgentProfileConflictError | AgentProfileNotFoundError | AgentProfileSelectorConflictError | AgentProfileSelectorNotFoundError>
+  /** Resolves the explicitly configured global primary profile; undefined means no primary selector is configured. */
+  readonly primaryAgentProfile: () => Effect.Effect<AgentProfileV2.AgentProfileDefinitionV2 | undefined, AgentProfileConflictError | AgentProfileNotFoundError | AgentProfileSelectorConflictError | AgentProfileRoleError>
 }
 
 export class AgentProfileService extends Context.Service<AgentProfileService, AgentProfileInterface>()(
@@ -240,6 +265,11 @@ const layer = Layer.effect(
       onExcessProperty: "error",
       propertyOrder: "original",
     })
+    const decodeWorkspaceCommandProfile = Schema.decodeUnknownOption(WorkspaceCommandProfileV1.WorkspaceCommandProfileDefinitionV1, {
+      errors: "all",
+      onExcessProperty: "error",
+      propertyOrder: "original",
+    })
 
     const loadFile = Effect.fnUntraced(function* (filepath: string) {
       const text = yield* fs.readFileStringSafe(filepath)
@@ -253,6 +283,12 @@ const layer = Layer.effect(
         Array.isArray(input.agent_profiles) &&
         input.agent_profiles.some((profile) => Option.isNone(decodeProfileDefinition(profile)))
       ) return
+      if (typeof input === "object" && input !== null && "workspace_command_profiles" in input &&
+        Array.isArray(input.workspace_command_profiles) &&
+        input.workspace_command_profiles.some((profile) => {
+          const decoded = Option.getOrUndefined(decodeWorkspaceCommandProfile(profile))
+          return !decoded || !WorkspaceCommandProfileV1.validateWorkspaceCommandProfileV1(decoded)
+        })) return
 
       const info = Option.getOrUndefined(
         ConfigMigrateV1.isV1(input)
@@ -312,6 +348,41 @@ const layer = Layer.effect(
         .flatMap((config) => config.info.experimental?.policies ?? []),
     )
 
+    const workspaceCommandProfiles = Effect.fn("Config.workspaceCommandProfiles")(function* () {
+      const userConfigDirectory = path.resolve(global.config)
+      const configured = configs
+        .filter((entry): entry is Document => entry.type === "document" && typeof entry.path === "string" &&
+          path.resolve(path.dirname(entry.path)) === userConfigDirectory)
+        .flatMap((entry) => entry.info.workspace_command_profiles ?? [])
+      const byIdentity = new Map<string, WorkspaceCommandProfileV1.WorkspaceCommandProfileDefinitionV1>()
+      for (const raw of configured) {
+        const profile = yield* Effect.try({
+          try: () => Schema.decodeUnknownSync(WorkspaceCommandProfileV1.WorkspaceCommandProfileDefinitionV1, { onExcessProperty: "error" })(raw),
+          catch: () => new Error("global WorkspaceCommandProfileV1 is malformed"),
+        })
+        if (!WorkspaceCommandProfileV1.validateWorkspaceCommandProfileV1(profile)) {
+          return yield* Effect.fail(new Error(`WorkspaceCommandProfileV1 ${profile.profileId}@${profile.revision} digest mismatch`))
+        }
+        const identity = `${profile.profileId}@${profile.revision}`
+        const prior = byIdentity.get(identity)
+        if (prior && prior.profileDigest !== profile.profileDigest) {
+          return yield* Effect.fail(new Error(`conflicting WorkspaceCommandProfileV1 ${identity}`))
+        }
+        byIdentity.set(identity, profile)
+      }
+      const profiles = [...byIdentity.values()].sort((left, right) => left.profileId.localeCompare(right.profileId) ||
+        (BigInt(left.revision) < BigInt(right.revision) ? -1 : BigInt(left.revision) > BigInt(right.revision) ? 1 : 0))
+      const latest = new Map<string, bigint>()
+      for (const profile of profiles) {
+        const revision = BigInt(profile.revision)
+        if (revision <= (latest.get(profile.profileId) ?? 0n)) {
+          return yield* Effect.fail(new Error(`WorkspaceCommandProfileV1 ${profile.profileId} revisions are not strictly increasing`))
+        }
+        latest.set(profile.profileId, revision)
+      }
+      return profiles
+    })
+
     return Service.of({
       entries: Effect.fn("Config.entries")(function* () {
         return configs
@@ -337,6 +408,19 @@ const layer = Layer.effect(
           return undefined
         }
         return configured[0]
+      }),
+      workspaceCommandProfiles,
+      workspaceCommandProfile: Effect.fn("Config.workspaceCommandProfile")(function* (
+        profileID: string,
+        revision: string,
+        action: "build" | "test",
+      ) {
+        const profile = (yield* workspaceCommandProfiles())
+          .find((candidate) => candidate.profileId === profileID && candidate.revision === revision)
+        if (!profile || !profile.enabled || !profile.actions.includes(action)) {
+          return yield* Effect.fail(new Error(`WorkspaceCommandProfileV1 ${profileID}@${revision} is unavailable for ${action}`))
+        }
+        return profile
       }),
       turnSnapshot: Effect.fn("Config.turnSnapshot")(function* () {
         const text = yield* fs
@@ -437,6 +521,42 @@ const agentProfileLayer = Layer.effect(
         )
         if (profile) return profile
         return yield* Effect.fail(new AgentProfileNotFoundError({ profileID: selection.profileId, revision: selection.revision }))
+      }),
+      primaryAgentProfile: Effect.fn("Config.AgentProfiles.resolvePrimary")(function* () {
+        const userConfigDirectory = path.resolve(global.config)
+        const entries = yield* config.entries()
+        const configuredSelectors = entries
+          .filter(
+            (entry): entry is Document =>
+              entry.type === "document" &&
+              typeof entry.path === "string" &&
+              path.resolve(path.dirname(entry.path)) === userConfigDirectory,
+          )
+          .map((entry) => entry.info.primary_agent_profile_selector)
+          .filter((selector): selector is string => selector !== undefined)
+        const distinct = [...new Set(configuredSelectors)]
+        if (distinct.length === 0) return undefined
+        if (distinct.length !== 1) {
+          return yield* Effect.fail(new AgentProfileSelectorConflictError({ selector: "primary" }))
+        }
+        const selection = (yield* selectors()).get(distinct[0]!)
+        if (!selection) {
+          return yield* Effect.fail(new AgentProfileSelectorConflictError({ selector: distinct[0]! }))
+        }
+        const profile = (yield* profiles()).find(
+          (candidate) => candidate.profileId === selection.profileId && candidate.revision === selection.revision,
+        )
+        if (!profile) {
+          return yield* Effect.fail(new AgentProfileNotFoundError({ profileID: selection.profileId, revision: selection.revision }))
+        }
+        if (!profile.enabled || !profile.roles.includes("main")) {
+          return yield* Effect.fail(new AgentProfileRoleError({
+            profileID: profile.profileId,
+            revision: profile.revision,
+            role: "main",
+          }))
+        }
+        return profile
       }),
     })
   }),

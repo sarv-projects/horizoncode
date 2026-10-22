@@ -9,7 +9,7 @@ import { useClipboard } from "../context/clipboard"
 import { useToast } from "../ui/toast"
 import { useBindings } from "../keymap"
 import { describeOS, describeTerminal } from "../util/system"
-import { formatTuiObservation, tuiAnalyticsProjection } from "../util/tui-analytics"
+import { formatTuiObservation, projectSessionUsage, tuiAnalyticsProjection } from "../util/tui-analytics"
 import { useSync } from "../context/sync"
 
 export function DialogDebug() {
@@ -28,6 +28,13 @@ export function DialogDebug() {
     const model = local.model.current()
     const artifactMetrics = tuiAnalyticsProjection.snapshot().map((observation) => formatTuiObservation(observation))
     const streamMetrics = sync.stream.observations().map((observation) => formatTuiObservation(observation))
+    const usage = route.data.type === "session"
+      ? projectSessionUsage(
+          sync.data.message[route.data.sessionID] ?? [],
+          4,
+          sync.data.part,
+        )
+      : []
     return [
       { label: "Version", value: `${InstallationVersion} (${InstallationChannel})` },
       { label: "Date", value: new Date().toISOString() },
@@ -35,6 +42,10 @@ export function DialogDebug() {
       { label: "Terminal", value: describeTerminal() },
       { label: "Session ID", value: route.data.type === "session" ? route.data.sessionID : "n/a" },
       { label: "Model", value: model ? `${model.providerID}/${model.modelID}` : "n/a" },
+      ...usage.map((value, index) => ({
+        label: index === 0 ? "Usage" : value.startsWith("Token totals") ? "Tokens" : value.startsWith("Cost observations") ? "Cost" : "",
+        value,
+      })),
       ...artifactMetrics,
       ...streamMetrics,
     ]

@@ -10,6 +10,7 @@ import { ToolOutputStore } from "../tool-output-store"
 import { ApplicationTools } from "./application-tools"
 import { Tools } from "./tools"
 import { isBuiltinWrite } from "./write-provenance"
+import { isBuiltinBash, GUARDED_TERMINAL_RUN_READY } from "./bash-provenance"
 import type { TrustedPrincipal } from "../trusted-principal"
 import { Wildcard } from "../util/wildcard"
 import { capability, definition, permission, settle, validate as validateInput, validateName, type AnyTool, type Capability, type EffectLease, type RegistrationError } from "./tool"
@@ -23,6 +24,11 @@ export type ExecuteInput = {
   readonly effect?: EffectLease
   /** Captured by the session runner; absent callers can only reach fail-closed tools. */
   readonly trustedPrincipal?: TrustedPrincipal
+  readonly guardedCall?: import("../session/supervisor").GuardedToolCall
+  readonly workspaceCommandProfile?: import("../pty").WorkspaceCommandProfileBindingV1
+  readonly locationRef?: import("@opencode-ai/schema/location").Ref.Type
+  /** Active-runner nested wave seam; tool code cannot construct authority or bypass its lifecycle. */
+  readonly dispatchPreparedToolBatch?: import("./tool").Context["dispatchPreparedToolBatch"]
 }
 
 export interface Interface {
@@ -80,7 +86,15 @@ const registryLayer = Layer.effect(
       if (declared.effectClass === "effect") {
         // Application/plugin registrations do not get native effect authority
         // by self-declaring the ID of a first-party guarded tool.
-        if (declared.id !== "files.write" || input.call.name !== "write" || localRegistration !== registration || !isBuiltinWrite(registration.tool))
+        const builtinWrite = declared.id === "files.write" && input.call.name === "write" &&
+          localRegistration === registration && isBuiltinWrite(registration.tool)
+        const builtinTerminal = declared.id === "terminal.run" && input.call.name === "bash" &&
+          localRegistration === registration && isBuiltinBash(registration.tool)
+        // Keep the terminal tool out of the usable surface until P1's exact
+        // profile/lease/receipt path has passed integrated acceptance.
+        if (builtinTerminal && !GUARDED_TERMINAL_RUN_READY)
+          return { result: { type: "error" as const, value: "Guarded terminal execution is unavailable pending P1 acceptance" } }
+        if (!builtinWrite && !builtinTerminal)
           return { result: { type: "error" as const, value: `Rust Guard does not support: ${declared.id}` } }
         if (!input.effect)
           return { result: { type: "error" as const, value: "Rust Guard admission required" } }
@@ -91,6 +105,10 @@ const registryLayer = Layer.effect(
         assistantMessageID: input.assistantMessageID,
         toolCallID: input.call.id,
         trustedPrincipal: input.trustedPrincipal,
+        ...(input.guardedCall ? { guardedCall: input.guardedCall } : {}),
+        ...(input.workspaceCommandProfile ? { workspaceCommandProfile: input.workspaceCommandProfile } : {}),
+        ...(input.locationRef ? { locationRef: input.locationRef } : {}),
+        ...(input.dispatchPreparedToolBatch ? { dispatchPreparedToolBatch: input.dispatchPreparedToolBatch } : {}),
         ...(input.effect ? { effect: input.effect } : {}),
       }).pipe(
         Effect.map((output) => ({ output })),
@@ -139,10 +157,15 @@ const registryLayer = Layer.effect(
         }
         for (const [name, registration] of registrations) {
           const declared = capability(registration.tool, name)
+          const builtinTerminal = declared.id === "terminal.run" && name === "bash" &&
+            local.get(name)?.at(-1)?.registration === registration && isBuiltinBash(registration.tool)
           if (
             declared.effectClass === "unknown" ||
             (declared.effectClass === "effect" &&
-              (declared.id !== "files.write" || name !== "write" || local.get(name)?.at(-1)?.registration !== registration || !isBuiltinWrite(registration.tool))) ||
+              !(
+                declared.id === "files.write" && name === "write" && local.get(name)?.at(-1)?.registration === registration && isBuiltinWrite(registration.tool) ||
+                builtinTerminal && GUARDED_TERMINAL_RUN_READY
+              )) ||
             whollyDisabled(permission(registration.tool, name), permissions)
           ) {
             registrations.delete(name)

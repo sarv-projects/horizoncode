@@ -1,62 +1,112 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "horizon://schemas/source-artifact-v1",
   "title": "SourceArtifactV1",
-  "type": "object",
-  "properties": {
-    "schemaVersion": {
-      "const": 1
-    },
-    "artifactId": {
-      "type": "string",
-      "minLength": 1
-    },
-    "ownerRef": {
-      "type": "string",
-      "minLength": 1
-    },
-    "sourceRevision": {
-      "type": "string",
-      "minLength": 1
-    },
-    "sha256": {
-      "type": "string",
-      "pattern": "^[0-9a-fA-F]{64}$"
-    },
-    "mime": {
-      "type": "string",
-      "minLength": 1
-    },
-    "byteCount": {
-      "type": "integer",
-      "minimum": 0
-    },
-    "fidelity": {
-      "enum": [
-        "full",
-        "head_tail_sample",
-        "failed"
+  "description": "Strict immutable ArtifactStore reference. Lane variants are ownership scopes, not evidence or authorization tokens.",
+  "oneOf": [
+    { "$ref": "#/$defs/direct" },
+    { "$ref": "#/$defs/managed" }
+  ],
+  "$defs": {
+    "common": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "lane": { "type": "string", "enum": ["direct", "managed"] },
+        "artifactId": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "artifactGeneration": {
+          "$ref": "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64",
+          "description": "Immutable ArtifactStore generation; canonical decimal string."
+        },
+        "ownerRef": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "sourceRevision": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "mime": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "byteCount": {
+          "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64",
+          "description": "Unsigned 64-bit byte count; canonical decimal string."
+        },
+        "fidelity": { "type": "string", "enum": ["full", "head_tail_sample", "failed"] },
+        "droppedByteCount": {
+          "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64",
+          "description": "Unsigned 64-bit dropped byte count; canonical decimal string."
+        },
+        "redactionState": { "type": "string", "enum": ["known_safe", "known_redacted", "unknown"] },
+        "retentionClass": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "producerCapabilityId": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "evidenceRefs": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "description": "Managed evidence references only. Empty means no evidence is attached; the artifact alone never proves verification."
+        }
+      },
+      "required": [
+        "schemaVersion", "lane", "artifactId", "artifactGeneration", "ownerRef",
+        "sourceRevision", "sha256", "mime", "byteCount", "fidelity",
+        "droppedByteCount", "redactionState", "retentionClass", "producerCapabilityId"
       ]
     },
-    "droppedByteCount": {
-      "type": "integer",
-      "minimum": 0
+    "direct": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/common" },
+        {
+          "type": "object",
+          "properties": {
+            "lane": { "const": "direct" },
+            "sessionId": { "type": "string", "minLength": 1, "maxLength": 256 },
+            "producerRequestId": { "type": "string", "minLength": 1, "maxLength": 256 },
+            "producerToolCallId": { "type": "string", "minLength": 1, "maxLength": 256 },
+            "effectId": { "type": "string", "minLength": 1, "maxLength": 256 },
+            "effectReceiptRef": { "type": "string", "minLength": 1, "maxLength": 256 }
+          },
+          "required": ["lane", "sessionId", "producerRequestId", "producerToolCallId", "effectId", "effectReceiptRef"],
+          "not": { "anyOf": [{ "required": ["attemptId"] }, { "required": ["evidenceRefs"] }] }
+        }
+      ]
     },
-    "retentionClass": {
-      "type": "string",
-      "minLength": 1
+    "managed": {
+      "unevaluatedProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/common" },
+        {
+          "type": "object",
+          "properties": {
+            "lane": { "const": "managed" },
+            "attemptId": { "type": "string", "minLength": 1, "maxLength": 256 },
+            "evidenceRefs": {
+              "type": "array",
+              "maxItems": 64,
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1, "maxLength": 256 }
+            }
+          },
+          "required": ["lane", "attemptId", "evidenceRefs"],
+          "not": { "anyOf": [
+            { "required": ["sessionId"] },
+            { "required": ["producerRequestId"] },
+            { "required": ["producerToolCallId"] },
+            { "required": ["effectId"] },
+            { "required": ["effectReceiptRef"] }
+          ] }
+        }
+      ]
     }
   },
-  "required": [
-    "schemaVersion",
-    "artifactId",
-    "ownerRef",
-    "sourceRevision",
-    "sha256",
-    "mime",
-    "byteCount",
-    "fidelity",
-    "droppedByteCount",
-    "retentionClass"
-  ],
-  "additionalProperties": false
+  "x-horizon-validation": [
+    "ArtifactStore-is-the-single-canonical-byte-owner-for-both-lanes",
+    "ownerRef-equals-sessionId-for-direct-and-is-the-rust-owned-managed-attempt-owner-for-managed",
+    "direct-ArtifactRef-binds-authenticated-Core-Session-producer-request-tool-call-effect-and-settled-effect-receipt",
+    "managed-ArtifactRef-binds-Rust-owned-Attempt-and-only-owner-issued-evidenceRefs;empty-evidenceRefs-does-not-imply-verification",
+    "direct-lane-never-carries-attemptId-or-evidenceRefs-and-cannot-create-managed-verification-evidence",
+    "managed-lane-is-not-readable-through-direct-Session-scope",
+    "managed-Attempt-cannot-resolve-read-or-cite-direct-ref-or-content;equivalent-bytes-require-an-independent-managed-artifact-with-new-owner-issued-evidenceRefs;no-cross-lane-promotion-or-capture",
+    "artifactGeneration-and-content-digest-are-immutable;range/search-rechecks-owner-receipt-generation-and-digest",
+    "fidelity-failed-or-redaction-unknown-never-projects-as-successful-readable-content",
+    "sampled-or-truncated-content-is-never-labeled-full",
+    "path-is-never-an-artifact-identity-or-resolution-input",
+    "all-reference-count-byte-range-and-retention-limits-are-enforced-by-ArtifactStore-and-lane-owner"
+  ]
 }

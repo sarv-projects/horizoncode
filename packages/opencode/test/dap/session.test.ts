@@ -175,6 +175,8 @@ describe("dap.session lifecycle", () => {
       locationID: "location-1",
       sessionID: "session-1",
       workspaceRevision: authority.workspaceRevision,
+      effectiveMaxTokens: "100000",
+      remainingTokens: "100000",
       delegationBindingDigest: "blake3:" + "e".repeat(64),
     }
     const session = makeSessions().create({ ...created(), managedAttemptScope })
@@ -444,6 +446,8 @@ describe("dap.session fail-closed boundary", () => {
   test("DAP commands map to canonical actions and unsupported process commands stay unavailable", () => {
     expect(operationForCommand("attach")).toBe("session.attach")
     expect(operationForCommand("evaluate")).toBe("session.evaluate")
+    expect(operationForCommand("setVariable")).toBeUndefined()
+    expect(operationForCommand("setExpression")).toBeUndefined()
     expect(operationForCommand("setBreakpoints")).toBe("breakpoint.set")
     expect(operationForCommand("variables")).toBeUndefined()
     expect(operationForCommand("next")).toBe("debug.step.over")
@@ -514,7 +518,7 @@ describe("dap.session fail-closed boundary", () => {
 })
 
 describe("dap.session canonical Guard effect route", () => {
-  test("valid managed scope is preserved as a structured HostKernel binding", async () => {
+  test("registering a route cannot unlock DAP before integrated Guard acceptance", async () => {
     const scope = {
       goalID: "goal-1",
       runID: "run-1",
@@ -525,6 +529,8 @@ describe("dap.session canonical Guard effect route", () => {
       locationID: "location-1",
       sessionID: "session-1",
       workspaceRevision: authority.workspaceRevision,
+      effectiveMaxTokens: "100000",
+      remainingTokens: "100000",
       delegationBindingDigest: "blake3:" + "e".repeat(64),
     }
     const requests: DebugEffectRequest[] = []
@@ -540,10 +546,12 @@ describe("dap.session canonical Guard effect route", () => {
       },
     })
     try {
-      await authorizeEffect(effectRequest("session.stop", { managedAttemptScope: scope }))
-      expect(requests).toHaveLength(1)
-      expect(requests[0]?.managedAttemptScope).toEqual(scope)
-      expect(Object.isFrozen(requests[0]?.managedAttemptScope)).toBe(true)
+      expect(debugEffectRouteAvailable()).toBe(false)
+      for (const operation of ["session.stop", "session.attach", "session.evaluate"] as const) {
+        await expect(authorizeEffect(effectRequest(operation, { managedAttemptScope: scope })))
+          .rejects.toBeInstanceOf(UnavailableError)
+      }
+      expect(requests).toHaveLength(0)
     } finally {
       setDebugEffectRoute(undefined)
     }
@@ -564,7 +572,7 @@ describe("dap.session canonical Guard effect route", () => {
     }
   })
 
-  test("a registered boundary is asked verbatim and a malformed answer is refused", async () => {
+  test("a registered boundary is not called before integrated acceptance", async () => {
     const requests: Array<Record<string, unknown>> = []
     setDebugEffectRoute({
       authorize: async (request) => {
@@ -573,22 +581,11 @@ describe("dap.session canonical Guard effect route", () => {
       },
     })
     try {
-      expect(debugEffectRouteAvailable()).toBe(true)
+      expect(debugEffectRouteAvailable()).toBe(false)
       await expect(
         authorizeEffect(effectRequest("session.start")),
       ).rejects.toThrow(UnavailableError)
-      expect(requests).toEqual([
-        {
-          operation: "session.start",
-          ...authority,
-          launchConfigDigest: "blake3:" + "d".repeat(64),
-          launchProfileRef: {
-            profileId: "dap-gdb",
-            revision: "1",
-            profileDigest: "blake3:" + "c".repeat(64),
-          },
-        },
-      ])
+      expect(requests).toEqual([])
     } finally {
       setDebugEffectRoute(undefined)
     }
@@ -727,7 +724,7 @@ describe("dap.session canonical Guard effect route", () => {
     }
   })
 
-  test("an admitted authorization is returned unchanged to the caller", async () => {
+  test("a registered route cannot enable DAP evaluate or expose its process pin", async () => {
     const lease = "blake3:" + "a".repeat(64)
     let routed: DapSession.DebugEffectRequest | undefined
     setDebugEffectRoute({
@@ -742,24 +739,10 @@ describe("dap.session canonical Guard effect route", () => {
       },
     })
     try {
-      const authorization = await authorizeEffect(effectRequest("session.evaluate", { generation: 2 }))
-      expect(authorization).toEqual({
-        capabilityID: "debug.evaluate",
-        challengeID: "ch_1",
-        effectID: "eff_1",
-        capabilityLeaseDigest: lease,
-      })
-      expect(routed?.adapterProcessRef).toEqual({
-        executionID: "adapter-exec-1",
-        generation: "1",
-        ownerEpoch: "7",
-        kind: "debug_adapter",
-        profileID: "dap-gdb",
-        profileRevision: "1",
-        profileDigest: "blake3:" + "c".repeat(64),
-        executableDigest: "blake3:" + "e".repeat(64),
-      })
-      expect(Object.isFrozen(routed?.adapterProcessRef)).toBe(true)
+      expect(debugEffectRouteAvailable()).toBe(false)
+      await expect(authorizeEffect(effectRequest("session.evaluate", { generation: 2 })))
+        .rejects.toBeInstanceOf(UnavailableError)
+      expect(routed).toBeUndefined()
     } finally {
       setDebugEffectRoute(undefined)
     }

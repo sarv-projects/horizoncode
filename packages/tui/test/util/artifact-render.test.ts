@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { createTuiArtifactRenderer, renderTuiArtifacts } from "../../src/util/artifact-render"
+import { createSvgRasterPort, createTuiArtifactRenderer, renderTuiArtifacts } from "../../src/util/artifact-render"
 import { rasterizeSvgSubset, type SvgRasterWorkerLikeV1 } from "../../src/component/svg-raster"
 
 const SAFE_SVG = '<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><rect x="10" y="10" width="80" height="80"/></svg>'
@@ -313,6 +313,41 @@ test("bounds the raster frame cache across many blocks", async () => {
     expect(renderer.render(SAFE_SVG_BLOCK, true).fidelity).toBe("FAILED")
   } finally {
     renderer.dispose()
+  }
+})
+
+test("does not let an older geometry generation overwrite a newer cached frame", async () => {
+  const pending: Array<(value: {
+    status: "ok"
+    generation: number
+    frame: string[]
+    shapeCount: number
+    cellCount: number
+  }) => void> = []
+  const port = createSvgRasterPort({
+    service: {
+      render() {
+        return new Promise((resolve) => pending.push(resolve))
+      },
+      dispose() {},
+    },
+  })
+  const block = { blockID: "same-source", generation: "width-40", source: SAFE_SVG }
+  const updated = { ...block, generation: "width-80" }
+  const frame = (value: string) => ({ status: "ok" as const, generation: 1, frame: [value], shapeCount: 1, cellCount: 1 })
+
+  try {
+    port.request(block)
+    port.request(updated)
+    pending[1]?.(frame("##"))
+    await Promise.resolve()
+    expect(port.frame(updated)).toMatchObject({ status: "ready", generation: "width-80", frame: ["##"] })
+
+    pending[0]?.(frame("#"))
+    await Promise.resolve()
+    expect(port.frame(updated)).toMatchObject({ status: "ready", generation: "width-80", frame: ["##"] })
+  } finally {
+    port.dispose()
   }
 })
 

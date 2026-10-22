@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "horizon://schemas/direct-session-workspace-snapshot-v1",
+  "title": "DirectSessionWorkspaceSnapshotV1",
+  "description": "Authenticated read-only HostKernel projection of the current root direct-Session workspace and owner pins. It grants no effect authority.",
+  "oneOf": [
+    { "$ref": "#/$defs/request" },
+    { "$ref": "#/$defs/response" }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^blake3:[a-f0-9]{64}$"
+    },
+    "counter": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,19})$"
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sessionID", "locationID"],
+      "properties": {
+        "sessionID": { "$ref": "#/$defs/id" },
+        "locationID": { "$ref": "#/$defs/id" }
+      }
+    },
+    "response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sessionID", "locationID", "ownerEpoch", "workspaceRevision", "workspaceRootDigest", "observedAtUnixMs"],
+      "properties": {
+        "sessionID": { "$ref": "#/$defs/id" },
+        "locationID": { "$ref": "#/$defs/id" },
+        "ownerEpoch": { "$ref": "#/$defs/counter" },
+        "workspaceRevision": { "$ref": "#/$defs/digest" },
+        "workspaceRootDigest": { "$ref": "#/$defs/digest" },
+        "observedAtUnixMs": { "$ref": "#/$defs/counter" }
+      }
+    }
+  },
+  "x-horizon-validation": [
+    "private-execution.v1-operation-requires-authenticated-ServerAuth-and-owner-fence-outside-request-body",
+    "request-supplies-only-session-and-registered-location-correlation-no-principal-owner-epoch-path-or-revision",
+    "HostKernel-requires-registered-Location-principal-binding-and-derives-current-workspace-revision-and-root-identity-from-the-canonical-location",
+    "snapshot-is-read-only-and-does-not-issue-an-effect-intent-challenge-approval-lease-or-process-reference",
+    "a-later-effect-or-process-operation-must-revalidate-current-pins-and-pass-normal-Guard-lease-and-receipt-lifecycle",
+    "managed-Attempt-authority-is-not-representable-by-this-root-direct-session-operation"
+  ]
+}

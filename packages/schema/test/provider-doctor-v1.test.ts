@@ -62,6 +62,7 @@ describe("Provider Doctor V1 result contract", () => {
       tier: "offline",
       selection: { ...offlineRequest.selection, configurationStatus: "UNKNOWN" },
       localReadiness: "READY",
+      catalogFreshness: "FRESH",
       remoteChecks: { entitlement: "UNCHECKED", quota: "UNCHECKED", service: "UNCHECKED" },
       credentialAccess: "NOT_READ",
       networkRequestCount: 0,

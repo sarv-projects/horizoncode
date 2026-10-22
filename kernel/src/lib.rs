@@ -22,12 +22,25 @@ pub(crate) mod artifact_store;
 // Durable checkpoint journal and fail-closed restore preview/recovery policy.
 #[allow(dead_code)]
 pub(crate) mod checkpoint;
+/// Strict bounded stdio frames for the private CodeMode helper RPC.
+pub(crate) mod codemode_protocol;
 // Deterministic automation scheduling state only. Guarded invocation is not wired.
 #[allow(dead_code)]
 pub(crate) mod automation;
 /// Canonical hashes for authenticated managed AgentProfileV2 definitions.
 pub(crate) mod agent_profile;
 pub(crate) mod context_selection;
+/// Optional Linux cgroup-v2 containment identity and restart quiescence proof.
+#[cfg(target_os = "linux")]
+pub mod cgroup_v2;
+/// OwnerLog-backed direct child mailbox admission and append receipt recovery.
+pub(crate) mod direct_message_journal;
+/// Strict DirectSessionGrantV1 schema and canonical digest validation.
+pub(crate) mod direct_session_grant;
+/// Strict, digest-checked Core Config command profiles for bounded build/test.
+pub(crate) mod workspace_command_profile;
+/// Same-child OwnerLog direct provider-turn cycles and one-use fresh-turn proofs.
+pub(crate) mod direct_turn_journal;
 #[cfg(target_os = "linux")]
 pub mod effect_host;
 pub mod guard;
@@ -41,6 +54,11 @@ pub mod messagepack;
 pub mod owner_log;
 pub(crate) mod owner_log_index;
 pub mod protocol;
+/// Bounded Content-Length JSON framing for supervised LSP/DAP stdio.
+pub(crate) mod protocol_framing;
+/// Durable HostKernel intent/ACK and bounded protocol-event replay journal.
+pub(crate) mod protocol_io_journal;
+pub(crate) mod search_secret_journal;
 pub mod request_cancellation;
 pub mod resource_budget;
 /// Bounded, ownership-scoped process-tree sampling with explicit unknown states.

@@ -58,6 +58,7 @@
     "drizzle-kit": "catalog:"
   },
   "dependencies": {
+    "@noble/hashes": "2.2.0",
     "@ai-sdk/alibaba": "1.0.17",
     "@ai-sdk/amazon-bedrock": "4.0.166",
     "@ai-sdk/anthropic": "3.0.111",

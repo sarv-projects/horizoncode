@@ -327,7 +327,11 @@ describe("provider HttpApi", () => {
 
       const opencode = providerByID(body, "all", "opencode")
       if (isRecord(opencode) && opencode.source === "custom") {
-        expect(isRecord(body) && Array.isArray(body.connected) ? body.connected : []).not.toContain("opencode")
+        const anonymous = isRecord(body) && Array.isArray(body.anonymousFreeProviders)
+          ? body.anonymousFreeProviders.includes("opencode")
+          : false
+        const connected = isRecord(body) && Array.isArray(body.connected) ? body.connected : []
+        expect(connected.includes("opencode")).toBe(anonymous)
       }
     }),
     {

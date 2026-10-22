@@ -8,6 +8,14 @@ import { AbsolutePath } from "@opencode-ai/core/schema"
 import { TrustedPrincipalContext } from "@opencode-ai/core/trusted-principal"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { QuestionV2 } from "@opencode-ai/core/question"
+import * as SubagentDeliveryV1 from "@opencode-ai/schema/subagent-delivery-v1"
+import * as SubagentStatusV1 from "@opencode-ai/schema/subagent-status-v1"
+import {
+  digestText,
+  inboxReceiptDigest,
+} from "@/session/direct-subagent-inbox"
+import type { ManagedSubagentInboxStateV1 } from "@/session/managed-subagent-inbox"
+import { legacyHostRootCompatible, ownerMatchesPrincipal } from "@/question/owner"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Command } from "@/command"
 import { Permission } from "@/permission"
@@ -16,6 +24,7 @@ import { Session } from "@/session/session"
 import { SessionCompaction } from "@/session/compaction"
 import { MessageV2 } from "@/session/message-v2"
 import { SessionPrompt } from "@/session/prompt"
+import { ManagedControl } from "@/session/managed-control"
 import { SessionRevert } from "@/session/revert"
 import { SessionRunState } from "@/session/run-state"
 import { SessionStatus } from "@/session/status"
@@ -23,7 +32,7 @@ import { SessionSummary } from "@/session/summary"
 import { Todo } from "@/session/todo"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { NamedError } from "@opencode-ai/core/util/error"
-import { SessionSupervisorError } from "@opencode-ai/core/session/supervisor"
+import { SessionSupervisor, SessionSupervisorError } from "@opencode-ai/core/session/supervisor"
 import { Cause, Effect, Option, Schema, Scope } from "effect"
 import * as Stream from "effect/Stream"
 import { InstanceState } from "@/effect/instance-state"
@@ -42,6 +51,8 @@ import {
   PromptPayload,
   RevertPayload,
   ShellPayload,
+  SubagentWaitQuery,
+  SubagentMessagePayload,
   SummarizePayload,
   UpdatePayload,
 } from "../groups/session"
@@ -57,6 +68,33 @@ import * as SessionError from "./session-errors"
 
 const SHELL_UNAVAILABLE_MESSAGE =
   "Shell execution is unavailable until terminal.run is mediated by Rust Guard and ExecutionHost."
+const DIRECT_SCOPE_PIN_KEY = "horizonDirectAttemptScopeDigest"
+
+const decodeDirectProfilePin = Schema.decodeUnknownSync(Schema.Struct({
+  harness: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9._-]{1,256}$/)),
+  profileID: Schema.String.check(Schema.isMaxLength(256)).check(Schema.isPattern(/^[^\s\u0000-\u001f\u007f]+$/)),
+  profileRevision: Schema.String.check(Schema.isPattern(/^[1-9][0-9]{0,19}$/)),
+  profileDigest: Schema.String.check(Schema.isPattern(/^blake3:[0-9a-f]{64}$/)),
+  permissionsDigest: Schema.String.check(Schema.isPattern(/^(sha256|blake3):[0-9a-f]{64}$/)),
+}))
+
+function directProfilePin(value: unknown) {
+  try {
+    const pin = decodeDirectProfilePin(value, { onExcessProperty: "error" })
+    if (BigInt(pin.profileRevision) > 18_446_744_073_709_551_615n) return undefined
+    return pin
+  } catch {
+    return undefined
+  }
+}
+
+function subagentDelivery(value: unknown) {
+  try {
+    return Schema.decodeUnknownSync(SubagentDeliveryV1.SubagentDeliveryV1, { onExcessProperty: "error" })(value)
+  } catch {
+    return undefined
+  }
+}
 
 export function mapLegacySupervisorError(error: SessionSupervisorError, sessionID: string, service = "host-kernel") {
   switch (error.stage) {
@@ -134,11 +172,96 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
         ),
       )
     })
-    const requireQuestionPrincipal = Effect.fn("SessionHttpApi.requireQuestionPrincipal")(function* () {
-      const principal = yield* Effect.serviceOption(TrustedPrincipalContext)
-      if (Option.isNone(principal)) {
+    const withLocationSupervisor = Effect.fnUntraced(function* <A, E, R>(effect: Effect.Effect<A, E, R>) {
+      return yield* effect.pipe(
+        Effect.provide(
+          locations.get(
+            Location.Ref.make({ directory: AbsolutePath.make((yield* InstanceState.context).directory) }),
+          ),
+        ),
+      )
+    })
+    const requireQuestionOwner = Effect.fn("SessionHttpApi.requireQuestionOwner")(function* (sessionID: SessionID) {
+      const authenticated = yield* Effect.serviceOption(TrustedPrincipalContext)
+      if (Option.isNone(authenticated)) {
         return yield* new ForbiddenError({ message: "Question access requires an authenticated session principal" })
       }
+      const principal = authenticated.value.principal
+      let current = yield* requireSession(sessionID)
+      const instanceDirectory = yield* InstanceState.directory
+      const workspaceID = yield* InstanceState.workspaceID
+      const seen = new Set<string>()
+      for (let depth = 0; depth < 32; depth++) {
+        if (seen.has(current.id)) break
+        if (current.directory !== instanceDirectory) break
+        if (current.workspaceID !== undefined && current.workspaceID !== workspaceID) break
+        seen.add(current.id)
+        const owner = current.metadata?.horizonPrincipalOwner
+        if (owner !== undefined) {
+          if (ownerMatchesPrincipal(principal, owner)) return
+          break
+        }
+        if (!current.parentID) {
+          // Preserve only pre-owner-metadata roots from this exact instance.
+          if (legacyHostRootCompatible(principal, {
+            parentID: current.parentID,
+            directory: current.directory,
+            instanceDirectory: yield* InstanceState.directory,
+            ownerMetadata: owner,
+          })) return
+          break
+        }
+        current = yield* requireSession(current.parentID)
+      }
+      return yield* new ForbiddenError({ message: "Question access is outside the authenticated Session owner scope" })
+    })
+    const questions = Effect.fn("SessionHttpApi.questions")(function* (ctx: { params: { sessionID: SessionID } }) {
+      const owner = yield* requireSession(ctx.params.sessionID)
+      yield* requireQuestionOwner(owner.id)
+      // Pending questions live in the Location-owned QuestionV2 service. Keep
+      // this projection scoped to the exact authenticated Session owner.
+      return yield* withLocationQuestions(
+        QuestionV2.Service.use((service) => service.list(owner.id)),
+      )
+    })
+    const questionReply = Effect.fn("SessionHttpApi.questionReply")(function* (ctx: {
+      params: { sessionID: SessionID; requestID: QuestionV2.ID }
+      payload: typeof QuestionV2.Reply.Type
+    }) {
+      const owner = yield* requireSession(ctx.params.sessionID)
+      yield* requireQuestionOwner(owner.id)
+      yield* withLocationQuestions(
+        QuestionV2.Service.use((service) => service.reply({
+          sessionID: owner.id,
+          requestID: ctx.params.requestID,
+          answers: ctx.payload.answers,
+        })),
+      ).pipe(
+        Effect.catchTag("QuestionV2.NotFoundError", () => Effect.fail(new ApiNotFoundError({
+          name: "NotFoundError",
+          data: { message: "Pending question not found" },
+        }))),
+        Effect.catchTag("QuestionV2.InvalidReplyError", () => Effect.fail(new HttpApiError.BadRequest({}))),
+      )
+      return undefined
+    })
+    const questionReject = Effect.fn("SessionHttpApi.questionReject")(function* (ctx: {
+      params: { sessionID: SessionID; requestID: QuestionV2.ID }
+    }) {
+      const owner = yield* requireSession(ctx.params.sessionID)
+      yield* requireQuestionOwner(owner.id)
+      yield* withLocationQuestions(
+        QuestionV2.Service.use((service) => service.reject({
+          sessionID: owner.id,
+          requestID: ctx.params.requestID,
+        })),
+      ).pipe(
+        Effect.catchTag("QuestionV2.NotFoundError", () => Effect.fail(new ApiNotFoundError({
+          name: "NotFoundError",
+          data: { message: "Pending question not found" },
+        }))),
+      )
+      return undefined
     })
     const scope = yield* Scope.Scope
     const list = Effect.fn("SessionHttpApi.list")(function* (ctx: { query: typeof ListQuery.Type }) {
@@ -167,13 +290,947 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     })
 
     const children = Effect.fn("SessionHttpApi.children")(function* (ctx: { params: { sessionID: SessionID } }) {
-      yield* requireSession(ctx.params.sessionID)
+      yield* requireQuestionOwner(ctx.params.sessionID)
       return yield* session.children(ctx.params.sessionID)
     })
 
-    const todo = Effect.fn("SessionHttpApi.todo")(function* (ctx: { params: { sessionID: SessionID } }) {
-      yield* requireSession(ctx.params.sessionID)
-      return yield* todoSvc.get(ctx.params.sessionID)
+    const subagents = Effect.fn("SessionHttpApi.subagents")(function* (ctx: { params: { sessionID: SessionID } }) {
+      const parent = yield* requireSession(ctx.params.sessionID)
+      yield* requireQuestionOwner(parent.id)
+      const linked = yield* session.children(parent.id)
+      const directChildren = linked
+        .filter((child) =>
+          child.parentID === parent.id && child.directory === parent.directory && child.workspaceID === parent.workspaceID &&
+          subagentDelivery(child.metadata?.horizonSubagentDelivery)?.lane === "direct_session" &&
+          child.metadata?.horizonAgentProfileV2 !== undefined,
+        )
+        .sort((left, right) => right.time.updated - left.time.updated || right.id.localeCompare(left.id))
+      const visible = directChildren.slice(0, 64)
+      const projection: SubagentStatusV1.ChildV1[] = []
+      let omitted = 0
+      for (const child of visible) {
+        const pin = directProfilePin(child.metadata?.horizonAgentProfileV2)
+        if (!pin) {
+          omitted++
+          continue
+        }
+        const attemptID = child.metadata?.horizonDirectAttemptID
+        if (typeof attemptID !== "string" || !/^att_[a-z0-9]{16,64}$/.test(attemptID)) {
+          omitted++
+          continue
+        }
+        const snapshot = yield* ManagedControl.snapshotDirectAttempt(attemptID).pipe(
+          Effect.catch(() => Effect.succeed(undefined)),
+        )
+        const scopeDigest = child.metadata?.[DIRECT_SCOPE_PIN_KEY]
+        const ownedAttempt = snapshot && snapshot.attemptID === attemptID && snapshot.parentSessionID === parent.id &&
+          snapshot.childSessionID === child.id && typeof scopeDigest === "string" &&
+          /^(sha256|blake3):[0-9a-f]{64}$/.test(scopeDigest) && snapshot.scopeDigest === scopeDigest
+          ? snapshot
+          : undefined
+        const sessionStatus = yield* statusSvc.get(child.id)
+        const pendingMessages = (yield* session.directInboxList(child.id)).filter((row) =>
+          row.state !== "denied" && (row.state !== "consumed" || row.host_consumed_ack_digest === null),
+        ).length
+        // HostKernel enforces the same 32-row pending ceiling. A larger local
+        // projection signals inconsistent durable state, so omit the child
+        // instead of emitting a truncated count that could look authoritative.
+        if (pendingMessages > 32) {
+          omitted++
+          continue
+        }
+        const delivery = subagentDelivery(child.metadata?.horizonSubagentDelivery)
+        const state = ownedAttempt?.phase === "EXECUTING"
+          ? "running"
+          : ownedAttempt?.phase === "SUCCEEDED"
+            ? "completed"
+            : ownedAttempt?.phase === "FAILED"
+              ? "failed"
+              : ownedAttempt?.phase === "CANCELLED"
+                ? "cancelled"
+                : "unknown"
+        projection.push({
+          schemaVersion: 1 as const,
+          sessionId: child.id,
+          parentSessionId: parent.id,
+          title: child.title,
+          state,
+          activeRequest: sessionStatus.type === "busy",
+          profileId: pin.profileID,
+          profileRevision: pin.profileRevision,
+          profileDigest: pin.profileDigest,
+          permissionScopeDigest: pin.permissionsDigest,
+          directAttemptId: attemptID,
+          pendingMessages,
+          deliveryAckState: delivery?.lane === "direct_session" ? delivery.ackState : "unknown",
+          lastSequence: delivery?.lane === "direct_session" ? delivery.sequence : "0",
+          resultDigest: ownedAttempt?.resultDigest ?? null,
+          receiptDigest: ownedAttempt?.receiptDigest ?? null,
+          failureCode: ownedAttempt?.failureCode ?? null,
+          createdAt: child.time.created,
+          updatedAt: child.time.updated,
+        })
+      }
+      return Schema.decodeUnknownSync(SubagentStatusV1.ListV1, { onExcessProperty: "error" })({
+        schemaVersion: 1,
+        parentSessionId: parent.id,
+        children: projection,
+        truncated: directChildren.length > visible.length || omitted > 0,
+      })
+    })
+
+    const subagentWait = Effect.fn("SessionHttpApi.subagentWait")(function* (ctx: {
+      params: { sessionID: SessionID; childSessionID: SessionID }
+      query: typeof SubagentWaitQuery.Type
+    }) {
+      const parent = yield* requireSession(ctx.params.sessionID)
+      yield* requireQuestionOwner(parent.id)
+      const childID = ctx.params.childSessionID
+      const deadline = Date.now() + ctx.query.timeoutMs
+      const project = Effect.fn("SessionHttpApi.projectWaitChild")(function* () {
+        // Wait is a repeated read. Re-resolve the authenticated parent on each
+        // sample so a changed owner/workspace scope cannot inherit the initial
+        // authorization for the remainder of a long poll.
+        const currentParent = yield* requireSession(parent.id)
+        yield* requireQuestionOwner(currentParent.id)
+        if (currentParent.directory !== parent.directory || currentParent.workspaceID !== parent.workspaceID) {
+          return yield* new ApiNotFoundError({ name: "NotFoundError", data: { message: "Direct child Session not found" } })
+        }
+        const child = yield* requireSession(childID)
+        if (child.parentID !== currentParent.id || child.directory !== currentParent.directory ||
+          child.workspaceID !== currentParent.workspaceID) {
+          return yield* new ApiNotFoundError({ name: "NotFoundError", data: { message: "Direct child Session not found" } })
+        }
+        if (subagentDelivery(child.metadata?.horizonSubagentDelivery)?.lane !== "direct_session") {
+          return yield* new ApiNotFoundError({ name: "NotFoundError", data: { message: "Direct child Session not found" } })
+        }
+        const pin = directProfilePin(child.metadata?.horizonAgentProfileV2)
+        const attemptID = child.metadata?.horizonDirectAttemptID
+        if (!pin || typeof attemptID !== "string" || !/^att_[a-z0-9]{16,64}$/.test(attemptID)) {
+          return yield* new ApiNotFoundError({ name: "NotFoundError", data: { message: "Direct child Attempt not found" } })
+        }
+        const snapshot = yield* ManagedControl.snapshotDirectAttempt(attemptID).pipe(
+          Effect.catch(() => Effect.succeed(undefined)),
+        )
+        const scopeDigest = child.metadata?.[DIRECT_SCOPE_PIN_KEY]
+        const ownedAttempt = snapshot && snapshot.attemptID === attemptID && snapshot.parentSessionID === parent.id &&
+          snapshot.childSessionID === child.id && typeof scopeDigest === "string" &&
+          /^(sha256|blake3):[0-9a-f]{64}$/.test(scopeDigest) && snapshot.scopeDigest === scopeDigest
+          ? snapshot
+          : undefined
+        const status = yield* statusSvc.get(child.id)
+        const pendingMessages = (yield* session.directInboxList(child.id)).filter((row) =>
+          row.state !== "denied" && (row.state !== "consumed" || row.host_consumed_ack_digest === null),
+        ).length
+        if (pendingMessages > 32) {
+          return yield* new ServiceUnavailableError({ message: "Direct child mailbox capacity projection is inconsistent", service: "session" })
+        }
+        const delivery = subagentDelivery(child.metadata?.horizonSubagentDelivery)
+        const state = ownedAttempt?.phase === "EXECUTING"
+          ? "running"
+          : ownedAttempt?.phase === "SUCCEEDED"
+            ? "completed"
+            : ownedAttempt?.phase === "FAILED"
+              ? "failed"
+              : ownedAttempt?.phase === "CANCELLED"
+                ? "cancelled"
+                : "unknown"
+        return Schema.decodeUnknownSync(SubagentStatusV1.ChildV1, { onExcessProperty: "error" })({
+          schemaVersion: 1,
+          sessionId: child.id,
+          parentSessionId: parent.id,
+          title: child.title,
+          state,
+          activeRequest: status.type === "busy",
+          profileId: pin.profileID,
+          profileRevision: pin.profileRevision,
+          profileDigest: pin.profileDigest,
+          permissionScopeDigest: pin.permissionsDigest,
+          directAttemptId: attemptID,
+          pendingMessages,
+          deliveryAckState: delivery?.lane === "direct_session" ? delivery.ackState : "unknown",
+          lastSequence: delivery?.lane === "direct_session" ? delivery.sequence : "0",
+          resultDigest: ownedAttempt?.resultDigest ?? null,
+          receiptDigest: ownedAttempt?.receiptDigest ?? null,
+          failureCode: ownedAttempt?.failureCode ?? null,
+          createdAt: child.time.created,
+          updatedAt: child.time.updated,
+        })
+      })
+
+      const first = yield* project()
+      const isTerminal = (value: SubagentStatusV1.ChildV1) => value.state !== "running"
+      let current = first
+      let outcome: "terminal" | "activity" | "timeout" = isTerminal(first) ? "terminal" : "timeout"
+      while (!isTerminal(current) && Date.now() < deadline) {
+        yield* Effect.sleep("200 millis")
+        const next = yield* project()
+        if (isTerminal(next)) {
+          current = next
+          outcome = "terminal"
+          break
+        }
+        const changed = next.activeRequest !== current.activeRequest ||
+          next.pendingMessages !== current.pendingMessages ||
+          next.deliveryAckState !== current.deliveryAckState || next.lastSequence !== current.lastSequence ||
+          next.resultDigest !== current.resultDigest || next.receiptDigest !== current.receiptDigest ||
+          next.failureCode !== current.failureCode || next.updatedAt !== current.updatedAt
+        current = next
+        if (changed) {
+          outcome = "activity"
+          break
+        }
+      }
+      return Schema.decodeUnknownSync(SubagentStatusV1.WaitResultV1, { onExcessProperty: "error" })({
+        schemaVersion: 1,
+        child: current,
+        outcome,
+      })
+    })
+
+    const subagentMessage = Effect.fn("SessionHttpApi.subagentMessage")(function* (ctx: {
+      params: { sessionID: SessionID; childSessionID: SessionID }
+      payload: typeof SubagentMessagePayload.Type
+    }) {
+      const parent = yield* requireSession(ctx.params.sessionID)
+      yield* requireQuestionOwner(parent.id)
+      const child = yield* requireSession(ctx.params.childSessionID)
+      const delivery = subagentDelivery(child.metadata?.horizonSubagentDelivery)
+      const encoded = new TextEncoder().encode(ctx.payload.content)
+      if (encoded.byteLength === 0 || encoded.byteLength > 16 * 1024) return yield* new HttpApiError.BadRequest({})
+      const payloadDigest = digestText(ctx.payload.content)
+      if (child.parentID !== parent.id) {
+        return yield* new ApiNotFoundError({ name: "NotFoundError", data: { message: "Child Session not found" } })
+      }
+      if (delivery?.lane === "managed_attempt") {
+        // Managed child authority is always re-resolved from HostKernel. The
+        // Session metadata below is used only to locate that authenticated
+        // projection; no request-body field can select a Goal, Run or Attempt.
+        const lineage = child.metadata?.horizonManagedAttempt
+        const target = child.metadata?.horizonManagedWorktreeTarget
+        const profilePin = child.metadata?.horizonAgentProfileV2
+        const authenticated = yield* Effect.serviceOption(TrustedPrincipalContext)
+        if (!Option.isSome(authenticated) || authenticated.value.principal.kind !== "server_auth" ||
+          typeof lineage !== "object" || lineage === null || Array.isArray(lineage) ||
+          typeof target !== "object" || target === null || Array.isArray(target) ||
+          typeof profilePin !== "object" || profilePin === null || Array.isArray(profilePin)) {
+          return { status: "UNAVAILABLE" as const, messageId: null, mailboxSequence: null,
+            reason: "managed child authority is unavailable to this authenticated principal", challengeId: null, effectId: null }
+        }
+        const managed = lineage as Record<string, unknown>
+        const worktree = target as Record<string, unknown>
+        const profileMetadata = profilePin as Record<string, unknown>
+        const envelopeAuthority = delivery.authority as Record<string, unknown>
+        if (managed.schemaVersion !== 1 || managed.goalID !== envelopeAuthority.goalId || managed.runID !== envelopeAuthority.runId ||
+          managed.taskID !== envelopeAuthority.taskId || managed.attemptID !== envelopeAuthority.attemptId ||
+          managed.ownerEpoch !== delivery.ownerEpoch || managed.bindingDigest !== envelopeAuthority.delegationBindingDigest ||
+          delivery.parentExecutionId !== parent.id || delivery.childExecutionId !== child.id ||
+          typeof worktree.locationID !== "string" || typeof worktree.workspaceID !== "string" ||
+          typeof worktree.canonicalRoot !== "string" || typeof profileMetadata.profileID !== "string" ||
+          typeof profileMetadata.profileRevision !== "string" || typeof profileMetadata.profileDigest !== "string" ||
+          typeof profileMetadata.permissionCeilingDigest !== "string") {
+          return { status: "UNAVAILABLE" as const, messageId: null, mailboxSequence: null,
+            reason: "managed child metadata does not match its lane-tagged delivery envelope", challengeId: null, effectId: null }
+        }
+        const prior = yield* session.managedInboxGetByRequest({ parentSessionID: parent.id, childSessionID: child.id, requestID: ctx.payload.requestId })
+        const managedDeliveryMode = ctx.payload.mode === "follow_up" ? "follow_up" as const : "queued" as const
+        const hostDeliveryMode = managedDeliveryMode === "queued" ? "queue" as const : "follow_up" as const
+        if (prior && (prior.payload_digest !== payloadDigest || prior.payload_bytes !== encoded.byteLength || prior.delivery_mode !== hostDeliveryMode)) {
+          return yield* new ConflictError({ message: "Managed child message requestId was reused with different content or delivery mode" })
+        }
+        const snapshot = yield* ManagedControl.goalReviewSnapshot(String(managed.goalID), authenticated.value.principal).pipe(
+          Effect.catch(() => Effect.fail(new ServiceUnavailableError({ message: "Managed Goal authority cannot be inspected", service: "host-kernel" }))),
+        )
+        if (snapshot.projectRef !== parent.projectID || snapshot.workspaceRef !== parent.workspaceID) {
+          return { status: "UNAVAILABLE" as const, messageId: null, mailboxSequence: null,
+            reason: "managed Goal is outside the authenticated parent Session workspace", challengeId: null, effectId: null }
+        }
+        const rootLocationID = yield* withLocationSupervisor(
+          SessionSupervisor.Service.use((supervisor) => supervisor.registerHostLocation(
+            Location.Ref.make({ directory: AbsolutePath.make(parent.directory) }),
+          )),
+        ).pipe(Effect.provideService(TrustedPrincipalContext, authenticated.value))
+        const recovery = yield* ManagedControl.activeAttemptRecovery({
+          trustedPrincipal: authenticated.value.principal,
+          goalID: String(managed.goalID), runID: String(managed.runID), locationID: rootLocationID,
+          sessionID: parent.id, expectedRevision: snapshot.goalRevision,
+        }).pipe(Effect.catch(() => Effect.fail(new ServiceUnavailableError({ message: "Managed Attempt authority cannot be reconciled", service: "host-kernel" }))))
+        const attempt = recovery.attempt
+        const scope = attempt?.managedAttempt
+        if (recovery.status !== "ACTIVE_ATTEMPT" || !attempt || !scope ||
+          recovery.goalID !== managed.goalID || recovery.runID !== managed.runID || recovery.sessionID !== parent.id ||
+          recovery.locationID !== rootLocationID || recovery.revision !== snapshot.goalRevision ||
+          attempt.attemptID !== managed.attemptID || attempt.sessionID !== child.id || attempt.ownerEpoch !== managed.ownerEpoch ||
+          attempt.bindingDigest !== managed.bindingDigest || attempt.phase !== "EXECUTING" || attempt.runPhase !== "RUNNING" ||
+          scope.attemptID !== managed.attemptID || scope.sessionID !== child.id || scope.ownerEpoch !== managed.ownerEpoch ||
+          scope.delegationBindingDigest !== managed.bindingDigest || !/^blake3:[0-9a-f]{64}$/.test(scope.permissionScopeDigest) ||
+          scope.expectedManagedRevision !== recovery.revision ||
+          scope.locationID !== worktree.locationID || scope.workspaceRevision !== worktree.workspaceRevision) {
+          if (prior && ["preparing", "approval_required", "admitted", "appended", "delivering"].includes(prior.state)) {
+            yield* session.managedInboxTransition({ messageID: prior.message_id, expected: [prior.state as ManagedSubagentInboxStateV1], state: "unknown" }).pipe(Effect.ignore)
+          }
+          return { status: "UNKNOWN" as const, messageId: prior?.message_id ?? null, mailboxSequence: prior?.mailbox_sequence ?? null,
+            reason: "the original managed Attempt is not the current live HostKernel authority; no message was reissued", challengeId: null, effectId: null }
+        }
+        if (prior?.state === "delivering") {
+          const pins: ManagedControl.ManagedMessagePinsV1 = {
+            lane: "managed_attempt", goalID: prior.goal_id, runID: prior.run_id, taskID: prior.task_id,
+            attemptID: prior.attempt_id, parentSessionID: prior.parent_session_id, childSessionID: prior.child_session_id,
+            ownerEpoch: prior.owner_epoch, bindingDigest: prior.binding_digest, profileID: prior.profile_id,
+            profileRevision: prior.profile_revision, profileDigest: prior.profile_digest,
+            permissionScopeDigest: prior.permission_scope_digest, messageID: prior.message_id, deliveryMode: managedDeliveryMode === "queued" ? "queued" : "follow_up",
+            payloadDigest: prior.payload_digest, payloadBytes: prior.payload_bytes,
+            mailboxSequence: prior.mailbox_sequence, mailboxCapacity: prior.mailbox_capacity,
+          }
+          const observed = yield* ManagedControl.inspectManagedMessage({ scope, pins }).pipe(Effect.catch(() => Effect.succeed(undefined)))
+          return { status: "UNKNOWN" as const, messageId: prior.message_id, mailboxSequence: prior.mailbox_sequence,
+            reason: observed?.status === "QUEUED"
+              ? "HostKernel confirms the queue receipt, but Core cannot prove whether the child already consumed it; it was not reinjected"
+              : "managed delivery remains ambiguous after restart; exact receipt inspection only", challengeId: null, effectId: null }
+        }
+        if (prior?.state === "committed" || prior?.state === "consumed") {
+          const pins: ManagedControl.ManagedMessagePinsV1 = {
+            lane: "managed_attempt", goalID: prior.goal_id, runID: prior.run_id, taskID: prior.task_id,
+            attemptID: prior.attempt_id, parentSessionID: prior.parent_session_id, childSessionID: prior.child_session_id,
+            ownerEpoch: prior.owner_epoch, bindingDigest: prior.binding_digest, profileID: prior.profile_id,
+            profileRevision: prior.profile_revision, profileDigest: prior.profile_digest,
+            permissionScopeDigest: prior.permission_scope_digest, messageID: prior.message_id, deliveryMode: "queued",
+            payloadDigest: prior.payload_digest, payloadBytes: prior.payload_bytes,
+            mailboxSequence: prior.mailbox_sequence, mailboxCapacity: prior.mailbox_capacity,
+          }
+          const observed = yield* ManagedControl.inspectManagedMessage({ scope, pins }).pipe(Effect.catch(() => Effect.succeed(undefined)))
+          const receiptStatus = managedDeliveryMode === "queued" ? "QUEUED" : "FOLLOW_UP_SCHEDULED"
+          if (observed?.status !== receiptStatus || observed.receiptDigest !== prior.host_receipt_digest ||
+            (managedDeliveryMode === "follow_up" && (observed.wakeReceiptDigest !== prior.wake_receipt_digest ||
+              observed.nextRequestSequence !== prior.next_request_sequence))) {
+            return { status: "UNKNOWN" as const, messageId: prior.message_id, mailboxSequence: prior.mailbox_sequence,
+              reason: "Core ACK and HostKernel queue receipt differ; no delivery was retried", challengeId: null, effectId: null }
+          }
+          return { status: managedDeliveryMode === "queued" ? "QUEUED" as const : "FOLLOW_UP_SCHEDULED" as const, messageId: prior.message_id, mailboxSequence: prior.mailbox_sequence,
+            reason: null, challengeId: null, effectId: null }
+        }
+        const pinnedAgent = yield* agentSvc.getProfile(String(managed.profileID ?? profileMetadata.profileID), Number(profileMetadata.profileRevision)).pipe(
+          Effect.catch(() => Effect.fail(new ServiceUnavailableError({ message: "Pinned managed AgentProfileV2 is unavailable", service: "agent-profile" }))),
+        )
+        const profileProjection = pinnedAgent.options.horizonAgentProfile
+        const limits = typeof profileProjection === "object" && profileProjection !== null && !Array.isArray(profileProjection)
+          ? (profileProjection as Record<string, unknown>).limits as Record<string, unknown> | undefined : undefined
+        const maxMessageBytes = limits?.maxMessageBytes
+        const maxPendingMessages = limits?.maxPendingMessages
+        if (!limits || String((profileProjection as Record<string, unknown>).profileId) !== profileMetadata.profileID ||
+          String((profileProjection as Record<string, unknown>).revision) !== profileMetadata.profileRevision ||
+          String((profileProjection as Record<string, unknown>).harness) !== String((profileMetadata as Record<string, unknown>).harness) ||
+          recovery.task.profile.profileID !== profileMetadata.profileID || recovery.task.profile.revision !== profileMetadata.profileRevision ||
+          recovery.task.profile.definitionDigest !== profileMetadata.profileDigest ||
+          typeof maxMessageBytes !== "number" || !Number.isSafeInteger(maxMessageBytes) || maxMessageBytes < 1 ||
+          typeof maxPendingMessages !== "number" || !Number.isSafeInteger(maxPendingMessages) || maxPendingMessages < 1 ||
+          encoded.byteLength > maxMessageBytes || pinnedAgent.model === undefined) {
+          return yield* new ServiceUnavailableError({ message: "Pinned managed AgentProfileV2 limits or digest are unavailable", service: "agent-profile" })
+        }
+        const draft = prior ?? (yield* session.managedInboxCreateDraft({
+          messageID: MessageID.ascending(`${parent.id}:${child.id}:${ctx.payload.requestId}`),
+          parentSessionID: parent.id, childSessionID: child.id, requestID: ctx.payload.requestId,
+          goalID: recovery.goalID, runID: recovery.runID, taskID: recovery.task.taskID, attemptID: attempt.attemptID,
+          ownerEpoch: attempt.ownerEpoch, bindingDigest: attempt.bindingDigest,
+          profileID: recovery.task.profile.profileID, profileRevision: recovery.task.profile.revision,
+          profileDigest: recovery.task.profile.definitionDigest,
+          permissionScopeDigest: scope.permissionScopeDigest,
+          payload: ctx.payload.content, payloadDigest, payloadBytes: encoded.byteLength,
+          deliveryMode: managedDeliveryMode, mailboxCapacity: Math.min(32, maxPendingMessages),
+        })).row)
+        let completedTurnReceiptDigest: string | undefined
+        if (managedDeliveryMode === "follow_up") {
+          completedTurnReceiptDigest = draft.completed_turn_receipt_digest ?? undefined
+          if (!completedTurnReceiptDigest) {
+            const history = yield* session.messages({ sessionID: child.id, limit: 512 })
+            const latest = MessageV2.latest(history)
+            const assistantMessage = latest.assistant
+              ? history.findLast((message) => message.info.role === "assistant" && message.info.id === latest.assistant?.id)
+              : undefined
+            const hasToolCalls = assistantMessage?.parts.some((part) => part.type === "tool" && !part.metadata?.providerExecuted) ?? false
+            if (!latest.user || !latest.assistant || latest.finished?.id !== latest.assistant.id ||
+              latest.assistant.parentID !== latest.user.id || !latest.assistant.finish ||
+              ["tool-calls", "unknown"].includes(latest.assistant.finish) || hasToolCalls) {
+              return { status: "UNAVAILABLE" as const, messageId: draft.message_id, mailboxSequence: draft.mailbox_sequence,
+                reason: "managed follow-up requires the exact latest completed assistant turn", challengeId: null, effectId: null }
+            }
+            const authority = ManagedControl.createManagedAttemptAuthority(scope)
+            const completion = yield* SessionSupervisor.Service.use((supervisor) =>
+              ManagedControl.completeManagedProviderTurn({ authority, assistantEntryID: latest.assistant!.id })
+                .pipe(Effect.provideService(SessionSupervisor.Service, supervisor)))
+            completedTurnReceiptDigest = completion.completionReceiptDigest
+          }
+        }
+        const pins: ManagedControl.ManagedMessagePinsV1 = {
+          lane: "managed_attempt", goalID: draft.goal_id, runID: draft.run_id, taskID: draft.task_id,
+          attemptID: draft.attempt_id, parentSessionID: draft.parent_session_id, childSessionID: draft.child_session_id,
+          ownerEpoch: draft.owner_epoch, bindingDigest: draft.binding_digest, profileID: draft.profile_id,
+          profileRevision: draft.profile_revision, profileDigest: draft.profile_digest,
+          permissionScopeDigest: draft.permission_scope_digest, messageID: draft.message_id, deliveryMode: managedDeliveryMode,
+          payloadDigest: draft.payload_digest, payloadBytes: draft.payload_bytes,
+          mailboxSequence: draft.mailbox_sequence, mailboxCapacity: draft.mailbox_capacity,
+        }
+        if (prior?.state === "preparing" || prior?.state === "approval_required") {
+          const observed = yield* ManagedControl.inspectManagedMessage({ scope, pins }).pipe(Effect.catch(() => Effect.succeed(undefined)))
+          const expectedStatus = managedDeliveryMode === "queued" ? "QUEUED" : "FOLLOW_UP_SCHEDULED"
+          if (observed?.status === expectedStatus && (managedDeliveryMode === "queued" ||
+            observed.wakeReceiptDigest === prior.wake_receipt_digest && observed.nextRequestSequence === prior.next_request_sequence)) {
+            yield* session.managedInboxTransition({ messageID: draft.message_id, expected: [prior.state as ManagedSubagentInboxStateV1], state: "committed", hostReceiptDigest: observed.receiptDigest,
+              ...(managedDeliveryMode === "follow_up" ? { completedTurnReceiptDigest: prior.completed_turn_receipt_digest, wakeReceiptDigest: observed.wakeReceiptDigest, nextRequestSequence: observed.nextRequestSequence } : {}) })
+            return { status: managedDeliveryMode === "queued" ? "QUEUED" as const : "FOLLOW_UP_SCHEDULED" as const, messageId: draft.message_id, mailboxSequence: draft.mailbox_sequence, reason: null, challengeId: null, effectId: null }
+          }
+        }
+        if (draft.state === "unknown") {
+          const observed = yield* ManagedControl.inspectManagedMessage({ scope, pins }).pipe(Effect.catch(() => Effect.succeed(undefined)))
+          const expectedStatus = managedDeliveryMode === "queued" ? "QUEUED" : "FOLLOW_UP_SCHEDULED"
+          if (observed?.status === expectedStatus && draft.capability_lease_digest && draft.inbox_receipt_digest &&
+            (managedDeliveryMode === "queued" || draft.completed_turn_receipt_digest !== null &&
+              observed.wakeReceiptDigest !== undefined && observed.nextRequestSequence === (BigInt(scope.requestSequence) + 1n).toString())) {
+            const reconciled = yield* session.managedInboxTransition({ messageID: draft.message_id, expected: ["unknown"], state: "committed", hostReceiptDigest: observed.receiptDigest,
+              ...(managedDeliveryMode === "follow_up" ? { completedTurnReceiptDigest: draft.completed_turn_receipt_digest, wakeReceiptDigest: observed.wakeReceiptDigest, nextRequestSequence: observed.nextRequestSequence } : {}) })
+            return { status: managedDeliveryMode === "queued" ? "QUEUED" as const : "FOLLOW_UP_SCHEDULED" as const, messageId: reconciled.message_id, mailboxSequence: reconciled.mailbox_sequence,
+              reason: null, challengeId: null, effectId: null }
+          }
+          return { status: "UNKNOWN" as const, messageId: draft.message_id, mailboxSequence: draft.mailbox_sequence,
+            reason: observed?.status === expectedStatus ? "HostKernel has a receipt, but the exact managed delivery transition cannot be reconciled safely" : "managed message authority is unresolved; no retry was attempted",
+            challengeId: null, effectId: null }
+        }
+        const coreReceipt = draft.inbox_receipt_digest
+        const prepared = yield* ManagedControl.prepareManagedMessage({ scope, pins, content: draft.payload }).pipe(Effect.either)
+        if (prepared._tag === "Left") {
+          return { status: "UNKNOWN" as const, messageId: draft.message_id, mailboxSequence: draft.mailbox_sequence,
+            reason: "exact managed Guard prepare is unresolved; the durable Core request identity is retained", challengeId: draft.challenge_id, effectId: draft.effect_id }
+        }
+        if (prepared.right.status === "DENIED") {
+          yield* session.managedInboxTransition({ messageID: draft.message_id, expected: [draft.state as ManagedSubagentInboxStateV1], state: "denied", pinsDigest: prepared.right.pinsDigest })
+          return { status: "DENIED" as const, messageId: draft.message_id, mailboxSequence: draft.mailbox_sequence, reason: prepared.right.reasonCode, challengeId: null, effectId: null }
+        }
+        if (prepared.right.status === "NEEDS_APPROVAL") {
+          yield* session.managedInboxTransition({ messageID: draft.message_id, expected: [draft.state as ManagedSubagentInboxStateV1], state: "approval_required",
+            challengeID: prepared.right.challengeID, effectID: prepared.right.effectID, pinsDigest: prepared.right.inputDigest })
+          return { status: "NEEDS_APPROVAL" as const, messageId: draft.message_id, mailboxSequence: draft.mailbox_sequence,
+            reason: prepared.right.policySummary, challengeId: prepared.right.challengeID, effectId: prepared.right.effectID }
+        }
+        let admitted = draft
+        if (draft.state !== "admitted" && draft.state !== "appended") admitted = yield* session.managedInboxTransition({
+          messageID: draft.message_id, expected: [draft.state as ManagedSubagentInboxStateV1], state: "admitted",
+          pinsDigest: prepared.right.pinsDigest, capabilityLeaseDigest: prepared.right.capabilityLeaseDigest,
+        })
+        if (admitted.state === "admitted") admitted = yield* session.managedInboxTransition({ messageID: draft.message_id, expected: ["admitted"], state: "appended", ...(managedDeliveryMode === "follow_up" ? { completedTurnReceiptDigest } : {}) })
+        const committed = yield* ManagedControl.commitManagedMessage({ scope, pins,
+          capabilityLeaseDigest: admitted.capability_lease_digest!,
+          ...(managedDeliveryMode === "follow_up" ? { completedTurnReceiptDigest } : {}),
+          inboxReceipt: { status: managedDeliveryMode === "queued" ? "QUEUED" : "FOLLOW_UP_SCHEDULED", messageID: admitted.message_id, parentSessionID: parent.id,
+            childSessionID: child.id, deliveryMode: managedDeliveryMode, mailboxSequence: admitted.mailbox_sequence,
+            receiptDigest: coreReceipt },
+        }).pipe(Effect.catch(() => ManagedControl.inspectManagedMessage({ scope, pins }).pipe(Effect.catch(() => Effect.succeed(undefined)))) )
+        const expectedStatus = managedDeliveryMode === "queued" ? "QUEUED" : "FOLLOW_UP_SCHEDULED"
+        if (!committed || committed.status !== expectedStatus || (managedDeliveryMode === "follow_up" &&
+          (committed.wakeReceiptDigest === undefined || committed.nextRequestSequence === undefined))) {
+          yield* session.managedInboxTransition({ messageID: admitted.message_id, expected: ["appended"], state: "unknown", hostReceiptDigest: committed?.receiptDigest ?? null })
+          return { status: "UNKNOWN" as const, messageId: admitted.message_id, mailboxSequence: admitted.mailbox_sequence,
+            reason: "HostKernel managed message ACK is unresolved; exact receipt inspection only", challengeId: null, effectId: null }
+        }
+        const acked = yield* session.managedInboxTransition({ messageID: admitted.message_id, expected: ["appended"], state: "committed", hostReceiptDigest: committed.receiptDigest,
+          ...(managedDeliveryMode === "follow_up" ? { completedTurnReceiptDigest, wakeReceiptDigest: committed.wakeReceiptDigest, nextRequestSequence: committed.nextRequestSequence } : {}) })
+        return { status: managedDeliveryMode === "queued" ? "QUEUED" as const : "FOLLOW_UP_SCHEDULED" as const, messageId: acked.message_id, mailboxSequence: acked.mailbox_sequence,
+          reason: null, challengeId: null, effectId: null }
+      }
+      if (child.directory !== parent.directory || child.workspaceID !== parent.workspaceID || delivery?.lane !== "direct_session") {
+        return yield* new ApiNotFoundError({ name: "NotFoundError", data: { message: "Direct child Session not found" } })
+      }
+      if (ctx.payload.mode === "follow_up") {
+        const turnGate = yield* ManagedControl.requireDirectTurnLifecycle().pipe(Effect.either)
+        if (turnGate._tag === "Left") {
+          return { status: "UNAVAILABLE" as const, messageId: null, mailboxSequence: null,
+            reason: "HostKernel direct-turn recovery and P1/P8 acceptance have not enabled follow-up dispatch", challengeId: null, effectId: null }
+        }
+        const profile = directProfilePin(child.metadata?.horizonAgentProfileV2)
+        const attemptID = child.metadata?.horizonDirectAttemptID
+        const scopeDigest = child.metadata?.[DIRECT_SCOPE_PIN_KEY]
+        if (!profile || typeof attemptID !== "string" || !/^att_[a-z0-9]{16,64}$/.test(attemptID) ||
+          delivery.ownerEpoch === "0" || typeof scopeDigest !== "string" || !/^(sha256|blake3):[0-9a-f]{64}$/.test(scopeDigest)) {
+          return yield* new ApiNotFoundError({ name: "NotFoundError", data: { message: "Direct child Attempt authority not found" } })
+        }
+        const attempt = yield* ManagedControl.snapshotDirectAttempt(attemptID).pipe(
+          Effect.catch(() => Effect.fail(new ServiceUnavailableError({ message: "HostKernel child Attempt cannot be inspected", service: "host-kernel" }))),
+        )
+        const directAttempt = attempt.directAttempt
+        const pinnedAgent = yield* agentSvc.getProfile(profile.profileID, Number(profile.profileRevision)).pipe(
+          Effect.catch(() => Effect.fail(new ServiceUnavailableError({ message: "Pinned AgentProfileV2 revision is unavailable", service: "agent-profile" }))),
+        )
+        const profileProjection = pinnedAgent.options.horizonAgentProfile
+        const limits = typeof profileProjection === "object" && profileProjection !== null && !Array.isArray(profileProjection)
+          ? (profileProjection as Record<string, unknown>).limits as Record<string, unknown> | undefined
+          : undefined
+        const maxMessageBytes = limits?.maxMessageBytes
+        const maxPendingMessages = limits?.maxPendingMessages
+        if (!limits || (profileProjection as Record<string, unknown>).profileId !== profile.profileID ||
+          String((profileProjection as Record<string, unknown>).revision) !== profile.profileRevision ||
+          (profileProjection as Record<string, unknown>).harness !== profile.harness ||
+          typeof maxMessageBytes !== "number" || !Number.isSafeInteger(maxMessageBytes) || maxMessageBytes < 1 ||
+          typeof maxPendingMessages !== "number" || !Number.isSafeInteger(maxPendingMessages) || maxPendingMessages < 1 ||
+          encoded.byteLength > maxMessageBytes || pinnedAgent.model === undefined) {
+          return yield* new ServiceUnavailableError({ message: "Pinned AgentProfileV2 limits or model are unavailable", service: "agent-profile" })
+        }
+        const mailboxCapacity = Math.min(32, maxPendingMessages)
+        const completedScope = yield* Effect.try({
+          try: () => ManagedControl.decodeDirectTurnScopeCandidate(child.metadata?.horizonDirectTurnScope),
+          catch: () => new ManagedControl.ManagedControlError({ operation: "direct_follow_up", code: "managed_conflict", reason: "child has no exact completed turn to follow up" }),
+        })
+        const completion = child.metadata?.horizonDirectTurnCompletion
+        if (attempt.phase !== "EXECUTING" || !directAttempt || attempt.parentSessionID !== parent.id ||
+          attempt.childSessionID !== child.id || attempt.scopeDigest !== scopeDigest ||
+          !ManagedControl.sameDirectAttemptScope(directAttempt, completedScope.directAttempt) ||
+          typeof completion !== "object" || completion === null || Array.isArray(completion) ||
+          (completion as Record<string, unknown>).state !== "completed" ||
+          (completion as Record<string, unknown>).runnerCycleID !== completedScope.runnerCycleID ||
+          (completion as Record<string, unknown>).turnSequence !== completedScope.turnSequence ||
+          (completion as Record<string, unknown>).cycleDigest !== completedScope.cycleDigest) {
+          return { status: "DENIED" as const, messageId: null, mailboxSequence: null, reason: "the exact child Attempt has no current completed turn for this follow-up", challengeId: null, effectId: null }
+        }
+        const previous = yield* session.directInboxGetByRequest({ parentSessionID: parent.id, childSessionID: child.id, requestID: ctx.payload.requestId })
+        if (previous && (previous.payload_digest !== payloadDigest || previous.payload_bytes !== encoded.byteLength || previous.delivery_mode !== "follow_up")) {
+          return yield* new ConflictError({ message: "Direct child message requestId was reused with different payload or delivery mode" })
+        }
+        if (previous?.state === "denied") return { status: "DENIED" as const, messageId: previous.message_id, mailboxSequence: previous.mailbox_sequence, reason: "HostKernel denied this direct follow-up", challengeId: null, effectId: null }
+        if (previous?.state === "consumed") {
+          if (previous.host_consumed_ack_digest) return { status: "FOLLOW_UP_SCHEDULED" as const, messageId: previous.message_id, mailboxSequence: previous.mailbox_sequence, reason: null, challengeId: null, effectId: null }
+          const reconciled = yield* promptSvc.followUpDirectChild({ parentSessionID: parent.id, childSessionID: child.id, messageID: previous.message_id }).pipe(Effect.either)
+          return reconciled._tag === "Right"
+            ? { status: "FOLLOW_UP_SCHEDULED" as const, messageId: previous.message_id, mailboxSequence: previous.mailbox_sequence, reason: null, challengeId: null, effectId: null }
+            : { status: "UNKNOWN" as const, messageId: previous.message_id, mailboxSequence: previous.mailbox_sequence, reason: "follow-up was consumed but its HostKernel capacity acknowledgement is unresolved", challengeId: null, effectId: null }
+        }
+        let draft = previous
+        if (!draft) {
+          const messageID = MessageID.ascending(`${parent.id}:${child.id}:${ctx.payload.requestId}`)
+          try {
+            draft = (yield* session.directInboxCreateDraft({
+              messageId: messageID, parentSessionId: parent.id, childSessionId: child.id,
+              requestId: ctx.payload.requestId, payload: ctx.payload.content, payloadDigest,
+              payloadBytes: encoded.byteLength, deliveryMode: "follow_up", childAttemptId: attemptID,
+              childOwnerEpoch: directAttempt.ownerEpoch, profileId: profile.profileID,
+              profileRevision: profile.profileRevision, profileDigest: profile.profileDigest,
+              permissionScopeDigest: profile.permissionsDigest, mailboxCapacity,
+              inboxReceiptDigest: digestText(`${messageID}:preparing`),
+            })).row
+          } catch (error) {
+            return yield* new ConflictError({ message: error instanceof Error ? error.message : "Core direct inbox reservation failed" })
+          }
+        }
+        if (!draft) return yield* new ServiceUnavailableError({ message: "Core direct inbox reservation could not be recovered", service: "host-kernel" })
+        if (draft.child_attempt_id !== attemptID || draft.child_owner_epoch !== directAttempt.ownerEpoch ||
+          draft.profile_id !== profile.profileID || draft.profile_revision !== profile.profileRevision ||
+          draft.profile_digest !== profile.profileDigest || draft.permission_scope_digest !== profile.permissionsDigest ||
+          draft.mailbox_capacity !== mailboxCapacity) {
+          yield* session.directInboxTransition({ messageID: draft.message_id, expected: ["preparing", "approval_required"], state: "unknown" }).pipe(Effect.ignore)
+          return { status: "UNKNOWN" as const, messageId: draft.message_id, mailboxSequence: draft.mailbox_sequence, reason: "follow-up authority pins changed; only exact receipt inspection is allowed", challengeId: null, effectId: null }
+        }
+        const pins: ManagedControl.DirectMessagePinsV1 = {
+          parentSessionID: parent.id, childSessionID: child.id, childOwnerEpoch: draft.child_owner_epoch,
+          profileID: draft.profile_id, profileRevision: draft.profile_revision, profileDigest: draft.profile_digest,
+          permissionScopeDigest: draft.permission_scope_digest, directAttemptID: draft.child_attempt_id,
+          messageID: draft.message_id, deliveryMode: "follow_up", payloadDigest: draft.payload_digest,
+          payloadBytes: draft.payload_bytes, mailboxSequence: draft.mailbox_sequence, mailboxCapacity: draft.mailbox_capacity,
+        }
+        if (draft.state === "unknown" || draft.state === "delivering") {
+          const observed = yield* ManagedControl.inspectDirectMessage({ pins }).pipe(Effect.catch(() => Effect.succeed(undefined)))
+          return { status: "UNKNOWN" as const, messageId: draft.message_id, mailboxSequence: draft.mailbox_sequence,
+            reason: observed?.status === "FOLLOW_UP_SCHEDULED"
+              ? "HostKernel retained the follow-up receipt, but Core cannot prove whether the child runner already consumed it; no replay was attempted"
+              : "follow-up dispatch remains uncertain; only exact receipt inspection is permitted",
+            challengeId: null, effectId: null }
+        }
+        const freshTurnAuthorization = yield* ManagedControl.issueFreshTurnAuthorization({ pins, completedTurnScope: completedScope })
+          .pipe(Effect.catch((error) => Effect.fail(new ServiceUnavailableError({ message: error.message, service: "host-kernel" }))))
+        const inboxDigest = inboxReceiptDigest({
+          messageID: draft.message_id, parentSessionID: parent.id, childSessionID: child.id,
+          deliveryMode: "follow_up", directAttemptID: draft.child_attempt_id,
+          childOwnerEpoch: draft.child_owner_epoch, profileID: draft.profile_id,
+          profileRevision: draft.profile_revision, profileDigest: draft.profile_digest,
+          permissionScopeDigest: draft.permission_scope_digest, payloadDigest: draft.payload_digest,
+          payloadBytes: draft.payload_bytes, mailboxSequence: draft.mailbox_sequence, mailboxCapacity: draft.mailbox_capacity,
+        })
+        if (draft.state === "preparing" || draft.state === "approval_required") {
+          const prepared = yield* ManagedControl.prepareDirectMessage({ pins, content: draft.payload, mailboxCapacity: draft.mailbox_capacity, freshTurnAuthorization })
+            .pipe(Effect.either)
+          if (prepared._tag === "Left") return { status: "UNKNOWN" as const, messageId: draft.message_id, mailboxSequence: draft.mailbox_sequence, reason: "exact follow-up prepare is unresolved; the original inbox identity is retained", challengeId: draft.challenge_id, effectId: draft.effect_id }
+          if (prepared.right.status === "DENIED") {
+            yield* session.directInboxTransition({ messageID: draft.message_id, expected: [draft.state], state: "denied", pinsDigest: prepared.right.pinsDigest })
+            return { status: "DENIED" as const, messageId: draft.message_id, mailboxSequence: draft.mailbox_sequence, reason: prepared.right.reasonCode, challengeId: null, effectId: null }
+          }
+          if (prepared.right.status === "NEEDS_APPROVAL") {
+            yield* session.directInboxTransition({
+              messageID: draft.message_id, expected: [draft.state], state: "approval_required",
+              challengeID: prepared.right.challengeID, effectID: prepared.right.effectID,
+              approvalExpiresAtUnixMs: prepared.right.expiresAtUnixMs,
+              approvalArgumentSummary: JSON.stringify(prepared.right.argumentSummary),
+              approvalPolicySummary: prepared.right.policySummary, pinsDigest: prepared.right.inputDigest,
+              inboxReceiptDigest: inboxDigest,
+            })
+            return { status: "NEEDS_APPROVAL" as const, messageId: draft.message_id, mailboxSequence: draft.mailbox_sequence, reason: prepared.right.policySummary, challengeId: prepared.right.challengeID, effectId: prepared.right.effectID }
+          }
+          draft = yield* session.directInboxTransition({
+            messageID: draft.message_id, expected: [draft.state], state: "admitted",
+            capabilityLeaseDigest: prepared.right.capabilityLeaseDigest, pinsDigest: prepared.right.pinsDigest,
+            inboxReceiptDigest: inboxDigest,
+          })
+        }
+        if (draft.state === "admitted") draft = yield* session.directInboxTransition({ messageID: draft.message_id, expected: ["admitted"], state: "appended" })
+        if (draft.state === "appended") {
+          if (!draft.capability_lease_digest || draft.inbox_receipt_digest !== inboxDigest) {
+            return { status: "UNKNOWN" as const, messageId: draft.message_id, mailboxSequence: draft.mailbox_sequence, reason: "admitted follow-up has no exact retained one-use lease or inbox receipt", challengeId: null, effectId: null }
+          }
+          const committed = yield* ManagedControl.commitDirectMessage({
+            pins, capabilityLeaseDigest: draft.capability_lease_digest,
+            inboxReceipt: { messageID: draft.message_id, parentSessionID: parent.id, childSessionID: child.id,
+              deliveryMode: "follow_up", mailboxSequence: draft.mailbox_sequence, receiptDigest: inboxDigest },
+          }).pipe(Effect.catch(() => ManagedControl.inspectDirectMessage({ pins }).pipe(Effect.catch(() => Effect.succeed(undefined)))))
+          if (!committed || committed.status !== "FOLLOW_UP_SCHEDULED") {
+            yield* session.directInboxTransition({ messageID: draft.message_id, expected: ["appended"], state: "unknown", hostReceiptDigest: committed?.receiptDigest ?? null })
+            return { status: "UNKNOWN" as const, messageId: draft.message_id, mailboxSequence: draft.mailbox_sequence, reason: "HostKernel follow-up commit is unresolved; the child was not woken", challengeId: null, effectId: null }
+          }
+          draft = yield* session.directInboxTransition({ messageID: draft.message_id, expected: ["appended"], state: "committed", hostReceiptDigest: committed.receiptDigest })
+        }
+        const committedReceipt = yield* ManagedControl.inspectDirectMessage({ pins }).pipe(Effect.catch(() => Effect.succeed(undefined)))
+        if (draft.state !== "committed" || committedReceipt?.status !== "FOLLOW_UP_SCHEDULED" ||
+          committedReceipt.receiptDigest !== draft.host_receipt_digest) {
+          return { status: "UNKNOWN" as const, messageId: draft.message_id, mailboxSequence: draft.mailbox_sequence, reason: "the follow-up commit receipt is unresolved; the child was not woken", challengeId: null, effectId: null }
+        }
+        const wake = yield* promptSvc.followUpDirectChild({ parentSessionID: parent.id, childSessionID: child.id,
+          messageID: draft.message_id, freshTurnAuthorization }).pipe(Effect.either)
+        if (wake._tag === "Left") {
+          yield* session.directInboxTransition({ messageID: draft.message_id, expected: ["delivering"], state: "unknown" }).pipe(Effect.ignore)
+          return { status: "UNKNOWN" as const, messageId: draft.message_id, mailboxSequence: draft.mailbox_sequence, reason: "the exact committed follow-up was not confirmed through the serialized child runner", challengeId: null, effectId: null }
+        }
+        return { status: "FOLLOW_UP_SCHEDULED" as const, messageId: draft.message_id, mailboxSequence: draft.mailbox_sequence, reason: null, challengeId: null, effectId: null }
+      }
+      const profile = directProfilePin(child.metadata?.horizonAgentProfileV2)
+      const attemptID = child.metadata?.horizonDirectAttemptID
+      const scopeDigest = child.metadata?.[DIRECT_SCOPE_PIN_KEY]
+      const previous = yield* session.directInboxGetByRequest({
+        parentSessionID: parent.id,
+        childSessionID: child.id,
+        requestID: ctx.payload.requestId,
+      })
+      if (previous) {
+        if (previous.payload_digest !== payloadDigest || previous.payload_bytes !== encoded.byteLength || previous.delivery_mode !== "queue") {
+          return yield* new ConflictError({ message: "Direct child message requestId was reused with different payload or delivery mode" })
+        }
+        const pins: ManagedControl.DirectMessagePinsV1 = {
+          parentSessionID: previous.parent_session_id,
+          childSessionID: previous.child_session_id,
+          childOwnerEpoch: previous.child_owner_epoch,
+          profileID: previous.profile_id,
+          profileRevision: previous.profile_revision,
+          profileDigest: previous.profile_digest,
+          permissionScopeDigest: previous.permission_scope_digest,
+          directAttemptID: previous.child_attempt_id,
+          messageID: previous.message_id,
+          deliveryMode: "queued",
+          payloadDigest: previous.payload_digest,
+          payloadBytes: previous.payload_bytes,
+          mailboxSequence: previous.mailbox_sequence,
+          mailboxCapacity: previous.mailbox_capacity,
+        }
+        if (previous.state === "committed" || previous.state === "consumed") {
+          return { status: "QUEUED" as const, messageId: previous.message_id, mailboxSequence: previous.mailbox_sequence, reason: null, challengeId: null, effectId: null }
+        }
+        if (previous.state === "preparing") {
+          // Recover a lost prepare reply only by replaying the exact journal key,
+          // pins and payload in the same live child Attempt/owner epoch. The
+          // HostKernel journal returns its retained challenge/lease; it cannot
+          // mint a replacement for this immutable message identity.
+          const sameLiveAuthority = profile && typeof attemptID === "string" &&
+            attemptID === previous.child_attempt_id && delivery.ownerEpoch === previous.child_owner_epoch &&
+            profile.profileID === previous.profile_id && profile.profileRevision === previous.profile_revision &&
+            profile.profileDigest === previous.profile_digest && profile.permissionsDigest === previous.permission_scope_digest &&
+            typeof scopeDigest === "string"
+          if (!sameLiveAuthority) {
+            const observed = yield* ManagedControl.inspectDirectMessage({ pins }).pipe(Effect.catch(() => Effect.succeed(undefined)))
+            if (observed?.status === "QUEUED") {
+              yield* session.directInboxTransition({ messageID: previous.message_id, expected: ["preparing", "appended", "admitted", "unknown"], state: "committed", hostReceiptDigest: observed.receiptDigest })
+              return { status: "QUEUED" as const, messageId: previous.message_id, mailboxSequence: previous.mailbox_sequence, reason: null, challengeId: null, effectId: null }
+            }
+            yield* session.directInboxTransition({ messageID: previous.message_id, expected: ["preparing"], state: "unknown" })
+            return { status: "UNKNOWN" as const, messageId: previous.message_id, mailboxSequence: previous.mailbox_sequence, reason: "the original prepare belongs to a stale Attempt or owner epoch; exact inspection only is permitted", challengeId: null, effectId: null }
+          }
+          const live = yield* ManagedControl.snapshotDirectAttempt(previous.child_attempt_id).pipe(Effect.catch(() => Effect.succeed(undefined)))
+          if (!live || live.phase !== "EXECUTING" || live.parentSessionID !== parent.id || live.childSessionID !== child.id || live.scopeDigest !== scopeDigest) {
+            yield* session.directInboxTransition({ messageID: previous.message_id, expected: ["preparing"], state: "unknown" })
+            return { status: "UNKNOWN" as const, messageId: previous.message_id, mailboxSequence: previous.mailbox_sequence, reason: "the original child Attempt is no longer live; prepare cannot be replayed", challengeId: null, effectId: null }
+          }
+          const retry = yield* ManagedControl.prepareDirectMessage({ pins, content: previous.payload, mailboxCapacity: previous.mailbox_capacity }).pipe(Effect.either)
+          if (retry._tag === "Left") {
+            // Leave PREPARING durable: a same-epoch exact retry can reconcile a
+            // lost reply. A restart changes epoch and takes the fail-closed path.
+            return { status: "UNKNOWN" as const, messageId: previous.message_id, mailboxSequence: previous.mailbox_sequence, reason: "exact same-epoch HostKernel prepare replay is unresolved; the immutable Core reservation is retained", challengeId: null, effectId: null }
+          }
+          const result = retry.right
+          if (result.status === "DENIED") {
+            yield* session.directInboxTransition({ messageID: previous.message_id, expected: ["preparing"], state: "denied", pinsDigest: result.pinsDigest })
+            return { status: "DENIED" as const, messageId: previous.message_id, mailboxSequence: previous.mailbox_sequence, reason: result.reasonCode, challengeId: null, effectId: null }
+          }
+          if (result.status === "NEEDS_APPROVAL") {
+            const receiptDigest = inboxReceiptDigest({
+              messageID: previous.message_id, parentSessionID: parent.id, childSessionID: child.id,
+              deliveryMode: "queued", directAttemptID: previous.child_attempt_id,
+              childOwnerEpoch: previous.child_owner_epoch, profileID: previous.profile_id,
+              profileRevision: previous.profile_revision, profileDigest: previous.profile_digest,
+              permissionScopeDigest: previous.permission_scope_digest, payloadDigest: previous.payload_digest,
+              payloadBytes: previous.payload_bytes, mailboxSequence: previous.mailbox_sequence,
+              mailboxCapacity: previous.mailbox_capacity,
+            })
+            yield* session.directInboxTransition({
+              messageID: previous.message_id, expected: ["preparing"], state: "approval_required",
+              challengeID: result.challengeID, effectID: result.effectID,
+              approvalExpiresAtUnixMs: result.expiresAtUnixMs,
+              approvalArgumentSummary: JSON.stringify(result.argumentSummary),
+              approvalPolicySummary: result.policySummary, pinsDigest: result.inputDigest,
+              inboxReceiptDigest: receiptDigest,
+            })
+            return { status: "NEEDS_APPROVAL" as const, messageId: previous.message_id, mailboxSequence: previous.mailbox_sequence, reason: result.policySummary, challengeId: result.challengeID, effectId: result.effectID }
+          }
+          const receiptDigest = inboxReceiptDigest({
+            messageID: previous.message_id, parentSessionID: parent.id, childSessionID: child.id,
+            deliveryMode: "queued", directAttemptID: previous.child_attempt_id,
+            childOwnerEpoch: previous.child_owner_epoch, profileID: previous.profile_id,
+            profileRevision: previous.profile_revision, profileDigest: previous.profile_digest,
+            permissionScopeDigest: previous.permission_scope_digest, payloadDigest: previous.payload_digest,
+            payloadBytes: previous.payload_bytes, mailboxSequence: previous.mailbox_sequence,
+            mailboxCapacity: previous.mailbox_capacity,
+          })
+          yield* session.directInboxTransition({
+            messageID: previous.message_id, expected: ["preparing"], state: "admitted",
+            capabilityLeaseDigest: result.capabilityLeaseDigest, pinsDigest: result.pinsDigest,
+            inboxReceiptDigest: receiptDigest,
+          })
+          yield* session.directInboxTransition({ messageID: previous.message_id, expected: ["admitted"], state: "appended" })
+          const committed = yield* ManagedControl.commitDirectMessage({
+            pins: result.authorityPins,
+            capabilityLeaseDigest: result.capabilityLeaseDigest,
+            inboxReceipt: { messageID: previous.message_id, parentSessionID: parent.id, childSessionID: child.id, deliveryMode: "queued", mailboxSequence: previous.mailbox_sequence, receiptDigest },
+          }).pipe(Effect.catch(() => ManagedControl.inspectDirectMessage({ pins: result.authorityPins }).pipe(Effect.catch(() => Effect.succeed(undefined)))) )
+          if (!committed || committed.status !== "QUEUED") {
+            yield* session.directInboxTransition({ messageID: previous.message_id, expected: ["appended"], state: "unknown", hostReceiptDigest: committed?.receiptDigest ?? null })
+            return { status: "UNKNOWN" as const, messageId: previous.message_id, mailboxSequence: previous.mailbox_sequence, reason: "replayed prepare was admitted but commit remains unresolved", challengeId: null, effectId: null }
+          }
+          yield* session.directInboxTransition({ messageID: previous.message_id, expected: ["appended"], state: "committed", hostReceiptDigest: committed.receiptDigest })
+          return { status: "QUEUED" as const, messageId: previous.message_id, mailboxSequence: previous.mailbox_sequence, reason: null, challengeId: null, effectId: null }
+        }
+        if (previous.state === "approval_required") {
+          const sameLiveAuthority = profile && typeof attemptID === "string" &&
+            attemptID === previous.child_attempt_id && delivery.ownerEpoch === previous.child_owner_epoch &&
+            profile.profileID === previous.profile_id && profile.profileRevision === previous.profile_revision &&
+            profile.profileDigest === previous.profile_digest && profile.permissionsDigest === previous.permission_scope_digest
+          if (!sameLiveAuthority) {
+            const observed = yield* ManagedControl.inspectDirectMessage({ pins }).pipe(Effect.catch(() => Effect.succeed(undefined)))
+            if (observed?.status === "QUEUED") {
+              yield* session.directInboxTransition({ messageID: previous.message_id, expected: ["approval_required", "appended", "unknown", "admitted"], state: "committed", hostReceiptDigest: observed.receiptDigest })
+              return { status: "QUEUED" as const, messageId: previous.message_id, mailboxSequence: previous.mailbox_sequence, reason: null, challengeId: null, effectId: null }
+            }
+            return { status: "UNKNOWN" as const, messageId: previous.message_id, mailboxSequence: previous.mailbox_sequence, reason: "the original approval is bound to a stale Attempt; only exact receipt inspection is permitted", challengeId: previous.challenge_id, effectId: previous.effect_id }
+          }
+          const approvalRetry = yield* ManagedControl.prepareDirectMessage({
+            pins,
+            content: previous.payload,
+            mailboxCapacity: previous.mailbox_capacity,
+          }).pipe(Effect.either)
+          if (approvalRetry._tag === "Left") {
+            yield* session.directInboxTransition({ messageID: previous.message_id, expected: ["approval_required"], state: "unknown" })
+            return { status: "UNKNOWN" as const, messageId: previous.message_id, mailboxSequence: previous.mailbox_sequence, reason: "Guard approval outcome could not be reconciled through the exact message prepare; inspect before retrying", challengeId: null, effectId: null }
+          }
+          const approvedPrepare = approvalRetry.right
+          if (approvedPrepare.status === "NEEDS_APPROVAL") {
+            yield* session.directInboxTransition({
+              messageID: previous.message_id,
+              expected: ["approval_required"],
+              state: "approval_required",
+              challengeID: approvedPrepare.challengeID,
+              effectID: approvedPrepare.effectID,
+              approvalExpiresAtUnixMs: approvedPrepare.expiresAtUnixMs,
+              approvalArgumentSummary: JSON.stringify(approvedPrepare.argumentSummary),
+              approvalPolicySummary: approvedPrepare.policySummary,
+            })
+            return { status: "NEEDS_APPROVAL" as const, messageId: previous.message_id, mailboxSequence: previous.mailbox_sequence, reason: approvedPrepare.policySummary, challengeId: approvedPrepare.challengeID, effectId: approvedPrepare.effectID }
+          }
+          if (approvedPrepare.status === "DENIED") {
+            yield* session.directInboxTransition({ messageID: previous.message_id, expected: ["approval_required"], state: "denied", pinsDigest: approvedPrepare.pinsDigest })
+            return { status: "DENIED" as const, messageId: previous.message_id, mailboxSequence: previous.mailbox_sequence, reason: approvedPrepare.reasonCode, challengeId: null, effectId: null }
+          }
+          yield* session.directInboxTransition({
+            messageID: previous.message_id,
+            expected: ["approval_required"],
+            state: "admitted",
+            capabilityLeaseDigest: approvedPrepare.capabilityLeaseDigest,
+            pinsDigest: approvedPrepare.pinsDigest,
+          })
+          yield* session.directInboxTransition({ messageID: previous.message_id, expected: ["admitted"], state: "appended" })
+          const inboxReceipt: ManagedControl.DirectMessageInboxReceiptV1 = {
+            messageID: previous.message_id,
+            parentSessionID: parent.id,
+            childSessionID: child.id,
+            deliveryMode: "queued",
+            mailboxSequence: previous.mailbox_sequence,
+            receiptDigest: previous.inbox_receipt_digest,
+          }
+          const committed = yield* ManagedControl.commitDirectMessage({
+            pins: approvedPrepare.authorityPins,
+            capabilityLeaseDigest: approvedPrepare.capabilityLeaseDigest,
+            inboxReceipt,
+          }).pipe(Effect.catch(() => ManagedControl.inspectDirectMessage({ pins: approvedPrepare.authorityPins }).pipe(Effect.catch(() => Effect.succeed(undefined)))))
+          if (!committed || committed.status !== "QUEUED") {
+            yield* session.directInboxTransition({ messageID: previous.message_id, expected: ["appended"], state: "unknown", hostReceiptDigest: committed?.receiptDigest ?? null })
+            return { status: "UNKNOWN" as const, messageId: previous.message_id, mailboxSequence: previous.mailbox_sequence, reason: "approved message commit is unresolved; inspect the existing request identity", challengeId: null, effectId: null }
+          }
+          yield* session.directInboxTransition({ messageID: previous.message_id, expected: ["appended"], state: "committed", hostReceiptDigest: committed.receiptDigest })
+          return { status: "QUEUED" as const, messageId: previous.message_id, mailboxSequence: previous.mailbox_sequence, reason: null, challengeId: null, effectId: null }
+        }
+        if (previous.state === "denied") {
+          return { status: "DENIED" as const, messageId: previous.message_id, mailboxSequence: previous.mailbox_sequence, reason: "HostKernel denied this direct message", challengeId: null, effectId: null }
+        }
+        const recovered = yield* ManagedControl.inspectDirectMessage({ pins }).pipe(Effect.catch(() => Effect.succeed(undefined)))
+        if (recovered?.status === "QUEUED") {
+          if (["appended", "unknown", "admitted"].includes(previous.state)) {
+            yield* session.directInboxTransition({ messageID: previous.message_id, expected: ["appended", "unknown", "admitted"], state: "committed", hostReceiptDigest: recovered.receiptDigest })
+          }
+          return { status: "QUEUED" as const, messageId: previous.message_id, mailboxSequence: previous.mailbox_sequence, reason: null, challengeId: null, effectId: null }
+        }
+        return { status: "UNKNOWN" as const, messageId: previous.message_id, mailboxSequence: previous.mailbox_sequence, reason: "HostKernel receipt is unresolved; the original Core inbox entry was retained and not reissued", challengeId: null, effectId: null }
+      }
+      if (!profile || typeof attemptID !== "string" || !/^att_[a-z0-9]{16,64}$/.test(attemptID) ||
+        delivery.ownerEpoch === "0" || typeof scopeDigest !== "string" || !/^(sha256|blake3):[0-9a-f]{64}$/.test(scopeDigest)) {
+        return yield* new ApiNotFoundError({ name: "NotFoundError", data: { message: "Direct child Attempt authority not found" } })
+      }
+      const attempt = yield* ManagedControl.snapshotDirectAttempt(attemptID).pipe(
+        Effect.catch(() => Effect.fail(new ServiceUnavailableError({ message: "HostKernel child Attempt cannot be inspected", service: "host-kernel" }))),
+      )
+      if (attempt.phase !== "EXECUTING" || attempt.parentSessionID !== parent.id || attempt.childSessionID !== child.id || attempt.scopeDigest !== scopeDigest) {
+        return { status: "DENIED" as const, messageId: null, mailboxSequence: null, reason: "the exact child DirectAttempt is not live for this parent/profile scope", challengeId: null, effectId: null }
+      }
+      const messageID = MessageID.ascending(`${parent.id}:${child.id}:${ctx.payload.requestId}`)
+      const nowPlaceholder = digestText(`${messageID}:preparing`)
+      let reservation
+      try {
+        reservation = yield* session.directInboxCreateDraft({
+          messageId: messageID,
+          parentSessionId: parent.id,
+          childSessionId: child.id,
+          requestId: ctx.payload.requestId,
+          payload: ctx.payload.content,
+          payloadDigest,
+          payloadBytes: encoded.byteLength,
+          deliveryMode: "queue",
+          childAttemptId: attemptID,
+          childOwnerEpoch: delivery.ownerEpoch,
+          profileId: profile.profileID,
+          profileRevision: profile.profileRevision,
+          profileDigest: profile.profileDigest,
+          permissionScopeDigest: profile.permissionsDigest,
+          mailboxCapacity: 32,
+          inboxReceiptDigest: nowPlaceholder,
+        })
+      } catch (error) {
+        return yield* new ConflictError({ message: error instanceof Error ? error.message : "Core direct inbox reservation failed" })
+      }
+      const draft = reservation.row
+      // A reservation created by another concurrent request is always reconciled
+      // by the immutable HostKernel message identity, never prepared a second time.
+      if (!reservation.created || draft.message_id !== messageID || draft.state !== "preparing") {
+        return { status: "UNKNOWN" as const, messageId: draft.message_id, mailboxSequence: draft.mailbox_sequence, reason: "an earlier direct inbox reservation requires receipt reconciliation", challengeId: draft.challenge_id, effectId: draft.effect_id }
+      }
+      const pins: ManagedControl.DirectMessagePinsV1 = {
+        parentSessionID: parent.id,
+        childSessionID: child.id,
+        childOwnerEpoch: delivery.ownerEpoch,
+        profileID: profile.profileID,
+        profileRevision: profile.profileRevision,
+        profileDigest: profile.profileDigest,
+        permissionScopeDigest: profile.permissionsDigest,
+        directAttemptID: attemptID,
+        messageID,
+        deliveryMode: "queued",
+        payloadDigest,
+        payloadBytes: encoded.byteLength,
+        mailboxSequence: draft.mailbox_sequence,
+        mailboxCapacity: draft.mailbox_capacity,
+      }
+      const receiptDigest = inboxReceiptDigest({
+        messageID,
+        parentSessionID: parent.id,
+        childSessionID: child.id,
+        deliveryMode: "queued",
+        directAttemptID: attemptID,
+        childOwnerEpoch: delivery.ownerEpoch,
+        profileID: profile.profileID,
+        profileRevision: profile.profileRevision,
+        profileDigest: profile.profileDigest,
+        permissionScopeDigest: profile.permissionsDigest,
+        payloadDigest,
+        payloadBytes: encoded.byteLength,
+        mailboxSequence: draft.mailbox_sequence,
+        mailboxCapacity: draft.mailbox_capacity,
+      })
+      const prepared = yield* ManagedControl.prepareDirectMessage({ pins, content: ctx.payload.content, mailboxCapacity: draft.mailbox_capacity }).pipe(Effect.either)
+      if (prepared._tag === "Left") {
+        return {
+          status: "UNKNOWN" as const,
+          messageId: messageID,
+          mailboxSequence: draft.mailbox_sequence,
+          reason: "HostKernel prepare outcome is unresolved; the payload and original identity were retained for inspection",
+          challengeId: null,
+          effectId: null,
+        }
+      }
+      const preparedResult = prepared.right
+      if (preparedResult.status === "DENIED") {
+        yield* session.directInboxTransition({ messageID, expected: ["preparing"], state: "denied", pinsDigest: preparedResult.pinsDigest })
+        return { status: "DENIED" as const, messageId: messageID, mailboxSequence: draft.mailbox_sequence, reason: preparedResult.reasonCode, challengeId: null, effectId: null }
+      }
+      if (preparedResult.status === "NEEDS_APPROVAL") {
+        yield* session.directInboxTransition({
+          messageID,
+          expected: ["preparing"],
+          state: "approval_required",
+          challengeID: preparedResult.challengeID,
+          effectID: preparedResult.effectID,
+          approvalExpiresAtUnixMs: preparedResult.expiresAtUnixMs,
+          approvalArgumentSummary: JSON.stringify(preparedResult.argumentSummary),
+          approvalPolicySummary: preparedResult.policySummary,
+          pinsDigest: preparedResult.inputDigest,
+          inboxReceiptDigest: receiptDigest,
+        })
+        return { status: "NEEDS_APPROVAL" as const, messageId: messageID, mailboxSequence: draft.mailbox_sequence, reason: preparedResult.policySummary, challengeId: preparedResult.challengeID, effectId: preparedResult.effectID }
+      }
+      yield* session.directInboxTransition({
+        messageID,
+        expected: ["preparing"],
+        state: "admitted",
+        capabilityLeaseDigest: preparedResult.capabilityLeaseDigest,
+        pinsDigest: preparedResult.pinsDigest,
+        inboxReceiptDigest: receiptDigest,
+      })
+      // The durable Core inbox row is now authorized by the exact one-use lease.
+      yield* session.directInboxTransition({ messageID, expected: ["admitted"], state: "appended" })
+      const inboxReceipt: ManagedControl.DirectMessageInboxReceiptV1 = {
+        messageID,
+        parentSessionID: parent.id,
+        childSessionID: child.id,
+        deliveryMode: "queued",
+        mailboxSequence: draft.mailbox_sequence,
+        receiptDigest,
+      }
+      const commit = yield* ManagedControl.commitDirectMessage({
+        pins: preparedResult.authorityPins,
+        capabilityLeaseDigest: preparedResult.capabilityLeaseDigest,
+        inboxReceipt,
+      }).pipe(Effect.catch(() => ManagedControl.inspectDirectMessage({ pins: preparedResult.authorityPins }).pipe(Effect.catch(() => Effect.succeed(undefined)))))
+      if (!commit || commit.status !== "QUEUED") {
+        yield* session.directInboxTransition({ messageID, expected: ["appended"], state: "unknown", hostReceiptDigest: commit?.receiptDigest ?? null })
+        return { status: "UNKNOWN" as const, messageId: messageID, mailboxSequence: draft.mailbox_sequence, reason: "HostKernel commit is unresolved; the durable Core inbox entry is retained for reconciliation", challengeId: null, effectId: null }
+      }
+      yield* session.directInboxTransition({ messageID, expected: ["appended"], state: "committed", hostReceiptDigest: commit.receiptDigest })
+      return { status: "QUEUED" as const, messageId: messageID, mailboxSequence: draft.mailbox_sequence, reason: null, challengeId: null, effectId: null }
     })
 
     const diff = Effect.fn("SessionHttpApi.diff")(function* (ctx: {
@@ -537,45 +1594,6 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       )
       return true
     })
-    const questions = Effect.fn("SessionHttpApi.questions")(function* (ctx: { params: { sessionID: SessionV2.ID } }) {
-      yield* requireQuestionPrincipal()
-      yield* requireSession(ctx.params.sessionID as SessionID)
-      return yield* withLocationQuestions(
-        QuestionV2.Service.use((service) => service.list(ctx.params.sessionID)),
-      )
-    })
-    const questionReply = Effect.fn("SessionHttpApi.questionReply")(function* (ctx: {
-      params: { sessionID: SessionV2.ID; requestID: QuestionV2.ID }
-      payload: QuestionV2.Reply
-    }) {
-      yield* requireQuestionPrincipal()
-      yield* requireSession(ctx.params.sessionID as SessionID)
-      yield* withLocationQuestions(
-        QuestionV2.Service.use((service) =>
-          service.reply({ sessionID: ctx.params.sessionID, requestID: ctx.params.requestID, answers: ctx.payload.answers }),
-        ),
-      ).pipe(
-        Effect.catchTag("QuestionV2.NotFoundError", () =>
-          Effect.fail(new ApiNotFoundError({ name: "NotFoundError", data: { message: "Question request not found" } })),
-        ),
-        Effect.catchTag("QuestionV2.InvalidReplyError", () => Effect.fail(new HttpApiError.BadRequest({}))),
-      )
-    })
-    const questionReject = Effect.fn("SessionHttpApi.questionReject")(function* (ctx: {
-      params: { sessionID: SessionV2.ID; requestID: QuestionV2.ID }
-    }) {
-      yield* requireQuestionPrincipal()
-      yield* requireSession(ctx.params.sessionID as SessionID)
-      yield* withLocationQuestions(
-        QuestionV2.Service.use((service) =>
-          service.reject({ sessionID: ctx.params.sessionID, requestID: ctx.params.requestID }),
-        ),
-      ).pipe(
-        Effect.catchTag("QuestionV2.NotFoundError", () =>
-          Effect.fail(new ApiNotFoundError({ name: "NotFoundError", data: { message: "Question request not found" } })),
-        ),
-      )
-    })
     const guardApproval = Effect.fn("SessionHttpApi.guardApproval")(function* (ctx: {
       params: { approvalID: string }
       payload: typeof GuardApprovalPayload.Type
@@ -632,6 +1650,9 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("status", status)
       .handle("get", get)
       .handle("children", children)
+      .handle("subagents", subagents)
+      .handle("subagentWait", subagentWait)
+      .handle("subagentMessage", subagentMessage)
       .handle("todo", todo)
       .handle("questions", questions)
       .handle("questionReply", questionReply)

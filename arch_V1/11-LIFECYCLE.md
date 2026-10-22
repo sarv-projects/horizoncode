@@ -95,6 +95,15 @@ Rules:
 - Rust records only authorization/control/result-correlation facts;
 - UNKNOWN cannot be converted to success by model text.
 
+CodeMode is an outer interpreter lifecycle, not a second tool/effect lifecycle. One request moves
+through `STARTED -> WAVE_PENDING -> WAVE_SETTLED` for each sequential wave, then `COMPLETED`,
+`FAILED`, `CANCELLED` or `UNKNOWN`. Each wave is a complete atomic ToolBatch of 1–32 calls;
+the entire script is capped at 64 calls and 64 waves. Direct Session waves use DirectTurnJournal.
+Managed waves append `attempt_effect_wave_bound` at one OwnerLog revision after approval and
+before leases become consumable. A later wave requires settled receipts and refreshed scope.
+UNKNOWN stops the interpreter and cannot be retried by helper restart. The private helper frame
+sequence is transport correlation, not a new durable event owner.
+
 ## 11.7 EffectIntent, approval, lease and receipt
 
 EffectIntent:
@@ -285,3 +294,15 @@ These are **new target state machines**; implementing them requires atomic expec
 **Causal ordering:** spec version acceptance precedes Run admission; predecessor trusted PASS precedes dependent READY; reserve workspace/resource and prepare effect precede child launch; Guard approval precedes single-use lease claim; process exit does not imply effect settlement; all effect receipts and final integrated revision evidence precede Run SUCCEEDED. GUI animation, resource graph and file-touch warning are non-durable derived projections and cannot satisfy causal prerequisites.
 
 **Concurrent races to test:** cancel vs lease claim, attachment logout vs ACK, duplicate resource request with different args, expiration vs process still running, source edit vs verification, cache eviction vs pinned active reader, Provider Doctor consent revocation vs upstream billing, worker unknown vs a new Attempt, two clients racing to attach same Session, kernel incarnation change while old worker returns. The expected result for uncertain external mutation is UNKNOWN, never silent retry/success.
+### V1 managed DAG release boundary (DEC-V1-31)
+
+The single coding Task/Attempt journey is the required first managed vertical. After it
+passes integrated P2 acceptance, V1 also requires bounded multi-Task DAG execution and
+aggregate Run settlement. The DAG shares the existing Run/Task/Attempt states: it adds no
+parallel lifecycle owner. Each Task independently reaches a verifier-backed terminal
+state; dependency readiness is computed from trusted PASS only. Run success is impossible
+while any required Task is nonterminal, failed, cancelled, UNKNOWN, or lacks settled
+effects and exact-revision verification. Current Rust reducer and Core admission may keep
+multi-Task plans unavailable until all transition, replay, conflict, cancellation and
+recovery cases pass. See VEO-025 and DEC-V1-31.
+

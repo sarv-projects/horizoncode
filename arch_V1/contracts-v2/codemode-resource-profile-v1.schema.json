@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "horizon://schemas/codemode-resource-profile-v1",
+  "title": "CodeModeResourceProfileV1",
+  "description": "HostKernel-owned immutable limits applied and verified by the existing Linux ExecutionHost supervisor before starting the fixed CodeMode helper. This profile is not caller or model configurable.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "profileId", "memoryMaxBytes", "cpuMaxQuota", "cpuMaxPeriod", "pidsMax", "nofileMax", "profileDigest"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "profileId": { "const": "codemode.v1" },
+    "memoryMaxBytes": { "const": 536870912 },
+    "cpuMaxQuota": { "const": 100000 },
+    "cpuMaxPeriod": { "const": 100000 },
+    "pidsMax": { "const": 64 },
+    "nofileMax": { "const": 256 },
+    "profileDigest": { "type": "string", "pattern": "^blake3:[a-f0-9]{64}$" }
+  },
+  "x-horizon-validation": [
+    "profile-digest-is-blake3-domain-horizoncode.codemode-resource-profile.v1-NUL-plus-canonical-MessagePack-of-schema-decoded-profile-excluding-profileDigest",
+    "HostKernel-selects-profile-from-compiled-trusted-policy-not-request-or-agent-configuration",
+    "existing-ExecutionHost-applies-cgroup-v2-memory.max-cpu.max-pids.max-and-RLIMIT_NOFILE-before-first-helper-instruction-and-verifies-readback",
+    "any-missing-unwritable-or-unverifiable-limit-keeps-CodeMode-unavailable-before-spawn",
+    "profile-identity-and-digest-are-bound-to-verified-cgroup-and-supervised-process-incarnation",
+    "not-a-general-resource-policy-or-managed-worker-quota-and-does-not-claim-limits-for-other-processes"
+  ]
+}

@@ -26,6 +26,7 @@ import { QueryBoolean } from "./query"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { QuestionV2 } from "@opencode-ai/core/question"
+import { SubagentStatusV1 } from "@opencode-ai/schema/subagent-status-v1"
 
 const root = "/session"
 export const ListQuery = Schema.Struct({
@@ -45,6 +46,27 @@ export const MessagesQuery = Schema.Struct({
   ...WorkspaceRoutingQueryFields,
   limit: Schema.optional(Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0))),
   before: Schema.optional(Schema.String),
+})
+export const SubagentWaitQuery = Schema.Struct({
+  ...WorkspaceRoutingQueryFields,
+  timeoutMs: Schema.NumberFromString.check(
+    Schema.isInt(),
+    Schema.isGreaterThanOrEqualTo(0),
+    Schema.isLessThanOrEqualTo(30_000),
+  ),
+})
+export const SubagentMessagePayload = Schema.Struct({
+  requestId: Schema.String.check(Schema.isMinLength(1)).check(Schema.isMaxLength(128)).check(Schema.isPattern(/^[A-Za-z0-9._:-]+$/)),
+  mode: Schema.Literals(["queued", "follow_up"]),
+  content: Schema.String.check(Schema.isMinLength(1)).check(Schema.isMaxLength(16 * 1024)),
+})
+export const SubagentMessageResult = Schema.Struct({
+  status: Schema.Literals(["QUEUED", "FOLLOW_UP_SCHEDULED", "UNKNOWN", "NEEDS_APPROVAL", "UNAVAILABLE", "DENIED"]),
+  messageId: Schema.NullOr(Schema.String),
+  mailboxSequence: Schema.NullOr(Schema.String),
+  reason: Schema.NullOr(Schema.String),
+  challengeId: Schema.NullOr(Schema.String),
+  effectId: Schema.NullOr(Schema.String),
 })
 export const StatusMap = Schema.Record(Schema.String, SessionStatus.Info)
 export const UpdatePayload = Schema.Struct({
@@ -77,13 +99,16 @@ export const PermissionResponsePayload = Schema.Struct({
 })
 
 export const GuardApprovalPayload = Schema.Struct({
-  decision: Schema.Literals(["allow_once", "deny"]),
+  decision: Schema.Literals(["allow_once", "deny", "grant_session", "grant_workspace"]),
 })
 export const SessionPaths = {
   list: root,
   status: `${root}/status`,
   get: `${root}/:sessionID`,
   children: `${root}/:sessionID/children`,
+  subagents: `${root}/:sessionID/subagents`,
+  subagentWait: `${root}/:sessionID/subagents/:childSessionID/wait`,
+  subagentMessage: `${root}/:sessionID/subagents/:childSessionID/message`,
   todo: `${root}/:sessionID/todo`,
   diff: `${root}/:sessionID/diff`,
   messages: `${root}/:sessionID/message`,
@@ -153,12 +178,48 @@ export const SessionApi = HttpApi.make("session")
           params: { sessionID: SessionID },
           query: WorkspaceRoutingQuery,
           success: described(Schema.Array(Session.Info), "List of children"),
-          error: [HttpApiError.BadRequest, ApiNotFoundError],
+          error: [HttpApiError.BadRequest, ApiNotFoundError, ForbiddenError],
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "session.children",
             summary: "Get session children",
-            description: "Retrieve all child sessions that were forked from the specified parent session.",
+            description: "Retrieve child sessions only when the authenticated principal owns the parent Session lineage.",
+          }),
+        ),
+        HttpApiEndpoint.get("subagents", SessionPaths.subagents, {
+          params: { sessionID: SessionID },
+          query: WorkspaceRoutingQuery,
+          success: described(SubagentStatusV1.ListV1, "Bounded direct child lifecycle projection"),
+          error: [HttpApiError.BadRequest, ApiNotFoundError, ForbiddenError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.subagents",
+            summary: "Inspect direct child Sessions",
+            description: "Return bounded owner-checked child status, immutable profile/Attempt pins, and an aggregate count of rows reserving mailbox capacity. Message content and turn authority are not exposed by this projection.",
+          }),
+        ),
+        HttpApiEndpoint.get("subagentWait", SessionPaths.subagentWait, {
+          params: { sessionID: SessionID, childSessionID: SessionID },
+          query: SubagentWaitQuery,
+          success: described(SubagentStatusV1.WaitResultV1, "Wait for a bounded direct child update"),
+          error: [HttpApiError.BadRequest, ApiNotFoundError, ForbiddenError, ServiceUnavailableError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.subagents.wait",
+            summary: "Wait for a direct child without cancelling it",
+            description: "Wait up to 30 seconds for terminal state, new activity, or timeout. A timeout never cancels the named child.",
+          }),
+        ),
+        HttpApiEndpoint.post("subagentMessage", SessionPaths.subagentMessage, {
+          params: { sessionID: SessionID, childSessionID: SessionID },
+          payload: SubagentMessagePayload,
+          success: described(SubagentMessageResult, "Guarded direct child inbox message outcome"),
+          error: [HttpApiError.BadRequest, ApiNotFoundError, ForbiddenError, ConflictError, ServiceUnavailableError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.subagents.message",
+            summary: "Queue a message for a direct child Session",
+            description: "Appends a bounded queued or explicit follow-up message through HostKernel Guard and a durable Core inbox receipt. Follow-up execution remains unavailable until P1 Guard/lease and P8 recovery acceptance enable the turn-cycle gate.",
           }),
         ),
         HttpApiEndpoint.get("todo", SessionPaths.todo, {
@@ -299,12 +360,12 @@ export const SessionApi = HttpApi.make("session")
           params: { sessionID: SessionID },
           query: WorkspaceRoutingQuery,
           success: described(Schema.Boolean, "Aborted session"),
-          error: HttpApiError.BadRequest,
+          error: [HttpApiError.BadRequest, ForbiddenError],
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "session.abort",
             summary: "Abort session",
-            description: "Abort an active session and stop any ongoing AI processing or command execution.",
+            description: "Abort an active Session only within the authenticated principal's owner lineage; interruption also closes the owning direct Attempt through its existing cancellation fence.",
           }),
         ),
         HttpApiEndpoint.post("init", SessionPaths.init, {
@@ -421,7 +482,7 @@ export const SessionApi = HttpApi.make("session")
           OpenApi.annotations({
             identifier: "guard.approval.reply",
             summary: "Reply to a Guard approval request",
-            description: "Allow a prepared effect once or deny it.",
+            description: "Allow a prepared effect once, deny it, or explicitly save a bounded direct workspace grant. Saving a grant denies this current challenge; a later effect must be freshly prepared.",
           }),
         ),
         HttpApiEndpoint.post("revert", SessionPaths.revert, {

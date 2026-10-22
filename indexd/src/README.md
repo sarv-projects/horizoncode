@@ -24,8 +24,16 @@ authority.
   set, read scope, read policy, source receipt, parser set, paths, and file bytes.
 - Adapter queries carry the expected generation ID. Old generation IDs, overlays from
   another base, and stale/cross-query/cross-overlay cursors fail explicitly. Text
-  results remain `PARTIAL`; symbol, references, impact, and expand operations return
+  results remain `PARTIAL`; the generic symbol/reference/impact/expand operations remain
   typed `UNAVAILABLE` until a real parser/LSP owner supplies them.
+- The separate `repo_structure` projection can return bounded exact-text occurrences
+  from immutable snapshots as `sourceKind=lexical`, with exact byte ranges and file
+  digests. These are explicitly `PARTIAL` evidence (`text_occurrence`), never parser
+  declarations or resolved reference edges. Overlay queries remain unavailable until
+  a trusted owner supplies the matching immutable overlay. `max_bytes` bounds unique
+  source coverage; a separate 4 MiB work-unit ceiling bounds repeated scans when a
+  query contains many selectors. Exceeding the work ceiling returns partial coverage
+  with `resource_refused`, without a continuation position.
 - Bounded, deterministic, line-oriented lexical search with generation provenance.
 - Stable path-then-line cursor pagination. A bounded versioned token binds the exact
   query digest, base-generation digest, optional overlay digest, and last returned
@@ -44,7 +52,8 @@ authority.
   paths and 8 MiB of replacement bytes; the resulting overlay remains subject to the
   same file-count and aggregate-content limits.
 - Generation status is always `PARTIAL`. Text query status is `PARTIAL`, including
-  bounded/truncated results; symbol/reference/impact/expand status is `UNAVAILABLE`.
+  bounded/truncated results; generic symbol/reference/impact/expand status is
+  `UNAVAILABLE`.
   Tree-sitter, LSP, SCIP, and vector enrichment are not implemented; this crate never
   reports `CURRENT`.
 - A bounded generation pack (`persist` module) encodes one immutable generation into a
@@ -210,33 +219,32 @@ wired" code and stays a caller-side decision. The `unavailable_reason.operation`
 `overlay_digest` fields of the TypeScript result map to the `UNAVAILABLE` payload and the
 echoed overlay digest.
 
-### HostKernel bridge status and bounded-design gate
+### Legacy transport and current HostKernel integration status
 
-There is no registered `indexd.v1` HostKernel operation or production mapping today. A
-one-frame/one-RPC mapping is not viable: `MAX_BODY_BYTES` is 6,291,456 bytes, while one
-`build` body may be 72,351,744 bytes. Putting that frame in a base64 string would expand it
-to about 96,469,048 bytes; MessagePack binary values avoid that expansion but still exceed
-the same HostKernel body cap. Kernel code also defines a 768 KiB artifact-chunk body
-validator, but HostKernel dispatches no artifact-transfer operation; that validator is not
-an indexd upload service.
+The `transport` / `TransportHandler` / `GenerationPack` protocol described above remains
+an opt-in crate API; it has no registered `indexd.v1` HostKernel RPC mapping. A one-frame /
+one-RPC mapping is not viable: `MAX_BODY_BYTES` is 6,291,456 bytes while one `build` body
+may be 72,351,744 bytes. Base64 would expand it to about 96,469,048 bytes; MessagePack
+binary avoids that expansion but still exceeds the HostKernel cap. The 768 KiB artifact
+chunk validator is not an indexd upload operation.
 
-The indexd crate must remain embedded/rebuildable under the existing HostKernel owner; do
-not introduce a separate `hz-indexd` daemon. `GenerationPack` remains encoded and decoded
-by Rust (`BaseGeneration::build` plus `GenerationPack::from_generation`); TypeScript must
-not reimplement that format. The crate now includes inert bounded staging primitives, but
-no HostKernel request contract, authenticated ingress, lifecycle cleanup integration or
-production RepoIntel backend is approved or wired.
+The production structural path is separate: HostKernel embeds `indexd::repo_structure`,
+constructs `RepoIntelGeneration` from its authenticated bounded source snapshot, and
+serves `ensure_generation → query_structure` under the existing `repo-intel.v1` service.
+Core calls it through the authenticated `SessionSupervisor`; it does not send source
+snapshots or a `GenerationPack` over RPC. HostKernel owns generation leases and read
+authorization. The optional cursor-lease feature is source-present but remains disabled
+until integrated acceptance. Do not wire the legacy local `RepoIntelBackend` or introduce
+a second index owner/`hz-indexd` daemon.
 
-Proposal requirements to take to the HostKernel owner before implementation: bind each
-staging upload to the authenticated peer principal, owner epoch/process incarnation, and a
-validated Location/read-policy scope; enforce strict chunk offsets and whole-upload digest;
-bound per-upload and aggregate staged bytes, concurrent uploads, and lifetime; and release
-staging on explicit abort, cancellation, disconnect, owner restart, or expiry. The current
-Core `requestHostKernel` cancellation option and Rust request handler only route cooperative
-cancellation for `terminal.run`, so they do not establish indexd cancellation or cleanup.
-Until the HostKernel owner settles and tests this interface, keep the production backend
-unavailable. Once wired, frame/error mapping remains as above: decoded error frames map to
-`RepoIntelBackendErrorCode`, while frame-level failures map to `rejected`.
+The older `TransportHandler` still has no HostKernel request contract, authentication,
+retention owner, cancellation/lifecycle integration or production caller. Its upload
+staging API is not authority. Keep that legacy backend unavailable; the separate
+HostKernel-backed structural query remains lexical-only and must keep parser, overlay and
+cursor availability truthful. The structural RPC uses the existing cooperative
+cancel-on-interrupt request path; the index adapter additionally bounds query bytes,
+results, unique source bytes, repeated selector work and the HostKernel deadline. Frame /
+error mapping above applies only if the legacy transport is integrated in a future design.
 
 ## Initial hard limits
 
@@ -308,7 +316,7 @@ cargo clippy --offline --all-targets -- -D warnings
 
 ### P3 checkpoint — 2026-10-19
 
-The full offline crate suite passed on the current P3 source revision:
+Historical pre-lexical implementation evidence (not run on the current source revision):
 
 ```text
 cargo test --locked --offline
@@ -325,20 +333,39 @@ cargo test --manifest-path indexd/Cargo.toml --locked --offline --lib watch::tes
 8 passed, 0 failed
 ```
 
-This verifies crate-local bounds, codec/cache corruption handling, in-memory upload
-staging, watcher coalescing, and generation invalidation fences. It does not verify a
-HostKernel bridge or production RepoIntel path. P3 therefore remains `PARTIAL` pending
-the authenticated PermissionV2 read grant and Location-derived build/query seam, source
-walker and OS watcher supervision, live cache/lifecycle ownership, and dependent parser,
-LSP, and resource-owner acceptance. Symbol, reference, impact, and expand operations
-remain typed `UNAVAILABLE`; the production backend remains disabled.
+That historical run verifies the then-current crate-local bounds, codec/cache corruption
+handling, in-memory upload staging, watcher coalescing, and generation invalidation fences.
+It does not apply to the lexical structure-query change below and does not verify a
+HostKernel bridge or final production RepoIntel path. P3 remains `PARTIAL` pending
+authenticated pagination leases, trusted unsaved-buffer ownership, parser-backed
+declarations/definitions, P4 LSP composition, P8 cache/pressure integration, and final
+cross-phase acceptance. The generic symbol/reference/impact/expand API remains typed
+`UNAVAILABLE`; the HostKernel-backed structure query separately returns lexical
+candidates only.
 
 `repo_structure` exposes schema-derived `RepoStructureQueryV1` / `RepoStructurePageV1`
 types and a generation-fenced adapter. The adapter validates query/page bounds, normalized
 `rootRef`, host-derived workspace/revision provenance, and the expected source-generation
-pin; until a structural parser/index is integrated, it returns `UNAVAILABLE` with
-`sourceKind=none`, unknown freshness, zero coverage, no node references, and the explicit
-`parser_unsupported` fallback. It does not resolve filesystem paths. HostKernel must
-authenticate Session/Location from the private request envelope, derive and enforce the
-live `files.read` grant, resolve `rootRef` beneath the registered Location, and mint any
-continuation cursor before this adapter can be exposed to product traffic.
+pin. For symbol selectors it returns bounded exact lexical occurrences with `PARTIAL`
+status, current immutable-generation provenance, stable node references, exact byte ranges
+and file digests. Parser-backed declarations, call/reference graphs, and definitions remain
+unavailable; lexical matches must never be described as those features. Requests that
+exceed the scan/node budget remain partial. Overlay queries remain
+unavailable absent the matching trusted immutable snapshot. The adapter does not resolve
+filesystem paths. HostKernel authenticates Session/Location from the private request
+envelope, derives and enforces the live `files.read` grant, resolves `rootRef` beneath the
+registered Location. HostKernel has source for authenticated cursor leases but keeps the
+capability disabled until integrated acceptance.
+
+The index-side page adapter is `RepoIntelGeneration::query_structure_page`. It accepts
+only a HostKernel-resolved exclusive `RepoStructurePositionV1` and returns
+`RepoStructurePageV1.next_position` only after observing another matching node beyond the
+current node cap. The position is ordered by the generation's canonical BTreeMap path
+order, selector symbol order, then UTF-8 byte offset. It is internal data, not an opaque
+cursor and carries no authority. HostKernel must bind it inside a
+principal/Session/Location/workspace/generation/revision/query/epoch/expiry lease and
+remeasure source and current Guard read policy before continuation reads. HostKernel
+source now implements that lease adapter, but leaves the capability disabled by default.
+An anchor-file suffix that does not fit the remaining per-page byte budget is skipped and
+marks coverage partial, allowing later files to make progress without changing the
+last-emitted-node contract. Only a real extra matching node can produce `next_position`.

@@ -29,6 +29,7 @@ import path from "path"
 import { fromRow } from "./session/info"
 import { SessionStore } from "./session/store"
 import * as ContextSelection from "./session/context-selection"
+import type { ContextProfileRefV1, ProviderInputV1 } from "./session/context-selection"
 import { SessionExecution } from "./session/execution"
 import { makeGlobalNode } from "./effect/app-node"
 import { LocationServiceMap } from "./location-service-map"
@@ -39,6 +40,9 @@ import { SessionRevert } from "./session/revert"
 import { Revert } from "@opencode-ai/schema/revert"
 import { FSUtil } from "./fs-util"
 import { SessionDurable } from "@opencode-ai/schema/durable-event-manifest"
+
+export { compileContextLedgerV2 } from "./session/context-ledger"
+export type { ContextLedgerCompileInputV2, CompiledContextLedgerV2 } from "./session/context-ledger"
 
 export const RevertState = Revert.State
 export type RevertState = Revert.State
@@ -132,7 +136,13 @@ export interface Interface {
   ) => Effect.Effect<SessionMessage.Message[], NotFoundError | MessageDecodeError>
   readonly contextSelection: (input: {
     readonly sessionID: SessionSchema.ID
+    /** Minted by authenticated Core ingress and reused for the exact provider dispatch. */
+    readonly requestID: string
     readonly mode: import("@opencode-ai/schema/context-selection-v1").ContextSelectionModeV1
+    /** Resolved exact AgentProfileV2 revision supplied by trusted Core Config. */
+    readonly agentProfile: ContextProfileRefV1
+    /** Frozen adapter-visible payload; callers must dispatch this same object unchanged. */
+    readonly providerInput: ProviderInputV1
   }) => Effect.Effect<import("@opencode-ai/schema/context-selection-v1").ContextSelectionV1, NotFoundError | MessageDecodeError>
   readonly events: (input: {
     sessionID: SessionSchema.ID
@@ -220,6 +230,12 @@ const layer = Layer.effect(
         const sessionID = input.id ?? SessionSchema.ID.create()
         const recorded = yield* store.get(sessionID)
         if (recorded) return recorded
+        const trusted = yield* Effect.serviceOption(TrustedPrincipalContext)
+        const principalOwner = Option.isSome(trusted) && trusted.value.principal.kind === "server_auth"
+          && trusted.value.principal.subject.length > 0 && trusted.value.principal.subject.length <= 256
+          && !trusted.value.principal.subject.split("").some((character) => character.charCodeAt(0) < 0x20 || character.charCodeAt(0) === 0x7f)
+          ? { kind: "server_auth", subject: trusted.value.principal.subject }
+          : undefined
         const project = yield* projects.resolve(input.location.directory)
         yield* db
           .insert(ProjectTable)
@@ -237,6 +253,7 @@ const layer = Layer.effect(
           path: path.relative(project.directory, input.location.directory).replaceAll("\\", "/"),
           workspaceID: input.location.workspaceID ? WorkspaceV2.ID.make(input.location.workspaceID) : undefined,
           title: `New session - ${new Date(now).toISOString()}`,
+          metadata: principalOwner ? { horizonPrincipalOwner: principalOwner } : undefined,
           agent: input.agent,
           model: input.model
             ? {
@@ -363,9 +380,12 @@ const layer = Layer.effect(
         ])
         return ContextSelection.compile({
           sessionID: input.sessionID,
+          requestID: input.requestID,
           mode: input.mode,
-          sourceRevision: Math.max(0, sourceRevision),
+          agentProfile: input.agentProfile,
+          sourceRevision: Math.max(0, sourceRevision).toString(),
           messages,
+          providerInput: input.providerInput,
         })
       }),
       events: (input) =>

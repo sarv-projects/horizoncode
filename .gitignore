@@ -15,6 +15,11 @@
 !/.github/workflows/
 !/.github/workflows/horizoncode-full-validation.yml
 !/.github/workflows/horizoncode-release-qualification.yml
+!/.github/workflows/publish-vscode.yml
+!/.github/workflows/publish-github-action.yml
+!/.github/workflows/release-github-action.yml
+!/.github/workflows/containers.yml
+!/.github/workflows/nix-hashes.yml
 !/IMPLEMENTER_PROMPT.md
 !/HANDOFF.md
 !/implementationtov1release.md
@@ -37,6 +42,9 @@
 !/arch_V1/**
 !/docs/
 !/docs/agent-tool-routing.md
+!/docs/repository-root-inventory.md
+!/docs/research/
+!/docs/research/**
 !/docs/architecture-input/
 !/docs/architecture-archive/
 !/docs/architecture-archive/2026-10-12-pre-repo-audit-HANDOFF.md
@@ -64,6 +72,10 @@
 !/packages/core/src/control-plane/move-session.ts
 !/packages/core/src/database/
 !/packages/core/src/database/database.ts
+!/packages/core/src/database/migration.gen.ts
+!/packages/core/src/database/migration/
+!/packages/core/src/database/migration/20261020090000_direct_subagent_inbox.ts
+!/packages/core/src/database/migration/20261022120000_direct_provider_request_journal.ts
 !/packages/core/src/horizon/
 !/packages/core/src/horizon/**
 !/packages/core/src/composition.ts
@@ -94,6 +106,8 @@
 !/packages/core/test/git.test.ts
 !/packages/core/test/snapshot.test.ts
 !/packages/core/src/session/
+!/packages/core/src/session/store.ts
+!/packages/core/src/session/sql.ts
 !/packages/core/src/session/supervisor.ts
 !/packages/core/src/session/revert.ts
 !/packages/core/src/session/runner/
@@ -103,9 +117,14 @@
 !/packages/core/src/session.ts
 !/packages/core/src/session/runner/llm.ts
 !/packages/core/src/session/runner/publish-llm-event.ts
+!/packages/core/src/session/runner/model.ts
+!/packages/core/src/session/provider-request.ts
+!/packages/core/src/effect/
+!/packages/core/src/effect/app-node-platform.ts
 !/packages/core/src/v1/
 !/packages/core/src/v1/config/
 !/packages/core/src/v1/config/config.ts
+!/packages/core/src/v1/config/repo-intelligence.ts
 !/packages/core/src/tool/
 !/packages/core/src/tool/tool.ts
 !/packages/core/src/tool/bash.ts
@@ -115,9 +134,12 @@
 !/packages/core/src/tool/write.ts
 !/packages/core/src/tool/skill.ts
 !/packages/core/src/tool/grep.ts
+!/packages/core/src/ripgrep.ts
 !/packages/core/src/tool/question.ts
 !/packages/tui/
 !/packages/tui/src/
+!/packages/tui/src/ui/
+!/packages/tui/src/ui/dialog.tsx
 !/packages/tui/src/feature-plugins/
 !/packages/tui/src/feature-plugins/system/
 !/packages/tui/src/feature-plugins/system/notifications.ts
@@ -129,6 +151,7 @@
 !/packages/tui/src/util/collapse-tool-output.ts
 !/packages/tui/src/util/session-scroll.ts
 !/packages/tui/src/component/
+!/packages/tui/src/component/dialog-automation-definition.tsx
 !/packages/tui/src/component/dialog-workspace-create.tsx
 !/packages/tui/src/component/prompt/
 !/packages/tui/src/component/prompt/move.tsx
@@ -144,6 +167,12 @@
 !/packages/tui/test/context/
 !/packages/tui/test/context/ui-event-mux.test.ts
 !/packages/tui/test/context/data-stream.test.tsx
+!/packages/session-ui/
+!/packages/session-ui/src/
+!/packages/session-ui/src/components/
+!/packages/session-ui/src/components/message-part.tsx
+!/packages/session-ui/src/components/message-part.test.ts
+!/packages/session-ui/src/components/tool-display.ts
 !/packages/app/
 !/packages/app/src/
 !/packages/app/src/index.css
@@ -170,6 +199,10 @@
 !/packages/opencode/
 !/packages/opencode/script/
 !/packages/opencode/script/build.ts
+!/packages/opencode/script/publish.ts
+!/packages/containers/
+!/packages/containers/script/
+!/packages/containers/script/build.ts
 !/packages/opencode/src/
 !/packages/opencode/src/snapshot/
 !/packages/opencode/src/snapshot/index.ts
@@ -178,6 +211,7 @@
 !/packages/opencode/src/effect/app-runtime.ts
 !/packages/opencode/src/effect/runtime-flags.ts
 !/packages/opencode/src/session/
+!/packages/opencode/src/session/direct-subagent-inbox.ts
 !/packages/opencode/src/session/run-state.ts
 !/packages/opencode/src/session/prompt.ts
 !/packages/opencode/src/session/tools.ts
@@ -192,6 +226,8 @@
 !/packages/opencode/src/tool/read.ts
 !/packages/opencode/src/tool/glob.ts
 !/packages/opencode/src/tool/grep.ts
+!/packages/opencode/src/tool/history.ts
+!/packages/opencode/src/tool/history-projection.ts
 !/packages/opencode/src/tool/registry.ts
 !/packages/opencode/src/project/
 !/packages/opencode/src/project/project.ts
@@ -258,6 +294,7 @@
 !/packages/opencode/test/cli/agent-debug.test.ts
 !/packages/opencode/test/server/
 !/packages/opencode/test/server/httpapi-v2-question-live.test.ts
+!/packages/opencode/test/server/question-owner.test.ts
 !/packages/opencode/test/server/httpapi-cors.test.ts
 !/packages/opencode/test/server/httpapi-public-openapi.test.ts
 !/packages/opencode/test/server/httpapi-control-plane.test.ts
@@ -300,6 +337,7 @@
 !/packages/schema/src/composition-v1.ts
 !/packages/schema/src/event-payload-v1.ts
 !/packages/schema/src/repo-intelligence-v1.ts
+!/packages/schema/src/context-ledger-v2.ts
 !/packages/schema/src/revert.ts
 !/packages/schema/test/
 !/packages/schema/test/composition-v1.test.ts
@@ -447,6 +485,9 @@ tsconfig.tsbuildinfo
 !/kernel/src/terminal.rs
 !/kernel/src/terminal_process.rs
 !/kernel/src/terminal_profile.rs
+!/kernel/src/protocol_framing.rs
+!/kernel/src/protocol_io_journal.rs
+!/kernel/src/search_secret_journal.rs
 !/kernel/src/bin/hz-kernel.rs
 !/kernel/tests/effect_host_principal.rs
 !/kernel/tests/hz_kernel_process.rs
@@ -456,6 +497,10 @@ tsconfig.tsbuildinfo
 !/scripts/perf/
 !/scripts/perf/rc0.py
 !/scripts/perf/test_rc0.py
+!/scripts/eval/
+!/scripts/eval/README.md
+!/scripts/eval/eval_harness.py
+!/scripts/eval/test_eval_harness.py
 !/packages/app/src/components/
 !/packages/app/src/components/terminal.tsx
 !/packages/app/src/components/prompt-input/
@@ -581,6 +626,9 @@ tsconfig.tsbuildinfo
 !/packages/llm/test/provider/google-vertex.test.ts
 !/packages/llm/src/route/
 !/packages/llm/src/route/auth.ts
+!/packages/llm/src/route/index.ts
+!/packages/llm/src/route/executor.ts
+!/packages/llm/src/route/direct-provider-transport.ts
 !/packages/llm/src/route/transport/
 !/packages/llm/src/route/transport/http.ts
 !/packages/llm/test/auth.test.ts
@@ -640,10 +688,14 @@ tsconfig.tsbuildinfo
 !/packages/opencode/src/tool/question.ts
 !/packages/opencode/test/lsp/launch.test.ts
 !/packages/opencode/src/session/managed-control.ts
+!/packages/opencode/src/session/managed-run-coordinator.ts
 !/packages/opencode/test/session/managed-control.test.ts
+!/packages/opencode/test/session/managed-run-coordinator.test.ts
 !/packages/opencode/src/format/index.ts
 !/packages/opencode/test/format/format.test.ts
 !/packages/core/test/session-supervisor-batch.test.ts
+!/packages/core/test/ripgrep.test.ts
+!/packages/core/test/repo-intelligence-config.test.ts
 !/packages/opencode/test/plugin/shell-origin.test.ts
 !/kernel/tests/managed_settlement_provenance.rs
 !/packages/tui/src/component/artifact-markdown.tsx
@@ -678,6 +730,8 @@ tsconfig.tsbuildinfo
 !/packages/opencode/src/server/routes/instance/httpapi/handlers/provider-doctor.ts
 !/packages/opencode/test/provider/doctor-api.test.ts
 !/packages/tui/src/component/dialog-provider-doctor.tsx
+!/packages/tui/src/component/dialog-subagents.tsx
+!/packages/tui/src/component/dialog-subagent-message.tsx
 !/packages/tui/test/component/provider-doctor.test.ts
 !/packages/tui/test/component/dialog-provider-doctor.test.tsx
 # P6 fail-closed MCP status presentation and focused tests.
@@ -708,6 +762,18 @@ tsconfig.tsbuildinfo
 # P5: V1 ordered web-search cascade service and TUI settings.
 !/packages/opencode/src/tool/websearch-broker.ts
 !/packages/opencode/src/tool/websearch.ts
+!/packages/opencode/src/tool/websearch-inspect.ts
+!/packages/opencode/src/tool/websearch-runtime.ts
+!/packages/opencode/src/tool/websearch-adapters.ts
+!/packages/opencode/src/tool/code-mode.ts
+!/packages/opencode/src/tool/code-mode-helper.ts
+!/packages/opencode/test/tool/websearch-inspect.test.ts
+!/packages/opencode/test/tool/websearch-runtime.test.ts
+!/packages/opencode/test/tool/websearch-adapters.test.ts
+!/packages/opencode/test/tool/websearch-cascade.fixture.ts
+!/packages/opencode/test/tool/code-mode.test.ts
+!/packages/opencode/src/dap/supervised.ts
+!/packages/opencode/src/lsp/supervised.ts
 !/packages/tui/src/component/dialog-websearch-settings.tsx
 !/packages/tui/test/component/dialog-websearch-settings.test.tsx
 # 2026-10-18 A4: P1 guarded legacy-origin deny tests and P6 free-provider acceptance.
@@ -804,6 +870,8 @@ tsconfig.tsbuildinfo
 !/packages/opencode/src/storage/storage.ts
 !/packages/opencode/src/auth/secure-input.ts
 !/packages/opencode/test/auth/secure-input.test.ts
+!/packages/opencode/src/question/
+!/packages/opencode/src/question/owner.ts
 !/packages/opencode/src/auth/secret-service-store.ts
 !/packages/opencode/src/auth/provider-transport.ts
 !/packages/opencode/test/auth/secret-service-store.test.ts
@@ -846,15 +914,23 @@ tsconfig.tsbuildinfo
 !/packages/core/test/config/agent-profiles.test.ts
 !/packages/schema/script/generate-agent-profile-v2.ts
 !/kernel/src/agent_profile.rs
+!/kernel/src/cgroup_v2.rs
 !/kernel/tests/fixtures/agent-profile-definition-v2.json
 !/packages/opencode/test/project/worktree.test.ts
 
 # 2026-10-19 overlay audit: keep active RepoIntel and context-selection deltas visible.
 !/packages/core/src/session/context-selection.ts
+!/packages/core/src/session/context-ledger.ts
 !/packages/core/test/session/context-selection.test.ts
+!/packages/core/test/session/context-ledger.test.ts
 !/packages/core/test/session/
 !/packages/schema/src/context-selection-v1.ts
 !/packages/schema/test/context-selection-v1.test.ts
+!/packages/schema/src/subagent-delivery-v1.ts
+!/packages/schema/src/agent-message-v1.ts
+!/packages/schema/src/subagent-status-v1.ts
+!/packages/schema/contracts-v2/
+!/packages/schema/contracts-v2/subagent-delivery-v1.schema.json
 !/kernel/src/context_selection.rs
 !/kernel/tests/fixtures/authenticated-request-context-v1.json
 !/kernel/tests/fixtures/context-selection-v1.json
@@ -872,7 +948,97 @@ tsconfig.tsbuildinfo
 !/packages/core/test/lib/effect.ts
 # 2026-10-19 A4: expose the P8 guarded worktree lifecycle journal.
 !/kernel/src/worktree_lifecycle.rs
+!/kernel/src/direct_message_journal.rs
+!/kernel/src/direct_turn_journal.rs
+!/kernel/src/codemode_protocol.rs
+!/kernel/src/direct_session_grant.rs
+!/kernel/src/workspace_command_profile.rs
+!/packages/opencode/
+!/packages/opencode/src/
+!/packages/opencode/src/tool/
+!/packages/opencode/src/tool/code-mode-protocol.ts
+!/packages/opencode/src/tool/lsp.ts
+!/packages/opencode/test/
+!/packages/opencode/test/tool/
+!/packages/opencode/test/tool/code-mode-protocol.test.ts
+!/arch_V1/contracts-v2/direct-turn-v1.schema.json
 
 # 2026-10-19 A4: expose P4's exact authenticated LSP edit batch and regression.
 !/packages/opencode/src/lsp/edits.ts
 !/packages/opencode/test/lsp/edits.test.ts
+!/packages/opencode/src/lsp/launch-profile.ts
+!/packages/opencode/src/server/routes/instance/httpapi/handlers/event.ts
+
+# 2026-10-20 A4: expose P4 trusted DAP config and launch/protocol adapters.
+!/packages/core/src/v1/config/dap.ts
+!/packages/opencode/src/lsp/protocol.ts
+!/packages/opencode/src/lsp/host-protocol-client.ts
+!/packages/opencode/src/lsp/process-lifecycle.ts
+!/packages/opencode/src/lsp/guard-authorizer.ts
+!/packages/opencode/src/dap/host-protocol-client.ts
+!/packages/opencode/test/lsp/
+!/packages/opencode/test/lsp/launch-profile.test.ts
+!/packages/opencode/test/lsp/supervised.test.ts
+
+# 2026-10-20 P3: expose authenticated RepoIntel document reader adapter.
+!/packages/opencode/src/lsp/repo-document-reader.ts
+
+# 2026-10-20 P7: expose read-only checkpoint control projection.
+!/packages/opencode/src/session/checkpoint-control.ts
+# P7: expose the authenticated managed-artifact read adapter.
+!/packages/opencode/src/session/artifact-control.ts
+!/packages/opencode/src/tool/managed-artifact-search.ts
+!/packages/opencode/test/session/checkpoint-control.test.ts
+!/packages/opencode/test/session/artifact-control.test.ts
+!/packages/opencode/src/server/routes/instance/httpapi/groups/checkpoint.ts
+!/packages/opencode/src/server/routes/instance/httpapi/handlers/checkpoint.ts
+
+# 2026-10-21 A4: expose P1 Core process and PTY pre-dispatch guards.
+!/packages/core/src/process.ts
+!/packages/core/src/pty/pty.bun.ts
+!/packages/core/src/pty/pty.node.ts
+!/packages/core/test/process-guard.test.ts
+!/packages/opencode/src/session/llm/ai-sdk.ts
+
+# 2026-10-21 P7: expose bounded transcript export and its regression fixtures.
+!/packages/tui/src/util/transcript.ts
+!/packages/tui/test/util/transcript.test.ts
+!/packages/tui/src/component/dialog-checkpoint.tsx
+!/packages/tui/test/component/dialog-checkpoint.test.tsx
+!/packages/opencode/src/server/routes/instance/httpapi/event-payload-bounds.ts
+!/packages/opencode/test/server/event-payload-bounds.test.ts
+!/packages/tui/src/routes/session/dialog-timeline.tsx
+!/packages/tui/src/routes/session/dialog-fork-from-timeline.tsx
+
+# 2026-10-20 P5: expose authenticated read-only web-search route inspection.
+!/packages/opencode/src/server/routes/instance/httpapi/groups/websearch.ts
+!/packages/opencode/src/server/routes/instance/httpapi/handlers/websearch.ts
+!/packages/opencode/src/server/routes/instance/httpapi/groups/provider.ts
+!/packages/schema/src/web-search-v1.ts
+!/scripts/release/README.md
+
+# 2026-10-21 P2: expose authenticated managed Goal proposal/review/plan dialogs.
+!/packages/tui/src/component/dialog-goal-proposal.tsx
+!/packages/tui/src/component/dialog-goal-review-inbox.tsx
+!/packages/tui/src/component/dialog-goal-run-plan.tsx
+
+# 2026-10-21 P7: expose the built-in versioned harness profiles and bounded tool discovery.
+!/packages/schema/src/harness-profile-v1.ts
+!/packages/schema/src/canonical-msgpack-v1.ts
+!/packages/core/src/harness-profile.ts
+!/packages/opencode/src/tool/discovery.ts
+
+# 2026-10-21 P7: expose managed provider persisted-step receipt projection.
+!/packages/opencode/src/session/managed-provider-entry.ts
+!/packages/schema/src/managed-provider-step-finish-v1.ts
+
+# 2026-10-22 P6/P4: expose authenticated permission and editor settings components.
+!/packages/tui/src/component/dialog-permissions.tsx
+!/packages/tui/src/component/dialog-editor-settings.tsx
+!/packages/tui/src/component/dialog-repo-intelligence.tsx
+!/packages/schema/src/direct-session-permission-mode-v1.ts
+
+# 2026-10-22 P3: expose authenticated read-only RepoIntel Explorer.
+!/packages/opencode/src/server/routes/instance/httpapi/groups/repo-explorer.ts
+!/packages/opencode/src/server/routes/instance/httpapi/handlers/repo-explorer.ts
+!/packages/tui/src/component/dialog-editor-explorer.tsx

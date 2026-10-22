@@ -1,0 +1,552 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "horizon://schemas/direct-turn-v1",
+  "title": "DirectTurnScopeV1 and FreshTurnAuthorizationV1",
+  "description": "Private direct-child Attempt/effect-turn fencing contract, not ordinary direct provider-inference authority. This schema describes message shapes; HostKernel OwnerLog state remains authoritative. All u64 counters/timestamps use canonical decimal strings; bounded small byte/count limits remain JSON integers.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/directTurnScope"
+    },
+    {
+      "$ref": "#/$defs/freshTurnAuthorization"
+    },
+    {
+      "$ref": "#/$defs/turnBeginRequest"
+    },
+    {
+      "$ref": "#/$defs/turnCompleteRequest"
+    },
+    {
+      "$ref": "#/$defs/issueFreshTurnAuthorizationRequest"
+    },
+    {
+      "$ref": "#/$defs/turnBeginReply"
+    },
+    {
+      "$ref": "#/$defs/turnCompleteReply"
+    },
+    {
+      "$ref": "#/$defs/directEffectBatchAdmission"
+    },
+    {
+      "$ref": "#/$defs/directEffectBatchAdmissionReply"
+    },
+    {
+      "$ref": "#/$defs/directEffectBatchApprovalReply"
+    },
+    {
+      "$ref": "#/$defs/directEffectBatchSettlement"
+    },
+    {
+      "$ref": "#/$defs/issueFreshTurnAuthorizationReply"
+    }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+    },
+    "bindingId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9._-]+$"
+    },
+    "profileId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+    },
+    "counter": {
+      "$ref": "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64"
+    },
+    "blake3": {
+      "type": "string",
+      "pattern": "^blake3:[a-f0-9]{64}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "directAttemptScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attemptID",
+        "parentSessionID",
+        "childSessionID",
+        "ownerEpoch",
+        "expectedRevision",
+        "profileID",
+        "profileRevision",
+        "profileDigest",
+        "locationID",
+        "workspaceID",
+        "workspaceRevision",
+        "capabilityDigest",
+        "permissionsDigest",
+        "budgetDigest",
+        "scopeDigest"
+      ],
+      "properties": {
+        "attemptID": {
+          "$ref": "#/$defs/bindingId"
+        },
+        "parentSessionID": {
+          "$ref": "#/$defs/bindingId"
+        },
+        "childSessionID": {
+          "$ref": "#/$defs/bindingId"
+        },
+        "ownerEpoch": {
+          "$ref": "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64"
+        },
+        "expectedRevision": {
+          "$ref": "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64"
+        },
+        "profileID": {
+          "$ref": "#/$defs/profileId"
+        },
+        "profileRevision": {
+          "$ref": "#/$defs/counter"
+        },
+        "profileDigest": {
+          "$ref": "#/$defs/blake3"
+        },
+        "locationID": {
+          "$ref": "#/$defs/bindingId"
+        },
+        "workspaceID": {
+          "$ref": "#/$defs/bindingId"
+        },
+        "workspaceRevision": {
+          "$ref": "#/$defs/blake3"
+        },
+        "capabilityDigest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "permissionsDigest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "budgetDigest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "scopeDigest": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "authorityPins": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "directAttemptID",
+        "parentSessionID",
+        "childSessionID",
+        "childOwnerEpoch",
+        "profileID",
+        "profileRevision",
+        "profileDigest",
+        "permissionScopeDigest",
+        "messageID",
+        "deliveryMode",
+        "payloadDigest",
+        "payloadBytes",
+        "mailboxSequence",
+        "mailboxCapacity"
+      ],
+      "properties": {
+        "directAttemptID": {
+          "$ref": "#/$defs/id"
+        },
+        "parentSessionID": {
+          "$ref": "#/$defs/id"
+        },
+        "childSessionID": {
+          "$ref": "#/$defs/id"
+        },
+        "childOwnerEpoch": {
+          "$ref": "#/$defs/counter"
+        },
+        "profileID": {
+          "$ref": "#/$defs/id"
+        },
+        "profileRevision": {
+          "$ref": "#/$defs/counter"
+        },
+        "profileDigest": {
+          "$ref": "#/$defs/blake3"
+        },
+        "permissionScopeDigest": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "$ref": "#/$defs/blake3"
+            }
+          ]
+        },
+        "messageID": {
+          "$ref": "#/$defs/id"
+        },
+        "deliveryMode": {
+          "enum": [
+            "queue",
+            "follow_up"
+          ]
+        },
+        "payloadDigest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "payloadBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16384
+        },
+        "mailboxSequence": {
+          "$ref": "#/$defs/counter"
+        },
+        "mailboxCapacity": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32
+        }
+      }
+    },
+    "directTurnScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "directAttempt",
+        "runnerCycleID",
+        "turnSequence",
+        "cycleDigest"
+      ],
+      "properties": {
+        "directAttempt": {
+          "$ref": "#/$defs/directAttemptScope"
+        },
+        "runnerCycleID": {
+          "$ref": "#/$defs/id"
+        },
+        "turnSequence": {
+          "$ref": "#/$defs/counter"
+        },
+        "cycleDigest": {
+          "$ref": "#/$defs/blake3"
+        }
+      }
+    },
+    "directEffectBatchAdmission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sessionID",
+        "locationID",
+        "batchID",
+        "turnContextDigest",
+        "calls",
+        "directTurnScope",
+        "payloadBytes"
+      ],
+      "properties": {
+        "sessionID": {
+          "$ref": "#/$defs/id"
+        },
+        "locationID": {
+          "$ref": "#/$defs/id"
+        },
+        "batchID": {
+          "$ref": "#/$defs/id"
+        },
+        "turnContextDigest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "directTurnScope": {
+          "$ref": "#/$defs/directTurnScope"
+        },
+        "calls": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "callID",
+              "capabilityID",
+              "arguments"
+            ],
+            "properties": {
+              "callID": {
+                "$ref": "#/$defs/id"
+              },
+              "capabilityID": {
+                "$ref": "#/$defs/id"
+              },
+              "arguments": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "payloadBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576,
+          "description": "Canonical encoded aggregate argument payload size; fixed JSON-safe admission bound."
+        }
+      }
+    },
+    "directEffectBatchAdmissionReply": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "batchId",
+        "calls",
+        "directTurnScope"
+      ],
+      "properties": {
+        "status": {
+          "const": "needs_approval"
+        },
+        "batchId": {
+          "$ref": "#/$defs/id"
+        },
+        "directTurnScope": {
+          "$ref": "#/$defs/directTurnScope"
+        },
+        "calls": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32
+        }
+      }
+    },
+    "directEffectBatchApprovalReply": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "batchID",
+        "leases",
+        "nextLeaseRequired",
+        "directTurnScope"
+      ],
+      "properties": {
+        "status": {
+          "const": "approved_set"
+        },
+        "batchID": {
+          "$ref": "#/$defs/id"
+        },
+        "directTurnScope": {
+          "$ref": "#/$defs/directTurnScope"
+        },
+        "leases": {
+          "type": "array",
+          "maxItems": 32
+        },
+        "nextLeaseRequired": {
+          "type": "boolean"
+        },
+        "attemptScopeTransition": {
+          "const": "batch_bind"
+        }
+      }
+    },
+    "directEffectBatchSettlement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "batchID",
+        "effectID",
+        "receiptDigest",
+        "status"
+      ],
+      "properties": {
+        "batchID": {
+          "$ref": "#/$defs/id"
+        },
+        "effectID": {
+          "$ref": "#/$defs/id"
+        },
+        "receiptDigest": {
+          "$ref": "#/$defs/blake3"
+        },
+        "status": {
+          "enum": [
+            "member_terminal",
+            "batch_completed",
+            "UNKNOWN"
+          ]
+        },
+        "directTurnScope": {
+          "$ref": "#/$defs/directTurnScope"
+        }
+      }
+    },
+    "freshTurnAuthorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authorityPins",
+        "completedTurnScope",
+        "nextTurnSequence",
+        "issuanceID",
+        "expiresAtUnixMs",
+        "authorizationDigest"
+      ],
+      "properties": {
+        "authorityPins": {
+          "$ref": "#/$defs/authorityPins"
+        },
+        "completedTurnScope": {
+          "$ref": "#/$defs/directTurnScope"
+        },
+        "nextTurnSequence": {
+          "$ref": "#/$defs/counter"
+        },
+        "issuanceID": {
+          "$ref": "#/$defs/id"
+        },
+        "expiresAtUnixMs": {
+          "$ref": "#/$defs/counter"
+        },
+        "authorizationDigest": {
+          "$ref": "#/$defs/blake3"
+        }
+      },
+      "allOf": [
+        {
+          "properties": {
+            "authorityPins": {
+              "properties": {
+                "deliveryMode": {
+                  "const": "follow_up"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "turnBeginRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "directAttempt"
+      ],
+      "properties": {
+        "directAttempt": {
+          "$ref": "#/$defs/directAttemptScope"
+        },
+        "freshTurnAuthorization": {
+          "$ref": "#/$defs/freshTurnAuthorization"
+        }
+      }
+    },
+    "turnCompleteRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "directTurnScope",
+        "resultDigest"
+      ],
+      "properties": {
+        "directTurnScope": {
+          "$ref": "#/$defs/directTurnScope"
+        },
+        "resultDigest": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "turnBeginReply": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "directTurnScope"
+      ],
+      "properties": {
+        "status": {
+          "const": "ACTIVE"
+        },
+        "directTurnScope": {
+          "$ref": "#/$defs/directTurnScope"
+        }
+      }
+    },
+    "turnCompleteReply": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "nextTurnSequence",
+        "receiptDigest"
+      ],
+      "properties": {
+        "status": {
+          "const": "COMPLETED"
+        },
+        "nextTurnSequence": {
+          "$ref": "#/$defs/counter"
+        },
+        "receiptDigest": {
+          "$ref": "#/$defs/blake3"
+        }
+      }
+    },
+    "issueFreshTurnAuthorizationReply": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "freshTurnAuthorization"
+      ],
+      "properties": {
+        "freshTurnAuthorization": {
+          "$ref": "#/$defs/freshTurnAuthorization"
+        }
+      }
+    },
+    "issueFreshTurnAuthorizationRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authorityPins",
+        "completedTurnScope"
+      ],
+      "properties": {
+        "authorityPins": {
+          "$ref": "#/$defs/authorityPins"
+        },
+        "completedTurnScope": {
+          "$ref": "#/$defs/directTurnScope"
+        }
+      },
+      "allOf": [
+        {
+          "properties": {
+            "authorityPins": {
+              "properties": {
+                "deliveryMode": {
+                  "const": "follow_up"
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "x-horizon-validation": [
+    "direct-effect-batch-payloadBytes-equals-canonical-encoded-call-arguments-and-is-at-most-1048576",
+    "direct-effect-batch-uses-the-host-turn-cancellation-and-deadline-not-a-model-selectable-extension"
+  ]
+}

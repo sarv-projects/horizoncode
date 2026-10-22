@@ -4,8 +4,9 @@ Status: normative current-only runtime behavior.
 
 ## 15.1 Direct versus managed
 
-Direct Session:
+Direct Session (normal CLI/TUI coding path):
 - ordinary pair coding;
+- Core `SessionRunner` owns ordinary direct turns. Managed work enters through a separate `SessionPrompt` path; both must satisfy the shared behavior contract in §15.21;
 - HorizonCode direct Session/continuation remains canonical; provider transport is replaceable only behind that owner per A-V2-27;
 - no mandatory Goal/Run/Task;
 - still uses capability scopes, complete ToolBatch barrier and Guard for effects.
@@ -18,20 +19,29 @@ Managed Run:
 
 ## 15.2 Provider turn
 
-1. Build context from canonical direct HorizonCode/OpenCode-derived history plus selected ContextLedger refs.
-2. Pin provider/model/harness/tool-registry generation and permission/cost policy for the turn.
-3. Start provider request through the configured ProviderTransport (current `packages/llm`; future verified A-V2-27 OMP adapter).
-4. Stream text/thinking into canonical direct Session message parts and derived UI.
-5. Collect local tool calls until the provider response/step is complete.
-6. Validate every call against request-pinned schemas.
-7. If any call is malformed or response incomplete/failed, dispatch no local effect.
-8. Read-only calls may execute through scoped fast paths after validation.
-9. Effectful batch crosses Rust Guard/ExecutionHost.
-10. Persist conversational tool results through the owning direct Session service.
+1. Authenticate the user's explicit prompt/continue at Core ingress and resolve only the already-selected provider/model/account/harness; do not infer or substitute a route.
+2. Build exact provider-visible input from canonical direct HorizonCode/OpenCode-derived history plus selected ContextLedger refs using Core ContextService.
+3. Pin the active AgentProfileV2 revision/digest, direct ContextSelection, exact provider-input digest, the selected Core-catalog route projection (including the fixed adapter, normalized endpoint and their revisions), the HostKernel-authenticated direct permission-mode digest, and the effective privacy/network/output-token/cost policy in Core SessionStore before transport; freeze the normalized input. The permission-mode digest is policy context only and does not authorize tool effects.
+4. Start the selected route through configured ProviderTransport only after checking the frozen-input and non-secret SDK transport-request digests. This bounded turn authorization covers ordinary continuation requests without per-step prompts.
+   The Core-to-Auth bridge is an in-process `DirectProviderTransport.Service`: Core supplies the frozen Catalog route projection, original request info/init, and SessionStore `pin` callback. It carries no credential reference, credential bytes, placeholder header, or caller-selected route. Auth validates the full destination and prepared request, computes `transportRequestDigest`, commits the `PINNED` journal record through that callback, then commits `DISPATCHING` and sends once through Auth's request-local pinned fetch. The Core default adapter is unavailable; OpenCode replaces it with the Auth-backed adapter. Unsupported or credentialed routes stay unavailable until their Auth/SecretBroker authorization contract exists. Auth response-stream failure or possible-send cancellation records `UNKNOWN`; Core owns response/usage settlement with the matching journal identity.
+5. Stream text/thinking into canonical direct Session message parts and derived UI; persist the exact response/usage settlement against its request pin.
+6. Collect local tool calls until the provider response/step is complete.
+7. Validate every call against request-pinned schemas.
+8. If any call is malformed or response incomplete/failed, dispatch no local effect.
+9. Read-only calls may execute through scoped fast paths after validation.
+10. Effectful batch crosses Rust Guard/ExecutionHost.
+11. Persist conversational tool results through the owning direct Session service; each later provider request recompiles and pins its own selection before dispatch.
 
 ## 15.3 Context compile
 
-ContextService selects, it does not replace canonical history.
+The V1 Core ContextService compiler assembles provider-visible context for both direct and managed
+prompt paths. It selects and bounds inputs; it does not replace canonical history. It records
+selection provenance, source revisions and measured/estimated/unknown token counts, then applies
+the selected model's context window and reserved-output budget. Direct and managed paths share the
+compiler and policy; their transcript/control owners remain distinct. For direct requests, Core
+SessionStore pins the compiled DTO, input digest, route and effective policy atomically before
+transport; no per-request HostKernel bind/advance is used. For managed requests, HostKernel binds
+the compiled DTO to the live Attempt and Core dispatches only after the exact digest receipt.
 
 Priority:
 - system/product safety;
@@ -66,6 +76,8 @@ Models receive a bounded starter toolset based on AgentProfile/Harness and curre
 
 tools.search exposes additional canonical capabilities by ID. Discovery never changes permission/effect class.
 
+CodeMode uses the existing OpenCode-derived interpreter in a short-lived helper process under the existing Rust ExecutionHost supervisor. Existing `$codemode.search` progressively discovers only the current authorized tool tree; existing MCP adapters can be called only through Core's same guarded dispatcher. A bounded versioned stdio protocol returns nested call requests to Core; Core admits each complete wave through SessionSupervisor and the ordinary ToolBatch Guard/lease/receipt path. Pure/read-only compositions require no per-action approval; workspace reads/edits within an explicit active grant are prompt-free. HostKernel applies fixed `CodeModeResourceProfileV1` before first instruction: cgroup-v2 memory 536870912 bytes, CPU `100000 100000`, PIDs 64, and nofile 256. Every limit is mandatory and verified; without all verified OS limits or the fixed `horizoncode:codemode:bun` runtime CodeMode is unavailable on that backend. Bound one script to 64 total nested calls across at most 64 sequential waves of at most 32 concurrent calls, 30 seconds wall time, 64 KiB source/output and the 1 MiB aggregate payload cap. Cancellation terminates/reaps the helper through the existing supervisor. CodeMode cannot mint authority, bypass discovery policy or create another interpreter/runtime.
+
 A tiny model may see compressed meta-tools, but they map to the same underlying capability IDs and Guard.
 
 ## 15.6 Managed scheduling
@@ -83,6 +95,14 @@ It does not automatically choose a cheaper/different model.
 Parallelism is used only when net benefit exceeds coordination/integration cost.
 
 ## 15.7 Subagents
+
+Direct Core child-Session fan-out is a V1 capability, separate from managed Task DAG scheduling.
+It is available only after direct child admission, authenticated profile/grant binding, child
+effects through Guard, and cancellation/recovery prerequisites are verified. It supports bounded
+follow-up messages to an existing direct child only through the guarded direct-lane follow-up
+operation after its fresh-turn/recovery proof; it is not arbitrary append or managed DAG fan-out.
+Managed multi-Task fan-out remains disabled until every Task settles and Rust durably settles the
+aggregate Run outcome.
 
 Child gets:
 - bounded objective and acceptance;
@@ -149,13 +169,13 @@ WebSearchBroker separates:
 - direct search providers;
 - model-grounded search providers.
 
-Request pins provider/account/cost policy. Results include source URL/provider/retrieval time and bounded extracted text/metadata.
+The model-facing request contains query intent, bounded filters and result limits only; it cannot pin provider, account, auth mode, route class, cost policy, endpoint, retry behavior or credential. HostKernel resolves the user-consented route plan and supplies its exact fixed provider/auth/cost policy. Results include source URL/provider/retrieval time and bounded extracted text/metadata.
 
 Fallback (V1 cascade, `DEC-V1-26`):
-- the built-in default route is enabled without a key; BYO-key providers are enabled per route in Settings;
-- every enabled route joins one ordered cascade; auth 4xx (401/403/407) failures are recorded per route and fall through to the next explicitly enabled route; other non-rate-limit 4xx stop and surface; timeout/network/5xx and empty-result handling remains bounded;
-- an exhausted chain applies one bounded normal retry and surfaces per-route reasons;
-- only explicitly enabled/configured routes are used; never silent paid/auth-class change;
+- after first-use query-sharing consent, the built-in free anonymous cascade is default-enabled in §37.5's fixed initial order (Exa, You.com free profile, Firecrawl Keyless, Parallel); authenticated routes are user-enabled separately in Settings, while grounded-model search is separate and explicit-only;
+- the trusted route plan comes from broker/config state, never model-supplied; auth 4xx (401/403/407) failures are recorded per route and fall through only to another explicitly enabled route; other non-rate-limit 4xx stop and surface; timeout/network/5xx and empty-result handling remains bounded;
+- each eligible route gets only its §37.5 bounded route-local retry; after one ordered cascade pass, exhaustion surfaces per-route reasons and does not restart the full cascade;
+- only default-enabled free anonymous routes (after first-use consent) and explicitly user-enabled BYO routes are used; grounded-model search is explicit-only; never silently change paid/auth class;
 - no claim a source adapter is usable merely because code exists.
 
 Search is network access and follows privacy/domain/provider policy.
@@ -260,3 +280,30 @@ Core Session input + provider selection snapshot
 **Runtime error mapping:** keep separate _validation DENIED_ vs _policy NEEDS_APPROVAL_ vs _unsupported UNAVAILABLE_ vs _capacity RESOURCE_BLOCKED_ vs _stale revision CONFLICT_ vs _transport retryable_ vs _effect UNKNOWN_. Use canonical typed error registry (§12) and preserve idempotency delivery key; log origin/session/attempt/source revision without raw secret/prompt contents. A failed provider call after a tool was dispatched cannot be replayed as a fresh tool effect merely by restarting the model request.
 
 **Fast path:** direct read/search/patch stays one canonical Session and existing host runner, mediated as needed; render/index/telemetry are bounded asynchronous derivatives. Managed background tasks reuse existing Core/provider connections when safe, with OS-sandboxed effectful children. Benchmark complete user-visible verified tasks, including retries and tool outputs, rather than only first-token latency.
+
+## 15.21 Shared SessionRunner/SessionPrompt behavior contract
+
+Core `SessionRunner` remains the normal direct CLI/TUI execution path. Managed work may use a
+separate `SessionPrompt` entry path to bind an Attempt, but it must reuse the same context compiler,
+provider/model/harness pinning rules, tool registry/schema generation, full-batch validation,
+stream and terminal-state semantics, usage accounting, cancellation/error mapping, durable
+transcript persistence, and Guard/ExecutionHost mediation. Managed execution adds authenticated
+Attempt and EffectIntent/lease bindings; it must not fork an alternate runtime or weaker tool policy.
+Acceptance covers matched direct-versus-managed requests for ordering, tool validation, usage,
+stream completion, cancellation and restart recovery. This contract does not claim both paths are
+currently implemented or verified.
+### CodeMode and request context truth (2026-10-22)
+
+CodeMode is a model-facing orchestration tool that runs compact code to compose tools,
+branch/loop, filter intermediate results and return only useful output. It improves
+multi-call/context efficiency; it does not implement the coding loop or grant tool
+authority. Existing `$codemode.search` supports progressive discovery. Every nested call
+must re-enter Core's authenticated ToolBatch and Rust Guard/lease/receipt boundary. The
+current registry is hard-disabled and the in-process adapter rejects nested dispatch, so
+there is no usable CodeMode path today; §37.24 is a target contract, not runtime evidence.
+
+Current context selection must not be described as a complete compiler: direct turns pin
+a bounded recent-reference set, and managed turns pin the exact prepared request. The
+model-aware budget/retrieval/provenance compiler and pressure recovery remain a distinct
+V1 implementation target in §30.21. Direct and managed runner parity also remains an
+acceptance requirement, not an assumed property.

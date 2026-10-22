@@ -376,6 +376,18 @@ export async function createLinuxSecretServiceStore(options: {
       return transact(async (index) => ({ value: index.secrets[secretRef]?.metadata }))
     },
 
+    async listByProviderIds(providerIds) {
+      if (providerIds.length > 16) throw new Error("SecretBroker provider lookup exceeds its bound")
+      const providers = new Set(providerIds)
+      return transact(async (index) => {
+        const matches = Object.values(index.secrets)
+          .map((record) => record.metadata)
+          .filter((metadata) => providers.has(metadata.providerId))
+        if (matches.length > 256) throw new Error("SecretBroker provider lookup exceeds its result bound")
+        return { value: matches }
+      })
+    },
+
     async putLease(lease, expectedSecretVersion) {
       await transact(async (index) => {
         const secret = index.secrets[lease.secretRef]

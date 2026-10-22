@@ -1,5 +1,6 @@
 import { SessionSupervisor } from "@opencode-ai/core/session/supervisor"
 import { Session } from "@/session/session"
+import { SessionRunState } from "@/session/run-state"
 import type { ManagedRootSessionLinkProjectionV1 } from "@/session/session"
 import { SessionID } from "@/session/schema"
 import { Location } from "@opencode-ai/core/location"
@@ -10,6 +11,11 @@ import { randomUUID } from "node:crypto"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import * as InstanceState from "@/effect/instance-state"
 import { ManagedControl, ManagedControlError } from "@/session/managed-control"
+
+// Finalization stays unavailable until the integrated P1/P2/P8 evidence gate is accepted.
+const MANAGED_VERIFICATION_ENABLED = false
+import { executeNextManagedTask } from "@/session/managed-run-coordinator"
+import { RuntimeFlags } from "@/effect/runtime-flags"
 import { InstanceHttpApi } from "../api"
 import {
   ApiGoalReviewConflictError,
@@ -260,7 +266,6 @@ export const goalReviewHandlers = HttpApiBuilder.group(InstanceHttpApi, "goalRev
     const goalVerification = Effect.fn("GoalReviewHttpApi.goalVerification")(function* (ctx: {
       payload: typeof GoalVerificationInputV1.Type
     }) {
-      const instance = yield* InstanceState.context
       const scope = yield* currentScope
       if (!scope) {
         return yield* Effect.fail(
@@ -282,6 +287,12 @@ export const goalReviewHandlers = HttpApiBuilder.group(InstanceHttpApi, "goalRev
           }),
         )
       }
+      if (!MANAGED_VERIFICATION_ENABLED) {
+        return yield* Effect.fail(new ApiGoalReviewUnavailableError({
+          name: "GoalReviewUnavailableError",
+          data: { code: "managed_unavailable", reason: "independent verification and Run finalization remain disabled pending integrated Guard and settlement acceptance" },
+        }))
+      }
       const snapshot = yield* ManagedControl.goalReviewSnapshot(ctx.payload.goalID, trustedPrincipal).pipe(
         Effect.provideService(SessionSupervisor.Service, supervisor),
         Effect.mapError(failure),
@@ -297,7 +308,6 @@ export const goalReviewHandlers = HttpApiBuilder.group(InstanceHttpApi, "goalRev
       const result = yield* ManagedControl.runVerification({
         goalID: ctx.payload.goalID,
         runID: ctx.payload.runID,
-        locationRef: Location.Ref.make({ directory: AbsolutePath.make(instance.directory) }),
       }).pipe(
         Effect.provideService(SessionSupervisor.Service, supervisor),
         // The principal is supplied only from the authenticated HTTP middleware projection.
@@ -344,6 +354,7 @@ export const goalReviewHandlers = HttpApiBuilder.group(InstanceHttpApi, "goalRev
         )
       }
       const runControl = {
+        trustedPrincipal,
         goalID: ctx.payload.goalID,
         runID: ctx.payload.runID,
         expectedRevision: ctx.payload.expectedRevision,
@@ -356,6 +367,61 @@ export const goalReviewHandlers = HttpApiBuilder.group(InstanceHttpApi, "goalRev
         Effect.provideService(SessionSupervisor.Service, supervisor),
         Effect.mapError(failure),
       )
+      // Persist the Rust cancellation fence first, then interrupt only the exact
+      // Core child Session that Rust still identifies as this Run's live Attempt.
+      // The child prompt's normal interruption path lets Guard/ExecutionHost
+      // settle or retain any dispatched effect as UNKNOWN; a UI cancel alone is
+      // never treated as proof that an external process/effect stopped.
+      if (ctx.payload.action === "cancel" && result.status === "CANCELLING") {
+        const run = snapshot.runs.find((candidate) => candidate.runID === ctx.payload.runID)
+        const pinned = run?.sessionLink
+        if (!pinned || pinned.sessionID.length === 0) {
+          return yield* Effect.fail(new ApiGoalReviewUnavailableError({
+            name: "GoalReviewUnavailableError",
+            data: { code: "managed_recovery_unavailable", reason: "cancellation is durable but its pinned root Session is unavailable for child interruption" },
+          }))
+        }
+        const rootSession = yield* sessions.get(SessionID.make(pinned.sessionID)).pipe(
+          Effect.mapError(() => new ApiGoalReviewUnavailableError({
+            name: "GoalReviewUnavailableError",
+            data: { code: "managed_recovery_unavailable", reason: "cancellation is durable but the pinned root Session is unavailable" },
+          })),
+        )
+        const rootBinding = rootSession.metadata?.horizonManagedRoot
+        if (rootSession.parentID || typeof rootBinding !== "object" || rootBinding === null || Array.isArray(rootBinding) ||
+          rootBinding.schemaVersion !== 1 || rootBinding.goalID !== ctx.payload.goalID || rootBinding.runID !== ctx.payload.runID) {
+          return yield* Effect.fail(new ApiGoalReviewConflictError({
+            name: "GoalReviewConflictError",
+            data: { code: "managed_conflict", reason: "cancellation root Session no longer matches the pinned Goal and Run" },
+          }))
+        }
+        const instance = yield* InstanceState.context
+        const locationRef = Location.Ref.make({ directory: AbsolutePath.make(instance.directory) })
+        const locationID = yield* supervisor.registerHostLocation(locationRef).pipe(
+          Effect.provideService(TrustedPrincipalContext, TrustedPrincipalContext.of({ principal: trustedPrincipal })),
+          Effect.mapError((error) => new ApiGoalReviewUnavailableError({
+            name: "GoalReviewUnavailableError",
+            data: { code: error.hostCode ?? "managed_unavailable", reason: error.reason },
+          })),
+        )
+        const active = yield* ManagedControl.activeAttemptRecovery({
+          trustedPrincipal,
+          goalID: ctx.payload.goalID,
+          runID: ctx.payload.runID,
+          locationID,
+          sessionID: rootSession.id,
+          expectedRevision: result.revision,
+        }).pipe(
+          Effect.provideService(SessionSupervisor.Service, supervisor),
+          Effect.mapError(failure),
+        )
+        if (active.status === "ACTIVE_ATTEMPT" && active.attempt) {
+          // This targets the Rust-pinned child Session only. The Run remains
+          // CANCELLING until Rust reconciles Attempt/effect receipts.
+          const runState = yield* Effect.serviceOption(SessionRunState.Service)
+          if (Option.isSome(runState)) yield* runState.value.cancel(SessionID.make(active.attempt.sessionID))
+        }
+      }
       return { schemaVersion: 1 as const, ...result }
     })
 
@@ -587,7 +653,20 @@ export const goalReviewHandlers = HttpApiBuilder.group(InstanceHttpApi, "goalRev
         Effect.provideService(SessionSupervisor.Service, supervisor),
         Effect.mapError(failure),
       )
-      return { schemaVersion: 1 as const, ...result, sessionID: rootSession.id }
+      const runtimeFlags = yield* RuntimeFlags.Service
+      let dispatchStatus: "DISABLED" | "NO_TASK" | "PROMPT_RETURNED" | "PROMPT_RETURNED_ERROR" | "PROMPT_UNKNOWN" | "UNAVAILABLE" = "DISABLED"
+      if (runtimeFlags.managedTaskDispatch) {
+        const dispatch = yield* executeNextManagedTask({
+          trustedPrincipal,
+          goalID: ctx.payload.goalID,
+          runID: ctx.payload.runID,
+          rootSessionID: rootSession.id,
+          locationID,
+          expectedRevision: result.revision,
+        }).pipe(Effect.either)
+        dispatchStatus = dispatch._tag === "Left" ? "UNAVAILABLE" : dispatch.right.status
+      }
+      return { schemaVersion: 1 as const, ...result, sessionID: rootSession.id, dispatchStatus }
     })
 
     return handlers

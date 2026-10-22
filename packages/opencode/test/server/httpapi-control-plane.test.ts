@@ -263,6 +263,10 @@ describe("Goal verification v1 route contract", () => {
       status: "ABORTED",
       goalID: "goal-1",
       runID: "run-1",
+      taskID: "task-1",
+      attemptID: "attempt_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      finalRevision: "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      challengeSetDigest: "blake3:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
       verificationRunID: "verification-1",
       reason: "transport_lost",
       revision: "12",
@@ -353,6 +357,34 @@ describe("control-plane HttpApi", () => {
 })
 
 describe("Goal review inbox HttpApi", () => {
+  itGoalReview.live("keeps independent verification unavailable before snapshot or verifier dispatch", () =>
+    Effect.gen(function* () {
+      const directory = yield* tmpdirScoped({ git: true })
+      const project = yield* Project.use.fromDirectory(directory)
+      const workspaceID = WorkspaceV2.ID.ascending()
+      yield* withFixedWorkspaceID(workspaceID)
+      yield* Ref.set(goalReviewHostResponse, pendingGoal({
+        goalID: "goal-verify-disabled",
+        projectRef: project.project.id,
+        workspaceRef: String(workspaceID),
+      }))
+      yield* Ref.set(goalReviewHostCalls, [])
+      yield* serveGoalReview()
+
+      const response = yield* HttpClientRequest.post(
+        `/experimental/control-plane/goal-verification?directory=${encodeURIComponent(directory)}` +
+          `&workspace=${encodeURIComponent(String(workspaceID))}`,
+      ).pipe(
+        HttpClientRequest.setHeader("authorization", basic("reviewer", "reviewer-secret")),
+        HttpClientRequest.setBody(HttpBody.jsonUnsafe({ schemaVersion: 1, goalID: "goal-verify-disabled", runID: "run-1" })),
+        HttpClient.execute,
+      )
+
+      expect(response.status).toBe(503)
+      expect(yield* Ref.get(goalReviewHostCalls)).toEqual([])
+    }),
+  )
+
   itGoalReview.live("derives the Run control CAS revision from the current scoped OwnerLog snapshot", () =>
     Effect.gen(function* () {
       const directory = yield* tmpdirScoped({ git: true })

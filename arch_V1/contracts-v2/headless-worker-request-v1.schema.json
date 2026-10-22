@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "horizon://schemas/headless-worker-request-v1",
+  "title": "HeadlessWorkerRequestV1",
+  "description": "Headless worker launch request pins (A-V2-30 §12.16).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "requestId",
+    "goalId",
+    "runId",
+    "taskId",
+    "attemptId",
+    "acceptedSpecDigest",
+    "sourceRevision",
+    "capabilitySubset"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "requestId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "goalId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "runId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "taskId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "attemptId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "acceptedSpecDigest": { "type": "string", "pattern": "^blake3:[0-9a-f]{64}$" },
+    "parentScopeDigest": { "type": ["string", "null"], "pattern": "^blake3:[0-9a-f]{64}$" },
+    "sourceRevision": { "type": "string", "minLength": 8, "maxLength": 128 },
+    "workerBudgetRef": { "type": ["string", "null"], "maxLength": 128 },
+    "providerSelectionRef": { "type": ["string", "null"], "maxLength": 128 },
+    "capabilitySubset": {
+      "type": "array",
+      "maxItems": 128,
+      "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+    },
+    "policyEpoch": { "$ref": "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64" }
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "horizon://schemas/terminal-run-invocation-v1",
+  "title": "TerminalRunInvocationV1",
+  "description": "Discriminated request for canonical terminal.run. Both branches pass through the same Guard, one-use lease, ExecutionHost and durable receipt boundary.",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "command", "cwd", "timeoutMs"],
+      "properties": {
+        "mode": {"const": "shell"},
+        "command": {"type": "string", "minLength": 1, "maxLength": 65536},
+        "cwd": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "timeoutMs": {"type": "integer", "minimum": 1, "maximum": 600000}
+      },
+      "description": "Existing shell-text form. Shell profile and sanitized environment are resolved by trusted host state and are not model-selected invocation fields."
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "action", "profileID", "revision", "profileDigest", "arguments"],
+      "properties": {
+        "mode": {"const": "workspace_profile"},
+        "action": {"enum": ["build", "test"]},
+        "profileID": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9._:-]+$"},
+        "revision": {"$ref": "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64"},
+        "profileDigest": {"type": "string", "pattern": "^blake3:[a-f0-9]{64}$"},
+        "arguments": {"type": "array", "maxItems": 128, "items": {"type": "string", "maxLength": 256}}
+      },
+      "description": "Trusted-config profile mode. These bounded arguments are matched positionally against the exact immutable profile and become fixed argv; no shell parsing occurs."
+    }
+  ],
+  "x-horizon-validation": [
+    "profileID-revision-digest-must-match-current-user-owned-Core-Config-and-grant-scope",
+    "action-and-each-argument-must-match-the-versioned-profile-before-process-creation",
+    "HostKernel-resolves-executable-and-builds-fixed-argv-from-trusted-configuration",
+    "profile-mode-has-no-caller-selectable-command-cwd-executable-or-environment",
+    "either-mode-consumes-the-canonical-terminal.run-lease-and-settles-one-durable-receipt-or-UNKNOWN"
+  ]
+}

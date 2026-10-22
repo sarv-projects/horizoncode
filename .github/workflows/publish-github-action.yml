@@ -1,0 +1,14 @@
+name: HorizonCode GitHub Action publication (disabled)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publication-disabled:
+    if: ${{ false }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "HorizonCode publication is disabled pending release authorization."

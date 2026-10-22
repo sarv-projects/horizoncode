@@ -24,12 +24,21 @@ import {
 import { createConnection, type Socket } from "node:net"
 import { dirname, join } from "node:path"
 import { pack, unpack } from "msgpackr"
-import { Event as EventSchema, Location as LocationSchema } from "@opencode-ai/schema"
+import { blake3 } from "@noble/hashes/blake3.js"
+import { bytesToHex } from "@noble/hashes/utils.js"
+import { encodeCanonicalMessagePackV1, Event as EventSchema, Location as LocationSchema } from "@opencode-ai/schema"
 import {
   RepoGenerationRequestV1,
   RepoGenerationPinV1,
+  RepoDiscoveryRequestV1,
+  RepoDiscoveryPageV1,
+  repoDiscoveryPrincipalBinding,
   RepoStructurePageV1,
   RepoStructureQueryV1,
+  RepoDocumentReadRequestV1,
+  RepoDocumentReadResponseV1,
+  RepoIntelPatchFenceV1,
+  repoDocumentContentDigest,
 } from "@opencode-ai/schema/repo-intelligence-v1"
 import { AbsolutePath } from "../schema"
 import { EventV2 } from "../event"
@@ -44,12 +53,14 @@ import { Global } from "../global"
 import { TrustedPrincipalContext, type TrustedPrincipal } from "../trusted-principal"
 import { withRepoIntelOverlayGate } from "./repo-intel-overlay"
 
-import { AppProcess } from "../process"
+import { AppProcess, pinCodeModeHelperRoot, pinSupervisorExecutable, pinSupervisorSource } from "../process"
 
 declare const OPENCODE_SESSION_OBSERVER_ASSET: string
 declare const OPENCODE_SESSION_OBSERVER_MANIFEST: string
 declare const OPENCODE_HOST_KERNEL_ASSET: string
 declare const OPENCODE_HOST_KERNEL_MANIFEST: string
+declare const OPENCODE_CODE_MODE_HELPER_ASSET: string
+declare const OPENCODE_CODE_MODE_HELPER_MANIFEST: string
 
 const PROTOCOL = 1
 const MAX_FRAME_BYTES = 8 * 1024 * 1024
@@ -58,6 +69,111 @@ const MAX_IDENTIFIER_BYTES = 256
 const MAX_TOOL_BATCH_CALLS = 32
 const MAX_TOOL_CALL_ARGUMENT_BYTES = 256 * 1024
 const MAX_TOOL_BATCH_ARGUMENT_BYTES = 512 * 1024
+
+function directGrantChallengeSetDigest(challengeIDs: ReadonlyArray<string>): string {
+  const domain = new TextEncoder().encode("horizoncode.direct-grant-challenge-set.v1\0")
+  const encodedIDs = encodeCanonicalMessagePackV1([...challengeIDs], {
+    maxEncodedBytes: MAX_IDENTIFIER_BYTES * MAX_TOOL_BATCH_CALLS + 64,
+    maxDepth: 2,
+    maxNodes: MAX_TOOL_BATCH_CALLS + 1,
+    maxCollectionItems: MAX_TOOL_BATCH_CALLS,
+    maxScalarBytes: MAX_IDENTIFIER_BYTES,
+  })
+  const preimage = new Uint8Array(domain.length + encodedIDs.length)
+  preimage.set(domain)
+  preimage.set(encodedIDs, domain.length)
+  return `blake3:${bytesToHex(blake3(preimage))}`
+}
+
+function decodeDirectSessionPermissionMode(value: unknown, expected: {
+  sessionID: string
+  locationID: string
+}): DirectSessionPermissionModeV1 {
+  const mode = record(value)
+  const keys = [
+    "schemaVersion", "sessionId", "ownerEpoch", "locationId", "workspaceId",
+    "workspaceRootDigest", "executionBackendId", "policyDigest", "sandboxMode",
+    "approvalPolicy", "source", "revision", "digest",
+  ].toSorted()
+  const canonicalDecimal = (input: unknown, positive: boolean) =>
+    typeof input === "string" && (positive ? /^[1-9][0-9]{0,19}$/ : /^(0|[1-9][0-9]{0,19})$/).test(input) &&
+    BigInt(input) <= 0xffff_ffff_ffff_ffffn
+  if (Object.keys(mode).toSorted().join("\0") !== keys.join("\0") ||
+    mode.schemaVersion !== 1 || mode.sessionId !== expected.sessionID || mode.locationId !== expected.locationID ||
+    typeof mode.sessionId !== "string" || !/^[A-Za-z0-9._:-]{1,256}$/.test(mode.sessionId) ||
+    !canonicalDecimal(mode.ownerEpoch, true) || !canonicalDecimal(mode.revision, true) ||
+    typeof mode.workspaceId !== "string" || !/^[A-Za-z0-9._:-]{1,256}$/.test(mode.workspaceId) ||
+    typeof mode.executionBackendId !== "string" || !/^[A-Za-z0-9._:-]{1,256}$/.test(mode.executionBackendId) ||
+    typeof mode.workspaceRootDigest !== "string" || !/^blake3:[0-9a-f]{64}$/.test(mode.workspaceRootDigest) ||
+    typeof mode.policyDigest !== "string" || !/^blake3:[0-9a-f]{64}$/.test(mode.policyDigest) ||
+    (mode.sandboxMode !== "read-only" && mode.sandboxMode !== "workspace-write" && mode.sandboxMode !== "danger-full-access") ||
+    (mode.approvalPolicy !== "on-request" && mode.approvalPolicy !== "always" && mode.approvalPolicy !== "never") ||
+    (mode.source !== "default" && mode.source !== "user-session" && mode.source !== "user-config") ||
+    typeof mode.digest !== "string" || !/^blake3:[0-9a-f]{64}$/.test(mode.digest)) {
+    throw fail("protocol", "HostKernel direct-session permission mode projection is malformed")
+  }
+  const { digest, ...claims } = mode
+  const domain = new TextEncoder().encode("horizoncode.direct-session-permission-mode.v1\0")
+  const encoded = encodeCanonicalMessagePackV1(claims, {
+    maxEncodedBytes: 4096,
+    maxDepth: 3,
+    maxNodes: 32,
+    maxCollectionItems: 16,
+    maxScalarBytes: 512,
+  })
+  const preimage = new Uint8Array(domain.length + encoded.length)
+  preimage.set(domain)
+  preimage.set(encoded, domain.length)
+  if (`blake3:${bytesToHex(blake3(preimage))}` !== digest) {
+    throw fail("protocol", "HostKernel direct-session permission mode digest is invalid")
+  }
+  return mode as unknown as DirectSessionPermissionModeV1
+}
+
+function compareUtf8(left: string, right: string) {
+  const encoder = new TextEncoder()
+  const a = encoder.encode(left)
+  const b = encoder.encode(right)
+  const limit = Math.min(a.length, b.length)
+  for (let index = 0; index < limit; index++) {
+    if (a[index] !== b[index]) return a[index]! - b[index]!
+  }
+  return a.length - b.length
+}
+
+/** Validate cross-language discovery semantics not expressible in RepoDiscoveryPageV1. */
+export function repoDiscoveryPageMatchesRequest(
+  request: typeof RepoDiscoveryRequestV1.Type,
+  page: typeof RepoDiscoveryPageV1.Type,
+) {
+  if (page.entries.length > request.maxEntries ||
+    page.coverage.entries !== page.entries.length ||
+    page.coverage.bytes > request.maxBytes ||
+    page.coverage.depth > request.maxDepth) return false
+
+  const rootPrefix = request.rootRef === "." ? "" : `${request.rootRef}/`
+  let previousPath: string | undefined
+  let visibleByteMinimum = 0
+  for (const entry of page.entries) {
+    if (entry.pathRef === "." || (rootPrefix && !entry.pathRef.startsWith(rootPrefix))) return false
+    const relativePath = rootPrefix ? entry.pathRef.slice(rootPrefix.length) : entry.pathRef
+    const pathDepth = relativePath.split("/").length
+    if (pathDepth < 1 || entry.depth !== pathDepth || entry.depth > request.maxDepth || entry.depth > page.coverage.depth) {
+      return false
+    }
+    if (previousPath !== undefined && compareUtf8(previousPath, entry.pathRef) >= 0) return false
+    previousPath = entry.pathRef
+    visibleByteMinimum += new TextEncoder().encode(entry.pathRef).length + 72
+
+    if (request.mode === "manifests") {
+      if (entry.kind !== "file" || entry.manifestKind === undefined) return false
+    } else if (entry.kind !== "file" && (entry.manifestKind !== undefined || entry.languageHint !== undefined)) {
+      return false
+    }
+  }
+  return visibleByteMinimum <= page.coverage.bytes
+}
+
 const MAX_PENDING_BYTES = MAX_FRAME_BYTES * 2 + 8
 const MAX_PENDING_MESSAGES = 128
 // Replay loss recovers in one retry; a host refusal must not spin forever.
@@ -73,6 +189,10 @@ const PAGE_CONTROL_FEATURE = "session.events.page-control.v1"
  */
 export const MULTI_CALL_BATCH_FEATURE = "effects.v2.multi-call"
 export const REPO_INTEL_READ_CONTEXT_FEATURE = "repo-intel.read-context-v1"
+/** Host-minted RepoIntel continuation leases are optional and independently negotiated. */
+export const REPO_INTEL_CURSOR_LEASE_FEATURE = "repo-intel.cursor-lease-v1"
+export const ARTIFACT_READ_CONTEXT_FEATURE = "artifact.read-context-v1"
+export const WEB_SEARCH_CASCADE_FEATURE = "execution.v1.web-search-cascade"
 export const GuardApprovalRequested = EventSchema.define({
   type: "guard.approval.requested",
   schema: {
@@ -83,11 +203,14 @@ export const GuardApprovalRequested = EventSchema.define({
     locationID: Schema.String,
     sessionID: Schema.optional(Schema.String),
     inputDigest: Schema.String,
+    // HostKernel-minted ordered web.search route authority, included only for
+    // search approvals so receipt reconciliation can never trust caller input.
+    routePlanDigest: Schema.optional(Schema.String),
     normalizedTargets: Schema.Array(Schema.Unknown),
     expiresAtUnixMs: Schema.Finite,
     policySummary: Schema.String,
-    origin: Schema.Literals(["session_batch", "user_action", "managed_run"]),
-    source: Schema.Literals(["core.tool_batch", "authenticated.user_action", "host.managed_verifier"]),
+    origin: Schema.Literals(["session_batch", "user_action", "managed_run", "managed_root"]),
+    source: Schema.Literals(["core.tool_batch", "authenticated.user_action", "host.managed_verifier", "host.managed_provider", "host.managed_worktree"]),
     policyID: Schema.String,
     policyDigest: Schema.String,
     normalizedAction: Schema.String,
@@ -111,8 +234,19 @@ const REQUIRED_FEATURES = ["session.events.v1", PAGE_CONTROL_FEATURE] as const
 // A missing optional feature leaves effectful origins unavailable without making
 // the authenticated read-only host channel unhealthy.
 const REQUIRED_HOST_FEATURES = [] as const
-export const OPTIONAL_HOST_FEATURES = ["effects.v2", "effects.v2.multi-call", "repo-intel.read-context-v1"] as const
+export const OPTIONAL_HOST_FEATURES = [
+  "effects.v2",
+  "effects.v2.multi-call",
+  REPO_INTEL_READ_CONTEXT_FEATURE,
+  REPO_INTEL_CURSOR_LEASE_FEATURE,
+  ARTIFACT_READ_CONTEXT_FEATURE,
+  WEB_SEARCH_CASCADE_FEATURE,
+] as const
 const BASE_DIGEST = `blake3:${"0".repeat(64)}`
+/** Source contract only; keep editor protocol approvals unavailable until the
+ * integrated HostKernel/OS/P4 acceptance gate has passed. */
+const EDITOR_PROTOCOL_GUARD_RUNTIME_READY = false
+const REPL_OPERATION_GUARD_RUNTIME_READY = false
 
 export type Cursor = {
   readonly ownerKind: string
@@ -149,6 +283,9 @@ export type GuardedToolCall = {
   readonly arguments: unknown
 }
 
+/** CodeMode binds the exact resolved executor name as well as its normalized arguments. */
+export type CodeModeGuardedToolCall = GuardedToolCall & { readonly toolName: string }
+
 /** Exact HostKernel envelope for one authenticated Goal-less child Attempt. */
 export type DirectAttemptScopeV1 = {
   readonly attemptID: string
@@ -173,7 +310,103 @@ export type DirectAttemptScopeWireV1 = Omit<DirectAttemptScopeV1, "ownerEpoch" |
   readonly expectedRevision: bigint
 }
 
+/** HostKernel-minted full-snapshot scope for exactly one serialized child turn. */
+export type DirectTurnScopeV1 = {
+  readonly directAttempt: DirectAttemptScopeV1
+  readonly runnerCycleID: string
+  readonly turnSequence: string
+  readonly cycleDigest: string
+}
+
+export type DirectTurnScopeWireV1 = Omit<DirectTurnScopeV1, "directAttempt" | "turnSequence"> & {
+  readonly directAttempt: DirectAttemptScopeWireV1
+  readonly turnSequence: bigint
+}
+
+export function directTurnScopeToWire(scope: DirectTurnScopeV1): DirectTurnScopeWireV1 {
+  const keys = ["directAttempt", "runnerCycleID", "turnSequence", "cycleDigest"]
+  if (typeof scope !== "object" || scope === null || Array.isArray(scope) ||
+    Object.keys(scope).toSorted().join("\0") !== [...keys].sort().join("\0")) {
+    throw fail("protocol", "direct turn scope has an invalid shape")
+  }
+  if (typeof scope.runnerCycleID !== "string" || !/^[A-Za-z0-9._-]{1,256}$/.test(scope.runnerCycleID) ||
+    typeof scope.turnSequence !== "string" || !/^(0|[1-9][0-9]{0,19})$/.test(scope.turnSequence) ||
+    BigInt(scope.turnSequence) > 0xffff_ffff_ffff_ffffn ||
+    typeof scope.cycleDigest !== "string" || !/^blake3:[0-9a-f]{64}$/.test(scope.cycleDigest)) {
+    throw fail("protocol", "direct turn scope pins are invalid")
+  }
+  return { ...scope, directAttempt: directAttemptScopeToWire(scope.directAttempt), turnSequence: BigInt(scope.turnSequence) }
+}
+
+export function directTurnScopeFromWire(value: unknown): DirectTurnScopeV1 {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw fail("protocol", "host direct turn scope is malformed")
+  const raw = value as Record<string, unknown>
+  const attempt = directAttemptScopeFromWire(raw.directAttempt)
+  const sequence = hostU64String(raw.turnSequence, "direct turn sequence")
+  const scope = { directAttempt: attempt, runnerCycleID: raw.runnerCycleID, turnSequence: sequence, cycleDigest: raw.cycleDigest } as DirectTurnScopeV1
+  directTurnScopeToWire(scope)
+  return scope
+}
+
+export function sameDirectTurnScopeCore(left: DirectTurnScopeV1, right: DirectTurnScopeV1): boolean {
+  try {
+    const a = directTurnScopeToWire(left)
+    const b = directTurnScopeToWire(right)
+    const attempt = (scope: DirectAttemptScopeWireV1) => JSON.stringify({
+      ...scope,
+      ownerEpoch: String(scope.ownerEpoch),
+      expectedRevision: String(scope.expectedRevision),
+    })
+    return a.runnerCycleID === b.runnerCycleID && a.turnSequence === b.turnSequence && a.cycleDigest === b.cycleDigest &&
+      attempt(a.directAttempt) === attempt(b.directAttempt)
+  } catch { return false }
+}
+
+export function isNextDirectTurnScopeCore(previous: DirectTurnScopeV1, next: DirectTurnScopeV1): boolean {
+  try {
+    const a = directTurnScopeToWire(previous), b = directTurnScopeToWire(next)
+    if (sameDirectTurnScopeCore(previous, next)) return true
+    return a.runnerCycleID === b.runnerCycleID && a.turnSequence === b.turnSequence &&
+      a.directAttempt.expectedRevision !== 0xffff_ffff_ffff_ffffn &&
+      b.directAttempt.expectedRevision === a.directAttempt.expectedRevision + 1n &&
+      a.directAttempt.attemptID === b.directAttempt.attemptID && a.directAttempt.parentSessionID === b.directAttempt.parentSessionID &&
+      a.directAttempt.childSessionID === b.directAttempt.childSessionID && a.directAttempt.ownerEpoch === b.directAttempt.ownerEpoch &&
+      a.directAttempt.profileID === b.directAttempt.profileID && a.directAttempt.profileRevision === b.directAttempt.profileRevision &&
+      a.directAttempt.profileDigest === b.directAttempt.profileDigest && a.directAttempt.permissionsDigest === b.directAttempt.permissionsDigest &&
+      a.directAttempt.locationID === b.directAttempt.locationID && a.directAttempt.workspaceID === b.directAttempt.workspaceID &&
+      a.directAttempt.workspaceRevision === b.directAttempt.workspaceRevision && a.directAttempt.capabilityDigest === b.directAttempt.capabilityDigest &&
+      a.directAttempt.budgetDigest === b.directAttempt.budgetDigest && a.directAttempt.scopeDigest === b.directAttempt.scopeDigest
+  } catch { return false }
+}
+
+export function isCompletedDirectTurnBatchScopeCore(previous: DirectTurnScopeV1, next: DirectTurnScopeV1): boolean {
+  try {
+    const a = directTurnScopeToWire(previous), b = directTurnScopeToWire(next)
+    if (sameDirectTurnScopeCore(previous, next)) return true
+    return a.runnerCycleID === b.runnerCycleID && a.turnSequence === b.turnSequence &&
+      b.directAttempt.expectedRevision > a.directAttempt.expectedRevision &&
+      a.directAttempt.attemptID === b.directAttempt.attemptID && a.directAttempt.parentSessionID === b.directAttempt.parentSessionID &&
+      a.directAttempt.childSessionID === b.directAttempt.childSessionID && a.directAttempt.ownerEpoch === b.directAttempt.ownerEpoch &&
+      a.directAttempt.profileID === b.directAttempt.profileID && a.directAttempt.profileRevision === b.directAttempt.profileRevision &&
+      a.directAttempt.profileDigest === b.directAttempt.profileDigest && a.directAttempt.permissionsDigest === b.directAttempt.permissionsDigest &&
+      a.directAttempt.locationID === b.directAttempt.locationID && a.directAttempt.workspaceID === b.directAttempt.workspaceID &&
+      a.directAttempt.capabilityDigest === b.directAttempt.capabilityDigest && a.directAttempt.budgetDigest === b.directAttempt.budgetDigest &&
+      a.directAttempt.scopeDigest === b.directAttempt.scopeDigest
+  } catch { return false }
+}
+
 /** Exact HostKernel-minted scope for one live managed Goal/Run/Task/Attempt. */
+export type ManagedWorktreeTargetV1 = {
+  readonly worktreeID: string
+  readonly worktreeBaseRevision: string
+  readonly worktreePoolRevision: string
+  readonly locationID: string
+  readonly workspaceID: string
+  readonly workspaceRef: string
+  readonly canonicalRoot: string
+  readonly workspaceRevision: string
+}
+
 export type ManagedAttemptScopeV1 = {
   readonly goalID: string
   readonly runID: string
@@ -181,16 +414,24 @@ export type ManagedAttemptScopeV1 = {
   readonly attemptID: string
   readonly ownerEpoch: string
   readonly expectedManagedRevision: string
+  readonly requestSequence: string
+  readonly requestID: string
+  readonly contextSelectionDigest: string
   readonly locationID: string
   readonly sessionID: string
   readonly workspaceRevision: string
+  readonly effectiveMaxTokens: string
+  /** Zero is an authenticated stopped-accounting projection and is never dispatchable. */
+  readonly remainingTokens: string
   readonly delegationBindingDigest: string
+  readonly permissionScopeDigest: string
+  readonly worktreeTarget: ManagedWorktreeTargetV1
 }
 
 export function managedAttemptScopeToWire(scope: ManagedAttemptScopeV1): ManagedAttemptScopeV1 {
   const keys = [
     "goalID", "runID", "taskID", "attemptID", "ownerEpoch", "expectedManagedRevision",
-    "locationID", "sessionID", "workspaceRevision", "delegationBindingDigest",
+    "requestSequence", "requestID", "contextSelectionDigest", "locationID", "sessionID", "workspaceRevision", "effectiveMaxTokens", "remainingTokens", "delegationBindingDigest", "permissionScopeDigest", "worktreeTarget",
   ]
   if (
     typeof scope !== "object" || scope === null ||
@@ -201,16 +442,39 @@ export function managedAttemptScopeToWire(scope: ManagedAttemptScopeV1): Managed
       throw fail("protocol", `managed Attempt scope ${name} is invalid`)
     }
   }
-  for (const name of ["ownerEpoch", "expectedManagedRevision"] as const) {
+  for (const name of ["ownerEpoch", "expectedManagedRevision", "effectiveMaxTokens", "remainingTokens"] as const) {
     const value = scope[name]
-    if (typeof value !== "string" || !/^[1-9][0-9]{0,19}$/.test(value) || BigInt(value) > 0xffff_ffff_ffff_ffffn) {
+    if (typeof value !== "string" || !/^(0|[1-9][0-9]{0,19})$/.test(value) || BigInt(value) > 0xffff_ffff_ffff_ffffn ||
+      (name === "effectiveMaxTokens" && BigInt(value) === 0n)) {
       throw fail("protocol", `managed Attempt scope ${name} is invalid`)
     }
   }
-  for (const name of ["workspaceRevision", "delegationBindingDigest"] as const) {
+  if (typeof scope.requestSequence !== "string" || !/^[1-9][0-9]{0,3}$/.test(scope.requestSequence) || Number(scope.requestSequence) > 1024 ||
+    typeof scope.requestID !== "string" || !/^[A-Za-z0-9._:-]{1,256}$/.test(scope.requestID) ||
+    typeof scope.contextSelectionDigest !== "string" || !/^blake3:[0-9a-f]{64}$/.test(scope.contextSelectionDigest)) {
+    throw fail("protocol", "managed Attempt context-selection pin is invalid")
+  }
+  if (BigInt(scope.remainingTokens) > BigInt(scope.effectiveMaxTokens)) {
+    throw fail("protocol", "managed Attempt remaining tokens exceed the effective ceiling")
+  }
+  for (const name of ["workspaceRevision", "delegationBindingDigest", "permissionScopeDigest"] as const) {
     if (typeof scope[name] !== "string" || !/^blake3:[0-9a-f]{64}$/.test(scope[name])) {
       throw fail("protocol", `managed Attempt scope ${name} is invalid`)
     }
+  }
+  const target = scope.worktreeTarget
+  const targetKeys = ["worktreeID", "worktreeBaseRevision", "worktreePoolRevision", "locationID", "workspaceID", "workspaceRef", "canonicalRoot", "workspaceRevision"]
+  if (typeof target !== "object" || target === null || Array.isArray(target) ||
+    Object.keys(target).toSorted().join("\0") !== targetKeys.toSorted().join("\0") ||
+    typeof target.worktreeID !== "string" || !/^[A-Za-z0-9._-]{1,256}$/.test(target.worktreeID) ||
+    typeof target.worktreeBaseRevision !== "string" || target.worktreeBaseRevision.length < 1 || target.worktreeBaseRevision.length > 256 ||
+    typeof target.worktreePoolRevision !== "string" || !/^(0|[1-9][0-9]{0,19})$/.test(target.worktreePoolRevision) || BigInt(target.worktreePoolRevision) > 0xffff_ffff_ffff_ffffn ||
+    typeof target.locationID !== "string" || !/^[A-Za-z0-9._-]{1,256}$/.test(target.locationID) || target.locationID !== scope.locationID ||
+    typeof target.workspaceID !== "string" || !/^[A-Za-z0-9._-]{1,256}$/.test(target.workspaceID) ||
+    typeof target.workspaceRef !== "string" || target.workspaceRef.length < 1 || Buffer.byteLength(target.workspaceRef, "utf8") > 2048 ||
+    typeof target.canonicalRoot !== "string" || target.canonicalRoot.length < 1 || Buffer.byteLength(target.canonicalRoot, "utf8") > 4096 ||
+    typeof target.workspaceRevision !== "string" || !/^(?:sha256:[0-9a-f]{64}|blake3:[0-9a-f]{64})$/.test(target.workspaceRevision)) {
+    throw fail("protocol", "managed Attempt worktree target is invalid")
   }
   return { ...scope }
 }
@@ -266,6 +530,9 @@ export function isReceiptAdvancedDirectAttemptScopeCore(
 ): boolean {
   const left = directAttemptScopeToWire(previous)
   const right = directAttemptScopeToWire(next)
+  if (left.expectedRevision === right.expectedRevision && left.workspaceRevision === right.workspaceRevision &&
+    JSON.stringify({ ...left, ownerEpoch: String(left.ownerEpoch), expectedRevision: String(left.expectedRevision) }) ===
+    JSON.stringify({ ...right, ownerEpoch: String(right.ownerEpoch), expectedRevision: String(right.expectedRevision) })) return true
   return left.attemptID === right.attemptID && left.parentSessionID === right.parentSessionID &&
     left.childSessionID === right.childSessionID && left.profileID === right.profileID &&
     left.profileRevision === right.profileRevision && left.profileDigest === right.profileDigest &&
@@ -284,7 +551,10 @@ export function sameManagedAttemptIdentityCore(
   const b = managedAttemptScopeToWire(right)
   return a.goalID === b.goalID && a.runID === b.runID && a.taskID === b.taskID &&
     a.attemptID === b.attemptID && a.ownerEpoch === b.ownerEpoch && a.locationID === b.locationID &&
-    a.sessionID === b.sessionID && a.delegationBindingDigest === b.delegationBindingDigest
+    a.sessionID === b.sessionID && a.effectiveMaxTokens === b.effectiveMaxTokens &&
+    a.delegationBindingDigest === b.delegationBindingDigest &&
+    a.permissionScopeDigest === b.permissionScopeDigest &&
+    JSON.stringify(a.worktreeTarget) === JSON.stringify(b.worktreeTarget)
 }
 
 export function isNextManagedAttemptScopeCore(
@@ -293,6 +563,9 @@ export function isNextManagedAttemptScopeCore(
 ): boolean {
   return sameManagedAttemptIdentityCore(previous, next) &&
     previous.workspaceRevision === next.workspaceRevision &&
+    previous.requestSequence === next.requestSequence && previous.requestID === next.requestID &&
+    previous.contextSelectionDigest === next.contextSelectionDigest &&
+    previous.remainingTokens === next.remainingTokens &&
     BigInt(next.expectedManagedRevision) === BigInt(previous.expectedManagedRevision) + 1n
 }
 
@@ -301,7 +574,23 @@ export function isReceiptAdvancedManagedAttemptScopeCore(
   next: ManagedAttemptScopeV1,
 ): boolean {
   return sameManagedAttemptIdentityCore(previous, next) &&
-    BigInt(next.expectedManagedRevision) > BigInt(previous.expectedManagedRevision)
+    previous.requestSequence === next.requestSequence && previous.requestID === next.requestID &&
+    previous.contextSelectionDigest === next.contextSelectionDigest &&
+    next.remainingTokens === previous.remainingTokens &&
+    BigInt(next.expectedManagedRevision) === BigInt(previous.expectedManagedRevision) + 1n
+}
+
+/** Only the durable managed-context transition may replace this provider-request pin. */
+export function isContextAdvancedManagedAttemptScopeCore(
+  previous: ManagedAttemptScopeV1,
+  next: ManagedAttemptScopeV1,
+): boolean {
+  return sameManagedAttemptIdentityCore(previous, next) &&
+    previous.workspaceRevision === next.workspaceRevision &&
+    previous.remainingTokens === next.remainingTokens &&
+    BigInt(next.requestSequence) === BigInt(previous.requestSequence) + 1n &&
+    next.requestID !== previous.requestID && next.contextSelectionDigest !== previous.contextSelectionDigest &&
+    BigInt(next.expectedManagedRevision) === BigInt(previous.expectedManagedRevision) + 1n
 }
 
 /**
@@ -432,6 +721,10 @@ export type PatchReceipt = {
   readonly effectID: string
   readonly receiptDigest: string
   readonly targets: ReadonlyArray<EffectTarget>
+  readonly directAttempt?: DirectAttemptScopeV1
+  readonly directTurnScope?: DirectTurnScopeV1
+  readonly managedAttempt?: ManagedAttemptScopeV1
+  readonly attemptScopeTransition?: "effect_receipt" | "batch_complete"
 }
 
 export type EffectLease = {
@@ -441,6 +734,80 @@ export type EffectLease = {
   readonly directAttempt?: DirectAttemptScopeV1
   readonly managedAttempt?: ManagedAttemptScopeV1
 }
+
+export type UserEffectCapabilityID =
+  | "terminal.start"
+  | "terminal.run"
+  | "automations.create"
+  | "automations.update"
+  | "automations.enable"
+  | "automations.disable"
+
+/** Host-issued lease plus the server-generated action identity needed for exact reconciliation. */
+export type PreparedUserEffect = EffectLease & {
+  readonly locationID: string
+  readonly userActionID: string
+  readonly capabilityID: UserEffectCapabilityID
+  readonly challengeID?: string
+  /** Host-authenticated digest of the exact normalized user-action arguments. */
+  readonly inputDigest?: string
+}
+
+export type PreparedEditorProcessApprovalV1 = EffectLease & {
+  readonly locationID: string
+  readonly capabilityID: "language.start" | "debug.start"
+  readonly challengeID: string
+  readonly inputDigest: string
+}
+
+/** Immutable subject for one editor-protocol frame. Payload bytes are never
+ * carried to the approval UI; HostKernel binds this digest to its retained
+ * process generation, scope and protocol sequence before issuing a lease. */
+export type EditorProtocolAuthorizationRequestV1 = {
+  readonly locationRef: typeof LocationSchema.Ref.Type
+  readonly capabilityID: string
+  readonly sessionID: string
+  /** Exact ExecutionProtocolAuthorizationV1 arguments sent to Guard. */
+  readonly arguments: Readonly<Record<string, unknown>>
+  readonly managedAttempt?: ManagedAttemptScopeV1
+  readonly directAttempt?: DirectAttemptScopeV1
+}
+
+type EditorProtocolAttemptWireV1 = {
+  readonly managedAttempt?: ManagedAttemptScopeV1
+  readonly directAttempt?: DirectAttemptScopeV1
+}
+
+/** The returned lease is pinned to every field in the request. */
+export type EditorProtocolAuthorizationLeaseV1 = EffectLease & {
+  readonly locationID: string
+  readonly userActionID: string
+  readonly challengeID: string
+  readonly inputDigest: string
+  readonly capabilityID: string
+  readonly arguments: Readonly<Record<string, unknown>>
+} & EditorProtocolAttemptWireV1
+
+/** Strict HostKernel Guard subject for one typed interpreter execute/reset.
+ * The HostKernel derives the operation digest and issues the sequence-bound
+ * one-use lease; Core never creates either value. */
+export type ReplOperationAuthorizationRequestV1 = {
+  readonly locationRef: typeof LocationSchema.Ref.Type
+  readonly capabilityID: "repl.execute" | "repl.reset"
+  readonly sessionID: string
+  readonly arguments: Readonly<Record<string, unknown>>
+  readonly managedAttempt?: ManagedAttemptScopeV1
+  readonly directAttempt?: DirectAttemptScopeV1
+}
+
+export type ReplOperationAuthorizationLeaseV1 = EffectLease & {
+  readonly locationID: string
+  readonly userActionID: string
+  readonly challengeID: string
+  readonly inputDigest: string
+  readonly capabilityID: "repl.execute" | "repl.reset"
+  readonly arguments: Readonly<Record<string, unknown>>
+} & EditorProtocolAttemptWireV1
 
 /**
  * One member of a complete multi-call ToolBatch admission: the member's own durable
@@ -460,6 +827,17 @@ export type ToolBatchCallLease = {
  */
 export type ToolBatchRelayPort = {
   readonly requestApproval: (request: GuardApprovalRequest) => Effect.Effect<GuardApprovalDecision, SessionSupervisorError>
+  /**
+   * Advisory only: a positive result permits Core to skip the repeat UI prompt,
+   * while resolveApprovalSet still revalidates the grant, reserves its budget and
+   * issues one-use leases atomically. Failure is always treated as prompt-required.
+   */
+  readonly preflightDirectGrant?: (request: {
+    readonly sessionID: string
+    readonly locationID: string
+    readonly batchID: string
+    readonly challengeIDs: ReadonlyArray<string>
+  }) => Effect.Effect<boolean, SessionSupervisorError>
   readonly resolveApprovalSet: (request: {
     readonly sessionID: string
     readonly locationID: string
@@ -468,6 +846,7 @@ export type ToolBatchRelayPort = {
   }) => Effect.Effect<{
     readonly leases: ReadonlyArray<{ readonly challengeID: string; readonly lease: EffectLease }>
     readonly directAttempt?: DirectAttemptScopeV1
+    readonly directTurnScope?: DirectTurnScopeV1
     readonly managedAttempt?: ManagedAttemptScopeV1
     readonly nextLeaseRequired?: boolean
   }, SessionSupervisorError>
@@ -480,6 +859,7 @@ export type ToolBatchRelayPort = {
     readonly challengeID: string
     readonly lease: EffectLease
     readonly directAttempt?: DirectAttemptScopeV1
+    readonly directTurnScope?: DirectTurnScopeV1
     readonly managedAttempt?: ManagedAttemptScopeV1
   }, SessionSupervisorError>
   readonly cancelBatch: (input: {
@@ -489,13 +869,14 @@ export type ToolBatchRelayPort = {
 }
 
 export type EffectAdmission =
-  | { readonly status: "prepared"; readonly lease: EffectLease }
+  | { readonly status: "prepared"; readonly lease: EffectLease; readonly directAttempt?: DirectAttemptScopeV1; readonly directTurnScope?: DirectTurnScopeV1; readonly managedAttempt?: ManagedAttemptScopeV1; readonly attemptScopeTransition?: "batch_bind" }
   | { readonly status: "admitted"; readonly challenge: EffectChallenge }
   | {
       readonly status: "prepared_batch"
       readonly calls: ReadonlyArray<ToolBatchCallLease>
       readonly leaseNext?: (request: { readonly callID: string; readonly previousEffectID: string }) => Effect.Effect<ToolBatchCallLease, SessionSupervisorError>
       readonly directAttempt?: DirectAttemptScopeV1
+      readonly directTurnScope?: DirectTurnScopeV1
       readonly managedAttempt?: ManagedAttemptScopeV1
       readonly attemptScopeTransition?: "batch_bind"
     }
@@ -506,9 +887,16 @@ export type EffectReceipt = {
   readonly target: string
   readonly resource: string
   readonly existed: boolean
+  /** HostKernel-issued receipt-advanced scope for the next Attempt-bound call. */
+  readonly directAttempt?: DirectAttemptScopeV1
+  /** Present only on the final terminal member of an entire direct turn batch. */
+  readonly directTurnScope?: DirectTurnScopeV1
+  readonly managedAttempt?: ManagedAttemptScopeV1
+  readonly attemptScopeTransition?: "effect_receipt" | "batch_complete"
 }
 
 export type GuardApprovalDecision = "allow_once" | "deny"
+export type GuardApprovalReplyDecisionV1 = GuardApprovalDecision | "grant_session" | "grant_workspace"
 export type GuardApprovalRequest = {
   readonly approvalID: string
   readonly challengeID: string
@@ -517,6 +905,7 @@ export type GuardApprovalRequest = {
   readonly locationID: string
   readonly sessionID?: string
   readonly inputDigest: string
+  readonly routePlanDigest?: string
   readonly normalizedTargets: ReadonlyArray<unknown>
   readonly expiresAtUnixMs: number
   readonly policySummary: string
@@ -532,8 +921,8 @@ export type GuardApprovalRequest = {
   readonly noResponse: "deny_and_expire"
   readonly allowEnabled: boolean
 }
-export type GuardApprovalOriginV1 = "session_batch" | "user_action" | "managed_run"
-export type GuardApprovalSourceV1 = "core.tool_batch" | "authenticated.user_action" | "host.managed_verifier"
+export type GuardApprovalOriginV1 = "session_batch" | "user_action" | "managed_run" | "managed_root"
+export type GuardApprovalSourceV1 = "core.tool_batch" | "authenticated.user_action" | "host.managed_verifier" | "host.managed_provider" | "host.managed_worktree"
 export type GuardArgumentSummaryV1 =
   | { readonly status: "available"; readonly text: string }
   | { readonly status: "unavailable"; readonly reason: string }
@@ -558,6 +947,96 @@ export type ManagedVerifierGuardChallengeV1 = {
   readonly requestedGuarantees: ReadonlyArray<string>
   readonly guaranteeAssessment: GuardGuaranteeAssessmentV1
   readonly runID: string
+  readonly noResponse: "deny_and_expire"
+  readonly allowEnabled: false
+}
+
+/** Host-authored, non-secret provider inference challenge. Route/request authority is
+ * repeated only in the dedicated HostKernel resolution call after the user decides. */
+export type ManagedProviderGuardChallengeV1 = {
+  readonly challengeID: string
+  readonly effectID: string
+  readonly capabilityID: "providers.infer"
+  readonly locationID: string
+  readonly inputDigest: string
+  readonly normalizedTargets: ReadonlyArray<unknown>
+  readonly expiresAtUnixMs: number
+  readonly policySummary: string
+  readonly origin: "managed_run"
+  readonly source: "host.managed_provider"
+  readonly policyID: "provider-inference.managed.v1"
+  readonly policyDigest: string
+  readonly normalizedAction: "providers.infer"
+  readonly argumentSummary: GuardArgumentSummaryV1
+  readonly requestedGuarantees: ReadonlyArray<string>
+  readonly guaranteeAssessment: GuardGuaranteeAssessmentV1
+  readonly runID: string
+  readonly sessionID: string
+  readonly noResponse: "deny_and_expire"
+  readonly allowEnabled: boolean
+}
+
+export type ManagedProviderApprovalResultV1 = {
+  readonly decision: GuardApprovalDecision
+  readonly challengeID: string
+  readonly effectID: string
+  readonly providerRequestID: string
+  readonly prepareDigest: string
+}
+
+export type DirectSessionGrantProjectionV1 = {
+  readonly status: "ACTIVE" | "REVOKED"
+  readonly grantID: string
+  readonly grantDigest: string
+  readonly scopeKind: "session" | "workspace"
+  readonly scopeDigest: string
+  readonly expiresAtUnixMs: string | null
+  readonly revokedAtUnixMs: string | null
+}
+
+/** Strict host-authenticated direct-session permission projection (schema v1). */
+export type DirectSessionPermissionModeV1 = {
+  readonly schemaVersion: 1
+  readonly sessionId: string
+  readonly ownerEpoch: string
+  readonly locationId: string
+  readonly workspaceId: string
+  readonly workspaceRootDigest: string
+  readonly executionBackendId: string
+  readonly policyDigest: string
+  readonly sandboxMode: "read-only" | "workspace-write" | "danger-full-access"
+  readonly approvalPolicy: "on-request" | "always" | "never"
+  readonly source: "default" | "user-session" | "user-config"
+  readonly revision: string
+  readonly digest: string
+}
+
+/** Host-authenticated direct Session permission scope for provider request pins. */
+export type DirectProviderPermissionScopeV1 = {
+  readonly sessionID: string
+  readonly locationID: string
+  readonly ownerEpoch: string
+  readonly permissionScopeDigest: string
+  readonly policyDigest: string
+}
+/** One HostKernel-minted, exact managed-root lifecycle approval challenge. */
+export type ManagedRootGuardChallengeV1 = {
+  readonly challengeID: string
+  readonly effectID: string
+  readonly capabilityID: "git.worktree.list"
+  readonly locationID: string
+  readonly inputDigest: string
+  readonly normalizedTargets: ReadonlyArray<unknown>
+  readonly expiresAtUnixMs: number
+  readonly policySummary: string
+  readonly origin: "managed_root"
+  readonly source: "host.managed_worktree"
+  readonly policyID: string
+  readonly policyDigest: string
+  readonly normalizedAction: "git.worktree.list"
+  readonly argumentSummary: GuardArgumentSummaryV1
+  readonly requestedGuarantees: ReadonlyArray<string>
+  readonly guaranteeAssessment: GuardGuaranteeAssessmentV1
   readonly noResponse: "deny_and_expire"
   readonly allowEnabled: boolean
 }
@@ -635,11 +1114,130 @@ export type HostKernelResnapshot = {
 }
 export type HostKernelStreamMessage = HostKernelEvent | HostKernelResnapshot
 
+export type ArtifactRefWireV1 = {
+  readonly artifactId: string
+  readonly digest: string
+  readonly byteLength: string
+  readonly mediaType: string
+  readonly classification: "public" | "workspace" | "sensitive"
+}
+
 /** Out-of-body metadata tied to the current authenticated Core principal. */
-export type AuthenticatedRequestContextV1 = {
+export type AuthenticatedRequestContextV1 =
+  | {
   readonly kind: "repo_read"
   readonly sessionID: string
   readonly locationID: string
+  }
+  | {
+      readonly kind: "artifact_read"
+      readonly sessionID: string
+      readonly locationID: string
+      readonly artifactRef: ArtifactRefWireV1
+      readonly managedAttempt: ManagedAttemptScopeV1
+    }
+  | {
+      readonly kind: "artifact_scope_resolve"
+      readonly sessionID: string
+      readonly locationID: string
+      readonly artifactRef: ArtifactRefWireV1
+    }
+  | {
+      /** Root-session artifact reads must resolve through the immutable direct receipt index. */
+      readonly kind: "direct_session_artifact_read"
+      readonly sessionID: string
+      readonly locationID: string
+      readonly artifactRef: ArtifactRefWireV1
+    }
+  | {
+      /** Private correlation for an ordinary guarded CodeMode tool call. */
+      readonly kind: "code_mode_call"
+      readonly sessionID: string
+      readonly locationID: string
+      readonly callID: string
+      readonly lane: "direct_session" | "managed_attempt"
+      readonly managedAttempt?: ManagedAttemptScopeV1
+    }
+
+function validateArtifactRefWire(value: unknown): value is ArtifactRefWireV1 {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false
+  const ref = value as Record<string, unknown>
+  return (
+    Object.keys(ref).toSorted().join("\0") === ["artifactId", "byteLength", "classification", "digest", "mediaType"].sort().join("\0") &&
+    typeof ref.artifactId === "string" && /^[A-Za-z0-9._-]{1,256}$/.test(ref.artifactId) &&
+    typeof ref.digest === "string" && /^blake3:[0-9a-f]{64}$/.test(ref.digest) &&
+    typeof ref.byteLength === "string" && /^(0|[1-9][0-9]{0,19})$/.test(ref.byteLength) &&
+    BigInt(ref.byteLength) <= 0xffff_ffff_ffff_ffffn &&
+    typeof ref.mediaType === "string" && ref.mediaType.length > 0 && Buffer.byteLength(ref.mediaType, "utf8") <= 256 &&
+    (ref.classification === "public" || ref.classification === "workspace" || ref.classification === "sensitive")
+  )
+}
+
+function sameArtifactRef(left: unknown, right: ArtifactRefWireV1): boolean {
+  if (!validateArtifactRefWire(left)) return false
+  return left.artifactId === right.artifactId && left.digest === right.digest && left.byteLength === right.byteLength &&
+    left.mediaType === right.mediaType && left.classification === right.classification
+}
+
+function validArtifactReadRequest(serviceID: string, operation: string, body: Readonly<Record<string, unknown>>, context: AuthenticatedRequestContextV1) {
+  if (serviceID !== "artifact.v1" || context.kind !== "artifact_read" ||
+    (operation !== "artifacts.inspect" && operation !== "artifacts.read_range") ||
+    !validateArtifactRefWire(context.artifactRef) || !sameArtifactRef(body.artifactRef, context.artifactRef)) return false
+  const expected = operation === "artifacts.inspect" ? ["artifactRef"] : ["artifactRef", "maxBytes", "offset"]
+  if (Object.keys(body).toSorted().join("\0") !== expected.sort().join("\0")) return false
+  if (operation === "artifacts.read_range") {
+    if (typeof body.offset !== "string" || !/^(0|[1-9][0-9]{0,19})$/.test(body.offset) || BigInt(body.offset) > 0xffff_ffff_ffff_ffffn) return false
+    if (typeof body.maxBytes !== "number" || !Number.isSafeInteger(body.maxBytes) || body.maxBytes < 1 || body.maxBytes > 768 * 1024) return false
+  }
+  try {
+    const scope = managedAttemptScopeToWire(context.managedAttempt)
+    if (scope.sessionID !== context.sessionID || scope.locationID !== context.locationID) return false
+  } catch {
+    return false
+  }
+  return /^ses_[A-Za-z0-9_-]{1,128}$/.test(context.sessionID) && /^loc_[0-9a-f]{64}$/.test(context.locationID)
+}
+
+function validArtifactScopeResolveRequest(serviceID: string, operation: string, body: Readonly<Record<string, unknown>>, context: AuthenticatedRequestContextV1) {
+  return serviceID === "artifact.v1" && operation === "artifacts.resolve_scope" &&
+    context.kind === "artifact_scope_resolve" &&
+    Object.keys(body).toSorted().join("\0") === ["artifactRef", "schemaVersion"].sort().join("\0") &&
+    body.schemaVersion === 1 && validateArtifactRefWire(context.artifactRef) &&
+    sameArtifactRef(body.artifactRef, context.artifactRef) &&
+    /^ses_[A-Za-z0-9_-]{1,128}$/.test(context.sessionID) && /^loc_[0-9a-f]{64}$/.test(context.locationID)
+}
+
+function validDirectSessionArtifactReadRequest(serviceID: string, operation: string, body: Readonly<Record<string, unknown>>, context: AuthenticatedRequestContextV1) {
+  if (serviceID !== "artifact.v1" || context.kind !== "direct_session_artifact_read" ||
+    (operation !== "artifacts.inspect" && operation !== "artifacts.read_range") ||
+    !validateArtifactRefWire(context.artifactRef) || !sameArtifactRef(body.artifactRef, context.artifactRef) ||
+    body.schemaVersion !== 1 || !/^ses_[A-Za-z0-9_-]{1,128}$/.test(context.sessionID) || !/^loc_[0-9a-f]{64}$/.test(context.locationID)) return false
+  const expected = operation === "artifacts.inspect"
+    ? ["artifactRef", "schemaVersion"]
+    : ["artifactRef", "maxBytes", "offset", "schemaVersion"]
+  if (Object.keys(body).toSorted().join("\0") !== expected.sort().join("\0")) return false
+  if (operation === "artifacts.read_range") {
+    if (typeof body.offset !== "string" || !/^(0|[1-9][0-9]{0,19})$/.test(body.offset) || BigInt(body.offset) > 0xffff_ffff_ffff_ffffn) return false
+    if (typeof body.maxBytes !== "number" || !Number.isSafeInteger(body.maxBytes) || body.maxBytes < 1 || body.maxBytes > 768 * 1024) return false
+  }
+  return true
+}
+
+function validCodeModeAuthenticatedRequest(serviceID: string, operation: string, body: Readonly<Record<string, unknown>>, context: AuthenticatedRequestContextV1) {
+  if (serviceID !== "execution.v1" || context.kind !== "code_mode_call" ||
+    !["codemode_enablement", "codemode_start", "codemode_resume", "codemode_cancel", "codemode_cancel_wave", "codemode_inspect", "codemode_prepare_wave", "codemode_settle_tool_results", "codemode_wave_receipts"].includes(operation) ||
+    body.schemaVersion !== 1 || !/^ses_[A-Za-z0-9_-]{1,128}$/.test(context.sessionID) || !/^loc_[0-9a-f]{64}$/.test(context.locationID) ||
+    !/^[A-Za-z0-9._:-]{1,256}$/.test(context.callID) ||
+    ((context.lane === "managed_attempt") !== (context.managedAttempt !== undefined))) return false
+  if (context.lane === "direct_session") return context.managedAttempt === undefined && body.lane === "direct_session" && body.sessionID === context.sessionID
+  if (!context.managedAttempt || body.lane !== "managed_attempt" || body.runID !== context.managedAttempt.runID ||
+    body.taskID !== context.managedAttempt.taskID || body.attemptID !== context.managedAttempt.attemptID) return false
+  try {
+    const scope = managedAttemptScopeToWire(context.managedAttempt)
+    return scope.sessionID === context.sessionID && scope.locationID === context.locationID
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -695,6 +1293,16 @@ export type HostKernelManifest =
       readonly reason: string
     }
 
+export type CodeModeHelperManifest = {
+  readonly schemaVersion: 1
+  readonly status: "available" | "unavailable"
+  readonly helperSelector: "horizoncode:codemode:bun"
+  readonly relativeEntrypoint: "codemode-helper.js"
+  readonly sha256: `sha256:${string}` | null
+  readonly target: string
+  readonly reason?: string
+}
+
 export interface RuntimeConfigOptions {
   readonly assetPath?: string
   readonly manifestJSON?: string
@@ -704,6 +1312,9 @@ export interface RuntimeConfigOptions {
   readonly hostKernelManifestJSON?: string
   readonly hostKernelInstallRoot?: string
   readonly hostKernelStateRoot?: string
+  readonly codeModeHelperAssetPath?: string
+  readonly codeModeHelperManifestJSON?: string
+  readonly codeModeHelperInstallRoot?: string
 }
 
 export type SessionSupervisorStart =
@@ -741,6 +1352,139 @@ export interface SessionSupervisorClient {
   readonly stop: () => Promise<void>
 }
 
+export type DirectSessionWorkspaceSnapshotV1 = {
+  readonly sessionID: string
+  readonly locationID: string
+  readonly ownerEpoch: string
+  readonly workspaceRevision: string
+  readonly workspaceRootDigest: string
+  readonly observedAtUnixMs: string
+}
+
+export type ManagedEffectWaveReceiptProjectionV1 = {
+  readonly status: "RECOVERED"
+  readonly goalID: string
+  readonly runID: string
+  readonly taskID: string
+  readonly attemptID: string
+  readonly batchID: string
+  readonly waveIndex: number
+  readonly sourceScopeDigest: string
+  readonly waveDigest: string
+  readonly effects: ReadonlyArray<{
+    readonly callIndex: number
+    readonly callID: string
+    readonly effectID: string
+    readonly receiptRef: string | null
+    readonly capabilityID: string
+    readonly attemptScopeDigest: string
+    readonly status: "SETTLED" | "NOT_APPLIED" | "DENIED" | "EXPIRED" | "CANCELLED" | "UNKNOWN"
+    readonly receiptKind: "effect" | "decision" | null
+    readonly receiptDigest: string | null
+  }>
+}
+
+export type ManagedCurrentEpochRecoveryQuiescenceV1 = {
+  readonly status: "CURRENT_EPOCH_QUIESCED"
+  readonly goalID: string
+  readonly runID: string
+  readonly taskID: string
+  readonly attemptID: string
+  readonly parentSessionID: string
+  readonly sessionID: string
+  readonly principal: string
+  readonly locationID: string
+  readonly currentOwnerEpoch: string
+  readonly currentProcessIncarnation: string
+  readonly currentCorePID: number
+  readonly currentCoreStartIdentity: string
+  readonly currentCoreExecutableDigest: string
+  readonly childSessionSequence: string
+  readonly childSessionEventDigest: string
+  readonly childSessionStateDigest: string
+  readonly childObservationDigest: string
+  readonly hostQuiescenceDigest: string
+  readonly originalTerminalOwnerLogID: string
+  readonly originalTerminalOwnerLogSequence: string
+  readonly originalTerminalOwnerLogEventDigest: string
+  readonly originalPromptQuiescenceDigest: string
+  readonly originalPromptQuiescenceOwnerEpoch: string
+  readonly originalAttemptStateDigest: string
+  readonly originalEffectChainDigest: string
+  readonly originalEvidenceDigest: string
+  readonly verifiedWorkspaceHead: string
+  readonly receiptDigest: string
+}
+
+export type DirectCodeModeWaveReceiptProjectionV1 = {
+  readonly status: "SETTLED" | "REJECTED" | "CANCELLED"
+  readonly sessionID: string
+  readonly locationID: string
+  readonly requestID: string
+  readonly batchID: string
+  readonly waveIndex: number
+  readonly frameDigest: string
+  readonly waveDigest: string | null
+  readonly directSessionScopeDigest: string
+  readonly effects: ReadonlyArray<{
+    readonly callIndex: number
+    readonly callID: string
+    readonly effectID: string | null
+    readonly challengeID: string | null
+    readonly receiptRef: string
+    readonly capabilityID: string | null
+    readonly status: "SETTLED" | "REJECTED" | "CANCELLED"
+    readonly receiptKind: "effect" | "decision"
+    readonly receiptDigest: string
+  }>
+}
+
+export type DirectAttemptTerminalArtifactProjectionV1 = {
+  readonly status: "RECOVERED"
+  readonly sessionID: string
+  readonly locationID: string
+  readonly directAttemptID: string
+  readonly ownerEpoch: string
+  readonly artifacts: ReadonlyArray<{
+    readonly artifactRef: ArtifactRefWireV1
+    readonly effectID: string
+    readonly batchID: string
+    readonly callIndex: number
+    readonly callID: string
+    readonly challengeID: string
+    readonly attemptScopeDigest: string
+    readonly receiptDigest: string
+    readonly outputDigest: string
+    readonly workspaceRevision: string
+    readonly fidelity: "FULL" | "SAMPLE"
+    readonly observedBytes: string
+    readonly droppedBytes: string
+  }>
+}
+
+/** Authenticated root DirectSession terminal artifacts; no synthetic Attempt scope is accepted. */
+export type DirectSessionTerminalArtifactProjectionV1 = {
+  readonly status: "RECOVERED"
+  readonly sessionID: string
+  readonly locationID: string
+  readonly currentOwnerEpoch: string
+  readonly artifacts: ReadonlyArray<{
+    readonly artifactRef: ArtifactRefWireV1
+    readonly effectID: string
+    readonly batchID: string
+    readonly ownerEpoch: string
+    readonly callIndex: number
+    readonly callID: string
+    readonly challengeID: string
+    readonly receiptDigest: string
+    readonly outputDigest: string
+    readonly workspaceRevision: string
+    readonly fidelity: "FULL" | "SAMPLE"
+    readonly observedBytes: string
+    readonly droppedBytes: string
+  }>
+}
+
 export interface Interface {
   /**
    * Acquire a child and authenticated channel in the caller's Effect scope. Scope close
@@ -754,15 +1498,64 @@ export interface Interface {
     workspaceRoot?: string,
   ) => Effect.Effect<SessionSupervisorStart, SessionSupervisorError, Scope.Scope>
   readonly registerHostLocation: (locationRef: typeof LocationSchema.Ref.Type) => Effect.Effect<string, SessionSupervisorError, TrustedPrincipalContext>
+  /** Read the authenticated, HostKernel-derived per-Session permission posture. */
+  readonly directSessionPermissionModeSnapshot: (input: {
+    readonly sessionID: string
+    readonly locationRef: typeof LocationSchema.Ref.Type
+  }) => Effect.Effect<DirectSessionPermissionModeV1, SessionSupervisorError, TrustedPrincipalContext>
+  /** Read-only permission-scope projection derived from the authenticated HostKernel mode snapshot. */
+  readonly directProviderPermissionScope: (input: {
+    readonly sessionID: string
+    readonly locationRef: typeof LocationSchema.Ref.Type
+  }) => Effect.Effect<DirectProviderPermissionScopeV1, SessionSupervisorError, TrustedPrincipalContext>
+  /** Persist a user-selected sandbox/approval posture with HostKernel CAS revision. */
+  readonly setDirectSessionPermissionMode: (input: {
+    readonly sessionID: string
+    readonly locationRef: typeof LocationSchema.Ref.Type
+    readonly sandboxMode: DirectSessionPermissionModeV1["sandboxMode"]
+    readonly approvalPolicy: DirectSessionPermissionModeV1["approvalPolicy"]
+    readonly expectedRevision: string
+  }) => Effect.Effect<DirectSessionPermissionModeV1, SessionSupervisorError, TrustedPrincipalContext>
+  /** Explicit UI-only consent persistence; this never resolves the displayed challenge. */
+  readonly issueDirectSessionGrant: (input: {
+    readonly locationRef: typeof LocationSchema.Ref.Type
+    readonly sessionID: string
+    readonly challengeID: string
+    readonly effectID: string
+    readonly scopeKind: "session" | "workspace"
+    readonly actions: readonly ("read" | "edit")[]
+  }) => Effect.Effect<DirectSessionGrantProjectionV1, SessionSupervisorError, TrustedPrincipalContext>
+  readonly revokeDirectSessionGrant: (input: {
+    readonly locationRef: typeof LocationSchema.Ref.Type
+    readonly grantID: string
+  }) => Effect.Effect<DirectSessionGrantProjectionV1, SessionSupervisorError, TrustedPrincipalContext>
   readonly prepareUserEffect: (input: {
     readonly locationRef: typeof LocationSchema.Ref.Type
     readonly sessionID?: string
-    readonly capabilityID: "terminal.start" | "terminal.run"
+    readonly capabilityID: UserEffectCapabilityID
     readonly arguments: Readonly<Record<string, unknown>>
-  }) => Effect.Effect<EffectLease & { readonly locationID: string }, SessionSupervisorError, TrustedPrincipalContext>
+  }) => Effect.Effect<PreparedUserEffect, SessionSupervisorError, TrustedPrincipalContext>
+  /** Resolve one HostKernel-minted editor-process Guard challenge through the shared approval owner. */
+  readonly resolveEditorProcessApproval: (input: {
+    readonly locationRef: typeof LocationSchema.Ref.Type
+    readonly challenge: GuardApprovalRequest
+  }) => Effect.Effect<PreparedEditorProcessApprovalV1, SessionSupervisorError, TrustedPrincipalContext>
+  /**
+   * Per-frame editor Guard admission through the existing HostKernel
+   * prepare_user_effect and durable protocol receipt path. The source adapter
+   * remains unavailable until integrated Guard, receipt and OS acceptance;
+   * process-start approval must never be reused for protocol traffic.
+   */
+  readonly authorizeEditorProtocolOperation: (
+    input: EditorProtocolAuthorizationRequestV1,
+  ) => Effect.Effect<EditorProtocolAuthorizationLeaseV1, SessionSupervisorError, TrustedPrincipalContext>
+  /** Fresh Guard admission for each REPL call; start approval cannot authorize execution. */
+  readonly authorizeReplOperation: (
+    input: ReplOperationAuthorizationRequestV1,
+  ) => Effect.Effect<ReplOperationAuthorizationLeaseV1, SessionSupervisorError, TrustedPrincipalContext>
   readonly replyGuardApproval: (input: {
     readonly approvalID: string
-    readonly decision: GuardApprovalDecision
+    readonly decision: GuardApprovalReplyDecisionV1
   }) => Effect.Effect<void, SessionSupervisorError, TrustedPrincipalContext>
   /**
    * Publishes and waits for a bounded complete set of HostKernel-minted verifier
@@ -774,13 +1567,42 @@ export interface Interface {
     readonly sessionID?: string
     readonly challenges: ReadonlyArray<ManagedVerifierGuardChallengeV1>
   }) => Effect.Effect<ManagedVerifierApprovalCollectionV1, SessionSupervisorError, TrustedPrincipalContext>
+  /** Present one HostKernel-minted providers.infer challenge to the authenticated user,
+   * then resolve that exact challenge through the dedicated managed-provider RPC. */
+  readonly awaitManagedProviderApproval: (input: {
+    readonly locationRef: typeof LocationSchema.Ref.Type
+    readonly scope: ManagedAttemptScopeV1
+    readonly routeProjection: {
+      readonly providerID: string
+      readonly modelID: string
+      readonly harnessID: string
+      readonly routeID: string
+      readonly endpointRevision: string
+      readonly credentialLeaseRef: string | null
+    }
+    readonly requestPins: {
+      readonly requestID: string
+      readonly requestSequence: string
+      readonly contextSelectionDigest: string
+      readonly requestDigest: string
+      readonly transportRequestDigest: string
+      readonly operationDigest: string
+    }
+    readonly challenge: ManagedProviderGuardChallengeV1
+  }) => Effect.Effect<ManagedProviderApprovalResultV1, SessionSupervisorError, TrustedPrincipalContext>
+  /** Publishes one exact P8 final-Inspect challenge, then resolves its one-use lease. */
+  readonly awaitManagedRootApproval: (input: {
+    readonly locationRef: typeof LocationSchema.Ref.Type
+    readonly runID: string
+    readonly challenge: ManagedRootGuardChallengeV1
+  }) => Effect.Effect<EffectLease & { readonly locationID: string }, SessionSupervisorError, TrustedPrincipalContext>
   readonly prepareToolBatch: (input: {
     readonly sessionID: string
     readonly locationRef: typeof LocationSchema.Ref.Type
     readonly batchID: string
     readonly turnContextDigest: string
     readonly calls: ReadonlyArray<GuardedToolCall>
-    readonly directAttempt?: DirectAttemptScopeV1
+    readonly directTurnScope?: DirectTurnScopeV1
     readonly managedAttempt?: ManagedAttemptScopeV1
   }) => Effect.Effect<EffectAdmission, SessionSupervisorError, TrustedPrincipalContext>
   readonly executeWrite: (input: {
@@ -789,6 +1611,7 @@ export interface Interface {
     readonly lease: EffectLease
     readonly content: string
     readonly directAttempt?: DirectAttemptScopeV1
+    readonly directTurnScope?: DirectTurnScopeV1
     readonly managedAttempt?: ManagedAttemptScopeV1
     readonly trustedPrincipal: TrustedPrincipal
   }) => Effect.Effect<EffectReceipt, SessionSupervisorError>
@@ -798,6 +1621,7 @@ export interface Interface {
     readonly lease: EffectLease
     readonly operations: ReadonlyArray<PatchOperation>
     readonly directAttempt?: DirectAttemptScopeV1
+    readonly directTurnScope?: DirectTurnScopeV1
     readonly managedAttempt?: ManagedAttemptScopeV1
     readonly trustedPrincipal: TrustedPrincipal
   }) => Effect.Effect<PatchReceipt, SessionSupervisorError>
@@ -820,16 +1644,194 @@ export interface Interface {
       readonly deliveryID?: string
       /** Delegated identity captured from TrustedPrincipalContext middleware. */
       readonly trustedPrincipal?: TrustedPrincipal
-      /** Private authenticated envelope context; only RepoIntel generation/read operations are allowed. */
+      /** Private authenticated envelope context; only bounded RepoIntel and artifact reads are allowed. */
       readonly authenticatedContext?: AuthenticatedRequestContextV1
     },
   ) => Effect.Effect<Readonly<Record<string, unknown>>, SessionSupervisorError>
+  /** Read-only handshake projection; effect adapters must fail closed when absent. */
+  readonly hostFeatureEnabled: (feature: string) => Effect.Effect<boolean, SessionSupervisorError>
+  /** Authenticated HostKernel projection of the current root Session workspace; carries no effect authority. */
+  readonly directSessionWorkspaceSnapshot: (input: {
+    readonly sessionID: string
+    readonly locationRef: typeof LocationSchema.Ref.Type
+  }) => Effect.Effect<DirectSessionWorkspaceSnapshotV1, SessionSupervisorError, TrustedPrincipalContext>
+  /** Exact durable receipt projection for one committed managed Guarded effect wave. */
+  readonly managedEffectWaveReceipts: (input: {
+    readonly goalID: string
+    readonly runID: string
+    readonly taskID: string
+    readonly attemptID: string
+    readonly batchID: string
+    readonly waveIndex: number
+  }) => Effect.Effect<ManagedEffectWaveReceiptProjectionV1, SessionSupervisorError, TrustedPrincipalContext>
+  /** Mint a new current-owner observation while preserving the immutable terminal marker. */
+  readonly managedCurrentEpochRecoveryQuiescence: (input: {
+    readonly goalID: string
+    readonly runID: string
+    readonly taskID: string
+    readonly attemptID: string
+    readonly parentSessionID: string
+    readonly sessionID: string
+    readonly observation: {
+      readonly childSessionSequence: string
+      readonly childSessionEventDigest: string
+      readonly childSessionStateDigest: string
+      readonly sessionStatus: "idle"
+      readonly activePromptCount: 0
+      readonly activeProviderTaskCount: 0
+      readonly runningBackgroundTaskCount: 0
+      readonly pendingToolCallCount: 0
+      readonly incompleteAssistantMessageCount: 0
+      readonly observationDigest: string
+    }
+  }) => Effect.Effect<ManagedCurrentEpochRecoveryQuiescenceV1, SessionSupervisorError, TrustedPrincipalContext>
+  /** Exact direct-root CodeMode terminal receipts; no synthetic Attempt identity is accepted. */
+  readonly directCodeModeWaveReceipts: (input: {
+    readonly sessionID: string
+    readonly locationRef: typeof LocationSchema.Ref.Type
+    readonly requestID: string
+    readonly waveIndex: number
+  }) => Effect.Effect<DirectCodeModeWaveReceiptProjectionV1, SessionSupervisorError, TrustedPrincipalContext>
+  /** Typed private call-correlation envelope for §37.24 CodeMode lifecycle RPCs. */
+  readonly codeModeHostRequest: (input: {
+    readonly operation: "codemode_enablement" | "codemode_start" | "codemode_resume" | "codemode_cancel" | "codemode_cancel_wave" | "codemode_inspect" | "codemode_prepare_wave" | "codemode_settle_tool_results" | "codemode_wave_receipts"
+    readonly body: Readonly<Record<string, unknown>>
+    readonly sessionID: string
+    readonly locationRef: typeof LocationSchema.Ref.Type
+    readonly callID: string
+    readonly lane: "direct_session" | "managed_attempt"
+    readonly managedAttempt?: ManagedAttemptScopeV1
+  }) => Effect.Effect<Readonly<Record<string, unknown>>, SessionSupervisorError, TrustedPrincipalContext>
+  /** Report bounded callback completion metadata; Rust binds it to the retained wave and issues tool_result provenance. */
+  readonly settleCodeModeToolResults: (input: {
+    readonly sessionID: string
+    readonly locationRef: typeof LocationSchema.Ref.Type
+    readonly callID: string
+    readonly lane: "direct_session" | "managed_attempt"
+    readonly managedAttempt?: ManagedAttemptScopeV1
+    readonly requestID: string
+    readonly waveIndex: number
+    readonly results: ReadonlyArray<{
+      readonly callIndex: number
+      readonly callID: string
+      readonly status: "settled" | "rejected" | "cancelled" | "unknown"
+      readonly resultDigest?: string
+      readonly outputBytes?: number
+      readonly errorCode?: string
+    }>
+  }) => Effect.Effect<Readonly<Record<string, unknown>>, SessionSupervisorError, TrustedPrincipalContext>
+  /** Atomic CodeMode wave admission: the HostKernel returns ordinary ToolBatch challenges/leases only after its durable wave bind succeeds. */
+  readonly prepareCodeModeToolBatch: (input: {
+    readonly sessionID: string
+    readonly locationRef: typeof LocationSchema.Ref.Type
+    readonly callID: string
+    readonly lane: "direct_session" | "managed_attempt"
+    readonly managedAttempt?: ManagedAttemptScopeV1
+    readonly requestID: string
+    readonly waveFrame: Readonly<Record<string, unknown>>
+    /** Exact Core SessionTools.resolve output after schema validation and prepare/normalization. */
+    readonly calls: ReadonlyArray<CodeModeGuardedToolCall>
+  }) => Effect.Effect<Readonly<Record<string, unknown>>, SessionSupervisorError, TrustedPrincipalContext>
+  /** Read exact terminal nested-call receipts; UNKNOWN carries no receipt fields. */
+  readonly codeModeWaveReceipts: (input: {
+    readonly sessionID: string
+    readonly locationRef: typeof LocationSchema.Ref.Type
+    readonly callID: string
+    readonly lane: "direct_session" | "managed_attempt"
+    readonly managedAttempt?: ManagedAttemptScopeV1
+    readonly requestID: string
+    readonly waveIndex: number
+  }) => Effect.Effect<Readonly<Record<string, unknown>>, SessionSupervisorError, TrustedPrincipalContext>
+  /** Cancel only the exact retained wave; never infer a terminal outcome from AbortSignal alone. */
+  readonly cancelCodeModeWave?: (input: {
+    readonly sessionID: string
+    readonly locationRef: typeof LocationSchema.Ref.Type
+    readonly callID: string
+    readonly lane: "direct_session" | "managed_attempt"
+    readonly managedAttempt?: ManagedAttemptScopeV1
+    readonly requestID: string
+    readonly waveIndex: number
+    readonly reason: "user_abort" | "deadline" | "parent_cancel"
+  }) => Effect.Effect<Readonly<Record<string, unknown>>, SessionSupervisorError, TrustedPrincipalContext>
+  /** Resolve exact direct-Attempt terminal artifacts from durable Guard/ArtifactStore receipts. */
+  readonly listDirectAttemptArtifacts: (input: {
+    readonly sessionID: string
+    readonly locationRef: typeof LocationSchema.Ref.Type
+    readonly directAttempt: DirectAttemptScopeV1
+  }) => Effect.Effect<DirectAttemptTerminalArtifactProjectionV1, SessionSupervisorError, TrustedPrincipalContext>
+  /** Resolve root DirectSession receipts from the HostKernel index and verified ArtifactStore. */
+  readonly listDirectSessionArtifacts: (input: {
+    readonly sessionID: string
+    readonly locationRef: typeof LocationSchema.Ref.Type
+  }) => Effect.Effect<DirectSessionTerminalArtifactProjectionV1, SessionSupervisorError, TrustedPrincipalContext>
+  /** Inspect root-session artifacts only through the exact direct-session receipt index. */
+  readonly inspectDirectSessionArtifact: (input: {
+    readonly sessionID: string
+    readonly locationRef: typeof LocationSchema.Ref.Type
+    readonly ownerEpoch: string
+    readonly artifactRef: ArtifactRefWireV1
+  }) => Effect.Effect<Readonly<Record<string, unknown>>, SessionSupervisorError, TrustedPrincipalContext>
+  /** Bounded root-session artifact range read through the exact direct-session receipt index. */
+  readonly readDirectSessionArtifactRange: (input: {
+    readonly sessionID: string
+    readonly locationRef: typeof LocationSchema.Ref.Type
+    readonly ownerEpoch: string
+    readonly artifactRef: ArtifactRefWireV1
+    readonly offset: string
+    readonly maxBytes: number
+  }) => Effect.Effect<Readonly<Record<string, unknown>>, SessionSupervisorError, TrustedPrincipalContext>
   /** Generation-pinned RepoIntel read through the authenticated Rust boundary. */
   readonly queryRepoStructure?: (input: {
     readonly sessionID: string
     readonly locationRef: typeof LocationSchema.Ref.Type
     readonly query: Omit<typeof RepoStructureQueryV1.Type, "sourceGeneration">
   }) => Effect.Effect<typeof RepoStructurePageV1.Type, SessionSupervisorError, TrustedPrincipalContext>
+  /** Bounded Guarded no-follow tree/manifest discovery; no app-process filesystem fallback. */
+  readonly discoverRepo?: (input: {
+    readonly sessionID: string
+    readonly locationRef: typeof LocationSchema.Ref.Type
+    readonly request: typeof RepoDiscoveryRequestV1.Type
+  }) => Effect.Effect<typeof RepoDiscoveryPageV1.Type, SessionSupervisorError, TrustedPrincipalContext>
+  /** Bounded authenticated source read for LSP synchronization; never an edit grant. */
+  readonly readRepoDocument?: (input: {
+    readonly sessionID: string
+    readonly locationRef: typeof LocationSchema.Ref.Type
+    readonly request: typeof RepoDocumentReadRequestV1.Type
+  }) => Effect.Effect<typeof RepoDocumentReadResponseV1.Type, SessionSupervisorError, TrustedPrincipalContext>
+  /** Read verifier artifacts only through the managed Attempt scope that owns the ref. */
+  readonly inspectManagedArtifact?: (input: {
+    readonly sessionID: string
+    readonly managedAttempt: ManagedAttemptScopeV1
+    readonly artifactRef: ArtifactRefWireV1
+  }) => Effect.Effect<Readonly<Record<string, unknown>>, SessionSupervisorError, TrustedPrincipalContext>
+  /** Inspect a direct terminal artifact only after HostKernel re-derives its receipt from the live DirectAttempt. */
+  readonly inspectDirectAttemptArtifact?: (input: {
+    readonly sessionID: string
+    readonly directAttempt: DirectAttemptScopeV1
+    readonly artifactRef: ArtifactRefWireV1
+  }) => Effect.Effect<Readonly<Record<string, unknown>>, SessionSupervisorError, TrustedPrincipalContext>
+  /** Resolve, without reading bytes, the terminal verified Attempt that durably owns a verifier artifact ref. */
+  readonly resolveVerifiedManagedArtifactScope?: (input: {
+    readonly sessionID: string
+    readonly locationRef: typeof LocationSchema.Ref.Type
+    readonly artifactRef: ArtifactRefWireV1
+  }) => Effect.Effect<ManagedAttemptScopeV1, SessionSupervisorError, TrustedPrincipalContext>
+  /** Read a bounded range from a verifier artifact; direct Attempt refs remain unavailable. */
+  readonly readManagedArtifactRange?: (input: {
+    readonly sessionID: string
+    readonly managedAttempt: ManagedAttemptScopeV1
+    readonly artifactRef: ArtifactRefWireV1
+    readonly offset: string
+    readonly maxBytes: number
+  }) => Effect.Effect<Readonly<Record<string, unknown>>, SessionSupervisorError, TrustedPrincipalContext>
+  /** Read a bounded range only through the exact DirectAttempt terminal receipt and ArtifactStore owner metadata. */
+  readonly readDirectAttemptArtifactRange?: (input: {
+    readonly sessionID: string
+    readonly directAttempt: DirectAttemptScopeV1
+    readonly artifactRef: ArtifactRefWireV1
+    readonly offset: string
+    readonly maxBytes: number
+  }) => Effect.Effect<Readonly<Record<string, unknown>>, SessionSupervisorError, TrustedPrincipalContext>
   readonly hostOwnerEpoch: () => Effect.Effect<number, SessionSupervisorError>
   /** Current exact Rust SessionProjection cursor last durably acknowledged by Core. */
   readonly sessionProjectionCursor: (sessionID: string) => Effect.Effect<Cursor, SessionSupervisorError>
@@ -908,12 +1910,13 @@ type ValidatedGuardConsentProjection<
     | "runID"
     | "noResponse"
     | "allowEnabled"
+    | "routePlanDigest"
   >,
   "origin" | "source" | "runID" | "normalizedAction"
 > & {
   readonly origin: Origin
   readonly source: Source
-  readonly normalizedAction: CapabilityID
+  readonly normalizedAction: string
 } & (RunID extends string ? { readonly runID: RunID } : { readonly runID?: undefined })
 
 function validateGuardConsentProjection<
@@ -925,6 +1928,7 @@ function validateGuardConsentProjection<
   value: Record<string, unknown>,
   input: {
     readonly capabilityID: CapabilityID
+    readonly normalizedAction?: string
     readonly origin: Origin
     readonly source: Source
     readonly runID?: RunID
@@ -933,12 +1937,21 @@ function validateGuardConsentProjection<
   const policyID = stringField(value, "policyID", 128)
   const policyDigest = stringField(value, "policyDigest")
   const normalizedAction = stringField(value, "normalizedAction", 128)
+  const routePlanDigest = value.routePlanDigest
+  if (
+    input.capabilityID === "web.search"
+      ? typeof routePlanDigest !== "string" || !/^blake3:[0-9a-f]{64}$/.test(routePlanDigest)
+      : routePlanDigest !== undefined
+  ) {
+    throw fail("protocol", "Guard route-plan authority is missing or unexpected")
+  }
   if (value.argumentSummary === undefined) throw fail("protocol", "Guard argument summary is missing")
   if (value.guaranteeAssessment === undefined) throw fail("protocol", "Guard guarantee assessment is missing")
   const rawSummary = record(value.argumentSummary)
   const rawAssessment = record(value.guaranteeAssessment)
   const requested = value.requestedGuarantees
   const runID = value.runID
+  const expectedNormalizedAction = input.normalizedAction ?? input.capabilityID
   let argumentSummary: GuardArgumentSummaryV1
   if (rawSummary.status === "available") {
     if (Object.keys(rawSummary).toSorted().join("\0") !== "status\0text") {
@@ -985,7 +1998,7 @@ function validateGuardConsentProjection<
   if (
     !/^[a-z][a-z0-9._-]{0,127}$/.test(policyID) ||
     !/^blake3:[0-9a-f]{64}$/.test(policyDigest) ||
-    normalizedAction !== input.capabilityID ||
+    normalizedAction !== expectedNormalizedAction ||
     value.origin !== input.origin ||
     value.source !== input.source ||
     !Array.isArray(requested) ||
@@ -1034,6 +2047,7 @@ function validateGuardConsentProjection<
     ...(input.runID === undefined ? {} : { runID: input.runID }),
     noResponse: "deny_and_expire",
     allowEnabled: value.allowEnabled,
+    ...(typeof routePlanDigest === "string" ? { routePlanDigest } : {}),
   } as unknown as ValidatedGuardConsentProjection<Origin, Source, RunID, CapabilityID>
 }
 
@@ -1059,12 +2073,13 @@ export function validateManagedVerifierChallenges(
     const challengeID = stringField(value, "challengeID")
     const effectID = stringField(value, "effectID")
     const locationID = stringField(value, "locationID")
-    const policySummary = stringField(value, "policySummary", 1024)
+    const policySummary = stringField(value, "policySummary", 512)
     const inputDigest = stringField(value, "inputDigest")
     const targets = value.normalizedTargets
     const runID = stringField(value, "runID", MAX_IDENTIFIER_BYTES)
     const consent = validateGuardConsentProjection(value, {
       capabilityID: "builtin.verifier",
+      normalizedAction: "builtin.verifier",
       origin: "managed_run",
       source: "host.managed_verifier",
       runID,
@@ -1084,7 +2099,11 @@ export function validateManagedVerifierChallenges(
       (value.expiresAtUnixMs as number) <= now ||
       (value.expiresAtUnixMs as number) > now + 5 * 60 * 1000 ||
       Buffer.byteLength(JSON.stringify(targets), "utf8") > 64 * 1024 ||
-      policySummary.trim().length === 0
+      policySummary.trim().length === 0 ||
+      consent.allowEnabled !== false ||
+      consent.guaranteeAssessment.status !== "not_assessed" ||
+      consent.guaranteeAssessment.residual !== null ||
+      consent.requestedGuarantees.length > 16
     ) {
       throw fail("protocol", "verifier challenge is invalid or exceeds bounds")
     }
@@ -1106,6 +2125,74 @@ export function validateManagedVerifierChallenges(
     }
   })
   return validated
+}
+
+const MANAGED_ROOT_INSPECT_GUARANTEES = [
+  "configured_executable",
+  "bounded_argv_env",
+  "beneath_workspace_root",
+  "one_use",
+] as const
+
+/** Validate the single HostKernel-minted final Inspect consent projection. */
+export function validateManagedRootGuardChallenge(
+  registeredLocationID: string,
+  raw: unknown,
+): ManagedRootGuardChallengeV1 {
+  if (!/^loc_[0-9a-f]{64}$/.test(registeredLocationID)) {
+    throw fail("protocol", "managed-root Location ID is invalid")
+  }
+  const value = record(raw)
+  const expectedKeys = [
+    "status", "challengeID", "effectID", "capabilityID", "locationID", "inputDigest", "targets",
+    "normalizedTargets", "expiresAtUnixMs", "policySummary", "origin", "source", "policyID", "policyDigest",
+    "normalizedAction", "argumentSummary", "requestedGuarantees", "guaranteeAssessment", "noResponse", "allowEnabled",
+  ].toSorted()
+  if (Object.keys(value).toSorted().join("\0") !== expectedKeys.join("\0") || value.status !== "needs_approval") {
+    throw fail("protocol", "managed-root Guard challenge has an invalid shape")
+  }
+  const challengeID = stringField(value, "challengeID", MAX_IDENTIFIER_BYTES)
+  const effectID = stringField(value, "effectID", MAX_IDENTIFIER_BYTES)
+  const locationID = stringField(value, "locationID", MAX_IDENTIFIER_BYTES)
+  const inputDigest = stringField(value, "inputDigest")
+  const policySummary = stringField(value, "policySummary", 1024)
+  const normalizedTargets = value.normalizedTargets
+  const targets = value.targets
+  const expiresAtUnixMs = wireUnixMs(value.expiresAtUnixMs)
+  const consent = validateGuardConsentProjection(value, {
+    capabilityID: "git.worktree.list",
+    origin: "managed_root",
+    source: "host.managed_worktree",
+  })
+  if (
+    !/^[A-Za-z0-9._-]{1,256}$/.test(challengeID) ||
+    !/^[A-Za-z0-9._-]{1,256}$/.test(effectID) ||
+    locationID !== registeredLocationID ||
+    value.capabilityID !== "git.worktree.list" ||
+    !/^blake3:[0-9a-f]{64}$/.test(inputDigest) ||
+    !Array.isArray(normalizedTargets) || normalizedTargets.length !== 1 ||
+    !Array.isArray(targets) || JSON.stringify(targets) !== JSON.stringify(normalizedTargets) ||
+    Buffer.byteLength(JSON.stringify(normalizedTargets), "utf8") > 64 * 1024 ||
+    expiresAtUnixMs === undefined || expiresAtUnixMs <= Date.now() || expiresAtUnixMs > Date.now() + 5 * 60 * 1000 ||
+    policySummary.trim().length === 0 || consent.policyID !== "broker-process.local.v1" ||
+    consent.requestedGuarantees.join("\0") !== MANAGED_ROOT_INSPECT_GUARANTEES.join("\0") ||
+    consent.guaranteeAssessment.status === "assessed" && consent.guaranteeAssessment.residual.length > 0
+  ) {
+    throw fail("protocol", "managed-root Guard challenge does not match the exact final Inspect policy")
+  }
+  return {
+    challengeID,
+    effectID,
+    capabilityID: "git.worktree.list",
+    locationID,
+    inputDigest,
+    normalizedTargets,
+    expiresAtUnixMs,
+    policySummary,
+    origin: "managed_root",
+    source: "host.managed_worktree",
+    ...consent,
+  }
 }
 
 // Nested scopes from one backend share a lease; a second backend fails closed.
@@ -1208,6 +2295,48 @@ function parseHostKernelManifest(input: string): HostKernelManifest {
   }
 }
 
+function parseCodeModeHelperManifest(input: string): CodeModeHelperManifest {
+  let value: Record<string, unknown>
+  try {
+    value = record(JSON.parse(input))
+  } catch {
+    throw fail("manifest", "embedded CodeMode helper manifest is malformed")
+  }
+  const common = ["helperSelector", "relativeEntrypoint", "schemaVersion", "sha256", "status", "target"]
+  const expected = value.status === "unavailable" ? [...common, "reason"].toSorted() : [...common].toSorted()
+  if (Object.keys(value).toSorted().join("\0") !== expected.join("\0") || value.schemaVersion !== 1 ||
+    value.helperSelector !== "horizoncode:codemode:bun" || value.relativeEntrypoint !== "codemode-helper.js" ||
+    typeof value.target !== "string") {
+    throw fail("manifest", "CodeMode helper manifest has an unsupported or non-canonical shape")
+  }
+  if (value.status === "unavailable") {
+    if (value.sha256 !== null || typeof value.reason !== "string" || value.reason.length === 0 || value.reason.length > 1024) {
+      throw fail("manifest", "unavailable CodeMode helper manifest is invalid")
+    }
+    return {
+      schemaVersion: 1,
+      status: "unavailable",
+      helperSelector: "horizoncode:codemode:bun",
+      relativeEntrypoint: "codemode-helper.js",
+      sha256: null,
+      target: value.target,
+      reason: value.reason,
+    }
+  }
+  if (value.status !== "available" || typeof value.sha256 !== "string" || !/^sha256:[0-9a-f]{64}$/.test(value.sha256) ||
+    !/^linux-(x64|arm64)-gnu$/.test(value.target)) {
+    throw fail("manifest", "available CodeMode helper manifest is invalid")
+  }
+  return {
+    schemaVersion: 1,
+    status: "available",
+    helperSelector: "horizoncode:codemode:bun",
+    relativeEntrypoint: "codemode-helper.js",
+    sha256: value.sha256 as `sha256:${string}`,
+    target: value.target,
+  }
+}
+
 function ensurePrivateDirectory(path: string, stage: string) {
   if (!path.startsWith("/")) throw fail(stage, "directory path must be absolute")
   const parentPath = dirname(path)
@@ -1295,7 +2424,7 @@ async function installBundledBinary(
   assetPath: string,
   expectedDigest: string,
   installRoot: string,
-  binaryName = "session_supervisor",
+  binaryName: "session_supervisor" | "hz-kernel" = "session_supervisor",
 ): Promise<string> {
   const bytes = await Bun.file(assetPath).bytes()
   const actualDigest = createHash("sha256").update(bytes).digest("hex")
@@ -1320,7 +2449,12 @@ async function installBundledBinary(
     }
     return target
   }
-  if (existsSync(target)) return verify()
+  const pin = () => {
+    const path = verify()
+    pinSupervisorExecutable({ path, binaryName, sha256: expectedDigest })
+    return path
+  }
+  if (existsSync(target)) return pin()
 
   const temporary = `${target}.${randomUUID()}.tmp`
   try {
@@ -1344,7 +2478,69 @@ async function installBundledBinary(
       unlinkSync(temporary)
     } catch {}
   }
-  return verify()
+  return pin()
+}
+
+function installPrivateAsset(root: string, name: "codemode-helper.js" | "codemode-helper.manifest.json", bytes: Uint8Array) {
+  const target = join(root, name)
+  try {
+    const existing = lstatSync(target)
+    if (!existing.isFile() || existing.isSymbolicLink() || existing.nlink !== 1 ||
+      (process.getuid && existing.uid !== process.getuid()) || (existing.mode & 0o077) !== 0 || realpathSync(target) !== target) {
+      throw fail("helper-install", "existing CodeMode helper asset is not a private regular file")
+    }
+  } catch (error) {
+    if (error instanceof SessionSupervisorError) throw error
+    if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") throw error
+  }
+  const temporary = join(root, `.${name}.${randomUUID()}.tmp`)
+  try {
+    const descriptor = openSync(temporary, "wx", 0o600)
+    try {
+      writeFileSync(descriptor, bytes)
+      fsyncSync(descriptor)
+    } finally {
+      closeSync(descriptor)
+    }
+    renameSync(temporary, target)
+    const directory = openSync(root, "r")
+    try {
+      fsyncSync(directory)
+    } finally {
+      closeSync(directory)
+    }
+  } catch (error) {
+    if (error instanceof SessionSupervisorError) throw error
+    throw fail("helper-install", "could not atomically install the pinned CodeMode helper asset")
+  } finally {
+    try { unlinkSync(temporary) } catch {}
+  }
+}
+
+async function installBundledCodeModeHelper(input: {
+  readonly assetPath?: string
+  readonly manifestJSON?: string
+  readonly installRoot?: string
+}): Promise<string | undefined> {
+  if (!input.manifestJSON) return undefined
+  const manifest = parseCodeModeHelperManifest(input.manifestJSON)
+  if (manifest.status === "unavailable" || process.platform !== "linux" || manifest.target !== `linux-${process.arch}-gnu`) {
+    return undefined
+  }
+  if (!input.assetPath || !input.installRoot) throw fail("helper-install", "available CodeMode helper manifest is missing its embedded asset or install root")
+  const bytes = await Bun.file(input.assetPath).bytes()
+  if (bytes.byteLength === 0 || bytes.byteLength > 16 * 1024 * 1024) throw fail("helper-install", "embedded CodeMode helper asset is empty or exceeds its bound")
+  const actualDigest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`
+  if (actualDigest !== manifest.sha256) throw fail("helper-install", "embedded CodeMode helper does not match its build manifest")
+  const root = ensurePrivateDirectory(input.installRoot, "helper-install")
+  installPrivateAsset(root, "codemode-helper.js", bytes)
+  const manifestBytes = Buffer.from(`${JSON.stringify(manifest)}\n`, "utf8")
+  if (manifestBytes.byteLength > 4 * 1024) throw fail("helper-install", "CodeMode helper manifest exceeds its bound")
+  // Publish the manifest last. During an update a concurrent HostKernel can
+  // observe a digest mismatch and remain unavailable, but cannot run a mixed pair.
+  installPrivateAsset(root, "codemode-helper.manifest.json", manifestBytes)
+  pinCodeModeHelperRoot({ path: root, sha256: manifest.sha256! })
+  return root
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -1446,6 +2642,56 @@ function batchField(
 
 function validBatchIdentity(value: string) {
   return /^[A-Za-z0-9._-]{1,256}$/.test(value)
+}
+
+function validateWorkspaceCommandProjections(
+  calls: ReadonlyArray<GuardedToolCall>,
+  projections: ReadonlyArray<{
+    readonly callID: string
+    readonly reference: { readonly profileId: string; readonly revision: string; readonly profileDigest: string; readonly action: "build" | "test" }
+    readonly definition: unknown
+    readonly resolvedEnvironment: Readonly<Record<string, string>>
+  }> | undefined,
+): void {
+  const profileCalls = new Set<string>()
+  for (const call of calls) {
+    if (call.capabilityID !== "terminal.run") continue
+    const args = record(call.arguments)
+    if (args.mode === "workspace_profile") profileCalls.add(call.callID)
+  }
+  if (!projections?.length) {
+    if (profileCalls.size) throw fail("protocol", "workspace command profile projection is missing")
+    return
+  }
+  if (projections.length > MAX_TOOL_BATCH_CALLS) throw fail("protocol", "workspace command profile projection exceeds the call bound")
+  const seen = new Set<string>()
+  for (const item of projections) {
+    if (!item || !validBatchIdentity(item.callID) || seen.has(item.callID) || !profileCalls.has(item.callID)) {
+      throw fail("protocol", "workspace command profile projection has an invalid call binding")
+    }
+    seen.add(item.callID)
+    const ref = item.reference
+    if (!ref || !validBatchIdentity(ref.profileId) || !/^[1-9][0-9]{0,19}$/.test(ref.revision) ||
+      !/^blake3:[0-9a-f]{64}$/.test(ref.profileDigest) || !["build", "test"].includes(ref.action)) {
+      throw fail("protocol", "workspace command profile reference is invalid")
+    }
+    const definition = record(item.definition)
+    if (definition.profileId !== ref.profileId || definition.revision !== ref.revision ||
+      definition.profileDigest !== ref.profileDigest || definition.enabled !== true ||
+      !Array.isArray(definition.actions) || !definition.actions.includes(ref.action)) {
+      throw fail("protocol", "workspace command profile definition does not match its selected reference")
+    }
+    if (!item.resolvedEnvironment || typeof item.resolvedEnvironment !== "object" || Array.isArray(item.resolvedEnvironment)) {
+      throw fail("protocol", "workspace command profile environment is invalid")
+    }
+    const allowedNames = new Set(Array.isArray(definition.environment?.allowedNames) ? definition.environment.allowedNames : [])
+    for (const [name, value] of Object.entries(item.resolvedEnvironment)) {
+      if (!allowedNames.has(name) || typeof value !== "string" || value.includes("\0") || Buffer.byteLength(value, "utf8") > 4096) {
+        throw fail("protocol", "workspace command profile environment exceeds its configured allowlist")
+      }
+    }
+  }
+  if (seen.size !== profileCalls.size) throw fail("protocol", "workspace command profile calls and projections differ")
 }
 
 /** Apply the Rust EffectHost ToolBatch envelope limits before packing or sending IPC. */
@@ -1667,10 +2913,25 @@ export function relayMultiCallToolBatch(
           ? error
           : fail("protocol", "Rust returned an invalid multi-call Guard challenge"),
     }).pipe(Effect.tapError(() => cancel))
-    const decisions = yield* Effect.forEach(members, (member) => port.requestApproval(member.request), {
-      concurrency: "unbounded",
-    }).pipe(Effect.tapError(() => cancel))
-    if (decisions.some((decision) => decision !== "allow_once") || members.some((member) => !member.request.allowEnabled)) {
+    const challengeIDs = members.map((member) => member.challengeID)
+    const preflightRequest = {
+      sessionID: input.sessionID,
+      locationID: input.locationID,
+      batchID: input.batchID,
+      challengeIDs,
+    }
+    // A stored exact grant is only a quiet-prompt hint here. HostKernel's later
+    // approval-set transaction is authoritative and can still reject stale scope.
+    const grantCandidate = (port.preflightDirectGrant
+      ? yield* port.preflightDirectGrant(preflightRequest).pipe(Effect.catch(() => Effect.succeed(false)))
+      : false) && members.every((member) => member.request.allowEnabled)
+    const decisions = grantCandidate
+      ? members.map(() => "allow_once" as const)
+      : yield* Effect.forEach(members, (member) => port.requestApproval(member.request), {
+          concurrency: "unbounded",
+        }).pipe(Effect.tapError(() => cancel))
+    if (decisions.some((decision) => decision !== "allow_once") ||
+      (!grantCandidate && members.some((member) => !member.request.allowEnabled))) {
       yield* cancel
       return { status: "denied" as const, reason: "Guard approval was denied" }
     }
@@ -1678,7 +2939,7 @@ export function relayMultiCallToolBatch(
       sessionID: input.sessionID,
       locationID: input.locationID,
       batchID: input.batchID,
-      challengeIDs: members.map((member) => member.challengeID),
+      challengeIDs,
     }).pipe(Effect.tapError(() => cancel))
     const serializedAttempt = approvalSet.nextLeaseRequired === true
     if (serializedAttempt && (!approvalSet.directAttempt && !approvalSet.managedAttempt)) {
@@ -1758,6 +3019,7 @@ export function relayMultiCallToolBatch(
       calls,
       ...(leaseNext ? { leaseNext } : {}),
       ...(approvalSet.directAttempt ? { directAttempt: approvalSet.directAttempt } : {}),
+      ...(approvalSet.directTurnScope ? { directTurnScope: approvalSet.directTurnScope } : {}),
       ...(approvalSet.managedAttempt ? { managedAttempt: approvalSet.managedAttempt } : {}),
     }
   }).pipe(
@@ -2528,6 +3790,7 @@ function openHostKernel(input: {
   readonly stateDirectory: string
   readonly hostBuildDigest: string
   readonly appProcess: AppProcess.Interface
+  readonly codeModeHelperRoot?: string
 }): Effect.Effect<HostKernelClientImpl, SessionSupervisorError, Scope.Scope> {
   return Effect.gen(function* () {
     const stateDirectory = yield* Effect.try({
@@ -2549,6 +3812,7 @@ function openHostKernel(input: {
       `--host-exe=${realpathSync(globalThis.process.execPath)}`,
       `--nonce=${nonce}`,
       `--incarnation=${incarnation}`,
+      ...(input.codeModeHelperRoot ? [`--codemode-helper-root=${input.codeModeHelperRoot}`] : []),
     ]
     const child = yield* input.appProcess
       .spawn(
@@ -2772,17 +4036,41 @@ class HostKernelClientImpl {
       throw fail("protocol", "authenticated ServerAuth subject is invalid")
     }
     const isRepoIntelRead =
-      serviceID === "repo-intel.v1" && (operation === "query_structure" || operation === "ensure_generation")
-    if (isRepoIntelRead || authenticatedContext) {
+      serviceID === "repo-intel.v1" && (operation === "query_structure" || operation === "ensure_generation" || operation === "read_document" || operation === "discover")
+    const isArtifactRead = serviceID === "artifact.v1" && (operation === "artifacts.inspect" || operation === "artifacts.read_range")
+    const isArtifactScopeResolve = serviceID === "artifact.v1" && operation === "artifacts.resolve_scope"
+    const isCodeModeOperation = serviceID === "execution.v1" &&
+      ["codemode_enablement", "codemode_start", "codemode_resume", "codemode_cancel", "codemode_cancel_wave", "codemode_inspect", "codemode_prepare_wave", "codemode_settle_tool_results", "codemode_wave_receipts"].includes(operation)
+    if (isRepoIntelRead || isArtifactRead || isArtifactScopeResolve || isCodeModeOperation || authenticatedContext) {
       if (
-        !isRepoIntelRead ||
         !authenticatedContext ||
         trustedPrincipal?.kind !== "server_auth" ||
-        !this.enabledFeatures.includes(REPO_INTEL_READ_CONTEXT_FEATURE) ||
-        !/^ses_[A-Za-z0-9_-]{1,128}$/.test(authenticatedContext.sessionID) ||
-        !/^loc_[0-9a-f]{64}$/.test(authenticatedContext.locationID)
+        (authenticatedContext.kind === "repo_read" && (
+          !isRepoIntelRead ||
+          !this.enabledFeatures.includes(REPO_INTEL_READ_CONTEXT_FEATURE) ||
+          !/^ses_[A-Za-z0-9_-]{1,128}$/.test(authenticatedContext.sessionID) ||
+          !/^loc_[0-9a-f]{64}$/.test(authenticatedContext.locationID)
+        )) ||
+        (authenticatedContext.kind === "artifact_read" && (
+          !isArtifactRead ||
+          !this.enabledFeatures.includes(ARTIFACT_READ_CONTEXT_FEATURE) ||
+          !validArtifactReadRequest(serviceID, operation, body, authenticatedContext)
+        )) ||
+        (authenticatedContext.kind === "artifact_scope_resolve" && (
+          !isArtifactScopeResolve ||
+          !this.enabledFeatures.includes(ARTIFACT_READ_CONTEXT_FEATURE) ||
+          !validArtifactScopeResolveRequest(serviceID, operation, body, authenticatedContext)
+        )) ||
+        (authenticatedContext.kind === "direct_session_artifact_read" && (
+          !isArtifactRead ||
+          !this.enabledFeatures.includes(ARTIFACT_READ_CONTEXT_FEATURE) ||
+          !validDirectSessionArtifactReadRequest(serviceID, operation, body, authenticatedContext)
+        )) ||
+        (authenticatedContext.kind === "code_mode_call" && (
+          !isCodeModeOperation || !validCodeModeAuthenticatedRequest(serviceID, operation, body, authenticatedContext)
+        ))
       ) {
-        throw fail("protocol", "authenticated RepoIntel context is unavailable or invalid")
+        throw fail("protocol", "authenticated read context is unavailable or invalid")
       }
     }
     if (this.#pendingRequests.size >= 16) throw fail("effect", "too many pending host requests")
@@ -2842,11 +4130,21 @@ class HostKernelClientImpl {
         ...(authenticatedContext === undefined
           ? {}
           : {
-              authenticatedContext: {
-                kind: "repo_read",
-                sessionID: authenticatedContext.sessionID,
-                locationID: authenticatedContext.locationID,
-              },
+              authenticatedContext: authenticatedContext.kind === "repo_read"
+                ? {
+                    kind: "repo_read",
+                    sessionID: authenticatedContext.sessionID,
+                    locationID: authenticatedContext.locationID,
+                  }
+                : {
+                    kind: "artifact_read",
+                    sessionID: authenticatedContext.sessionID,
+                    locationID: authenticatedContext.locationID,
+                    artifactRef: authenticatedContext.artifactRef,
+                    ...(authenticatedContext.managedAttempt
+                      ? { managedAttempt: managedAttemptScopeToWire(authenticatedContext.managedAttempt) }
+                      : {}),
+                  },
             }),
         body,
       })
@@ -3117,11 +4415,20 @@ const layer = Layer.effect(
               error instanceof SessionSupervisorError ? error : fail("install", "embedded host kernel is unavailable"),
           })
           const hostBuildDigest = yield* getHostBuildDigest(binary)
+          const codeModeHelperRoot = yield* Effect.tryPromise({
+            try: () => installBundledCodeModeHelper({
+              assetPath: runtime.codeModeHelperAssetPath,
+              manifestJSON: runtime.codeModeHelperManifestJSON,
+              installRoot: runtime.codeModeHelperInstallRoot,
+            }),
+            catch: (error) => error instanceof SessionSupervisorError ? error : fail("helper-install", "bundled CodeMode helper is unavailable"),
+          })
           hostKernelClient = yield* openHostKernel({
             binary,
             stateDirectory: runtime.hostKernelStateRoot,
             hostBuildDigest,
             appProcess,
+            ...(codeModeHelperRoot === undefined ? {} : { codeModeHelperRoot }),
           })
         }
       }
@@ -3132,6 +4439,20 @@ const layer = Layer.effect(
       }
       if (!/^ses_[a-zA-Z0-9_-]{1,128}$/.test(options.sessionID)) {
         return yield* Effect.fail(fail("configuration", "Session ID is invalid"))
+      }
+      // A caller-supplied absolute path is not source authority. Bind the observer
+      // to the live Core database selected by Database, then pin that exact file
+      // identity before AppProcess can dispatch the child.
+      const database = yield* Database.Service
+      let canonicalSource: string
+      try {
+        canonicalSource = realpathSync(options.source)
+        if (canonicalSource !== realpathSync(database.path)) {
+          return yield* Effect.fail(fail("configuration", "observer source is not the active Core database"))
+        }
+        pinSupervisorSource(canonicalSource)
+      } catch {
+        return yield* Effect.fail(fail("configuration", "active Core database source is unavailable"))
       }
       const stateDirectory = options.stateDirectory
       if (!stateDirectory.startsWith("/")) {
@@ -3145,7 +4466,6 @@ const layer = Layer.effect(
       let binary: string
       try {
         binary = realpathSync(options.binary)
-        realpathSync(options.source)
         if (options.workspaceRoot !== undefined) {
           if (!options.workspaceRoot.startsWith("/"))
             return yield* Effect.fail(fail("configuration", "workspace root must be absolute"))
@@ -3183,7 +4503,7 @@ const layer = Layer.effect(
         )
       }
       const args = sessionSupervisorArgs({
-        source: realpathSync(options.source),
+        source: canonicalSource,
         stateDirectory,
         socketPath,
         hostExecutable: realpathSync(globalThis.process.execPath),
@@ -3281,7 +4601,9 @@ const layer = Layer.effect(
         options?.cancelOnInterrupt &&
         !(
           (serviceID === "terminal.v1" && operation === "run") ||
-          (serviceID === "repo-intel.v1" && (operation === "query_structure" || operation === "ensure_generation"))
+          (serviceID === "execution.v1" && (operation === "execute_search_cascade" || operation === "resume_search_cascade" || operation === "cancel_search_cascade")) ||
+          (serviceID === "execution.v1" && operation === "git_read") ||
+          (serviceID === "repo-intel.v1" && (operation === "query_structure" || operation === "ensure_generation" || operation === "read_document" || operation === "discover"))
         )
       ) {
         return yield* Effect.fail(fail("protocol", "host request cancellation is unavailable for this operation"))
@@ -3290,15 +4612,32 @@ const layer = Layer.effect(
         return yield* Effect.fail(fail("protocol", "host request delivery id is invalid"))
       }
       const isRepoIntelRead =
-        serviceID === "repo-intel.v1" && (operation === "query_structure" || operation === "ensure_generation")
-      if (isRepoIntelRead || options?.authenticatedContext) {
-        if (
-          !isRepoIntelRead ||
-          !options?.authenticatedContext ||
-          options.trustedPrincipal?.kind !== "server_auth" ||
-          !hostKernelClient.enabledFeatures.includes(REPO_INTEL_READ_CONTEXT_FEATURE)
-        ) {
-          return yield* Effect.fail(fail("protocol", "authenticated RepoIntel context is unavailable"))
+        serviceID === "repo-intel.v1" && (operation === "query_structure" || operation === "ensure_generation" || operation === "read_document" || operation === "discover")
+      const isArtifactRead = serviceID === "artifact.v1" && (operation === "artifacts.inspect" || operation === "artifacts.read_range")
+      const isArtifactScopeResolve = serviceID === "artifact.v1" && operation === "artifacts.resolve_scope"
+      const isCodeModeOperation = serviceID === "execution.v1" &&
+        ["codemode_enablement", "codemode_start", "codemode_resume", "codemode_cancel", "codemode_cancel_wave", "codemode_inspect", "codemode_prepare_wave", "codemode_settle_tool_results", "codemode_wave_receipts"].includes(operation)
+      if (isRepoIntelRead || isArtifactRead || isArtifactScopeResolve || isCodeModeOperation || options?.authenticatedContext) {
+        const context = options?.authenticatedContext
+        const validCodeModeContext = !!context && options?.trustedPrincipal?.kind === "server_auth" &&
+          validCodeModeAuthenticatedRequest(serviceID, operation, body, context)
+        const valid = !!context && options?.trustedPrincipal?.kind === "server_auth" && (
+          context.kind === "repo_read"
+            ? isRepoIntelRead && hostKernelClient.enabledFeatures.includes(REPO_INTEL_READ_CONTEXT_FEATURE) &&
+              /^ses_[A-Za-z0-9_-]{1,128}$/.test(context.sessionID) && /^loc_[0-9a-f]{64}$/.test(context.locationID)
+          : context.kind === "artifact_read"
+            ? isArtifactRead && hostKernelClient.enabledFeatures.includes(ARTIFACT_READ_CONTEXT_FEATURE) &&
+              validArtifactReadRequest(serviceID, operation, body, context)
+            : context.kind === "artifact_scope_resolve"
+              ? isArtifactScopeResolve && hostKernelClient.enabledFeatures.includes(ARTIFACT_READ_CONTEXT_FEATURE) &&
+                validArtifactScopeResolveRequest(serviceID, operation, body, context)
+          : context.kind === "direct_session_artifact_read"
+              ? isArtifactRead && hostKernelClient.enabledFeatures.includes(ARTIFACT_READ_CONTEXT_FEATURE) &&
+                validDirectSessionArtifactReadRequest(serviceID, operation, body, context)
+              : validCodeModeContext
+        )
+        if (!valid) {
+          return yield* Effect.fail(fail("protocol", "authenticated read context is unavailable"))
         }
       }
       return yield* Effect.tryPromise({
@@ -3315,6 +4654,12 @@ const layer = Layer.effect(
         catch: (error) =>
           error instanceof SessionSupervisorError ? error : fail("host-kernel", "host kernel request failed"),
       })
+    })
+    const hostFeatureEnabled = Effect.fn("SessionSupervisor.hostFeatureEnabled")(function* (feature: string) {
+      if (!hostKernelClient || typeof feature !== "string" || !/^[a-z0-9][a-z0-9._-]{0,127}$/.test(feature)) {
+        return false
+      }
+      return hostKernelClient.enabledFeatures.includes(feature)
     })
     const hostOwnerEpoch = Effect.fn("SessionSupervisor.hostOwnerEpoch")(function* () {
       if (!hostKernelClient) return yield* Effect.fail(fail("host-kernel", "host kernel is unavailable"))
@@ -3444,10 +4789,10 @@ const layer = Layer.effect(
       )
     const replyGuardApproval = Effect.fn("SessionSupervisor.replyGuardApproval")(function* (input: {
       readonly approvalID: string
-      readonly decision: GuardApprovalDecision
+      readonly decision: GuardApprovalReplyDecisionV1
     }) {
       const trusted = yield* TrustedPrincipalContext
-      if (input.decision !== "allow_once" && input.decision !== "deny") {
+      if (!(["allow_once", "deny", "grant_session", "grant_workspace"] as const).includes(input.decision)) {
         return yield* Effect.fail(fail("approval-invalid", "Guard approval decision is invalid", "approval-invalid"))
       }
       const pending = pendingApprovals.get(input.approvalID)
@@ -3485,12 +4830,35 @@ const layer = Layer.effect(
         })
         return yield* Effect.fail(fail("approval-conflict", "Guard approval expired", "approval-conflict"))
       }
+      let resolvedDecision: GuardApprovalDecision = input.decision === "allow_once" ? "allow_once" : "deny"
+      if (input.decision === "grant_session" || input.decision === "grant_workspace") {
+        const request = pending.request
+        const sessionID = request.sessionID
+        const action = request.capabilityID === "files.write" || request.capabilityID === "files.patch" ? "edit" : undefined
+        if (trusted.principal.kind !== "server_auth" || !sessionID || !action ||
+          request.origin !== "session_batch" || request.source !== "core.tool_batch" || request.runID !== undefined ||
+          !/^[A-Za-z0-9._-]{1,256}$/.test(request.challengeID) || !/^[A-Za-z0-9._-]{1,256}$/.test(request.effectID)) {
+          return yield* Effect.fail(fail("approval-invalid", "Persistent grant choices are unavailable for this challenge", "approval-invalid"))
+        }
+        // Persist the explicit choice against this host-issued challenge, then
+        // deny that challenge. The challenged effect is never dispatched under
+        // the grant; a fresh prepare must revalidate Guard and issue a new lease.
+        yield* issueDirectSessionGrant({
+          locationRef: pending.locationRef,
+          sessionID,
+          challengeID: request.challengeID,
+          effectID: request.effectID,
+          scopeKind: input.decision === "grant_session" ? "session" : "workspace",
+          actions: [action],
+        })
+        resolvedDecision = "deny"
+      }
       pendingApprovals.delete(input.approvalID)
       closedApprovals.set(input.approvalID, Date.now())
-      yield* Deferred.succeed(pending.decision, input.decision)
+      yield* Deferred.succeed(pending.decision, resolvedDecision)
       yield* events.publish(GuardApprovalResolved, {
         approvalID: input.approvalID,
-        decision: input.decision,
+        decision: resolvedDecision,
       })
     })
     const registeredLocations = new Map<string, string>()
@@ -3531,6 +4899,506 @@ const layer = Layer.effect(
       const trusted = yield* TrustedPrincipalContext
       return yield* registerHostLocationFor(locationRef, trusted.principal)
     })
+    const directSessionWorkspaceSnapshot = Effect.fn("SessionSupervisor.directSessionWorkspaceSnapshot")(function* (input: {
+      readonly sessionID: string
+      readonly locationRef: typeof LocationSchema.Ref.Type
+    }) {
+      const trusted = yield* TrustedPrincipalContext
+      if (trusted.principal.kind !== "server_auth" || !trusted.principal.subject ||
+        !/^ses_[A-Za-z0-9_-]{1,128}$/.test(input.sessionID)) {
+        return yield* Effect.fail(fail("authorization", "direct Session workspace projection requires authenticated ServerAuth"))
+      }
+      const locationID = yield* registerHostLocationFor(input.locationRef, trusted.principal)
+      const response = yield* requestHostKernel("execution.v1", "direct_session_workspace_snapshot", {
+        sessionID: input.sessionID,
+        locationID,
+      }, { trustedPrincipal: trusted.principal })
+      const expectedKeys = ["sessionID", "locationID", "ownerEpoch", "workspaceRevision", "workspaceRootDigest", "observedAtUnixMs"].toSorted()
+      if (Object.keys(response).toSorted().join("\0") !== expectedKeys.join("\0") ||
+        response.sessionID !== input.sessionID || response.locationID !== locationID ||
+        typeof response.ownerEpoch !== "string" || !/^[1-9][0-9]{0,19}$/.test(response.ownerEpoch) ||
+        typeof response.workspaceRevision !== "string" || !/^blake3:[0-9a-f]{64}$/.test(response.workspaceRevision) ||
+        typeof response.workspaceRootDigest !== "string" || !/^blake3:[0-9a-f]{64}$/.test(response.workspaceRootDigest) ||
+        typeof response.observedAtUnixMs !== "string" || !/^(0|[1-9][0-9]{0,19})$/.test(response.observedAtUnixMs)) {
+        return yield* Effect.fail(fail("protocol", "HostKernel returned an invalid direct Session workspace snapshot"))
+      }
+      return response as unknown as DirectSessionWorkspaceSnapshotV1
+    })
+    const managedEffectWaveReceipts: Interface["managedEffectWaveReceipts"] = Effect.fn("SessionSupervisor.managedEffectWaveReceipts")(function* (input) {
+      const trusted = yield* TrustedPrincipalContext
+      if (trusted.principal.kind !== "server_auth" || !trusted.principal.subject ||
+        !/^[A-Za-z0-9._-]{1,256}$/.test(input.goalID) || !/^[A-Za-z0-9._-]{1,256}$/.test(input.runID) ||
+        !/^[A-Za-z0-9._-]{1,256}$/.test(input.taskID) || !/^[A-Za-z0-9._-]{1,256}$/.test(input.attemptID) ||
+        !/^[A-Za-z0-9._-]{1,256}$/.test(input.batchID) || !Number.isInteger(input.waveIndex) ||
+        input.waveIndex < 0 || input.waveIndex > 63) {
+        return yield* Effect.fail(fail("authorization", "managed wave receipt lookup requires exact authenticated Attempt pins"))
+      }
+      const response = yield* requestHostKernel("managed.v1", "effect_wave_receipts", {
+        goalID: input.goalID,
+        runID: input.runID,
+        taskID: input.taskID,
+        attemptID: input.attemptID,
+        batchID: input.batchID,
+        waveIndex: input.waveIndex,
+      }, { trustedPrincipal: trusted.principal })
+      const expected = ["status", "goalID", "runID", "taskID", "attemptID", "batchID", "waveIndex", "sourceScopeDigest", "waveDigest", "effects"].toSorted()
+      if (Object.keys(response).toSorted().join("\0") !== expected.join("\0") ||
+        response.status !== "RECOVERED" || response.goalID !== input.goalID || response.runID !== input.runID ||
+        response.taskID !== input.taskID || response.attemptID !== input.attemptID || response.batchID !== input.batchID ||
+        response.waveIndex !== input.waveIndex || typeof response.sourceScopeDigest !== "string" || !/^blake3:[0-9a-f]{64}$/.test(response.sourceScopeDigest) ||
+        typeof response.waveDigest !== "string" || !/^blake3:[0-9a-f]{64}$/.test(response.waveDigest) ||
+        !Array.isArray(response.effects) || response.effects.length < 1 || response.effects.length > MAX_TOOL_BATCH_CALLS) {
+        return yield* Effect.fail(fail("protocol", "HostKernel returned malformed managed effect wave receipts"))
+      }
+      const seenCalls = new Set<string>()
+      const seenEffects = new Set<string>()
+      const effects = response.effects.map((raw, index) => {
+        const item = record(raw)
+        const keys = ["callIndex", "callID", "effectID", "receiptRef", "capabilityID", "attemptScopeDigest", "status", "receiptKind", "receiptDigest"].toSorted()
+        const status = item.status
+        if (Object.keys(item).toSorted().join("\0") !== keys.join("\0") || item.callIndex !== index ||
+          typeof item.callID !== "string" || !/^[A-Za-z0-9._-]{1,256}$/.test(item.callID) || seenCalls.has(item.callID) ||
+          typeof item.effectID !== "string" || !/^[A-Za-z0-9._-]{1,256}$/.test(item.effectID) || seenEffects.has(item.effectID) ||
+          typeof item.capabilityID !== "string" || !/^[a-z][a-z0-9._-]{1,127}$/.test(item.capabilityID) ||
+          typeof item.attemptScopeDigest !== "string" || !/^blake3:[0-9a-f]{64}$/.test(item.attemptScopeDigest) ||
+          !["SETTLED", "NOT_APPLIED", "DENIED", "EXPIRED", "CANCELLED", "UNKNOWN"].includes(String(status))) {
+          throw fail("protocol", "HostKernel returned malformed or reordered managed wave receipt edge")
+        }
+        seenCalls.add(item.callID)
+        seenEffects.add(item.effectID)
+        const unknown = status === "UNKNOWN"
+        if (unknown ? item.receiptRef !== null || item.receiptKind !== null || item.receiptDigest !== null :
+          typeof item.receiptRef !== "string" || !/^[A-Za-z0-9._:-]{1,256}$/.test(item.receiptRef) ||
+          typeof item.receiptDigest !== "string" || !/^blake3:[0-9a-f]{64}$/.test(item.receiptDigest) ||
+          (status === "SETTLED" ? item.receiptKind !== "effect" : item.receiptKind !== "decision")) {
+          throw fail("protocol", "HostKernel receipt refs do not match terminal effect status")
+        }
+        return item
+      })
+      return { ...response, effects } as unknown as ManagedEffectWaveReceiptProjectionV1
+    })
+    const managedCurrentEpochRecoveryQuiescence: Interface["managedCurrentEpochRecoveryQuiescence"] = Effect.fn("SessionSupervisor.managedCurrentEpochRecoveryQuiescence")(function* (input) {
+      const trusted = yield* TrustedPrincipalContext
+      const ids = [input.goalID, input.runID, input.taskID, input.attemptID, input.parentSessionID, input.sessionID]
+      if (trusted.principal.kind !== "server_auth" || !trusted.principal.subject ||
+        ids.some((value) => !/^[A-Za-z0-9._-]{1,256}$/.test(value)) ||
+        input.observation.sessionStatus !== "idle" || input.observation.activePromptCount !== 0 ||
+        input.observation.activeProviderTaskCount !== 0 || input.observation.runningBackgroundTaskCount !== 0 ||
+        input.observation.pendingToolCallCount !== 0 || input.observation.incompleteAssistantMessageCount !== 0 ||
+        !/^[1-9][0-9]{0,19}$/.test(input.observation.childSessionSequence) ||
+        !/^blake3:[0-9a-f]{64}$/.test(input.observation.childSessionEventDigest) ||
+        !/^blake3:[0-9a-f]{64}$/.test(input.observation.childSessionStateDigest) ||
+        !/^blake3:[0-9a-f]{64}$/.test(input.observation.observationDigest)) {
+        return yield* Effect.fail(fail("protocol", "current-epoch managed recovery observation is malformed"))
+      }
+      const response = yield* requestHostKernel("managed.v1", "current_epoch_recovery_quiescence", {
+        goalID: input.goalID,
+        runID: input.runID,
+        taskID: input.taskID,
+        attemptID: input.attemptID,
+        parentSessionID: input.parentSessionID,
+        sessionID: input.sessionID,
+        childSessionSequence: input.observation.childSessionSequence,
+        childSessionEventDigest: input.observation.childSessionEventDigest,
+        childSessionStateDigest: input.observation.childSessionStateDigest,
+        sessionStatus: input.observation.sessionStatus,
+        activePromptCount: input.observation.activePromptCount,
+        activeProviderTaskCount: input.observation.activeProviderTaskCount,
+        runningBackgroundTaskCount: input.observation.runningBackgroundTaskCount,
+        pendingToolCallCount: input.observation.pendingToolCallCount,
+        incompleteAssistantMessageCount: input.observation.incompleteAssistantMessageCount,
+        observationDigest: input.observation.observationDigest,
+      }, { trustedPrincipal: trusted.principal })
+      const keys = ["status", "goalID", "runID", "taskID", "attemptID", "parentSessionID", "sessionID", "principal", "locationID",
+        "currentOwnerEpoch", "currentProcessIncarnation", "currentCorePID", "currentCoreStartIdentity", "currentCoreExecutableDigest",
+        "childSessionSequence", "childSessionEventDigest", "childSessionStateDigest", "childObservationDigest", "hostQuiescenceDigest",
+        "originalTerminalOwnerLogID", "originalTerminalOwnerLogSequence", "originalTerminalOwnerLogEventDigest",
+        "originalPromptQuiescenceDigest", "originalPromptQuiescenceOwnerEpoch", "originalAttemptStateDigest",
+        "originalEffectChainDigest", "originalEvidenceDigest", "verifiedWorkspaceHead", "receiptDigest"].toSorted()
+      const digestFields = ["currentCoreExecutableDigest", "childSessionEventDigest", "childSessionStateDigest", "childObservationDigest",
+        "hostQuiescenceDigest", "originalTerminalOwnerLogEventDigest", "originalPromptQuiescenceDigest",
+        "originalAttemptStateDigest", "originalEffectChainDigest", "originalEvidenceDigest", "verifiedWorkspaceHead", "receiptDigest"] as const
+      const decimalFields = ["currentOwnerEpoch", "currentCoreStartIdentity", "childSessionSequence", "originalTerminalOwnerLogSequence", "originalPromptQuiescenceOwnerEpoch"] as const
+      if (Object.keys(response).toSorted().join("\0") !== keys.join("\0") || response.status !== "CURRENT_EPOCH_QUIESCED" ||
+        response.goalID !== input.goalID || response.runID !== input.runID || response.taskID !== input.taskID ||
+        response.attemptID !== input.attemptID || response.parentSessionID !== input.parentSessionID || response.sessionID !== input.sessionID ||
+        response.principal !== `server_auth:${trusted.principal.subject}` ||
+        typeof response.locationID !== "string" || !/^[A-Za-z0-9._-]{1,256}$/.test(response.locationID) ||
+        typeof response.currentProcessIncarnation !== "string" || !/^[A-Za-z0-9._-]{1,256}$/.test(response.currentProcessIncarnation) ||
+        !Number.isSafeInteger(response.currentCorePID) || (response.currentCorePID as number) < 1 ||
+        digestFields.some((key) => typeof response[key] !== "string" || !/^blake3:[0-9a-f]{64}$/.test(response[key] as string)) ||
+        decimalFields.some((key) => typeof response[key] !== "string" || !/^(0|[1-9][0-9]{0,19})$/.test(response[key] as string)) ||
+        response.currentOwnerEpoch === "0" || response.childSessionSequence !== input.observation.childSessionSequence ||
+        response.childSessionEventDigest !== input.observation.childSessionEventDigest ||
+        response.childSessionStateDigest !== input.observation.childSessionStateDigest ||
+        response.childObservationDigest !== input.observation.observationDigest) {
+        return yield* Effect.fail(fail("protocol", "HostKernel returned a malformed or mismatched current-epoch recovery proof"))
+      }
+      return response as unknown as ManagedCurrentEpochRecoveryQuiescenceV1
+    })
+    const directCodeModeWaveReceipts: Interface["directCodeModeWaveReceipts"] = Effect.fn("SessionSupervisor.directCodeModeWaveReceipts")(function* (input) {
+      const trusted = yield* TrustedPrincipalContext
+      if (trusted.principal.kind !== "server_auth" || !trusted.principal.subject ||
+        !/^ses_[A-Za-z0-9_-]{1,128}$/.test(input.sessionID) || !/^[A-Za-z0-9._:-]{1,256}$/.test(input.requestID) ||
+        !Number.isInteger(input.waveIndex) || input.waveIndex < 0 || input.waveIndex > 63) {
+        return yield* Effect.fail(fail("authorization", "direct CodeMode receipt lookup requires authenticated Session and exact wave selector"))
+      }
+      const locationID = yield* registerHostLocationFor(input.locationRef, trusted.principal)
+      const response = yield* requestHostKernel("execution.v1", "direct_effect_wave_receipts", {
+        sessionID: input.sessionID,
+        locationID,
+        requestID: input.requestID,
+        waveIndex: input.waveIndex,
+      }, { trustedPrincipal: trusted.principal })
+      const keys = ["status", "sessionID", "locationID", "requestID", "batchID", "waveIndex", "frameDigest", "waveDigest", "directSessionScopeDigest", "effects"].toSorted()
+      if (Object.keys(response).toSorted().join("\0") !== keys.join("\0") ||
+        !["SETTLED", "REJECTED", "CANCELLED"].includes(String(response.status)) ||
+        response.sessionID !== input.sessionID || response.locationID !== locationID || response.requestID !== input.requestID ||
+        !Number.isSafeInteger(response.waveIndex) || response.waveIndex !== input.waveIndex ||
+        typeof response.batchID !== "string" || !/^[A-Za-z0-9._-]{1,256}$/.test(response.batchID) ||
+        typeof response.frameDigest !== "string" || !/^blake3:[0-9a-f]{64}$/.test(response.frameDigest) ||
+        (response.waveDigest !== null && (typeof response.waveDigest !== "string" || !/^blake3:[0-9a-f]{64}$/.test(response.waveDigest))) ||
+        typeof response.directSessionScopeDigest !== "string" || !/^blake3:[0-9a-f]{64}$/.test(response.directSessionScopeDigest) ||
+        !Array.isArray(response.effects) || response.effects.length < 1 || response.effects.length > MAX_TOOL_BATCH_CALLS) {
+        return yield* Effect.fail(fail("protocol", "HostKernel returned malformed direct CodeMode receipts"))
+      }
+      const effects = response.effects.map((raw, index) => {
+        const item = record(raw)
+        const expected = ["callIndex", "callID", "effectID", "challengeID", "receiptRef", "capabilityID", "status", "receiptKind", "receiptDigest"].toSorted()
+        if (Object.keys(item).toSorted().join("\0") !== expected.join("\0") || item.callIndex !== index ||
+          typeof item.callID !== "string" || !/^[A-Za-z0-9._-]{1,256}$/.test(item.callID) ||
+          (item.effectID !== null && (typeof item.effectID !== "string" || !/^[A-Za-z0-9._-]{1,256}$/.test(item.effectID))) ||
+          (item.challengeID !== null && (typeof item.challengeID !== "string" || !/^[A-Za-z0-9._-]{1,256}$/.test(item.challengeID))) ||
+          typeof item.receiptRef !== "string" || !/^[A-Za-z0-9._:-]{1,256}$/.test(item.receiptRef) ||
+          (item.capabilityID !== null && (typeof item.capabilityID !== "string" || !/^[a-z][a-z0-9._-]{1,127}$/.test(item.capabilityID))) ||
+          !["SETTLED", "REJECTED", "CANCELLED"].includes(String(item.status)) ||
+          (item.status === "SETTLED" ? item.receiptKind !== "effect" : item.receiptKind !== "decision") ||
+          typeof item.receiptDigest !== "string" || !/^blake3:[0-9a-f]{64}$/.test(item.receiptDigest)) {
+          throw fail("protocol", "HostKernel returned an invalid direct CodeMode wave edge")
+        }
+        return item
+      })
+      const aggregate = effects.some((edge) => edge.status === "REJECTED") ? "REJECTED" :
+        effects.some((edge) => edge.status === "CANCELLED") ? "CANCELLED" : "SETTLED"
+      if (response.status !== aggregate) return yield* Effect.fail(fail("protocol", "HostKernel direct wave outcome differs from its ordered receipts"))
+      return { ...response, effects } as unknown as DirectCodeModeWaveReceiptProjectionV1
+    })
+    const listDirectAttemptArtifacts: Interface["listDirectAttemptArtifacts"] = Effect.fn("SessionSupervisor.listDirectAttemptArtifacts")(function* (input) {
+      const trusted = yield* TrustedPrincipalContext
+      if (trusted.principal.kind !== "server_auth" || !trusted.principal.subject ||
+        !/^ses_[A-Za-z0-9_-]{1,128}$/.test(input.sessionID)) {
+        return yield* Effect.fail(fail("authorization", "direct artifact resolution requires authenticated ServerAuth and Session"))
+      }
+      const directAttempt = yield* Effect.try({
+        try: () => directAttemptScopeToWire(input.directAttempt),
+        catch: () => fail("protocol", "direct artifact Attempt scope is malformed"),
+      })
+      if (directAttempt.childSessionID !== input.sessionID) {
+        return yield* Effect.fail(fail("authorization", "direct artifact Attempt does not belong to the current Session"))
+      }
+      if (!hostKernelClient?.enabledFeatures.includes(ARTIFACT_READ_CONTEXT_FEATURE)) {
+        return yield* Effect.fail(fail("host-kernel-feature", "authenticated direct artifact reads are unavailable"))
+      }
+      const locationID = yield* registerHostLocationFor(input.locationRef, trusted.principal)
+      const response = yield* requestHostKernel("execution.v1", "direct_attempt_artifacts", {
+        sessionID: input.sessionID,
+        locationID,
+        directAttempt,
+      }, { trustedPrincipal: trusted.principal })
+      const responseKeys = ["status", "sessionID", "locationID", "directAttemptID", "ownerEpoch", "artifacts"].toSorted()
+      if (Object.keys(response).toSorted().join("\0") !== responseKeys.join("\0") ||
+        response.status !== "RECOVERED" || response.sessionID !== input.sessionID ||
+        response.locationID !== locationID || response.directAttemptID !== directAttempt.attemptID ||
+        response.ownerEpoch !== String(directAttempt.ownerEpoch) || !Array.isArray(response.artifacts) || response.artifacts.length > MAX_TOOL_BATCH_CALLS) {
+        return yield* Effect.fail(fail("protocol", "HostKernel returned malformed direct Attempt artifact provenance"))
+      }
+      const seenEffects = new Set<string>()
+      const artifacts = response.artifacts.map((raw, index) => {
+        const item = record(raw)
+        const keys = ["artifactRef", "effectID", "batchID", "callIndex", "callID", "challengeID", "attemptScopeDigest", "receiptDigest", "outputDigest", "workspaceRevision", "fidelity", "observedBytes", "droppedBytes"].toSorted()
+        if (Object.keys(item).toSorted().join("\0") !== keys.join("\0") || !validateArtifactRefWire(item.artifactRef) ||
+          typeof item.effectID !== "string" || !/^[A-Za-z0-9._-]{1,256}$/.test(item.effectID) || seenEffects.has(item.effectID) ||
+          typeof item.batchID !== "string" || !/^[A-Za-z0-9._-]{1,256}$/.test(item.batchID) ||
+          !Number.isSafeInteger(item.callIndex) || (item.callIndex as number) < 0 || (item.callIndex as number) > 31 ||
+          typeof item.callID !== "string" || !/^[A-Za-z0-9._-]{1,256}$/.test(item.callID) ||
+          typeof item.challengeID !== "string" || !/^[A-Za-z0-9._-]{1,256}$/.test(item.challengeID) ||
+          item.attemptScopeDigest !== directAttempt.scopeDigest ||
+          typeof item.receiptDigest !== "string" || !/^blake3:[0-9a-f]{64}$/.test(item.receiptDigest) ||
+          typeof item.outputDigest !== "string" || !/^blake3:[0-9a-f]{64}$/.test(item.outputDigest) ||
+          typeof item.workspaceRevision !== "string" || !/^blake3:[0-9a-f]{64}$/.test(item.workspaceRevision) ||
+          !["FULL", "SAMPLE"].includes(String(item.fidelity)) ||
+          typeof item.observedBytes !== "string" || !/^(0|[1-9][0-9]{0,19})$/.test(item.observedBytes) ||
+          typeof item.droppedBytes !== "string" || !/^(0|[1-9][0-9]{0,19})$/.test(item.droppedBytes)) {
+          throw fail("protocol", "HostKernel returned an invalid or duplicated direct terminal artifact edge")
+        }
+        seenEffects.add(item.effectID)
+        return item
+      })
+      return { ...response, artifacts } as unknown as DirectAttemptTerminalArtifactProjectionV1
+    })
+    const listDirectSessionArtifacts: Interface["listDirectSessionArtifacts"] = Effect.fn("SessionSupervisor.listDirectSessionArtifacts")(function* (input) {
+      const trusted = yield* TrustedPrincipalContext
+      if (trusted.principal.kind !== "server_auth" || !trusted.principal.subject ||
+        !/^ses_[A-Za-z0-9_-]{1,128}$/.test(input.sessionID)) {
+        return yield* Effect.fail(fail("authorization", "root artifact resolution requires authenticated ServerAuth and Session"))
+      }
+      if (!hostKernelClient?.enabledFeatures.includes(ARTIFACT_READ_CONTEXT_FEATURE)) {
+        return yield* Effect.fail(fail("host-kernel-feature", "authenticated root artifact reads are unavailable"))
+      }
+      const locationID = yield* registerHostLocationFor(input.locationRef, trusted.principal)
+      const response = yield* requestHostKernel("execution.v1", "direct_session_artifacts", {
+        sessionID: input.sessionID,
+        locationID,
+      }, { trustedPrincipal: trusted.principal })
+      const responseKeys = ["status", "sessionID", "locationID", "currentOwnerEpoch", "artifacts"].toSorted()
+      if (Object.keys(response).toSorted().join("\0") !== responseKeys.join("\0") ||
+        response.status !== "RECOVERED" || response.sessionID !== input.sessionID ||
+        response.locationID !== locationID || typeof response.currentOwnerEpoch !== "string" ||
+        !/^[1-9][0-9]{0,19}$/.test(response.currentOwnerEpoch) ||
+        BigInt(response.currentOwnerEpoch) > 0xffff_ffff_ffff_ffffn ||
+        !Array.isArray(response.artifacts) || response.artifacts.length > 256) {
+        return yield* Effect.fail(fail("protocol", "HostKernel returned malformed root DirectSession artifact provenance"))
+      }
+      const seenEffects = new Set<string>()
+      const artifacts = response.artifacts.map((raw, index) => {
+        const item = record(raw)
+        const keys = ["artifactRef", "effectID", "batchID", "ownerEpoch", "callIndex", "callID", "challengeID", "receiptDigest", "outputDigest", "workspaceRevision", "fidelity", "observedBytes", "droppedBytes"].toSorted()
+        if (Object.keys(item).toSorted().join("\0") !== keys.join("\0") || !validateArtifactRefWire(item.artifactRef) ||
+          typeof item.effectID !== "string" || !/^[A-Za-z0-9._-]{1,256}$/.test(item.effectID) || seenEffects.has(item.effectID) ||
+          typeof item.batchID !== "string" || !/^[A-Za-z0-9._-]{1,256}$/.test(item.batchID) ||
+          typeof item.ownerEpoch !== "string" || !/^[1-9][0-9]{0,19}$/.test(item.ownerEpoch) || BigInt(item.ownerEpoch) > 0xffff_ffff_ffff_ffffn ||
+          !Number.isSafeInteger(item.callIndex) || (item.callIndex as number) < 0 || (item.callIndex as number) > 31 ||
+          typeof item.callID !== "string" || !/^[A-Za-z0-9._-]{1,256}$/.test(item.callID) ||
+          typeof item.challengeID !== "string" || !/^[A-Za-z0-9._-]{1,256}$/.test(item.challengeID) ||
+          typeof item.receiptDigest !== "string" || !/^blake3:[0-9a-f]{64}$/.test(item.receiptDigest) ||
+          typeof item.outputDigest !== "string" || !/^blake3:[0-9a-f]{64}$/.test(item.outputDigest) ||
+          typeof item.workspaceRevision !== "string" || !/^blake3:[0-9a-f]{64}$/.test(item.workspaceRevision) ||
+          !["FULL", "SAMPLE"].includes(String(item.fidelity)) ||
+          typeof item.observedBytes !== "string" || !/^(0|[1-9][0-9]{0,19})$/.test(item.observedBytes) ||
+          BigInt(item.observedBytes) > 0xffff_ffff_ffff_ffffn ||
+          typeof item.droppedBytes !== "string" || !/^(0|[1-9][0-9]{0,19})$/.test(item.droppedBytes) ||
+          BigInt(item.droppedBytes) > 0xffff_ffff_ffff_ffffn) {
+          throw fail("protocol", "HostKernel returned an invalid or duplicated root terminal artifact edge")
+        }
+        seenEffects.add(item.effectID)
+        return item
+      })
+      return { ...response, artifacts } as unknown as DirectSessionTerminalArtifactProjectionV1
+    })
+    const inspectDirectSessionArtifact: Interface["inspectDirectSessionArtifact"] = Effect.fn("SessionSupervisor.inspectDirectSessionArtifact")(function* (input) {
+      if (!/^ses_[A-Za-z0-9_-]{1,128}$/.test(input.sessionID) || !validateArtifactRefWire(input.artifactRef) ||
+        !/^[1-9][0-9]{0,19}$/.test(input.ownerEpoch) || BigInt(input.ownerEpoch) > 0xffff_ffff_ffff_ffffn) {
+        return yield* Effect.fail(fail("protocol", "root DirectSession artifact identity is invalid"))
+      }
+      const trusted = yield* TrustedPrincipalContext
+      if (trusted.principal.kind !== "server_auth" || !trusted.principal.subject) {
+        return yield* Effect.fail(fail("authorization", "root artifact reads require authenticated ServerAuth"))
+      }
+      if (!hostKernelClient?.enabledFeatures.includes(ARTIFACT_READ_CONTEXT_FEATURE)) {
+        return yield* Effect.fail(fail("host-kernel-feature", "authenticated root artifact reads are unavailable"))
+      }
+      const locationID = yield* registerHostLocationFor(input.locationRef, trusted.principal)
+      const projection = yield* listDirectSessionArtifacts({ sessionID: input.sessionID, locationRef: input.locationRef })
+      if (projection.locationID !== locationID || projection.currentOwnerEpoch !== input.ownerEpoch ||
+        !projection.artifacts.some((edge) => sameArtifactRef(edge.artifactRef, input.artifactRef))) {
+        return yield* Effect.fail(fail("authorization", "root artifact is stale or absent from the current authenticated receipt index"))
+      }
+      const response = yield* requestHostKernel("artifact.v1", "artifacts.inspect", {
+        schemaVersion: 1,
+        artifactRef: input.artifactRef,
+      }, {
+        trustedPrincipal: trusted.principal,
+        authenticatedContext: { kind: "direct_session_artifact_read", sessionID: input.sessionID, locationID, artifactRef: input.artifactRef },
+      })
+      const expected = ["artifactRef", "retentionClass", "createdAt", "fidelity", "droppedByteCount", "encryption", "redaction"].toSorted()
+      if (Object.keys(response).toSorted().join("\0") !== expected.join("\0") ||
+        !sameArtifactRef(response.artifactRef, input.artifactRef) ||
+        typeof response.retentionClass !== "string" || typeof response.createdAt !== "string" ||
+        !["FULL", "SAMPLE", "FAILED"].includes(String(response.fidelity)) ||
+        typeof response.droppedByteCount !== "string" || !/^(0|[1-9][0-9]{0,19})$/.test(response.droppedByteCount) ||
+        BigInt(response.droppedByteCount) > 0xffff_ffff_ffff_ffffn ||
+        !["NONE", "STATE_KEY"].includes(String(response.encryption)) || !["NOT_NEEDED", "APPLIED", "UNKNOWN"].includes(String(response.redaction))) {
+        return yield* Effect.fail(fail("protocol", "HostKernel returned malformed root artifact metadata"))
+      }
+      return response
+    })
+    const readDirectSessionArtifactRange: Interface["readDirectSessionArtifactRange"] = Effect.fn("SessionSupervisor.readDirectSessionArtifactRange")(function* (input) {
+      if (!/^ses_[A-Za-z0-9_-]{1,128}$/.test(input.sessionID) || !validateArtifactRefWire(input.artifactRef) ||
+        !/^[1-9][0-9]{0,19}$/.test(input.ownerEpoch) || BigInt(input.ownerEpoch) > 0xffff_ffff_ffff_ffffn ||
+        typeof input.offset !== "string" || !/^(0|[1-9][0-9]{0,19})$/.test(input.offset) || BigInt(input.offset) > 0xffff_ffff_ffff_ffffn ||
+        !Number.isSafeInteger(input.maxBytes) || input.maxBytes < 1 || input.maxBytes > 768 * 1024) {
+        return yield* Effect.fail(fail("protocol", "root DirectSession artifact range is invalid"))
+      }
+      const trusted = yield* TrustedPrincipalContext
+      if (trusted.principal.kind !== "server_auth" || !trusted.principal.subject) {
+        return yield* Effect.fail(fail("authorization", "root artifact reads require authenticated ServerAuth"))
+      }
+      if (!hostKernelClient?.enabledFeatures.includes(ARTIFACT_READ_CONTEXT_FEATURE)) {
+        return yield* Effect.fail(fail("host-kernel-feature", "authenticated root artifact reads are unavailable"))
+      }
+      const locationID = yield* registerHostLocationFor(input.locationRef, trusted.principal)
+      const projection = yield* listDirectSessionArtifacts({ sessionID: input.sessionID, locationRef: input.locationRef })
+      if (projection.locationID !== locationID || projection.currentOwnerEpoch !== input.ownerEpoch ||
+        !projection.artifacts.some((edge) => sameArtifactRef(edge.artifactRef, input.artifactRef))) {
+        return yield* Effect.fail(fail("authorization", "root artifact is stale or absent from the current authenticated receipt index"))
+      }
+      const response = yield* requestHostKernel("artifact.v1", "artifacts.read_range", {
+        schemaVersion: 1,
+        artifactRef: input.artifactRef,
+        offset: input.offset,
+        maxBytes: input.maxBytes,
+      }, {
+        trustedPrincipal: trusted.principal,
+        authenticatedContext: { kind: "direct_session_artifact_read", sessionID: input.sessionID, locationID, artifactRef: input.artifactRef },
+      })
+      const expected = ["artifactRef", "offset", "nextOffset", "complete", "bytes"].toSorted()
+      if (Object.keys(response).toSorted().join("\0") !== expected.join("\0") ||
+        !sameArtifactRef(response.artifactRef, input.artifactRef) || response.offset !== input.offset ||
+        typeof response.nextOffset !== "string" || !/^(0|[1-9][0-9]{0,19})$/.test(response.nextOffset) ||
+        BigInt(response.nextOffset) > 0xffff_ffff_ffff_ffffn || typeof response.complete !== "boolean" ||
+        !(response.bytes instanceof Uint8Array) || response.bytes.byteLength > input.maxBytes) {
+        return yield* Effect.fail(fail("protocol", "HostKernel returned malformed root artifact range data"))
+      }
+      return response
+    })
+    const directSessionPermissionModeSnapshot = Effect.fn("SessionSupervisor.directSessionPermissionModeSnapshot")(function* (input: {
+      readonly sessionID: string
+      readonly locationRef: typeof LocationSchema.Ref.Type
+    }) {
+      const trusted = yield* TrustedPrincipalContext
+      if (trusted.principal.kind !== "server_auth" || !trusted.principal.subject ||
+        !/^ses_[A-Za-z0-9_-]{1,128}$/.test(input.sessionID)) {
+        return yield* Effect.fail(fail("authorization", "direct Session permission mode requires authenticated ServerAuth"))
+      }
+      const locationID = yield* registerHostLocationFor(input.locationRef, trusted.principal)
+      const response = yield* requestHostKernel("effects.v1", "direct_session_permission_mode_snapshot", {
+        sessionID: input.sessionID,
+        locationID,
+      }, { trustedPrincipal: trusted.principal })
+      return yield* Effect.try({
+        try: () => decodeDirectSessionPermissionMode(response, { sessionID: input.sessionID, locationID }),
+        catch: (error) => error instanceof SessionSupervisorError ? error : fail("protocol", "HostKernel returned an invalid direct Session permission mode"),
+      })
+    })
+    const directProviderPermissionScope: Interface["directProviderPermissionScope"] = Effect.fn("SessionSupervisor.directProviderPermissionScope")(function* (input) {
+      const mode = yield* directSessionPermissionModeSnapshot(input)
+      // The digest is HostKernel-authored over the live Session owner epoch,
+      // workspace root/backend, Guard policy, and effective Session modes.
+      // It is a request pin only; Guard still authorizes every effect separately.
+      return {
+        sessionID: mode.sessionId,
+        locationID: mode.locationId,
+        ownerEpoch: mode.ownerEpoch,
+        permissionScopeDigest: mode.digest,
+        policyDigest: mode.policyDigest,
+      }
+    })
+    const setDirectSessionPermissionMode = Effect.fn("SessionSupervisor.setDirectSessionPermissionMode")(function* (input: {
+      readonly sessionID: string
+      readonly locationRef: typeof LocationSchema.Ref.Type
+      readonly sandboxMode: DirectSessionPermissionModeV1["sandboxMode"]
+      readonly approvalPolicy: DirectSessionPermissionModeV1["approvalPolicy"]
+      readonly expectedRevision: string
+    }) {
+      const trusted = yield* TrustedPrincipalContext
+      if (trusted.principal.kind !== "server_auth" || !trusted.principal.subject ||
+        !/^ses_[A-Za-z0-9_-]{1,128}$/.test(input.sessionID) ||
+        !/^[1-9][0-9]{0,19}$/.test(input.expectedRevision) || BigInt(input.expectedRevision) > 0xffff_ffff_ffff_ffffn ||
+        !["read-only", "workspace-write", "danger-full-access"].includes(input.sandboxMode) ||
+        !["on-request", "always", "never"].includes(input.approvalPolicy)) {
+        return yield* Effect.fail(fail("authorization", "direct Session permission mode update is invalid"))
+      }
+      const locationID = yield* registerHostLocationFor(input.locationRef, trusted.principal)
+      const response = yield* requestHostKernel("effects.v1", "set_direct_session_permission_mode", {
+        sessionID: input.sessionID,
+        locationID,
+        sandboxMode: input.sandboxMode,
+        approvalPolicy: input.approvalPolicy,
+        expectedRevision: input.expectedRevision,
+      }, { trustedPrincipal: trusted.principal })
+      return yield* Effect.try({
+        try: () => {
+          const mode = decodeDirectSessionPermissionMode(response, { sessionID: input.sessionID, locationID })
+          if (mode.sandboxMode !== input.sandboxMode || mode.approvalPolicy !== input.approvalPolicy ||
+            BigInt(mode.revision) !== BigInt(input.expectedRevision) + 1n) {
+            throw fail("protocol", "HostKernel returned a different direct Session permission mode revision")
+          }
+          return mode
+        },
+        catch: (error) => error instanceof SessionSupervisorError ? error : fail("protocol", "HostKernel returned an invalid direct Session permission mode update"),
+      })
+    })
+    const decodeDirectSessionGrantProjection = (response: unknown, expectedStatus: "ACTIVE" | "REVOKED") => {
+      const value = record(response)
+      const keys = ["status", "grantID", "grantDigest", "scopeKind", "scopeDigest", "expiresAtUnixMs", "revokedAtUnixMs"].toSorted()
+      if (Object.keys(value).toSorted().join("\0") !== keys.join("\0") || value.status !== expectedStatus ||
+        typeof value.grantID !== "string" || !/^[A-Za-z0-9._:-]{1,256}$/.test(value.grantID) ||
+        typeof value.grantDigest !== "string" || !/^blake3:[a-f0-9]{64}$/.test(value.grantDigest) ||
+        typeof value.scopeDigest !== "string" || !/^blake3:[a-f0-9]{64}$/.test(value.scopeDigest) ||
+        (value.scopeKind !== "session" && value.scopeKind !== "workspace") ||
+        !(value.expiresAtUnixMs === null || typeof value.expiresAtUnixMs === "string" && /^(0|[1-9][0-9]*)$/.test(value.expiresAtUnixMs)) ||
+        !(value.revokedAtUnixMs === null || typeof value.revokedAtUnixMs === "string" && /^(0|[1-9][0-9]*)$/.test(value.revokedAtUnixMs))) {
+        throw fail("protocol", "HostKernel direct grant projection is malformed")
+      }
+      return value as unknown as DirectSessionGrantProjectionV1
+    }
+    const issueDirectSessionGrant = Effect.fn("SessionSupervisor.issueDirectSessionGrant")(function* (input: {
+      readonly locationRef: typeof LocationSchema.Ref.Type
+      readonly sessionID: string
+      readonly challengeID: string
+      readonly effectID: string
+      readonly scopeKind: "session" | "workspace"
+      readonly actions: readonly ("read" | "edit")[]
+    }) {
+      const trusted = yield* TrustedPrincipalContext
+      if (trusted.principal.kind !== "server_auth" || !trusted.principal.subject ||
+        !/^ses_[A-Za-z0-9_-]{1,128}$/.test(input.sessionID) ||
+        !/^[A-Za-z0-9._:-]{1,256}$/.test(input.challengeID) || !/^[A-Za-z0-9._:-]{1,256}$/.test(input.effectID) ||
+        (input.scopeKind !== "session" && input.scopeKind !== "workspace") ||
+        input.actions.length === 0 || input.actions.length > 2 || new Set(input.actions).size !== input.actions.length ||
+        input.actions.some((action) => action !== "read" && action !== "edit")) {
+        return yield* Effect.fail(fail("authorization", "direct grant requires a bounded authenticated UI selection"))
+      }
+      yield* registerHostLocationFor(input.locationRef, trusted.principal)
+      const scope = {
+        profile: "workspace-code",
+        actions: [...input.actions].toSorted(),
+        resourceScope: "registered_workspace_and_isolated_temp_cache_roots",
+        limits: { maxEffectCount: 64, maxPayloadBytes: 1_048_576, maxWallTimeMs: 30_000 },
+      } as const
+      const deliveryID = `grantissue_${createHash("sha256").update(JSON.stringify([
+        input.challengeID, input.effectID, input.scopeKind, scope.actions, input.sessionID,
+      ])).digest("hex")}`
+      const response = yield* requestHostKernel("execution.v1", "issue_direct_session_grant", {
+        scopeKind: input.scopeKind,
+        scope,
+        challengeID: input.challengeID,
+        effectID: input.effectID,
+      }, { trustedPrincipal: trusted.principal, deliveryID })
+      const projection = yield* Effect.try({
+        try: () => decodeDirectSessionGrantProjection(response, "ACTIVE"),
+        catch: () => fail("protocol", "HostKernel did not confirm direct grant issuance"),
+      })
+      if (projection.scopeKind !== input.scopeKind) return yield* Effect.fail(fail("protocol", "HostKernel direct grant class differs from the selected class"))
+      return projection
+    })
+    const revokeDirectSessionGrant = Effect.fn("SessionSupervisor.revokeDirectSessionGrant")(function* (input: {
+      readonly locationRef: typeof LocationSchema.Ref.Type
+      readonly grantID: string
+    }) {
+      const trusted = yield* TrustedPrincipalContext
+      if (trusted.principal.kind !== "server_auth" || !trusted.principal.subject || !/^[A-Za-z0-9._:-]{1,256}$/.test(input.grantID)) {
+        return yield* Effect.fail(fail("authorization", "direct grant revocation requires authenticated ServerAuth"))
+      }
+      const locationID = yield* registerHostLocationFor(input.locationRef, trusted.principal)
+      const response = yield* requestHostKernel("execution.v1", "revoke_direct_session_grant", {
+        locationID, grantID: input.grantID,
+      }, { trustedPrincipal: trusted.principal, deliveryID: `grantrevoke_${createHash("sha256").update(input.grantID).digest("hex")}` })
+      return yield* Effect.try({
+        try: () => decodeDirectSessionGrantProjection(response, "REVOKED"),
+        catch: () => fail("protocol", "HostKernel did not confirm direct grant revocation"),
+      })
+    })
     const queryRepoStructure = Effect.fn("SessionSupervisor.queryRepoStructure")(function* (input: {
       readonly sessionID: string
       readonly locationRef: typeof LocationSchema.Ref.Type
@@ -3538,6 +5406,12 @@ const layer = Layer.effect(
     }) {
       if (!/^ses_[A-Za-z0-9_-]{1,128}$/.test(input.sessionID)) {
         return yield* Effect.fail(fail("protocol", "RepoIntel Session ID is invalid"))
+      }
+      // A continuation is only usable after HostKernel has negotiated and
+      // implemented the opaque owner-bound cursor lease. Until then reject it
+      // before Location registration or source collection; never restart page 1.
+      if (input.query.cursor !== undefined && !hostKernelClient?.enabledFeatures.includes(REPO_INTEL_CURSOR_LEASE_FEATURE)) {
+        return yield* Effect.fail(fail("host-kernel", "RepoIntel continuation leases are unavailable", undefined, "capability_unavailable"))
       }
       // An overlay reference has no Core snapshot owner. The gate runs before
       // Location registration or generation acquisition can collect workspace files.
@@ -3553,51 +5427,54 @@ const layer = Layer.effect(
         return yield* Effect.fail(fail("host-kernel-feature", "authenticated RepoIntel reads are unavailable"))
       }
       const requestId = input.query.queryId
-      const ensureRequest = yield* Effect.try({
-        try: () => Schema.encodeSync(RepoGenerationRequestV1)({
-          schemaVersion: 1,
-          messageType: "ensure_generation",
-          requestId,
-          rootRef: input.query.rootRef,
-          maxFiles: 4096,
-          maxBytes: 67_108_864,
-          maxFileBytes: 1_048_576,
-          deadline: input.query.deadline,
-        }),
-        catch: () => fail("protocol", "RepoIntel generation request does not match the strict schema"),
-      })
+      const now = Date.now()
+      const deadlineAt = Date.parse(input.query.deadline)
+      if (!Number.isFinite(deadlineAt) || deadlineAt <= now || deadlineAt > now + 5 * 60_000) {
+        return yield* Effect.fail(fail("protocol", "RepoIntel query deadline is invalid"))
+      }
       const locationID = yield* registerHostLocation(input.locationRef)
       const authenticatedContext = { kind: "repo_read" as const, sessionID: input.sessionID, locationID }
-      const generationResponse = yield* requestHostKernel("repo-intel.v1", "ensure_generation", ensureRequest, {
-        cancelOnInterrupt: true,
-        trustedPrincipal: trusted.principal,
-        authenticatedContext,
-      })
-      const generationPin = yield* Effect.try({
-        try: () => Schema.decodeUnknownSync(RepoGenerationPinV1, { onExcessProperty: "error" })(generationResponse),
-        catch: () => fail("protocol", "HostKernel returned an invalid RepoIntel generation pin"),
-      })
-      const now = Date.now()
-      const pinExpiresAt = Date.parse(generationPin.expiresAt)
-      const deadlineAt = Date.parse(input.query.deadline)
-      if (
-        generationPin.requestId !== requestId ||
-        !Number.isFinite(pinExpiresAt) ||
-        pinExpiresAt <= now ||
-        pinExpiresAt > now + 5 * 60_000 ||
-        !Number.isFinite(deadlineAt) ||
-        deadlineAt <= now ||
-        deadlineAt > now + 5 * 60_000 ||
-        pinExpiresAt > deadlineAt ||
-        generationPin.coverage.files > 4096 ||
-        generationPin.coverage.bytes > 67_108_864
-      ) {
-        return yield* Effect.fail(fail("stale-generation", "RepoIntel generation pin or deadline expired", undefined, "stale_generation"))
+      let generationPin: typeof RepoGenerationPinV1.Type | undefined
+      if (input.query.cursor === undefined) {
+        const ensureRequest = yield* Effect.try({
+          try: () => Schema.encodeSync(RepoGenerationRequestV1)({
+            schemaVersion: 1,
+            messageType: "ensure_generation",
+            requestId,
+            rootRef: input.query.rootRef,
+            maxFiles: 4096,
+            maxBytes: 67_108_864,
+            maxFileBytes: 1_048_576,
+            deadline: input.query.deadline,
+          }),
+          catch: () => fail("protocol", "RepoIntel generation request does not match the strict schema"),
+        })
+        const generationResponse = yield* requestHostKernel("repo-intel.v1", "ensure_generation", ensureRequest, {
+          cancelOnInterrupt: true,
+          trustedPrincipal: trusted.principal,
+          authenticatedContext,
+        })
+        generationPin = yield* Effect.try({
+          try: () => Schema.decodeUnknownSync(RepoGenerationPinV1, { onExcessProperty: "error" })(generationResponse),
+          catch: () => fail("protocol", "HostKernel returned an invalid RepoIntel generation pin"),
+        })
+        const pinExpiresAt = Date.parse(generationPin.expiresAt)
+        if (
+          generationPin.requestId !== requestId ||
+          !Number.isFinite(pinExpiresAt) ||
+          pinExpiresAt <= now ||
+          pinExpiresAt > now + 5 * 60_000 ||
+          pinExpiresAt > deadlineAt ||
+          generationPin.coverage.files > 4096 ||
+          generationPin.coverage.bytes > 67_108_864
+        ) {
+          return yield* Effect.fail(fail("stale-generation", "RepoIntel generation pin or deadline expired", undefined, "stale_generation"))
+        }
       }
       const query = yield* Effect.try({
         try: () => Schema.encodeSync(RepoStructureQueryV1)({
           ...input.query,
-          sourceGeneration: generationPin.sourceGeneration,
+          ...(generationPin ? { sourceGeneration: generationPin.sourceGeneration } : {}),
         }),
         catch: () => fail("protocol", "RepoIntel query does not match the strict query schema"),
       })
@@ -3614,14 +5491,294 @@ const layer = Layer.effect(
         page.status === "STALE" ||
         page.freshness === "stale" ||
         page.queryId !== requestId ||
-        page.workspaceBinding !== generationPin.workspaceBinding ||
-        page.sourceGeneration !== generationPin.sourceGeneration ||
-        page.sourceRevision !== generationPin.sourceRevision
+        (generationPin !== undefined && (
+          page.workspaceBinding !== generationPin.workspaceBinding ||
+          page.sourceGeneration !== generationPin.sourceGeneration ||
+          page.sourceRevision !== generationPin.sourceRevision
+        ))
       ) {
-        return yield* Effect.fail(fail("stale-generation", "RepoIntel source changed after generation acquisition", undefined, "stale_generation"))
+        return yield* Effect.fail(fail("stale-generation", "RepoIntel source changed or cursor lease is stale", undefined, "stale_generation"))
       }
       return page
         }),
+      })
+    })
+    const discoverRepo = Effect.fn("SessionSupervisor.discoverRepo")(function* (input: {
+      readonly sessionID: string
+      readonly locationRef: typeof LocationSchema.Ref.Type
+      readonly request: typeof RepoDiscoveryRequestV1.Type
+    }) {
+      if (!/^ses_[A-Za-z0-9_-]{1,128}$/.test(input.sessionID)) {
+        return yield* Effect.fail(fail("protocol", "RepoIntel Session ID is invalid"))
+      }
+      const trusted = yield* TrustedPrincipalContext
+      if (trusted.principal.kind !== "server_auth" || !trusted.principal.subject) {
+        return yield* Effect.fail(fail("authorization", "RepoIntel discovery requires authenticated ServerAuth context"))
+      }
+      if (!hostKernelClient?.enabledFeatures.includes(REPO_INTEL_READ_CONTEXT_FEATURE)) {
+        return yield* Effect.fail(fail("host-kernel-feature", "authenticated RepoIntel discovery is unavailable"))
+      }
+      const request = yield* Effect.try({
+        try: () => Schema.encodeSync(RepoDiscoveryRequestV1)(input.request),
+        catch: () => fail("protocol", "RepoIntel discovery request does not match the strict schema"),
+      })
+      const now = Date.now()
+      const deadlineAt = Date.parse(input.request.deadline)
+      if (!Number.isFinite(deadlineAt) || deadlineAt <= now || deadlineAt > now + 5 * 60_000) {
+        return yield* Effect.fail(fail("protocol", "RepoIntel discovery deadline is invalid"))
+      }
+      const locationID = yield* registerHostLocation(input.locationRef)
+      const response = yield* requestHostKernel("repo-intel.v1", "discover", request, {
+        cancelOnInterrupt: true,
+        trustedPrincipal: trusted.principal,
+        authenticatedContext: { kind: "repo_read", sessionID: input.sessionID, locationID },
+      })
+      const page = yield* Effect.try({
+        try: () => Schema.decodeUnknownSync(RepoDiscoveryPageV1, { onExcessProperty: "error" })(response),
+        catch: () => fail("protocol", "HostKernel returned an invalid RepoIntel discovery page"),
+      })
+      const authority = page.authority
+      const expectedRoot = input.request.rootRef
+      if (
+        page.requestId !== input.request.requestId ||
+        authority.sessionID !== input.sessionID || authority.locationID !== locationID ||
+        authority.principalBinding !== repoDiscoveryPrincipalBinding(trusted.principal.subject) ||
+        authority.ownerEpoch !== String(hostKernelClient.ownerEpoch) ||
+        authority.rootRef !== expectedRoot || authority.mode !== input.request.mode ||
+        authority.maxEntries !== input.request.maxEntries || authority.maxBytes !== input.request.maxBytes ||
+        authority.maxDepth !== input.request.maxDepth ||
+        !repoDiscoveryPageMatchesRequest(input.request, page)
+      ) {
+        return yield* Effect.fail(fail("stale-generation", "RepoIntel discovery authority or bounds do not match the request", undefined, "stale_generation"))
+      }
+      return page
+    })
+    const readRepoDocument = Effect.fn("SessionSupervisor.readRepoDocument")(function* (input: {
+      readonly sessionID: string
+      readonly locationRef: typeof LocationSchema.Ref.Type
+      readonly request: typeof RepoDocumentReadRequestV1.Type
+    }) {
+      if (!/^ses_[A-Za-z0-9_-]{1,128}$/.test(input.sessionID)) {
+        return yield* Effect.fail(fail("protocol", "RepoIntel Session ID is invalid"))
+      }
+      const trusted = yield* TrustedPrincipalContext
+      if (trusted.principal.kind !== "server_auth" || !trusted.principal.subject) {
+        return yield* Effect.fail(fail("authorization", "RepoIntel document read requires authenticated ServerAuth context"))
+      }
+      if (!hostKernelClient?.enabledFeatures.includes(REPO_INTEL_READ_CONTEXT_FEATURE)) {
+        return yield* Effect.fail(fail("host-kernel-feature", "authenticated RepoIntel reads are unavailable"))
+      }
+      const body = yield* Effect.try({
+        try: () => Schema.encodeSync(RepoDocumentReadRequestV1)(input.request),
+        catch: () => fail("protocol", "RepoIntel document read request does not match the strict schema"),
+      })
+      const locationID = yield* registerHostLocation(input.locationRef)
+      const response = yield* requestHostKernel("repo-intel.v1", "read_document", body, {
+        cancelOnInterrupt: true,
+        trustedPrincipal: trusted.principal,
+        authenticatedContext: { kind: "repo_read", sessionID: input.sessionID, locationID },
+      })
+      const document = yield* Effect.try({
+        try: () => Schema.decodeUnknownSync(RepoDocumentReadResponseV1, { onExcessProperty: "error" })(response),
+        catch: () => fail("protocol", "HostKernel returned an invalid RepoIntel document"),
+      })
+      if (
+        document.pathRef !== input.request.pathRef ||
+        document.revisionKind !== input.request.revisionKind ||
+        document.observedWorkspaceRevision !== input.request.expectedWorkspaceRevision ||
+        Buffer.byteLength(document.text, "utf8") > input.request.maxBytes ||
+        document.contentDigest !== repoDocumentContentDigest(document.text)
+      ) {
+        return yield* Effect.fail(fail("stale-generation", "RepoIntel document binding, digest, or revision does not match the request", undefined, "stale_generation"))
+      }
+      return document
+    })
+    const resolveVerifiedManagedArtifactScope = Effect.fn("SessionSupervisor.resolveVerifiedManagedArtifactScope")(function* (input: {
+      readonly sessionID: string
+      readonly locationRef: typeof LocationSchema.Ref.Type
+      readonly artifactRef: ArtifactRefWireV1
+    }) {
+      if (!/^ses_[A-Za-z0-9_-]{1,128}$/.test(input.sessionID) || !validateArtifactRefWire(input.artifactRef)) {
+        return yield* Effect.fail(fail("protocol", "managed artifact identity is invalid"))
+      }
+      const trusted = yield* TrustedPrincipalContext
+      if (trusted.principal.kind !== "server_auth" || !trusted.principal.subject) {
+        return yield* Effect.fail(fail("authorization", "artifact scope resolution requires authenticated ServerAuth context"))
+      }
+      if (!hostKernelClient?.enabledFeatures.includes(ARTIFACT_READ_CONTEXT_FEATURE)) {
+        return yield* Effect.fail(fail("host-kernel-feature", "authenticated managed artifact reads are unavailable"))
+      }
+      const locationID = yield* registerHostLocation(input.locationRef)
+      const response = yield* requestHostKernel("artifact.v1", "artifacts.resolve_scope", {
+        schemaVersion: 1,
+        artifactRef: input.artifactRef,
+      }, {
+        trustedPrincipal: trusted.principal,
+        authenticatedContext: {
+          kind: "artifact_scope_resolve",
+          sessionID: input.sessionID,
+          locationID,
+          artifactRef: input.artifactRef,
+        },
+      })
+      if (Object.keys(response).toSorted().join("\0") !== ["artifactRef", "managedAttempt", "schemaVersion"].sort().join("\0") ||
+        response.schemaVersion !== 1 || !sameArtifactRef(response.artifactRef, input.artifactRef)) {
+        return yield* Effect.fail(fail("protocol", "HostKernel returned an invalid verified artifact scope"))
+      }
+      const scope = yield* Effect.try({
+        try: () => managedAttemptScopeFromWire(response.managedAttempt),
+        catch: () => fail("protocol", "HostKernel returned an invalid verified artifact Attempt scope"),
+      })
+      return scope
+    })
+    const inspectManagedArtifact = Effect.fn("SessionSupervisor.inspectManagedArtifact")(function* (input: {
+      readonly sessionID: string
+      readonly managedAttempt: ManagedAttemptScopeV1
+      readonly artifactRef: ArtifactRefWireV1
+    }) {
+      if (!/^ses_[A-Za-z0-9_-]{1,128}$/.test(input.sessionID) || !validateArtifactRefWire(input.artifactRef)) {
+        return yield* Effect.fail(fail("protocol", "managed artifact identity is invalid"))
+      }
+      const scope = yield* Effect.try({
+        try: () => managedAttemptScopeToWire(input.managedAttempt),
+        catch: () => fail("protocol", "managed artifact Attempt scope is invalid"),
+      })
+      if (scope.sessionID !== input.sessionID) {
+        return yield* Effect.fail(fail("authorization", "managed artifact Attempt does not belong to the current Session"))
+      }
+      const trusted = yield* TrustedPrincipalContext
+      if (trusted.principal.kind !== "server_auth" || !trusted.principal.subject) {
+        return yield* Effect.fail(fail("authorization", "artifact reads require authenticated ServerAuth context"))
+      }
+      if (!hostKernelClient?.enabledFeatures.includes(ARTIFACT_READ_CONTEXT_FEATURE)) {
+        return yield* Effect.fail(fail("host-kernel-feature", "authenticated managed artifact reads are unavailable"))
+      }
+      const locationID = scope.locationID
+      return yield* requestHostKernel("artifact.v1", "artifacts.inspect", { artifactRef: input.artifactRef }, {
+        trustedPrincipal: trusted.principal,
+        authenticatedContext: {
+          kind: "artifact_read",
+          sessionID: input.sessionID,
+          locationID,
+          artifactRef: input.artifactRef,
+          managedAttempt: scope,
+        },
+      })
+    })
+    const readManagedArtifactRange = Effect.fn("SessionSupervisor.readManagedArtifactRange")(function* (input: {
+      readonly sessionID: string
+      readonly managedAttempt: ManagedAttemptScopeV1
+      readonly artifactRef: ArtifactRefWireV1
+      readonly offset: string
+      readonly maxBytes: number
+    }) {
+      if (!/^ses_[A-Za-z0-9_-]{1,128}$/.test(input.sessionID) || !validateArtifactRefWire(input.artifactRef) ||
+        typeof input.offset !== "string" || !/^(0|[1-9][0-9]{0,19})$/.test(input.offset) || BigInt(input.offset) > 0xffff_ffff_ffff_ffffn ||
+        !Number.isSafeInteger(input.maxBytes) || input.maxBytes < 1 || input.maxBytes > 768 * 1024) {
+        return yield* Effect.fail(fail("protocol", "managed artifact range is invalid"))
+      }
+      const scope = yield* Effect.try({
+        try: () => managedAttemptScopeToWire(input.managedAttempt),
+        catch: () => fail("protocol", "managed artifact Attempt scope is invalid"),
+      })
+      if (scope.sessionID !== input.sessionID) {
+        return yield* Effect.fail(fail("authorization", "managed artifact Attempt does not belong to the current Session"))
+      }
+      const trusted = yield* TrustedPrincipalContext
+      if (trusted.principal.kind !== "server_auth" || !trusted.principal.subject) {
+        return yield* Effect.fail(fail("authorization", "artifact reads require authenticated ServerAuth context"))
+      }
+      if (!hostKernelClient?.enabledFeatures.includes(ARTIFACT_READ_CONTEXT_FEATURE)) {
+        return yield* Effect.fail(fail("host-kernel-feature", "authenticated managed artifact reads are unavailable"))
+      }
+      const locationID = scope.locationID
+      return yield* requestHostKernel("artifact.v1", "artifacts.read_range", {
+        artifactRef: input.artifactRef,
+        offset: input.offset,
+        maxBytes: input.maxBytes,
+      }, {
+        trustedPrincipal: trusted.principal,
+        authenticatedContext: {
+          kind: "artifact_read",
+          sessionID: input.sessionID,
+          locationID,
+          artifactRef: input.artifactRef,
+          managedAttempt: scope,
+        },
+      })
+    })
+    const inspectDirectAttemptArtifact = Effect.fn("SessionSupervisor.inspectDirectAttemptArtifact")(function* (input: {
+      readonly sessionID: string
+      readonly directAttempt: DirectAttemptScopeV1
+      readonly artifactRef: ArtifactRefWireV1
+    }) {
+      if (!/^ses_[A-Za-z0-9_-]{1,128}$/.test(input.sessionID) || !validateArtifactRefWire(input.artifactRef)) {
+        return yield* Effect.fail(fail("protocol", "direct artifact identity is invalid"))
+      }
+      const scope = yield* Effect.try({
+        try: () => directAttemptScopeToWire(input.directAttempt),
+        catch: () => fail("protocol", "direct artifact Attempt scope is invalid"),
+      })
+      if (scope.childSessionID !== input.sessionID) {
+        return yield* Effect.fail(fail("authorization", "direct artifact Attempt does not belong to the current Session"))
+      }
+      const trusted = yield* TrustedPrincipalContext
+      if (trusted.principal.kind !== "server_auth" || !trusted.principal.subject) {
+        return yield* Effect.fail(fail("authorization", "artifact reads require authenticated ServerAuth context"))
+      }
+      if (!hostKernelClient?.enabledFeatures.includes(ARTIFACT_READ_CONTEXT_FEATURE)) {
+        return yield* Effect.fail(fail("host-kernel-feature", "authenticated direct artifact reads are unavailable"))
+      }
+      return yield* requestHostKernel("artifact.v1", "artifacts.inspect", { artifactRef: input.artifactRef }, {
+        trustedPrincipal: trusted.principal,
+        authenticatedContext: {
+          kind: "artifact_read",
+          sessionID: input.sessionID,
+          locationID: scope.locationID,
+          artifactRef: input.artifactRef,
+          directAttempt: scope,
+        },
+      })
+    })
+    const readDirectAttemptArtifactRange = Effect.fn("SessionSupervisor.readDirectAttemptArtifactRange")(function* (input: {
+      readonly sessionID: string
+      readonly directAttempt: DirectAttemptScopeV1
+      readonly artifactRef: ArtifactRefWireV1
+      readonly offset: string
+      readonly maxBytes: number
+    }) {
+      if (!/^ses_[A-Za-z0-9_-]{1,128}$/.test(input.sessionID) || !validateArtifactRefWire(input.artifactRef) ||
+        typeof input.offset !== "string" || !/^(0|[1-9][0-9]{0,19})$/.test(input.offset) || BigInt(input.offset) > 0xffff_ffff_ffff_ffffn ||
+        !Number.isSafeInteger(input.maxBytes) || input.maxBytes < 1 || input.maxBytes > 768 * 1024) {
+        return yield* Effect.fail(fail("protocol", "direct artifact range is invalid"))
+      }
+      const scope = yield* Effect.try({
+        try: () => directAttemptScopeToWire(input.directAttempt),
+        catch: () => fail("protocol", "direct artifact Attempt scope is invalid"),
+      })
+      if (scope.childSessionID !== input.sessionID) {
+        return yield* Effect.fail(fail("authorization", "direct artifact Attempt does not belong to the current Session"))
+      }
+      const trusted = yield* TrustedPrincipalContext
+      if (trusted.principal.kind !== "server_auth" || !trusted.principal.subject) {
+        return yield* Effect.fail(fail("authorization", "artifact reads require authenticated ServerAuth context"))
+      }
+      if (!hostKernelClient?.enabledFeatures.includes(ARTIFACT_READ_CONTEXT_FEATURE)) {
+        return yield* Effect.fail(fail("host-kernel-feature", "authenticated direct artifact reads are unavailable"))
+      }
+      return yield* requestHostKernel("artifact.v1", "artifacts.read_range", {
+        artifactRef: input.artifactRef,
+        offset: input.offset,
+        maxBytes: input.maxBytes,
+      }, {
+        trustedPrincipal: trusted.principal,
+        authenticatedContext: {
+          kind: "artifact_read",
+          sessionID: input.sessionID,
+          locationID: scope.locationID,
+          artifactRef: input.artifactRef,
+          directAttempt: scope,
+        },
       })
     })
     const awaitGuardApproval = Effect.fn("SessionSupervisor.awaitGuardApproval")(function* (
@@ -3668,15 +5825,23 @@ const layer = Layer.effect(
     const prepareUserEffect = Effect.fn("SessionSupervisor.prepareUserEffect")(function* (input: {
       readonly locationRef: typeof LocationSchema.Ref.Type
       readonly sessionID?: string
-      readonly capabilityID: "terminal.start" | "terminal.run"
+      readonly capabilityID: UserEffectCapabilityID
       readonly arguments: Readonly<Record<string, unknown>>
     }) {
       const trusted = yield* TrustedPrincipalContext
+      const automationAction = input.capabilityID.startsWith("automations.")
+      if (automationAction && (trusted.principal.kind !== "server_auth" || !trusted.principal.subject)) {
+        return yield* Effect.fail(fail("authorization", "automation definition changes require authenticated ServerAuth"))
+      }
+      if (automationAction && input.sessionID !== undefined) {
+        return yield* Effect.fail(fail("authorization", "automation definition changes use the authenticated workspace-owner lane"))
+      }
       const locationID = yield* registerHostLocation(input.locationRef)
+      const userActionID = `action_${randomUUID().replaceAll("-", "")}`
       const response = yield* requestHostKernel("effects.v2", "prepare_user_effect", {
         locationID,
         ...(input.sessionID === undefined ? {} : { sessionID: input.sessionID }),
-        userActionID: `action_${randomUUID().replaceAll("-", "")}`,
+        userActionID,
         capabilityID: input.capabilityID,
         arguments: input.arguments,
       }, { trustedPrincipal: trusted.principal })
@@ -3686,7 +5851,7 @@ const layer = Layer.effect(
           catch: (error) =>
             error instanceof SessionSupervisorError ? error : fail("protocol", "host returned an invalid capability lease"),
         })
-        return { ...lease, locationID }
+        return { ...lease, locationID, userActionID, capabilityID: input.capabilityID }
       }
       if (response.status === "denied") return yield* Effect.fail(fail("authorization", "Guard denied the user action"))
       if (response.status !== "needs_approval") {
@@ -3757,8 +5922,662 @@ const layer = Layer.effect(
       if (lease.effectID !== challenge.effectID) {
         return yield* Effect.fail(fail("protocol", "approval lease does not match its challenge"))
       }
-      return { ...lease, locationID }
+      return {
+        ...lease,
+        locationID,
+        userActionID,
+        capabilityID: input.capabilityID,
+        challengeID: challenge.challengeID,
+        inputDigest: challenge.inputDigest,
+      }
     })
+    const codeModeHostRequest: Interface["codeModeHostRequest"] = Effect.fn("SessionSupervisor.codeModeHostRequest")(function* (input) {
+      const trusted = yield* TrustedPrincipalContext
+      if (trusted.principal.kind !== "server_auth" || !trusted.principal.subject ||
+        !/^ses_[A-Za-z0-9_-]{1,128}$/.test(input.sessionID) || !/^[A-Za-z0-9._:-]{1,256}$/.test(input.callID) ||
+        !["codemode_enablement", "codemode_start", "codemode_resume", "codemode_cancel", "codemode_cancel_wave", "codemode_inspect", "codemode_prepare_wave", "codemode_settle_tool_results", "codemode_wave_receipts"].includes(input.operation) ||
+        input.body.schemaVersion !== 1 || (input.lane === "managed_attempt") !== (input.managedAttempt !== undefined)) {
+        return yield* Effect.fail(fail("authorization", "CodeMode request requires authenticated Session and Tool.Context correlation"))
+      }
+      const bindingMatches = input.lane === "direct_session"
+        ? input.managedAttempt === undefined && input.body.lane === "direct_session" && input.body.sessionID === input.sessionID
+        : input.managedAttempt !== undefined && input.body.lane === "managed_attempt" &&
+          input.body.runID === input.managedAttempt.runID && input.body.taskID === input.managedAttempt.taskID &&
+          input.body.attemptID === input.managedAttempt.attemptID && input.managedAttempt.sessionID === input.sessionID
+      if (!bindingMatches) return yield* Effect.fail(fail("authorization", "CodeMode public lane binding differs from private Tool.Context"))
+      const locationID = yield* registerHostLocationFor(input.locationRef, trusted.principal)
+      let managedAttempt: ManagedAttemptScopeV1 | undefined
+      if (input.managedAttempt) {
+        const scope = managedAttemptScopeToWire(input.managedAttempt)
+        if (scope.locationID !== locationID) return yield* Effect.fail(fail("authorization", "CodeMode managed Attempt Location differs from authenticated Location"))
+        managedAttempt = input.managedAttempt
+      }
+      return yield* requestHostKernel("execution.v1", input.operation, input.body, {
+        trustedPrincipal: trusted.principal,
+        authenticatedContext: {
+          kind: "code_mode_call",
+          sessionID: input.sessionID,
+          locationID,
+          callID: input.callID,
+          lane: input.lane,
+          ...(managedAttempt ? { managedAttempt } : {}),
+        },
+      })
+    })
+    const prepareCodeModeToolBatch: Interface["prepareCodeModeToolBatch"] = Effect.fn("SessionSupervisor.prepareCodeModeToolBatch")(function* (input) {
+      if (input.calls.some((call) => !validBatchIdentity(call.toolName))) {
+        return yield* Effect.fail(fail("protocol", "CodeMode resolved executor name is invalid"))
+      }
+      yield* Effect.try({
+        try: () => validateToolBatchCalls(input.calls),
+        catch: () => fail("protocol", "CodeMode ToolBatch calls are malformed or exceed ordinary admission bounds"),
+      })
+      const laneBinding = input.lane === "direct_session"
+        ? { sessionID: input.sessionID }
+        : { runID: input.managedAttempt!.runID, taskID: input.managedAttempt!.taskID, attemptID: input.managedAttempt!.attemptID }
+      return yield* codeModeHostRequest({
+        operation: "codemode_prepare_wave",
+        body: { schemaVersion: 1, lane: input.lane, ...laneBinding, requestId: input.requestID,
+          waveFrame: input.waveFrame, calls: input.calls },
+        sessionID: input.sessionID, locationRef: input.locationRef, callID: input.callID,
+        lane: input.lane, ...(input.managedAttempt ? { managedAttempt: input.managedAttempt } : {}),
+      })
+    })
+    const settleCodeModeToolResults: Interface["settleCodeModeToolResults"] = Effect.fn("SessionSupervisor.settleCodeModeToolResults")(function* (input) {
+      if (!/^ses_[A-Za-z0-9_-]{1,128}$/.test(input.sessionID) || !/^[A-Za-z0-9._:-]{1,256}$/.test(input.callID) ||
+        !/^[A-Za-z0-9._:-]{1,256}$/.test(input.requestID) || !Number.isInteger(input.waveIndex) || input.waveIndex < 0 || input.waveIndex > 63 ||
+        input.results.length < 1 || input.results.length > MAX_TOOL_BATCH_CALLS || input.results.some((result, index) =>
+          result.callIndex !== index || !/^[A-Za-z0-9._:-]{1,256}$/.test(result.callID) ||
+          !["settled", "rejected", "cancelled", "unknown"].includes(result.status) ||
+          (result.status === "settled" && (typeof result.resultDigest !== "string" || !/^blake3:[0-9a-f]{64}$/.test(result.resultDigest) ||
+            !Number.isSafeInteger(result.outputBytes) || result.outputBytes! < 0 || result.outputBytes! > 65536 || result.errorCode !== undefined)) ||
+          (result.status !== "unknown" && ((result.resultDigest === undefined) !== (result.outputBytes === undefined) ||
+            (result.resultDigest !== undefined && (typeof result.resultDigest !== "string" || !/^blake3:[0-9a-f]{64}$/.test(result.resultDigest))))) ||
+          (result.status === "unknown" && (result.resultDigest !== undefined || result.outputBytes !== undefined || result.errorCode !== undefined)) ||
+          (result.outputBytes !== undefined && (!Number.isSafeInteger(result.outputBytes) || result.outputBytes < 0 || result.outputBytes > 65536)) ||
+          (result.errorCode !== undefined && (typeof result.errorCode !== "string" || result.errorCode.length > 128)))) {
+        return yield* Effect.fail(fail("protocol", "CodeMode callback settlement is malformed or outside bounds"))
+      }
+      const laneBinding = input.lane === "direct_session"
+        ? { sessionID: input.sessionID }
+        : { runID: input.managedAttempt!.runID, taskID: input.managedAttempt!.taskID, attemptID: input.managedAttempt!.attemptID }
+      return yield* codeModeHostRequest({
+        operation: "codemode_settle_tool_results",
+        body: { schemaVersion: 1, lane: input.lane, ...laneBinding, requestId: input.requestID,
+          waveIndex: input.waveIndex, results: input.results.map((result) => ({
+            ...result, resultDigest: result.resultDigest ?? null, outputBytes: result.outputBytes ?? null,
+            errorCode: result.errorCode ?? null,
+          })) },
+        sessionID: input.sessionID, locationRef: input.locationRef, callID: input.callID,
+        lane: input.lane, ...(input.managedAttempt ? { managedAttempt: input.managedAttempt } : {}),
+      })
+    })
+    const codeModeWaveReceipts: Interface["codeModeWaveReceipts"] = Effect.fn("SessionSupervisor.codeModeWaveReceipts")(function* (input) {
+      const laneBinding = input.lane === "direct_session"
+        ? { sessionID: input.sessionID }
+        : { runID: input.managedAttempt!.runID, taskID: input.managedAttempt!.taskID, attemptID: input.managedAttempt!.attemptID }
+      const response = yield* codeModeHostRequest({
+        operation: "codemode_wave_receipts",
+        body: { schemaVersion: 1, lane: input.lane, ...laneBinding, requestId: input.requestID,
+          waveIndex: input.waveIndex },
+        sessionID: input.sessionID, locationRef: input.locationRef, callID: input.callID,
+        lane: input.lane, ...(input.managedAttempt ? { managedAttempt: input.managedAttempt } : {}),
+      })
+      const expected = ["status", "requestID", "batchID", "waveIndex", "results", "receiptDigest"].toSorted()
+      if (Object.keys(response).toSorted().join("\0") !== expected.join("\0") ||
+        !["settled", "rejected", "cancelled", "unknown"].includes(String(response.status)) ||
+        response.requestID !== input.requestID || response.waveIndex !== input.waveIndex ||
+        typeof response.batchID !== "string" || !/^[A-Za-z0-9._:-]{1,256}$/.test(response.batchID) ||
+        !Array.isArray(response.results) || response.results.length < 1 || response.results.length > MAX_TOOL_BATCH_CALLS) {
+        return yield* Effect.fail(fail("protocol", "HostKernel returned malformed CodeMode wave result provenance"))
+      }
+      const results = response.results.map((raw, index) => {
+        const item = record(raw)
+        const keys = ["callIndex", "callID", "status", "receiptKind", "receiptRef", "receiptDigest", "resultDigest", "outputBytes", "errorCode"].toSorted()
+        if (Object.keys(item).toSorted().join("\0") !== keys.join("\0") || item.callIndex !== index ||
+          typeof item.callID !== "string" || !/^[A-Za-z0-9._:-]{1,256}$/.test(item.callID) ||
+          !["settled", "rejected", "cancelled", "unknown"].includes(String(item.status))) {
+          throw fail("protocol", "HostKernel CodeMode result rows are malformed or reordered")
+        }
+        if (item.status === "unknown") {
+          if (item.receiptKind !== null || item.receiptRef !== null || item.receiptDigest !== null ||
+            item.resultDigest !== null || item.outputBytes !== null || item.errorCode !== null) {
+            throw fail("protocol", "UNKNOWN CodeMode result exposes receipt provenance")
+          }
+        } else if ((item.receiptKind !== "effect_receipt" && item.receiptKind !== "host_decision" && item.receiptKind !== "tool_result") ||
+          typeof item.receiptRef !== "string" || !/^[A-Za-z0-9._:-]{1,256}$/.test(item.receiptRef) ||
+          typeof item.receiptDigest !== "string" || !/^blake3:[0-9a-f]{64}$/.test(item.receiptDigest) ||
+          (item.receiptKind === "tool_result" && item.status === "settled" &&
+            (typeof item.resultDigest !== "string" || !/^blake3:[0-9a-f]{64}$/.test(item.resultDigest) ||
+             !Number.isSafeInteger(item.outputBytes) || (item.outputBytes as number) < 0 || (item.outputBytes as number) > 65536)) ||
+          (item.receiptKind !== "tool_result" && (item.resultDigest !== null || item.outputBytes !== null)) ||
+          (item.receiptKind === "tool_result" && ((item.resultDigest === null) !== (item.outputBytes === null) ||
+            (item.resultDigest !== null && (typeof item.resultDigest !== "string" || !/^blake3:[0-9a-f]{64}$/.test(item.resultDigest))) ||
+            (item.outputBytes !== null && (!Number.isSafeInteger(item.outputBytes) || (item.outputBytes as number) < 0 || (item.outputBytes as number) > 65536)))) ||
+          (item.errorCode !== null && (typeof item.errorCode !== "string" || item.errorCode.length > 128))) {
+          throw fail("protocol", "Known CodeMode result lacks correct typed provenance")
+        }
+        return item
+      })
+      const aggregateStatus = results.some((item) => item.status === "unknown") ? "unknown" :
+        results.some((item) => item.status === "cancelled") ? "cancelled" :
+          results.some((item) => item.status === "rejected") ? "rejected" : "settled"
+      if (response.status !== aggregateStatus) {
+        return yield* Effect.fail(fail("protocol", "HostKernel CodeMode aggregate status differs from ordered rows"))
+      }
+      if (aggregateStatus === "unknown") {
+        if (response.receiptDigest !== null) {
+          return yield* Effect.fail(fail("protocol", "UNKNOWN CodeMode wave cannot claim an aggregate receipt digest"))
+        }
+      } else {
+        if (typeof response.receiptDigest !== "string" || !/^blake3:[0-9a-f]{64}$/.test(response.receiptDigest)) {
+          return yield* Effect.fail(fail("protocol", "Known CodeMode wave lacks its aggregate receipt digest"))
+        }
+        const tuples = results.map((item, index) => [
+          index,
+          item.callID as string,
+          item.status as "settled" | "rejected" | "cancelled",
+          item.receiptKind as "effect_receipt" | "host_decision" | "tool_result",
+          item.receiptRef as string,
+          item.receiptDigest as string,
+        ] as const)
+        const encoded = encodeCanonicalMessagePackV1(tuples, {
+          maxEncodedBytes: 1024 * MAX_TOOL_BATCH_CALLS,
+          maxDepth: 4,
+          maxNodes: 1 + MAX_TOOL_BATCH_CALLS * 7,
+          maxCollectionItems: 1 + MAX_TOOL_BATCH_CALLS,
+          maxScalarBytes: MAX_IDENTIFIER_BYTES,
+        })
+        const domain = new TextEncoder().encode("horizoncode.codemode-receipts.v1\0")
+        const bytes = new Uint8Array(domain.byteLength + encoded.byteLength)
+        bytes.set(domain)
+        bytes.set(encoded, domain.byteLength)
+        const digest = `blake3:${bytesToHex(blake3(bytes))}`
+        if (digest !== response.receiptDigest) {
+          return yield* Effect.fail(fail("protocol", "HostKernel CodeMode aggregate receipt digest differs from ordered rows"))
+        }
+      }
+      return { ...response, results } as Readonly<Record<string, unknown>>
+    })
+    const cancelCodeModeWave: NonNullable<Interface["cancelCodeModeWave"]> = Effect.fn("SessionSupervisor.cancelCodeModeWave")(function* (input) {
+      if (!/^ses_[A-Za-z0-9_-]{1,128}$/.test(input.sessionID) || !/^[A-Za-z0-9._:-]{1,256}$/.test(input.callID) ||
+        !/^[A-Za-z0-9._:-]{1,256}$/.test(input.requestID) || !Number.isInteger(input.waveIndex) || input.waveIndex < 0 || input.waveIndex > 63 ||
+        !["user_abort", "deadline", "parent_cancel"].includes(input.reason) ||
+        (input.lane === "managed_attempt") !== (input.managedAttempt !== undefined)) {
+        return yield* Effect.fail(fail("protocol", "CodeMode wave cancellation selector is invalid"))
+      }
+      const laneBinding = input.lane === "direct_session"
+        ? { sessionID: input.sessionID }
+        : { runID: input.managedAttempt!.runID, taskID: input.managedAttempt!.taskID, attemptID: input.managedAttempt!.attemptID }
+      const response = yield* codeModeHostRequest({
+        operation: "codemode_cancel_wave",
+        body: { schemaVersion: 1, lane: input.lane, ...laneBinding, requestId: input.requestID, waveIndex: input.waveIndex, reason: input.reason },
+        sessionID: input.sessionID, locationRef: input.locationRef, callID: input.callID,
+        lane: input.lane, ...(input.managedAttempt ? { managedAttempt: input.managedAttempt } : {}),
+      })
+      const expected = ["status", "requestID", "batchID", "waveIndex", "results", "receiptDigest"].toSorted()
+      if (Object.keys(response).toSorted().join("\0") !== expected.join("\0") ||
+        !["cancelled", "unknown"].includes(String(response.status)) || response.requestID !== input.requestID ||
+        response.waveIndex !== input.waveIndex || typeof response.batchID !== "string" || !/^[A-Za-z0-9._:-]{1,256}$/.test(response.batchID) ||
+        !Array.isArray(response.results) || response.results.length < 1 || response.results.length > MAX_TOOL_BATCH_CALLS ||
+        (response.status === "cancelled" ? typeof response.receiptDigest !== "string" || !/^blake3:[0-9a-f]{64}$/.test(response.receiptDigest) : response.receiptDigest !== null)) {
+        return yield* Effect.fail(fail("protocol", "HostKernel returned malformed correlated CodeMode cancellation"))
+      }
+      const rows = response.results.map((raw, index) => {
+        const row = record(raw)
+        const keys = ["callIndex", "callID", "status", "receiptKind", "receiptRef", "receiptDigest", "resultDigest", "outputBytes", "errorCode"].toSorted()
+        if (Object.keys(row).toSorted().join("\0") !== keys.join("\0") || row.callIndex !== index ||
+          typeof row.callID !== "string" || !/^[A-Za-z0-9._:-]{1,256}$/.test(row.callID) ||
+          (response.status === "unknown"
+            ? row.status !== "unknown" || row.receiptKind !== null || row.receiptRef !== null || row.receiptDigest !== null || row.resultDigest !== null || row.outputBytes !== null || row.errorCode !== null
+            : row.status !== "cancelled" || row.receiptKind !== "host_decision" || typeof row.receiptRef !== "string" ||
+              !/^[A-Za-z0-9._:-]{1,256}$/.test(row.receiptRef) || typeof row.receiptDigest !== "string" ||
+              !/^blake3:[0-9a-f]{64}$/.test(row.receiptDigest) || row.resultDigest !== null || row.outputBytes !== null ||
+              (row.errorCode !== null && (typeof row.errorCode !== "string" || Buffer.byteLength(row.errorCode, "utf8") > 128)))) {
+          throw fail("protocol", "HostKernel cancellation rows are malformed or uncorrelated")
+        }
+        return row
+      })
+      return { ...response, results: rows }
+    })
+    const resolveEditorProcessApproval = Effect.fn("SessionSupervisor.resolveEditorProcessApproval")(function* (input: {
+      readonly locationRef: typeof LocationSchema.Ref.Type
+      readonly challenge: GuardApprovalRequest
+    }) {
+      const trusted = yield* TrustedPrincipalContext
+      if (trusted.principal.kind !== "server_auth" || !trusted.principal.subject) {
+        return yield* Effect.fail(fail("authorization", "editor process approval requires authenticated ServerAuth"))
+      }
+      const challenge = input.challenge
+      const capabilityID = challenge.capabilityID
+      if (capabilityID !== "language.start" && capabilityID !== "debug.start") {
+        return yield* Effect.fail(fail("protocol", "editor process approval has an unsupported capability"))
+      }
+      const locationID = yield* registerHostLocation(input.locationRef)
+      if (challenge.locationID !== locationID ||
+        typeof challenge.sessionID !== "string" || !/^[A-Za-z0-9._-]{1,256}$/.test(challenge.sessionID) ||
+        typeof challenge.challengeID !== "string" || !/^[A-Za-z0-9._-]{1,256}$/.test(challenge.challengeID) ||
+        typeof challenge.effectID !== "string" || !/^[A-Za-z0-9._-]{1,256}$/.test(challenge.effectID)) {
+        return yield* Effect.fail(fail("protocol", "editor process challenge identity is invalid"))
+      }
+      const consent = yield* Effect.try({
+        try: () => validateGuardConsentProjection(challenge as unknown as Record<string, unknown>, {
+          capabilityID,
+          origin: "user_action",
+          source: "authenticated.user_action",
+        }),
+        catch: (error) => error instanceof SessionSupervisorError
+          ? error
+          : fail("protocol", "editor process Guard consent projection is invalid"),
+      })
+      const request: GuardApprovalRequest = {
+        approvalID: `approval_${randomUUID().replaceAll("-", "")}`,
+        challengeID: challenge.challengeID,
+        effectID: challenge.effectID,
+        capabilityID,
+        locationID,
+        sessionID: challenge.sessionID,
+        inputDigest: challenge.inputDigest,
+        normalizedTargets: challenge.normalizedTargets,
+        expiresAtUnixMs: challenge.expiresAtUnixMs,
+        policySummary: challenge.policySummary,
+        ...consent,
+      }
+      const decision = yield* awaitGuardApproval(request, trusted.principal, input.locationRef)
+      if (decision !== "allow_once") return yield* Effect.fail(fail("authorization", "editor process Guard approval was denied"))
+      if (!request.allowEnabled) return yield* Effect.fail(fail("authorization", "Guard allow is unavailable without assessed guarantees"))
+      const resolved = yield* requestHostKernel("effects.v2", "resolve_approval", {
+        challengeID: request.challengeID,
+        decision,
+      }, { trustedPrincipal: trusted.principal })
+      if (resolved.status !== "approved") return yield* Effect.fail(fail("authorization", "HostKernel rejected editor process approval"))
+      const lease = yield* Effect.try({
+        try: () => parseCapabilityLease(resolved),
+        catch: (error) => error instanceof SessionSupervisorError
+          ? error
+          : fail("protocol", "HostKernel returned an invalid editor process lease"),
+      })
+      if (lease.effectID !== request.effectID) return yield* Effect.fail(fail("protocol", "editor process lease differs from its Guard challenge"))
+      return {
+        ...lease,
+        locationID,
+        capabilityID,
+        challengeID: request.challengeID,
+        inputDigest: request.inputDigest,
+      } satisfies PreparedEditorProcessApprovalV1
+    })
+    const authorizeEditorProtocolOperation = Effect.fn("SessionSupervisor.authorizeEditorProtocolOperation")(
+      function* (input: EditorProtocolAuthorizationRequestV1) {
+        const trusted = yield* TrustedPrincipalContext
+        if (trusted.principal.kind !== "server_auth" || !trusted.principal.subject) {
+          return yield* Effect.fail(fail("authorization", "editor protocol authorization requires authenticated ServerAuth"))
+        }
+        if (!EDITOR_PROTOCOL_GUARD_RUNTIME_READY) {
+          return yield* Effect.fail(fail("host-kernel-feature", "LSP/DAP per-operation Guard admission is unavailable until integrated acceptance passes"))
+        }
+        const locationID = yield* registerHostLocation(input.locationRef)
+        const authorization = yield* Effect.try({
+          try: () => {
+            const subject = record(input.arguments)
+            const required = ["hostProcessRef", "sessionID", "locationID", "workspaceRevision", "protocol", "requestSequence", "operation"]
+            const optional = ["operationDigest", "callbackEventSequence"]
+            if (Object.keys(subject).toSorted().join("\0") !== [...required, ...Object.keys(subject).filter((key) => optional.includes(key))].sort().join("\0")) {
+              throw fail("protocol", "editor protocol authorization subject has unknown or missing fields")
+            }
+            const hostProcessRef = record(subject.hostProcessRef)
+            const processKeys = ["executionID", "generation", "ownerEpoch", "kind", "profileID", "profileRevision", "profileDigest", "executableDigest"]
+            if (Object.keys(hostProcessRef).toSorted().join("\0") !== processKeys.sort().join("\0")) {
+              throw fail("protocol", "editor protocol HostProcessRef is malformed")
+            }
+            const protocol = subject.protocol
+            const kind = protocol === "lsp" ? "language_server" : protocol === "dap" ? "debug_adapter" : undefined
+            const sequence = subject.requestSequence
+            const operation = record(subject.operation)
+            if (
+              !kind || hostProcessRef.kind !== kind || subject.sessionID !== input.sessionID ||
+              subject.locationID !== locationID || typeof subject.workspaceRevision !== "string" ||
+              !/^blake3:[0-9a-f]{64}$/.test(subject.workspaceRevision) ||
+              typeof sequence !== "string" || !/^[1-9][0-9]{0,19}$/.test(sequence) || BigInt(sequence) > 0xffff_ffff_ffff_ffffn ||
+              operation.requestSequence !== sequence ||
+              (subject.operationDigest !== undefined && (typeof subject.operationDigest !== "string" || !/^blake3:[0-9a-f]{64}$/.test(subject.operationDigest)))
+            ) throw fail("protocol", "editor protocol authorization pins are invalid")
+            const callback = Object.hasOwn(subject, "callbackEventSequence")
+            const isReply = protocol === "lsp" && Object.hasOwn(operation, "serverRequestID")
+            if (callback !== isReply || (callback && (typeof subject.callbackEventSequence !== "string" || !/^[1-9][0-9]{0,19}$/.test(subject.callbackEventSequence) || BigInt(subject.callbackEventSequence) > 0xffff_ffff_ffff_ffffn))) {
+              throw fail("protocol", "editor protocol callback correlation is invalid")
+            }
+            for (const key of ["executionID", "profileID"] as const) {
+              if (typeof hostProcessRef[key] !== "string" || !/^[A-Za-z0-9._-]{1,256}$/.test(hostProcessRef[key] as string)) {
+                throw fail("protocol", `editor protocol HostProcessRef ${key} is invalid`)
+              }
+            }
+            for (const key of ["generation", "ownerEpoch", "profileRevision"] as const) {
+              const value = hostProcessRef[key]
+              if (typeof value !== "string" || !/^[1-9][0-9]{0,19}$/.test(value) || BigInt(value) > 0xffff_ffff_ffff_ffffn) {
+                throw fail("protocol", `editor protocol HostProcessRef ${key} is invalid`)
+              }
+            }
+            for (const key of ["profileDigest", "executableDigest"] as const) {
+              if (typeof hostProcessRef[key] !== "string" || !/^blake3:[0-9a-f]{64}$/.test(hostProcessRef[key] as string)) {
+                throw fail("protocol", `editor protocol HostProcessRef ${key} is invalid`)
+              }
+            }
+            return Object.freeze({ ...subject })
+          },
+          catch: (error) => error instanceof SessionSupervisorError ? error : fail("protocol", "editor protocol authorization subject is invalid"),
+        })
+        if (!input.sessionID || !/^[A-Za-z0-9._-]{1,256}$/.test(input.sessionID) ||
+          (input.managedAttempt !== undefined && input.directAttempt !== undefined)) {
+          return yield* Effect.fail(fail("protocol", "editor protocol authorization cannot combine Attempt scopes"))
+        }
+        const scope: EditorProtocolAttemptWireV1 = yield* Effect.try({
+          try: () => input.managedAttempt !== undefined
+            ? { managedAttempt: managedAttemptScopeToWire(input.managedAttempt) }
+            : input.directAttempt !== undefined
+              ? { directAttempt: directAttemptScopeToWire(input.directAttempt) }
+              : {},
+          catch: (error) => error instanceof SessionSupervisorError ? error : fail("protocol", "editor protocol Attempt scope is invalid"),
+        })
+        const attemptScope = input.managedAttempt !== undefined ? scope.managedAttempt : scope.directAttempt
+        const attemptSessionID = input.managedAttempt?.sessionID ?? input.directAttempt?.childSessionID
+        const attemptOwnerEpoch = input.managedAttempt?.ownerEpoch ?? input.directAttempt?.ownerEpoch
+        if (authorization.sessionID !== input.sessionID || authorization.locationID !== locationID ||
+          (attemptScope !== undefined && (attemptSessionID !== input.sessionID || attemptScope.locationID !== locationID ||
+            authorization.workspaceRevision !== attemptScope.workspaceRevision ||
+            authorization.hostProcessRef.ownerEpoch !== attemptOwnerEpoch))) {
+          return yield* Effect.fail(fail("authorization", "editor protocol subject differs from its authenticated Session scope"))
+        }
+        if (attemptScope === undefined) {
+          const currentOwnerEpoch = yield* hostOwnerEpoch()
+          if (authorization.hostProcessRef.ownerEpoch !== String(currentOwnerEpoch)) {
+            return yield* Effect.fail(fail("authorization", "root Session protocol process belongs to a stale HostKernel epoch"))
+          }
+        }
+        if (input.capabilityID.length === 0 || input.capabilityID.length > 160 || /[\0\s]/.test(input.capabilityID)) {
+          return yield* Effect.fail(fail("protocol", "editor protocol capability ID is invalid"))
+        }
+        const userActionID = `action_${randomUUID().replaceAll("-", "")}`
+        const response = yield* requestHostKernel("effects.v2", "prepare_user_effect", {
+          locationID,
+          userActionID,
+          capabilityID: input.capabilityID,
+          sessionID: input.sessionID,
+          arguments: authorization,
+          ...scope,
+        }, { trustedPrincipal: trusted.principal })
+        if (response.status === "denied") return yield* Effect.fail(fail("authorization", "Guard denied the editor protocol operation"))
+        if (response.status !== "needs_approval") {
+          return yield* Effect.fail(fail("protocol", "HostKernel returned an invalid editor protocol admission"))
+        }
+        const challenge = yield* Effect.try({
+          try: () => {
+            const challengeID = stringField(response, "challengeID")
+            const effectID = stringField(response, "effectID")
+            const capabilityID = stringField(response, "capabilityID")
+            const responseLocationID = stringField(response, "locationID")
+            const inputDigest = stringField(response, "inputDigest")
+            const expiresAtUnixMs = wireUnixMs(response.expiresAtUnixMs)
+            const normalizedTargets = response.normalizedTargets
+            const policySummary = stringField(response, "policySummary", 1024)
+            const consent = validateGuardConsentProjection(response, {
+              capabilityID,
+              origin: "user_action",
+              source: "authenticated.user_action",
+            })
+            if (capabilityID !== input.capabilityID || responseLocationID !== locationID ||
+              !/^blake3:[0-9a-f]{64}$/.test(inputDigest) || expiresAtUnixMs === undefined ||
+              expiresAtUnixMs <= Date.now() || expiresAtUnixMs > Date.now() + 5 * 60 * 1000 ||
+              !Array.isArray(normalizedTargets) || normalizedTargets.length === 0 || normalizedTargets.length > 64) {
+              throw fail("protocol", "HostKernel returned an invalid editor protocol Guard challenge")
+            }
+            return {
+              approvalID: `approval_${randomUUID().replaceAll("-", "")}`,
+              challengeID, effectID, capabilityID, locationID, sessionID: input.sessionID,
+              inputDigest, normalizedTargets, expiresAtUnixMs, policySummary, ...consent,
+            } satisfies GuardApprovalRequest
+          },
+          catch: (error) => error instanceof SessionSupervisorError ? error : fail("protocol", "HostKernel editor protocol challenge is malformed"),
+        })
+        // A direct root Session may already have an exact persisted routine
+        // grant. HostKernel preflight is read-only: it re-resolves the retained
+        // challenge/process/workspace and returns correlation data only. The
+        // ordinary allow_once resolution below still reserves grant use,
+        // rechecks Guard, and issues the one-use lease atomically. Child and
+        // managed Attempts, LSP callbacks, and any preflight error always use
+        // the normal approval UI.
+        const directGrantPreflightDigest = !attemptScope &&
+          authorization.callbackEventSequence === undefined && challenge.allowEnabled
+          ? yield* requestHostKernel("effects.v1", "preflight_direct_session_grant_protocol_effect", {
+              sessionID: input.sessionID,
+              locationID,
+              challengeID: challenge.challengeID,
+            }, { trustedPrincipal: trusted.principal }).pipe(
+              Effect.catchAll(() => Effect.succeed(undefined)),
+            ).pipe(Effect.map((response) => {
+              const expectedDigest = directGrantChallengeSetDigest([challenge.challengeID])
+              return response !== undefined &&
+                Object.keys(response).toSorted().join("\0") === ["challengeID", "challengeSetDigest", "status"].join("\0") &&
+                response.challengeID === challenge.challengeID &&
+                response.challengeSetDigest === expectedDigest &&
+                response.status === "eligible"
+                ? expectedDigest
+                : undefined
+            }))
+          : undefined
+        const decision = directGrantPreflightDigest !== undefined
+          ? "allow_once"
+          : yield* awaitGuardApproval(challenge, trusted.principal, input.locationRef)
+        if (decision !== "allow_once") return yield* Effect.fail(fail("authorization", "Guard denied the editor protocol operation"))
+        if (!challenge.allowEnabled) return yield* Effect.fail(fail("authorization", "Guard allow is unavailable without assessed guarantees"))
+        const resolveApproval = (grantPreflightDigest?: string) => requestHostKernel("effects.v2", "resolve_approval", {
+          challengeID: challenge.challengeID,
+          decision,
+          ...(grantPreflightDigest === undefined ? {} : { grantPreflightDigest }),
+        }, { trustedPrincipal: trusted.principal })
+        const resolved = directGrantPreflightDigest === undefined
+          ? yield* resolveApproval()
+          : yield* resolveApproval(directGrantPreflightDigest).pipe(Effect.catchAll((error) =>
+              error instanceof SessionSupervisorError && error.hostCode === "effect_conflict"
+                ? Effect.gen(function* () {
+                    // The persisted grant changed after preflight. Restore the
+                    // ordinary approval dialog; the stale candidate can never
+                    // be interpreted as the user's approval.
+                    const explicitDecision = yield* awaitGuardApproval(challenge, trusted.principal, input.locationRef)
+                    if (explicitDecision !== "allow_once") {
+                      return yield* Effect.fail(fail("authorization", "Guard denied the editor protocol operation"))
+                    }
+                    return yield* resolveApproval()
+                  })
+                : Effect.fail(error),
+            ))
+        if (resolved.status !== "approved" || Object.keys(resolved).toSorted().join("\0") !== ["capabilityLeaseDigest", "effectID", "status"].join("\0")) {
+          return yield* Effect.fail(fail("authorization", "HostKernel rejected editor protocol approval"))
+        }
+        const lease = yield* Effect.try({
+          try: () => parseCapabilityLease(resolved),
+          catch: (error) => error instanceof SessionSupervisorError ? error : fail("protocol", "HostKernel editor protocol lease is malformed"),
+        })
+        if (lease.effectID !== challenge.effectID) return yield* Effect.fail(fail("protocol", "editor protocol lease differs from its Guard challenge"))
+        return {
+          ...lease,
+          ...scope,
+          locationID,
+          userActionID,
+          challengeID: challenge.challengeID,
+          inputDigest: challenge.inputDigest,
+          capabilityID: input.capabilityID,
+          arguments: authorization,
+        } satisfies EditorProtocolAuthorizationLeaseV1
+      },
+    )
+    const authorizeReplOperation = Effect.fn("SessionSupervisor.authorizeReplOperation")(
+      function* (input: ReplOperationAuthorizationRequestV1) {
+        const trusted = yield* TrustedPrincipalContext
+        if (trusted.principal.kind !== "server_auth" || !trusted.principal.subject) {
+          return yield* Effect.fail(fail("authorization", "REPL operation authorization requires authenticated ServerAuth"))
+        }
+        if (!REPL_OPERATION_GUARD_RUNTIME_READY) {
+          return yield* Effect.fail(fail("host-kernel-feature", "REPL per-call Guard admission is unavailable until HostKernel receipt and OS-quota acceptance passes"))
+        }
+        if (input.capabilityID !== "repl.execute" && input.capabilityID !== "repl.reset") {
+          return yield* Effect.fail(fail("protocol", "REPL operation has an unsupported canonical capability"))
+        }
+        const locationID = yield* registerHostLocation(input.locationRef)
+        const authorization = yield* Effect.try({
+          try: () => {
+            const subject = record(input.arguments)
+            const required = ["hostProcessRef", "sessionID", "locationID", "workspaceRevision", "requestSequence", "operation"]
+            if (Object.keys(subject).toSorted().join("\0") !== required.toSorted().join("\0")) {
+              throw fail("protocol", "REPL authorization subject has unknown or missing fields")
+            }
+            const process = record(subject.hostProcessRef)
+            const processKeys = ["executionID", "generation", "ownerEpoch", "kind", "profileID", "profileRevision", "profileDigest", "executableDigest"]
+            if (Object.keys(process).toSorted().join("\0") !== processKeys.toSorted().join("\0") || process.kind !== "interpreter") {
+              throw fail("protocol", "REPL HostProcessRef is malformed")
+            }
+            for (const key of ["executionID", "profileID"] as const) {
+              if (typeof process[key] !== "string" || !/^[A-Za-z0-9._-]{1,256}$/.test(process[key] as string)) {
+                throw fail("protocol", `REPL HostProcessRef ${key} is invalid`)
+              }
+            }
+            for (const key of ["generation", "ownerEpoch", "profileRevision"] as const) {
+              if (typeof process[key] !== "string" || !/^[1-9][0-9]{0,19}$/.test(process[key] as string) ||
+                  BigInt(process[key] as string) > 0xffff_ffff_ffff_ffffn) {
+                throw fail("protocol", `REPL HostProcessRef ${key} is invalid`)
+              }
+            }
+            for (const key of ["profileDigest", "executableDigest"] as const) {
+              if (typeof process[key] !== "string" || !/^blake3:[0-9a-f]{64}$/.test(process[key] as string)) {
+                throw fail("protocol", `REPL HostProcessRef ${key} is invalid`)
+              }
+            }
+            const operation = record(subject.operation)
+            const sequence = subject.requestSequence
+            if (typeof sequence !== "string" || !/^[1-9][0-9]{0,19}$/.test(sequence) || BigInt(sequence) > 0xffff_ffff_ffff_ffffn) {
+              throw fail("protocol", "REPL operation sequence is invalid")
+            }
+            if (input.capabilityID === "repl.execute") {
+              if (Object.keys(operation).toSorted().join("\0") !== ["kind", "code", "deadlineMs", "maxOutputBytes"].sort().join("\0") ||
+                  operation.kind !== "execute" || typeof operation.code !== "string" || operation.code.length === 0 || operation.code.includes("\0") || Buffer.byteLength(operation.code, "utf8") > 64 * 1024 ||
+                  !Number.isSafeInteger(operation.deadlineMs) || (operation.deadlineMs as number) < 1 || (operation.deadlineMs as number) > 30_000 ||
+                  !Number.isSafeInteger(operation.maxOutputBytes) || (operation.maxOutputBytes as number) < 1 || (operation.maxOutputBytes as number) > 64 * 1024) {
+                throw fail("protocol", "bounded repl.execute operation is invalid")
+              }
+            } else {
+              if (Object.keys(operation).toSorted().join("\0") !== ["kind", "profileRef"].sort().join("\0") || operation.kind !== "reset") {
+                throw fail("protocol", "repl.reset operation is invalid")
+              }
+              const profile = record(operation.profileRef)
+              if (Object.keys(profile).toSorted().join("\0") !== ["profileId", "revision", "profileDigest"].sort().join("\0") ||
+                  profile.profileId !== process.profileID || profile.revision !== process.profileRevision ||
+                  profile.profileDigest !== process.profileDigest) {
+                throw fail("protocol", "repl.reset profile differs from the retained interpreter")
+              }
+            }
+            if (subject.sessionID !== input.sessionID || subject.locationID !== locationID ||
+                typeof subject.workspaceRevision !== "string" || !/^blake3:[0-9a-f]{64}$/.test(subject.workspaceRevision)) {
+              throw fail("protocol", "REPL operation Session, Location, or workspace revision is invalid")
+            }
+            return Object.freeze({ ...subject })
+          },
+          catch: (error) => error instanceof SessionSupervisorError ? error : fail("protocol", "REPL operation authorization subject is invalid"),
+        })
+        if (!input.sessionID || !/^[A-Za-z0-9._-]{1,256}$/.test(input.sessionID) ||
+            (input.managedAttempt !== undefined && input.directAttempt !== undefined)) {
+          return yield* Effect.fail(fail("protocol", "REPL authorization cannot combine Attempt scopes"))
+        }
+        const scope: EditorProtocolAttemptWireV1 = yield* Effect.try({
+          try: () => input.managedAttempt !== undefined
+            ? { managedAttempt: managedAttemptScopeToWire(input.managedAttempt) }
+            : input.directAttempt !== undefined
+              ? { directAttempt: directAttemptScopeToWire(input.directAttempt) }
+              : {},
+          catch: (error) => error instanceof SessionSupervisorError ? error : fail("protocol", "REPL Attempt scope is invalid"),
+        })
+        const attemptScope = input.managedAttempt !== undefined ? scope.managedAttempt : scope.directAttempt
+        const attemptSessionID = input.managedAttempt?.sessionID ?? input.directAttempt?.childSessionID
+        const attemptOwnerEpoch = input.managedAttempt?.ownerEpoch ?? input.directAttempt?.ownerEpoch
+        if (authorization.sessionID !== input.sessionID || authorization.locationID !== locationID ||
+            (attemptScope !== undefined && (attemptSessionID !== input.sessionID || attemptScope.locationID !== locationID ||
+              authorization.workspaceRevision !== attemptScope.workspaceRevision ||
+              authorization.hostProcessRef.ownerEpoch !== attemptOwnerEpoch))) {
+          return yield* Effect.fail(fail("authorization", "REPL operation differs from its authenticated Session scope"))
+        }
+        if (attemptScope === undefined) {
+          const currentOwnerEpoch = yield* hostOwnerEpoch()
+          if (authorization.hostProcessRef.ownerEpoch !== String(currentOwnerEpoch)) {
+            return yield* Effect.fail(fail("authorization", "root Session REPL process belongs to a stale HostKernel epoch"))
+          }
+        }
+        const userActionID = `action_${randomUUID().replaceAll("-", "")}`
+        const response = yield* requestHostKernel("effects.v2", "prepare_user_effect", {
+          locationID,
+          userActionID,
+          capabilityID: input.capabilityID,
+          sessionID: input.sessionID,
+          arguments: authorization,
+          ...scope,
+        }, { trustedPrincipal: trusted.principal })
+        if (response.status === "denied") return yield* Effect.fail(fail("authorization", "Guard denied the REPL operation"))
+        if (response.status !== "needs_approval") {
+          return yield* Effect.fail(fail("protocol", "HostKernel returned an invalid REPL operation admission"))
+        }
+        const challenge = yield* Effect.try({
+          try: () => {
+            const challengeID = stringField(response, "challengeID")
+            const effectID = stringField(response, "effectID")
+            const capabilityID = stringField(response, "capabilityID")
+            const responseLocationID = stringField(response, "locationID")
+            const inputDigest = stringField(response, "inputDigest")
+            const expiresAtUnixMs = wireUnixMs(response.expiresAtUnixMs)
+            const normalizedTargets = response.normalizedTargets
+            const policySummary = stringField(response, "policySummary", 1024)
+            const consent = validateGuardConsentProjection(response, {
+              capabilityID,
+              origin: "user_action",
+              source: "authenticated.user_action",
+            })
+            if (capabilityID !== input.capabilityID || responseLocationID !== locationID ||
+                !/^blake3:[0-9a-f]{64}$/.test(inputDigest) || expiresAtUnixMs === undefined ||
+                expiresAtUnixMs <= Date.now() || expiresAtUnixMs > Date.now() + 5 * 60 * 1000 ||
+                !Array.isArray(normalizedTargets) || normalizedTargets.length === 0 || normalizedTargets.length > 64) {
+              throw fail("protocol", "HostKernel returned an invalid REPL Guard challenge")
+            }
+            return {
+              approvalID: `approval_${randomUUID().replaceAll("-", "")}`,
+              challengeID, effectID, capabilityID, locationID, sessionID: input.sessionID,
+              inputDigest, normalizedTargets, expiresAtUnixMs, policySummary, ...consent,
+            } satisfies GuardApprovalRequest
+          },
+          catch: (error) => error instanceof SessionSupervisorError ? error : fail("protocol", "HostKernel REPL challenge is malformed"),
+        })
+        const decision = yield* awaitGuardApproval(challenge, trusted.principal, input.locationRef)
+        if (decision !== "allow_once") return yield* Effect.fail(fail("authorization", "Guard denied the REPL operation"))
+        if (!challenge.allowEnabled) return yield* Effect.fail(fail("authorization", "REPL Guard allow is unavailable without assessed guarantees"))
+        const resolved = yield* requestHostKernel("effects.v2", "resolve_approval", {
+          challengeID: challenge.challengeID,
+          decision,
+        }, { trustedPrincipal: trusted.principal })
+        if (resolved.status !== "approved" || Object.keys(resolved).toSorted().join("\0") !== ["capabilityLeaseDigest", "effectID", "status"].sort().join("\0")) {
+          return yield* Effect.fail(fail("authorization", "HostKernel rejected REPL operation approval"))
+        }
+        const lease = yield* Effect.try({
+          try: () => parseCapabilityLease(resolved),
+          catch: (error) => error instanceof SessionSupervisorError ? error : fail("protocol", "HostKernel REPL lease is malformed"),
+        })
+        if (lease.effectID !== challenge.effectID) return yield* Effect.fail(fail("protocol", "REPL lease differs from its Guard challenge"))
+        return {
+          ...lease,
+          ...scope,
+          locationID,
+          userActionID,
+          challengeID: challenge.challengeID,
+          inputDigest: challenge.inputDigest,
+          capabilityID: input.capabilityID,
+          arguments: authorization,
+        } satisfies ReplOperationAuthorizationLeaseV1
+      },
+    )
     const awaitManagedVerifierApprovals = Effect.fn("SessionSupervisor.awaitManagedVerifierApprovals")(function* (input: {
       readonly locationRef: typeof LocationSchema.Ref.Type
       readonly sessionID?: string
@@ -3827,29 +6646,265 @@ const layer = Layer.effect(
       })
       return yield* Effect.ensuring(collectDecisions, retirePending)
     })
+    const awaitManagedProviderApproval = Effect.fn("SessionSupervisor.awaitManagedProviderApproval")(function* (input: {
+      readonly locationRef: typeof LocationSchema.Ref.Type
+      readonly scope: ManagedAttemptScopeV1
+      readonly routeProjection: {
+        readonly providerID: string
+        readonly modelID: string
+        readonly harnessID: string
+        readonly routeID: string
+        readonly endpointRevision: string
+        readonly credentialLeaseRef: string | null
+      }
+      readonly requestPins: {
+        readonly requestID: string
+        readonly requestSequence: string
+        readonly contextSelectionDigest: string
+        readonly requestDigest: string
+        readonly transportRequestDigest: string
+        readonly operationDigest: string
+      }
+      readonly challenge: ManagedProviderGuardChallengeV1
+    }) {
+      const trusted = yield* TrustedPrincipalContext
+      if (trusted.principal.kind !== "server_auth" || !trusted.principal.subject) {
+        return yield* Effect.fail(fail("authorization", "provider inference approval requires authenticated ServerAuth context"))
+      }
+      const scope = yield* Effect.try({
+        try: () => managedAttemptScopeToWire(input.scope),
+        catch: () => fail("protocol", "provider approval Attempt scope is invalid"),
+      })
+      const locationID = yield* registerHostLocation(input.locationRef)
+      if (scope.locationID !== locationID || scope.sessionID.length === 0 ||
+        scope.requestID !== input.requestPins.requestID || scope.requestSequence !== input.requestPins.requestSequence) {
+        return yield* Effect.fail(fail("authorization", "provider approval pins do not match the current managed Attempt"))
+      }
+      const challenge = yield* Effect.try({
+        try: () => {
+          const value = record(input.challenge)
+          const exact = [
+            "allowEnabled", "argumentSummary", "capabilityID", "challengeID", "effectID", "expiresAtUnixMs",
+            "guaranteeAssessment", "inputDigest", "locationID", "normalizedAction", "normalizedTargets", "noResponse", "origin",
+            "policyDigest", "policyID", "policySummary", "requestedGuarantees", "runID", "sessionID", "source",
+          ].toSorted()
+          if (Object.keys(value).toSorted().join("\0") !== exact.join("\0") ||
+            value.capabilityID !== "providers.infer" || value.origin !== "managed_run" ||
+            value.source !== "host.managed_provider" || value.policyID !== "provider-inference.managed.v1" ||
+            value.normalizedAction !== "providers.infer" || value.runID !== scope.runID ||
+            value.sessionID !== scope.sessionID || value.locationID !== locationID || value.noResponse !== "deny_and_expire" || value.allowEnabled !== true) {
+            throw fail("protocol", "provider Guard challenge has an invalid source, scope, or approval policy")
+          }
+          const guarantees = value.requestedGuarantees
+          const expectedGuarantees = ["live_managed_attempt", "selected_route_revision", "normalized_request_digest", "transport_request_digest", "secret_operation_digest", "explicit_route_consent", "budget_bound", "one_use", "no_fallback"]
+          if (!Array.isArray(guarantees) || guarantees.join("\0") !== expectedGuarantees.join("\0")) {
+            throw fail("protocol", "provider Guard challenge guarantee set is invalid")
+          }
+          const targets = value.normalizedTargets
+          if (!Array.isArray(targets) || targets.length !== 1) throw fail("protocol", "provider Guard challenge targets are invalid")
+          const target = record(targets[0])
+          const targetKeys = ["endpointRevision", "harnessID", "maxCostMicros", "maxTokens", "modelID", "providerID", "routeID"].toSorted()
+          if (Object.keys(target).toSorted().join("\0") !== targetKeys.join("\0") ||
+            target.providerID !== input.routeProjection.providerID || target.modelID !== input.routeProjection.modelID ||
+            target.harnessID !== input.routeProjection.harnessID || target.routeID !== input.routeProjection.routeID ||
+            target.endpointRevision !== input.routeProjection.endpointRevision || target.maxTokens !== scope.remainingTokens ||
+            typeof target.maxCostMicros !== "string" || !/^(0|[1-9][0-9]*)$/.test(target.maxCostMicros)) {
+            throw fail("protocol", "provider Guard challenge target differs from the selected route or budget")
+          }
+          const projection = validateGuardConsentProjection(value, {
+            capabilityID: "providers.infer", origin: "managed_run", source: "host.managed_provider", runID: scope.runID,
+          })
+          if (projection.guaranteeAssessment.status !== "assessed" || projection.guaranteeAssessment.residual.length !== 0) {
+            throw fail("authorization", "provider Guard allow is unavailable without complete assessed guarantees")
+          }
+          const expiresAtUnixMs = value.expiresAtUnixMs
+          if (typeof expiresAtUnixMs !== "number" || !Number.isSafeInteger(expiresAtUnixMs) || expiresAtUnixMs <= Date.now() || expiresAtUnixMs - Date.now() > 5 * 60 * 1000) {
+            throw fail("protocol", "provider Guard challenge expiry is invalid")
+          }
+          return {
+            challengeID: stringField(value, "challengeID", 256),
+            effectID: stringField(value, "effectID", 256),
+            capabilityID: "providers.infer" as const,
+            locationID,
+            inputDigest: stringField(value, "inputDigest"),
+            normalizedTargets: targets,
+            expiresAtUnixMs,
+            policySummary: stringField(value, "policySummary", MAX_GUARD_SUMMARY_BYTES),
+            origin: "managed_run" as const,
+            source: "host.managed_provider" as const,
+            policyID: "provider-inference.managed.v1" as const,
+            policyDigest: stringField(value, "policyDigest"),
+            normalizedAction: "providers.infer" as const,
+            argumentSummary: projection.argumentSummary,
+            requestedGuarantees: expectedGuarantees,
+            guaranteeAssessment: projection.guaranteeAssessment,
+            runID: scope.runID,
+            sessionID: scope.sessionID,
+            noResponse: "deny_and_expire" as const,
+            allowEnabled: true,
+          } satisfies ManagedProviderGuardChallengeV1
+        },
+        catch: (error) => error instanceof SessionSupervisorError ? error : fail("protocol", "provider Guard challenge is invalid"),
+      })
+      const request: GuardApprovalRequest = {
+        approvalID: `approval_${randomUUID().replaceAll("-", "")}`,
+        challengeID: challenge.challengeID,
+        effectID: challenge.effectID,
+        capabilityID: challenge.capabilityID,
+        locationID,
+        sessionID: challenge.sessionID,
+        inputDigest: challenge.inputDigest,
+        normalizedTargets: challenge.normalizedTargets,
+        expiresAtUnixMs: challenge.expiresAtUnixMs,
+        policySummary: challenge.policySummary,
+        origin: challenge.origin,
+        source: challenge.source,
+        policyID: challenge.policyID,
+        policyDigest: challenge.policyDigest,
+        normalizedAction: challenge.normalizedAction,
+        argumentSummary: challenge.argumentSummary,
+        requestedGuarantees: challenge.requestedGuarantees,
+        guaranteeAssessment: challenge.guaranteeAssessment,
+        runID: challenge.runID,
+        noResponse: challenge.noResponse,
+        allowEnabled: challenge.allowEnabled,
+      }
+      const decision = yield* awaitGuardApproval(request, trusted.principal, input.locationRef)
+      const resolved = yield* requestHostKernel("managed.v1", "managed_provider.resolve_approval", {
+        managedAttempt: scope,
+        routeProjection: input.routeProjection,
+        requestPins: input.requestPins,
+        challengeID: challenge.challengeID,
+        effectID: challenge.effectID,
+        allow: decision === "allow_once",
+      }, { trustedPrincipal: trusted.principal })
+      const expectedKeys = ["status", "challengeID", "effectID", "providerRequestID", "prepareDigest", "revision", "managedAttempt"].toSorted()
+      if (Object.keys(resolved).toSorted().join("\0") !== expectedKeys.join("\0") ||
+        resolved.status !== (decision === "allow_once" ? "APPROVED" : "DENIED") ||
+        resolved.challengeID !== challenge.challengeID || resolved.effectID !== challenge.effectID ||
+        resolved.providerRequestID !== `mpr_${scope.attemptID}_${scope.requestSequence}` ||
+        resolved.prepareDigest === undefined || typeof resolved.prepareDigest !== "string" ||
+        !/^blake3:[0-9a-f]{64}$/.test(resolved.prepareDigest) || resolved.revision !== scope.expectedManagedRevision ||
+        !sameManagedAttemptScope(scope, managedAttemptScopeFromWire(resolved.managedAttempt))) {
+        return yield* Effect.fail(fail("authorization", "HostKernel did not durably resolve the exact provider Guard decision"))
+      }
+      return {
+        decision,
+        challengeID: challenge.challengeID,
+        effectID: challenge.effectID,
+        providerRequestID: resolved.providerRequestID as string,
+        prepareDigest: resolved.prepareDigest,
+      } satisfies ManagedProviderApprovalResultV1
+    })
+    const awaitManagedRootApproval = Effect.fn("SessionSupervisor.awaitManagedRootApproval")(function* (input: {
+      readonly locationRef: typeof LocationSchema.Ref.Type
+      readonly runID: string
+      readonly challenge: ManagedRootGuardChallengeV1
+    }) {
+      const trusted = yield* TrustedPrincipalContext
+      if (trusted.principal.kind !== "server_auth" || !trusted.principal.subject) {
+        return yield* Effect.fail(fail("authorization", "managed-root approval requires authenticated ServerAuth context"))
+      }
+      if (!/^[A-Za-z0-9._-]{1,256}$/.test(input.runID)) {
+        return yield* Effect.fail(fail("protocol", "managed-root Run ID is invalid"))
+      }
+      const locationID = yield* registerHostLocation(input.locationRef)
+      const challenge = yield* Effect.try({
+        try: () => validateManagedRootGuardChallenge(locationID, {
+          ...record(input.challenge),
+          status: "needs_approval",
+          targets: input.challenge.normalizedTargets,
+        }),
+        catch: (error) => error instanceof SessionSupervisorError ? error : fail("protocol", "managed-root Guard challenge is invalid"),
+      })
+      const request: GuardApprovalRequest = {
+        approvalID: `approval_${randomUUID().replaceAll("-", "")}`,
+        challengeID: challenge.challengeID,
+        effectID: challenge.effectID,
+        capabilityID: challenge.capabilityID,
+        locationID,
+        inputDigest: challenge.inputDigest,
+        normalizedTargets: [...challenge.normalizedTargets],
+        expiresAtUnixMs: challenge.expiresAtUnixMs,
+        policySummary: challenge.policySummary,
+        origin: challenge.origin,
+        source: challenge.source,
+        policyID: challenge.policyID,
+        policyDigest: challenge.policyDigest,
+        normalizedAction: challenge.normalizedAction,
+        argumentSummary: challenge.argumentSummary,
+        requestedGuarantees: [...challenge.requestedGuarantees],
+        guaranteeAssessment: challenge.guaranteeAssessment,
+        runID: input.runID,
+        noResponse: "deny_and_expire",
+        allowEnabled: challenge.allowEnabled,
+      }
+      const decision = yield* awaitGuardApproval(request, trusted.principal, input.locationRef)
+      const resolved = yield* requestHostKernel("effects.v2", "resolve_approval", {
+        challengeID: challenge.challengeID,
+        decision,
+      }, { trustedPrincipal: trusted.principal })
+      if (decision !== "allow_once") {
+        if (resolved.status !== "denied" || Object.keys(resolved).toSorted().join("\0") !== "status") {
+          return yield* Effect.fail(fail("protocol", "HostKernel did not durably record managed-root denial"))
+        }
+        return yield* Effect.fail(fail("authorization", "final Inspect approval was denied"))
+      }
+      if (resolved.status !== "approved" || Object.keys(resolved).toSorted().join("\0") !== ["capabilityLeaseDigest", "effectID", "status"].sort().join("\0")) {
+        return yield* Effect.fail(fail("authorization", "HostKernel rejected managed-root approval"))
+      }
+      const lease = yield* Effect.try({
+        try: () => parseCapabilityLease(resolved),
+        catch: (error) => error instanceof SessionSupervisorError ? error : fail("protocol", "HostKernel returned an invalid managed-root lease"),
+      })
+      if (lease.effectID !== challenge.effectID) return yield* Effect.fail(fail("protocol", "managed-root lease does not match its challenge"))
+      return { ...lease, locationID }
+    })
     const prepareToolBatch = Effect.fn("SessionSupervisor.prepareToolBatch")(function* (input: {
       readonly sessionID: string
       readonly locationRef: typeof LocationSchema.Ref.Type
       readonly batchID: string
       readonly turnContextDigest: string
       readonly calls: ReadonlyArray<GuardedToolCall>
-      readonly directAttempt?: DirectAttemptScopeV1
+      /** Authenticated Core Config projection for `terminal.run` workspace profiles.
+       * This is private RPC metadata and is never part of model tool arguments. */
+      readonly workspaceCommandProfiles?: ReadonlyArray<{
+        readonly callID: string
+        readonly reference: { readonly profileId: string; readonly revision: string; readonly profileDigest: string; readonly action: "build" | "test" }
+        readonly definition: unknown
+      }>
+      readonly directTurnScope?: DirectTurnScopeV1
       readonly managedAttempt?: ManagedAttemptScopeV1
     }) {
-      if (input.directAttempt && input.managedAttempt) {
+      const trusted = yield* TrustedPrincipalContext
+      if (input.directTurnScope && input.managedAttempt) {
         return yield* Effect.fail(fail("protocol", "ToolBatch cannot carry both Attempt lanes"))
+      }
+      if (input.managedAttempt) {
+        const managedAttempt = yield* Effect.try({
+          try: () => managedAttemptScopeToWire(input.managedAttempt!),
+          catch: () => fail("protocol", "managed Attempt scope is invalid"),
+        })
+        if (managedAttempt.remainingTokens === "0") {
+          return { status: "denied" as const, reason: "managed Attempt token budget is exhausted" }
+        }
       }
       yield* Effect.try({ try: () => validateToolBatchCalls(input.calls), catch: (error) =>
         error instanceof SessionSupervisorError ? error : fail("protocol", "ToolBatch is invalid") })
+      yield* Effect.try({ try: () => validateWorkspaceCommandProjections(input.calls, input.workspaceCommandProfiles), catch: (error) =>
+        error instanceof SessionSupervisorError ? error : fail("protocol", "workspace command profile projection is invalid") })
       for (const call of input.calls) {
         if (call.capabilityID !== "files.patch") continue
         yield* Effect.try({
           try: () => {
             const args = record(call.arguments)
-            if (Object.keys(args).length !== 1 || !("operations" in args)) {
+            if (!("operations" in args) || Object.keys(args).some((key) => !["operations", "repoIntelFence"].includes(key))) {
               throw fail("effect", "files.patch arguments are invalid")
             }
             validatePatchOperations(args.operations)
+            if (args.repoIntelFence !== undefined) {
+              Schema.decodeUnknownSync(RepoIntelPatchFenceV1, { onExcessProperty: "error" })(args.repoIntelFence)
+            }
           },
           catch: (error) =>
             error instanceof SessionSupervisorError ? error : fail("effect", "files.patch arguments are invalid"),
@@ -3866,13 +6921,14 @@ const layer = Layer.effect(
           locationID,
           batchID: input.batchID,
           turnContextDigest: input.turnContextDigest,
-          ...(input.directAttempt ? { directAttempt: directAttemptScopeToWire(input.directAttempt) } : {}),
+          ...(input.directTurnScope ? { directTurnScope: directTurnScopeToWire(input.directTurnScope) } : {}),
           ...(input.managedAttempt ? { managedAttempt: managedAttemptScopeToWire(input.managedAttempt) } : {}),
           calls: input.calls.map((call) => ({
             callID: call.callID,
             capabilityID: call.capabilityID,
             arguments: call.arguments,
           })),
+          ...(input.workspaceCommandProfiles?.length ? { workspaceCommandProfiles: input.workspaceCommandProfiles } : {}),
         }),
       )
       if (response.status === "denied") {
@@ -3885,18 +6941,59 @@ const layer = Layer.effect(
               : "Guard denied the complete tool batch",
         }
       }
-      const refreshedDirectAttempt = response.status === "prepared" && input.directAttempt
+      if (response.status === "admitted_batch") {
+        const responseKeys = Object.keys(response).sort().join("\0")
+        if (input.calls.length < 2 || input.calls.length > MAX_TOOL_BATCH_CALLS ||
+          input.directTurnScope || input.managedAttempt ||
+          !(hostKernelClient?.enabledFeatures ?? []).includes(MULTI_CALL_BATCH_FEATURE) ||
+          responseKeys !== ["batchID", "calls", "status"].sort().join("\0") ||
+          response.batchID !== input.batchID) {
+          return yield* Effect.fail(fail("protocol", "HostKernel returned an out-of-scope admitted ToolBatch"))
+        }
+        const members = yield* Effect.try({
+          try: () => parseMultiCallChallenges({
+            sessionID: input.sessionID,
+            batchID: input.batchID,
+            locationID,
+            calls: input.calls,
+            response,
+          }),
+          catch: (error) => error instanceof SessionSupervisorError
+            ? error : fail("protocol", "HostKernel returned invalid mode-approved challenges"),
+        })
+        const rawCalls = response.calls as ReadonlyArray<unknown>
+        const byCall = new Map(rawCalls.map((value) => {
+          const item = record(value)
+          return [batchField(item, "callId", "callID", MAX_IDENTIFIER_BYTES), item] as const
+        }))
+        const calls = yield* Effect.try({
+          try: () => members.map((member) => {
+            const item = byCall.get(member.callID)
+            if (!item) throw fail("protocol", "HostKernel omitted a mode-approved call")
+            const lease = parseCapabilityLease(record(item.lease))
+            if (lease.effectID !== member.effectID) throw fail("protocol", "HostKernel returned a mode lease for another effect")
+            return {
+              callID: member.callID,
+              capabilityID: member.capabilityID,
+              challenge: member.challenge,
+              lease,
+            }
+          }),
+          catch: (error) => error instanceof SessionSupervisorError
+            ? error : fail("protocol", "HostKernel returned an invalid mode-approved lease set"),
+        })
+        return { status: "admitted_batch" as const, calls }
+      }
+      const refreshedDirectTurn = response.status === "prepared" && input.directTurnScope
         ? yield* Effect.try({
             try: () => {
-              const refreshed = directAttemptScopeFromWire(response.directAttempt)
-              if (response.attemptScopeTransition !== "batch_bind" ||
-                !isNextDirectAttemptScopeCore(input.directAttempt!, refreshed)) {
-                throw fail("protocol", "HostKernel returned a stale direct Attempt batch scope")
+              const refreshed = directTurnScopeFromWire(response.directTurnScope)
+              if (response.attemptScopeTransition !== "batch_bind" || !isNextDirectTurnScopeCore(input.directTurnScope!, refreshed)) {
+                throw fail("protocol", "HostKernel returned a stale DirectTurnScope batch bind")
               }
               return refreshed
             },
-            catch: (error) => error instanceof SessionSupervisorError
-              ? error : fail("protocol", "HostKernel returned an invalid direct Attempt scope"),
+            catch: (error) => error instanceof SessionSupervisorError ? error : fail("protocol", "HostKernel returned an invalid DirectTurnScope batch bind"),
           })
         : undefined
       const refreshedManagedAttempt = response.status === "prepared" && input.managedAttempt
@@ -3929,7 +7026,7 @@ const layer = Layer.effect(
         return {
           status: "prepared" as const,
           lease,
-          ...(refreshedDirectAttempt ? { directAttempt: refreshedDirectAttempt } : {}),
+          ...(refreshedDirectTurn ? { directTurnScope: refreshedDirectTurn } : {}),
           ...(refreshedManagedAttempt ? { managedAttempt: refreshedManagedAttempt } : {}),
         }
       }
@@ -3949,8 +7046,9 @@ const layer = Layer.effect(
         const currentAttempt: {
           direct?: DirectAttemptScopeV1
           managed?: ManagedAttemptScopeV1
+          directTurn?: DirectTurnScopeV1
         } = {
-          ...(input.directAttempt ? { direct: input.directAttempt } : {}),
+          ...(input.directTurnScope ? { direct: input.directTurnScope.directAttempt, directTurn: input.directTurnScope } : {}),
           ...(input.managedAttempt ? { managed: input.managedAttempt } : {}),
         }
         const resolveApprovedSet = (request: {
@@ -3988,20 +7086,21 @@ const layer = Layer.effect(
               (!serialAttempt && request.challengeIDs.some((id) => !byChallenge.has(id)))) {
               return yield* Effect.fail(fail("protocol", "HostKernel returned a mismatched approval lease set"))
             }
-            const refreshedDirectAttempt = input.directAttempt
+            const refreshedDirectTurn = input.directTurnScope
               ? yield* Effect.try({
                   try: () => {
-                    const refreshed = directAttemptScopeFromWire(resolved.directAttempt)
+                    const refreshed = directTurnScopeFromWire(resolved.directTurnScope)
                     if (resolved.attemptScopeTransition !== "batch_bind" ||
-                      !isNextDirectAttemptScopeCore(input.directAttempt!, refreshed)) {
-                      throw fail("protocol", "HostKernel returned a stale direct Attempt batch scope")
+                      !isNextDirectTurnScopeCore(input.directTurnScope!, refreshed)) {
+                      throw fail("protocol", "HostKernel returned a stale DirectTurnScope batch bind")
                     }
                     return refreshed
                   },
                   catch: (error) => error instanceof SessionSupervisorError
-                    ? error : fail("protocol", "HostKernel returned an invalid direct Attempt scope"),
+                    ? error : fail("protocol", "HostKernel returned an invalid DirectTurnScope"),
                 })
               : undefined
+            const refreshedDirectAttempt = refreshedDirectTurn?.directAttempt
             const refreshedManagedAttempt = input.managedAttempt
               ? yield* Effect.try({
                   try: () => {
@@ -4016,10 +7115,11 @@ const layer = Layer.effect(
                     ? error : fail("protocol", "HostKernel returned an invalid managed Attempt scope"),
                 })
               : undefined
-            if (serialAttempt && !refreshedDirectAttempt && !refreshedManagedAttempt) {
+            if (serialAttempt && !refreshedDirectTurn && !refreshedManagedAttempt) {
               return yield* Effect.fail(fail("protocol", "HostKernel requested serial Attempt leases without a refreshed scope"))
             }
             if (refreshedDirectAttempt) currentAttempt.direct = refreshedDirectAttempt
+            if (refreshedDirectTurn) currentAttempt.directTurn = refreshedDirectTurn
             if (refreshedManagedAttempt) currentAttempt.managed = refreshedManagedAttempt
             const scopedLeases = leases.map((item) => ({
               ...item,
@@ -4032,10 +7132,38 @@ const layer = Layer.effect(
             return {
               leases: scopedLeases,
               ...(refreshedDirectAttempt ? { directAttempt: refreshedDirectAttempt } : {}),
+              ...(refreshedDirectTurn ? { directTurnScope: refreshedDirectTurn } : {}),
               ...(refreshedManagedAttempt ? { managedAttempt: refreshedManagedAttempt } : {}),
               ...(serialAttempt ? { nextLeaseRequired: true } : {}),
             }
           })
+        const preflightDirectGrant = (request: {
+          readonly sessionID: string
+          readonly locationID: string
+          readonly batchID: string
+          readonly challengeIDs: ReadonlyArray<string>
+        }) => Effect.gen(function* () {
+          // Direct-session grants never authorize a managed Task/Attempt. Keep
+          // managed approval on its authenticated Attempt path even when a user
+          // also has a matching direct workspace grant. A root Session has no
+          // DirectTurnScope by design; HostKernel derives that lane from the
+          // authenticated Session/Location and must still get the read-only
+          // grant hint so the user is not prompted on every pre-authorized edit.
+          if (input.managedAttempt ||
+            trusted.principal.kind !== "server_auth" || !trusted.principal.subject) return false
+          const response = yield* requestHostKernel("effects.v1", "preflight_direct_session_grant_batch", {
+            sessionID: request.sessionID,
+            locationID: request.locationID,
+            batchID: request.batchID,
+            challengeIDs: request.challengeIDs,
+          }, { trustedPrincipal: trusted.principal })
+          const responseKeys = Object.keys(response).sort().join("\0")
+          if (responseKeys !== ["batchID", "challengeSetDigest", "status"].sort().join("\0") ||
+            response.batchID !== request.batchID || !["eligible", "prompt_required"].includes(String(response.status)) ||
+            typeof response.challengeSetDigest !== "string" ||
+            response.challengeSetDigest !== directGrantChallengeSetDigest(request.challengeIDs)) return false
+          return response.status === "eligible"
+        })
         const leaseNextEffect = (request: {
           readonly sessionID: string
           readonly locationID: string
@@ -4110,6 +7238,7 @@ const layer = Layer.effect(
           },
           {
             requestApproval: (request) => awaitGuardApproval(request, undefined, input.locationRef),
+            preflightDirectGrant,
             resolveApprovalSet: resolveApprovedSet,
             leaseNextEffect,
             cancelBatch: (value) =>
@@ -4123,8 +7252,9 @@ const layer = Layer.effect(
         return {
           ...relayed,
           ...(relayed.directAttempt ? { directAttempt: relayed.directAttempt } : {}),
+          ...(relayed.directTurnScope ? { directTurnScope: relayed.directTurnScope } : {}),
           ...(relayed.managedAttempt ? { managedAttempt: relayed.managedAttempt } : {}),
-          ...(relayed.directAttempt || relayed.managedAttempt ? { attemptScopeTransition: "batch_bind" as const } : {}),
+          ...(relayed.directTurnScope || relayed.managedAttempt ? { attemptScopeTransition: "batch_bind" as const } : {}),
         }
       }
       if (input.calls.length !== 1) {
@@ -4213,36 +7343,48 @@ const layer = Layer.effect(
       if (decision === "allow_once" && !request.allowEnabled) {
         return yield* Effect.fail(fail("authorization", "Guard allow is unavailable without assessed guarantees"))
       }
-      const resolved = yield* requestHostKernel("effects.v2", "resolve_approval", {
-        challengeID: challenge.challengeID,
-        decision,
-      })
+      const resolved = decision === "allow_once" && input.managedAttempt
+        ? yield* requestHostKernel("effects.v2", "resolve_approval_set", {
+            sessionID: input.sessionID,
+            locationID,
+            batchID: input.batchID,
+            challengeIDs: [challenge.challengeID],
+          })
+        : yield* requestHostKernel("effects.v2", "resolve_approval", {
+            challengeID: challenge.challengeID,
+            decision,
+          })
       if (decision !== "allow_once") {
         return { status: "denied" as const, reason: "Guard approval was denied" }
       }
-      if (resolved.status !== "approved") {
+      if (input.managedAttempt && (resolved.status !== "approved_set" || !Array.isArray(resolved.leases) || resolved.leases.length !== 1) ||
+        !input.managedAttempt && resolved.status !== "approved") {
         return yield* Effect.fail(fail("authorization", "host rejected Guard approval"))
       }
+      const leaseResponse = input.managedAttempt ? record(resolved.leases![0]) : resolved
+      if (input.managedAttempt && stringField(leaseResponse, "challengeID") !== challenge.challengeID) {
+        return yield* Effect.fail(fail("protocol", "managed wave lease does not match its approved challenge"))
+      }
       const lease = yield* Effect.try({
-        try: () => parseCapabilityLease(resolved),
+        try: () => parseCapabilityLease(leaseResponse),
         catch: (error) =>
           error instanceof SessionSupervisorError ? error : fail("protocol", "host returned an invalid capability lease"),
       })
       if (lease.effectID !== challenge.effectID) {
         return yield* Effect.fail(fail("protocol", "approval lease does not match its challenge"))
       }
-      const approvedDirectAttempt = input.directAttempt
+      const approvedDirectTurn = input.directTurnScope
         ? yield* Effect.try({
             try: () => {
-              const refreshed = directAttemptScopeFromWire(resolved.directAttempt)
+              const refreshed = directTurnScopeFromWire(resolved.directTurnScope)
               if (resolved.attemptScopeTransition !== "batch_bind" ||
-                !isNextDirectAttemptScopeCore(input.directAttempt!, refreshed)) {
-                throw fail("protocol", "HostKernel returned a stale direct Attempt scope after approval")
+                !isNextDirectTurnScopeCore(input.directTurnScope!, refreshed)) {
+                throw fail("protocol", "HostKernel returned a stale DirectTurnScope after approval")
               }
               return refreshed
             },
             catch: (error) => error instanceof SessionSupervisorError
-              ? error : fail("protocol", "HostKernel returned an invalid direct Attempt scope"),
+              ? error : fail("protocol", "HostKernel returned an invalid DirectTurnScope after approval"),
           })
         : undefined
       const approvedManagedAttempt = input.managedAttempt
@@ -4262,9 +7404,9 @@ const layer = Layer.effect(
       return {
         status: "prepared" as const,
         lease,
-        ...(approvedDirectAttempt ? { directAttempt: approvedDirectAttempt } : {}),
+        ...(approvedDirectTurn ? { directTurnScope: approvedDirectTurn } : {}),
         ...(approvedManagedAttempt ? { managedAttempt: approvedManagedAttempt } : {}),
-        ...(approvedDirectAttempt || approvedManagedAttempt ? { attemptScopeTransition: "batch_bind" as const } : {}),
+        ...(approvedDirectTurn || approvedManagedAttempt ? { attemptScopeTransition: "batch_bind" as const } : {}),
       }
     })
     const executeWrite = Effect.fn("SessionSupervisor.executeWrite")(function* (input: {
@@ -4273,10 +7415,15 @@ const layer = Layer.effect(
       readonly lease: EffectLease
       readonly content: string
       readonly directAttempt?: DirectAttemptScopeV1
+      readonly directTurnScope?: DirectTurnScopeV1
       readonly managedAttempt?: ManagedAttemptScopeV1
       readonly trustedPrincipal: TrustedPrincipal
     }) {
       const locationID = yield* registerHostLocationFor(input.locationRef, input.trustedPrincipal)
+      if (input.directAttempt && (!input.directTurnScope ||
+        !sameDirectTurnScopeCore(input.directTurnScope, { ...input.directTurnScope, directAttempt: input.directAttempt }))) {
+        return yield* Effect.fail(fail("authorization", "direct effect Attempt does not match its DirectTurnScope"))
+      }
       if (!/^blake3:[0-9a-f]{64}$/.test(input.lease.capabilityLeaseDigest)) {
         return yield* Effect.fail(fail("authorization", "capability lease is invalid"))
       }
@@ -4285,7 +7432,7 @@ const layer = Layer.effect(
         locationID,
         effectID: input.lease.effectID,
         capabilityLeaseDigest: input.lease.capabilityLeaseDigest,
-        ...(input.directAttempt ? { directAttempt: directAttemptScopeToWire(input.directAttempt) } : {}),
+        ...(input.directTurnScope ? { directTurnScope: directTurnScopeToWire(input.directTurnScope) } : {}),
         ...(input.managedAttempt ? { managedAttempt: managedAttemptScopeToWire(input.managedAttempt) } : {}),
         content: input.content,
       })
@@ -4339,9 +7486,24 @@ const layer = Layer.effect(
               ? error : fail("protocol", "HostKernel returned an invalid direct Attempt receipt scope"),
           })
         : undefined
+      const refreshedDirectTurn = input.directTurnScope && response.directTurnScope !== undefined
+        ? yield* Effect.try({
+            try: () => {
+              const refreshed = directTurnScopeFromWire(response.directTurnScope)
+              if (response.attemptScopeTransition !== "effect_receipt" ||
+                !isCompletedDirectTurnBatchScopeCore(input.directTurnScope!, refreshed) ||
+                (refreshedDirectAttempt && JSON.stringify(refreshed.directAttempt) !== JSON.stringify(refreshedDirectAttempt))) {
+                throw fail("protocol", "HostKernel returned a stale or mismatched completed DirectTurnScope")
+              }
+              return refreshed
+            },
+            catch: (error) => error instanceof SessionSupervisorError ? error : fail("protocol", "HostKernel returned an invalid completed DirectTurnScope"),
+          })
+        : undefined
       return {
         ...receipt,
         ...(refreshedDirectAttempt ? { directAttempt: refreshedDirectAttempt } : {}),
+        ...(refreshedDirectTurn ? { directTurnScope: refreshedDirectTurn } : {}),
         ...(refreshedManagedAttempt ? { managedAttempt: refreshedManagedAttempt } : {}),
         ...(refreshedDirectAttempt || refreshedManagedAttempt ? { attemptScopeTransition: "effect_receipt" as const } : {}),
       }
@@ -4352,6 +7514,7 @@ const layer = Layer.effect(
       readonly lease: EffectLease
       readonly operations: ReadonlyArray<PatchOperation>
       readonly directAttempt?: DirectAttemptScopeV1
+      readonly directTurnScope?: DirectTurnScopeV1
       readonly managedAttempt?: ManagedAttemptScopeV1
       readonly trustedPrincipal: TrustedPrincipal
     }) {
@@ -4361,6 +7524,10 @@ const layer = Layer.effect(
           error instanceof SessionSupervisorError ? error : fail("effect", "files.patch operations are invalid"),
       })
       const locationID = yield* registerHostLocationFor(input.locationRef, input.trustedPrincipal)
+      if (input.directAttempt && (!input.directTurnScope ||
+        !sameDirectTurnScopeCore(input.directTurnScope, { ...input.directTurnScope, directAttempt: input.directAttempt }))) {
+        return yield* Effect.fail(fail("authorization", "direct effect Attempt does not match its DirectTurnScope"))
+      }
       if (!/^blake3:[0-9a-f]{64}$/.test(input.lease.capabilityLeaseDigest)) {
         return yield* Effect.fail(fail("authorization", "capability lease is invalid"))
       }
@@ -4369,7 +7536,7 @@ const layer = Layer.effect(
         locationID,
         effectID: input.lease.effectID,
         capabilityLeaseDigest: input.lease.capabilityLeaseDigest,
-        ...(input.directAttempt ? { directAttempt: directAttemptScopeToWire(input.directAttempt) } : {}),
+        ...(input.directTurnScope ? { directTurnScope: directTurnScopeToWire(input.directTurnScope) } : {}),
         ...(input.managedAttempt ? { managedAttempt: managedAttemptScopeToWire(input.managedAttempt) } : {}),
         operations: input.operations,
       })
@@ -4403,10 +7570,41 @@ const layer = Layer.effect(
               ? error : fail("protocol", "HostKernel returned an invalid managed Attempt receipt scope"),
           })
         : undefined
+      const refreshedDirectAttempt = input.directAttempt
+        ? yield* Effect.try({
+            try: () => {
+              const refreshed = directAttemptScopeFromWire(response.directAttempt)
+              if (response.attemptScopeTransition !== "effect_receipt" ||
+                !isReceiptAdvancedDirectAttemptScopeCore(input.directAttempt!, refreshed)) {
+                throw fail("protocol", "HostKernel returned a stale direct Attempt receipt scope")
+              }
+              return refreshed
+            },
+            catch: (error) => error instanceof SessionSupervisorError
+              ? error : fail("protocol", "HostKernel returned an invalid direct Attempt receipt scope"),
+          })
+        : undefined
+      const refreshedDirectTurn = input.directTurnScope && response.directTurnScope !== undefined
+        ? yield* Effect.try({
+            try: () => {
+              const refreshed = directTurnScopeFromWire(response.directTurnScope)
+              if (response.attemptScopeTransition !== "effect_receipt" ||
+                !isCompletedDirectTurnBatchScopeCore(input.directTurnScope!, refreshed)) {
+                throw fail("protocol", "HostKernel returned a stale completed DirectTurnScope")
+              }
+              return refreshed
+            },
+            catch: (error) => error instanceof SessionSupervisorError ? error : fail("protocol", "HostKernel returned an invalid completed DirectTurnScope"),
+          })
+        : undefined
       return {
         ...receipt,
+        ...(refreshedDirectAttempt ? { directAttempt: refreshedDirectAttempt } : {}),
+        ...(refreshedDirectTurn ? { directTurnScope: refreshedDirectTurn } : {}),
         ...(refreshedManagedAttempt ? { managedAttempt: refreshedManagedAttempt } : {}),
-        ...(refreshedManagedAttempt ? { attemptScopeTransition: "effect_receipt" as const } : {}),
+        ...(refreshedDirectAttempt || refreshedManagedAttempt
+          ? { attemptScopeTransition: "effect_receipt" as const }
+          : {}),
       }
     })
     const runPatch = Effect.fn("SessionSupervisor.runPatch")(function* (input: {
@@ -4578,15 +7776,46 @@ const layer = Layer.effect(
       open,
       openForSession,
       registerHostLocation,
+      directSessionPermissionModeSnapshot,
+      directProviderPermissionScope,
+      setDirectSessionPermissionMode,
+      issueDirectSessionGrant,
+      revokeDirectSessionGrant,
       prepareUserEffect,
+      resolveEditorProcessApproval,
+      authorizeEditorProtocolOperation,
+      authorizeReplOperation,
       replyGuardApproval,
       awaitManagedVerifierApprovals,
+      awaitManagedProviderApproval,
+      awaitManagedRootApproval,
       prepareToolBatch,
       executeWrite,
       executePatch,
       runPatch,
       requestHostKernel,
+      hostFeatureEnabled,
+      directSessionWorkspaceSnapshot,
+      managedEffectWaveReceipts,
+      managedCurrentEpochRecoveryQuiescence,
+      directCodeModeWaveReceipts,
+      codeModeHostRequest,
+      prepareCodeModeToolBatch,
+      settleCodeModeToolResults,
+      codeModeWaveReceipts,
+      cancelCodeModeWave,
+      listDirectAttemptArtifacts,
+      listDirectSessionArtifacts,
+      inspectDirectSessionArtifact,
+      readDirectSessionArtifactRange,
       queryRepoStructure,
+      discoverRepo,
+      readRepoDocument,
+      resolveVerifiedManagedArtifactScope,
+      inspectManagedArtifact,
+      inspectDirectAttemptArtifact,
+      readManagedArtifactRange,
+      readDirectAttemptArtifactRange,
       hostOwnerEpoch,
       sessionProjectionCursor: Effect.fn("SessionSupervisor.sessionProjectionCursor")(function* (sessionID: string) {
         if (typeof sessionID !== "string" || !/^[A-Za-z0-9._-]{1,256}$/.test(sessionID)) {
@@ -4621,6 +7850,10 @@ const runtimeConfigLayer = Layer.succeed(
       typeof OPENCODE_HOST_KERNEL_MANIFEST === "undefined" ? undefined : OPENCODE_HOST_KERNEL_MANIFEST,
     hostKernelInstallRoot: join(Global.Path.bin, "hz-kernel"),
     hostKernelStateRoot: join(Global.Path.state, "hz-kernel"),
+    codeModeHelperAssetPath: typeof OPENCODE_CODE_MODE_HELPER_ASSET === "undefined" ? undefined : OPENCODE_CODE_MODE_HELPER_ASSET,
+    codeModeHelperManifestJSON:
+      typeof OPENCODE_CODE_MODE_HELPER_MANIFEST === "undefined" ? undefined : OPENCODE_CODE_MODE_HELPER_MANIFEST,
+    codeModeHelperInstallRoot: join(Global.Path.bin, "codemode-helper"),
   }),
 )
 
@@ -4633,7 +7866,7 @@ export const runtimeConfigNode = LayerNode.make({
 export const node = makeGlobalNode({
   service: Service,
   layer,
-  deps: [AppProcess.node, runtimeConfigNode, EventV2.node],
+  deps: [AppProcess.node, runtimeConfigNode, EventV2.node, Database.node],
 })
 
 export const SessionSupervisor = { Service, RuntimeConfig, runtimeConfigNode, node, acquireExecutionOwner }

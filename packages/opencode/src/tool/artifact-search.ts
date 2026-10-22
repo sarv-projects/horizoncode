@@ -347,9 +347,13 @@ export const nodeSource: ArtifactSearchSource = {
     }),
 }
 
-type MatcherIndex = { readonly kind: "match"; readonly index?: number } | { readonly kind: "deadline" }
+export type ArtifactMatcherResult = { readonly kind: "match"; readonly index?: number } | { readonly kind: "deadline" }
 
-type Matcher = { readonly index: (line: Buffer) => Effect.Effect<MatcherIndex, ArtifactSearchError> }
+export type ArtifactLineMatcher = { readonly index: (line: Buffer) => Effect.Effect<ArtifactMatcherResult, ArtifactSearchError> }
+
+type MatcherIndex = ArtifactMatcherResult
+
+type Matcher = ArtifactLineMatcher
 
 const regexWorkers = Semaphore.makeUnsafe(1)
 
@@ -473,6 +477,30 @@ const regexMatcher = (
         }),
     } satisfies Matcher
   })
+
+/**
+ * Create the same bounded literal/isolated-regex line matcher for authenticated
+ * HostKernel artifact range readers. The returned matcher owns no file access;
+ * callers must supply bounded lines and hold a Scope for regex worker cleanup.
+ */
+export const makeArtifactLineMatcher = (
+  query: string,
+  mode: "literal" | "regex",
+  flags: string,
+  deadline: number,
+  now: () => number,
+): Effect.Effect<ArtifactLineMatcher, ArtifactSearchError, Scope.Scope> => {
+  const error = validateQuery(query, mode)
+  if (error) return Effect.fail(error)
+  if (mode === "literal") return Effect.succeed(literalMatcher(query))
+  const compiled = compileRegex(query, flags)
+  if ("error" in compiled) return Effect.fail(compiled.error)
+  return regexMatcher(query, flags, deadline, now)
+}
+
+/** Keep regex workers globally serialized across local and HostKernel readers. */
+export const withArtifactRegexPermit = <A, E, R>(operation: Effect.Effect<A, E, R>) =>
+  regexWorkers.withPermits(1)(operation)
 
 const excerptOf = (line: Buffer, matchIndex: number, maxExcerptBytes: number) => {
   const start = Math.max(0, matchIndex - EXCERPT_CONTEXT_BYTES)

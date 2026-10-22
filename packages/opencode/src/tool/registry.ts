@@ -24,22 +24,26 @@ import { Plugin } from "../plugin"
 import { Provider } from "@/provider/provider"
 
 import { WebSearchTool } from "./websearch"
-import { normalizeSearchCascadeSettings, WEB_SEARCH_GUARD_READY, type SearchCascadeSettings } from "./websearch-broker"
+import { WebSearchInspectProviderTool } from "./websearch-inspect"
+import { WebSearchRuntime } from "./websearch-runtime"
+import { hasEnabledSearchRouteReady, normalizeSearchCascadeSettings, type SearchCascadeSettings } from "./websearch-broker"
 import { LspTool } from "./lsp"
-import { ReferencesFindTool, RepoTreeTool, SymbolsSearchTool } from "./repo-tools"
-import { RepoIntel } from "./repo-intel"
+import { DapTool, DAP_TOOL_ACCEPTANCE_READY } from "./dap"
+import { debugEffectRouteAvailable } from "@/dap/session"
+import { DefinitionsFindTool, ReferencesFindTool, RepoDetectTool, RepoTreeTool, SymbolsSearchTool } from "./repo-tools"
+import { ManagedArtifactSearchTool, ManagedTerminalOutputRangeTool, ManagedTerminalSearchTool } from "./managed-artifact-search"
+import { HistoryReadRangeTool, HistorySearchTool } from "./history"
 import { ApplyPatchTool } from "./apply_patch"
 import { Glob } from "@opencode-ai/core/util/glob"
 import path from "path"
-import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
-import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Format } from "../format"
 import { InstanceState } from "@/effect/instance-state"
 import { Question } from "../question"
 import { Todo } from "../session/todo"
 import { LSP } from "@/lsp/lsp"
+import { hostProtocolRouteAvailable, languageServiceProcessRouteAvailable } from "@/lsp/launch"
 import { Instruction } from "../session/instruction"
-import { SessionSupervisorError } from "@opencode-ai/core/session/supervisor"
+import { REPO_INTEL_READ_CONTEXT_FEATURE, WEB_SEARCH_CASCADE_FEATURE, SessionSupervisorError } from "@opencode-ai/core/session/supervisor"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Agent } from "../agent/agent"
@@ -49,20 +53,28 @@ import { BackgroundJob } from "@/background/job"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
-import { MCP } from "@/mcp"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
-import { McpCatalog } from "@/mcp/catalog"
 
 import { SessionSupervisor } from "@opencode-ai/core/session/supervisor"
 import { LocationServiceMap, locationServiceMapLayer } from "@opencode-ai/core/location-services"
+
+/**
+ * Source presence is not integrated acceptance. Keep RepoIntel model-visible
+ * tools closed until the authenticated HostKernel paths, revision/symlink
+ * behavior and end-to-end journeys have been accepted on one revision.
+ */
+export const REPO_INTEL_TOOL_ACCEPTANCE_READY = false
+export const REPO_DISCOVERY_TOOL_ACCEPTANCE_READY = false
 export function webSearchEnabled(
   _providerID: ProviderV2.ID,
   settings?: SearchCascadeSettings,
-  guardReady = WEB_SEARCH_GUARD_READY,
+  runtimeReady?: boolean,
 ) {
-  // Search route configuration is not execution authority. Keep the entire
-  // network origin absent until the Rust Guard/ExecutionHost gate is accepted.
-  return guardReady && normalizeSearchCascadeSettings(settings).enabled.length > 0
+  // Search route configuration is not execution authority. Expose the tool
+  // only when an explicitly enabled route's own Guard/SecretBroker gate passed.
+  if (runtimeReady === undefined) return hasEnabledSearchRouteReady(settings)
+  // Explicit override is retained only for the isolated registry contract seam.
+  return runtimeReady && normalizeSearchCascadeSettings(settings).enabled.length > 0
 }
 
 type TaskDef = Tool.InferDef<typeof TaskTool>
@@ -96,7 +108,7 @@ const layer = Layer.effect(
     const agents = yield* Agent.Service
 
     const flags = yield* RuntimeFlags.Service
-    const mcp = yield* MCP.Service
+    const supervisor = yield* SessionSupervisor.Service
 
     const invalid = yield* InvalidTool
     const task = yield* TaskTool
@@ -104,12 +116,21 @@ const layer = Layer.effect(
     const question = yield* QuestionTool
     const todo = yield* TodoWriteTool
     const lsptool = yield* LspTool
+    const daptool = yield* DapTool
     const plan = yield* PlanExitTool
-    const repoToolTree = yield* RepoTreeTool
     const repoToolSymbols = yield* SymbolsSearchTool
     const repoToolReferences = yield* ReferencesFindTool
+    const repoToolDefinitions = yield* DefinitionsFindTool
+    const repoTree = yield* RepoTreeTool
+    const repoDetect = yield* RepoDetectTool
+    const managedArtifactSearch = yield* ManagedArtifactSearchTool
+    const managedTerminalSearch = yield* ManagedTerminalSearchTool
+    const managedTerminalOutputRange = yield* ManagedTerminalOutputRangeTool
+    const historySearch = yield* HistorySearchTool
+    const historyReadRange = yield* HistoryReadRangeTool
     const webfetch = yield* WebFetchTool
     const websearch = yield* WebSearchTool
+    const webSearchInspect = yield* WebSearchInspectProviderTool
     const shell = yield* ShellTool
     const globtool = yield* GlobTool
     const writetool = yield* WriteTool
@@ -117,13 +138,6 @@ const layer = Layer.effect(
     const greptool = yield* GrepTool
     const patchtool = yield* ApplyPatchTool
     const skilltool = yield* SkillTool
-
-    // MCP tool calls still originate from this OpenCode-derived package and do
-    // not yet have a production Rust Guard/ExecutionHost transport. Keep the
-    // orchestration tool out of the model-visible registry even when an
-    // experimental flag is set; CodeModeTool also rejects every nested call.
-    const codeMode: undefined = undefined
-    const codeModeTool: undefined = undefined
 
     const state = yield* InstanceState.make<State>(
       Effect.fn("ToolRegistry.state")(function* (ctx) {
@@ -162,16 +176,32 @@ const layer = Layer.effect(
           fetch: Tool.init(webfetch),
           todo: Tool.init(todo),
           search: Tool.init(websearch),
+          searchInspect: Tool.init(webSearchInspect),
           skill: Tool.init(skilltool),
           patch: Tool.init(patchtool),
           question: Tool.init(question),
           lsp: Tool.init(lsptool),
+          debug: Tool.init(daptool),
           plan: Tool.init(plan),
-          repoTree: Tool.init(repoToolTree),
           symbolsSearch: Tool.init(repoToolSymbols),
           referencesFind: Tool.init(repoToolReferences),
-          ...(codeModeTool ? { execute: Tool.init(codeModeTool) } : {}),
+          definitionsFind: Tool.init(repoToolDefinitions),
+          repoTree: Tool.init(repoTree),
+          repoDetect: Tool.init(repoDetect),
+          managedArtifactSearch: Tool.init(managedArtifactSearch),
+          managedTerminalSearch: Tool.init(managedTerminalSearch),
+          managedTerminalOutputRange: Tool.init(managedTerminalOutputRange),
+          historySearch: Tool.init(historySearch),
+          historyReadRange: Tool.init(historyReadRange),
         })
+
+        const repoReadFeatureReady =
+          (REPO_INTEL_TOOL_ACCEPTANCE_READY || REPO_DISCOVERY_TOOL_ACCEPTANCE_READY) &&
+          (yield* supervisor.hostFeatureEnabled(REPO_INTEL_READ_CONTEXT_FEATURE).pipe(
+            Effect.catch(() => Effect.succeed(false)),
+          ))
+        const repoIntelHostReady = REPO_INTEL_TOOL_ACCEPTANCE_READY && repoReadFeatureReady
+        const repoDiscoveryHostReady = REPO_DISCOVERY_TOOL_ACCEPTANCE_READY && repoReadFeatureReady
 
         return {
           builtin: [
@@ -187,11 +217,29 @@ const layer = Layer.effect(
             tool.fetch,
             tool.todo,
             tool.search,
+            tool.searchInspect,
+            tool.managedArtifactSearch,
+            tool.managedTerminalSearch,
+            tool.managedTerminalOutputRange,
+            tool.historySearch,
+            tool.historyReadRange,
             tool.skill,
             tool.patch,
             ...(tool.execute ? [tool.execute] : []),
-            ...(flags.experimentalLspTool ? [tool.lsp] : []),
-            ...(flags.experimentalRepoTools ? [tool.repoTree, tool.symbolsSearch, tool.referencesFind] : []),
+            ...(flags.experimentalLspTool && languageServiceProcessRouteAvailable() && hostProtocolRouteAvailable()
+              ? [tool.lsp]
+              : []),
+            // Keep the DAP action hidden until its end-to-end Guard/HostKernel
+            // acceptance gate is explicitly released. Its execute path also
+            // returns the typed unavailable state, so visibility alone cannot
+            // accidentally start an adapter.
+            ...(DAP_TOOL_ACCEPTANCE_READY && debugEffectRouteAvailable() ? [tool.debug] : []),
+            ...(flags.experimentalRepoTools && repoIntelHostReady
+              ? [tool.symbolsSearch, tool.definitionsFind, tool.referencesFind]
+              : []),
+            ...(flags.experimentalRepoTools && repoDiscoveryHostReady
+              ? [tool.repoTree, tool.repoDetect]
+              : []),
             ...(flags.experimentalPlanMode && flags.client === "cli" ? [tool.plan] : []),
           ],
           task: tool.task,
@@ -224,22 +272,15 @@ const layer = Layer.effect(
       return ["Available agent types and the tools they have access to:", description].join("\n")
     })
 
-    const describeCodeMode = Effect.fn("ToolRegistry.describeCodeMode")(function* (input: {
-      agent: Agent.Info
-      permission?: PermissionV1.Ruleset
-    }) {
-      if (!codeMode) return
-      const ruleset = Permission.merge(input.agent.permission, input.permission ?? [])
-      const tools = Permission.visibleTools(yield* mcp.tools(), ruleset)
-      if (Object.keys(tools).length === 0) return
-      return codeMode.describeCatalog(tools, Object.keys(yield* mcp.clients()).map(McpCatalog.sanitize))
-    })
-
     const tools: Interface["tools"] = Effect.fn("ToolRegistry.tools")(function* (input) {
       const searchConfig = yield* config.get()
+      const webSearchRouteReady = webSearchEnabled(input.providerID, searchConfig.websearch)
+      const webSearchHostReady = webSearchRouteReady &&
+        (yield* supervisor.hostFeatureEnabled(WEB_SEARCH_CASCADE_FEATURE).pipe(Effect.catch(() => Effect.succeed(false)))) &&
+        (yield* supervisor.hostFeatureEnabled("effects.v2").pipe(Effect.catch(() => Effect.succeed(false))))
       const filtered = (yield* all()).filter((tool) => {
         if (tool.id === WebSearchTool.id) {
-          return webSearchEnabled(input.providerID, searchConfig.websearch)
+          return webSearchHostReady
         }
 
         const usePatch =
@@ -250,13 +291,8 @@ const layer = Layer.effect(
         return true
       })
 
-      const codeModeDescription = filtered.some((tool) => tool.id === "execute")
-        ? yield* describeCodeMode(input)
-        : undefined
-      const visible = filtered.filter((tool) => tool.id !== "execute" || codeModeDescription)
-
       return yield* Effect.forEach(
-        visible,
+        filtered,
         Effect.fnUntraced(function* (tool: Tool.Def) {
           const output = {
             description: tool.description,
@@ -273,7 +309,6 @@ const layer = Layer.effect(
             description: [
               output.description,
               tool.id === TaskTool.id ? yield* describeTask(input.agent) : undefined,
-              tool.id === "execute" ? codeModeDescription : undefined,
             ]
               .filter(Boolean)
               .join("\n"),
@@ -317,13 +352,11 @@ export const node = LayerNode.make({
     BackgroundJob.node,
     Provider.node,
     LSP.node,
-    RepoIntel.node,
     Instruction.node,
     FSUtil.node,
     EventV2Bridge.node,
     SessionSupervisor.node,
     httpClient,
-    CrossSpawnSpawner.node,
     Truncate.node,
     Format.node,
     RuntimeFlags.node,
@@ -331,6 +364,7 @@ export const node = LayerNode.make({
     Database.node,
     Ripgrep.node,
     locationServiceMapNode,
+    WebSearchRuntime.node,
   ],
 })
 

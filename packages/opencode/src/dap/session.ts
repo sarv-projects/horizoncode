@@ -201,14 +201,10 @@ export function operationForCommand(command: string): Operation | undefined {
     case "terminate":
       return "session.stop"
     case "evaluate":
-    case "setVariable":
-    case "setExpression":
       return "session.evaluate"
     case "setBreakpoints":
     case "setFunctionBreakpoints":
     case "setExceptionBreakpoints":
-    case "setDataBreakpoints":
-    case "setInstructionBreakpoints":
       return "breakpoint.set"
     case "continue":
       return "debug.continue"
@@ -310,6 +306,14 @@ export interface DebugEffectRoute {
 let route: DebugEffectRoute | undefined
 
 /**
+ * DAP launch/attach and protocol effects stay unavailable until P1 Guard,
+ * process confinement, durable receipt recovery, and the P4 integration
+ * journey are accepted together. Registering an adapter callback is not
+ * evidence for those prerequisites and must never unlock this boundary.
+ */
+const GUARDED_DEBUG_RUNTIME_READY = false
+
+/**
  * Register the canonical Guard route for debug effects. Only the host integration that
  * owns an admitted `debug.*` action may call this; the default (no route) keeps every
  * debug effect typed-unavailable.
@@ -319,7 +323,7 @@ export function setDebugEffectRoute(next: DebugEffectRoute | undefined): void {
 }
 
 export function debugEffectRouteAvailable(): boolean {
-  return route !== undefined
+  return GUARDED_DEBUG_RUNTIME_READY && route !== undefined
 }
 
 function validAuthorization(value: unknown): value is DebugEffectAuthorization {
@@ -346,6 +350,13 @@ function validTokenID(value: unknown): value is string {
  * boundary alone decides and a malformed answer is refused rather than trusted.
  */
 export async function authorizeEffect(request: DebugEffectRequest): Promise<DebugEffectAuthorization> {
+  if (!GUARDED_DEBUG_RUNTIME_READY) {
+    throw new UnavailableError({
+      operation: request.operation,
+      reason: "guard_not_verified",
+      detail: "DAP effects remain unavailable until integrated HostKernel Guard, process confinement, and receipt-recovery acceptance passes",
+    })
+  }
   const action = guardActionID(request.operation)
   if (!action) {
     throw new UnavailableError({
@@ -395,6 +406,9 @@ export async function authorizeEffect(request: DebugEffectRequest): Promise<Debu
 }
 
 function validateEffectRequest(request: DebugEffectRequest): void {
+  if (request.operation === "session.evaluate") {
+    throw new TypeError("debug evaluation remains unavailable until a trusted adapter profile grants it")
+  }
   for (const [field, value] of Object.entries({
     sessionID: request.sessionID,
     principalId: request.principalId,
@@ -442,8 +456,8 @@ function validateEffectRequest(request: DebugEffectRequest): void {
     if (request.operation === "session.attach") {
       try {
         const target = decodeProcessTargetRef(request.targetProcessRef)
-        if (target.ownerEpoch !== request.ownerEpoch) {
-          throw new TypeError("attach target process reference belongs to a different HostKernel owner epoch")
+        if (target.ownerEpoch !== request.ownerEpoch || target.kind !== "terminal_run") {
+          throw new TypeError("attach target must be a HostKernel terminal_run reference in this owner epoch")
         }
       } catch {
         throw new TypeError("debug adapter attach requires a host-issued process reference; raw PIDs are forbidden")

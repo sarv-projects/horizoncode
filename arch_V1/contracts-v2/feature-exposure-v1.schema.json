@@ -9,6 +9,7 @@
     "schemaVersion",
     "featureId",
     "settingKey",
+    "owner",
     "title",
     "description",
     "releaseClass",
@@ -16,6 +17,10 @@
     "audience",
     "defaultEnabled",
     "supportedScopes",
+    "prerequisites",
+    "supportedPlatforms",
+    "supportedModelRefs",
+    "supportedHarnessRefs",
     "applyBoundary",
     "capabilityIds",
     "state"
@@ -33,6 +38,27 @@
       "type": "string",
       "minLength": 1,
       "description": "Existing config owner is authoritative. Unique and stable, not a parallel capability ID."
+    },
+    "owner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "config",
+        "runtime"
+      ],
+      "properties": {
+        "config": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "runtime": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "description": "Existing Config owner and runtime owner; this projection creates neither."
     },
     "title": {
       "type": "string",
@@ -75,6 +101,48 @@
         ]
       }
     },
+    "prerequisites": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      },
+      "description": "Descriptive runtime prerequisites; never an authorization grant."
+    },
+    "supportedPlatforms": {
+      "type": "array",
+      "uniqueItems": true,
+      "minItems": 1,
+      "items": {
+        "enum": [
+          "linux",
+          "windows",
+          "darwin"
+        ]
+      }
+    },
+    "supportedModelRefs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "description": "Empty means the setting has no model-specific restriction."
+    },
+    "supportedHarnessRefs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "description": "Empty means the setting has no harness-specific restriction."
+    },
     "applyBoundary": {
       "enum": [
         "live",
@@ -91,14 +159,6 @@
         "minLength": 1
       },
       "description": "Canonical IDs defined by §33; empty for settings-only UI or backend choices."
-    },
-    "prerequisites": {
-      "type": "array",
-      "uniqueItems": true,
-      "items": {
-        "type": "string",
-        "minLength": 1
-      }
     },
     "riskNotes": {
       "type": "string"
@@ -160,8 +220,12 @@
           ]
         },
         "policyLock": {
-          "const": "unknown",
-          "description": "No feature-setting policy action is currently owned by the policy catalog; report unknown rather than inferring an unlocked or locked state."
+          "enum": [
+            "locked",
+            "unlocked",
+            "unknown"
+          ],
+          "description": "The Config owner reports a lock only when the winning policy source proves it; otherwise report unknown."
         },
         "blockedReason": {
           "type": "string",

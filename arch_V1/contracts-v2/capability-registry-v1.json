@@ -387,6 +387,13 @@
       "sealed": false
     },
     {
+      "id": "codemode.execute",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
       "id": "connectors.invoke",
       "kind": "tool",
       "effectClass": "guarded_effect",
@@ -777,6 +784,13 @@
       "effectClass": "read_only",
       "status": "designed",
       "sealed": false
+    },
+    {
+      "id": "editor.launch",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": true
     },
     {
       "id": "files.create",
@@ -1220,6 +1234,13 @@
       "sealed": false
     },
     {
+      "id": "providers.infer",
+      "kind": "action",
+      "effectClass": "guarded_effect",
+      "status": "code_present",
+      "sealed": true
+    },
+    {
       "id": "question.ask",
       "kind": "tool",
       "effectClass": "control",
@@ -1472,14 +1493,14 @@
       "sealed": false
     },
     {
-      "id": "terminal.run",
+      "id": "terminal.resize",
       "kind": "tool",
       "effectClass": "guarded_effect",
       "status": "designed",
       "sealed": false
     },
     {
-      "id": "terminal.resize",
+      "id": "terminal.run",
       "kind": "tool",
       "effectClass": "guarded_effect",
       "status": "designed",

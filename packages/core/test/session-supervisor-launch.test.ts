@@ -33,6 +33,11 @@ describe("session_supervisor launch arguments", () => {
     expect(OPTIONAL_HOST_FEATURES).not.toContain("repo-intel.read-context-v1-required")
   })
 
+  test("offers managed ArtifactStore reads only as an optional negotiated host feature", () => {
+    expect(OPTIONAL_HOST_FEATURES).toContain("artifact.read-context-v1")
+    expect(OPTIONAL_HOST_FEATURES).not.toContain("artifact.read-context-v1-required")
+  })
+
   test("passes the host kernel owner epoch and the exact accepted argument set", () => {
     const args = sessionSupervisorArgs(base)
 

@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://horizoncode.dev/contracts/repo-intelligence-query-v1.schema.json",
-  "title": "Horizon RepoIntel structure query and page v1",
-  "description": "Bounded generation-pinned RepoIntel navigation. Principal, workspace root, PermissionV2 read scope, policy digest, and overlay ownership are authenticated out of band and must never be inferred from this payload. A generation pin is acquired first through the same authenticated repo-intel.v1 service.",
+  "title": "Horizon RepoIntel query, discovery, and page v1",
+  "description": "Bounded generation-pinned RepoIntel navigation plus authenticated bounded discovery. Principal, workspace root, PermissionV2 read scope, policy digest, and overlay ownership are authenticated out of band and must never be inferred from this payload. A generation pin is acquired first through the same authenticated repo-intel.v1 service.",
   "oneOf": [
     {
       "$ref": "#/$defs/RepoGenerationRequestV1"
@@ -15,6 +15,12 @@
     },
     {
       "$ref": "#/$defs/RepoDocumentReadResponseV1"
+    },
+    {
+      "$ref": "#/$defs/RepoDiscoveryRequestV1"
+    },
+    {
+      "$ref": "#/$defs/RepoDiscoveryPageV1"
     },
     {
       "$ref": "#/$defs/RepoStructureQueryV1"
@@ -145,14 +151,12 @@
           ],
           "properties": {
             "files": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 4096
+              "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64",
+              "description": "Unsigned 64-bit JSON counter/budget; encoded as canonical decimal string."
             },
             "bytes": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 67108864
+              "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64",
+              "description": "Unsigned 64-bit JSON counter/budget; encoded as canonical decimal string."
             }
           }
         },
@@ -363,26 +367,455 @@
     "RepoDocumentReadRequestV1": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schemaVersion", "pathRef", "expectedWorkspaceRevision", "maxBytes"],
+      "required": [
+        "schemaVersion",
+        "pathRef",
+        "revisionKind",
+        "expectedWorkspaceRevision",
+        "maxBytes"
+      ],
       "properties": {
-        "schemaVersion": { "const": 1 },
-        "pathRef": { "$ref": "#/$defs/RelativePathRef" },
-        "expectedWorkspaceRevision": { "$ref": "#/$defs/Digest" },
-        "maxBytes": { "type": "integer", "minimum": 1, "maximum": 6291456 }
+        "schemaVersion": {
+          "const": 1
+        },
+        "pathRef": {
+          "$ref": "#/$defs/RelativePathRef"
+        },
+        "revisionKind": {
+          "enum": [
+            "workspace",
+            "discovery_observation"
+          ],
+          "description": "Selects the authenticated revision domain; the host never infers or downgrades this mode."
+        },
+        "expectedWorkspaceRevision": {
+          "$ref": "#/$defs/Digest"
+        },
+        "maxBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 131072
+        }
       }
     },
     "RepoDocumentReadResponseV1": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schemaVersion", "status", "pathRef", "text", "contentDigest", "observedWorkspaceRevision"],
+      "required": [
+        "schemaVersion",
+        "status",
+        "pathRef",
+        "revisionKind",
+        "text",
+        "contentDigest",
+        "observedWorkspaceRevision"
+      ],
       "properties": {
-        "schemaVersion": { "const": 1 },
-        "status": { "const": "OK" },
-        "pathRef": { "$ref": "#/$defs/RelativePathRef" },
-        "text": { "type": "string", "maxLength": 6291456 },
-        "contentDigest": { "$ref": "#/$defs/Digest" },
-        "observedWorkspaceRevision": { "$ref": "#/$defs/Digest" }
+        "schemaVersion": {
+          "const": 1
+        },
+        "status": {
+          "const": "OK"
+        },
+        "pathRef": {
+          "$ref": "#/$defs/RelativePathRef"
+        },
+        "revisionKind": {
+          "enum": [
+            "workspace",
+            "discovery_observation"
+          ]
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 131072
+        },
+        "contentDigest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "observedWorkspaceRevision": {
+          "$ref": "#/$defs/Digest"
+        }
       }
+    },
+    "RepoDiscoveryRequestV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "messageType",
+        "requestId",
+        "rootRef",
+        "mode",
+        "maxEntries",
+        "maxBytes",
+        "maxDepth",
+        "deadline"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "messageType": {
+          "const": "discover"
+        },
+        "requestId": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "rootRef": {
+          "$ref": "#/$defs/RelativePathRef"
+        },
+        "mode": {
+          "enum": [
+            "tree",
+            "manifests"
+          ]
+        },
+        "maxEntries": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 512
+        },
+        "maxBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 262144
+        },
+        "maxDepth": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
+        },
+        "deadline": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+        }
+      }
+    },
+    "RepoDiscoveryEntryV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pathRef",
+        "kind",
+        "depth",
+        "sizeBytes"
+      ],
+      "properties": {
+        "pathRef": {
+          "$ref": "#/$defs/RelativePathRef"
+        },
+        "kind": {
+          "enum": [
+            "file",
+            "directory",
+            "symlink",
+            "other"
+          ]
+        },
+        "depth": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 16
+        },
+        "sizeBytes": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$"
+        },
+        "manifestKind": {
+          "enum": [
+            "package_json",
+            "tsconfig_json",
+            "cargo_toml",
+            "pyproject_toml",
+            "requirements_txt",
+            "go_mod",
+            "pom_xml",
+            "gradle",
+            "csproj",
+            "sln",
+            "composer_json",
+            "gemfile",
+            "package_swift",
+            "makefile",
+            "dockerfile"
+          ]
+        },
+        "languageHint": {
+          "enum": [
+            "typescript",
+            "javascript",
+            "python",
+            "rust",
+            "go",
+            "java",
+            "csharp",
+            "c",
+            "cpp",
+            "kotlin",
+            "swift",
+            "ruby",
+            "php",
+            "scala",
+            "shell"
+          ]
+        }
+      }
+    },
+    "RepoDiscoveryPageV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "messageType",
+        "requestId",
+        "status",
+        "freshness",
+        "completeness",
+        "authority",
+        "coverage",
+        "entries"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "messageType": {
+          "const": "discovery"
+        },
+        "requestId": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "status": {
+          "enum": [
+            "CURRENT",
+            "PARTIAL",
+            "UNAVAILABLE"
+          ]
+        },
+        "freshness": {
+          "enum": [
+            "current",
+            "unknown"
+          ]
+        },
+        "completeness": {
+          "enum": [
+            "complete",
+            "partial",
+            "unavailable"
+          ]
+        },
+        "unavailableReason": {
+          "enum": [
+            "read_unavailable",
+            "deadline_exceeded",
+            "workspace_changed"
+          ]
+        },
+        "partialReason": {
+          "enum": [
+            "entry_limit",
+            "byte_limit",
+            "depth_limit"
+          ]
+        },
+        "authority": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "principalBinding",
+            "sessionID",
+            "locationID",
+            "ownerEpoch",
+            "workspaceBinding",
+            "sourceRevision",
+            "readPolicyDigest",
+            "rootRef",
+            "mode",
+            "maxEntries",
+            "maxBytes",
+            "maxDepth"
+          ],
+          "properties": {
+            "principalBinding": {
+              "$ref": "#/$defs/Digest"
+            },
+            "sessionID": {
+              "$ref": "#/$defs/Identifier"
+            },
+            "locationID": {
+              "$ref": "#/$defs/Identifier"
+            },
+            "ownerEpoch": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]{0,19}$"
+            },
+            "workspaceBinding": {
+              "$ref": "#/$defs/Digest"
+            },
+            "sourceRevision": {
+              "$ref": "#/$defs/Digest"
+            },
+            "readPolicyDigest": {
+              "$ref": "#/$defs/Digest"
+            },
+            "rootRef": {
+              "$ref": "#/$defs/RelativePathRef"
+            },
+            "mode": {
+              "enum": [
+                "tree",
+                "manifests"
+              ]
+            },
+            "maxEntries": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 512
+            },
+            "maxBytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 262144
+            },
+            "maxDepth": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 16
+            }
+          }
+        },
+        "coverage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "entries",
+            "bytes",
+            "depth"
+          ],
+          "properties": {
+            "entries": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 512
+            },
+            "bytes": {
+              "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64",
+              "description": "Unsigned 64-bit JSON counter/budget; encoded as canonical decimal string."
+            },
+            "depth": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 16
+            }
+          }
+        },
+        "entries": {
+          "type": "array",
+          "maxItems": 512,
+          "items": {
+            "$ref": "#/$defs/RepoDiscoveryEntryV1"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "CURRENT"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "completeness": {
+                "const": "complete"
+              }
+            },
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "partialReason"
+                  ]
+                },
+                {
+                  "required": [
+                    "unavailableReason"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "PARTIAL"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "completeness": {
+                "const": "partial"
+              }
+            },
+            "required": [
+              "partialReason"
+            ],
+            "not": {
+              "required": [
+                "unavailableReason"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "UNAVAILABLE"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "freshness": {
+                "const": "unknown"
+              },
+              "completeness": {
+                "const": "unavailable"
+              },
+              "entries": {
+                "maxItems": 0
+              }
+            },
+            "required": [
+              "unavailableReason"
+            ],
+            "not": {
+              "required": [
+                "partialReason"
+              ]
+            }
+          }
+        }
+      ],
+      "description": "The consumer additionally verifies request/page correlation, exact authority echo, request bounds, path root/depth/order, mode-specific entry shape, visible byte minimum and coverage.entries == entries.length."
     },
     "RepoStructurePageV1": {
       "type": "object",
@@ -471,16 +904,16 @@
           ],
           "properties": {
             "files": {
-              "type": "integer",
-              "minimum": 0
+              "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64",
+              "description": "Unsigned 64-bit JSON counter/budget; encoded as canonical decimal string."
             },
             "nodes": {
-              "type": "integer",
-              "minimum": 0
+              "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64",
+              "description": "Unsigned 64-bit JSON counter/budget; encoded as canonical decimal string."
             },
             "bytes": {
-              "type": "integer",
-              "minimum": 0
+              "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64",
+              "description": "Unsigned 64-bit JSON counter/budget; encoded as canonical decimal string."
             }
           }
         },

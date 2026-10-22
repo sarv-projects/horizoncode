@@ -87,6 +87,9 @@ import { controlHandlers } from "./handlers/control"
 import { controlPlaneHandlers } from "./handlers/control-plane"
 import { goalReviewHandlers } from "./handlers/goal-review"
 import { automationHandlers } from "./handlers/automation"
+import { checkpointHandlers } from "./handlers/checkpoint"
+import { artifactHandlers } from "./handlers/artifact"
+import { repoExplorerHandlers } from "./handlers/repo-explorer"
 import { experimentalHandlers } from "./handlers/experimental"
 import { fileHandlers } from "./handlers/file"
 import { globalHandlers } from "./handlers/global"
@@ -109,6 +112,7 @@ import { sessionLocationLayer } from "@opencode-ai/server/middleware/session-loc
 import { PtyEnvironment } from "@opencode-ai/server/pty-environment"
 import { schemaErrorLayer as v2SchemaErrorLayer } from "@opencode-ai/server/middleware/schema-error"
 import { workspaceHandlers } from "./handlers/workspace"
+import { webSearchHandlers } from "./handlers/websearch"
 import { instanceContextLayer } from "./middleware/instance-context"
 import { workspaceRoutingLayer } from "./middleware/workspace-routing"
 import { disposeMiddleware } from "./lifecycle"
@@ -172,8 +176,12 @@ const instanceApiRoutes = HttpApiBuilder.layer(InstanceHttpApi).pipe(
     syncHandlers,
     tuiHandlers,
     workspaceHandlers,
+    webSearchHandlers,
     goalReviewHandlers,
     automationHandlers,
+    checkpointHandlers,
+    artifactHandlers,
+    repoExplorerHandlers,
   ]),
 )
 

@@ -5,6 +5,8 @@ Status: normative terminology only. Ownership is defined by 01/02/17.
 | Term | Meaning |
 |---|---|
 | Session | Durable conversation identity owned by its selected backend: HorizonCode Core for direct Sessions, or official OpenCode for explicitly native OpenCode Sessions. |
+| SessionRunner | HorizonCode Core's canonical direct CLI/TUI conversation loop, including provider turn, tool admission and continuation. |
+| SessionPrompt | Separate managed provider-turn adapter; binds each managed request to its live Rust Attempt and is not the direct-session loop. |
 | SessionLink | Bounded Rust correlation to a backend-owned Session/source cursor/epoch; never a second transcript. |
 | Direct Session | Ordinary pair-coding flow without mandatory Goal/Run/Task. Effects still use Guard. |
 | Goal | Durable managed objective. |
@@ -40,13 +42,15 @@ Status: normative terminology only. Ownership is defined by 01/02/17.
 | DesktopActionService | OS display/window/AX/screenshot/input service with capability matrix and Guarded mutations. |
 | WebSearchBroker | Provider-routed direct or grounded search service with auth/cost/source provenance. |
 | AgentProfile | Versioned agent behavior/capability/context/delegation policy. |
+| Direct-session grant | Authenticated, bounded Session-scoped capability/workspace/operation/budget grant; matching effects avoid repeat prompts, while Guard still denies expired, revoked or out-of-scope actions. |
+| CodeMode | Existing embedded interpreter that composes calls to an already-authorized tool tree; it has no ambient filesystem/process/network/credential authority and does not replace Guard/ToolBatch. |
 | HarnessProfile | Model/provider-independent prompt/tool/message/response shaping profile. |
 | Skill | Versioned instruction/resource capability package; cannot self-grant tools. |
 | Hook | Versioned event contribution; effectful callbacks use canonical actions/Guard. |
 | MCP profile | Versioned external tool-server registration with explicit transport/auth/capability scope. |
 | ActionDescriptor | One presentation/argument/effect description projected to slash/menu/keybinding/API/model surfaces. |
 | Capability ID | Stable canonical operation identifier from 33. Aliases never change effect class. |
-| SourceArtifact | Durable content-addressed artifact metadata/bytes with FULL/SAMPLE/FAILED fidelity. |
+| SourceArtifact | Durable content-addressed artifact metadata/bytes with wire fidelity `full`/`head_tail_sample`/`failed` (displayed as FULL/SAMPLE/FAILED). |
 | FigureBlock | Derived SVG/Mermaid/chart render state tied to source/theme/geometry generation. |
 | UiEventMux | Bounded derived presentation stream; not canonical state. |
 | Automation | Durable schedule/action definition whose occurrence still invokes normal authorization. |
@@ -56,6 +60,10 @@ Status: normative terminology only. Ownership is defined by 01/02/17.
 | Source digest | Digest binding a contract/action/evidence item to exact input/source bytes. |
 | Metric provenance | Label identifying value as measured, estimated or unknown plus its source/freshness. |
 | DESIGNED/CODE_PRESENT/WIRED/TESTED/VERIFIED/RELEASED | Distinct implementation-status levels; never collapse them into one “implemented” label. |
+
+Wire counters backed by unsigned 64-bit integers use canonical decimal strings across JSON and
+MessagePack language boundaries. Bounded values that remain within JavaScript's safe-integer
+range may use JSON numbers.
 
 Do not reintroduce historical Rust conversation-owner terms into active architecture. Their provenance is in docs/architecture-archive.
 

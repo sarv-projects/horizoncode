@@ -37,7 +37,7 @@ use crate::worker_pool::{
 use crate::worktree_lifecycle::{
     GuardedWorktreeReceiptV1, GuardedWorktreeRequestV1, WorktreeLifecycleErrorV1,
     WorktreeObservedStatusV1, WorktreePreReleaseEvidenceV1, WorktreeOperationIntentV1, WorktreeOperationJournalV1,
-    WorktreeOperationKindV1, VerifiedWorktreeRegistrationV1, WorktreeRegistrationProvenanceV1,
+    WorktreeOperationKindV1, WorktreeOperationStateV1, VerifiedWorktreeRegistrationV1, WorktreeRegistrationProvenanceV1,
     WorktreeRootOwnerV1,
 };
 use crate::worktree_pool::WorktreeRegistration;
@@ -55,6 +55,19 @@ pub enum WorkerDurableError {
     ReplayConflict(&'static str),
     StaleRevision,
     NotFound(&'static str),
+    /// A worktree intent has crossed the durable possible-dispatch fence. It
+    /// must be reconciled from its exact receipt; it is never equivalent to
+    /// an absent operation and must not trigger a replacement dispatch.
+    WorktreeIntentUnknown,
+    /// The durable HostKernel observation quarantined this operation.
+    WorktreeIntentQuarantined,
+    /// The operation has a committed terminal receipt. Call the exact receipt
+    /// resolver; do not run the operation again.
+    WorktreeIntentCompleted,
+    /// The exact intent was retired with proof that it was never dispatched.
+    WorktreeIntentRetired,
+    /// The operation exists but is bound to a different or stale root owner.
+    WorktreeIntentStale,
 }
 
 impl From<OwnerLogError> for WorkerDurableError {
@@ -169,6 +182,20 @@ pub(crate) enum ManagedParentProofV1 {
     ClaimedWorker(DurableParentExecutionProofV1),
 }
 
+/// Parent/root Session lineage is distinct from the admitted child's Session.
+/// Nested child reconciliation remains unavailable until its durable proof
+/// carries the original Run root identity through the parent chain.
+fn managed_root_session_id(
+    proof: &ManagedParentProofV1,
+) -> Result<&str, WorkerDurableError> {
+    match proof {
+        ManagedParentProofV1::RootCoordinator(root) => Ok(root.session_id()),
+        ManagedParentProofV1::ClaimedWorker(_) => Err(WorkerDurableError::Conflict(
+            "nested managed child lacks an authenticated root Session lineage proof",
+        )),
+    }
+}
+
 /// Authenticated projection of the existing Core Session/Run process used as
 /// the logical root coordinator. It has no managed Task/Attempt identity and
 /// does not create or account for another OS process.
@@ -275,11 +302,14 @@ pub(crate) struct TrustedPreAdmissionPinsV1 {
     profile_id: String,
     profile_revision: u64,
     profile_digest: String,
-    permission_scope_digest: String,
-    context_selection_digest: String,
+    profile_permission_ceiling_digest: String,
+    context_selection_digest: Option<String>,
     accepted_scope_digest: String,
     capability_ceiling_digest: String,
     spec_max_workers: u64,
+    resource_policy_revision: u64,
+    resource_policy_digest: String,
+    resource_active_worker_limit: Option<u64>,
     dimension: crate::resource_budget::BudgetDimension,
     amount: u64,
     expires_at_ms: u64,
@@ -287,6 +317,10 @@ pub(crate) struct TrustedPreAdmissionPinsV1 {
     worktree_pool_revision: u64,
     idempotency_key: String,
     parent_proof: ManagedParentProofV1,
+    /// New two-stage reservations use a context-independent candidate digest.
+    /// The context digest is durably attached by `PreAdmissionContextBound`.
+    /// Legacy full-pin reservations keep their original digest/ID derivation.
+    staged_pre_admission: bool,
     pins_digest: String,
 }
 
@@ -294,6 +328,166 @@ pub(crate) struct TrustedPreAdmissionPinsV1 {
 /// only by the authenticated HostKernel path after checking the current Run,
 /// Task, SpecVersion, profile, context, workspace, Guard ceiling and parent.
 pub(crate) type ManagedReadyTaskPinV1 = TrustedPreAdmissionPinsV1;
+
+/// Stage-A pins for the managed pre-admission target. ContextSelection is
+/// genuinely absent and excluded from the candidate identity digest.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ManagedPreAdmissionTargetPinsV1 {
+    pins: TrustedPreAdmissionPinsV1,
+}
+
+impl ManagedPreAdmissionTargetPinsV1 {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_verified_host_staged(
+        owner: AuthenticatedOwnerContext,
+        goal_id: String,
+        task_revision: String,
+        task_attempt_count: u64,
+        candidate_generation: u64,
+        accepted_spec_digest: String,
+        workspace_revision: String,
+        location_id: String,
+        process_incarnation: String,
+        profile_id: String,
+        profile_revision: u64,
+        profile_digest: String,
+        profile_permission_ceiling_digest: String,
+        accepted_scope_digest: String,
+        capability_ceiling_digest: String,
+        spec_max_workers: u64,
+        resource_policy_revision: u64,
+        resource_policy_digest: String,
+        resource_active_worker_limit: Option<u64>,
+        dimension: crate::resource_budget::BudgetDimension,
+        amount: u64,
+        expires_at_ms: u64,
+        worktree: crate::worker_pool::ResolvedManagedWorktreeV1,
+        idempotency_key: String,
+        parent_proof: ManagedParentProofV1,
+    ) -> Result<Self, WorkerDurableError> {
+        if resource_policy_revision == 0 {
+            return Err(WorkerDurableError::Invalid("resource policy revision is zero"));
+        }
+        if worktree.workspace_binding() != owner.workspace_binding()
+            || worktree.location_id() != location_id
+            || worktree.source_revision() != workspace_revision
+            || worktree.pool_revision() == 0
+        {
+            return Err(WorkerDurableError::Conflict(
+                "resolved worktree differs from authenticated owner, Location or workspace revision",
+            ));
+        }
+        let worktree_pool_revision = worktree.pool_revision();
+        let worktree = crate::worker_pool::WorktreeBindingRequest {
+            worktree_id: worktree.worktree_id().to_owned(),
+            base_revision: worktree.base_revision().to_owned(),
+        };
+        let mut pins = TrustedPreAdmissionPinsV1 {
+            owner, goal_id, task_revision, task_attempt_count, candidate_generation,
+            accepted_spec_digest, workspace_revision, location_id, process_incarnation,
+            profile_id, profile_revision, profile_digest, profile_permission_ceiling_digest,
+            context_selection_digest: None, accepted_scope_digest,
+            capability_ceiling_digest, spec_max_workers, resource_policy_revision,
+            resource_policy_digest, resource_active_worker_limit, dimension, amount,
+            expires_at_ms, worktree, worktree_pool_revision, idempotency_key,
+            parent_proof, staged_pre_admission: true, pins_digest: String::new(),
+        };
+        pins.validate()?;
+        pins.pins_digest = pins.compute_digest();
+        Ok(Self { pins })
+    }
+
+    pub(crate) fn candidate_attempt_id(&self) -> &str { self.pins.attempt_id() }
+    pub(crate) fn idempotency_key(&self) -> &str { &self.pins.idempotency_key }
+    pub(crate) fn pins_digest(&self) -> &str { &self.pins.pins_digest }
+    pub(crate) fn owner(&self) -> &AuthenticatedOwnerContext { &self.pins.owner }
+    pub(crate) fn principal_ref(&self) -> &str { self.pins.principal_ref() }
+    pub(crate) fn workspace_binding(&self) -> &str { self.pins.workspace_binding() }
+    pub(crate) fn session_id(&self) -> &str { self.pins.session_id() }
+    pub(crate) fn owner_epoch(&self) -> u64 { self.pins.owner_epoch() }
+    pub(crate) fn goal_id(&self) -> &str { &self.pins.goal_id }
+    pub(crate) fn run_id(&self) -> &str { self.pins.run_id() }
+    pub(crate) fn task_id(&self) -> &str { self.pins.task_id() }
+    pub(crate) fn task_revision(&self) -> &str { &self.pins.task_revision }
+    pub(crate) fn task_attempt_count(&self) -> u64 { self.pins.task_attempt_count }
+    pub(crate) fn candidate_generation(&self) -> u64 { self.pins.candidate_generation }
+    pub(crate) fn accepted_spec_digest(&self) -> &str { &self.pins.accepted_spec_digest }
+    pub(crate) fn profile_id(&self) -> &str { &self.pins.profile_id }
+    pub(crate) fn profile_revision(&self) -> u64 { self.pins.profile_revision }
+    pub(crate) fn profile_digest(&self) -> &str { &self.pins.profile_digest }
+    pub(crate) fn profile_permission_ceiling_digest(&self) -> &str { &self.pins.profile_permission_ceiling_digest }
+    pub(crate) fn accepted_scope_digest(&self) -> &str { &self.pins.accepted_scope_digest }
+    pub(crate) fn capability_ceiling_digest(&self) -> &str { &self.pins.capability_ceiling_digest }
+    pub(crate) fn workspace_revision(&self) -> &str { &self.pins.workspace_revision }
+    pub(crate) fn location_id(&self) -> &str { &self.pins.location_id }
+    pub(crate) fn process_incarnation(&self) -> &str { &self.pins.process_incarnation }
+    pub(crate) fn spec_max_workers(&self) -> u64 { self.pins.spec_max_workers }
+    pub(crate) fn resource_policy_revision(&self) -> u64 { self.pins.resource_policy_revision }
+    pub(crate) fn resource_policy_digest(&self) -> &str { &self.pins.resource_policy_digest }
+    pub(crate) fn resource_active_worker_limit(&self) -> Option<u64> { self.pins.resource_active_worker_limit }
+    pub(crate) fn expires_at_ms(&self) -> u64 { self.pins.expires_at_ms }
+    pub(crate) fn worktree_id(&self) -> &str { &self.pins.worktree.worktree_id }
+    pub(crate) fn worktree_base_revision(&self) -> &str { &self.pins.worktree.base_revision }
+    pub(crate) fn parent_execution_id(&self) -> String { pre_admission_parent_execution_id(&self.pins) }
+    pub(crate) fn parent_root_session_id(&self) -> Result<&str, WorkerDurableError> {
+        managed_root_session_id(self.pins.parent_proof())
+    }
+    pub(crate) fn worktree_pool_revision(&self) -> u64 { self.pins.worktree_pool_revision }
+}
+
+/// Proof of a Stage-A RESERVED candidate. It carries no ContextSelection,
+/// Attempt admission, binding, claim or dispatch authority.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ReservedPreAdmissionTargetProofV1 {
+    pins: ManagedPreAdmissionTargetPinsV1,
+    reservation: ReservedWorkerLeaseProofV1,
+    proof_digest: String,
+}
+
+impl ReservedPreAdmissionTargetProofV1 {
+    pub(crate) fn pins(&self) -> &ManagedPreAdmissionTargetPinsV1 { &self.pins }
+    pub(crate) fn pre_context_pins(&self) -> &ManagedPreAdmissionTargetPinsV1 { &self.pins }
+    pub(crate) fn candidate_attempt_id(&self) -> &str { self.pins.candidate_attempt_id() }
+    pub(crate) fn candidate_generation(&self) -> u64 { self.pins.candidate_generation() }
+    pub(crate) fn idempotency_key(&self) -> &str { self.pins.idempotency_key() }
+    pub(crate) fn pins_digest(&self) -> &str { self.pins.pins_digest() }
+    pub(crate) fn owner_epoch(&self) -> u64 { self.pins.owner_epoch() }
+    pub(crate) fn worker_execution_id(&self) -> &str { self.reservation.worker_execution_id() }
+    pub(crate) fn ticket_id(&self) -> &str { self.reservation.ticket_id() }
+    pub(crate) fn owner_log_id(&self) -> &str { self.reservation.owner_log_id() }
+    pub(crate) fn owner_log_sequence(&self) -> &str { self.reservation.owner_log_sequence() }
+    pub(crate) fn owner_log_event_digest(&self) -> &str { self.reservation.owner_log_event_digest() }
+    pub(crate) fn worker_pool_revision(&self) -> u64 { self.reservation.worker_pool_revision() }
+    pub(crate) fn proof_digest(&self) -> &str { &self.proof_digest }
+    /// Fresh cursor/pool-bound proof of the currently RESERVED lease. This
+    /// changes as OwnerLog advances and is never the response replay key.
+    pub(crate) fn lease_proof_digest(&self) -> String {
+        self.reservation.proof_digest()
+    }
+    /// Persisted Stage-B context, when this candidate was already bound.
+    pub(crate) fn context_selection_digest(&self) -> Option<&str> {
+        self.reservation.context_selection_digest()
+    }
+    /// Stable reservation receipt for DTO replay; current OwnerLog cursor is
+    /// exposed separately and must be refreshed before any admission action.
+    pub(crate) fn reservation_receipt_digest(&self) -> String {
+        self.reservation.context_bound_receipt_digest()
+    }
+}
+
+impl ReservedPreAdmissionTargetProofV1 {
+    fn new(pins: ManagedPreAdmissionTargetPinsV1, reservation: ReservedWorkerLeaseProofV1) -> Self {
+        let mut h = blake3::Hasher::new();
+        h.update(b"horizoncode.pre-admission-target-proof.v1\0");
+        for value in [pins.pins_digest(), reservation.worker_execution_id(), reservation.ticket_id(),
+            reservation.workspace_lease_id()] {
+            h.update(&(value.len() as u64).to_be_bytes());
+            h.update(value.as_bytes());
+        }
+        let proof_digest = format!("blake3:{}", h.finalize().to_hex());
+        Self { pins, reservation, proof_digest }
+    }
+}
 
 /// V1 managed Task workers are logical child Sessions in the authenticated Core
 /// process. A future process-backed class must carry separate supervisor exit
@@ -319,11 +513,14 @@ impl TrustedPreAdmissionPinsV1 {
         profile_id: String,
         profile_revision: u64,
         profile_digest: String,
-        permission_scope_digest: String,
+        profile_permission_ceiling_digest: String,
         context_selection_digest: String,
         accepted_scope_digest: String,
         capability_ceiling_digest: String,
         spec_max_workers: u64,
+        resource_policy_revision: u64,
+        resource_policy_digest: String,
+        resource_active_worker_limit: Option<u64>,
         dimension: crate::resource_budget::BudgetDimension,
         amount: u64,
         expires_at_ms: u64,
@@ -331,6 +528,9 @@ impl TrustedPreAdmissionPinsV1 {
         idempotency_key: String,
         parent_proof: ManagedParentProofV1,
     ) -> Result<Self, WorkerDurableError> {
+        if resource_policy_revision == 0 {
+            return Err(WorkerDurableError::Invalid("resource policy revision is zero"));
+        }
         if worktree.workspace_binding() != owner.workspace_binding()
             || worktree.location_id() != location_id
             || worktree.source_revision() != workspace_revision
@@ -358,11 +558,14 @@ impl TrustedPreAdmissionPinsV1 {
             profile_id,
             profile_revision,
             profile_digest,
-            permission_scope_digest,
-            context_selection_digest,
+            profile_permission_ceiling_digest,
+            context_selection_digest: Some(context_selection_digest),
             accepted_scope_digest,
             capability_ceiling_digest,
             spec_max_workers,
+            resource_policy_revision,
+            resource_policy_digest,
+            resource_active_worker_limit,
             dimension,
             amount,
             expires_at_ms,
@@ -370,6 +573,7 @@ impl TrustedPreAdmissionPinsV1 {
             worktree_pool_revision,
             idempotency_key,
             parent_proof,
+            staged_pre_admission: false,
             pins_digest: String::new(),
         };
         pins.validate()?;
@@ -394,11 +598,29 @@ impl TrustedPreAdmissionPinsV1 {
             validate_owner_token(value)?;
         }
         for value in [&self.accepted_spec_digest, &self.workspace_revision,
-            &self.profile_digest, &self.permission_scope_digest,
-            &self.context_selection_digest, &self.accepted_scope_digest] {
+            &self.profile_digest, &self.profile_permission_ceiling_digest,
+            &self.accepted_scope_digest] {
             validate_owner_digest(value, "blake3:")?;
         }
+        match self.context_selection_digest.as_deref() {
+            Some(value) => validate_owner_digest(value, "blake3:")?,
+            None if self.staged_pre_admission => {},
+            None => return Err(WorkerDurableError::Invalid("ContextSelection digest is required after pre-admission binding")),
+        }
         validate_owner_digest(&self.capability_ceiling_digest, "sha256:")?;
+        if self.resource_policy_revision == 0 {
+            // Schema-v1 records written before resource-policy pinning remain
+            // replayable for conservative recovery, but carry no authority for
+            // new admission.
+            if !self.resource_policy_digest.is_empty() || self.resource_active_worker_limit.is_some() {
+                return Err(WorkerDurableError::Invalid("legacy pre-admission pins contain resource authority"));
+            }
+        } else {
+            validate_owner_digest(&self.resource_policy_digest, "blake3:")?;
+        }
+        if self.resource_active_worker_limit == Some(0) {
+            return Err(WorkerDurableError::Invalid("resource active-worker policy limit is zero"));
+        }
         if self.owner.workspace_binding().is_empty()
             || self.owner.session_id().is_empty()
             || self.owner.run_id().is_empty()
@@ -421,16 +643,31 @@ impl TrustedPreAdmissionPinsV1 {
     }
 
     fn compute_digest(&self) -> String {
-        let mut bytes = b"horizoncode.trusted-pre-admission-pins.v1\0".to_vec();
+        let mut bytes = if self.staged_pre_admission {
+            b"horizoncode.trusted-pre-admission-pins.staged.v1\0".to_vec()
+        } else if self.resource_policy_revision == 0 {
+            b"horizoncode.trusted-pre-admission-pins.v1\0".to_vec()
+        } else {
+            b"horizoncode.trusted-pre-admission-pins.v2\0".to_vec()
+        };
         for value in [
             self.owner.principal_ref(), self.owner.workspace_binding(), self.owner.session_id(),
             self.owner.run_id(), self.owner.task_id(), self.owner.attempt_id(), &self.goal_id,
             &self.task_revision, &self.accepted_spec_digest, &self.workspace_revision,
             &self.location_id, &self.process_incarnation, &self.profile_id, &self.profile_digest,
-            &self.permission_scope_digest, &self.context_selection_digest,
-            &self.accepted_scope_digest, &self.capability_ceiling_digest,
-            &self.worktree.worktree_id, &self.worktree.base_revision, &self.idempotency_key,
+            &self.profile_permission_ceiling_digest,
         ] {
+            bytes.extend_from_slice(&(value.len() as u64).to_be_bytes());
+            bytes.extend_from_slice(value.as_bytes());
+        }
+        if !self.staged_pre_admission {
+            if let Some(value) = self.context_selection_digest.as_deref() {
+                bytes.extend_from_slice(&(value.len() as u64).to_be_bytes());
+                bytes.extend_from_slice(value.as_bytes());
+            }
+        }
+        for value in [&self.accepted_scope_digest, &self.capability_ceiling_digest,
+            &self.worktree.worktree_id, &self.worktree.base_revision, &self.idempotency_key] {
             bytes.extend_from_slice(&(value.len() as u64).to_be_bytes());
             bytes.extend_from_slice(value.as_bytes());
         }
@@ -439,6 +676,18 @@ impl TrustedPreAdmissionPinsV1 {
         bytes.extend_from_slice(&self.candidate_generation.to_be_bytes());
         bytes.extend_from_slice(&self.profile_revision.to_be_bytes());
         bytes.extend_from_slice(&self.spec_max_workers.to_be_bytes());
+        if self.resource_policy_revision != 0 {
+            bytes.extend_from_slice(&self.resource_policy_revision.to_be_bytes());
+            bytes.extend_from_slice(&(self.resource_policy_digest.len() as u64).to_be_bytes());
+            bytes.extend_from_slice(self.resource_policy_digest.as_bytes());
+            match self.resource_active_worker_limit {
+                Some(limit) => {
+                    bytes.push(1);
+                    bytes.extend_from_slice(&limit.to_be_bytes());
+                }
+                None => bytes.push(0),
+            }
+        }
         bytes.extend_from_slice(&self.worktree_pool_revision.to_be_bytes());
         bytes.extend_from_slice(&self.amount.to_be_bytes());
         bytes.extend_from_slice(&self.expires_at_ms.to_be_bytes());
@@ -512,11 +761,14 @@ impl TrustedPreAdmissionPinsV1 {
     pub(crate) fn profile_id(&self) -> &str { &self.profile_id }
     pub(crate) fn profile_revision(&self) -> u64 { self.profile_revision }
     pub(crate) fn profile_digest(&self) -> &str { &self.profile_digest }
-    pub(crate) fn permission_scope_digest(&self) -> &str { &self.permission_scope_digest }
-    pub(crate) fn context_selection_digest(&self) -> &str { &self.context_selection_digest }
+    pub(crate) fn profile_permission_ceiling_digest(&self) -> &str { &self.profile_permission_ceiling_digest }
+    pub(crate) fn context_selection_digest(&self) -> Option<&str> { self.context_selection_digest.as_deref() }
     pub(crate) fn accepted_scope_digest(&self) -> &str { &self.accepted_scope_digest }
     pub(crate) fn capability_ceiling_digest(&self) -> &str { &self.capability_ceiling_digest }
     pub(crate) fn spec_max_workers(&self) -> u64 { self.spec_max_workers }
+    pub(crate) fn resource_policy_revision(&self) -> u64 { self.resource_policy_revision }
+    pub(crate) fn resource_policy_digest(&self) -> &str { &self.resource_policy_digest }
+    pub(crate) fn resource_active_worker_limit(&self) -> Option<u64> { self.resource_active_worker_limit }
     pub(crate) fn dimension(&self) -> crate::resource_budget::BudgetDimension { self.dimension }
     pub(crate) fn amount(&self) -> u64 { self.amount }
     pub(crate) fn expires_at_ms(&self) -> u64 { self.expires_at_ms }
@@ -548,6 +800,7 @@ pub(crate) struct ReservedWorkerLeaseProofV1 {
     workspace_lease_id: String,
     resource_lease_ids: Vec<String>,
     pins_digest: String,
+    context_selection_digest: Option<String>,
     binding_digest: Option<String>,
     owner_log_id: String,
     owner_log_sequence: String,
@@ -563,6 +816,43 @@ impl ReservedWorkerLeaseProofV1 {
     pub(crate) fn workspace_lease_id(&self) -> &str { &self.workspace_lease_id }
     pub(crate) fn resource_lease_ids(&self) -> &[String] { &self.resource_lease_ids }
     pub(crate) fn pins_digest(&self) -> &str { &self.pins_digest }
+    pub(crate) fn context_selection_digest(&self) -> Option<&str> {
+        self.context_selection_digest.as_deref()
+    }
+    /// Digest of the exact current reservation proof. At Stage A this binds
+    /// the context-free candidate; Stage B includes the compiled context pin.
+    pub(crate) fn proof_digest(&self) -> String {
+        let mut h = blake3::Hasher::new();
+        h.update(b"horizoncode.reserved-worker-lease-proof.v1\0");
+        for value in [self.attempt_id.as_str(), self.worker_execution_id.as_str(),
+            self.ticket_id.as_str(), self.budget_lease_id.as_str(),
+            self.workspace_lease_id.as_str(), self.pins_digest.as_str(),
+            self.owner_log_id.as_str(), self.owner_log_sequence.as_str(),
+            self.owner_log_event_digest.as_str()]
+        .into_iter().chain(self.context_selection_digest.as_deref())
+        .chain(self.resource_lease_ids.iter().map(String::as_str)) {
+            h.update(&(value.len() as u64).to_be_bytes());
+            h.update(value.as_bytes());
+        }
+        h.update(&self.worker_pool_revision.to_be_bytes());
+        format!("blake3:{}", h.finalize().to_hex())
+    }
+    /// Stable idempotency receipt for the immutable context-bind event. Unlike
+    /// `proof_digest`, this does not claim the current lease cursor and remains
+    /// unchanged after admission or later OwnerLog events.
+    pub(crate) fn context_bound_receipt_digest(&self) -> String {
+        let mut h = blake3::Hasher::new();
+        h.update(b"horizoncode.pre-admission-context-bound-receipt.v1\0");
+        for value in [self.attempt_id.as_str(), self.worker_execution_id.as_str(),
+            self.ticket_id.as_str(), self.budget_lease_id.as_str(),
+            self.workspace_lease_id.as_str(), self.pins_digest.as_str()]
+        .into_iter().chain(self.context_selection_digest.as_deref())
+        .chain(self.resource_lease_ids.iter().map(String::as_str)) {
+            h.update(&(value.len() as u64).to_be_bytes());
+            h.update(value.as_bytes());
+        }
+        format!("blake3:{}", h.finalize().to_hex())
+    }
     pub(crate) fn binding_digest(&self) -> Option<&str> { self.binding_digest.as_deref() }
     pub(crate) fn owner_log_id(&self) -> &str { &self.owner_log_id }
     pub(crate) fn owner_log_sequence(&self) -> &str { &self.owner_log_sequence }
@@ -617,6 +907,7 @@ pub(crate) struct WorkerSettlementProofV1 {
     owner: AuthenticatedOwnerContext,
     attempt_binding: VerifiedAttemptBinding,
     terminal: crate::managed_control::ManagedAttemptTerminalSnapshotV1,
+    verifier_pins: Option<crate::host_kernel::SettledVerifierChallengeSetPinsV1>,
     host_quiescence_digest: String,
     final_worktree_receipt: Option<GuardedWorktreeReceiptV1>,
     proof_digest: String,
@@ -626,10 +917,90 @@ pub(crate) struct WorkerSettlementProofV1 {
 /// Core child. It is not an escape hatch for an unresolved effect chain.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct WorkerReconciliationProofV1 {
-    settlement: WorkerSettlementProofV1,
+    quarantine: WorkerManagedQuarantineReceiptV1,
     current_owner: AuthenticatedOwnerContext,
-    current_root: RootCoordinatorExecutionProofV1,
+    current_root: ReadOnlyReconciliationRootProofV1,
+    current_terminal: crate::managed_control::ManagedAttemptTerminalSnapshotV1,
+    current_host_quiescence_digest: String,
+    current_worktree_receipt: GuardedWorktreeReceiptV1,
     reconciliation_digest: String,
+}
+
+/// P1/P2 authority for completing the second half of a successful worker
+/// settlement after the HostKernel owner epoch changed. It never reopens the
+/// worker or replays the old Inspect: the receipt must name a newly committed
+/// current-epoch Guarded Inspect, while the terminal snapshot must still match
+/// the original verified Attempt.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct WorkerSettlementDispositionRecoveryProofV1 {
+    current_root: RootCoordinatorExecutionProofV1,
+    current_owner: AuthenticatedOwnerContext,
+    current_terminal: crate::managed_control::ManagedAttemptTerminalSnapshotV1,
+    current_worktree_receipt: GuardedWorktreeReceiptV1,
+    current_host_quiescence_digest: String,
+    proof_digest: String,
+}
+
+impl WorkerSettlementDispositionRecoveryProofV1 {
+    pub(crate) fn from_host_kernel(
+        current_root: RootCoordinatorExecutionProofV1,
+        current_owner: AuthenticatedOwnerContext,
+        current_terminal: crate::managed_control::ManagedAttemptTerminalSnapshotV1,
+        current_worktree_receipt: GuardedWorktreeReceiptV1,
+        current_host_quiescence_digest: String,
+    ) -> Result<Self, WorkerDurableError> {
+        let receipt = &current_worktree_receipt;
+        if current_owner.owner_epoch() == 0
+            || current_owner.owner_epoch() != current_root.owner_epoch()
+            || current_owner.principal_ref() != current_root.principal_ref()
+            || current_owner.workspace_binding() != current_root.workspace_binding()
+            || current_owner.run_id() != current_root.run_id()
+            || current_terminal.goal_id() != current_root.goal_id()
+            || current_terminal.run_id() != current_root.run_id()
+            || current_terminal.attempt_state() != crate::managed_control::ManagedAttemptTerminalStateV1::Succeeded
+            || current_terminal.task_state() != crate::managed_control::ManagedTaskTerminalStateV1::Verified
+            || current_terminal.effect_chain_state() != crate::managed_control::ManagedAttemptEffectChainStateV1::AllSettled
+            || current_terminal.child_prompt_state() != crate::managed_control::ManagedChildPromptStateV1::Quiesced
+            || current_terminal.child_prompt_quiescence().is_none_or(|q| {
+                let p = q.proof();
+                p.goal_id() != current_terminal.goal_id()
+                    || p.run_id() != current_terminal.run_id()
+                    || p.task_id() != current_terminal.task_id()
+                    || p.attempt_id() != current_terminal.attempt_id()
+                    || p.parent_session_id() != current_root.session_id()
+                    || p.session_id() != current_owner.session_id()
+                    || p.owner_epoch() != current_owner.owner_epoch()
+            })
+            || current_terminal.observed_workspace_head() != Some(receipt.observed_workspace_revision())
+            || receipt.workspace_binding() != current_owner.workspace_binding()
+            || matches!(receipt.status(), WorktreeObservedStatusV1::Missing | WorktreeObservedStatusV1::Unknown)
+            || !receipt.owned() || !receipt.no_follow()
+            || !valid_digest(&current_host_quiescence_digest, "blake3:")
+            || !valid_digest(current_terminal.owner_log_event_digest(), "blake3:")
+            || !valid_digest(current_terminal.attempt_state_digest(), "blake3:")
+            || !valid_digest(current_terminal.effect_chain_digest(), "blake3:")
+        {
+            return Err(WorkerDurableError::Conflict(
+                "settlement disposition recovery lacks current root, verified terminal, quiescence, or Guarded Inspect proof",
+            ));
+        }
+        let mut h = blake3::Hasher::new();
+        h.update(b"horizoncode.worker-settlement-disposition-recovery.v1\0");
+        for value in [current_root.owner_log_id(), current_root.owner_log_sequence(),
+            current_root.owner_log_event_digest(), current_owner.principal_ref(),
+            current_owner.workspace_binding(), current_owner.session_id(),
+            current_owner.run_id(), current_owner.task_id(), current_owner.attempt_id(),
+            current_terminal.owner_log_id(), current_terminal.owner_log_event_digest(),
+            current_terminal.attempt_state_digest(), current_terminal.effect_chain_digest(),
+            current_host_quiescence_digest.as_str(), receipt.operation_id(),
+            receipt.host_receipt_ref(), receipt.observed_workspace_revision()] {
+            append_digest_field(&mut h, value);
+        }
+        h.update(&current_owner.owner_epoch().to_be_bytes());
+        let proof_digest = format!("blake3:{}", h.finalize().to_hex());
+        Ok(Self { current_root, current_owner, current_terminal, current_worktree_receipt,
+            current_host_quiescence_digest, proof_digest })
+    }
 }
 
 impl WorkerSettlementProofV1 {
@@ -641,6 +1012,7 @@ impl WorkerSettlementProofV1 {
         terminal: crate::managed_control::ManagedAttemptTerminalSnapshotV1,
         host_quiescence_digest: String,
         final_worktree_receipt: Option<GuardedWorktreeReceiptV1>,
+        verifier_pins: Option<crate::host_kernel::SettledVerifierChallengeSetPinsV1>,
     ) -> Result<Self, WorkerDurableError> {
         let execution_kind = WorkerExecutionKindV1::LogicalCoreSession;
         let quiescence = terminal.child_prompt_quiescence();
@@ -684,10 +1056,17 @@ impl WorkerSettlementProofV1 {
             || !valid_digest(terminal.attempt_state_digest(), "blake3:")
             || !valid_digest(terminal.effect_chain_digest(), "blake3:")
             || !valid_digest(&host_quiescence_digest, "blake3:")
+            || terminal.observed_workspace_head().is_some_and(|head| !valid_digest(head, "blake3:"))
+            || validate_settlement_evidence(terminal.evidence_digest(), terminal.evidence_refs()).is_err()
+            || validate_terminal_usage_accounting(
+                &terminal,
+                terminal.task_state() == crate::managed_control::ManagedTaskTerminalStateV1::Verified,
+            ).is_err()
             || terminal.effects().len() > MAX_BATCH_EVENTS
             || terminal.effects().iter().any(|effect| {
                 effect.effect_id().is_empty()
                     || effect.outcome().is_none()
+                    || effect.outcome() == Some(crate::managed_control::AttemptEffectOutcomeV1::Unknown)
                     || effect.observation_digest().is_none_or(|digest| !valid_digest(digest, "blake3:"))
             })
         {
@@ -695,15 +1074,48 @@ impl WorkerSettlementProofV1 {
                 "managed logical worker terminal evidence is incomplete or mismatched",
             ));
         }
+        if terminal.task_state() == crate::managed_control::ManagedTaskTerminalStateV1::Verified
+            && (terminal.evidence_digest().is_none() || terminal.evidence_refs().is_empty()
+                || terminal.observed_workspace_head().is_none() || final_worktree_receipt.is_none())
+        {
+            return Err(WorkerDurableError::Conflict("verified Task lacks final Inspect or durable verifier evidence refs"));
+        }
+        let verified = terminal.task_state() == crate::managed_control::ManagedTaskTerminalStateV1::Verified;
+        if verified != verifier_pins.is_some() {
+            return Err(WorkerDurableError::Conflict(
+                "verified settlement requires opaque verifier pins; non-success settlement forbids them",
+            ));
+        }
+        if let Some(pins) = verifier_pins.as_ref() {
+            if pins.goal_id() != terminal.goal_id() || pins.run_id() != terminal.run_id()
+                || pins.task_id() != terminal.task_id() || pins.attempt_id() != terminal.attempt_id()
+                || terminal.evidence_digest() != Some(pins.evidence_digest())
+                || !valid_digest(pins.set_identity_digest(), "blake3:")
+                || !valid_digest(pins.challenge_set_digest(), "blake3:")
+                || pins.verification_run_id().is_empty()
+            {
+                return Err(WorkerDurableError::Conflict(
+                    "opaque verifier-set pins differ from the authenticated terminal evidence",
+                ));
+            }
+        }
         if final_worktree_receipt.as_ref().is_some_and(|receipt| {
             receipt.workspace_binding() != owner.workspace_binding()
                 || terminal.observed_workspace_head()
                     .is_none_or(|head| head != receipt.observed_workspace_revision())
+                || matches!(receipt.status(), WorktreeObservedStatusV1::Missing | WorktreeObservedStatusV1::Unknown)
                 || !receipt.owned()
                 || !receipt.no_follow()
         }) {
             return Err(WorkerDurableError::Conflict(
                 "final guarded workspace receipt differs from terminal workspace observation",
+            ));
+        }
+        if verified && final_worktree_receipt.as_ref()
+            .is_none_or(|receipt| !final_inspect_allows_verified_settlement(receipt))
+        {
+            return Err(WorkerDurableError::Conflict(
+                "verified settlement requires a clean or Attempt-owned final Inspect with no user-owned changes",
             ));
         }
         if terminal.attempt_state() == crate::managed_control::ManagedAttemptTerminalStateV1::Succeeded
@@ -715,11 +1127,11 @@ impl WorkerSettlementProofV1 {
         }
         let proof_digest = worker_settlement_proof_digest(
             execution_kind, &claim, &root, &owner, &attempt_binding, &terminal,
-            &host_quiescence_digest, final_worktree_receipt.as_ref(),
+            &host_quiescence_digest, final_worktree_receipt.as_ref(), verifier_pins.as_ref(),
         );
         Ok(Self {
             execution_kind, claim, root, owner, attempt_binding, terminal,
-            host_quiescence_digest, final_worktree_receipt, proof_digest,
+            host_quiescence_digest, final_worktree_receipt, verifier_pins, proof_digest,
         })
     }
 
@@ -731,37 +1143,95 @@ impl WorkerSettlementProofV1 {
     pub(crate) fn terminal(&self) -> &crate::managed_control::ManagedAttemptTerminalSnapshotV1 { &self.terminal }
     pub(crate) fn host_quiescence_digest(&self) -> &str { &self.host_quiescence_digest }
     pub(crate) fn final_worktree_receipt(&self) -> Option<&GuardedWorktreeReceiptV1> { self.final_worktree_receipt.as_ref() }
+    pub(crate) fn verifier_pins(&self) -> Option<&crate::host_kernel::SettledVerifierChallengeSetPinsV1> { self.verifier_pins.as_ref() }
     pub(crate) fn proof_digest(&self) -> &str { &self.proof_digest }
 }
 
 impl WorkerReconciliationProofV1 {
     pub(crate) fn from_host_kernel(
-        settlement: WorkerSettlementProofV1,
+        quarantine: WorkerManagedQuarantineReceiptV1,
         current_owner: AuthenticatedOwnerContext,
-        current_root: RootCoordinatorExecutionProofV1,
+        current_root: ReadOnlyReconciliationRootProofV1,
+        current_terminal: crate::managed_control::ManagedAttemptTerminalSnapshotV1,
+        current_host_quiescence_digest: String,
+        current_worktree_receipt: GuardedWorktreeReceiptV1,
     ) -> Result<Self, WorkerDurableError> {
-        let prior = settlement.owner();
-        if current_owner.principal_ref() != prior.principal_ref()
-            || current_owner.workspace_binding() != prior.workspace_binding()
-            || current_owner.session_id() != prior.session_id()
-            || current_owner.run_id() != prior.run_id()
-            || current_owner.task_id() != prior.task_id()
-            || current_owner.attempt_id() != prior.attempt_id()
-            || current_owner.owner_epoch() < prior.owner_epoch()
-            || current_root.goal_id() != settlement.root().goal_id()
-            || current_root.run_id() != settlement.root().run_id()
-            || current_root.principal_ref() != prior.principal_ref()
-            || current_root.workspace_binding() != prior.workspace_binding()
-            || current_root.session_id() != settlement.root().session_id()
-            || current_root.location_id() != settlement.root().location_id()
+        let reason = quarantine.reason();
+        let quiescence = current_terminal.child_prompt_quiescence();
+        let expected_terminal_state = match reason {
+            WorkerManagedQuarantineReasonV1::FailedAttempt => crate::managed_control::ManagedTaskTerminalStateV1::Failed,
+            WorkerManagedQuarantineReasonV1::CancelledTask => crate::managed_control::ManagedTaskTerminalStateV1::Cancelled,
+        };
+        if quarantine.owner_epoch() > current_owner.owner_epoch()
+            || current_owner.principal_ref().is_empty()
+            || current_owner.workspace_binding().is_empty()
+            || current_owner.session_id().is_empty()
+            || current_owner.run_id() != quarantine.run_id()
+            || current_owner.task_id() != quarantine.task_id()
+            || current_owner.attempt_id() != quarantine.attempt_id()
+            || current_owner.owner_epoch() == 0
+            || current_root.goal_id() != quarantine.goal_id()
+            || current_root.run_id() != quarantine.run_id()
+            || current_root.principal_ref() != current_owner.principal_ref()
+            || current_root.workspace_binding() != current_owner.workspace_binding()
+            || current_root.location_id().is_empty()
             || current_root.owner_epoch() != current_owner.owner_epoch()
-            || current_root.accepted_spec_digest() != settlement.root().accepted_spec_digest()
+            || current_root.accepted_spec_digest().is_empty()
+            || quarantine.worker_execution_id().is_empty()
+            || quarantine.attempt_id().is_empty()
+            || quarantine.reservation_id().is_empty()
+            || quarantine.worktree_lease_id().is_empty()
+            || !valid_digest(quarantine.receipt_digest(), "blake3:")
+            || current_terminal.goal_id() != quarantine.goal_id()
+            || current_terminal.run_id() != quarantine.run_id()
+            || current_terminal.task_id() != quarantine.task_id()
+            || current_terminal.attempt_id() != quarantine.attempt_id()
+            || !matches!(current_terminal.attempt_state(), crate::managed_control::ManagedAttemptTerminalStateV1::Failed)
+            || current_terminal.task_state() != expected_terminal_state
+            || current_terminal.child_prompt_state() != crate::managed_control::ManagedChildPromptStateV1::Quiesced
+            || current_terminal.effect_chain_state() != crate::managed_control::ManagedAttemptEffectChainStateV1::AllSettled
+            || current_terminal.owner_log_sequence() == 0
+            || current_terminal.managed_revision() == 0
+            || current_terminal.owner_log_id().is_empty()
+            || !valid_digest(current_terminal.owner_log_event_digest(), "blake3:")
+            || current_terminal.attempt_revision() == 0
+            || quiescence.is_none_or(|receipt| {
+                let marker = receipt.proof();
+                marker.goal_id() != current_terminal.goal_id()
+                    || marker.run_id() != current_terminal.run_id()
+                    || marker.task_id() != current_terminal.task_id()
+                    || marker.attempt_id() != current_terminal.attempt_id()
+                    || marker.parent_session_id() != current_root.session_id()
+                    || marker.session_id() != current_owner.session_id()
+                    || marker.owner_epoch() > current_owner.owner_epoch()
+            })
+            || current_terminal.child_prompt_quiescence_digest().is_none_or(|digest| !valid_digest(digest, "blake3:"))
+            || current_terminal.child_prompt_quiescence_owner_log_id().is_none_or(str::is_empty)
+            || current_terminal.child_prompt_quiescence_owner_log_sequence().is_none_or(|sequence| sequence == 0)
+            || current_terminal.child_prompt_quiescence_owner_log_event_digest()
+                .is_none_or(|digest| !valid_digest(digest, "blake3:"))
+            || current_terminal.effects().len() > MAX_BATCH_EVENTS
+            || current_terminal.effects().iter().any(|effect| {
+                effect.effect_id().is_empty()
+                    || effect.outcome().is_none()
+                    || effect.outcome() == Some(crate::managed_control::AttemptEffectOutcomeV1::Unknown)
+                    || effect.observation_digest().is_none_or(|digest| !valid_digest(digest, "blake3:"))
+            })
+            || !valid_digest(&current_host_quiescence_digest, "blake3:")
+            || !current_worktree_receipt.owned()
+            || !current_worktree_receipt.no_follow()
+            || matches!(current_worktree_receipt.status(), WorktreeObservedStatusV1::Missing | WorktreeObservedStatusV1::Unknown)
+            || current_worktree_receipt.workspace_binding() != current_owner.workspace_binding()
+            || !valid_digest(current_terminal.attempt_state_digest(), "blake3:")
+            || !valid_digest(current_terminal.effect_chain_digest(), "blake3:")
+            || validate_settlement_evidence(current_terminal.evidence_digest(), current_terminal.evidence_refs()).is_err()
+            || validate_terminal_usage_accounting(&current_terminal, false).is_err()
         {
             return Err(WorkerDurableError::Invalid("worker reconciliation authority or digest is invalid"));
         }
         let mut h = blake3::Hasher::new();
-        h.update(b"horizoncode.worker-reconciliation-proof.v1\0");
-        append_digest_field(&mut h, settlement.proof_digest());
+        h.update(b"horizoncode.worker-reconciliation-proof.v2\0");
+        append_digest_field(&mut h, quarantine.receipt_digest());
         for value in [current_owner.principal_ref(), current_owner.workspace_binding(),
             current_owner.session_id(), current_owner.run_id(), current_owner.task_id(),
             current_owner.attempt_id()] {
@@ -779,13 +1249,39 @@ impl WorkerReconciliationProofV1 {
         h.update(&current_root.worker_pool_revision().to_be_bytes());
         h.update(&current_root.process_identity().pid.to_be_bytes());
         h.update(&current_root.process_identity().start_identity.to_be_bytes());
+        append_digest_field(&mut h, current_terminal.attempt_state_digest());
+        append_digest_field(&mut h, current_terminal.effect_chain_digest());
+        append_usage_summary_to_digest(&mut h, current_terminal.usage_accounting());
+        append_digest_field(&mut h, current_terminal.owner_log_id());
+        append_digest_field(&mut h, current_terminal.owner_log_event_digest());
+        h.update(&current_terminal.owner_log_sequence().to_be_bytes());
+        h.update(&current_terminal.managed_revision().to_be_bytes());
+        append_digest_field(&mut h, &current_host_quiescence_digest);
+        append_digest_field(&mut h, current_worktree_receipt.operation_id());
+        append_digest_field(&mut h, current_worktree_receipt.host_receipt_ref());
+        append_digest_field(&mut h, current_worktree_receipt.observed_workspace_revision());
+        append_digest_field(&mut h, current_worktree_receipt.dirty_entries_digest());
+        h.update(&current_worktree_receipt.registration_generation().to_be_bytes());
+        h.update(&current_worktree_receipt.dirty_entry_count().to_be_bytes());
+        append_digest_field(&mut h, match current_worktree_receipt.status() {
+            WorktreeObservedStatusV1::Clean => "CLEAN",
+            WorktreeObservedStatusV1::DirtyOwned => "DIRTY_OWNED",
+            WorktreeObservedStatusV1::DirtyUnattributed => "DIRTY_UNATTRIBUTED",
+            WorktreeObservedStatusV1::Missing => "MISSING",
+            WorktreeObservedStatusV1::Unknown => "UNKNOWN",
+        });
+        h.update(&[u8::from(current_worktree_receipt.contains_user_owned_changes())]);
         let reconciliation_digest = format!("blake3:{}", h.finalize().to_hex());
-        Ok(Self { settlement, current_owner, current_root, reconciliation_digest })
+        Ok(Self { quarantine, current_owner, current_root, current_terminal,
+            current_host_quiescence_digest, current_worktree_receipt, reconciliation_digest })
     }
 
-    pub(crate) fn settlement(&self) -> &WorkerSettlementProofV1 { &self.settlement }
+    pub(crate) fn quarantine(&self) -> &WorkerManagedQuarantineReceiptV1 { &self.quarantine }
     pub(crate) fn current_owner(&self) -> &AuthenticatedOwnerContext { &self.current_owner }
-    pub(crate) fn current_root(&self) -> &RootCoordinatorExecutionProofV1 { &self.current_root }
+    pub(crate) fn current_root(&self) -> &ReadOnlyReconciliationRootProofV1 { &self.current_root }
+    pub(crate) fn current_terminal(&self) -> &crate::managed_control::ManagedAttemptTerminalSnapshotV1 { &self.current_terminal }
+    pub(crate) fn current_host_quiescence_digest(&self) -> &str { &self.current_host_quiescence_digest }
+    pub(crate) fn current_worktree_receipt(&self) -> &GuardedWorktreeReceiptV1 { &self.current_worktree_receipt }
     pub(crate) fn reconciliation_digest(&self) -> &str { &self.reconciliation_digest }
 }
 
@@ -803,9 +1299,10 @@ fn worker_settlement_proof_digest(
     terminal: &crate::managed_control::ManagedAttemptTerminalSnapshotV1,
     host_quiescence_digest: &str,
     final_worktree: Option<&GuardedWorktreeReceiptV1>,
+    verifier_pins: Option<&crate::host_kernel::SettledVerifierChallengeSetPinsV1>,
 ) -> String {
     let mut h = blake3::Hasher::new();
-    h.update(b"horizoncode.logical-worker-settlement-proof.v1\0");
+    h.update(b"horizoncode.logical-worker-settlement-proof.v3\0");
     let claim_nonce = claim.claim_nonce();
     h.update(&[match execution_kind { WorkerExecutionKindV1::LogicalCoreSession => 1, WorkerExecutionKindV1::ProcessBacked => 2 }]);
     for value in [
@@ -825,6 +1322,7 @@ fn worker_settlement_proof_digest(
         terminal.attempt_state_digest(), terminal.effect_chain_digest(),
         host_quiescence_digest,
     ] { append_digest_field(&mut h, value); }
+    append_usage_summary_to_digest(&mut h, terminal.usage_accounting());
     for number in [
         claim.worker_pool_revision(), root.owner_epoch(), root.worker_pool_revision(),
         terminal.task_revision(), terminal.attempt_revision(), terminal.managed_revision(),
@@ -835,6 +1333,14 @@ fn worker_settlement_proof_digest(
     h.update(&[terminal.run_phase() as u8, terminal.task_state() as u8,
         terminal.attempt_state() as u8, terminal.effect_chain_state() as u8,
         terminal.child_prompt_state() as u8]);
+    if let Some(pins) = verifier_pins {
+        h.update(&[1]);
+        for value in [pins.goal_id(), pins.run_id(), pins.task_id(), pins.attempt_id(),
+            pins.verification_run_id(), pins.set_identity_digest(), pins.challenge_set_digest(),
+            pins.evidence_digest()] { append_digest_field(&mut h, value); }
+    } else {
+        h.update(&[0]);
+    }
     if let Some(digest) = terminal.child_prompt_quiescence_digest() { append_digest_field(&mut h, digest); }
     for value in [
         terminal.admission_workspace_revision().unwrap_or_default(),
@@ -876,6 +1382,139 @@ fn worker_settlement_proof_digest(
 fn append_digest_field(hasher: &mut blake3::Hasher, value: &str) {
     hasher.update(&(value.len() as u64).to_be_bytes());
     hasher.update(value.as_bytes());
+}
+
+fn append_usage_summary_to_digest(
+    hasher: &mut blake3::Hasher,
+    usage: Option<&crate::managed_control::ManagedAttemptUsageSummaryV1>,
+) {
+    let Some(usage) = usage else {
+        append_digest_field(hasher, "usage-accounting-unavailable");
+        return;
+    };
+    append_digest_field(hasher, "usage-accounting-v1");
+    for value in [
+        usage.token_remainder_status(), usage.cost_remainder_status(), usage.usage_state(),
+        usage.stop_reason(), usage.ceiling_digest(), usage.cost_status(), usage.receipt_chain_digest(),
+    ] { append_digest_field(hasher, value); }
+    for value in [usage.accounting_cursor(), usage.token_known_subtotal(),
+        usage.cost_known_subtotal_micros(), usage.receipt_count()] {
+        hasher.update(&value.to_be_bytes());
+    }
+    hasher.update(&(usage.metric_statuses().len() as u64).to_be_bytes());
+    for (metric, status) in usage.metric_statuses() {
+        append_digest_field(hasher, metric);
+        append_digest_field(hasher, status);
+    }
+}
+
+fn artifact_ref_value(reference: &crate::protocol::ArtifactRefV1) -> Value {
+    json!({
+        "artifactId": reference.artifact_id,
+        "digest": reference.digest,
+        "byteLength": reference.byte_length,
+        "mediaType": reference.media_type,
+        "classification": match reference.classification {
+            crate::protocol::ArtifactClassificationV1::Public => "public",
+            crate::protocol::ArtifactClassificationV1::Workspace => "workspace",
+            crate::protocol::ArtifactClassificationV1::Sensitive => "sensitive",
+        },
+    })
+}
+
+fn decode_artifact_ref_value(value: Value) -> Result<crate::protocol::ArtifactRefV1, WorkerDurableError> {
+    let artifact_id = text(&value, "artifactId")?;
+    let digest = text(&value, "digest")?;
+    let byte_length = text(&value, "byteLength")?;
+    let media_type = text(&value, "mediaType")?;
+    let classification = match text(&value, "classification")?.as_str() {
+        "public" => crate::protocol::ArtifactClassificationV1::Public,
+        "workspace" => crate::protocol::ArtifactClassificationV1::Workspace,
+        "sensitive" => crate::protocol::ArtifactClassificationV1::Sensitive,
+        _ => return Err(WorkerDurableError::Invalid("invalid artifact classification")),
+    };
+    validate_owner_token(&artifact_id)?;
+    validate_owner_digest(&digest, "blake3:")?;
+    validate_owner_token(&media_type)?;
+    let parsed_length = byte_length.parse::<u64>()
+        .map_err(|_| WorkerDurableError::Invalid("invalid artifact byte length"))?;
+    if parsed_length.to_string() != byte_length || byte_length.len() > 20 {
+        return Err(WorkerDurableError::Invalid("non-canonical artifact byte length"));
+    }
+    Ok(crate::protocol::ArtifactRefV1 { artifact_id, digest, byte_length, media_type, classification })
+}
+
+fn validate_settlement_evidence(
+    evidence_digest: Option<&str>,
+    evidence_refs: &[crate::protocol::ArtifactRefV1],
+) -> Result<(), WorkerDurableError> {
+    if evidence_refs.len() > 256 {
+        return Err(WorkerDurableError::Invalid("settlement evidence ref count exceeds limit"));
+    }
+    if let Some(digest) = evidence_digest {
+        validate_owner_digest(digest, "blake3:")?;
+    }
+    let mut total_bytes = 0u64;
+    for reference in evidence_refs {
+        let decoded = decode_artifact_ref_value(artifact_ref_value(reference))?;
+        total_bytes = total_bytes.saturating_add(decoded.byte_length.parse::<u64>().unwrap_or(u64::MAX));
+        if total_bytes > 64 * 1024 * 1024 {
+            return Err(WorkerDurableError::Invalid("settlement evidence refs exceed aggregate bound"));
+        }
+    }
+    if evidence_digest.is_some() != !evidence_refs.is_empty() {
+        return Err(WorkerDurableError::Invalid("settlement evidence digest and refs are incomplete"));
+    }
+    Ok(())
+}
+
+fn validate_terminal_usage_accounting(
+    terminal: &crate::managed_control::ManagedAttemptTerminalSnapshotV1,
+    required: bool,
+) -> Result<(), WorkerDurableError> {
+    let Some(usage) = terminal.usage_accounting() else {
+        return if required {
+            Err(WorkerDurableError::Conflict("verified managed terminal lacks durable usage accounting"))
+        } else {
+            Ok(())
+        };
+    };
+    validate_usage_accounting_summary(usage, terminal.managed_revision())
+}
+
+fn validate_usage_accounting_summary(
+    usage: &crate::managed_control::ManagedAttemptUsageSummaryV1,
+    managed_revision: u64,
+) -> Result<(), WorkerDurableError> {
+    let valid_remainder = |value: &str| matches!(value, "KNOWN" | "ESTIMATED" | "UNKNOWN");
+    let valid_aggregate_status = |value: &str| matches!(
+        value, "provider-reported" | "measured" | "estimated" | "unknown" | "mixed"
+    );
+    // These are the five canonical keys emitted by ManagedControl's V1
+    // per-operation ledger; cache read/write are subcomponents and never
+    // duplicate the input-token total.
+    let valid_metric_key = |value: &str| matches!(
+        value, "input" | "output" | "reasoning" | "cache.read" | "cache.write"
+    );
+    if usage.accounting_cursor() == 0
+        || usage.receipt_count() == 0
+        || usage.receipt_count() > usage.accounting_cursor()
+        || usage.accounting_cursor() > managed_revision
+        || !valid_digest(usage.ceiling_digest(), "blake3:")
+        || !valid_digest(usage.receipt_chain_digest(), "blake3:")
+        || !valid_remainder(usage.token_remainder_status())
+        || !valid_remainder(usage.cost_remainder_status())
+        || !matches!(usage.usage_state(), "KNOWN" | "ESTIMATED" | "UNKNOWN")
+        || !matches!(usage.stop_reason(), "NONE" | "TOKEN_CEILING" | "COST_CEILING" | "USAGE_UNCERTAIN")
+        || !valid_aggregate_status(usage.cost_status())
+        || usage.metric_statuses().len() != 5
+        || usage.metric_statuses().iter().any(|(metric, status)| {
+            !valid_metric_key(metric) || !valid_aggregate_status(status)
+        })
+    {
+        return Err(WorkerDurableError::Conflict("managed terminal usage accounting summary is invalid"));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1101,6 +1740,38 @@ pub(crate) struct RootCoordinatorExecutionProofV1 {
     worker_pool_revision: u64,
 }
 
+/// Current authenticated Core owner authority restricted to read-only
+/// reconciliation of one already-quarantined logical child. This deliberately
+/// cannot be passed to admission, claim, dispatch, or ordinary worktree APIs.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ReadOnlyReconciliationRootProofV1 {
+    execution: RootCoordinatorExecutionV1,
+    owner_log_id: String,
+    owner_log_sequence: String,
+    owner_log_event_digest: String,
+    worker_pool_revision: u64,
+}
+
+impl ReadOnlyReconciliationRootProofV1 {
+    pub(crate) fn worker_execution_id(&self) -> &str { &self.execution.worker_execution_id }
+    pub(crate) fn goal_id(&self) -> &str { &self.execution.goal_id }
+    pub(crate) fn run_id(&self) -> &str { &self.execution.run_id }
+    pub(crate) fn principal_ref(&self) -> &str { &self.execution.principal_ref }
+    pub(crate) fn workspace_binding(&self) -> &str { &self.execution.workspace_binding }
+    pub(crate) fn session_id(&self) -> &str { &self.execution.session_id }
+    pub(crate) fn location_id(&self) -> &str { &self.execution.location_id }
+    pub(crate) fn owner_epoch(&self) -> u64 { self.execution.owner_epoch }
+    pub(crate) fn process_incarnation(&self) -> &str { &self.execution.process_incarnation }
+    pub(crate) fn process_identity(&self) -> &ProcessIdentity { &self.execution.process_identity }
+    pub(crate) fn source_revision(&self) -> &str { &self.execution.source_revision }
+    pub(crate) fn accepted_spec_digest(&self) -> &str { &self.execution.accepted_spec_digest }
+    pub(crate) fn owner_log_id(&self) -> &str { &self.owner_log_id }
+    pub(crate) fn owner_log_sequence(&self) -> &str { &self.owner_log_sequence }
+    pub(crate) fn owner_log_event_digest(&self) -> &str { &self.owner_log_event_digest }
+    pub(crate) fn worker_pool_revision(&self) -> u64 { self.worker_pool_revision }
+    pub(crate) fn expires_at_ms(&self) -> u64 { self.execution.expires_at_ms }
+}
+
 impl RootCoordinatorExecutionProofV1 {
     pub(crate) fn worker_execution_id(&self) -> &str { &self.execution.worker_execution_id }
     pub(crate) fn goal_id(&self) -> &str { &self.execution.goal_id }
@@ -1125,6 +1796,69 @@ impl RootCoordinatorExecutionProofV1 {
 pub(crate) struct BoundWorkerDelegationV1 {
     binding_digest: String,
     parent_execution_id: String,
+    /// HostKernel-measured child Location/workspace and revision. Older journal
+    /// records omit this pin and remain replayable, but cannot authorize a new
+    /// managed Attempt dispatch or settlement.
+    worktree_admission: Option<ManagedWorktreeAdmissionPinV1>,
+}
+
+impl BoundWorkerDelegationV1 {
+    fn child_workspace_revision(&self) -> Result<&str, WorkerDurableError> {
+        self.worktree_admission.as_ref().map(|pin| pin.child_workspace_revision.as_str())
+            .ok_or(WorkerDurableError::Conflict("managed binding has no HostKernel child worktree pin"))
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ManagedWorktreeAdmissionPinV1 {
+    worktree_id: String,
+    base_revision: String,
+    pool_revision: u64,
+    root_location_id: String,
+    p8_workspace_binding: String,
+    child_location_id: String,
+    child_workspace_id: String,
+    child_workspace_ref: String,
+    child_canonical_root: String,
+    child_workspace_revision: String,
+}
+
+impl ManagedWorktreeAdmissionPinV1 {
+    fn from_hostkernel(
+        projection: &crate::managed_control::ManagedWorktreeAdmissionProjectionV1,
+    ) -> Result<Self, WorkerDurableError> {
+        let pin = Self {
+            worktree_id: projection.worktree_id().to_owned(),
+            base_revision: projection.base_revision().to_owned(),
+            pool_revision: projection.pool_revision(),
+            root_location_id: projection.root_location_id().to_owned(),
+            p8_workspace_binding: projection.p8_workspace_binding().to_owned(),
+            child_location_id: projection.location_id().to_owned(),
+            child_workspace_id: projection.workspace_id().to_owned(),
+            child_workspace_ref: projection.workspace_ref().to_owned(),
+            child_canonical_root: projection.canonical_root().to_owned(),
+            child_workspace_revision: projection.workspace_revision().to_owned(),
+        };
+        pin.validate()?;
+        Ok(pin)
+    }
+
+    fn validate(&self) -> Result<(), WorkerDurableError> {
+        for value in [&self.worktree_id, &self.base_revision, &self.root_location_id,
+            &self.p8_workspace_binding, &self.child_location_id, &self.child_workspace_id,
+            &self.child_workspace_ref] {
+            validate_owner_token(value)?;
+        }
+        validate_owner_digest(&self.child_workspace_revision, "blake3:")?;
+        if self.pool_revision == 0 || self.root_location_id == self.child_location_id
+            || self.child_canonical_root.is_empty() || self.child_canonical_root.len() > 4096
+            || self.child_canonical_root.chars().any(char::is_control)
+            || !std::path::Path::new(&self.child_canonical_root).is_absolute()
+        {
+            return Err(WorkerDurableError::Invalid("invalid HostKernel managed worktree admission projection"));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1133,6 +1867,7 @@ struct WorkerIdentityJournalV1 {
     admission_pins: BTreeMap<String, WorkerAdmissionPinsV1>,
     delegation_bindings: BTreeMap<String, BoundWorkerDelegationV1>,
     root_coordinators: BTreeMap<String, RootCoordinatorExecutionV1>,
+    reconciliation_root_ids: BTreeMap<String, (String, String)>,
     claim_receipts: BTreeMap<String, WorkerClaimReceiptV1>,
     verified_worktree_registrations: BTreeMap<String, String>,
     worktree_registration_records: BTreeMap<String, VerifiedWorktreeRegistrationV1>,
@@ -1276,7 +2011,10 @@ impl DurableManagedLeaseProofV1 {
     pub(crate) fn profile_id(&self) -> Option<&str> { self.admission_pins.as_ref().map(|p| p.profile_id.as_str()).or_else(|| self.pre_admission_pins.as_ref().map(|p| p.profile_id.as_str())) }
     pub(crate) fn profile_revision(&self) -> Option<u64> { self.admission_pins.as_ref().map(|p| p.profile_revision).or_else(|| self.pre_admission_pins.as_ref().map(|p| p.profile_revision)) }
     pub(crate) fn profile_digest(&self) -> Option<&str> { self.admission_pins.as_ref().map(|p| p.profile_digest.as_str()).or_else(|| self.pre_admission_pins.as_ref().map(|p| p.profile_digest.as_str())) }
-    pub(crate) fn context_selection_digest(&self) -> Option<&str> { self.admission_pins.as_ref().map(|p| p.context_selection_digest.as_str()).or_else(|| self.pre_admission_pins.as_ref().map(|p| p.context_selection_digest.as_str())) }
+    pub(crate) fn context_selection_digest(&self) -> Option<&str> {
+        self.admission_pins.as_ref().map(|p| p.context_selection_digest.as_str())
+            .or_else(|| self.pre_admission_pins.as_ref().and_then(|p| p.context_selection_digest.as_deref()))
+    }
     pub(crate) fn accepted_scope_digest(&self) -> Option<&str> { self.admission_pins.as_ref().map(|p| p.accepted_scope_digest.as_str()).or_else(|| self.pre_admission_pins.as_ref().map(|p| p.accepted_scope_digest.as_str())) }
     pub(crate) fn capability_ceiling_digest(&self) -> Option<&str> { self.admission_pins.as_ref().map(|p| p.capability_ceiling_digest.as_str()).or_else(|| self.pre_admission_pins.as_ref().map(|p| p.capability_ceiling_digest.as_str())) }
     pub(crate) fn delegation_binding_digest(&self) -> Option<&str> { self.delegation.as_ref().map(|p| p.binding_digest.as_str()) }
@@ -1394,6 +2132,78 @@ impl DurableManagedLeaseProofV1 {
 /// One durable worker-pool command. Only trusted ingress code may construct
 /// and apply these; every command is validated by the pool state machine again.
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ManagedFinalInspectCandidatePinV1 {
+    operation_id: String,
+    candidate_digest: String,
+    attempt_id: String,
+    binding_digest: String,
+    spec_id: String,
+    spec_digest: String,
+    evidence_digest: String,
+    final_revision: String,
+    verification_run_id: Option<String>,
+    set_identity_digest: Option<String>,
+    challenge_set_digest: Option<String>,
+}
+
+fn managed_final_inspect_candidate_digest(
+    attempt_id: &str, goal_id: &str, run_id: &str, task_id: &str,
+    binding_digest: &str, spec_id: &str, spec_digest: &str, evidence_digest: &str,
+    final_revision: &str, effect_chain_digest: &str, attempt_state_digest: &str,
+    owner_log_id: &str, owner_log_sequence: u64, owner_log_event_digest: &str,
+    managed_revision: u64,
+    usage_accounting: &crate::managed_control::ManagedAttemptUsageSummaryV1,
+    verifier_pins: &crate::host_kernel::SettledVerifierChallengeSetPinsV1,
+) -> String {
+    let mut h = blake3::Hasher::new();
+    h.update(b"horizoncode.managed-final-inspect-candidate.v3\0");
+    for value in [attempt_id, goal_id, run_id, task_id, binding_digest, spec_id,
+        spec_digest, evidence_digest, final_revision, effect_chain_digest,
+        attempt_state_digest, owner_log_id, owner_log_event_digest,
+        verifier_pins.verification_run_id(), verifier_pins.set_identity_digest(),
+        verifier_pins.challenge_set_digest()] {
+        append_digest_field(&mut h, value);
+    }
+    h.update(&owner_log_sequence.to_be_bytes());
+    h.update(&managed_revision.to_be_bytes());
+    append_usage_summary_to_digest(&mut h, Some(usage_accounting));
+    format!("blake3:{}", h.finalize().to_hex())
+}
+
+fn validate_final_inspect_verifier_pins(
+    candidate: &crate::managed_control::ManagedAttemptSettlementCandidateV1,
+    verifier_pins: &crate::host_kernel::SettledVerifierChallengeSetPinsV1,
+) -> Result<(), WorkerDurableError> {
+    if verifier_pins.goal_id() != candidate.goal_id()
+        || verifier_pins.run_id() != candidate.run_id()
+        || verifier_pins.task_id() != candidate.task_id()
+        || verifier_pins.attempt_id() != candidate.attempt_id()
+        || verifier_pins.evidence_digest() != candidate.evidence_digest()
+        || validate_owner_token(verifier_pins.verification_run_id()).is_err()
+        || !valid_digest(verifier_pins.set_identity_digest(), "blake3:")
+        || !valid_digest(verifier_pins.challenge_set_digest(), "blake3:")
+    {
+        return Err(WorkerDurableError::Conflict(
+            "settled verifier pins differ from the final Inspect candidate",
+        ));
+    }
+    Ok(())
+}
+
+/// A successful managed Attempt may settle only against an attributable final
+/// workspace observation. A dirty result is acceptable when all dirty entries
+/// are owned by the Attempt; user-owned or unattributed changes keep the
+/// result from becoming a successful settlement proof.
+fn final_inspect_allows_verified_settlement(receipt: &GuardedWorktreeReceiptV1) -> bool {
+    matches!(
+        receipt.status(),
+        WorktreeObservedStatusV1::Clean | WorktreeObservedStatusV1::DirtyOwned
+    ) && !receipt.contains_user_owned_changes()
+        && receipt.owned()
+        && receipt.no_follow()
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WorkerCommand {
     /// Atomically creates the queue record, RESERVED budget/worktree leases,
     /// and immutable pre-admission pins from one authenticated READY Task.
@@ -1404,6 +2214,13 @@ pub enum WorkerCommand {
         worker_execution_id: String,
         now_ms: u64,
     },
+    /// Binds the compiled ContextSelection to the same still-RESERVED Stage-A
+    /// candidate. Only this event makes a staged reservation admissible.
+    PreAdmissionContextBound {
+        worker_execution_id: String,
+        ticket_id: String,
+        pins: TrustedPreAdmissionPinsV1,
+    },
     /// Releases only a pinned pre-admission lease with P1's durable
     /// cross-owner proof that no dispatched effect or process can exist.
     PreAdmissionReconciled {
@@ -1412,6 +2229,14 @@ pub enum WorkerCommand {
     AdmissionPinsRecorded { worker_execution_id: String, pins: WorkerAdmissionPinsV1 },
     DelegationBound { worker_execution_id: String, binding: BoundWorkerDelegationV1 },
     RootCoordinatorRegistered { execution: RootCoordinatorExecutionV1 },
+    /// Reauthorizes an existing root identity for terminal read-only recovery.
+    /// Immutable Goal/Run/Session/Location/spec lineage is checked on replay.
+    RootCoordinatorReauthorized {
+        attempt_id: String,
+        quarantine_receipt_digest: String,
+        prior_execution_digest: String,
+        execution: RootCoordinatorExecutionV1,
+    },
     /// First command of the stream; binds the pool's durable owner epoch.
     PoolOpened {
         owner_epoch: u64,
@@ -1506,6 +2331,13 @@ pub enum WorkerCommand {
     /// carries no PID or process-exit boolean; it is emitted only after the
     /// opaque HostKernel proof is revalidated by WorkerPoolControl.
     ManagedLogicalSettled { event: ManagedLogicalSettlementEventV1 },
+    /// Final workspace disposition is independently replayable from logical
+    /// reservation settlement. It is emitted only after the exact final Inspect
+    /// receipt and the durable settlement receipt have both been re-resolved.
+    ManagedWorktreeDisposition { event: ManagedWorktreeDispositionEventV1 },
+    /// Quarantine-only terminal record. It retains ActiveWorkers and the
+    /// worktree lease; it is not a success settlement or release proof.
+    ManagedTerminalQuarantined { event: ManagedTerminalQuarantineEventV1 },
     CancelScope {
         scope: OwnerScopeKey,
         cancel: CancelScope,
@@ -1515,6 +2347,10 @@ pub enum WorkerCommand {
     WorktreeOperationIntent {
         intent: WorktreeOperationIntentV1,
     },
+    /// Durable binding from a final Inspect operation to the exact P2 settlement
+    /// candidate and the HostKernel-validated settled verifier identity. Legacy
+    /// entries without verifier fields remain readable for history only.
+    ManagedFinalInspectCandidatePinned { pin: ManagedFinalInspectCandidatePinV1 },
     WorktreeOperationReceipt {
         receipt: GuardedWorktreeReceiptV1,
     },
@@ -1540,6 +2376,11 @@ impl WorkerCommand {
                     "nowMs": now_ms,
                 }),
             ),
+            Self::PreAdmissionContextBound { worker_execution_id, ticket_id, pins } => (
+                "worker_pre_admission_context_bound",
+                json!({"workerExecutionId": worker_execution_id, "ticketId": ticket_id,
+                    "pins": trusted_pre_admission_value(pins)}),
+            ),
             Self::PreAdmissionReconciled { proof } => (
                 "worker_pre_admission_reconciled",
                 managed_reservation_reconciliation_value(proof),
@@ -1548,10 +2389,15 @@ impl WorkerCommand {
                 "worker_admission_pins_recorded", json!({"workerExecutionId": worker_execution_id, "pins": admission_pins_value(pins)}),
             ),
             Self::DelegationBound { worker_execution_id, binding } => (
-                "worker_delegation_bound", json!({"workerExecutionId": worker_execution_id, "bindingDigest": binding.binding_digest, "parentExecutionId": binding.parent_execution_id}),
+                "worker_delegation_bound", json!({"workerExecutionId": worker_execution_id, "bindingDigest": binding.binding_digest, "parentExecutionId": binding.parent_execution_id, "worktreeAdmission": binding.worktree_admission.as_ref().map(managed_worktree_admission_pin_value)}),
             ),
             Self::RootCoordinatorRegistered { execution } => (
                 "worker_root_coordinator_registered", root_coordinator_value(execution),
+            ),
+            Self::RootCoordinatorReauthorized { attempt_id, quarantine_receipt_digest, prior_execution_digest, execution } => (
+                "worker_root_coordinator_reauthorized",
+                json!({"attemptId": attempt_id, "quarantineReceiptDigest": quarantine_receipt_digest,
+                    "priorExecutionDigest": prior_execution_digest, "execution": root_coordinator_value(execution)}),
             ),
             Self::PoolOpened {
                 owner_epoch,
@@ -1699,15 +2545,57 @@ impl WorkerCommand {
                     "proof": reconciliation_value(proof),
                 }),
             ),
-            Self::ManagedLogicalSettled { event } => (
-                "worker_managed_logical_settled",
-                json!({
+            Self::ManagedLogicalSettled { event } => {
+                let mut payload = json!({
                     "workerExecutionId": event.worker_execution_id,
                     "attemptId": event.attempt_id,
                     "proofDigest": event.proof_digest,
                     "observedWorkspaceRevision": event.observed_workspace_revision,
+                    "finalWorktreeOperationId": event.final_worktree_operation_id,
+                    "finalWorktreeHostReceiptRef": event.final_worktree_host_receipt_ref,
+                    "evidenceDigest": event.evidence_digest,
+                    "evidenceRefs": event.evidence_refs.iter().map(artifact_ref_value).collect::<Vec<_>>(),
                     "reusableWorktree": event.reusable_worktree,
                     "reconciliationOwnerEpoch": event.reconciliation_owner_epoch,
+                    "dispositionDeferred": event.disposition_deferred,
+                });
+                if event.schema_version >= 4 {
+                    payload["verificationRunID"] = event.verification_run_id.clone().map(Value::String).unwrap_or(Value::Null);
+                    payload["setIdentityDigest"] = event.set_identity_digest.clone().map(Value::String).unwrap_or(Value::Null);
+                    payload["challengeSetDigest"] = event.challenge_set_digest.clone().map(Value::String).unwrap_or(Value::Null);
+                }
+                ("worker_managed_logical_settled", payload)
+            },
+            Self::ManagedWorktreeDisposition { event } => (
+                "worker_managed_worktree_disposition",
+                json!({
+                    "workerExecutionId": event.worker_execution_id,
+                    "attemptId": event.attempt_id,
+                    "ownerEpoch": event.owner_epoch,
+                    "settlementReceiptDigest": event.settlement_receipt_digest,
+                    "finalWorktreeOperationId": event.final_worktree_operation_id,
+                    "finalWorktreeHostReceiptRef": event.final_worktree_host_receipt_ref,
+                    "observedWorkspaceRevision": event.observed_workspace_revision,
+                    "inspectReceiptDigest": event.inspect_receipt_digest,
+                    "reusableWorktree": event.reusable_worktree,
+                    "reconciliationOwnerEpoch": event.reconciliation_owner_epoch,
+                    "reconciliationProofDigest": event.reconciliation_proof_digest,
+                }),
+            ),
+            Self::ManagedTerminalQuarantined { event } => (
+                "worker_managed_terminal_quarantined",
+                json!({
+                    "scope": scope_value(&event.scope),
+                    "workerExecutionId": event.worker_execution_id,
+                    "goalId": event.goal_id,
+                    "runId": event.run_id,
+                    "taskId": event.task_id,
+                    "attemptId": event.attempt_id,
+                    "ownerEpoch": event.owner_epoch,
+                    "reservationId": event.reservation_id,
+                    "worktreeLeaseId": event.worktree_lease_id,
+                    "terminalProofDigest": event.terminal_proof_digest,
+                    "reason": event.reason.wire_name(),
                 }),
             ),
             Self::CancelScope {
@@ -1724,6 +2612,24 @@ impl WorkerCommand {
             Self::WorktreeOperationIntent { intent } => (
                 "worker_worktree_operation_intent",
                 worktree_intent_value(intent),
+            ),
+            Self::ManagedFinalInspectCandidatePinned { pin } => (
+                "worker_managed_final_inspect_candidate_pinned",
+                if let (Some(verification_run_id), Some(set_identity_digest), Some(challenge_set_digest)) =
+                    (&pin.verification_run_id, &pin.set_identity_digest, &pin.challenge_set_digest) {
+                    json!({"operationId": pin.operation_id, "candidateDigest": pin.candidate_digest,
+                        "attemptId": pin.attempt_id, "bindingDigest": pin.binding_digest,
+                        "specId": pin.spec_id,
+                        "specDigest": pin.spec_digest, "evidenceDigest": pin.evidence_digest,
+                        "finalRevision": pin.final_revision, "verificationRunID": verification_run_id,
+                        "setIdentityDigest": set_identity_digest, "challengeSetDigest": challenge_set_digest})
+                } else {
+                    json!({"operationId": pin.operation_id, "candidateDigest": pin.candidate_digest,
+                        "attemptId": pin.attempt_id, "bindingDigest": pin.binding_digest,
+                        "specId": pin.spec_id,
+                        "specDigest": pin.spec_digest, "evidenceDigest": pin.evidence_digest,
+                        "finalRevision": pin.final_revision})
+                },
             ),
             Self::WorktreeOperationReceipt { receipt } => (
                 "worker_worktree_operation_receipt",
@@ -1772,6 +2678,13 @@ impl WorkerCommand {
                 worker_execution_id: text(payload, "workerExecutionId")?,
                 now_ms: unsigned(payload, "nowMs")?,
             }),
+            "worker_pre_admission_context_bound" if count == 3 => Ok(Self::PreAdmissionContextBound {
+                worker_execution_id: text(payload, "workerExecutionId")?,
+                ticket_id: text(payload, "ticketId")?,
+                pins: decode_trusted_pre_admission(payload.get("pins").ok_or(
+                    WorkerDurableError::Invalid("missing context-bound pre-admission pins"),
+                )?)?,
+            }),
             "worker_pre_admission_reconciled" if count == 1 => Ok(Self::PreAdmissionReconciled {
                 proof: decode_managed_reservation_reconciliation(payload)?,
             }),
@@ -1784,11 +2697,31 @@ impl WorkerCommand {
                 validate_owner_digest(&binding_digest, "blake3:")?;
                 Ok(Self::DelegationBound {
                     worker_execution_id: text(payload, "workerExecutionId")?,
-                    binding: BoundWorkerDelegationV1 { binding_digest, parent_execution_id: text(payload, "parentExecutionId")? },
+                    binding: BoundWorkerDelegationV1 { binding_digest, parent_execution_id: text(payload, "parentExecutionId")?, worktree_admission: None },
+                })
+            },
+            "worker_delegation_bound" if count == 4 => {
+                let binding_digest = text(payload, "bindingDigest")?;
+                validate_owner_digest(&binding_digest, "blake3:")?;
+                let worktree_admission = match payload.get("worktreeAdmission") {
+                    Some(Value::Null) => None,
+                    Some(value) => Some(decode_managed_worktree_admission_pin(value)?),
+                    None => return Err(WorkerDurableError::Invalid("missing managed worktree admission pin")),
+                };
+                Ok(Self::DelegationBound {
+                    worker_execution_id: text(payload, "workerExecutionId")?,
+                    binding: BoundWorkerDelegationV1 { binding_digest, parent_execution_id: text(payload, "parentExecutionId")?, worktree_admission },
                 })
             },
             "worker_root_coordinator_registered" if count == 13 => Ok(Self::RootCoordinatorRegistered {
                 execution: decode_root_coordinator(payload)?,
+            }),
+            "worker_root_coordinator_reauthorized" if count == 4 => Ok(Self::RootCoordinatorReauthorized {
+                attempt_id: text(payload, "attemptId")?,
+                quarantine_receipt_digest: text(payload, "quarantineReceiptDigest")?,
+                prior_execution_digest: text(payload, "priorExecutionDigest")?,
+                execution: decode_root_coordinator(payload.get("execution")
+                    .ok_or(WorkerDurableError::Invalid("missing reauthorized root execution"))?)?,
             }),
             "worker_pool_opened" if schema_version == 1 && count == 1 => Ok(Self::PoolOpened {
                 owner_epoch: unsigned(payload, "ownerEpoch")?,
@@ -1955,6 +2888,32 @@ impl WorkerCommand {
                         .ok_or(WorkerDurableError::Invalid("settlement missing"))?,
                 )?,
             }),
+            "worker_managed_terminal_quarantined" if count == 11 => {
+                let event = ManagedTerminalQuarantineEventV1 {
+                    scope: decode_scope(payload.get("scope").ok_or(
+                        WorkerDurableError::Invalid("managed quarantine scope is missing"),
+                    )?)?,
+                    worker_execution_id: text(payload, "workerExecutionId")?,
+                    goal_id: text(payload, "goalId")?,
+                    run_id: text(payload, "runId")?,
+                    task_id: text(payload, "taskId")?,
+                    attempt_id: text(payload, "attemptId")?,
+                    owner_epoch: unsigned(payload, "ownerEpoch")?,
+                    reservation_id: text(payload, "reservationId")?,
+                    worktree_lease_id: text(payload, "worktreeLeaseId")?,
+                    terminal_proof_digest: text(payload, "terminalProofDigest")?,
+                    reason: WorkerManagedQuarantineReasonV1::from_wire(text(payload, "reason")?.as_str())?,
+                };
+                for token in [&event.worker_execution_id, &event.goal_id, &event.run_id,
+                    &event.task_id, &event.attempt_id, &event.reservation_id, &event.worktree_lease_id] {
+                    validate_owner_token(token)?;
+                }
+                validate_owner_digest(&event.terminal_proof_digest, "blake3:")?;
+                if event.owner_epoch == 0 {
+                    return Err(WorkerDurableError::Invalid("managed quarantine owner epoch must be nonzero"));
+                }
+                Ok(Self::ManagedTerminalQuarantined { event })
+            }
             "worker_quarantined" if count == 2 => Ok(Self::QuarantineWorker {
                 scope: decode_scope(
                     payload
@@ -1990,25 +2949,123 @@ impl WorkerCommand {
                         .ok_or(WorkerDurableError::Invalid("reconciliation proof missing"))?,
                 )?,
             }),
-            "worker_managed_logical_settled" if count == 6 => {
+            "worker_managed_logical_settled" if count == 6 || count == 10 || count == 11 || count == 14 => {
                 let observed_workspace_revision = match payload.get("observedWorkspaceRevision") {
                     Some(Value::Null) | None => None,
                     Some(Value::String(value)) => Some(value.clone()),
                     _ => return Err(WorkerDurableError::Invalid("invalid settled workspace revision")),
                 };
+                if count == 10 {
+                    if let Some(revision) = observed_workspace_revision.as_deref() {
+                        validate_owner_digest(revision, "blake3:")?;
+                    }
+                }
                 let proof_digest = text(payload, "proofDigest")?;
                 validate_owner_digest(&proof_digest, "blake3:")?;
+                let final_worktree_operation_id = optional_text(payload, "finalWorktreeOperationId")?;
+                let final_worktree_host_receipt_ref = optional_text(payload, "finalWorktreeHostReceiptRef")?;
+                let evidence_digest = optional_text(payload, "evidenceDigest")?;
+                if let Some(digest) = evidence_digest.as_deref() { validate_owner_digest(digest, "blake3:")?; }
+                let evidence_refs = match payload.get("evidenceRefs") {
+                    None => Vec::new(),
+                    Some(Value::Array(values)) if values.len() <= 256 => values.iter()
+                        .cloned().map(decode_artifact_ref_value).collect::<Result<Vec<_>, _>>()?,
+                    _ => return Err(WorkerDurableError::Invalid("invalid settlement evidence refs")),
+                };
+                let verification_run_id = optional_text(payload, "verificationRunID")?;
+                let set_identity_digest = optional_text(payload, "setIdentityDigest")?;
+                let challenge_set_digest = optional_text(payload, "challengeSetDigest")?;
+                let has_all_verifier_pins = verification_run_id.is_some()
+                    && set_identity_digest.is_some() && challenge_set_digest.is_some();
+                let has_any_verifier_pins = verification_run_id.is_some()
+                    || set_identity_digest.is_some() || challenge_set_digest.is_some();
+                let reconciliation_owner_epoch = match payload.get("reconciliationOwnerEpoch") {
+                    Some(Value::Null) | None => None,
+                    Some(value) => Some(value.as_u64().ok_or(WorkerDurableError::Invalid("invalid reconciliation epoch"))?),
+                };
+                if count == 14 {
+                    if has_any_verifier_pins != has_all_verifier_pins {
+                        return Err(WorkerDurableError::Invalid("incomplete verifier settlement pins"));
+                    }
+                    if let Some(run_id) = verification_run_id.as_deref() {
+                        validate_owner_token(run_id)?;
+                    }
+                    for digest in [set_identity_digest.as_deref(), challenge_set_digest.as_deref()]
+                        .into_iter().flatten() { validate_owner_digest(digest, "blake3:")?; }
+                    if has_any_verifier_pins && evidence_digest.is_none() {
+                        return Err(WorkerDurableError::Invalid("verifier settlement pins have no evidence digest"));
+                    }
+                    if reconciliation_owner_epoch.is_some() == has_any_verifier_pins {
+                        return Err(WorkerDurableError::Invalid(
+                            "verifier pins must appear exactly on verified, non-reconciliation settlement",
+                        ));
+                    }
+                } else if has_any_verifier_pins {
+                    return Err(WorkerDurableError::Invalid("legacy settlement cannot carry verifier pins"));
+                }
+                validate_settlement_evidence(evidence_digest.as_deref(), &evidence_refs)?;
+                if final_worktree_operation_id.is_some() != final_worktree_host_receipt_ref.is_some() {
+                    return Err(WorkerDurableError::Invalid("incomplete final worktree receipt reference"));
+                }
+                if let Some(operation_id) = final_worktree_operation_id.as_deref() {
+                    validate_owner_token(operation_id)?;
+                }
+                if let Some(host_ref) = final_worktree_host_receipt_ref.as_deref() {
+                    validate_owner_token(host_ref)?;
+                }
+                if final_worktree_operation_id.is_some() && observed_workspace_revision.is_none() {
+                    return Err(WorkerDurableError::Invalid("final worktree receipt has no observed revision"));
+                }
                 Ok(Self::ManagedLogicalSettled { event: ManagedLogicalSettlementEventV1 {
+                    schema_version: if count == 6 { 1 } else if count == 10 { 2 } else if count == 11 { 3 } else { 4 },
                     worker_execution_id: text(payload, "workerExecutionId")?,
                     attempt_id: text(payload, "attemptId")?,
-                    proof_digest, observed_workspace_revision,
+                    proof_digest, observed_workspace_revision, final_worktree_operation_id,
+                    final_worktree_host_receipt_ref, evidence_digest, evidence_refs,
+                    verification_run_id, set_identity_digest, challenge_set_digest,
                     reusable_worktree: boolean(payload, "reusableWorktree")?,
-                    reconciliation_owner_epoch: match payload.get("reconciliationOwnerEpoch") {
-                        Some(Value::Null) | None => None,
-                        Some(value) => Some(value.as_u64().ok_or(WorkerDurableError::Invalid("invalid reconciliation epoch"))?),
-                    },
+                    disposition_deferred: if count == 11 { boolean(payload, "dispositionDeferred")? } else { false },
+                    reconciliation_owner_epoch,
                 } })
             },
+            "worker_managed_worktree_disposition" if count == 10 || count == 11 => {
+                let event = ManagedWorktreeDispositionEventV1 {
+                    worker_execution_id: text(payload, "workerExecutionId")?,
+                    attempt_id: text(payload, "attemptId")?,
+                    owner_epoch: payload.get("ownerEpoch").and_then(Value::as_u64)
+                        .filter(|epoch| *epoch > 0)
+                        .ok_or(WorkerDurableError::Invalid("invalid disposition owner epoch"))?,
+                    settlement_receipt_digest: text(payload, "settlementReceiptDigest")?,
+                    final_worktree_operation_id: text(payload, "finalWorktreeOperationId")?,
+                    final_worktree_host_receipt_ref: text(payload, "finalWorktreeHostReceiptRef")?,
+                    observed_workspace_revision: text(payload, "observedWorkspaceRevision")?,
+                    inspect_receipt_digest: text(payload, "inspectReceiptDigest")?,
+                    reusable_worktree: boolean(payload, "reusableWorktree")?,
+                    reconciliation_owner_epoch: match payload.get("reconciliationOwnerEpoch") {
+                        Some(Value::Null) => None,
+                        Some(value) => Some(value.as_u64().ok_or(WorkerDurableError::Invalid("invalid disposition owner epoch"))?),
+                        None => return Err(WorkerDurableError::Invalid("missing disposition owner epoch")),
+                    },
+                    reconciliation_proof_digest: match payload.get("reconciliationProofDigest") {
+                        Some(Value::Null) | None => None,
+                        Some(value) => Some(value.as_str().ok_or(WorkerDurableError::Invalid("invalid disposition reconciliation proof digest"))?.to_owned()),
+                    },
+                };
+                for digest in [&event.settlement_receipt_digest, &event.observed_workspace_revision,
+                    &event.inspect_receipt_digest] { validate_owner_digest(digest, "blake3:")?; }
+                if let Some(digest) = event.reconciliation_proof_digest.as_deref() {
+                    validate_owner_digest(digest, "blake3:")?;
+                }
+                if (count == 11 || event.reconciliation_proof_digest.is_some())
+                    && event.reconciliation_owner_epoch.is_some() != event.reconciliation_proof_digest.is_some() {
+                    return Err(WorkerDurableError::Invalid("epoch recovery disposition requires its authenticated recovery proof digest"));
+                }
+                validate_owner_token(&event.worker_execution_id)?;
+                validate_owner_token(&event.attempt_id)?;
+                validate_owner_token(&event.final_worktree_operation_id)?;
+                validate_owner_token(&event.final_worktree_host_receipt_ref)?;
+                Ok(Self::ManagedWorktreeDisposition { event })
+            }
             "worker_scope_cancelled" if count == 3 => Ok(Self::CancelScope {
                 scope: decode_scope(
                     payload
@@ -2029,6 +3086,34 @@ impl WorkerCommand {
                 Ok(Self::WorktreeOperationIntent {
                     intent: decode_worktree_intent(payload)?,
                 })
+            }
+            "worker_managed_final_inspect_candidate_pinned" if count == 8 || count == 11 => {
+                let pin = ManagedFinalInspectCandidatePinV1 {
+                    operation_id: text(payload, "operationId")?,
+                    candidate_digest: text(payload, "candidateDigest")?,
+                    attempt_id: text(payload, "attemptId")?,
+                    binding_digest: text(payload, "bindingDigest")?,
+                    spec_id: text(payload, "specId")?,
+                    spec_digest: text(payload, "specDigest")?,
+                    evidence_digest: text(payload, "evidenceDigest")?,
+                    final_revision: text(payload, "finalRevision")?,
+                    verification_run_id: if count == 11 { Some(text(payload, "verificationRunID")?) } else { None },
+                    set_identity_digest: if count == 11 { Some(text(payload, "setIdentityDigest")?) } else { None },
+                    challenge_set_digest: if count == 11 { Some(text(payload, "challengeSetDigest")?) } else { None },
+                };
+                for digest in [&pin.candidate_digest, &pin.binding_digest, &pin.spec_digest,
+                    &pin.evidence_digest, &pin.final_revision] {
+                    validate_owner_digest(digest, "blake3:")?;
+                }
+                for digest in [pin.set_identity_digest.as_deref(), pin.challenge_set_digest.as_deref()]
+                    .into_iter().flatten() { validate_owner_digest(digest, "blake3:")?; }
+                validate_owner_token(&pin.operation_id)?;
+                validate_owner_token(&pin.attempt_id)?;
+                validate_owner_token(&pin.spec_id)?;
+                if let Some(verification_run_id) = pin.verification_run_id.as_deref() {
+                    validate_owner_token(verification_run_id)?;
+                }
+                Ok(Self::ManagedFinalInspectCandidatePinned { pin })
             }
             "worker_worktree_operation_receipt" if count == 9 || count == 10 || count == 11 || count == 12 => {
                 Ok(Self::WorktreeOperationReceipt {
@@ -2097,6 +3182,7 @@ impl WorkerCommand {
                 };
                 Ok(())
             }
+            Self::PreAdmissionContextBound { .. } => Ok(()),
             Self::PreAdmissionReconciled { proof } => {
                 let owner = pool.worker(proof.worker_execution_id())
                     .ok_or(WorkerPoolError::WorkerNotFound)?;
@@ -2104,7 +3190,7 @@ impl WorkerCommand {
                 pool.reconcile_pre_admission_no_dispatch(proof.worker_execution_id(), &scope, pool.revision())
             }
             Self::AdmissionPinsRecorded { .. } | Self::DelegationBound { .. }
-                | Self::RootCoordinatorRegistered { .. } => Ok(()),
+                | Self::RootCoordinatorRegistered { .. } | Self::RootCoordinatorReauthorized { .. } => Ok(()),
             Self::PoolOpened { .. } => Err(WorkerPoolError::InvalidTransition),
             Self::EpochAdvanced { from, to, now_ms, retain_reserved } => {
                 pool.advance_owner_epoch_preserving(*from, *to, *now_ms, &retain_reserved.iter().cloned().collect())
@@ -2248,14 +3334,41 @@ impl WorkerCommand {
             Self::ManagedLogicalSettled { event } => pool.settle_logical_managed_worker_event(
                 &event.worker_execution_id, &event.attempt_id, &event.proof_digest,
                 event.observed_workspace_revision.clone(), event.reusable_worktree,
-                event.reconciliation_owner_epoch,
+                event.disposition_deferred, event.reconciliation_owner_epoch,
             ),
+            Self::ManagedWorktreeDisposition { event } => pool.finalize_logical_managed_worktree_disposition(
+                &event.worker_execution_id, &event.attempt_id, &event.observed_workspace_revision,
+                event.reusable_worktree, event.reconciliation_owner_epoch,
+            ),
+            Self::ManagedTerminalQuarantined { event } => {
+                let owner = rehydrate(&event.scope)?;
+                if owner.owner_epoch() != event.owner_epoch
+                    || owner.run_id() != event.run_id
+                    || owner.task_id() != event.task_id
+                    || owner.attempt_id() != event.attempt_id
+                {
+                    return Err(WorkerPoolError::ScopeMismatch);
+                }
+                let worker = pool.worker(&event.worker_execution_id)
+                    .ok_or(WorkerPoolError::WorkerNotFound)?;
+                if worker.goal_id != event.goal_id
+                    || worker.owner != event.scope
+                    || worker.process_identity.is_some()
+                    || pool.worker_reservation_id(&event.worker_execution_id)
+                        != Some(event.reservation_id.as_str())
+                    || worker.worktree_lease_id.as_deref() != Some(event.worktree_lease_id.as_str())
+                {
+                    return Err(WorkerPoolError::ScopeMismatch);
+                }
+                pool.quarantine_worker(&event.worker_execution_id, &owner, pool.revision())
+            }
             Self::CancelScope { scope, cancel, .. } => {
                 let owner = rehydrate(scope)?;
                 pool.cancel_scope(cancel, &owner, pool.revision())?;
                 Ok(())
             }
-            Self::WorktreeOperationDispatchStarted { .. } | Self::WorktreeOperationIntent { .. } | Self::WorktreeOperationReceipt { .. } => Ok(()),
+            Self::WorktreeOperationDispatchStarted { .. } | Self::WorktreeOperationIntent { .. }
+            | Self::WorktreeOperationReceipt { .. } | Self::ManagedFinalInspectCandidatePinned { .. } => Ok(()),
             Self::MemoryUsageObserved { scope, attribution } => {
                 // Current capacity is not replayable; keep the event in the
                 // canonical log and restore full reservation headroom.
@@ -2284,16 +3397,131 @@ pub struct WorkerPoolControl {
     cursor: Option<CursorV1>,
     deliveries: BTreeMap<String, String>,
     worktree_operations: WorktreeOperationJournalV1,
+    managed_final_inspect_candidate_pins: BTreeMap<String, ManagedFinalInspectCandidatePinV1>,
     identities: WorkerIdentityJournalV1,
     pre_admission_reconciliation_receipts: BTreeMap<String, PreAdmissionReconciliationReceiptV1>,
     managed_settlement_receipts: BTreeMap<String, WorkerSettlementReceiptV1>,
+    managed_worktree_disposition_events: BTreeMap<String, ManagedWorktreeDispositionEventV1>,
+    managed_worktree_disposition_receipts: BTreeMap<String, WorkerWorktreeDispositionReceiptV1>,
+    managed_quarantine_receipts: BTreeMap<String, WorkerManagedQuarantineReceiptV1>,
     worktree_removal_receipts: BTreeMap<String, WorktreeRegistrationRemovalReceiptV1>,
     worktree_retirement_receipts: BTreeMap<String, WorktreeOperationRetirementReceiptV1>,
+    /// Process-local advisory hysteresis only. It is deliberately reset on
+    /// reopen because no OwnerLog retention contract exists for pressure
+    /// history; a new tracker starts in RECOVERING and cannot claim NORMAL
+    /// until it observes the configured calm window again.
+    resource_pressure_trackers: std::collections::HashMap<AuthenticatedOwnerContext,
+        crate::resource_budget::ManagedResourcePressureTrackerV1>,
     resumed_epoch: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum WorkerManagedSettlementDispositionV1 { Released, WorktreeQuarantined }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WorkerManagedQuarantineReasonV1 {
+    FailedAttempt,
+    CancelledTask,
+}
+
+impl WorkerManagedQuarantineReasonV1 {
+    fn wire_name(self) -> &'static str {
+        match self {
+            Self::FailedAttempt => "FAILED_ATTEMPT",
+            Self::CancelledTask => "CANCELLED_TASK",
+        }
+    }
+
+    fn from_wire(value: &str) -> Result<Self, WorkerDurableError> {
+        match value {
+            "FAILED_ATTEMPT" => Ok(Self::FailedAttempt),
+            "CANCELLED_TASK" => Ok(Self::CancelledTask),
+            _ => Err(WorkerDurableError::Invalid("unknown managed terminal quarantine reason")),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ManagedTerminalQuarantineEventV1 {
+    scope: OwnerScopeKey,
+    worker_execution_id: String,
+    goal_id: String,
+    run_id: String,
+    task_id: String,
+    attempt_id: String,
+    owner_epoch: u64,
+    reservation_id: String,
+    worktree_lease_id: String,
+    terminal_proof_digest: String,
+    reason: WorkerManagedQuarantineReasonV1,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct WorkerManagedQuarantineReceiptV1 {
+    worker_execution_id: String,
+    goal_id: String,
+    run_id: String,
+    task_id: String,
+    attempt_id: String,
+    owner_epoch: u64,
+    reservation_id: String,
+    worktree_lease_id: String,
+    terminal_proof_digest: String,
+    reason: WorkerManagedQuarantineReasonV1,
+    owner_log_id: String,
+    owner_log_sequence: String,
+    owner_log_event_digest: String,
+    worker_pool_revision: u64,
+    receipt_digest: String,
+}
+
+impl WorkerManagedQuarantineReceiptV1 {
+    fn from_committed_event(
+        event: &ManagedTerminalQuarantineEventV1,
+        cursor: &CursorV1,
+        worker_pool_revision: u64,
+    ) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"horizoncode.worker-managed-terminal-quarantine.v1\0");
+        for value in [
+            event.worker_execution_id.as_str(), event.goal_id.as_str(), event.run_id.as_str(),
+            event.task_id.as_str(), event.attempt_id.as_str(), event.reservation_id.as_str(),
+            event.worktree_lease_id.as_str(), event.terminal_proof_digest.as_str(),
+            event.reason.wire_name(), cursor.owner_id.as_str(), cursor.seq.as_str(), cursor.event_digest.as_str(),
+        ] {
+            append_digest_field(&mut hasher, value);
+        }
+        hasher.update(&event.owner_epoch.to_be_bytes());
+        hasher.update(&worker_pool_revision.to_be_bytes());
+        Self {
+            worker_execution_id: event.worker_execution_id.clone(),
+            goal_id: event.goal_id.clone(), run_id: event.run_id.clone(),
+            task_id: event.task_id.clone(), attempt_id: event.attempt_id.clone(),
+            owner_epoch: event.owner_epoch, reservation_id: event.reservation_id.clone(),
+            worktree_lease_id: event.worktree_lease_id.clone(),
+            terminal_proof_digest: event.terminal_proof_digest.clone(), reason: event.reason,
+            owner_log_id: cursor.owner_id.clone(), owner_log_sequence: cursor.seq.clone(),
+            owner_log_event_digest: cursor.event_digest.clone(), worker_pool_revision,
+            receipt_digest: format!("blake3:{}", hasher.finalize().to_hex()),
+        }
+    }
+
+    pub(crate) fn worker_execution_id(&self) -> &str { &self.worker_execution_id }
+    pub(crate) fn goal_id(&self) -> &str { &self.goal_id }
+    pub(crate) fn run_id(&self) -> &str { &self.run_id }
+    pub(crate) fn task_id(&self) -> &str { &self.task_id }
+    pub(crate) fn attempt_id(&self) -> &str { &self.attempt_id }
+    pub(crate) fn owner_epoch(&self) -> u64 { self.owner_epoch }
+    pub(crate) fn reservation_id(&self) -> &str { &self.reservation_id }
+    pub(crate) fn worktree_lease_id(&self) -> &str { &self.worktree_lease_id }
+    pub(crate) fn terminal_proof_digest(&self) -> &str { &self.terminal_proof_digest }
+    pub(crate) fn reason(&self) -> WorkerManagedQuarantineReasonV1 { self.reason }
+    pub(crate) fn owner_log_id(&self) -> &str { &self.owner_log_id }
+    pub(crate) fn owner_log_sequence(&self) -> &str { &self.owner_log_sequence }
+    pub(crate) fn owner_log_event_digest(&self) -> &str { &self.owner_log_event_digest }
+    pub(crate) fn worker_pool_revision(&self) -> u64 { self.worker_pool_revision }
+    pub(crate) fn receipt_digest(&self) -> &str { &self.receipt_digest }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct WorkerSettlementReceiptV1 {
@@ -2305,7 +3533,42 @@ pub(crate) struct WorkerSettlementReceiptV1 {
     owner_log_sequence: String,
     owner_log_event_digest: String,
     worker_pool_revision: u64,
+    final_worktree_operation_id: Option<String>,
+    final_worktree_host_receipt_ref: Option<String>,
+    final_workspace_revision: Option<String>,
+    evidence_digest: Option<String>,
+    evidence_refs: Vec<crate::protocol::ArtifactRefV1>,
+    verification_run_id: Option<String>,
+    set_identity_digest: Option<String>,
+    challenge_set_digest: Option<String>,
+    disposition_deferred: bool,
+    reconciliation_owner_epoch: Option<u64>,
     receipt_digest: String,
+}
+
+/// Typed reference to the durable P8 HostRun settlement record. This is a
+/// reference only; constructing one requires the committed settlement receipt.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct HostRunReceiptRefV1 {
+    worker_execution_id: String,
+    attempt_id: String,
+    settlement_proof_digest: String,
+    owner_log_id: String,
+    owner_log_sequence: String,
+    owner_log_event_digest: String,
+    worker_pool_revision: u64,
+    settlement_receipt_digest: String,
+}
+
+impl HostRunReceiptRefV1 {
+    pub(crate) fn worker_execution_id(&self) -> &str { &self.worker_execution_id }
+    pub(crate) fn attempt_id(&self) -> &str { &self.attempt_id }
+    pub(crate) fn settlement_proof_digest(&self) -> &str { &self.settlement_proof_digest }
+    pub(crate) fn owner_log_id(&self) -> &str { &self.owner_log_id }
+    pub(crate) fn owner_log_sequence(&self) -> &str { &self.owner_log_sequence }
+    pub(crate) fn owner_log_event_digest(&self) -> &str { &self.owner_log_event_digest }
+    pub(crate) fn worker_pool_revision(&self) -> u64 { self.worker_pool_revision }
+    pub(crate) fn settlement_receipt_digest(&self) -> &str { &self.settlement_receipt_digest }
 }
 
 impl WorkerSettlementReceiptV1 {
@@ -2313,7 +3576,15 @@ impl WorkerSettlementReceiptV1 {
         event: &ManagedLogicalSettlementEventV1, cursor: &CursorV1, worker_pool_revision: u64,
     ) -> Self {
         let mut h = blake3::Hasher::new();
-        h.update(b"horizoncode.worker-settlement-receipt.v1\0");
+        h.update(if event.schema_version >= 4 {
+            b"horizoncode.worker-settlement-receipt.v4\0"
+        } else if event.schema_version >= 3 {
+            b"horizoncode.worker-settlement-receipt.v3\0"
+        } else if event.schema_version >= 2 {
+            b"horizoncode.worker-settlement-receipt.v2\0"
+        } else {
+            b"horizoncode.worker-settlement-receipt.v1\0"
+        });
         for value in [&event.worker_execution_id, &event.attempt_id, &event.proof_digest,
             &cursor.owner_id, &cursor.seq, &cursor.event_digest] {
             h.update(&(value.len() as u64).to_be_bytes());
@@ -2325,10 +3596,51 @@ impl WorkerSettlementReceiptV1 {
         h.update(&[match disposition { WorkerManagedSettlementDispositionV1::Released => 1,
             WorkerManagedSettlementDispositionV1::WorktreeQuarantined => 2 }]);
         h.update(&worker_pool_revision.to_be_bytes());
+        if event.schema_version >= 2 {
+            for value in [&event.final_worktree_operation_id,
+                &event.final_worktree_host_receipt_ref,
+                &event.observed_workspace_revision,
+                &event.evidence_digest] {
+                match value {
+                    Some(value) => { h.update(&[1]); append_digest_field(&mut h, value); }
+                    None => { h.update(&[0]); }
+                };
+            }
+            for reference in &event.evidence_refs {
+                append_digest_field(&mut h, &reference.artifact_id);
+                append_digest_field(&mut h, &reference.digest);
+                append_digest_field(&mut h, &reference.byte_length);
+                append_digest_field(&mut h, &reference.media_type);
+                h.update(&[match reference.classification {
+                    crate::protocol::ArtifactClassificationV1::Public => 1,
+                    crate::protocol::ArtifactClassificationV1::Workspace => 2,
+                    crate::protocol::ArtifactClassificationV1::Sensitive => 3,
+                }]);
+            }
+        }
+        if event.schema_version >= 4 {
+            for value in [&event.verification_run_id, &event.set_identity_digest,
+                &event.challenge_set_digest] {
+                match value {
+                    Some(value) => { h.update(&[1]); append_digest_field(&mut h, value); }
+                    None => { h.update(&[0]); }
+                }
+            }
+        }
         Self { worker_execution_id: event.worker_execution_id.clone(), attempt_id: event.attempt_id.clone(),
             proof_digest: event.proof_digest.clone(), disposition, owner_log_id: cursor.owner_id.clone(),
             owner_log_sequence: cursor.seq.clone(), owner_log_event_digest: cursor.event_digest.clone(),
-            worker_pool_revision, receipt_digest: format!("blake3:{}", h.finalize().to_hex()) }
+            worker_pool_revision,
+            final_worktree_operation_id: event.final_worktree_operation_id.clone(),
+            final_worktree_host_receipt_ref: event.final_worktree_host_receipt_ref.clone(),
+            final_workspace_revision: event.observed_workspace_revision.clone(),
+            evidence_digest: event.evidence_digest.clone(), evidence_refs: event.evidence_refs.clone(),
+            verification_run_id: event.verification_run_id.clone(),
+            set_identity_digest: event.set_identity_digest.clone(),
+            challenge_set_digest: event.challenge_set_digest.clone(),
+            disposition_deferred: event.disposition_deferred,
+            reconciliation_owner_epoch: event.reconciliation_owner_epoch,
+            receipt_digest: format!("blake3:{}", h.finalize().to_hex()) }
     }
     pub(crate) fn worker_execution_id(&self) -> &str { &self.worker_execution_id }
     pub(crate) fn attempt_id(&self) -> &str { &self.attempt_id }
@@ -2338,17 +3650,145 @@ impl WorkerSettlementReceiptV1 {
     pub(crate) fn owner_log_sequence(&self) -> &str { &self.owner_log_sequence }
     pub(crate) fn owner_log_event_digest(&self) -> &str { &self.owner_log_event_digest }
     pub(crate) fn worker_pool_revision(&self) -> u64 { self.worker_pool_revision }
+    pub(crate) fn final_worktree_operation_id(&self) -> Option<&str> { self.final_worktree_operation_id.as_deref() }
+    pub(crate) fn final_worktree_host_receipt_ref(&self) -> Option<&str> { self.final_worktree_host_receipt_ref.as_deref() }
+    pub(crate) fn final_workspace_revision(&self) -> Option<&str> { self.final_workspace_revision.as_deref() }
+    pub(crate) fn disposition_deferred(&self) -> bool { self.disposition_deferred }
+    pub(crate) fn reconciliation_owner_epoch(&self) -> Option<u64> { self.reconciliation_owner_epoch }
+    pub(crate) fn evidence_digest(&self) -> Option<&str> { self.evidence_digest.as_deref() }
+    pub(crate) fn evidence_refs(&self) -> &[crate::protocol::ArtifactRefV1] { &self.evidence_refs }
+    pub(crate) fn verification_run_id(&self) -> Option<&str> { self.verification_run_id.as_deref() }
+    pub(crate) fn set_identity_digest(&self) -> Option<&str> { self.set_identity_digest.as_deref() }
+    pub(crate) fn challenge_set_digest(&self) -> Option<&str> { self.challenge_set_digest.as_deref() }
     pub(crate) fn receipt_digest(&self) -> &str { &self.receipt_digest }
+    pub(crate) fn host_run_receipt_ref(&self) -> HostRunReceiptRefV1 {
+        HostRunReceiptRefV1 {
+            worker_execution_id: self.worker_execution_id.clone(),
+            attempt_id: self.attempt_id.clone(),
+            settlement_proof_digest: self.proof_digest.clone(),
+            owner_log_id: self.owner_log_id.clone(),
+            owner_log_sequence: self.owner_log_sequence.clone(),
+            owner_log_event_digest: self.owner_log_event_digest.clone(),
+            worker_pool_revision: self.worker_pool_revision,
+            settlement_receipt_digest: self.receipt_digest.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ManagedLogicalSettlementEventV1 {
+    schema_version: u8,
     worker_execution_id: String,
     attempt_id: String,
     proof_digest: String,
     observed_workspace_revision: Option<String>,
+    final_worktree_operation_id: Option<String>,
+    final_worktree_host_receipt_ref: Option<String>,
+    evidence_digest: Option<String>,
+    evidence_refs: Vec<crate::protocol::ArtifactRefV1>,
+    verification_run_id: Option<String>,
+    set_identity_digest: Option<String>,
+    challenge_set_digest: Option<String>,
     reusable_worktree: bool,
     reconciliation_owner_epoch: Option<u64>,
+    disposition_deferred: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ManagedWorktreeDispositionEventV1 {
+    worker_execution_id: String,
+    attempt_id: String,
+    owner_epoch: u64,
+    settlement_receipt_digest: String,
+    final_worktree_operation_id: String,
+    final_worktree_host_receipt_ref: String,
+    observed_workspace_revision: String,
+    inspect_receipt_digest: String,
+    reusable_worktree: bool,
+    reconciliation_owner_epoch: Option<u64>,
+    reconciliation_proof_digest: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WorkerWorktreeDispositionV1 { Reusable, Quarantined }
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct WorkerWorktreeDispositionReceiptV1 {
+    worker_execution_id: String,
+    attempt_id: String,
+    owner_epoch: u64,
+    disposition: WorkerWorktreeDispositionV1,
+    settlement_receipt_digest: String,
+    final_worktree_operation_id: String,
+    final_worktree_host_receipt_ref: String,
+    observed_workspace_revision: String,
+    inspect_receipt_digest: String,
+    owner_log_id: String,
+    owner_log_sequence: String,
+    owner_log_event_digest: String,
+    worker_pool_revision: u64,
+    receipt_digest: String,
+}
+
+impl WorkerWorktreeDispositionReceiptV1 {
+    fn from_committed_event(
+        event: &ManagedWorktreeDispositionEventV1,
+        cursor: &CursorV1,
+        worker_pool_revision: u64,
+    ) -> Self {
+        let disposition = if event.reusable_worktree {
+            WorkerWorktreeDispositionV1::Reusable
+        } else {
+            WorkerWorktreeDispositionV1::Quarantined
+        };
+        let mut h = blake3::Hasher::new();
+        h.update(b"horizoncode.worker-worktree-disposition-receipt.v1\0");
+        for value in [event.worker_execution_id.as_str(), event.attempt_id.as_str(),
+            event.settlement_receipt_digest.as_str(), event.final_worktree_operation_id.as_str(),
+            event.final_worktree_host_receipt_ref.as_str(), event.observed_workspace_revision.as_str(),
+            event.inspect_receipt_digest.as_str(), cursor.owner_id.as_str(), cursor.seq.as_str(),
+            cursor.event_digest.as_str()] {
+            h.update(&(value.len() as u64).to_be_bytes());
+            h.update(value.as_bytes());
+        }
+        h.update(&event.owner_epoch.to_be_bytes());
+        if let Some(digest) = event.reconciliation_proof_digest.as_deref() {
+            h.update(&[1]);
+            append_digest_field(&mut h, digest);
+        }
+        h.update(&[match disposition {
+            WorkerWorktreeDispositionV1::Reusable => 1,
+            WorkerWorktreeDispositionV1::Quarantined => 2,
+        }]);
+        h.update(&worker_pool_revision.to_be_bytes());
+        Self {
+            worker_execution_id: event.worker_execution_id.clone(),
+            attempt_id: event.attempt_id.clone(), owner_epoch: event.owner_epoch, disposition,
+            settlement_receipt_digest: event.settlement_receipt_digest.clone(),
+            final_worktree_operation_id: event.final_worktree_operation_id.clone(),
+            final_worktree_host_receipt_ref: event.final_worktree_host_receipt_ref.clone(),
+            observed_workspace_revision: event.observed_workspace_revision.clone(),
+            inspect_receipt_digest: event.inspect_receipt_digest.clone(),
+            owner_log_id: cursor.owner_id.clone(), owner_log_sequence: cursor.seq.clone(),
+            owner_log_event_digest: cursor.event_digest.clone(), worker_pool_revision,
+            receipt_digest: format!("blake3:{}", h.finalize().to_hex()),
+        }
+    }
+
+    pub(crate) fn worker_execution_id(&self) -> &str { &self.worker_execution_id }
+    pub(crate) fn attempt_id(&self) -> &str { &self.attempt_id }
+    pub(crate) fn owner_epoch(&self) -> u64 { self.owner_epoch }
+    pub(crate) fn disposition(&self) -> WorkerWorktreeDispositionV1 { self.disposition }
+    pub(crate) fn settlement_receipt_digest(&self) -> &str { &self.settlement_receipt_digest }
+    pub(crate) fn final_worktree_operation_id(&self) -> &str { &self.final_worktree_operation_id }
+    pub(crate) fn final_worktree_host_receipt_ref(&self) -> &str { &self.final_worktree_host_receipt_ref }
+    pub(crate) fn observed_workspace_revision(&self) -> &str { &self.observed_workspace_revision }
+    pub(crate) fn inspect_receipt_digest(&self) -> &str { &self.inspect_receipt_digest }
+    pub(crate) fn owner_log_id(&self) -> &str { &self.owner_log_id }
+    pub(crate) fn owner_log_sequence(&self) -> &str { &self.owner_log_sequence }
+    pub(crate) fn owner_log_event_digest(&self) -> &str { &self.owner_log_event_digest }
+    pub(crate) fn worker_pool_revision(&self) -> u64 { self.worker_pool_revision }
+    pub(crate) fn receipt_digest(&self) -> &str { &self.receipt_digest }
 }
 
 /// P8-minted immutable input to one guarded worktree operation. The intent is
@@ -2367,6 +3807,95 @@ pub(crate) struct WorktreeLifecycleTargetV1 {
     base_revision: String,
     relative_path: std::path::PathBuf,
     verification_digest: String,
+}
+
+/// Read-only exact target for an attached managed Attempt reservation. It
+/// carries no execution authority; P1 uses it to derive the cross-owner P2
+/// workspace target without accepting paths or revisions from a request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ManagedAttemptWorktreeTargetV1 {
+    target: WorktreeLifecycleTargetV1,
+    root: crate::worktree_lifecycle::WorkspaceRootRefV1,
+    workspace_revision: String,
+    binding_digest: String,
+    pool_revision: u64,
+    admission: Option<ManagedWorktreeAdmissionPinV1>,
+    reservation_proof_digest: Option<String>,
+}
+
+/// Read-only target for a current-epoch reconciliation Inspect of a previously
+/// quarantined FAILED/CANCELLED logical child. It exposes the registered P8
+/// worktree path only after re-resolving the durable quarantine, old claim and
+/// reservation under a fresh root proof. It carries no claim or dispatch right.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct QuarantinedManagedWorktreeTargetV1 {
+    target: WorktreeLifecycleTargetV1,
+    root: crate::worktree_lifecycle::WorkspaceRootRefV1,
+    worker_execution_id: String,
+    goal_id: String,
+    run_id: String,
+    task_id: String,
+    attempt_id: String,
+    reservation_id: String,
+    worktree_lease_id: String,
+    quarantine_receipt_digest: String,
+    binding_digest: String,
+    pool_revision: u64,
+}
+
+/// Read-only target for a fresh Inspect that completes a successful settlement
+/// after an owner restart. It conveys no dispatch or lease-release authority.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SettledManagedWorktreeRecoveryTargetV1 {
+    target: WorktreeLifecycleTargetV1,
+    root: crate::worktree_lifecycle::WorkspaceRootRefV1,
+    attempt_id: String,
+    settlement_receipt_digest: String,
+    pool_revision: u64,
+}
+
+impl SettledManagedWorktreeRecoveryTargetV1 {
+    pub(crate) fn target(&self) -> &WorktreeLifecycleTargetV1 { &self.target }
+    pub(crate) fn root(&self) -> &crate::worktree_lifecycle::WorkspaceRootRefV1 { &self.root }
+    pub(crate) fn attempt_id(&self) -> &str { &self.attempt_id }
+    pub(crate) fn settlement_receipt_digest(&self) -> &str { &self.settlement_receipt_digest }
+    pub(crate) fn pool_revision(&self) -> u64 { self.pool_revision }
+}
+
+impl QuarantinedManagedWorktreeTargetV1 {
+    pub(crate) fn target(&self) -> &WorktreeLifecycleTargetV1 { &self.target }
+    pub(crate) fn root(&self) -> &crate::worktree_lifecycle::WorkspaceRootRefV1 { &self.root }
+    pub(crate) fn worker_execution_id(&self) -> &str { &self.worker_execution_id }
+    pub(crate) fn goal_id(&self) -> &str { &self.goal_id }
+    pub(crate) fn run_id(&self) -> &str { &self.run_id }
+    pub(crate) fn task_id(&self) -> &str { &self.task_id }
+    pub(crate) fn attempt_id(&self) -> &str { &self.attempt_id }
+    pub(crate) fn reservation_id(&self) -> &str { &self.reservation_id }
+    pub(crate) fn worktree_lease_id(&self) -> &str { &self.worktree_lease_id }
+    pub(crate) fn quarantine_receipt_digest(&self) -> &str { &self.quarantine_receipt_digest }
+    pub(crate) fn binding_digest(&self) -> &str { &self.binding_digest }
+    pub(crate) fn pool_revision(&self) -> u64 { self.pool_revision }
+    pub(crate) fn reservation_proof_digest(&self) -> Option<&str> {
+        self.reservation_proof_digest.as_deref()
+    }
+}
+
+impl ManagedAttemptWorktreeTargetV1 {
+    pub(crate) fn worktree_id(&self) -> &str { self.target.worktree_id() }
+    pub(crate) fn base_revision(&self) -> &str { self.target.base_revision() }
+    pub(crate) fn relative_path(&self) -> &Path { self.target.relative_path() }
+    pub(crate) fn workspace_binding(&self) -> &str { self.target.owner().workspace_binding() }
+    pub(crate) fn workspace_revision(&self) -> &str { &self.workspace_revision }
+    pub(crate) fn binding_digest(&self) -> Option<&str> { (!self.binding_digest.is_empty()).then_some(self.binding_digest.as_str()) }
+    pub(crate) fn location_id(&self) -> &str { self.root.location_ref() }
+    pub(crate) fn root(&self) -> &crate::worktree_lifecycle::WorkspaceRootRefV1 { &self.root }
+    pub(crate) fn pool_revision(&self) -> u64 { self.pool_revision }
+    pub(crate) fn target(&self) -> &WorktreeLifecycleTargetV1 { &self.target }
+    pub(crate) fn child_location_id(&self) -> Option<&str> { self.admission.as_ref().map(|pin| pin.child_location_id.as_str()) }
+    pub(crate) fn child_workspace_id(&self) -> Option<&str> { self.admission.as_ref().map(|pin| pin.child_workspace_id.as_str()) }
+    pub(crate) fn child_workspace_ref(&self) -> Option<&str> { self.admission.as_ref().map(|pin| pin.child_workspace_ref.as_str()) }
+    pub(crate) fn child_canonical_root(&self) -> Option<&str> { self.admission.as_ref().map(|pin| pin.child_canonical_root.as_str()) }
+    pub(crate) fn child_workspace_revision(&self) -> Option<&str> { self.admission.as_ref().map(|pin| pin.child_workspace_revision.as_str()) }
 }
 
 /// Durable proof that the exact verified registration was removed after a
@@ -2564,11 +4093,16 @@ impl WorkerPoolControl {
             cursor: None,
             deliveries: BTreeMap::new(),
             worktree_operations: WorktreeOperationJournalV1::default(),
+            managed_final_inspect_candidate_pins: BTreeMap::new(),
             identities: WorkerIdentityJournalV1::default(),
             pre_admission_reconciliation_receipts: BTreeMap::new(),
             managed_settlement_receipts: BTreeMap::new(),
+            managed_worktree_disposition_events: BTreeMap::new(),
+            managed_worktree_disposition_receipts: BTreeMap::new(),
+            managed_quarantine_receipts: BTreeMap::new(),
             worktree_removal_receipts: BTreeMap::new(),
             worktree_retirement_receipts: BTreeMap::new(),
+            resource_pressure_trackers: std::collections::HashMap::new(),
             resumed_epoch: 0,
         };
         control.replay()?;
@@ -2672,6 +4206,7 @@ impl WorkerPoolControl {
     pub(crate) fn resolve_managed_worktree(
         &self,
         owner: &AuthenticatedOwnerContext,
+        parent_session_id: &str,
         location_id: &str,
         workspace_revision: &str,
         root_proof: &RootCoordinatorExecutionProofV1,
@@ -2681,10 +4216,11 @@ impl WorkerPoolControl {
             return Err(WorkerDurableError::Pool(WorkerPoolError::StaleOwnerEpoch));
         }
         let root_owner = self.resolve_worktree_root_owner(root_proof, now_ms)?;
-        if root_owner.run_id() != owner.run_id()
+        if parent_session_id.is_empty()
+            || root_owner.session_id() != parent_session_id
+            || root_owner.run_id() != owner.run_id()
             || root_owner.principal_ref() != owner.principal_ref()
             || root_owner.workspace_binding() != owner.workspace_binding()
-            || root_owner.session_id() != owner.session_id()
             || root_owner.location_id() != location_id
         {
             return Err(WorkerDurableError::Conflict("managed worktree root proof differs from Attempt owner"));
@@ -2892,6 +4428,1403 @@ impl WorkerPoolControl {
             root_proof, now_ms, idempotency_key, WorktreeOperationKindV1::Inspect,
             root, target.base_revision(), workspace_revision, Some(target),
         )
+    }
+
+    /// Prepare the final P1 Guarded Inspect for a managed child. The worker ID
+    /// selects only an existing P8 claim; workspace revision comes from P2's
+    /// typed SETTLING candidate, while verifier identity must be a HostKernel-
+    /// minted token from the exact persisted SETTLED ChallengeSet. Target
+    /// identity/path come from immutable admission pins plus the verified
+    /// worktree registration/Create receipt.
+    pub(crate) fn prepare_managed_final_inspect_pin(
+        &mut self,
+        root_proof: &RootCoordinatorExecutionProofV1,
+        now_ms: u64,
+        idempotency_key: &str,
+        root: crate::worktree_lifecycle::WorkspaceRootRefV1,
+        worker_execution_id: &str,
+        candidate: &crate::managed_control::ManagedAttemptSettlementCandidateV1,
+        verifier_pins: &crate::host_kernel::SettledVerifierChallengeSetPinsV1,
+    ) -> Result<WorktreeLifecycleOperationPinV1, WorkerDurableError> {
+        validate_owner_token(worker_execution_id)?;
+        if idempotency_key != managed_final_inspect_idempotency_key(candidate.attempt_id()) {
+            return Err(WorkerDurableError::Conflict(
+                "managed final Inspect idempotency key is not derived from the settlement Attempt",
+            ));
+        }
+        validate_final_inspect_verifier_pins(candidate, verifier_pins)?;
+        let root_owner = self.resolve_worktree_root_owner(root_proof, now_ms)?;
+        let pins = self.identities.pre_admission_pins.get(worker_execution_id)
+            .ok_or(WorkerDurableError::NotFound("managed final Inspect P8 pins unavailable"))?;
+        let claim = self.claimed_worker_dispatch_proof(worker_execution_id)?;
+        self.validate_claimed_worker_dispatch_proof(&claim)?;
+        let durable_binding = self.identities.delegation_bindings.get(worker_execution_id)
+            .ok_or(WorkerDurableError::Conflict("claimed managed worktree binding is unavailable"))?;
+        let worker = self.pool.as_ref().and_then(|pool| pool.worker(worker_execution_id))
+            .ok_or(WorkerDurableError::NotFound("managed final Inspect worker is unavailable"))?;
+        let tree = self.pool.as_ref().and_then(|pool| pool.worktree_snapshot(&pins.worktree.worktree_id))
+            .ok_or(WorkerDurableError::NotFound("managed final Inspect worktree lease is unavailable"))?;
+        if pins.owner_epoch() != self.resumed_epoch
+            || pins.goal_id() != candidate.goal_id()
+            || pins.run_id() != candidate.run_id()
+            || pins.task_id() != candidate.task_id()
+            || pins.attempt_id() != candidate.attempt_id()
+            || pins.attempt_id() != claim.attempt_id()
+            || candidate.binding_digest() != claim.binding_digest()
+            || durable_binding.binding_digest != candidate.binding_digest()
+            || durable_binding.worktree_admission.as_ref().is_none_or(|admission|
+                admission.worktree_id != pins.worktree.worktree_id
+                    || admission.base_revision != pins.worktree.base_revision
+                    || admission.root_location_id != pins.location_id
+                    || admission.p8_workspace_binding != pins.workspace_binding())
+            || pins.owner().owner_epoch() != root_owner.owner_epoch()
+            || pins.owner().principal_ref() != root_owner.principal_ref()
+            || pins.owner().workspace_binding() != root_owner.workspace_binding()
+            || pins.run_id() != root_owner.run_id()
+            || pins.goal_id() != root_owner.goal_id()
+            || pins.location_id() != root_owner.location_id()
+            || root.workspace_binding() != root_owner.workspace_binding()
+            || worker.state != crate::resource_budget::ReservationState::Claimed
+            || worker.cancellation_requested || worker.unknown_effect
+            || worker.process_identity.is_some()
+            || worker.worktree_lease_id.as_deref() != tree.lease_id.as_deref()
+            || tree.status != crate::worktree_pool::WorktreeStatus::Leased
+            || tree.workspace_binding != pins.workspace_binding()
+            || !valid_digest(candidate.evidence_digest(), "blake3:")
+            || !valid_digest(candidate.final_revision(), "blake3:")
+            || !valid_digest(candidate.effect_chain_digest(), "blake3:")
+            || !valid_digest(candidate.attempt_state_digest(), "blake3:")
+            || candidate.owner_log_id().is_empty()
+            || candidate.owner_log_sequence() == 0
+            || !valid_digest(candidate.owner_log_event_digest(), "blake3:")
+            || candidate.managed_revision() == 0
+            || validate_usage_accounting_summary(
+                candidate.usage_accounting(), candidate.managed_revision(),
+            ).is_err()
+        {
+            return Err(WorkerDurableError::Conflict("managed final Inspect does not match the active claimed Attempt and worktree lease"));
+        }
+        let worktree_id = pins.worktree.worktree_id.as_str();
+        let registration = self.identities.worktree_registration_records.get(worktree_id)
+            .filter(|record| {
+                record.owner() == &root_owner
+                    && !self.identities.removed_worktree_registrations.contains_key(worktree_id)
+                    && record.verification_digest().is_some_and(|digest|
+                        self.identities.verified_worktree_registrations.get(worktree_id).map(String::as_str) == Some(digest))
+            })
+            .ok_or(WorkerDurableError::Conflict("managed final Inspect worktree lacks exact verified registration"))?;
+        let provenance = registration.provenance().ok_or(WorkerDurableError::Conflict(
+            "managed final Inspect worktree registration has no guarded provenance",
+        ))?;
+        let create = self.worktree_operations.get(provenance.create_operation_id())
+            .ok_or(WorkerDurableError::Conflict("managed final Inspect Create intent is unavailable"))?;
+        if create.state() != WorktreeOperationStateV1::Completed
+            || create.intent().kind() != WorktreeOperationKindV1::Create
+            || create.intent().owner() != &root_owner
+            || create.intent().worktree_id() != worktree_id
+            || create.intent().root() != &root
+            || create.intent().base_revision() != Some(pins.worktree.base_revision.as_str())
+            || registration.registration().base_revision != pins.worktree.base_revision
+            || create.receipt().is_none_or(|receipt| !receipt.owned() || !receipt.no_follow())
+        {
+            return Err(WorkerDurableError::Conflict("managed final Inspect registration does not match guarded Create provenance"));
+        }
+        let target = WorktreeLifecycleTargetV1 {
+            owner: root_owner,
+            worktree_id: worktree_id.to_owned(),
+            base_revision: pins.worktree.base_revision.clone(),
+            relative_path: create.intent().relative_path().to_path_buf(),
+            verification_digest: registration.verification_digest().ok_or(WorkerDurableError::Conflict(
+                "managed final Inspect worktree verification digest is unavailable",
+            ))?.to_owned(),
+        };
+        let operation = self.prepare_worktree_inspect_pin(
+            root_proof, now_ms, idempotency_key, root,
+            candidate.final_revision(), &target,
+        )?;
+        let candidate_digest = managed_final_inspect_candidate_digest(
+            candidate.attempt_id(), candidate.goal_id(), candidate.run_id(), candidate.task_id(),
+            candidate.binding_digest(), candidate.spec_id(), candidate.spec_digest(),
+            candidate.evidence_digest(), candidate.final_revision(), candidate.effect_chain_digest(),
+            candidate.attempt_state_digest(), candidate.owner_log_id(), candidate.owner_log_sequence(),
+            candidate.owner_log_event_digest(), candidate.managed_revision(), candidate.usage_accounting(),
+            verifier_pins,
+        );
+        let candidate_pin = ManagedFinalInspectCandidatePinV1 {
+            operation_id: operation.operation_id().to_owned(), candidate_digest,
+            attempt_id: candidate.attempt_id().to_owned(),
+            binding_digest: candidate.binding_digest().to_owned(), spec_id: candidate.spec_id().to_owned(),
+            spec_digest: candidate.spec_digest().to_owned(),
+            evidence_digest: candidate.evidence_digest().to_owned(), final_revision: candidate.final_revision().to_owned(),
+            verification_run_id: Some(verifier_pins.verification_run_id().to_owned()),
+            set_identity_digest: Some(verifier_pins.set_identity_digest().to_owned()),
+            challenge_set_digest: Some(verifier_pins.challenge_set_digest().to_owned()),
+        };
+        let expected_revision = self.revision();
+        self.apply(expected_revision, &format!("managed-final-inspect-candidate:{}", operation.operation_id()),
+            WorkerCommand::ManagedFinalInspectCandidatePinned { pin: candidate_pin })?;
+        Ok(operation)
+    }
+
+    /// Resolve the exact registered Create root for the active managed claim.
+    /// HostKernel must use this generation instead of guessing a root ref.
+    pub(crate) fn managed_final_inspect_root(
+        &self,
+        root_proof: &RootCoordinatorExecutionProofV1,
+        now_ms: u64,
+        worker_execution_id: &str,
+        candidate: &crate::managed_control::ManagedAttemptSettlementCandidateV1,
+    ) -> Result<crate::worktree_lifecycle::WorkspaceRootRefV1, WorkerDurableError> {
+        validate_owner_token(worker_execution_id)?;
+        let owner = self.resolve_worktree_root_owner(root_proof, now_ms)?;
+        let pins = self.identities.pre_admission_pins.get(worker_execution_id)
+            .ok_or(WorkerDurableError::NotFound("managed final Inspect P8 pins unavailable"))?;
+        let claim = self.claimed_worker_dispatch_proof(worker_execution_id)?;
+        let registration = self.identities.worktree_registration_records.get(&pins.worktree.worktree_id)
+            .filter(|record| record.owner() == &owner
+                && !self.identities.removed_worktree_registrations.contains_key(&pins.worktree.worktree_id)
+                && record.matches_durable_operations(&self.worktree_operations))
+            .ok_or(WorkerDurableError::Conflict("managed final Inspect registration is unavailable"))?;
+        let provenance = registration.provenance().ok_or(WorkerDurableError::Conflict(
+            "managed final Inspect registration provenance is unavailable",
+        ))?;
+        let create = self.worktree_operations.get(provenance.create_operation_id())
+            .filter(|record| record.state() == WorktreeOperationStateV1::Completed
+                && record.intent().kind() == WorktreeOperationKindV1::Create
+                && record.intent().owner() == &owner
+                && record.intent().worktree_id() == pins.worktree.worktree_id
+                && record.intent().root().workspace_binding() == pins.workspace_binding())
+            .ok_or(WorkerDurableError::Conflict("managed final Inspect Create root is unavailable"))?;
+        if pins.attempt_id() != candidate.attempt_id()
+            || pins.goal_id() != candidate.goal_id()
+            || pins.run_id() != candidate.run_id()
+            || pins.task_id() != candidate.task_id()
+            || pins.attempt_id() != claim.attempt_id()
+            || claim.binding_digest() != candidate.binding_digest()
+            || pins.owner().principal_ref() != owner.principal_ref()
+            || pins.workspace_binding() != owner.workspace_binding()
+            || pins.run_id() != owner.run_id()
+            || pins.goal_id() != owner.goal_id()
+            || pins.location_id() != owner.location_id()
+            || pins.owner_epoch() != owner.owner_epoch()
+        {
+            return Err(WorkerDurableError::Conflict("managed final Inspect candidate does not match the claimed P8 worktree"));
+        }
+        Ok(create.intent().root().clone())
+    }
+
+    /// Derive the exact worktree target attached to an active claimed managed
+    /// child. The returned pool revision lets HostKernel reject a stale target
+    /// before it mints P2's workspace reference.
+    pub(crate) fn resolve_claimed_managed_worktree_target(
+        &self,
+        root_proof: &RootCoordinatorExecutionProofV1,
+        now_ms: u64,
+        worker_execution_id: &str,
+        candidate: &crate::managed_control::ManagedAttemptSettlementCandidateV1,
+    ) -> Result<ManagedAttemptWorktreeTargetV1, WorkerDurableError> {
+        validate_owner_token(worker_execution_id)?;
+        let owner = self.resolve_worktree_root_owner(root_proof, now_ms)?;
+        let pins = self.identities.pre_admission_pins.get(worker_execution_id)
+            .ok_or(WorkerDurableError::NotFound("claimed managed worktree P8 pins unavailable"))?;
+        let claim = self.claimed_worker_dispatch_proof(worker_execution_id)?;
+        self.validate_claimed_worker_dispatch_proof(&claim)?;
+        let durable_binding = self.identities.delegation_bindings.get(worker_execution_id)
+            .ok_or(WorkerDurableError::Conflict("claimed managed worktree binding is unavailable"))?;
+        let worker = self.pool.as_ref().and_then(|pool| pool.worker(worker_execution_id))
+            .ok_or(WorkerDurableError::NotFound("claimed managed worktree worker is unavailable"))?;
+        let pool = self.pool.as_ref().ok_or(WorkerDurableError::Invalid("worker pool unavailable"))?;
+        let tree = pool.worktree_snapshot(&pins.worktree.worktree_id)
+            .ok_or(WorkerDurableError::NotFound("claimed managed worktree lease is unavailable"))?;
+        if pins.owner_epoch() != self.resumed_epoch
+            || pins.goal_id() != candidate.goal_id()
+            || pins.run_id() != candidate.run_id()
+            || pins.task_id() != candidate.task_id()
+            || pins.attempt_id() != candidate.attempt_id()
+            || pins.attempt_id() != claim.attempt_id()
+            || claim.binding_digest() != candidate.binding_digest()
+            || durable_binding.binding_digest != candidate.binding_digest()
+            || durable_binding.worktree_admission.as_ref().is_none_or(|admission|
+                admission.worktree_id != pins.worktree.worktree_id
+                    || admission.base_revision != pins.worktree.base_revision
+                    || admission.root_location_id != pins.location_id
+                    || admission.p8_workspace_binding != pins.workspace_binding())
+            || pins.owner().principal_ref() != owner.principal_ref()
+            || pins.owner().workspace_binding() != owner.workspace_binding()
+            || pins.run_id() != owner.run_id()
+            || pins.goal_id() != owner.goal_id()
+            || pins.location_id() != owner.location_id()
+            || worker.state != crate::resource_budget::ReservationState::Claimed
+            || worker.cancellation_requested || worker.unknown_effect
+            || worker.process_identity.is_some()
+            || worker.worktree_lease_id.as_deref() != tree.lease_id.as_deref()
+            || tree.status != crate::worktree_pool::WorktreeStatus::Leased
+            || tree.workspace_binding != pins.workspace_binding()
+        {
+            return Err(WorkerDurableError::Conflict("claimed managed worktree is stale or mismatched"));
+        }
+        let worktree_id = pins.worktree.worktree_id.as_str();
+        let registration = self.identities.worktree_registration_records.get(worktree_id)
+            .filter(|registration| registration.owner() == &owner
+                && !self.identities.removed_worktree_registrations.contains_key(worktree_id)
+                && registration.matches_durable_operations(&self.worktree_operations)
+                && registration.verification_digest().is_some_and(|digest|
+                    self.identities.verified_worktree_registrations.get(worktree_id).map(String::as_str) == Some(digest)))
+            .ok_or(WorkerDurableError::Conflict("claimed worktree has no exact durable verified registration"))?;
+        let provenance = registration.provenance().ok_or(WorkerDurableError::Conflict(
+            "claimed worktree registration has no guarded Create provenance",
+        ))?;
+        let create = self.worktree_operations.get(provenance.create_operation_id())
+            .filter(|record| record.state() == WorktreeOperationStateV1::Completed
+                && record.intent().kind() == WorktreeOperationKindV1::Create
+                && record.intent().owner() == &owner
+                && record.intent().worktree_id() == worktree_id
+                && record.intent().base_revision() == Some(pins.worktree.base_revision.as_str())
+                && record.intent().root().workspace_binding() == pins.workspace_binding()
+                && record.receipt().is_some_and(|receipt| receipt.owned() && receipt.no_follow()))
+            .ok_or(WorkerDurableError::Conflict("claimed worktree Create receipt does not match P8 pins"))?;
+        let target = WorktreeLifecycleTargetV1 {
+            owner,
+            worktree_id: worktree_id.to_owned(),
+            base_revision: pins.worktree.base_revision.clone(),
+            relative_path: create.intent().relative_path().to_path_buf(),
+            verification_digest: registration.verification_digest().ok_or(WorkerDurableError::Conflict(
+                "claimed worktree registration verification digest is unavailable",
+            ))?.to_owned(),
+        };
+        Ok(ManagedAttemptWorktreeTargetV1 {
+            target,
+            root: create.intent().root().clone(),
+            workspace_revision: candidate.final_revision().to_owned(),
+            binding_digest: durable_binding.binding_digest.clone(),
+            pool_revision: pool.revision(),
+            admission: durable_binding.worktree_admission.clone(),
+            reservation_proof_digest: None,
+        })
+    }
+
+    /// Pre-prompt variant for P1 admission/handoff. Identity and authority come
+    /// from the authenticated owner, exact P2 binding and the durable P8 claim;
+    /// no post-verification candidate or caller path is needed.
+    pub(crate) fn resolve_active_claimed_managed_worktree_target(
+        &self,
+        root_proof: &RootCoordinatorExecutionProofV1,
+        now_ms: u64,
+        worker_execution_id: &str,
+        binding: &VerifiedAttemptBinding,
+        owner: &AuthenticatedOwnerContext,
+    ) -> Result<ManagedAttemptWorktreeTargetV1, WorkerDurableError> {
+        validate_owner_token(worker_execution_id)?;
+        let root_owner = self.resolve_worktree_root_owner(root_proof, now_ms)?;
+        let pins = self.identities.pre_admission_pins.get(worker_execution_id)
+            .ok_or(WorkerDurableError::NotFound("claimed managed worktree P8 pins unavailable"))?;
+        let claim = self.claimed_worker_dispatch_proof(worker_execution_id)?;
+        self.validate_claimed_worker_dispatch_proof(&claim)?;
+        let durable_binding = self.identities.delegation_bindings.get(worker_execution_id)
+            .ok_or(WorkerDurableError::Conflict("claimed managed worktree binding is unavailable"))?;
+        let worker = self.pool.as_ref().and_then(|pool| pool.worker(worker_execution_id))
+            .ok_or(WorkerDurableError::NotFound("claimed managed worktree worker is unavailable"))?;
+        let pool = self.pool.as_ref().ok_or(WorkerDurableError::Invalid("worker pool unavailable"))?;
+        let tree = pool.worktree_snapshot(&pins.worktree.worktree_id)
+            .ok_or(WorkerDurableError::NotFound("claimed managed worktree lease is unavailable"))?;
+        if binding.goal_id() != pins.goal_id()
+            || binding.run_id() != pins.run_id()
+            || binding.task_id() != pins.task_id()
+            || binding.attempt_id() != pins.attempt_id()
+            || binding.owner_epoch() != pins.owner_epoch()
+            || binding.source_revision() != durable_binding.child_workspace_revision()?
+            || binding.accepted_spec_digest() != pins.accepted_spec_digest()
+            || owner.owner_epoch() != binding.owner_epoch()
+            || owner.goal_id() != binding.goal_id()
+            || owner.run_id() != binding.run_id()
+            || owner.task_id() != binding.task_id()
+            || owner.attempt_id() != binding.attempt_id()
+            || owner.session_id() != pins.session_id()
+            || owner.principal_ref() != root_owner.principal_ref()
+            || owner.workspace_binding() != root_owner.workspace_binding()
+            || root_owner.session_id() != managed_root_session_id(pins.parent_proof())?
+            || pins.location_id() != root_owner.location_id()
+            || root_owner.run_id() != binding.run_id()
+            || root_owner.goal_id() != binding.goal_id()
+            || claim.attempt_id() != binding.attempt_id()
+            || claim.binding_digest() != durable_binding.binding_digest
+            || worker.state != crate::resource_budget::ReservationState::Claimed
+            || worker.cancellation_requested || worker.unknown_effect
+            || worker.process_identity.is_some()
+            || worker.worktree_lease_id.as_deref() != tree.lease_id.as_deref()
+            || tree.status != crate::worktree_pool::WorktreeStatus::Leased
+            || tree.workspace_binding != pins.workspace_binding()
+        {
+            return Err(WorkerDurableError::Conflict("active claimed managed worktree target is stale or mismatched"));
+        }
+        let worktree_id = pins.worktree.worktree_id.as_str();
+        let registration = self.identities.worktree_registration_records.get(worktree_id)
+            .filter(|registration| registration.owner() == &root_owner
+                && !self.identities.removed_worktree_registrations.contains_key(worktree_id)
+                && registration.matches_durable_operations(&self.worktree_operations)
+                && registration.verification_digest().is_some_and(|digest|
+                    self.identities.verified_worktree_registrations.get(worktree_id).map(String::as_str) == Some(digest)))
+            .ok_or(WorkerDurableError::Conflict("claimed worktree lacks exact verified registration"))?;
+        let provenance = registration.provenance().ok_or(WorkerDurableError::Conflict(
+            "claimed worktree registration lacks guarded Create provenance",
+        ))?;
+        let create = self.worktree_operations.get(provenance.create_operation_id())
+            .filter(|record| record.state() == WorktreeOperationStateV1::Completed
+                && record.intent().kind() == WorktreeOperationKindV1::Create
+                && record.intent().owner() == &root_owner
+                && record.intent().worktree_id() == worktree_id
+                && record.intent().base_revision() == Some(pins.worktree.base_revision.as_str())
+                && record.intent().root().workspace_binding() == pins.workspace_binding()
+                && record.receipt().is_some_and(|receipt| receipt.owned() && receipt.no_follow()))
+            .ok_or(WorkerDurableError::Conflict("claimed worktree Create receipt does not match durable pins"))?;
+        let target = WorktreeLifecycleTargetV1 {
+            owner: root_owner,
+            worktree_id: worktree_id.to_owned(),
+            base_revision: pins.worktree.base_revision.clone(),
+            relative_path: create.intent().relative_path().to_path_buf(),
+            verification_digest: registration.verification_digest().ok_or(WorkerDurableError::Conflict(
+                "claimed worktree registration verification digest is unavailable",
+            ))?.to_owned(),
+        };
+        Ok(ManagedAttemptWorktreeTargetV1 {
+            target,
+            root: create.intent().root().clone(),
+            workspace_revision: durable_binding.child_workspace_revision()?.to_owned(),
+            binding_digest: durable_binding.binding_digest.clone(),
+            pool_revision: pool.revision(),
+            admission: durable_binding.worktree_admission.clone(),
+            reservation_proof_digest: None,
+        })
+    }
+
+    fn resolve_quarantined_reconciliation_root_owner(
+        &self,
+        proof: &ReadOnlyReconciliationRootProofV1,
+        now_ms: u64,
+    ) -> Result<WorktreeRootOwnerV1, WorkerDurableError> {
+        let root = self.identities.root_coordinators.get(proof.worker_execution_id())
+            .ok_or(WorkerDurableError::NotFound("reauthorized reconciliation root unavailable"))?;
+        let (owner_log_id, owner_log_sequence, owner_log_event_digest, pool_revision) = self.owner_log_watermark()?;
+        if root.goal_id != proof.goal_id() || root.run_id != proof.run_id()
+            || root.principal_ref != proof.principal_ref()
+            || root.workspace_binding != proof.workspace_binding()
+            || root.session_id != proof.session_id() || root.location_id != proof.location_id()
+            || root.owner_epoch != proof.owner_epoch()
+            || root.process_incarnation != proof.process_incarnation()
+            || &root.process_identity != proof.process_identity()
+            || root.source_revision != proof.source_revision()
+            || root.accepted_spec_digest != proof.accepted_spec_digest()
+            || root.expires_at_ms != proof.expires_at_ms() || root.expires_at_ms <= now_ms
+            || proof.owner_epoch() != self.resumed_epoch
+            || proof.owner_log_id() != owner_log_id || proof.owner_log_sequence() != owner_log_sequence
+            || proof.owner_log_event_digest() != owner_log_event_digest
+            || proof.worker_pool_revision() != pool_revision
+        {
+            return Err(WorkerDurableError::Conflict("read-only reconciliation root proof is stale"));
+        }
+        WorktreeRootOwnerV1::from_read_only_reconciliation_proof(proof)
+            .map_err(map_worktree_lifecycle_error)
+    }
+
+    fn validate_quarantined_terminal_snapshot(
+        &self,
+        quarantine: &WorkerManagedQuarantineReceiptV1,
+        current_owner: &AuthenticatedOwnerContext,
+        terminal: &crate::managed_control::ManagedAttemptTerminalSnapshotV1,
+    ) -> Result<(), WorkerDurableError> {
+        let durable = self.resolve_managed_quarantine_for_attempt(quarantine.attempt_id())?
+            .ok_or(WorkerDurableError::NotFound("durable managed quarantine unavailable"))?;
+        let pins = self.identities.pre_admission_pins.get(quarantine.worker_execution_id())
+            .ok_or(WorkerDurableError::NotFound("quarantined worker pins unavailable"))?;
+        let claim = self.claimed_worker_dispatch_proof(quarantine.worker_execution_id())?;
+        let binding = self.identities.delegation_bindings.get(quarantine.worker_execution_id())
+            .ok_or(WorkerDurableError::Conflict("quarantined worker DelegationBinding unavailable"))?;
+        let expected_task = match quarantine.reason() {
+            WorkerManagedQuarantineReasonV1::FailedAttempt => crate::managed_control::ManagedTaskTerminalStateV1::Failed,
+            WorkerManagedQuarantineReasonV1::CancelledTask => crate::managed_control::ManagedTaskTerminalStateV1::Cancelled,
+        };
+        let quiescence = terminal.child_prompt_quiescence();
+        if quarantine != &durable
+            || current_owner.owner_epoch() != self.resumed_epoch
+            || current_owner.owner_epoch() <= quarantine.owner_epoch()
+            || current_owner.principal_ref() != pins.principal_ref()
+            || current_owner.workspace_binding() != pins.workspace_binding()
+            || current_owner.session_id() != pins.session_id()
+            || current_owner.run_id() != pins.run_id()
+            || current_owner.task_id() != pins.task_id()
+            || current_owner.attempt_id() != pins.attempt_id()
+            || terminal.goal_id() != pins.goal_id()
+            || terminal.run_id() != pins.run_id()
+            || terminal.task_id() != pins.task_id()
+            || terminal.attempt_id() != pins.attempt_id()
+            || terminal.task_revision() != pins.task_revision().parse::<u64>()
+                .map_err(|_| WorkerDurableError::Conflict("quarantined Task revision is invalid"))?
+            || terminal.spec_digest() != pins.accepted_spec_digest()
+            || terminal.binding_digest() != binding.binding_digest
+            || terminal.binding_digest() != claim.binding_digest()
+            || terminal.admission_workspace_revision() != Some(binding.child_workspace_revision()?)
+            || terminal.attempt_state() != crate::managed_control::ManagedAttemptTerminalStateV1::Failed
+            || terminal.task_state() != expected_task
+            || terminal.child_prompt_state() != crate::managed_control::ManagedChildPromptStateV1::Quiesced
+            || terminal.effect_chain_state() != crate::managed_control::ManagedAttemptEffectChainStateV1::AllSettled
+            || terminal.owner_log_sequence() == 0 || terminal.managed_revision() == 0
+            || !valid_digest(terminal.owner_log_event_digest(), "blake3:")
+            || !valid_digest(terminal.attempt_state_digest(), "blake3:")
+            || !valid_digest(terminal.effect_chain_digest(), "blake3:")
+            || terminal.effects().len() > MAX_BATCH_EVENTS
+            || terminal.effects().iter().any(|effect| effect.effect_id().is_empty()
+                || effect.outcome().is_none()
+                || effect.outcome() == Some(crate::managed_control::AttemptEffectOutcomeV1::Unknown)
+                || effect.observation_digest().is_none_or(|digest| !valid_digest(digest, "blake3:")))
+            || quiescence.is_none_or(|receipt| {
+                let marker = receipt.proof();
+                marker.goal_id() != pins.goal_id()
+                    || marker.run_id() != pins.run_id()
+                    || marker.task_id() != pins.task_id()
+                    || marker.attempt_id() != pins.attempt_id()
+                    || marker.session_id() != current_owner.session_id()
+                    || marker.owner_epoch() > current_owner.owner_epoch()
+            })
+            || terminal.child_prompt_quiescence_digest().is_none_or(|digest| !valid_digest(digest, "blake3:"))
+            || terminal.child_prompt_quiescence_owner_log_id().is_none_or(str::is_empty)
+            || terminal.child_prompt_quiescence_owner_log_sequence().is_none_or(|seq| seq == 0)
+            || terminal.child_prompt_quiescence_owner_log_event_digest().is_none_or(|digest| !valid_digest(digest, "blake3:"))
+        {
+            return Err(WorkerDurableError::Conflict("fresh terminal snapshot does not prove exact quarantined Attempt quiescence and settled effects"));
+        }
+        Ok(())
+    }
+
+    /// Resolve a current-epoch read-only target for the independent Guarded
+    /// Inspect required to reconcile an already quarantined logical child.
+    /// The caller cannot nominate a worktree, path, claim, or lease; this method
+    /// re-resolves all of them from the exact durable quarantine receipt and
+    /// HostKernel-minted current root/Attempt owner. It does not reopen the
+    /// worker claim, make the worktree reusable, or authorize an effect.
+    pub(crate) fn resolve_quarantined_managed_reconciliation_target(
+        &self,
+        root_proof: &ReadOnlyReconciliationRootProofV1,
+        now_ms: u64,
+        quarantine: &WorkerManagedQuarantineReceiptV1,
+        current_owner: &AuthenticatedOwnerContext,
+        current_terminal: &crate::managed_control::ManagedAttemptTerminalSnapshotV1,
+    ) -> Result<QuarantinedManagedWorktreeTargetV1, WorkerDurableError> {
+        validate_owner_token(quarantine.attempt_id())?;
+        if current_owner.owner_epoch() != self.resumed_epoch {
+            return Err(WorkerDurableError::Pool(WorkerPoolError::StaleOwnerEpoch));
+        }
+        let root_owner = self.resolve_quarantined_reconciliation_root_owner(root_proof, now_ms)?;
+        self.validate_quarantined_terminal_snapshot(quarantine, current_owner, current_terminal)?;
+        if current_terminal.child_prompt_quiescence().is_none_or(|receipt|
+            receipt.proof().parent_session_id() != root_owner.session_id())
+        {
+            return Err(WorkerDurableError::Conflict(
+                "quarantined child quiescence is not bound to the authenticated current root Session",
+            ));
+        }
+        let durable_quarantine = self.resolve_managed_quarantine_for_attempt(quarantine.attempt_id())?
+            .ok_or(WorkerDurableError::NotFound("durable managed quarantine receipt unavailable"))?;
+        let worker_id = quarantine.worker_execution_id();
+        let pins = self.identities.pre_admission_pins.get(worker_id)
+            .ok_or(WorkerDurableError::NotFound("quarantined worker admission pins unavailable"))?;
+        let claim = self.claimed_worker_dispatch_proof(worker_id)?;
+        let binding = self.identities.delegation_bindings.get(worker_id)
+            .ok_or(WorkerDurableError::Conflict("quarantined worker DelegationBinding unavailable"))?;
+        let pool = self.pool.as_ref()
+            .ok_or(WorkerDurableError::Invalid("worker pool unavailable"))?;
+        let worker = pool.worker(worker_id)
+            .ok_or(WorkerDurableError::NotFound("quarantined worker lease unavailable"))?;
+        let tree = pool.worktree_snapshot(&pins.worktree.worktree_id)
+            .ok_or(WorkerDurableError::NotFound("quarantined worktree lease unavailable"))?;
+        if quarantine != &durable_quarantine
+            || quarantine.attempt_id() != pins.attempt_id()
+            || quarantine.goal_id() != pins.goal_id()
+            || quarantine.run_id() != pins.run_id()
+            || quarantine.task_id() != pins.task_id()
+            || quarantine.owner_epoch() != pins.owner_epoch()
+            || quarantine.reservation_id() != claim.reservation().budget_lease_id()
+            || quarantine.worktree_lease_id() != claim.reservation().workspace_lease_id()
+            || current_owner.principal_ref() != pins.principal_ref()
+            || current_owner.workspace_binding() != pins.workspace_binding()
+            || current_owner.session_id() != pins.session_id()
+            || current_owner.run_id() != pins.run_id()
+            || current_owner.task_id() != pins.task_id()
+            || current_owner.attempt_id() != pins.attempt_id()
+            || current_owner.owner_epoch() < pins.owner_epoch()
+            || root_owner.goal_id() != pins.goal_id()
+            || root_owner.run_id() != pins.run_id()
+            || root_owner.principal_ref() != pins.principal_ref()
+            || root_owner.workspace_binding() != pins.workspace_binding()
+            || managed_root_session_id(pins.parent_proof())? != root_owner.session_id()
+            || root_owner.location_id() != pins.location_id()
+            || root_owner.owner_epoch() != current_owner.owner_epoch()
+            || root_owner.accepted_spec_digest() != pins.accepted_spec_digest()
+            || claim.attempt_id() != pins.attempt_id()
+            || claim.binding_digest() != binding.binding_digest
+            || worker.state != crate::resource_budget::ReservationState::Quarantined
+            || worker.goal_id != pins.goal_id()
+            || worker.owner.principal_ref != pins.principal_ref()
+            || worker.owner.workspace_binding != pins.workspace_binding()
+            || worker.owner.session_id != pins.session_id()
+            || worker.owner.run_id != pins.run_id()
+            || worker.owner.task_id != pins.task_id()
+            || worker.owner.attempt_id != pins.attempt_id()
+            || worker.owner.owner_epoch != pins.owner_epoch()
+            || worker.process_identity.is_some()
+            || pool.worker_reservation_id(worker_id) != Some(quarantine.reservation_id())
+            || worker.worktree_lease_id.as_deref() != Some(quarantine.worktree_lease_id())
+            || tree.status != crate::worktree_pool::WorktreeStatus::Quarantined
+            || tree.lease_id.as_deref() != Some(quarantine.worktree_lease_id())
+            || tree.workspace_binding != pins.workspace_binding()
+            || !valid_digest(quarantine.terminal_proof_digest(), "blake3:")
+            || !valid_digest(quarantine.receipt_digest(), "blake3:")
+        {
+            return Err(WorkerDurableError::Conflict(
+                "quarantined reconciliation target differs from current root, Attempt, claim, or retained lease",
+            ));
+        }
+
+        let worktree_id = pins.worktree.worktree_id.as_str();
+        let registration = self.identities.worktree_registration_records.get(worktree_id)
+            .filter(|registration| {
+                !self.identities.removed_worktree_registrations.contains_key(worktree_id)
+                    && same_worktree_root_lineage(registration.owner(), &root_owner)
+                    && registration.owner().owner_epoch() == pins.owner_epoch()
+                    && registration.matches_durable_operations(&self.worktree_operations)
+                    && registration.verification_digest().is_some_and(|digest|
+                        self.identities.verified_worktree_registrations.get(worktree_id).map(String::as_str) == Some(digest))
+            })
+            .ok_or(WorkerDurableError::Conflict("quarantined worktree has no retained guarded registration"))?;
+        let provenance = registration.provenance().ok_or(WorkerDurableError::Conflict(
+            "quarantined worktree registration has no guarded Create provenance",
+        ))?;
+        let create = self.worktree_operations.get(provenance.create_operation_id())
+            .filter(|record| record.state() == WorktreeOperationStateV1::Completed
+                && record.intent().kind() == WorktreeOperationKindV1::Create
+                && record.intent().owner() == registration.owner()
+                && record.intent().worktree_id() == worktree_id
+                && record.intent().base_revision() == Some(pins.worktree.base_revision.as_str())
+                && record.intent().root().workspace_binding() == pins.workspace_binding()
+                && record.receipt().is_some_and(|receipt| receipt.owned() && receipt.no_follow()))
+            .ok_or(WorkerDurableError::Conflict("quarantined worktree Create provenance differs from P8 pins"))?;
+        let target = WorktreeLifecycleTargetV1 {
+            owner: root_owner,
+            worktree_id: worktree_id.to_owned(),
+            base_revision: pins.worktree.base_revision.clone(),
+            relative_path: create.intent().relative_path().to_path_buf(),
+            verification_digest: registration.verification_digest().ok_or(WorkerDurableError::Conflict(
+                "quarantined worktree verification digest unavailable",
+            ))?.to_owned(),
+        };
+        Ok(QuarantinedManagedWorktreeTargetV1 {
+            target,
+            root: create.intent().root().clone(),
+            worker_execution_id: worker_id.to_owned(),
+            goal_id: pins.goal_id().to_owned(),
+            run_id: pins.run_id().to_owned(),
+            task_id: pins.task_id().to_owned(),
+            attempt_id: pins.attempt_id().to_owned(),
+            reservation_id: quarantine.reservation_id().to_owned(),
+            worktree_lease_id: quarantine.worktree_lease_id().to_owned(),
+            quarantine_receipt_digest: quarantine.receipt_digest().to_owned(),
+            binding_digest: binding.binding_digest.clone(),
+            pool_revision: pool.revision(),
+        })
+    }
+
+    /// Persist the single read-only Inspect intent for the exact quarantined
+    /// Attempt. `expected_workspace_revision` must be freshly measured by P1
+    /// from the registered child Location under the authenticated root proof.
+    pub(crate) fn prepare_quarantined_reconciliation_inspect_pin(
+        &mut self,
+        root_proof: &ReadOnlyReconciliationRootProofV1,
+        now_ms: u64,
+        quarantine: &WorkerManagedQuarantineReceiptV1,
+        current_owner: &AuthenticatedOwnerContext,
+        current_terminal: &crate::managed_control::ManagedAttemptTerminalSnapshotV1,
+        target: &QuarantinedManagedWorktreeTargetV1,
+        expected_workspace_revision: &str,
+    ) -> Result<WorktreeLifecycleOperationPinV1, WorkerDurableError> {
+        validate_owner_digest(expected_workspace_revision, "blake3:")?;
+        let resolved = self.resolve_quarantined_managed_reconciliation_target(
+            root_proof, now_ms, quarantine, current_owner, current_terminal,
+        )?;
+        if &resolved != target || target.attempt_id() != quarantine.attempt_id() {
+            return Err(WorkerDurableError::Conflict("reconciliation Inspect target is stale or mismatched"));
+        }
+        for record in self.worktree_operations.iter().filter(|record| {
+            let intent = record.intent();
+            intent.kind() == WorktreeOperationKindV1::Inspect
+                && intent.owner() == target.target().owner()
+                && intent.worktree_id() == target.target().worktree_id()
+                && intent.relative_path() == target.target().relative_path()
+                && intent.operation_id() == worktree_operation_id(
+                    intent.owner(), WorktreeOperationKindV1::Inspect,
+                    &quarantined_reconciliation_inspect_key(
+                        target.attempt_id(), intent.owner_epoch(), intent.owner_log_sequence(),
+                    ),
+                )
+        }) {
+            if record.state() == WorktreeOperationStateV1::Pending {
+                if record.intent().expected_workspace_revision() != expected_workspace_revision {
+                    return Err(WorkerDurableError::Conflict("pending reconciliation Inspect is pinned to a different workspace revision"));
+                }
+                return Ok(WorktreeLifecycleOperationPinV1::from_durable_intent(record.intent().clone()));
+            }
+        }
+        let (_, sequence, _, _) = self.owner_log_watermark()?;
+        let operation_key = quarantined_reconciliation_inspect_key(
+            target.attempt_id(), root_proof.owner_epoch(), &sequence,
+        );
+        validate_owner_token(&operation_key)?;
+        let intent = self.quarantined_reconciliation_inspect_intent(
+            target, expected_workspace_revision, &operation_key,
+        )?;
+        let operation_id = intent.operation_id().to_owned();
+        self.persist_worktree_intent(&format!("worktree-reconcile-inspect-intent-{operation_id}"), intent.clone())?;
+        Ok(WorktreeLifecycleOperationPinV1::from_durable_intent(intent))
+    }
+
+    fn quarantined_reconciliation_inspect_intent(
+        &self,
+        target: &QuarantinedManagedWorktreeTargetV1,
+        expected_workspace_revision: &str,
+        idempotency_key: &str,
+    ) -> Result<WorktreeOperationIntentV1, WorkerDurableError> {
+        let owner = target.target().owner().clone();
+        let operation_id = worktree_operation_id(&owner, WorktreeOperationKindV1::Inspect, idempotency_key);
+        let (log_id, sequence, event_digest, _) = self.owner_log_watermark()?;
+        WorktreeOperationIntentV1::new(
+            operation_id, WorktreeOperationKindV1::Inspect, owner, target.root().clone(),
+            target.target().worktree_id().to_owned(), target.target().base_revision().to_owned(),
+            target.target().relative_path().to_path_buf(), expected_workspace_revision.to_owned(),
+            log_id, sequence, event_digest,
+        ).map_err(map_worktree_lifecycle_error)
+    }
+
+    /// Cross the possible-dispatch fence for the single exact read-only
+    /// reconciliation Inspect. All other operation kinds are rejected.
+    pub(crate) fn mark_quarantined_reconciliation_inspect_dispatch_started_and_get_request(
+        &mut self,
+        root_proof: &ReadOnlyReconciliationRootProofV1,
+        pin: &WorktreeLifecycleOperationPinV1,
+        quarantine: &WorkerManagedQuarantineReceiptV1,
+        current_owner: &AuthenticatedOwnerContext,
+        current_terminal: &crate::managed_control::ManagedAttemptTerminalSnapshotV1,
+        now_ms: u64,
+    ) -> Result<GuardedWorktreeRequestV1, WorkerDurableError> {
+        if pin.kind() != WorktreeOperationKindV1::Inspect
+            || pin.operation_id() != worktree_operation_id(
+                pin.owner(), WorktreeOperationKindV1::Inspect,
+                &quarantined_reconciliation_inspect_key(
+                    quarantine.attempt_id(), pin.owner().owner_epoch(), pin.intent().owner_log_sequence(),
+                ),
+            )
+        {
+            return Err(WorkerDurableError::Conflict("reconciliation dispatch is not the exact quarantine Inspect"));
+        }
+        let target = self.resolve_quarantined_managed_reconciliation_target(
+            root_proof, now_ms, quarantine, current_owner, current_terminal,
+        )?;
+        let record = self.worktree_operations.get(pin.operation_id())
+            .ok_or(WorkerDurableError::NotFound("reconciliation Inspect intent unavailable"))?;
+        if record.intent() != pin.intent() || record.intent().owner() != target.target().owner()
+            || record.intent().root() != target.root()
+            || record.intent().worktree_id() != target.target().worktree_id()
+            || record.intent().relative_path() != target.target().relative_path()
+            || record.state() != WorktreeOperationStateV1::Pending
+        {
+            return Err(WorkerDurableError::Conflict("reconciliation Inspect intent differs from current quarantine target"));
+        }
+        let intent = record.intent().clone();
+        let revision = self.pool.as_ref()
+            .ok_or(WorkerDurableError::Invalid("worker pool unavailable"))?.revision();
+        self.apply(revision, &format!("worktree-reconcile-inspect-dispatch-{}", pin.operation_id()),
+            WorkerCommand::WorktreeOperationDispatchStarted { operation_id: pin.operation_id().to_owned() })?;
+        Ok(GuardedWorktreeRequestV1::from_durable_intent(intent))
+    }
+
+    /// Persist a fresh P1 Guarded Inspect receipt for the exact quarantined
+    /// Attempt. This does not itself release either retained lease.
+    pub(crate) fn persist_quarantined_reconciliation_inspect_receipt(
+        &mut self,
+        root_proof: &ReadOnlyReconciliationRootProofV1,
+        quarantine: &WorkerManagedQuarantineReceiptV1,
+        current_owner: &AuthenticatedOwnerContext,
+        current_terminal: &crate::managed_control::ManagedAttemptTerminalSnapshotV1,
+        now_ms: u64,
+        receipt: GuardedWorktreeReceiptV1,
+    ) -> Result<(), WorkerDurableError> {
+        let target = self.resolve_quarantined_managed_reconciliation_target(
+            root_proof, now_ms, quarantine, current_owner, current_terminal,
+        )?;
+        let record = self.worktree_operations.get(receipt.operation_id())
+            .ok_or(WorkerDurableError::NotFound("reconciliation Inspect intent unavailable"))?;
+        let operation_key = quarantined_reconciliation_inspect_key(
+            quarantine.attempt_id(), record.intent().owner_epoch(), record.intent().owner_log_sequence(),
+        );
+        let expected_operation = worktree_operation_id(
+            target.target().owner(), WorktreeOperationKindV1::Inspect, &operation_key,
+        );
+        if receipt.operation_id() != expected_operation
+            || record.intent().kind() != WorktreeOperationKindV1::Inspect
+            || record.intent().owner() != target.target().owner()
+            || record.intent().root() != target.root()
+            || record.intent().worktree_id() != target.target().worktree_id()
+            || record.intent().relative_path() != target.target().relative_path()
+            || record.state() != WorktreeOperationStateV1::Unknown
+            || !receipt.owned() || !receipt.no_follow()
+            || receipt.workspace_binding() != current_owner.workspace_binding()
+            || receipt.registration_generation() != record.intent().root().registration_generation()
+            || receipt.observed_workspace_revision() != record.intent().expected_workspace_revision()
+            || matches!(receipt.status(), WorktreeObservedStatusV1::Missing | WorktreeObservedStatusV1::Unknown)
+        {
+            return Err(WorkerDurableError::Conflict("Guarded reconciliation Inspect receipt differs from exact quarantined target"));
+        }
+        let revision = self.pool.as_ref()
+            .ok_or(WorkerDurableError::Invalid("worker pool unavailable"))?.revision();
+        self.apply(revision, &format!("worktree-reconcile-inspect-receipt-{}", quarantine.attempt_id()),
+            WorkerCommand::WorktreeOperationReceipt { receipt })
+    }
+
+    /// Resolve the durable result of a previously dispatched quarantine Inspect
+    /// after its execute response was lost. The caller supplies the operation
+    /// ID it already pinned; this resolver cannot select another generation or
+    /// turn a pending/UNKNOWN dispatch into a receipt. A returned receipt is
+    /// exact, current-owner scoped, and has already crossed the durable receipt
+    /// transition.
+    pub(crate) fn resolve_quarantined_reconciliation_inspect_receipt(
+        &self,
+        root_proof: &ReadOnlyReconciliationRootProofV1,
+        quarantine: &WorkerManagedQuarantineReceiptV1,
+        current_owner: &AuthenticatedOwnerContext,
+        current_terminal: &crate::managed_control::ManagedAttemptTerminalSnapshotV1,
+        operation_id: &str,
+        now_ms: u64,
+    ) -> Result<GuardedWorktreeReceiptV1, WorkerDurableError> {
+        let target = self.resolve_quarantined_managed_reconciliation_target(
+            root_proof, now_ms, quarantine, current_owner, current_terminal,
+        )?;
+        let record = self.worktree_operations.get(operation_id)
+            .ok_or(WorkerDurableError::NotFound("reconciliation Inspect operation unavailable"))?;
+        let expected_key = quarantined_reconciliation_inspect_key(
+            quarantine.attempt_id(), record.intent().owner_epoch(), record.intent().owner_log_sequence(),
+        );
+        let expected_id = worktree_operation_id(
+            target.target().owner(), WorktreeOperationKindV1::Inspect, &expected_key,
+        );
+        let receipt = record.receipt()
+            .ok_or(WorkerDurableError::Conflict("reconciliation Inspect has no durable receipt"))?;
+        if operation_id != expected_id
+            || record.intent().kind() != WorktreeOperationKindV1::Inspect
+            || record.intent().owner() != target.target().owner()
+            || record.intent().root() != target.root()
+            || record.intent().worktree_id() != target.target().worktree_id()
+            || record.intent().relative_path() != target.target().relative_path()
+            || record.state() != WorktreeOperationStateV1::Completed
+            || receipt.operation_id() != operation_id
+            || receipt.workspace_binding() != current_owner.workspace_binding()
+            || receipt.registration_generation() != target.root().registration_generation()
+            || receipt.observed_workspace_revision() != record.intent().expected_workspace_revision()
+            || !receipt.owned() || !receipt.no_follow()
+            || !matches!(receipt.status(), WorktreeObservedStatusV1::Clean | WorktreeObservedStatusV1::DirtyOwned)
+            || receipt.contains_user_owned_changes()
+        {
+            return Err(WorkerDurableError::Conflict(
+                "durable Inspect receipt does not match the exact current quarantined Attempt",
+            ));
+        }
+        Ok(receipt.clone())
+    }
+
+    /// Pre-dispatch projection for an attached RESERVED lease or an already
+    /// CLAIMED lease. It derives the target from P8 pins/registration and the
+    /// authenticated live owner; it does not consume or grant a claim.
+    pub(crate) fn resolve_managed_worktree_target_for_attempt(
+        &self,
+        root_proof: &RootCoordinatorExecutionProofV1,
+        now_ms: u64,
+        worker_execution_id: &str,
+        binding: &VerifiedAttemptBinding,
+        owner: &AuthenticatedOwnerContext,
+    ) -> Result<ManagedAttemptWorktreeTargetV1, WorkerDurableError> {
+        validate_owner_token(worker_execution_id)?;
+        let root_owner = self.resolve_worktree_root_owner(root_proof, now_ms)?;
+        let pins = self.identities.pre_admission_pins.get(worker_execution_id)
+            .ok_or(WorkerDurableError::NotFound("managed target P8 pins unavailable"))?;
+        let durable_binding = self.identities.delegation_bindings.get(worker_execution_id)
+            .ok_or(WorkerDurableError::Conflict("managed target requires durable attached DelegationBinding"))?;
+        let worker = self.pool.as_ref().and_then(|pool| pool.worker(worker_execution_id))
+            .ok_or(WorkerDurableError::NotFound("managed target worker reservation is unavailable"))?;
+        let pool = self.pool.as_ref().ok_or(WorkerDurableError::Invalid("worker pool unavailable"))?;
+        let tree = pool.worktree_snapshot(&pins.worktree.worktree_id)
+            .ok_or(WorkerDurableError::NotFound("managed target worktree lease is unavailable"))?;
+        let owner_matches = owner.owner_epoch() == binding.owner_epoch()
+            && owner.goal_id() == binding.goal_id()
+            && owner.run_id() == binding.run_id()
+            && owner.task_id() == binding.task_id()
+            && owner.attempt_id() == binding.attempt_id()
+            && owner.session_id() == pins.session_id()
+            && owner.principal_ref() == root_owner.principal_ref()
+            && owner.workspace_binding() == root_owner.workspace_binding()
+            && root_owner.session_id() == managed_root_session_id(pins.parent_proof())?
+            && pins.location_id() == root_owner.location_id();
+        if !owner_matches
+            || binding.goal_id() != pins.goal_id()
+            || binding.run_id() != pins.run_id()
+            || binding.task_id() != pins.task_id()
+            || binding.attempt_id() != pins.attempt_id()
+            || binding.owner_epoch() != pins.owner_epoch()
+            || binding.source_revision() != durable_binding.child_workspace_revision()?
+            || binding.accepted_spec_digest() != pins.accepted_spec_digest()
+            || durable_binding.binding_digest.is_empty()
+            || durable_binding.worktree_admission.is_none()
+            || pins.owner_epoch() != self.resumed_epoch
+            || pins.goal_id() != root_owner.goal_id()
+            || pins.run_id() != root_owner.run_id()
+            || pins.location_id() != root_owner.location_id()
+            || worker.cancellation_requested || worker.unknown_effect
+            || worker.process_identity.is_some()
+            || !matches!(worker.state, crate::resource_budget::ReservationState::Reserved
+                | crate::resource_budget::ReservationState::Claimed)
+            || worker.worktree_lease_id.as_deref() != tree.lease_id.as_deref()
+            || tree.status != crate::worktree_pool::WorktreeStatus::Leased
+            || tree.workspace_binding != pins.workspace_binding()
+        {
+            return Err(WorkerDurableError::Conflict("managed target does not match a live attached P8 reservation"));
+        }
+        let worktree_id = pins.worktree.worktree_id.as_str();
+        let registration = self.identities.worktree_registration_records.get(worktree_id)
+            .filter(|registration| registration.owner() == &root_owner
+                && !self.identities.removed_worktree_registrations.contains_key(worktree_id)
+                && registration.matches_durable_operations(&self.worktree_operations)
+                && registration.verification_digest().is_some_and(|digest|
+                    self.identities.verified_worktree_registrations.get(worktree_id).map(String::as_str) == Some(digest)))
+            .ok_or(WorkerDurableError::Conflict("managed target lacks exact durable verified registration"))?;
+        let provenance = registration.provenance().ok_or(WorkerDurableError::Conflict(
+            "managed target registration lacks guarded Create provenance",
+        ))?;
+        let create = self.worktree_operations.get(provenance.create_operation_id())
+            .filter(|record| record.state() == WorktreeOperationStateV1::Completed
+                && record.intent().kind() == WorktreeOperationKindV1::Create
+                && record.intent().owner() == &root_owner
+                && record.intent().worktree_id() == worktree_id
+                && record.intent().base_revision() == Some(pins.worktree.base_revision.as_str())
+                && record.intent().root().workspace_binding() == pins.workspace_binding()
+                && record.receipt().is_some_and(|receipt| receipt.owned() && receipt.no_follow()))
+            .ok_or(WorkerDurableError::Conflict("managed target Create receipt does not match P8 pins"))?;
+        let target = WorktreeLifecycleTargetV1 {
+            owner: root_owner,
+            worktree_id: worktree_id.to_owned(),
+            base_revision: pins.worktree.base_revision.clone(),
+            relative_path: create.intent().relative_path().to_path_buf(),
+            verification_digest: registration.verification_digest().ok_or(WorkerDurableError::Conflict(
+                "managed target registration verification digest is unavailable",
+            ))?.to_owned(),
+        };
+        Ok(ManagedAttemptWorktreeTargetV1 {
+            target,
+            root: create.intent().root().clone(),
+            workspace_revision: durable_binding.child_workspace_revision()?.to_owned(),
+            binding_digest: durable_binding.binding_digest.clone(),
+            pool_revision: pool.revision(),
+            admission: durable_binding.worktree_admission.clone(),
+            reservation_proof_digest: None,
+        })
+    }
+
+    /// Resolve the registered worktree immediately after P8 RESERVED the
+    /// opaque pre-admission lease and before P2 appends Attempt/Binding. This
+    /// closes the admission cycle: only the exact reservation proof and its
+    /// immutable HostKernel pins select the path/revision.
+    pub(crate) fn resolve_reserved_managed_worktree_target(
+        &self,
+        root_proof: &RootCoordinatorExecutionProofV1,
+        now_ms: u64,
+        pins: &ManagedReadyTaskPinV1,
+        reservation: &ReservedWorkerLeaseProofV1,
+    ) -> Result<ManagedAttemptWorktreeTargetV1, WorkerDurableError> {
+        pins.validate()?;
+        if pins.owner_epoch() != self.resumed_epoch
+            || self.identities.pre_admission_pins.get(reservation.worker_execution_id()) != Some(pins)
+            || reservation.binding_digest().is_some()
+        {
+            return Err(WorkerDurableError::Conflict("reserved target proof is stale or already attached"));
+        }
+        let current = self.reserved_worker_proof(
+            pins, reservation.ticket_id(), reservation.worker_execution_id(), None,
+        )?;
+        if current != *reservation {
+            return Err(WorkerDurableError::Conflict("reserved target proof is not the current lease"));
+        }
+        let pool = self.pool.as_ref().ok_or(WorkerDurableError::Invalid("worker pool unavailable"))?;
+        if pool.worker(reservation.worker_execution_id()).is_none_or(|worker|
+            worker.state != crate::resource_budget::ReservationState::Reserved
+                || worker.process_identity.is_some() || worker.cancellation_requested || worker.unknown_effect)
+        {
+            return Err(WorkerDurableError::Conflict("reserved target requires an undispatched RESERVED worker"));
+        }
+        if pins.expires_at_ms() <= now_ms {
+            return Err(WorkerDurableError::Conflict(
+                "pre-admission reservation expired; exact no-dispatch reconciliation is required",
+            ));
+        }
+        let root_owner = self.resolve_worktree_root_owner(root_proof, now_ms)?;
+        if pins.owner_epoch() != self.resumed_epoch
+            || pins.owner().principal_ref() != root_owner.principal_ref()
+            || pins.workspace_binding() != root_owner.workspace_binding()
+            || managed_root_session_id(pins.parent_proof())? != root_owner.session_id()
+            || pins.run_id() != root_owner.run_id()
+            || pins.goal_id() != root_owner.goal_id()
+            || pins.location_id() != root_owner.location_id()
+        {
+            return Err(WorkerDurableError::Conflict("reserved worktree target differs from authenticated root and Attempt pins"));
+        }
+        let pool = self.pool.as_ref().ok_or(WorkerDurableError::Invalid("worker pool unavailable"))?;
+        let worker = pool.worker(reservation.worker_execution_id())
+            .ok_or(WorkerDurableError::NotFound("reserved worker lease unavailable"))?;
+        let tree = pool.worktree_snapshot(&pins.worktree.worktree_id)
+            .ok_or(WorkerDurableError::NotFound("reserved worktree lease unavailable"))?;
+        if worker.state != crate::resource_budget::ReservationState::Reserved
+            || worker.cancellation_requested || worker.unknown_effect
+            || worker.process_identity.is_some()
+            || worker.worktree_lease_id.as_deref() != Some(reservation.workspace_lease_id())
+            || tree.status != crate::worktree_pool::WorktreeStatus::Leased
+            || tree.lease_id.as_deref() != Some(reservation.workspace_lease_id())
+            || tree.workspace_binding != pins.workspace_binding()
+        {
+            return Err(WorkerDurableError::Conflict("reserved worktree target no longer matches P8 lease"));
+        }
+        let worktree_id = pins.worktree.worktree_id.as_str();
+        let registration = self.identities.worktree_registration_records.get(worktree_id)
+            .filter(|registration| registration.owner() == &root_owner
+                && !self.identities.removed_worktree_registrations.contains_key(worktree_id)
+                && registration.matches_durable_operations(&self.worktree_operations)
+                && registration.verification_digest().is_some_and(|digest|
+                    self.identities.verified_worktree_registrations.get(worktree_id).map(String::as_str) == Some(digest)))
+            .ok_or(WorkerDurableError::Conflict("reserved worktree lacks exact verified registration"))?;
+        let provenance = registration.provenance().ok_or(WorkerDurableError::Conflict(
+            "reserved worktree registration lacks guarded Create provenance",
+        ))?;
+        let create = self.worktree_operations.get(provenance.create_operation_id())
+            .filter(|record| record.state() == WorktreeOperationStateV1::Completed
+                && record.intent().kind() == WorktreeOperationKindV1::Create
+                && record.intent().owner() == &root_owner
+                && record.intent().worktree_id() == worktree_id
+                && record.intent().base_revision() == Some(pins.worktree.base_revision.as_str())
+                && record.intent().root().workspace_binding() == pins.workspace_binding()
+                && record.receipt().is_some_and(|receipt| receipt.owned() && receipt.no_follow()))
+            .ok_or(WorkerDurableError::Conflict("reserved worktree Create receipt does not match exact P8 pins"))?;
+        let target = WorktreeLifecycleTargetV1 {
+            owner: root_owner,
+            worktree_id: worktree_id.to_owned(),
+            base_revision: pins.worktree.base_revision.clone(),
+            relative_path: create.intent().relative_path().to_path_buf(),
+            verification_digest: registration.verification_digest().ok_or(WorkerDurableError::Conflict(
+                "reserved worktree verification digest is unavailable",
+            ))?.to_owned(),
+        };
+        Ok(ManagedAttemptWorktreeTargetV1 {
+            target,
+            root: create.intent().root().clone(),
+            workspace_revision: pins.workspace_revision().to_owned(),
+            binding_digest: String::new(),
+            pool_revision: pool.revision(),
+            admission: None,
+            reservation_proof_digest: pins.staged_pre_admission
+                .then(|| reservation.context_bound_receipt_digest()),
+        })
+    }
+
+    /// Reserve a Rust-selected READY Task and resolve the exact registered
+    /// worktree while the reservation is still pre-admission. Keeping these
+    /// operations behind one P8 entry point makes it harder for the caller to
+    /// accidentally project a target from the Goal root or from a different
+    /// candidate after the durable reservation append.
+    ///
+    /// The returned target is read-only location evidence. It does not create
+    /// an Attempt, attach a DelegationBinding, claim a worker, or grant dispatch
+    /// authority. If target resolution fails after the reservation append, the
+    /// reservation remains durable and must be recovered through the existing
+    /// no-dispatch reconciliation path; this helper never rolls it back.
+    pub(crate) fn reserve_managed_ready_task_with_target(
+        &mut self,
+        root_proof: &RootCoordinatorExecutionProofV1,
+        now_ms: u64,
+        pins: &ManagedReadyTaskPinV1,
+    ) -> Result<(ReservedWorkerLeaseProofV1, ManagedAttemptWorktreeTargetV1), WorkerDurableError> {
+        let reservation = self.reserve_managed_ready_task(pins)?;
+        let mut target = self.resolve_reserved_managed_worktree_target(
+            root_proof, now_ms, pins, &reservation,
+        )?;
+        target.reservation_proof_digest = Some(reservation.context_bound_receipt_digest());
+        Ok((reservation, target))
+    }
+
+    /// Reconstruct the exact completed final Inspect receipt after restart.
+    /// A completed operation pin alone is not settlement evidence: this method
+    /// re-resolves the durable journal record and checks its immutable intent,
+    /// root lineage, worker lease, candidate/revision, verifier-set identity and receipt.
+    /// Possible-dispatch UNKNOWN operations intentionally have no receipt and
+    /// remain unrecoverable here.
+    pub(crate) fn resolve_managed_final_inspect_receipt(
+        &self,
+        idempotency_key: &str,
+        worker_execution_id: &str,
+        candidate: &crate::managed_control::ManagedAttemptSettlementCandidateV1,
+        verifier_pins: &crate::host_kernel::SettledVerifierChallengeSetPinsV1,
+        root_proof: &RootCoordinatorExecutionProofV1,
+        now_ms: u64,
+    ) -> Result<GuardedWorktreeReceiptV1, WorkerDurableError> {
+        validate_final_inspect_verifier_pins(candidate, verifier_pins)?;
+        self.resolve_managed_final_inspect_receipt_for_attempt(
+            idempotency_key, worker_execution_id, candidate.attempt_id(),
+            candidate.goal_id(), candidate.run_id(), candidate.task_id(),
+            candidate.binding_digest(), candidate.spec_id(), candidate.spec_digest(), candidate.evidence_digest(),
+            candidate.final_revision(), Some(managed_final_inspect_candidate_digest(
+                candidate.attempt_id(), candidate.goal_id(), candidate.run_id(), candidate.task_id(),
+                candidate.binding_digest(), candidate.spec_id(), candidate.spec_digest(),
+                candidate.evidence_digest(), candidate.final_revision(), candidate.effect_chain_digest(),
+                candidate.attempt_state_digest(), candidate.owner_log_id(), candidate.owner_log_sequence(),
+                candidate.owner_log_event_digest(), candidate.managed_revision(), candidate.usage_accounting(),
+                verifier_pins,
+            )), verifier_pins, root_proof, now_ms,
+        )
+    }
+
+    /// Resolve the exact final Inspect intent for a fresh Guard challenge after
+    /// an idempotent prepare. A durable Completed operation is returned only
+    /// after the exact candidate-bound receipt has been revalidated; this is a
+    /// read-only projection and never grants possible-dispatch authority.
+    pub(crate) fn resolve_managed_final_inspect_intent_for_candidate(
+        &self,
+        idempotency_key: &str,
+        worker_execution_id: &str,
+        candidate: &crate::managed_control::ManagedAttemptSettlementCandidateV1,
+        verifier_pins: &crate::host_kernel::SettledVerifierChallengeSetPinsV1,
+        root_proof: &RootCoordinatorExecutionProofV1,
+        now_ms: u64,
+    ) -> Result<GuardedWorktreeRequestV1, WorkerDurableError> {
+        validate_final_inspect_verifier_pins(candidate, verifier_pins)?;
+        validate_owner_token(idempotency_key)?;
+        validate_owner_token(worker_execution_id)?;
+        if idempotency_key != managed_final_inspect_idempotency_key(candidate.attempt_id()) {
+            return Err(WorkerDurableError::Conflict(
+                "managed final Inspect idempotency key is not derived from the settlement Attempt",
+            ));
+        }
+        let root_owner = self.resolve_worktree_root_owner(root_proof, now_ms)?;
+        let operation_id = worktree_operation_id(
+            &root_owner, WorktreeOperationKindV1::Inspect, idempotency_key,
+        );
+        let record = self.worktree_operations.get(&operation_id)
+            .ok_or(WorkerDurableError::NotFound("managed final Inspect operation is unavailable"))?;
+        let target = self.resolve_claimed_managed_worktree_target(
+            root_proof, now_ms, worker_execution_id, candidate,
+        )?;
+        let expected_candidate_digest = managed_final_inspect_candidate_digest(
+            candidate.attempt_id(), candidate.goal_id(), candidate.run_id(), candidate.task_id(),
+            candidate.binding_digest(), candidate.spec_id(), candidate.spec_digest(),
+            candidate.evidence_digest(), candidate.final_revision(), candidate.effect_chain_digest(),
+            candidate.attempt_state_digest(), candidate.owner_log_id(), candidate.owner_log_sequence(),
+            candidate.owner_log_event_digest(), candidate.managed_revision(), candidate.usage_accounting(),
+            verifier_pins,
+        );
+        let pin = self.managed_final_inspect_candidate_pins.get(&operation_id)
+            .ok_or(WorkerDurableError::Conflict("final Inspect has no durable P2 candidate pin"))?;
+        let intent = record.intent();
+        let pins = self.identities.pre_admission_pins.get(worker_execution_id)
+            .ok_or(WorkerDurableError::NotFound("managed final Inspect P8 pins unavailable"))?;
+        let claim = self.claimed_worker_dispatch_proof(worker_execution_id)?;
+        let binding = self.identities.delegation_bindings.get(worker_execution_id)
+            .ok_or(WorkerDurableError::Conflict("managed final Inspect binding is unavailable"))?;
+        let (ticket_id, expected_worker_id, _) = pre_admission_request(pins)?;
+        if expected_worker_id.as_str() != worker_execution_id
+            || pins.attempt_id() != candidate.attempt_id()
+            || pins.goal_id() != candidate.goal_id()
+            || pins.run_id() != candidate.run_id()
+            || pins.task_id() != candidate.task_id()
+            || claim.attempt_id() != candidate.attempt_id()
+            || claim.binding_digest() != candidate.binding_digest()
+            || binding.binding_digest != candidate.binding_digest()
+            || !self.identities.claim_receipts.get(worker_execution_id)
+                .is_some_and(|receipt| receipt.ticket_id == ticket_id)
+            || pin.operation_id != operation_id
+            || pin.candidate_digest != expected_candidate_digest
+            || pin.attempt_id != candidate.attempt_id()
+            || pin.binding_digest != candidate.binding_digest()
+            || pin.spec_id != candidate.spec_id()
+            || pin.spec_digest != candidate.spec_digest()
+            || pin.evidence_digest != candidate.evidence_digest()
+            || pin.final_revision != candidate.final_revision()
+            || pin.verification_run_id.as_deref() != Some(verifier_pins.verification_run_id())
+            || pin.set_identity_digest.as_deref() != Some(verifier_pins.set_identity_digest())
+            || pin.challenge_set_digest.as_deref() != Some(verifier_pins.challenge_set_digest())
+            || intent.kind() != WorktreeOperationKindV1::Inspect
+            || intent.owner() != &root_owner
+            || intent.root() != target.root()
+            || intent.operation_id() != operation_id
+            || intent.worktree_id() != target.target().worktree_id()
+            || intent.relative_path() != target.target().relative_path()
+            || intent.base_revision() != Some(target.target().base_revision())
+            || target.workspace_revision() != candidate.final_revision()
+            || intent.expected_workspace_revision() != candidate.final_revision()
+        {
+            return Err(WorkerDurableError::Conflict(
+                "managed final Inspect intent differs from the exact current P8/P2 candidate pins",
+            ));
+        }
+        match record.state() {
+            WorktreeOperationStateV1::Pending => {}
+            WorktreeOperationStateV1::Completed => {
+                // A completed operation is safe to expose only for challenge
+                // reconciliation after the durable Guard receipt is exact.
+                self.resolve_managed_final_inspect_receipt(
+                    idempotency_key, worker_execution_id, candidate, verifier_pins, root_proof, now_ms,
+                )?;
+            }
+            WorktreeOperationStateV1::Unknown => return Err(WorkerDurableError::WorktreeIntentUnknown),
+            WorktreeOperationStateV1::Quarantined => return Err(WorkerDurableError::WorktreeIntentQuarantined),
+            WorktreeOperationStateV1::RetiredNoDispatch => return Err(WorkerDurableError::WorktreeIntentRetired),
+        }
+        Ok(GuardedWorktreeRequestV1::from_durable_intent(intent.clone()))
+    }
+
+    /// Resolve the same exact durable Inspect after P2 has settled the Attempt.
+    /// The terminal projection must be a successful verified outcome and its
+    /// observed head/evidence/binding and opaque verifier identity must match the
+    /// original Inspect intent.
+    pub(crate) fn resolve_managed_final_inspect_receipt_for_terminal(
+        &self,
+        idempotency_key: &str,
+        worker_execution_id: &str,
+        terminal: &crate::managed_control::ManagedAttemptTerminalSnapshotV1,
+        verifier_pins: &crate::host_kernel::SettledVerifierChallengeSetPinsV1,
+        root_proof: &RootCoordinatorExecutionProofV1,
+        now_ms: u64,
+    ) -> Result<GuardedWorktreeReceiptV1, WorkerDurableError> {
+        if terminal.attempt_state() != crate::managed_control::ManagedAttemptTerminalStateV1::Succeeded
+            || terminal.task_state() != crate::managed_control::ManagedTaskTerminalStateV1::Verified
+            || terminal.effect_chain_state() != crate::managed_control::ManagedAttemptEffectChainStateV1::AllSettled
+            || terminal.child_prompt_state() != crate::managed_control::ManagedChildPromptStateV1::Quiesced
+        {
+            return Err(WorkerDurableError::Conflict(
+                "managed final Inspect terminal projection is not successfully verified and quiescent",
+            ));
+        }
+        let durable_binding = self.identities.delegation_bindings.get(worker_execution_id)
+            .ok_or(WorkerDurableError::Conflict("managed terminal final Inspect has no durable P8 binding"))?;
+        if terminal.admission_workspace_revision() != Some(durable_binding.child_workspace_revision()?) {
+            return Err(WorkerDurableError::Conflict(
+                "managed terminal admission revision differs from the P8-pinned child workspace",
+            ));
+        }
+        let evidence_digest = terminal.evidence_digest().ok_or(WorkerDurableError::Conflict(
+            "managed final Inspect terminal projection has no verifier evidence digest",
+        ))?;
+        let final_revision = terminal.observed_workspace_head().ok_or(WorkerDurableError::Conflict(
+            "managed final Inspect terminal projection has no observed workspace head",
+        ))?;
+        if verifier_pins.goal_id() != terminal.goal_id()
+            || verifier_pins.run_id() != terminal.run_id()
+            || verifier_pins.task_id() != terminal.task_id()
+            || verifier_pins.attempt_id() != terminal.attempt_id()
+            || verifier_pins.evidence_digest() != evidence_digest
+            || validate_owner_token(verifier_pins.verification_run_id()).is_err()
+            || !valid_digest(verifier_pins.set_identity_digest(), "blake3:")
+            || !valid_digest(verifier_pins.challenge_set_digest(), "blake3:")
+        {
+            return Err(WorkerDurableError::Conflict(
+                "settled verifier pins differ from the successful terminal projection",
+            ));
+        }
+        self.resolve_managed_final_inspect_receipt_for_attempt(
+            idempotency_key, worker_execution_id, terminal.attempt_id(),
+            terminal.goal_id(), terminal.run_id(), terminal.task_id(),
+            terminal.binding_digest(), terminal.spec_id(), terminal.spec_digest(), evidence_digest,
+            final_revision, None, verifier_pins, root_proof, now_ms,
+        )
+    }
+
+    fn resolve_managed_final_inspect_receipt_for_attempt(
+        &self,
+        idempotency_key: &str,
+        worker_execution_id: &str,
+        attempt_id: &str,
+        goal_id: &str,
+        run_id: &str,
+        task_id: &str,
+        binding_digest: &str,
+        spec_id: &str,
+        spec_digest: &str,
+        evidence_digest: &str,
+        final_revision: &str,
+        candidate_digest: Option<String>,
+        verifier_pins: &crate::host_kernel::SettledVerifierChallengeSetPinsV1,
+        root_proof: &RootCoordinatorExecutionProofV1,
+        now_ms: u64,
+    ) -> Result<GuardedWorktreeReceiptV1, WorkerDurableError> {
+        validate_owner_token(idempotency_key)?;
+        validate_owner_token(worker_execution_id)?;
+        if idempotency_key != managed_final_inspect_idempotency_key(attempt_id) {
+            return Err(WorkerDurableError::Conflict(
+                "managed final Inspect idempotency key is not derived from the settlement Attempt",
+            ));
+        }
+        if !valid_digest(binding_digest, "blake3:")
+            || !valid_digest(spec_digest, "blake3:")
+            || !valid_digest(evidence_digest, "blake3:")
+            || !valid_digest(final_revision, "blake3:")
+        {
+            return Err(WorkerDurableError::Conflict(
+                "managed final Inspect terminal evidence contains an invalid digest",
+            ));
+        }
+        if verifier_pins.goal_id() != goal_id || verifier_pins.run_id() != run_id
+            || verifier_pins.task_id() != task_id || verifier_pins.attempt_id() != attempt_id
+            || verifier_pins.evidence_digest() != evidence_digest
+            || validate_owner_token(verifier_pins.verification_run_id()).is_err()
+            || !valid_digest(verifier_pins.set_identity_digest(), "blake3:")
+            || !valid_digest(verifier_pins.challenge_set_digest(), "blake3:")
+        {
+            return Err(WorkerDurableError::Conflict(
+                "terminal final Inspect verifier pins differ from authenticated evidence scope",
+            ));
+        }
+        let root_owner = self.resolve_worktree_root_owner(root_proof, now_ms)?;
+        let pins = self.identities.pre_admission_pins.get(worker_execution_id)
+            .ok_or(WorkerDurableError::NotFound("managed final Inspect P8 pins unavailable"))?;
+        let claim = self.identities.claim_receipts.get(worker_execution_id)
+            .ok_or(WorkerDurableError::Conflict("durable claim receipt is unavailable"))?;
+        let binding = self.identities.delegation_bindings.get(worker_execution_id)
+            .ok_or(WorkerDurableError::Conflict("managed worker binding is unavailable"))?;
+        let mut matching_operations = self.worktree_operations.iter().filter(|record| {
+            let intent = record.intent();
+            intent.kind() == WorktreeOperationKindV1::Inspect
+                && same_worktree_root_lineage(intent.owner(), &root_owner)
+                && intent.owner().owner_epoch() <= root_owner.owner_epoch()
+                && worktree_operation_id(intent.owner(), WorktreeOperationKindV1::Inspect, idempotency_key)
+                    == intent.operation_id()
+        });
+        let record = matching_operations.next()
+            .ok_or(WorkerDurableError::NotFound("managed final Inspect operation is unavailable"))?;
+        if matching_operations.next().is_some() {
+            return Err(WorkerDurableError::ReplayConflict(
+                "Attempt-derived final Inspect key maps to multiple durable operations",
+            ));
+        }
+        let operation_id = record.intent().operation_id();
+        let intent = record.intent();
+        let candidate_pin = self.managed_final_inspect_candidate_pins.get(operation_id)
+            .ok_or(WorkerDurableError::Conflict("final Inspect has no durable P2 candidate pin"))?;
+        if candidate_pin.attempt_id != attempt_id
+            || candidate_pin.binding_digest != binding_digest
+            || candidate_pin.spec_id != spec_id
+            || candidate_pin.spec_digest != spec_digest
+            || candidate_pin.evidence_digest != evidence_digest
+            || candidate_pin.final_revision != final_revision
+            || candidate_pin.verification_run_id.as_deref() != Some(verifier_pins.verification_run_id())
+            || candidate_pin.set_identity_digest.as_deref() != Some(verifier_pins.set_identity_digest())
+            || candidate_pin.challenge_set_digest.as_deref() != Some(verifier_pins.challenge_set_digest())
+            || candidate_digest.as_deref().is_some_and(|digest| candidate_pin.candidate_digest != digest)
+        {
+            return Err(WorkerDurableError::Conflict(
+                "terminal settlement does not match the durably pinned final Inspect candidate",
+            ));
+        }
+        let receipt = record.receipt().ok_or(WorkerDurableError::Conflict(
+            "managed final Inspect has no durable completed Guard receipt",
+        ))?;
+        let worker = self.pool.as_ref().and_then(|pool| pool.worker(worker_execution_id))
+            .ok_or(WorkerDurableError::NotFound("managed final Inspect worker is unavailable"))?;
+        let tree = self.pool.as_ref().and_then(|pool| pool.worktree_snapshot(&pins.worktree.worktree_id))
+            .ok_or(WorkerDurableError::NotFound("managed final Inspect worktree lease is unavailable"))?;
+        let (expected_ticket_id, expected_worker_id, _) = pre_admission_request(pins)?;
+        let claim_sequence = claim.owner_log_sequence.parse::<u64>().ok();
+        let current_sequence = self.cursor.as_ref()
+            .and_then(|cursor| cursor.seq.parse::<u64>().ok());
+        let current_pool_revision = self.pool.as_ref().map(WorkerPool::revision);
+        let registration = self.identities.worktree_registration_records.get(&pins.worktree.worktree_id)
+            .filter(|registration| same_worktree_root_lineage(registration.owner(), &root_owner)
+                && registration.owner().owner_epoch() <= root_owner.owner_epoch()
+                && !self.identities.removed_worktree_registrations.contains_key(&pins.worktree.worktree_id)
+                && registration.matches_durable_operations(&self.worktree_operations))
+            .ok_or(WorkerDurableError::Conflict("managed final Inspect registration is not durably verified"))?;
+        let provenance = registration.provenance().ok_or(WorkerDurableError::Conflict(
+            "managed final Inspect registration provenance is unavailable",
+        ))?;
+        let create = self.worktree_operations.get(provenance.create_operation_id())
+            .filter(|create| create.state() == WorktreeOperationStateV1::Completed
+                && create.intent().kind() == WorktreeOperationKindV1::Create
+                && same_worktree_root_lineage(create.intent().owner(), &root_owner)
+                && create.intent().owner().owner_epoch() <= root_owner.owner_epoch()
+                && create.intent().worktree_id() == pins.worktree.worktree_id)
+            .ok_or(WorkerDurableError::Conflict("managed final Inspect Create provenance is unavailable"))?;
+        if record.state() != WorktreeOperationStateV1::Completed
+            || intent.kind() != WorktreeOperationKindV1::Inspect
+            || !same_worktree_root_lineage(intent.owner(), &root_owner)
+            || intent.owner().owner_epoch() > root_owner.owner_epoch()
+            || worktree_operation_id(intent.owner(), WorktreeOperationKindV1::Inspect, idempotency_key) != operation_id
+            || intent.worktree_id() != pins.worktree.worktree_id
+            || intent.base_revision() != Some(pins.worktree.base_revision.as_str())
+            || intent.expected_workspace_revision() != final_revision
+            || intent.root() != create.intent().root()
+            || intent.relative_path() != create.intent().relative_path()
+            || intent.root().workspace_binding() != pins.workspace_binding()
+            || intent.root().workspace_binding() != root_owner.workspace_binding()
+            || intent.root().location_ref() != pins.location_id()
+            || intent.root().location_ref() != root_proof.location_id()
+            || pins.owner_epoch() > self.resumed_epoch
+            || pins.goal_id() != goal_id
+            || pins.run_id() != run_id
+            || pins.task_id() != task_id
+            || pins.attempt_id() != attempt_id
+            || pins.accepted_spec_digest() != spec_digest
+            || expected_worker_id != worker_execution_id
+            || pins.attempt_id() != claim.attempt_id
+            || claim.worker_pool_revision == 0
+            || claim.ticket_id != expected_ticket_id
+            || claim.owner_log_id != self.pool_id
+            || claim_sequence.is_none_or(|sequence| sequence == 0
+                || current_sequence.is_none_or(|current| sequence > current))
+            || current_pool_revision.is_none_or(|revision| claim.worker_pool_revision > revision)
+            || !valid_digest(&claim.owner_log_event_digest, "blake3:")
+            || claim.pins_digest != pins.pins_digest()
+            || claim.binding_digest != binding.binding_digest
+            || binding_digest != binding.binding_digest
+            || binding.worktree_admission.as_ref().is_none_or(|admission|
+                admission.worktree_id != pins.worktree.worktree_id
+                    || admission.base_revision != pins.worktree.base_revision
+                    || admission.root_location_id != pins.location_id
+                    || admission.p8_workspace_binding != pins.workspace_binding()
+                    || self.pool.as_ref().and_then(|pool|
+                        pool.worker_source_revision(worker_execution_id))
+                        != Some(admission.child_workspace_revision.as_str()))
+            || pins.owner().principal_ref() != root_owner.principal_ref()
+            || pins.owner().workspace_binding() != root_owner.workspace_binding()
+            || pins.run_id() != root_owner.run_id()
+            || pins.goal_id() != root_owner.goal_id()
+            || pins.location_id() != root_owner.location_id()
+            || !matches!(worker.state, crate::resource_budget::ReservationState::Claimed
+                | crate::resource_budget::ReservationState::Quarantined)
+            || worker.owner.owner_epoch != pins.owner_epoch()
+            || worker.cancellation_requested
+            || worker.process_identity.is_some()
+            || worker.worktree_lease_id.as_deref() != tree.lease_id.as_deref()
+            || !matches!(tree.status, crate::worktree_pool::WorktreeStatus::Leased
+                | crate::worktree_pool::WorktreeStatus::Quarantined)
+            || tree.workspace_binding != pins.workspace_binding()
+            || receipt.operation_id() != operation_id
+            || receipt.workspace_binding() != intent.root().workspace_binding()
+            || receipt.registration_generation() != intent.root().registration_generation()
+            || receipt.observed_workspace_revision() != final_revision
+            || !final_inspect_allows_verified_settlement(receipt)
+        {
+            return Err(WorkerDurableError::Conflict(
+            "durable final Inspect receipt does not match the P8 claim, idempotency key and settlement candidate",
+            ));
+        }
+        Ok(receipt.clone())
     }
 
     pub(crate) fn prepare_worktree_release_pin(
@@ -3237,6 +6170,224 @@ impl WorkerPoolControl {
         self.reserved_worker_proof(pins, &ticket_id, &worker_execution_id, None)
     }
 
+    /// Stage A: reserve the exact bounded candidate and return its read-only
+    /// worktree target before Core compiles ContextSelection. The identity is
+    /// based on all authenticated pre-context pins plus the stable idempotency
+    /// key; no candidate is dispatched or admitted here.
+    pub(crate) fn reserve_managed_pre_admission_target(
+        &mut self,
+        pins: &ManagedPreAdmissionTargetPinsV1,
+    ) -> Result<ReservedPreAdmissionTargetProofV1, WorkerDurableError> {
+        let pins = &pins.pins;
+        pins.validate()?;
+        if !pins.staged_pre_admission || pins.context_selection_digest.is_some() {
+            return Err(WorkerDurableError::Conflict("Stage-A pins must omit ContextSelection"));
+        }
+        if pins.owner_epoch() != self.resumed_epoch {
+            return Err(WorkerDurableError::Pool(WorkerPoolError::StaleOwnerEpoch));
+        }
+        let candidate_worker_id = pre_admission_ids(pins).1;
+        if self.identities.pre_admission_pins.iter().any(|(existing_worker, existing)|
+            existing.attempt_id() == pins.attempt_id() && existing_worker != &candidate_worker_id)
+        {
+            return Err(WorkerDurableError::Conflict(
+                "candidate Attempt already has a different durable Stage-A identity; reconcile and advance generation",
+            ));
+        }
+        let (ticket_id, worker_id, request) = pre_admission_request(pins)?;
+        let (_, _, delivery_id) = pre_admission_ids(pins);
+        let revision = self.pool.as_ref().ok_or(WorkerDurableError::Invalid(
+            "worker pool is unavailable",
+        ))?.revision();
+        if let Some(existing) = self.identities.pre_admission_pins.get(&worker_id) {
+            if existing.expires_at_ms <= now_ms() {
+                return Err(WorkerDurableError::Conflict(
+                    "existing pre-admission reservation expired; reconcile before a new candidate",
+                ));
+            }
+            let mut existing_pre_context = existing.clone();
+            if existing_pre_context.staged_pre_admission {
+                existing_pre_context.context_selection_digest = None;
+                existing_pre_context.pins_digest = existing_pre_context.compute_digest();
+            }
+            if &existing_pre_context != pins {
+                return Err(WorkerDurableError::Conflict(
+                    "candidate identity is already reserved with different pre-context pins",
+                ));
+            }
+            let reservation = self.reserved_worker_proof(existing, &ticket_id, &worker_id, None)?;
+            return Ok(ReservedPreAdmissionTargetProofV1::new(
+                ManagedPreAdmissionTargetPinsV1 { pins: pins.clone() }, reservation,
+            ));
+        }
+        self.validate_managed_parent_pin(pins, now_ms())?;
+        self.apply(revision, &delivery_id, WorkerCommand::PreAdmissionReserved {
+            pins: pins.clone(), request, ticket_id: ticket_id.clone(),
+            worker_execution_id: worker_id.clone(), now_ms: now_ms(),
+        })?;
+        let reservation = self.reserved_worker_proof(pins, &ticket_id, &worker_id, None)?;
+        Ok(ReservedPreAdmissionTargetProofV1::new(
+            ManagedPreAdmissionTargetPinsV1 { pins: pins.clone() }, reservation,
+        ))
+    }
+
+    /// Resolve the exact Stage-A target from the persisted candidate and
+    /// proof after restart. It never searches for or substitutes another tree.
+    pub(crate) fn resolve_reserved_managed_pre_admission_target(
+        &self,
+        root_proof: &RootCoordinatorExecutionProofV1,
+        now_ms: u64,
+        pins: &ManagedPreAdmissionTargetPinsV1,
+        proof: &ReservedPreAdmissionTargetProofV1,
+    ) -> Result<(ReservedPreAdmissionTargetProofV1, ManagedAttemptWorktreeTargetV1), WorkerDurableError> {
+        if proof.pins != *pins || proof.proof_digest != ReservedPreAdmissionTargetProofV1::new(
+            pins.clone(), proof.reservation.clone(),
+        ).proof_digest {
+            return Err(WorkerDurableError::Conflict("Stage-A proof differs from the exact candidate"));
+        }
+        let current_pins = self.identities.pre_admission_pins.get(proof.worker_execution_id())
+            .ok_or(WorkerDurableError::NotFound("Stage-A candidate is not in the OwnerLog"))?;
+        let mut current_pre_context = current_pins.clone();
+        current_pre_context.context_selection_digest = None;
+        current_pre_context.pins_digest = current_pre_context.compute_digest();
+        if current_pre_context != pins.pins {
+            return Err(WorkerDurableError::Conflict("persisted candidate differs from Stage-A pins"));
+        }
+        let reservation = self.reserved_worker_proof(
+            current_pins, proof.ticket_id(), proof.worker_execution_id(), None,
+        )?;
+        let current_proof = ReservedPreAdmissionTargetProofV1::new(pins.clone(), reservation);
+        let mut target = self.resolve_reserved_managed_worktree_target(
+            root_proof, now_ms, current_pins, &current_proof.reservation,
+        )?;
+        target.reservation_proof_digest = Some(if current_proof.context_selection_digest().is_some() {
+            current_proof.reservation_receipt_digest()
+        } else {
+            current_proof.proof_digest().to_owned()
+        });
+        Ok((current_proof, target))
+    }
+
+    /// Restart resolver: candidate identity and stable idempotency key locate
+    /// the one durable reservation; all P8-issued pins (deadline and exact
+    /// worktree selection included) are returned from OwnerLog unchanged.
+    pub(crate) fn resolve_managed_pre_admission_target_for_candidate(
+        &self,
+        root_proof: &RootCoordinatorExecutionProofV1,
+        now_ms: u64,
+        candidate_attempt_id: &str,
+        idempotency_key: &str,
+    ) -> Result<(ManagedPreAdmissionTargetPinsV1, ReservedPreAdmissionTargetProofV1,
+        ManagedAttemptWorktreeTargetV1), WorkerDurableError> {
+        validate_owner_token(candidate_attempt_id)?;
+        if idempotency_key.is_empty() || idempotency_key.len() > 256
+            || idempotency_key.chars().any(char::is_control)
+        {
+            return Err(WorkerDurableError::Invalid("invalid pre-admission idempotency key"));
+        }
+        let candidates = self.identities.pre_admission_pins.values()
+            .filter(|pins| pins.attempt_id() == candidate_attempt_id).collect::<Vec<_>>();
+        if !candidates.is_empty() && !candidates.iter().any(|pins|
+            pins.staged_pre_admission && pins.idempotency_key == idempotency_key)
+        {
+            return Err(WorkerDurableError::Conflict(
+                "candidate Attempt exists under different P8 idempotency pins",
+            ));
+        }
+        let mut matches = candidates.into_iter().filter(|pins|
+            pins.staged_pre_admission && pins.idempotency_key == idempotency_key);
+        let persisted = matches.next().ok_or(WorkerDurableError::NotFound(
+            "candidate has no durable P8 pre-admission reservation",
+        ))?.clone();
+        if matches.next().is_some() {
+            return Err(WorkerDurableError::Conflict("candidate idempotency key maps to multiple P8 reservations"));
+        }
+        let mut stage_a_pins = persisted.clone();
+        stage_a_pins.context_selection_digest = None;
+        stage_a_pins.pins_digest = stage_a_pins.compute_digest();
+        let stage_a_pins = ManagedPreAdmissionTargetPinsV1 { pins: stage_a_pins };
+        let (ticket_id, worker_id, _) = pre_admission_request(&persisted)?;
+        let reservation = self.reserved_worker_proof(&persisted, &ticket_id, &worker_id, None)?;
+        let proof = ReservedPreAdmissionTargetProofV1::new(stage_a_pins.clone(), reservation);
+        let mut target = self.resolve_reserved_managed_worktree_target(
+            root_proof, now_ms, &persisted, &proof.reservation,
+        )?;
+        target.reservation_proof_digest = Some(if proof.context_selection_digest().is_some() {
+            proof.reservation_receipt_digest()
+        } else {
+            proof.proof_digest().to_owned()
+        });
+        Ok((stage_a_pins, proof, target))
+    }
+
+    /// Stage B: bind the exact Rust-validated ContextSelection to the same
+    /// still-RESERVED Stage-A lease. Returns canonical pins plus the exact
+    /// reservation proof admission must consume; it never reserves again.
+    pub(crate) fn bind_managed_pre_admission_context_digest(
+        &mut self,
+        proof: &ReservedPreAdmissionTargetProofV1,
+        context_selection_digest: &str,
+    ) -> Result<(ManagedReadyTaskPinV1, ReservedWorkerLeaseProofV1), WorkerDurableError> {
+        validate_owner_digest(context_selection_digest, "blake3:")?;
+        let stored = self.identities.pre_admission_pins.get(proof.worker_execution_id())
+            .ok_or(WorkerDurableError::NotFound("Stage-A candidate pins unavailable"))?;
+        let mut persisted_stage_a = stored.clone();
+        persisted_stage_a.context_selection_digest = None;
+        persisted_stage_a.pins_digest = persisted_stage_a.compute_digest();
+        let mut supplied_stage_a = proof.pins.pins.clone();
+        supplied_stage_a.context_selection_digest = None;
+        supplied_stage_a.pins_digest = supplied_stage_a.compute_digest();
+        if !stored.staged_pre_admission || proof.pins.pins.context_selection_digest.is_some()
+            || supplied_stage_a != persisted_stage_a
+            || proof.worker_execution_id() != pre_admission_ids(stored).1
+            || proof.ticket_id() != pre_admission_ids(stored).0
+            || proof.proof_digest != ReservedPreAdmissionTargetProofV1::new(
+                proof.pins.clone(), proof.reservation.clone(),
+            ).proof_digest
+        {
+            return Err(WorkerDurableError::Conflict("Stage-B pins differ from Stage-A candidate"));
+        }
+        if stored.owner_epoch() != self.resumed_epoch {
+            return Err(WorkerDurableError::Pool(WorkerPoolError::StaleOwnerEpoch));
+        }
+        if stored.expires_at_ms <= now_ms() {
+            return Err(WorkerDurableError::Conflict(
+                "pre-admission reservation expired before ContextSelection bind; reconcile without dispatch",
+            ));
+        }
+        let mut bound = stored.clone();
+        if bound.context_selection_digest.as_deref().is_some_and(|existing|
+            existing != context_selection_digest)
+        {
+            return Err(WorkerDurableError::Conflict("ContextSelection is already bound differently"));
+        }
+        bound.context_selection_digest = Some(context_selection_digest.to_owned());
+        bound.pins_digest = bound.compute_digest();
+        let worker = self.pool.as_ref().and_then(|pool| pool.worker(proof.worker_execution_id()))
+            .ok_or(WorkerDurableError::NotFound("Stage-A reserved worker unavailable"))?;
+        if worker.state != crate::resource_budget::ReservationState::Reserved
+            || worker.cancellation_requested || worker.unknown_effect || worker.process_identity.is_some()
+            || self.identities.delegation_bindings.contains_key(proof.worker_execution_id())
+        {
+            return Err(WorkerDurableError::Conflict("Stage-B requires the same unclaimed RESERVED lease"));
+        }
+        let current = self.identities.pre_admission_pins.get(proof.worker_execution_id())
+            .ok_or(WorkerDurableError::NotFound("Stage-A candidate pins unavailable"))?;
+        let (_, _, delivery_id) = pre_admission_ids(&bound);
+        if current != &bound {
+            let revision = self.pool.as_ref().map(WorkerPool::revision).unwrap_or_default();
+            self.apply(revision, &format!("{delivery_id}-context-bound"),
+                WorkerCommand::PreAdmissionContextBound {
+                    worker_execution_id: proof.worker_execution_id().to_owned(),
+                    ticket_id: proof.ticket_id().to_owned(), pins: bound.clone(),
+                })?;
+        }
+        let reservation = self.reserved_worker_proof(
+            &bound, proof.ticket_id(), proof.worker_execution_id(), None,
+        )?;
+        Ok((bound, reservation))
+    }
+
     /// Resolve the immutable P8 reservation by a trusted Attempt identity
     /// already selected by HostKernel. A tombstoned candidate remains
     /// discoverable only through its reconciliation receipt and cannot be
@@ -3274,7 +6425,8 @@ impl WorkerPoolControl {
         now_ms: u64,
     ) -> Result<DurableManagedLeaseProofV1, WorkerDurableError> {
         pins.validate()?;
-        if pins.owner() != owner || pins.owner_epoch() != self.resumed_epoch
+        if pins.context_selection_digest.is_none()
+            || pins.owner() != owner || pins.owner_epoch() != self.resumed_epoch
             || self.identities.pre_admission_pins.get(reservation.worker_execution_id()) != Some(pins)
             || reservation.binding_digest().is_some()
         {
@@ -3323,16 +6475,18 @@ impl WorkerPoolControl {
         &mut self,
         proof: &ReservedWorkerLeaseProofV1,
         delegation: &crate::protocol::DelegationBindingV1,
+        worktree_projection: &crate::managed_control::ManagedWorktreeAdmissionProjectionV1,
     ) -> Result<ReservedWorkerLeaseProofV1, WorkerDurableError> {
         let pins = self.identities.pre_admission_pins.get(&proof.worker_execution_id)
             .ok_or(WorkerDurableError::NotFound("pre-admission pins unavailable"))?.clone();
         let (_, _, delivery_id) = pre_admission_ids(&pins);
         let binding_digest = delegation.digest()
             .map_err(|_| WorkerDurableError::Invalid("delegation digest failed"))?;
+        let worktree_admission = ManagedWorktreeAdmissionPinV1::from_hostkernel(worktree_projection)?;
         let attached_digest = self.identities.delegation_bindings
             .get(&proof.worker_execution_id).map(|binding| binding.binding_digest.as_str());
         let current = self.reserved_worker_proof(&pins, &proof.ticket_id, &proof.worker_execution_id, attached_digest)?;
-        if &current != proof {
+        if &current != proof && attached_digest.is_none() {
             return Err(WorkerDurableError::Conflict("reserved worker proof is stale"));
         }
         let worker = self.pool.as_ref().and_then(|pool| pool.worker(&proof.worker_execution_id))
@@ -3344,13 +6498,19 @@ impl WorkerPoolControl {
             || delegation.attempt_id != pins.attempt_id()
             || delegation.child_execution_id != proof.worker_execution_id
             || delegation.accepted_spec_digest != pins.accepted_spec_digest
-            || delegation.source_revision != pins.workspace_revision
+            || delegation.source_revision != worktree_admission.child_workspace_revision
+            || worktree_admission.worktree_id != pins.worktree.worktree_id
+            || worktree_admission.base_revision != pins.worktree.base_revision
+            || worktree_admission.root_location_id != pins.location_id
+            || worktree_admission.p8_workspace_binding != pins.workspace_binding()
+            || worktree_admission.pool_revision != self.pool.as_ref()
+                .map(WorkerPool::revision).unwrap_or_default()
             || delegation.owner_epoch != pins.owner_epoch()
             || delegation.profile_id != pins.profile_id
             || delegation.profile_revision != pins.profile_revision
             || delegation.profile_digest != pins.profile_digest
             || delegation.capability_ceiling_digest != pins.capability_ceiling_digest
-            || delegation.context_selection_digest != pins.context_selection_digest
+            || Some(delegation.context_selection_digest.as_str()) != pins.context_selection_digest.as_deref()
             || delegation.workspace_lease_id != proof.workspace_lease_id
             || delegation.budget_lease_id != proof.budget_lease_id
             || delegation.resource_lease_ids != proof.resource_lease_ids
@@ -3361,10 +6521,21 @@ impl WorkerPoolControl {
         let journal_binding = BoundWorkerDelegationV1 {
             binding_digest: binding_digest.clone(),
             parent_execution_id: delegation.parent_execution_id.clone(),
+            worktree_admission: Some(worktree_admission),
         };
         if let Some(existing) = self.identities.delegation_bindings.get(&proof.worker_execution_id) {
             if existing != &journal_binding {
                 return Err(WorkerDurableError::Conflict("worker binding digest is immutable"));
+            }
+            if proof.worker_execution_id != current.worker_execution_id
+                || proof.ticket_id != current.ticket_id
+                || proof.attempt_id != current.attempt_id
+                || proof.pins_digest != current.pins_digest
+                || proof.workspace_lease_id != current.workspace_lease_id
+                || proof.budget_lease_id != current.budget_lease_id
+                || proof.resource_lease_ids != current.resource_lease_ids
+            {
+                return Err(WorkerDurableError::Conflict("binding retry differs from exact P8 reservation"));
             }
             return self.reserved_worker_proof(&pins, &proof.ticket_id, &proof.worker_execution_id, Some(&binding_digest));
         } else {
@@ -3399,7 +6570,6 @@ impl WorkerPoolControl {
             || attempt_binding.task_id() != pins.task_id()
             || attempt_binding.attempt_id() != pins.attempt_id()
             || attempt_binding.owner_epoch() != pins.owner_epoch()
-            || attempt_binding.source_revision() != pins.workspace_revision()
             || attempt_binding.accepted_spec_digest() != pins.accepted_spec_digest()
         {
             return Err(WorkerDurableError::Conflict(
@@ -3408,6 +6578,9 @@ impl WorkerPoolControl {
         }
 
         let worker_execution_id = reservation.worker_execution_id();
+        let attached_binding = self.identities.delegation_bindings.get(worker_execution_id)
+            .ok_or(WorkerDurableError::Conflict("managed Attempt has no durable P8 DelegationBinding"))?;
+        let child_workspace_revision = attached_binding.child_workspace_revision()?;
         let (ticket_id, expected_worker_id, _) = pre_admission_request(pins)?;
         if worker_execution_id != expected_worker_id
             || reservation.ticket_id() != ticket_id
@@ -3436,9 +6609,10 @@ impl WorkerPoolControl {
             || delegation.profile_id != pins.profile_id()
             || delegation.profile_revision != pins.profile_revision()
             || delegation.profile_digest != pins.profile_digest()
-            || delegation.context_selection_digest != pins.context_selection_digest()
+            || Some(delegation.context_selection_digest.as_str()) != pins.context_selection_digest()
             || delegation.capability_ceiling_digest != pins.capability_ceiling_digest()
-            || delegation.source_revision != pins.workspace_revision()
+            || attempt_binding.source_revision() != child_workspace_revision
+            || delegation.source_revision != child_workspace_revision
             || delegation.owner_epoch != pins.owner_epoch()
             || delegation.workspace_lease_id != reservation.workspace_lease_id()
             || delegation.budget_lease_id != reservation.budget_lease_id()
@@ -3464,7 +6638,9 @@ impl WorkerPoolControl {
         if self.identities.pre_admission_pins.get(worker_execution_id) != Some(pins)
             || self.identities.delegation_bindings.get(worker_execution_id)
                 .is_none_or(|attached| attached.binding_digest != binding_digest
-                    || attached.parent_execution_id != delegation.parent_execution_id)
+                    || attached.parent_execution_id != delegation.parent_execution_id
+                    || attached.worktree_admission.as_ref().is_none_or(|pin|
+                        pin.child_workspace_revision != child_workspace_revision))
         {
             return Err(WorkerDurableError::Conflict(
                 "durable P8 pins or attached DelegationBinding changed",
@@ -3593,7 +6769,6 @@ impl WorkerPoolControl {
             || attempt_binding.task_id() != pins.task_id()
             || attempt_binding.attempt_id() != pins.attempt_id()
             || attempt_binding.owner_epoch() != pins.owner_epoch()
-            || attempt_binding.source_revision() != pins.workspace_revision()
             || attempt_binding.accepted_spec_digest() != pins.accepted_spec_digest()
             || delegation.attempt_id != pins.attempt_id()
             || delegation.task_id != pins.task_id()
@@ -3604,9 +6779,11 @@ impl WorkerPoolControl {
             || delegation.profile_id != pins.profile_id()
             || delegation.profile_revision != pins.profile_revision()
             || delegation.profile_digest != pins.profile_digest()
-            || delegation.context_selection_digest != pins.context_selection_digest()
+            || Some(delegation.context_selection_digest.as_str()) != pins.context_selection_digest()
             || delegation.capability_ceiling_digest != pins.capability_ceiling_digest()
-            || delegation.source_revision != pins.workspace_revision()
+            || delegation.source_revision != self.identities.delegation_bindings.get(worker_id)
+                .ok_or(WorkerDurableError::Conflict("claimed worker binding is unavailable"))?
+                .child_workspace_revision()?
         {
             return Err(WorkerDurableError::Conflict("claimed handoff Attempt or binding differs from immutable P8 pins"));
         }
@@ -3680,9 +6857,11 @@ impl WorkerPoolControl {
             || delegation.profile_id != pins.profile_id()
             || delegation.profile_revision != pins.profile_revision()
             || delegation.profile_digest != pins.profile_digest()
-            || delegation.context_selection_digest != pins.context_selection_digest()
+            || Some(delegation.context_selection_digest.as_str()) != pins.context_selection_digest()
             || delegation.capability_ceiling_digest != pins.capability_ceiling_digest()
-            || delegation.source_revision != pins.workspace_revision()
+            || delegation.source_revision != self.identities.delegation_bindings.get(worker_id)
+                .ok_or(WorkerDurableError::Conflict("terminal worker binding is unavailable"))?
+                .child_workspace_revision()?
         {
             return Err(WorkerDurableError::Conflict("terminal Attempt or binding differs from immutable P8 pins"));
         }
@@ -3717,6 +6896,107 @@ impl WorkerPoolControl {
         Ok((pins.clone(), proof))
     }
 
+    /// Persist a typed non-success terminal quarantine without releasing the
+    /// ActiveWorkers reservation or making its worktree reusable. The proof
+    /// must establish exact logical-child quiescence and settled effects; this
+    /// path does not claim a child PID exit and cannot be used for UNKNOWN.
+    pub(crate) fn quarantine_managed_worker(
+        &mut self,
+        proof: WorkerSettlementProofV1,
+        now_ms: u64,
+    ) -> Result<WorkerManagedQuarantineReceiptV1, WorkerDurableError> {
+        if proof.execution_kind() != WorkerExecutionKindV1::LogicalCoreSession
+            || !valid_digest(proof.proof_digest(), "blake3:")
+            || proof.final_worktree_receipt().is_some()
+        {
+            return Err(WorkerDurableError::Invalid("managed terminal quarantine proof is invalid"));
+        }
+        let terminal = proof.terminal();
+        let reason = match (terminal.attempt_state(), terminal.task_state()) {
+            (crate::managed_control::ManagedAttemptTerminalStateV1::Failed,
+                crate::managed_control::ManagedTaskTerminalStateV1::Failed) => WorkerManagedQuarantineReasonV1::FailedAttempt,
+            (crate::managed_control::ManagedAttemptTerminalStateV1::Failed,
+                crate::managed_control::ManagedTaskTerminalStateV1::Cancelled) => WorkerManagedQuarantineReasonV1::CancelledTask,
+            _ => return Err(WorkerDurableError::Conflict("only FAILED/CANCELLED terminal Attempts may enter quarantine")),
+        };
+        let worker_id = proof.claim().worker_execution_id().to_owned();
+        if let Some(receipt) = self.managed_quarantine_receipts.get(&worker_id) {
+            return if receipt.terminal_proof_digest() == proof.proof_digest()
+                && receipt.attempt_id() == proof.claim().attempt_id()
+            {
+                Ok(receipt.clone())
+            } else {
+                Err(WorkerDurableError::Conflict("managed worker already has a different quarantine receipt"))
+            };
+        }
+        let root_owner = self.resolve_worktree_root_owner(proof.root(), now_ms)?;
+        let pins = self.identities.pre_admission_pins.get(&worker_id)
+            .ok_or(WorkerDurableError::NotFound("quarantine worker pins unavailable"))?;
+        let claim = self.claimed_worker_dispatch_proof(&worker_id)?;
+        let binding = self.identities.delegation_bindings.get(&worker_id)
+            .ok_or(WorkerDurableError::Conflict("quarantine DelegationBinding missing"))?;
+        let worker = self.pool.as_ref().and_then(|pool| pool.worker(&worker_id))
+            .ok_or(WorkerDurableError::NotFound("quarantine worker lease missing"))?;
+        if &claim != proof.claim()
+            || proof.owner() != pins.owner()
+            || proof.owner().owner_epoch() != self.resumed_epoch
+            || proof.attempt_binding().attempt_id() != pins.attempt_id()
+            || proof.attempt_binding().source_revision() != binding.child_workspace_revision()?
+            || proof.attempt_binding().accepted_spec_digest() != pins.accepted_spec_digest()
+            || terminal.task_revision() != pins.task_revision().parse::<u64>()
+                .map_err(|_| WorkerDurableError::Conflict("pinned Task revision is invalid"))?
+            || terminal.admission_workspace_revision() != Some(binding.child_workspace_revision()?)
+            || terminal.binding_digest() != binding.binding_digest
+            || terminal.binding_digest() != claim.binding_digest()
+            || terminal.spec_digest() != pins.accepted_spec_digest()
+            || terminal.goal_id() != pins.goal_id() || terminal.run_id() != pins.run_id()
+            || terminal.task_id() != pins.task_id() || terminal.attempt_id() != pins.attempt_id()
+            || root_owner.goal_id() != pins.goal_id() || root_owner.run_id() != pins.run_id()
+            || root_owner.principal_ref() != pins.principal_ref()
+            || root_owner.workspace_binding() != pins.workspace_binding()
+            || managed_root_session_id(pins.parent_proof())? != root_owner.session_id()
+            || root_owner.location_id() != pins.location_id()
+            || root_owner.owner_epoch() != pins.owner_epoch()
+            || root_owner.process_incarnation() != pins.process_incarnation()
+            || root_owner.accepted_spec_digest() != pins.accepted_spec_digest()
+            || worker.state != crate::resource_budget::ReservationState::Claimed
+            || worker.goal_id != pins.goal_id()
+            || worker.owner.principal_ref != pins.principal_ref()
+            || worker.owner.workspace_binding != pins.workspace_binding()
+            || worker.owner.session_id != pins.session_id()
+            || worker.owner.run_id != pins.run_id()
+            || worker.owner.task_id != pins.task_id()
+            || worker.owner.attempt_id != pins.attempt_id()
+            || worker.owner.owner_epoch != pins.owner_epoch()
+            || worker.process_identity.is_some()
+            || worker.worktree_lease_id.as_deref() != Some(claim.reservation().workspace_lease_id())
+            || worker.unknown_effect
+            || terminal.effects().iter().any(|effect| {
+                effect.outcome() == Some(crate::managed_control::AttemptEffectOutcomeV1::Unknown)
+            })
+        {
+            return Err(WorkerDurableError::Conflict(
+                "managed terminal quarantine differs from current P8/P1/P2 pins or has uncertain work",
+            ));
+        }
+        let event = ManagedTerminalQuarantineEventV1 {
+            scope: OwnerScopeKey::from_owner(proof.owner()),
+            worker_execution_id: worker_id.clone(),
+            goal_id: pins.goal_id().to_owned(), run_id: pins.run_id().to_owned(),
+            task_id: pins.task_id().to_owned(), attempt_id: pins.attempt_id().to_owned(),
+            owner_epoch: proof.owner().owner_epoch(),
+            reservation_id: claim.reservation().budget_lease_id().to_owned(),
+            worktree_lease_id: claim.reservation().workspace_lease_id().to_owned(),
+            terminal_proof_digest: proof.proof_digest().to_owned(), reason,
+        };
+        let revision = self.pool.as_ref().map(WorkerPool::revision)
+            .ok_or(WorkerDurableError::Invalid("worker pool unavailable"))?;
+        let delivery_id = format!("worker-managed-quarantine-{worker_id}");
+        self.apply(revision, &delivery_id, WorkerCommand::ManagedTerminalQuarantined { event })?;
+        self.managed_quarantine_receipts.get(&worker_id).cloned()
+            .ok_or(WorkerDurableError::Invalid("managed quarantine OwnerLog receipt was not materialized"))
+    }
+
     /// Consume a P1-minted logical-session terminal proof. P8 re-resolves the
     /// claim receipt, exact pins/binding, current root OwnerLog watermark and
     /// P2 evidence digests before appending. Exact retry returns the same
@@ -3733,13 +7013,23 @@ impl WorkerPoolControl {
         }
         let worker_id = proof.claim().worker_execution_id().to_owned();
         if let Some(receipt) = self.managed_settlement_receipts.get(&worker_id) {
-            return if receipt.proof_digest() == proof.proof_digest()
+            if receipt.proof_digest() == proof.proof_digest()
                 && receipt.attempt_id() == proof.claim().attempt_id()
             {
-                Ok(receipt.clone())
+                if self.resolve_managed_worktree_disposition_for_attempt(proof.claim().attempt_id())?.is_some() {
+                    return self.resolve_managed_settlement_for_attempt(proof.claim().attempt_id())?
+                        .ok_or(WorkerDurableError::ReplayConflict(
+                            "managed settlement disappeared after its disposition was committed",
+                        ));
+                }
+                self.ensure_managed_worktree_disposition(&worker_id, proof.claim().attempt_id(), None)?;
+                return self.resolve_managed_settlement_for_attempt(proof.claim().attempt_id())?
+                    .ok_or(WorkerDurableError::ReplayConflict(
+                        "managed settlement receipt disappeared during exact replay",
+                    ));
             } else {
-                Err(WorkerDurableError::Conflict("managed worker already has a different settlement receipt"))
-            };
+                return Err(WorkerDurableError::Conflict("managed worker already has a different settlement receipt"));
+            }
         }
         let root_owner = self.resolve_worktree_root_owner(proof.root(), now_ms)?;
         let pins = self.identities.pre_admission_pins.get(&worker_id)
@@ -3748,15 +7038,26 @@ impl WorkerPoolControl {
         let binding = self.identities.delegation_bindings.get(&worker_id)
             .ok_or(WorkerDurableError::Conflict("settlement DelegationBinding missing"))?;
         let terminal = proof.terminal();
+        // This event releases ActiveWorkers capacity. Architecture permits
+        // release here only after independently verified success. A failed or
+        // cancelled terminal can still be represented by the typed proof for
+        // quarantine/reconciliation, but must never enter this release path.
+        if terminal.attempt_state() != crate::managed_control::ManagedAttemptTerminalStateV1::Succeeded
+            || terminal.task_state() != crate::managed_control::ManagedTaskTerminalStateV1::Verified
+        {
+            return Err(WorkerDurableError::Conflict(
+                "non-success managed terminal requires quarantine/reconciliation; capacity is retained",
+            ));
+        }
         if &claim != proof.claim()
             || proof.owner() != pins.owner()
             || proof.owner().owner_epoch() != self.resumed_epoch
             || proof.attempt_binding().attempt_id() != pins.attempt_id()
-            || proof.attempt_binding().source_revision() != pins.workspace_revision()
+            || proof.attempt_binding().source_revision() != binding.child_workspace_revision()?
             || proof.attempt_binding().accepted_spec_digest() != pins.accepted_spec_digest()
             || terminal.task_revision() != pins.task_revision().parse::<u64>()
                 .map_err(|_| WorkerDurableError::Conflict("pinned Task revision is invalid"))?
-            || terminal.admission_workspace_revision() != Some(pins.workspace_revision())
+            || terminal.admission_workspace_revision() != Some(binding.child_workspace_revision()?)
             || terminal.binding_digest() != binding.binding_digest
             || terminal.binding_digest() != claim.binding_digest()
             || terminal.spec_digest() != pins.accepted_spec_digest()
@@ -3765,7 +7066,7 @@ impl WorkerPoolControl {
             || root_owner.goal_id() != pins.goal_id() || root_owner.run_id() != pins.run_id()
             || root_owner.principal_ref() != pins.principal_ref()
             || root_owner.workspace_binding() != pins.workspace_binding()
-            || root_owner.session_id() != pins.session_id()
+            || root_owner.session_id() != managed_root_session_id(pins.parent_proof())?
             || root_owner.location_id() != pins.location_id()
             || root_owner.owner_epoch() != pins.owner_epoch()
             || root_owner.process_incarnation() != pins.process_incarnation()
@@ -3773,40 +7074,868 @@ impl WorkerPoolControl {
         {
             return Err(WorkerDurableError::Conflict("managed settlement differs from current P8/P1/P2 pins"));
         }
-        let receipt = proof.final_worktree_receipt();
-        let reusable_worktree = receipt.is_some_and(|receipt| {
-            terminal.observed_workspace_head() == Some(receipt.observed_workspace_revision())
-                && receipt.workspace_binding() == pins.workspace_binding()
-                && receipt.status() == WorktreeObservedStatusV1::Clean
-                && receipt.dirty_entry_count() == 0
-                && !receipt.contains_user_owned_changes()
-                && receipt.owned() && receipt.no_follow()
-        });
-        if receipt.is_some_and(|receipt|
-            terminal.observed_workspace_head() != Some(receipt.observed_workspace_revision())
-                || receipt.workspace_binding() != pins.workspace_binding()
-                || !receipt.owned() || !receipt.no_follow()
-        ) {
+        // A successful worker settlement releases ActiveWorkers. Require the
+        // final Guarded Inspect receipt at this boundary even though the
+        // opaque P1 proof constructor also requires it for VERIFIED Tasks.
+        // P8 independently rechecks that invariant before appending its own
+        // OwnerLog event, and rejects incomplete observations as well as
+        // missing/UNKNOWN workspace states.
+        let receipt = proof.final_worktree_receipt().ok_or(WorkerDurableError::Conflict(
+            "successful managed settlement requires the durable final Inspect receipt",
+        ))?;
+        self.validate_settlement_worktree_receipt(receipt, &root_owner, pins, terminal)?;
+        if terminal.observed_workspace_head() != Some(receipt.observed_workspace_revision())
+            || receipt.workspace_binding() != pins.workspace_binding()
+            || !receipt.owned() || !receipt.no_follow()
+        {
             return Err(WorkerDurableError::Conflict("final guarded workspace observation differs from P2 terminal head"));
         }
         let event = ManagedLogicalSettlementEventV1 {
+            schema_version: 4,
             worker_execution_id: worker_id.clone(), attempt_id: pins.attempt_id().to_owned(),
             proof_digest: proof.proof_digest().to_owned(),
-            observed_workspace_revision: receipt.map(|receipt| receipt.observed_workspace_revision().to_owned()),
-            reusable_worktree,
+            observed_workspace_revision: Some(receipt.observed_workspace_revision().to_owned()),
+            final_worktree_operation_id: Some(receipt.operation_id().to_owned()),
+            final_worktree_host_receipt_ref: Some(receipt.host_receipt_ref().to_owned()),
+            evidence_digest: terminal.evidence_digest().map(str::to_owned),
+            evidence_refs: terminal.evidence_refs().to_vec(),
+            verification_run_id: proof.verifier_pins().map(|pins| pins.verification_run_id().to_owned()),
+            set_identity_digest: proof.verifier_pins().map(|pins| pins.set_identity_digest().to_owned()),
+            challenge_set_digest: proof.verifier_pins().map(|pins| pins.challenge_set_digest().to_owned()),
+            reusable_worktree: false,
             reconciliation_owner_epoch: None,
+            disposition_deferred: true,
         };
         let revision = self.pool.as_ref().map(WorkerPool::revision)
             .ok_or(WorkerDurableError::Invalid("worker pool unavailable"))?;
         let delivery_id = format!("worker-managed-settle-{worker_id}");
         self.apply(revision, &delivery_id, WorkerCommand::ManagedLogicalSettled { event })?;
+        self.ensure_managed_worktree_disposition(&worker_id, pins.attempt_id(), None)?;
         self.managed_settlement_receipts.get(&worker_id).cloned()
             .ok_or(WorkerDurableError::Invalid("settlement OwnerLog receipt was not materialized"))
+    }
+
+    fn validate_settlement_worktree_receipt(
+        &self,
+        receipt: &GuardedWorktreeReceiptV1,
+        root_owner: &WorktreeRootOwnerV1,
+        pins: &TrustedPreAdmissionPinsV1,
+        terminal: &crate::managed_control::ManagedAttemptTerminalSnapshotV1,
+    ) -> Result<(), WorkerDurableError> {
+        let operation = self.worktree_operations.get(receipt.operation_id()).ok_or(
+            WorkerDurableError::Conflict("final Inspect receipt has no durable P8 operation"),
+        )?;
+        let intent = operation.intent();
+        let registration = self.identities.worktree_registration_records
+            .get(&pins.worktree.worktree_id)
+            .filter(|registration| same_worktree_root_lineage(registration.owner(), root_owner)
+                && registration.owner().owner_epoch() <= root_owner.owner_epoch()
+                && !self.identities.removed_worktree_registrations.contains_key(&pins.worktree.worktree_id)
+                && registration.matches_durable_operations(&self.worktree_operations))
+            .ok_or(WorkerDurableError::Conflict("final Inspect registration lineage is unavailable"))?;
+        let provenance = registration.provenance().ok_or(WorkerDurableError::Conflict(
+            "final Inspect registration provenance is unavailable",
+        ))?;
+        let create = self.worktree_operations.get(provenance.create_operation_id())
+            .filter(|create| create.state() == WorktreeOperationStateV1::Completed
+                && create.intent().kind() == WorktreeOperationKindV1::Create
+                && same_worktree_root_lineage(create.intent().owner(), root_owner)
+                && create.intent().owner().owner_epoch() <= root_owner.owner_epoch()
+                && create.intent().worktree_id() == pins.worktree.worktree_id)
+            .ok_or(WorkerDurableError::Conflict("final Inspect Create provenance is unavailable"))?;
+        if operation.state() != WorktreeOperationStateV1::Completed
+            || operation.receipt() != Some(receipt)
+            || intent.kind() != WorktreeOperationKindV1::Inspect
+            || intent.owner() != root_owner
+            || intent.operation_id() != worktree_operation_id(
+                intent.owner(), WorktreeOperationKindV1::Inspect,
+                &managed_final_inspect_idempotency_key(pins.attempt_id()),
+            )
+            || intent.worktree_id() != pins.worktree.worktree_id
+            || intent.base_revision() != Some(pins.worktree.base_revision.as_str())
+            || intent.root() != create.intent().root()
+            || intent.root().location_ref() != pins.location_id()
+            || intent.relative_path() != create.intent().relative_path()
+            || intent.root().workspace_binding() != pins.workspace_binding()
+            || intent.expected_workspace_revision() != terminal.observed_workspace_head().unwrap_or_default()
+            || receipt.workspace_binding() != pins.workspace_binding()
+            || receipt.observed_workspace_revision() != terminal.observed_workspace_head().unwrap_or_default()
+            || !final_inspect_allows_verified_settlement(receipt)
+        {
+            return Err(WorkerDurableError::Conflict("final Inspect receipt is not the exact durable P8 operation for this Attempt"));
+        }
+        Ok(())
+    }
+
+    fn ensure_managed_worktree_disposition(
+        &mut self,
+        worker_execution_id: &str,
+        attempt_id: &str,
+        reconciliation_owner_epoch: Option<u64>,
+    ) -> Result<(), WorkerDurableError> {
+        let settlement = self.resolve_managed_settlement_for_attempt_inner(attempt_id, false)?
+            .ok_or(WorkerDurableError::Conflict("managed settlement is not durable before worktree disposition"))?;
+        if settlement.worker_execution_id() != worker_execution_id {
+            return Err(WorkerDurableError::ReplayConflict(
+                "settlement receipt belongs to another worker before worktree disposition",
+            ));
+        }
+        let operation_id = settlement.final_worktree_operation_id().ok_or(
+            WorkerDurableError::Conflict("managed settlement has no final Inspect operation for disposition"),
+        )?;
+        let host_receipt_ref = settlement.final_worktree_host_receipt_ref().ok_or(
+            WorkerDurableError::Conflict("managed settlement has no HostKernel Inspect receipt for disposition"),
+        )?;
+        let observed_revision = settlement.final_workspace_revision().ok_or(
+            WorkerDurableError::Conflict("managed settlement has no observed revision for disposition"),
+        )?;
+        let inspect = self.worktree_operations.get(operation_id).ok_or(
+            WorkerDurableError::ReplayConflict("final Inspect is unavailable for worktree disposition"),
+        )?;
+        let receipt = inspect.receipt().ok_or(
+            WorkerDurableError::ReplayConflict("final Inspect receipt is unavailable for worktree disposition"),
+        )?;
+        let inspect_receipt_digest = logical_command_digest(
+            "worker_final_inspect_receipt", &worktree_receipt_value(receipt),
+        );
+        let original_owner_epoch = self.identities.pre_admission_pins.get(worker_execution_id)
+            .ok_or(WorkerDurableError::ReplayConflict(
+                "managed worktree disposition has no immutable admission pins",
+            ))?.owner_epoch();
+        let reusable_worktree = receipt.status() == WorktreeObservedStatusV1::Clean
+            && receipt.dirty_entry_count() == 0
+            && !receipt.contains_user_owned_changes()
+            && receipt.owned() && receipt.no_follow();
+        let event = ManagedWorktreeDispositionEventV1 {
+            worker_execution_id: worker_execution_id.to_owned(),
+            attempt_id: attempt_id.to_owned(),
+            owner_epoch: original_owner_epoch,
+            settlement_receipt_digest: settlement.receipt_digest().to_owned(),
+            final_worktree_operation_id: operation_id.to_owned(),
+            final_worktree_host_receipt_ref: host_receipt_ref.to_owned(),
+            observed_workspace_revision: observed_revision.to_owned(),
+            inspect_receipt_digest,
+            reusable_worktree,
+            reconciliation_owner_epoch,
+            reconciliation_proof_digest: reconciliation_owner_epoch.map(|_| settlement.proof_digest().to_owned()),
+        };
+        if let Some(existing) = self.managed_worktree_disposition_events.get(worker_execution_id) {
+            let legacy_epoch_replay = existing.reconciliation_owner_epoch.is_some()
+                && existing.reconciliation_proof_digest.is_none()
+                && existing.worker_execution_id == event.worker_execution_id
+                && existing.attempt_id == event.attempt_id
+                && existing.owner_epoch == event.owner_epoch
+                && existing.settlement_receipt_digest == event.settlement_receipt_digest
+                && existing.final_worktree_operation_id == event.final_worktree_operation_id
+                && existing.final_worktree_host_receipt_ref == event.final_worktree_host_receipt_ref
+                && existing.observed_workspace_revision == event.observed_workspace_revision
+                && existing.inspect_receipt_digest == event.inspect_receipt_digest
+                && existing.reusable_worktree == event.reusable_worktree
+                && existing.reconciliation_owner_epoch == event.reconciliation_owner_epoch;
+            return if existing == &event || legacy_epoch_replay {
+                Ok(())
+            } else {
+                Err(WorkerDurableError::ReplayConflict(
+                    "managed worktree disposition changed after durable settlement",
+                ))
+            };
+        }
+        let revision = self.pool.as_ref().map(WorkerPool::revision)
+            .ok_or(WorkerDurableError::Invalid("worker pool unavailable"))?;
+        let delivery_id = format!("worker-managed-worktree-disposition-{worker_execution_id}");
+        self.apply(revision, &delivery_id, WorkerCommand::ManagedWorktreeDisposition { event })
+    }
+
+    /// Resolve the exact retained worktree for post-restart recovery of a
+    /// successful settlement. All identifying path/registration facts come
+    /// from P8 pins; current root and terminal evidence are re-resolved.
+    pub(crate) fn resolve_settled_managed_worktree_recovery_target(
+        &self,
+        root_proof: &RootCoordinatorExecutionProofV1,
+        now_ms: u64,
+        owner: &AuthenticatedOwnerContext,
+        terminal: &crate::managed_control::ManagedAttemptTerminalSnapshotV1,
+        attempt_id: &str,
+    ) -> Result<SettledManagedWorktreeRecoveryTargetV1, WorkerDurableError> {
+        validate_owner_token(attempt_id)?;
+        let settlement = self.resolve_managed_settlement_for_attempt_inner(attempt_id, false)?
+            .ok_or(WorkerDurableError::NotFound("managed settlement receipt unavailable"))?;
+        let pins = self.identities.pre_admission_pins.get(settlement.worker_execution_id())
+            .ok_or(WorkerDurableError::ReplayConflict("settled worker admission pins unavailable"))?;
+        let binding = self.identities.delegation_bindings.get(settlement.worker_execution_id())
+            .ok_or(WorkerDurableError::ReplayConflict("settled worker binding unavailable"))?;
+        let claim = self.claimed_worker_dispatch_proof(settlement.worker_execution_id())?;
+        let root_owner = self.resolve_worktree_root_owner(root_proof, now_ms)?;
+        let pool = self.pool.as_ref().ok_or(WorkerDurableError::Invalid("worker pool unavailable"))?;
+        let worker = pool.worker(settlement.worker_execution_id()).ok_or(
+            WorkerDurableError::ReplayConflict("settled logical worker missing"),
+        )?;
+        let tree = pool.worktree_snapshot(&pins.worktree.worktree_id).ok_or(
+            WorkerDurableError::ReplayConflict("settled worktree row missing"),
+        )?;
+        if !settlement.disposition_deferred()
+            || settlement.disposition() != WorkerManagedSettlementDispositionV1::Released
+            || settlement.attempt_id() != attempt_id
+            || owner.owner_epoch() != self.resumed_epoch
+            || owner.owner_epoch() <= pins.owner_epoch()
+            || owner.principal_ref() != pins.principal_ref()
+            || owner.workspace_binding() != pins.workspace_binding()
+            || owner.session_id() != pins.session_id()
+            || owner.run_id() != pins.owner().run_id()
+            || owner.task_id() != pins.owner().task_id()
+            || owner.attempt_id() != pins.attempt_id()
+            || root_owner.goal_id() != pins.goal_id()
+            || root_owner.run_id() != pins.owner().run_id()
+            || root_owner.principal_ref() != pins.principal_ref()
+            || root_owner.workspace_binding() != pins.workspace_binding()
+            || root_owner.session_id() != managed_root_session_id(pins.parent_proof())?
+            || root_owner.location_id() != pins.location_id()
+            || root_owner.owner_epoch() != owner.owner_epoch()
+            || root_owner.accepted_spec_digest() != pins.accepted_spec_digest()
+            || terminal.goal_id() != pins.goal_id()
+            || terminal.run_id() != pins.owner().run_id()
+            || terminal.task_id() != pins.owner().task_id()
+            || terminal.attempt_id() != pins.attempt_id()
+            || terminal.task_revision() != pins.task_revision().parse::<u64>()
+                .map_err(|_| WorkerDurableError::ReplayConflict("pinned Task revision invalid"))?
+            || terminal.binding_digest() != binding.binding_digest
+            || terminal.admission_workspace_revision() != Some(binding.child_workspace_revision()?)
+            || terminal.spec_digest() != pins.accepted_spec_digest()
+            || terminal.attempt_state() != crate::managed_control::ManagedAttemptTerminalStateV1::Succeeded
+            || terminal.task_state() != crate::managed_control::ManagedTaskTerminalStateV1::Verified
+            || terminal.child_prompt_state() != crate::managed_control::ManagedChildPromptStateV1::Quiesced
+            || terminal.effect_chain_state() != crate::managed_control::ManagedAttemptEffectChainStateV1::AllSettled
+            || terminal.evidence_digest() != settlement.evidence_digest()
+            || terminal.observed_workspace_head().is_none()
+            || terminal.owner_log_sequence() == 0
+            || terminal.managed_revision() == 0
+            || !valid_digest(terminal.owner_log_event_digest(), "blake3:")
+            || !valid_digest(terminal.attempt_state_digest(), "blake3:")
+            || !valid_digest(terminal.effect_chain_digest(), "blake3:")
+            || terminal.child_prompt_quiescence().is_none_or(|q| {
+                let marker = q.proof();
+                marker.goal_id() != pins.goal_id()
+                    || marker.run_id() != pins.owner().run_id()
+                    || marker.task_id() != pins.owner().task_id()
+                    || marker.attempt_id() != pins.attempt_id()
+                    || marker.parent_session_id() != root_owner.session_id()
+                    || marker.session_id() != owner.session_id()
+                    || marker.owner_epoch() != owner.owner_epoch()
+            })
+            || terminal.child_prompt_quiescence_digest().is_none_or(|digest| !valid_digest(digest, "blake3:"))
+            || terminal.child_prompt_quiescence_owner_log_id().is_none_or(str::is_empty)
+            || terminal.child_prompt_quiescence_owner_log_sequence().is_none_or(|sequence| sequence == 0)
+            || terminal.child_prompt_quiescence_owner_log_event_digest().is_none_or(|digest| !valid_digest(digest, "blake3:"))
+            || terminal.effects().len() > MAX_BATCH_EVENTS
+            || terminal.effects().iter().any(|effect| effect.outcome().is_none()
+                || effect.outcome() == Some(crate::managed_control::AttemptEffectOutcomeV1::Unknown)
+                || effect.observation_digest().is_none_or(|digest| !valid_digest(digest, "blake3:")))
+            || worker.owner.attempt_id != attempt_id
+            || worker.state != crate::resource_budget::ReservationState::Released
+            || worker.process_identity.is_some()
+            || worker.cancellation_requested
+            || worker.unknown_effect
+            || worker.worktree_lease_id.as_deref() != tree.lease_id.as_deref()
+            || pool.worker_reservation_id(settlement.worker_execution_id()) != Some(claim.reservation().budget_lease_id())
+            || worker.worktree_lease_id.as_deref() != Some(claim.reservation().workspace_lease_id())
+            || tree.status != crate::worktree_pool::WorktreeStatus::Quarantined
+            || tree.lease_id.is_none()
+            || tree.workspace_binding != pins.workspace_binding()
+        {
+            return Err(WorkerDurableError::Conflict(
+                "fresh settled-worktree recovery authority differs from the exact verified Attempt and retained lease",
+            ));
+        }
+        let registration = self.identities.worktree_registration_records.get(&pins.worktree.worktree_id)
+            .filter(|registration| !self.identities.removed_worktree_registrations.contains_key(&pins.worktree.worktree_id)
+                && same_worktree_root_lineage(registration.owner(), &root_owner)
+                && registration.owner().owner_epoch() == pins.owner_epoch()
+                && registration.matches_durable_operations(&self.worktree_operations)
+                && registration.verification_digest().is_some_and(|digest|
+                    self.identities.verified_worktree_registrations.get(&pins.worktree.worktree_id).map(String::as_str) == Some(digest)))
+            .ok_or(WorkerDurableError::Conflict("settled worktree guarded registration unavailable"))?;
+        let provenance = registration.provenance().ok_or(WorkerDurableError::Conflict(
+            "settled worktree Create provenance unavailable",
+        ))?;
+        let create = self.worktree_operations.get(provenance.create_operation_id())
+            .ok_or(WorkerDurableError::ReplayConflict("settled worktree Create operation unavailable"))?;
+        let target = WorktreeLifecycleTargetV1 {
+            owner: root_owner,
+            worktree_id: pins.worktree.worktree_id.clone(),
+            base_revision: pins.worktree.base_revision.clone(),
+            relative_path: create.intent().relative_path().to_path_buf(),
+            verification_digest: registration.verification_digest().ok_or(WorkerDurableError::Conflict(
+                "settled worktree verification digest unavailable",
+            ))?.to_owned(),
+        };
+        Ok(SettledManagedWorktreeRecoveryTargetV1 {
+            target, root: create.intent().root().clone(), attempt_id: attempt_id.to_owned(),
+            settlement_receipt_digest: settlement.receipt_digest().to_owned(),
+            pool_revision: pool.revision(),
+        })
+    }
+
+    pub(crate) fn prepare_settled_managed_worktree_recovery_inspect(
+        &mut self,
+        root: &RootCoordinatorExecutionProofV1,
+        now_ms: u64,
+        owner: &AuthenticatedOwnerContext,
+        terminal: &crate::managed_control::ManagedAttemptTerminalSnapshotV1,
+        target: &SettledManagedWorktreeRecoveryTargetV1,
+        expected_revision: &str,
+    ) -> Result<WorktreeLifecycleOperationPinV1, WorkerDurableError> {
+        validate_owner_digest(expected_revision, "blake3:")?;
+        let current = self.resolve_settled_managed_worktree_recovery_target(
+            root, now_ms, owner, terminal, target.attempt_id(),
+        )?;
+        if &current != target || terminal.observed_workspace_head() != Some(expected_revision) {
+            return Err(WorkerDurableError::Conflict("settlement recovery Inspect target or revision is stale"));
+        }
+        for record in self.worktree_operations.iter().filter(|record| {
+            let intent = record.intent();
+            intent.kind() == WorktreeOperationKindV1::Inspect
+                && intent.owner() == target.target().owner()
+                && intent.worktree_id() == target.target().worktree_id()
+                && intent.relative_path() == target.target().relative_path()
+                && intent.operation_id() == worktree_operation_id(
+                    target.target().owner(), WorktreeOperationKindV1::Inspect,
+                    &settled_reconciliation_inspect_key(target.attempt_id(), owner.owner_epoch(), intent.owner_log_sequence()),
+                )
+        }) {
+            match record.state() {
+                WorktreeOperationStateV1::Pending => {
+                    if record.intent().expected_workspace_revision() != expected_revision {
+                        return Err(WorkerDurableError::Conflict("pending settlement recovery Inspect is pinned to another revision"));
+                    }
+                    return Ok(WorktreeLifecycleOperationPinV1::from_durable_intent(record.intent().clone()));
+                }
+                WorktreeOperationStateV1::Unknown => return Err(WorkerDurableError::WorktreeIntentUnknown),
+                WorktreeOperationStateV1::Quarantined => return Err(WorkerDurableError::WorktreeIntentQuarantined),
+                WorktreeOperationStateV1::Completed => return Err(WorkerDurableError::WorktreeIntentCompleted),
+                WorktreeOperationStateV1::RetiredNoDispatch => return Err(WorkerDurableError::WorktreeIntentRetired),
+            }
+        }
+        let (owner_log_id, sequence, event_digest, _) = self.owner_log_watermark()?;
+        let key = settled_reconciliation_inspect_key(target.attempt_id(), owner.owner_epoch(), &sequence);
+        let intent = WorktreeOperationIntentV1::new(
+            worktree_operation_id(target.target().owner(), WorktreeOperationKindV1::Inspect, &key),
+            WorktreeOperationKindV1::Inspect, target.target().owner().clone(), target.root().clone(),
+            target.target().worktree_id().to_owned(), target.target().base_revision().to_owned(),
+            target.target().relative_path().to_path_buf(), expected_revision.to_owned(),
+            owner_log_id, sequence, event_digest,
+        ).map_err(map_worktree_lifecycle_error)?;
+        let operation_id = intent.operation_id().to_owned();
+        self.persist_worktree_intent(&format!("worktree-settlement-reconcile-intent-{operation_id}"), intent.clone())?;
+        Ok(WorktreeLifecycleOperationPinV1::from_durable_intent(intent))
+    }
+
+    pub(crate) fn mark_settled_managed_worktree_recovery_inspect_started(
+        &mut self,
+        root: &RootCoordinatorExecutionProofV1,
+        now_ms: u64,
+        owner: &AuthenticatedOwnerContext,
+        terminal: &crate::managed_control::ManagedAttemptTerminalSnapshotV1,
+        target: &SettledManagedWorktreeRecoveryTargetV1,
+        pin: &WorktreeLifecycleOperationPinV1,
+    ) -> Result<GuardedWorktreeRequestV1, WorkerDurableError> {
+        let current = self.resolve_settled_managed_worktree_recovery_target(
+            root, now_ms, owner, terminal, target.attempt_id(),
+        )?;
+        let record = self.worktree_operations.get(pin.operation_id()).ok_or(
+            WorkerDurableError::NotFound("settlement recovery Inspect intent unavailable"),
+        )?;
+        if &current != target || record.intent() != pin.intent()
+            || record.state() != WorktreeOperationStateV1::Pending
+            || record.intent().kind() != WorktreeOperationKindV1::Inspect
+            || record.intent().owner() != target.target().owner()
+            || record.intent().root() != target.root()
+            || record.intent().owner_epoch() != owner.owner_epoch()
+            || terminal.observed_workspace_head() != Some(record.intent().expected_workspace_revision())
+            || record.intent().operation_id() != worktree_operation_id(
+                target.target().owner(), WorktreeOperationKindV1::Inspect,
+                &settled_reconciliation_inspect_key(target.attempt_id(), owner.owner_epoch(), record.intent().owner_log_sequence()),
+            )
+        {
+            return Err(WorkerDurableError::Conflict("settlement recovery Inspect intent is stale or mismatched"));
+        }
+        let intent = record.intent().clone();
+        let revision = self.pool.as_ref().ok_or(WorkerDurableError::Invalid("worker pool unavailable"))?.revision();
+        self.apply(revision, &format!("worktree-settlement-reconcile-dispatch-{}", pin.operation_id()),
+            WorkerCommand::WorktreeOperationDispatchStarted { operation_id: pin.operation_id().to_owned() })?;
+        Ok(GuardedWorktreeRequestV1::from_durable_intent(intent))
+    }
+
+    pub(crate) fn persist_settled_managed_worktree_recovery_inspect(
+        &mut self,
+        root: &RootCoordinatorExecutionProofV1,
+        now_ms: u64,
+        owner: &AuthenticatedOwnerContext,
+        terminal: &crate::managed_control::ManagedAttemptTerminalSnapshotV1,
+        target: &SettledManagedWorktreeRecoveryTargetV1,
+        receipt: GuardedWorktreeReceiptV1,
+    ) -> Result<(), WorkerDurableError> {
+        let current = self.resolve_settled_managed_worktree_recovery_target(
+            root, now_ms, owner, terminal, target.attempt_id(),
+        )?;
+        let record = self.worktree_operations.get(receipt.operation_id()).ok_or(
+            WorkerDurableError::NotFound("settlement recovery Inspect intent unavailable"),
+        )?;
+        if &current != target || record.intent().kind() != WorktreeOperationKindV1::Inspect
+            || record.intent().owner() != target.target().owner()
+            || record.intent().root() != target.root()
+            || record.intent().worktree_id() != target.target().worktree_id()
+            || record.intent().owner_epoch() != owner.owner_epoch()
+            || terminal.observed_workspace_head() != Some(record.intent().expected_workspace_revision())
+            || record.intent().operation_id() != worktree_operation_id(
+                target.target().owner(), WorktreeOperationKindV1::Inspect,
+                &settled_reconciliation_inspect_key(target.attempt_id(), owner.owner_epoch(), record.intent().owner_log_sequence()),
+            )
+            || record.state() != WorktreeOperationStateV1::Unknown
+            || receipt.workspace_binding() != owner.workspace_binding()
+            || receipt.registration_generation() != record.intent().root().registration_generation()
+            || receipt.observed_workspace_revision() != record.intent().expected_workspace_revision()
+            || !receipt.owned() || !receipt.no_follow()
+            || !final_inspect_allows_verified_settlement(&receipt)
+            || matches!(receipt.status(), WorktreeObservedStatusV1::Missing | WorktreeObservedStatusV1::Unknown)
+        {
+            return Err(WorkerDurableError::Conflict("settlement recovery Guarded Inspect receipt is mismatched"));
+        }
+        let revision = self.pool.as_ref().ok_or(WorkerDurableError::Invalid("worker pool unavailable"))?.revision();
+        self.apply(revision, &format!("worktree-settlement-reconcile-receipt-{}", target.attempt_id()),
+            WorkerCommand::WorktreeOperationReceipt { receipt })
+    }
+
+    pub(crate) fn resolve_settled_managed_worktree_recovery_inspect(
+        &self,
+        root: &RootCoordinatorExecutionProofV1,
+        now_ms: u64,
+        owner: &AuthenticatedOwnerContext,
+        terminal: &crate::managed_control::ManagedAttemptTerminalSnapshotV1,
+        attempt_id: &str,
+        operation_id: &str,
+    ) -> Result<GuardedWorktreeReceiptV1, WorkerDurableError> {
+        let target = self.resolve_settled_managed_worktree_recovery_target(
+            root, now_ms, owner, terminal, attempt_id,
+        )?;
+        let operation = self.worktree_operations.get(operation_id).ok_or(
+            WorkerDurableError::NotFound("settlement recovery Inspect operation unavailable"),
+        )?;
+        let intent = operation.intent();
+        let expected_operation = worktree_operation_id(
+            target.target().owner(), WorktreeOperationKindV1::Inspect,
+            &settled_reconciliation_inspect_key(attempt_id, owner.owner_epoch(), intent.owner_log_sequence()),
+        );
+        let receipt = operation.receipt().ok_or(WorkerDurableError::Conflict(
+            "settlement recovery Inspect has no durable Guard receipt",
+        ))?;
+        if operation_id != expected_operation
+            || intent.kind() != WorktreeOperationKindV1::Inspect
+            || intent.owner() != target.target().owner()
+            || intent.root() != target.root()
+            || intent.worktree_id() != target.target().worktree_id()
+            || intent.relative_path() != target.target().relative_path()
+            || intent.owner_epoch() != owner.owner_epoch()
+            || operation.state() != WorktreeOperationStateV1::Completed
+            || receipt.operation_id() != operation_id
+            || receipt.workspace_binding() != owner.workspace_binding()
+            || receipt.registration_generation() != target.root().registration_generation()
+            || receipt.observed_workspace_revision() != intent.expected_workspace_revision()
+            || terminal.observed_workspace_head() != Some(receipt.observed_workspace_revision())
+            || !receipt.owned() || !receipt.no_follow()
+            || !final_inspect_allows_verified_settlement(receipt)
+            || receipt.contains_user_owned_changes()
+            || matches!(receipt.status(), WorktreeObservedStatusV1::Missing | WorktreeObservedStatusV1::Unknown)
+        {
+            return Err(WorkerDurableError::Conflict(
+                "durable settlement recovery Inspect does not match the current Attempt and root",
+            ));
+        }
+        Ok(receipt.clone())
+    }
+
+    /// Persist the separate recovered disposition only after the fresh P1/P2
+    /// proof has been revalidated. Any changed revision stays quarantined.
+    pub(crate) fn reconcile_settled_managed_worktree_disposition(
+        &mut self,
+        proof: WorkerSettlementDispositionRecoveryProofV1,
+        now_ms: u64,
+    ) -> Result<WorkerWorktreeDispositionReceiptV1, WorkerDurableError> {
+        let receipt = &proof.current_worktree_receipt;
+        let terminal = &proof.current_terminal;
+        let owner = &proof.current_owner;
+        let settlement = self.resolve_managed_settlement_for_attempt_inner(terminal.attempt_id(), false)?
+            .ok_or(WorkerDurableError::NotFound("settlement unavailable for disposition recovery"))?;
+        if let Some(existing) = self.resolve_managed_worktree_disposition_for_attempt(terminal.attempt_id())? {
+            let root_owner = self.resolve_worktree_root_owner(&proof.current_root, now_ms)?;
+            let pins = self.identities.pre_admission_pins.get(settlement.worker_execution_id())
+                .ok_or(WorkerDurableError::ReplayConflict("settlement admission pins missing"))?;
+            let operation = self.worktree_operations.get(proof.current_worktree_receipt.operation_id())
+                .ok_or(WorkerDurableError::ReplayConflict("recovered Inspect operation missing"))?;
+            let event = self.managed_worktree_disposition_events.get(settlement.worker_execution_id())
+                .ok_or(WorkerDurableError::ReplayConflict("recovered disposition event missing"))?;
+            let root_session_id = managed_root_session_id(pins.parent_proof())?;
+            if existing.reconciliation_owner_epoch() == Some(owner.owner_epoch())
+                && owner.owner_epoch() == self.resumed_epoch
+                && owner.principal_ref() == pins.principal_ref()
+                && owner.workspace_binding() == pins.workspace_binding()
+                && owner.session_id() == pins.session_id()
+                && owner.run_id() == pins.owner().run_id()
+                && owner.task_id() == pins.owner().task_id()
+                && owner.attempt_id() == pins.attempt_id()
+                && root_owner.owner_epoch() == owner.owner_epoch()
+                && root_owner.workspace_binding() == owner.workspace_binding()
+                && root_owner.session_id() == root_session_id
+                && root_owner.location_id() == pins.location_id()
+                && root_owner.accepted_spec_digest() == pins.accepted_spec_digest()
+                && terminal.attempt_id() == pins.attempt_id()
+                && terminal.goal_id() == pins.goal_id()
+                && terminal.binding_digest() == self.identities.delegation_bindings
+                    .get(settlement.worker_execution_id()).map(|binding| binding.binding_digest.as_str()).unwrap_or_default()
+                && terminal.task_state() == crate::managed_control::ManagedTaskTerminalStateV1::Verified
+                && terminal.attempt_state() == crate::managed_control::ManagedAttemptTerminalStateV1::Succeeded
+                && terminal.effect_chain_state() == crate::managed_control::ManagedAttemptEffectChainStateV1::AllSettled
+                && terminal.observed_workspace_head() == Some(existing.observed_workspace_revision())
+                && existing.final_worktree_operation_id() == proof.current_worktree_receipt.operation_id()
+                && existing.inspect_receipt_digest() == logical_command_digest(
+                    "worker_final_inspect_receipt", &worktree_receipt_value(&proof.current_worktree_receipt),
+                )
+                && operation.receipt() == Some(&proof.current_worktree_receipt)
+                && final_inspect_allows_verified_settlement(&proof.current_worktree_receipt)
+                && event.reconciliation_proof_digest.is_some()
+            {
+                return Ok(existing);
+            }
+            return Err(WorkerDurableError::ReplayConflict(
+                "settlement recovery retry differs from its committed current-epoch disposition",
+            ));
+        }
+        let target = self.resolve_settled_managed_worktree_recovery_target(
+            &proof.current_root, now_ms, owner, terminal, terminal.attempt_id(),
+        )?;
+        let operation = self.worktree_operations.get(receipt.operation_id()).ok_or(
+            WorkerDurableError::Conflict("fresh recovery Inspect has no durable operation"),
+        )?;
+        let intent = operation.intent();
+        if target.settlement_receipt_digest() != settlement.receipt_digest()
+            || intent.kind() != WorktreeOperationKindV1::Inspect
+            || intent.owner() != target.target().owner()
+            || intent.root() != target.root()
+            || intent.worktree_id() != target.target().worktree_id()
+            || intent.relative_path() != target.target().relative_path()
+            || intent.owner_epoch() != owner.owner_epoch()
+            || intent.operation_id() != worktree_operation_id(
+                target.target().owner(), WorktreeOperationKindV1::Inspect,
+                &settled_reconciliation_inspect_key(target.attempt_id(), owner.owner_epoch(), intent.owner_log_sequence()),
+            )
+            || operation.state() != WorktreeOperationStateV1::Completed
+            || operation.receipt() != Some(receipt)
+            || receipt.workspace_binding() != owner.workspace_binding()
+            || receipt.observed_workspace_revision() != terminal.observed_workspace_head().unwrap_or_default()
+            || !receipt.owned() || !receipt.no_follow()
+            || !final_inspect_allows_verified_settlement(receipt)
+            || receipt.contains_user_owned_changes()
+            || matches!(receipt.status(), WorktreeObservedStatusV1::Missing | WorktreeObservedStatusV1::Unknown)
+        {
+            return Err(WorkerDurableError::Conflict(
+                "fresh Inspect is not the exact current-epoch guarded recovery receipt for this settlement",
+            ));
+        }
+        let reusable = receipt.status() == WorktreeObservedStatusV1::Clean
+            && receipt.dirty_entry_count() == 0;
+        let pins = self.identities.pre_admission_pins.get(settlement.worker_execution_id())
+            .ok_or(WorkerDurableError::ReplayConflict("settlement admission pins missing"))?;
+        let mut recovery = blake3::Hasher::new();
+        recovery.update(b"horizoncode.worker-settlement-disposition-ownerlog-proof.v1\0");
+        for value in [proof.proof_digest.as_str(), settlement.receipt_digest(),
+            pins.pins_digest(), settlement.worker_execution_id(), terminal.attempt_id()] {
+            append_digest_field(&mut recovery, value);
+        }
+        recovery.update(&owner.owner_epoch().to_be_bytes());
+        let reconciliation_proof_digest = format!("blake3:{}", recovery.finalize().to_hex());
+        let event = ManagedWorktreeDispositionEventV1 {
+            worker_execution_id: settlement.worker_execution_id().to_owned(),
+            attempt_id: terminal.attempt_id().to_owned(),
+            owner_epoch: pins.owner_epoch(),
+            settlement_receipt_digest: settlement.receipt_digest().to_owned(),
+            final_worktree_operation_id: receipt.operation_id().to_owned(),
+            final_worktree_host_receipt_ref: receipt.host_receipt_ref().to_owned(),
+            observed_workspace_revision: receipt.observed_workspace_revision().to_owned(),
+            inspect_receipt_digest: logical_command_digest("worker_final_inspect_receipt", &worktree_receipt_value(receipt)),
+            reusable_worktree: reusable,
+            reconciliation_owner_epoch: Some(owner.owner_epoch()),
+            reconciliation_proof_digest: Some(reconciliation_proof_digest),
+        };
+        let revision = self.pool.as_ref().map(WorkerPool::revision)
+            .ok_or(WorkerDurableError::Invalid("worker pool unavailable"))?;
+        self.apply(revision, &format!("worker-managed-worktree-reconcile-{}-{}", terminal.attempt_id(), owner.owner_epoch()),
+            WorkerCommand::ManagedWorktreeDisposition { event })?;
+        self.resolve_managed_worktree_disposition_for_attempt(terminal.attempt_id())?
+            .ok_or(WorkerDurableError::Invalid("reconciled disposition receipt was not materialized"))
+    }
+
+    pub(crate) fn resolve_managed_worktree_disposition_for_attempt(
+        &self,
+        attempt_id: &str,
+    ) -> Result<Option<WorkerWorktreeDispositionReceiptV1>, WorkerDurableError> {
+        validate_owner_token(attempt_id)?;
+        let mut matches = self.managed_worktree_disposition_receipts.values()
+            .filter(|receipt| receipt.attempt_id() == attempt_id);
+        let Some(receipt) = matches.next() else { return Ok(None); };
+        if matches.next().is_some() {
+            return Err(WorkerDurableError::ReplayConflict(
+                "Attempt maps to multiple worktree disposition receipts",
+            ));
+        }
+        let settlement = self.managed_settlement_receipts.get(receipt.worker_execution_id())
+            .ok_or(WorkerDurableError::ReplayConflict("worktree disposition has no settlement receipt"))?;
+        let event = self.managed_worktree_disposition_events.get(receipt.worker_execution_id())
+            .ok_or(WorkerDurableError::ReplayConflict("worktree disposition event is missing"))?;
+        let cursor = CursorV1 {
+            owner_kind: OWNER_KIND.to_owned(), owner_id: receipt.owner_log_id().to_owned(),
+            seq: receipt.owner_log_sequence().to_owned(),
+            event_digest: receipt.owner_log_event_digest().to_owned(),
+        };
+        let expected = WorkerWorktreeDispositionReceiptV1::from_committed_event(
+            event, &cursor, receipt.worker_pool_revision(),
+        );
+        if &expected != receipt || !settlement.disposition_deferred()
+            || settlement.attempt_id() != attempt_id
+            || settlement.receipt_digest() != receipt.settlement_receipt_digest()
+            || !valid_digest(receipt.receipt_digest(), "blake3:")
+        {
+            return Err(WorkerDurableError::ReplayConflict(
+                "worktree disposition receipt differs from its durable settlement event",
+            ));
+        }
+        let pins = self.identities.pre_admission_pins.get(receipt.worker_execution_id())
+            .ok_or(WorkerDurableError::ReplayConflict("worktree disposition has no immutable pins"))?;
+        if receipt.owner_epoch() != pins.owner_epoch() || event.owner_epoch != pins.owner_epoch() {
+            return Err(WorkerDurableError::ReplayConflict(
+                "worktree disposition owner epoch differs from immutable admission pins",
+            ));
+        }
+        if event.reconciliation_owner_epoch.is_some_and(|epoch| {
+            epoch <= event.owner_epoch
+                || (event.reconciliation_proof_digest.as_deref().is_some_and(|digest| !valid_digest(digest, "blake3:")))
+                || (event.reconciliation_proof_digest.is_some()
+                    && self.worktree_operations.get(&event.final_worktree_operation_id)
+                        .is_none_or(|operation| operation.intent().owner_epoch() != epoch))
+                || (event.reconciliation_proof_digest.is_none()
+                    && settlement.reconciliation_owner_epoch() != Some(epoch))
+        }) || event.reconciliation_owner_epoch.is_none() && event.reconciliation_proof_digest.is_some()
+        {
+            return Err(WorkerDurableError::ReplayConflict(
+                "reconciled worktree disposition lost its current-epoch authority pins",
+            ));
+        }
+        let snapshot = self.pool.as_ref()
+            .and_then(|pool| pool.worktree_snapshot(&pins.worktree.worktree_id))
+            .ok_or(WorkerDurableError::ReplayConflict("worktree disposition pool record is missing"))?;
+        let expected_status = match receipt.disposition() {
+            WorkerWorktreeDispositionV1::Reusable => crate::worktree_pool::WorktreeStatus::Free,
+            WorkerWorktreeDispositionV1::Quarantined => crate::worktree_pool::WorktreeStatus::Quarantined,
+        };
+        if snapshot.status != expected_status
+            || snapshot.observed_revision.as_deref() != Some(receipt.observed_workspace_revision())
+            || snapshot.workspace_binding != pins.workspace_binding()
+            || snapshot.lease_id.is_some()
+        {
+            return Err(WorkerDurableError::ReplayConflict(
+                "worktree pool state does not match its durable disposition receipt",
+            ));
+        }
+        Ok(Some(receipt.clone()))
+    }
+
+    /// Immutable original admission epoch for P1's authenticated recovery
+    /// projection. The epoch comes only from P8's durable pre-admission pins,
+    /// never from a caller. A committed disposition receipt must carry the
+    /// same epoch and digest-bound event field.
+    pub(crate) fn managed_worktree_disposition_owner_epoch_for_attempt(
+        &self,
+        attempt_id: &str,
+    ) -> Result<Option<u64>, WorkerDurableError> {
+        validate_owner_token(attempt_id)?;
+        let Some(settlement) = self.resolve_managed_settlement_for_attempt_inner(attempt_id, false)? else {
+            return Ok(None);
+        };
+        if !settlement.disposition_deferred() {
+            return Ok(None);
+        }
+        let pins = self.identities.pre_admission_pins.get(settlement.worker_execution_id())
+            .ok_or(WorkerDurableError::ReplayConflict(
+                "worktree disposition epoch has no immutable admission pins",
+            ))?;
+        if let Some(receipt) = self.resolve_managed_worktree_disposition_for_attempt(attempt_id)? {
+            if receipt.owner_epoch() != pins.owner_epoch() {
+                return Err(WorkerDurableError::ReplayConflict(
+                    "worktree disposition receipt epoch differs from immutable admission pins",
+                ));
+            }
+        }
+        Ok(Some(pins.owner_epoch()))
+    }
+
+    /// Original admission owner epoch for P1's settlement recovery fence.
+    /// This is intentionally sourced from immutable P8 pins rather than a
+    /// HostKernel request field or caller-supplied epoch.
+    pub(crate) fn managed_settlement_owner_epoch_for_attempt(
+        &self,
+        attempt_id: &str,
+    ) -> Result<Option<u64>, WorkerDurableError> {
+        self.managed_worktree_disposition_owner_epoch_for_attempt(attempt_id)
+    }
+
+    /// Report the crash window after logical-worker capacity settlement but
+    /// before the independent worktree disposition event. This is deliberately
+    /// a projection only: it cannot release the retained lease or reuse the
+    /// historical final Inspect after an owner epoch change.
+    pub(crate) fn managed_worktree_disposition_pending_for_attempt(
+        &self,
+        attempt_id: &str,
+    ) -> Result<bool, WorkerDurableError> {
+        validate_owner_token(attempt_id)?;
+        let Some(settlement) = self.resolve_managed_settlement_for_attempt_inner(attempt_id, false)? else {
+            return Ok(false);
+        };
+        if !settlement.disposition_deferred() {
+            return Ok(false);
+        }
+        if self.resolve_managed_worktree_disposition_for_attempt(attempt_id)?.is_some() {
+            return Ok(false);
+        }
+        let pins = self.identities.pre_admission_pins.get(settlement.worker_execution_id())
+            .ok_or(WorkerDurableError::ReplayConflict(
+                "pending worktree disposition has no immutable Attempt pins",
+            ))?;
+        let pool = self.pool.as_ref()
+            .ok_or(WorkerDurableError::Invalid("worker pool unavailable"))?;
+        let worker = pool.worker(settlement.worker_execution_id()).ok_or(
+            WorkerDurableError::ReplayConflict("pending worktree disposition worker is missing"),
+        )?;
+        let tree = pool.worktree_snapshot(&pins.worktree.worktree_id).ok_or(
+            WorkerDurableError::ReplayConflict("pending worktree disposition pool row is missing"),
+        )?;
+        if worker.owner.attempt_id != attempt_id
+            || worker.state != crate::resource_budget::ReservationState::Released
+            || worker.process_identity.is_some()
+            || worker.worktree_lease_id.as_deref() != tree.lease_id.as_deref()
+            || tree.status != crate::worktree_pool::WorktreeStatus::Quarantined
+            || tree.lease_id.is_none()
+            || tree.workspace_binding != pins.workspace_binding()
+        {
+            return Err(WorkerDurableError::ReplayConflict(
+                "pending disposition lost its quarantined worktree lease or process ownership state",
+            ));
+        }
+        Ok(true)
+    }
+
+    /// Recovery hook for the crash window after capacity settlement committed
+    /// but before the independent worktree disposition event was appended.
+    /// It can only complete the exact already-settled Attempt and Inspect; it
+    /// cannot dispatch effects or invent a new workspace observation.
+    pub(crate) fn complete_pending_managed_worktree_disposition_for_attempt(
+        &mut self,
+        attempt_id: &str,
+    ) -> Result<Option<WorkerWorktreeDispositionReceiptV1>, WorkerDurableError> {
+        validate_owner_token(attempt_id)?;
+        let mut matching = self.managed_settlement_receipts.values()
+            .filter(|receipt| receipt.attempt_id() == attempt_id);
+        let Some(settlement) = matching.next().cloned() else { return Ok(None); };
+        if matching.next().is_some() {
+            return Err(WorkerDurableError::ReplayConflict(
+                "Attempt maps to multiple settlement receipts during disposition recovery",
+            ));
+        }
+        if !settlement.disposition_deferred() {
+            return Ok(None);
+        }
+        let expected_owner_epoch = self.managed_worktree_disposition_owner_epoch_for_attempt(attempt_id)?
+            .ok_or(WorkerDurableError::ReplayConflict(
+                "pending worktree disposition lost its immutable admission epoch",
+            ))?;
+        if self.resumed_epoch != expected_owner_epoch {
+            return Err(WorkerDurableError::Pool(WorkerPoolError::StaleOwnerEpoch));
+        }
+        self.ensure_managed_worktree_disposition(
+            settlement.worker_execution_id(), attempt_id, settlement.reconciliation_owner_epoch(),
+        )?;
+        self.resolve_managed_worktree_disposition_for_attempt(attempt_id)
+    }
+
+    /// Reconciliation requires a new current-epoch Guarded Inspect. The old
+    /// success-only final Inspect is historical evidence and cannot stand in
+    /// for the current workspace observation after edits or restart.
+    fn validate_managed_reconciliation_worktree_receipt(
+        &self,
+        receipt: &GuardedWorktreeReceiptV1,
+        pins: &TrustedPreAdmissionPinsV1,
+        current_root_owner: &WorktreeRootOwnerV1,
+    ) -> Result<(), WorkerDurableError> {
+        let operation = self.worktree_operations.get(receipt.operation_id()).ok_or(
+            WorkerDurableError::Conflict("reconciliation Inspect receipt has no durable P8 operation"),
+        )?;
+        let intent = operation.intent();
+        let registration = self.identities.worktree_registration_records
+            .get(&pins.worktree.worktree_id)
+            .ok_or(WorkerDurableError::Conflict("reconciliation worktree registration is unavailable"))?;
+        let provenance = registration.provenance().ok_or(WorkerDurableError::Conflict(
+            "reconciliation worktree Create provenance is unavailable",
+        ))?;
+        let create = self.worktree_operations.get(provenance.create_operation_id())
+            .filter(|create| create.state() == WorktreeOperationStateV1::Completed
+                && create.intent().kind() == WorktreeOperationKindV1::Create
+                && same_worktree_root_lineage(create.intent().owner(), current_root_owner)
+                && create.intent().owner().owner_epoch() <= current_root_owner.owner_epoch()
+                && create.intent().worktree_id() == pins.worktree.worktree_id)
+            .ok_or(WorkerDurableError::Conflict("reconciliation worktree Create receipt is unavailable"))?;
+        if !registration.matches_durable_operations(&self.worktree_operations)
+            || self.identities.removed_worktree_registrations.contains_key(&pins.worktree.worktree_id)
+            || registration.registration().id != pins.worktree.worktree_id
+            || registration.registration().workspace_binding != pins.workspace_binding()
+            || registration.registration().base_revision != pins.worktree.base_revision
+            || registration.owner().goal_id() != pins.goal_id()
+            || registration.owner().run_id() != pins.run_id()
+            || registration.owner().principal_ref() != pins.principal_ref()
+            || registration.owner().workspace_binding() != pins.workspace_binding()
+            || registration.owner().session_id() != managed_root_session_id(pins.parent_proof())?
+            || registration.owner().location_id() != pins.location_id()
+            || registration.owner().owner_epoch() != pins.owner_epoch()
+            || !same_worktree_root_lineage(registration.owner(), current_root_owner)
+            || operation.state() != WorktreeOperationStateV1::Completed
+            || operation.receipt() != Some(receipt)
+            || intent.kind() != WorktreeOperationKindV1::Inspect
+            || intent.owner() != current_root_owner
+            || intent.owner_epoch() != current_root_owner.owner_epoch()
+            || intent.worktree_id() != pins.worktree.worktree_id
+            || intent.base_revision() != Some(pins.worktree.base_revision.as_str())
+            || intent.root() != create.intent().root()
+            || intent.root().location_ref() != pins.location_id()
+            || intent.root().workspace_binding() != pins.workspace_binding()
+            || intent.relative_path() != create.intent().relative_path()
+            || intent.expected_workspace_revision() != receipt.observed_workspace_revision()
+            || receipt.workspace_binding() != pins.workspace_binding()
+            || receipt.registration_generation() != intent.root().registration_generation()
+            || matches!(receipt.status(), WorktreeObservedStatusV1::Unknown | WorktreeObservedStatusV1::Missing)
+            || !receipt.owned() || !receipt.no_follow()
+        {
+            return Err(WorkerDurableError::Conflict("current reconciliation Inspect receipt differs from durable worktree and authenticated root lineage"));
+        }
+        Ok(())
     }
 
     pub(crate) fn resolve_managed_settlement_for_attempt(
         &self,
         attempt_id: &str,
+    ) -> Result<Option<WorkerSettlementReceiptV1>, WorkerDurableError> {
+        self.resolve_managed_settlement_for_attempt_inner(attempt_id, true)
+    }
+
+    fn resolve_managed_settlement_for_attempt_inner(
+        &self,
+        attempt_id: &str,
+        require_worktree_disposition: bool,
     ) -> Result<Option<WorkerSettlementReceiptV1>, WorkerDurableError> {
         validate_owner_token(attempt_id)?;
         let mut matches = self.managed_settlement_receipts.values()
@@ -3833,6 +7962,110 @@ impl WorkerPoolControl {
                 "managed settlement receipt differs from durable claim pins",
             ));
         }
+        // Receipt replay is not complete merely because the settlement event
+        // survived OwnerLog recovery. Re-resolve the exact P8 Inspect event
+        // referenced by that settlement so a missing/truncated/mismatched
+        // workspace observation cannot be projected as a recovered success.
+        let operation_id = receipt.final_worktree_operation_id().ok_or(
+            WorkerDurableError::ReplayConflict("managed settlement lost its final Inspect operation reference"),
+        )?;
+        let host_receipt_ref = receipt.final_worktree_host_receipt_ref().ok_or(
+            WorkerDurableError::ReplayConflict("managed settlement lost its final Inspect receipt reference"),
+        )?;
+        let workspace_revision = receipt.final_workspace_revision().ok_or(
+            WorkerDurableError::ReplayConflict("managed settlement lost its observed workspace revision"),
+        )?;
+        if !valid_digest(workspace_revision, "blake3:") {
+            return Err(WorkerDurableError::ReplayConflict(
+                "managed settlement workspace revision is invalid",
+            ));
+        }
+        let inspect = self.worktree_operations.get(operation_id).ok_or(
+            WorkerDurableError::ReplayConflict("managed settlement final Inspect event is unavailable after replay"),
+        )?;
+        let intent = inspect.intent();
+        let guarded_receipt = inspect.receipt().ok_or(
+            WorkerDurableError::ReplayConflict("managed settlement final Inspect receipt is unavailable after replay"),
+        )?;
+        let registration = self.identities.worktree_registration_records
+            .get(&pins.worktree.worktree_id)
+            .ok_or(WorkerDurableError::ReplayConflict("managed settlement worktree registration is unavailable"))?;
+        if !registration.matches_durable_operations(&self.worktree_operations)
+            || registration.registration().id != pins.worktree.worktree_id
+            || registration.registration().workspace_binding != pins.workspace_binding()
+            || registration.registration().base_revision != pins.worktree.base_revision
+            || !same_worktree_root_lineage(registration.owner(), intent.owner())
+            || !matches!(inspect.state(), WorktreeOperationStateV1::Completed | WorktreeOperationStateV1::Quarantined)
+            || intent.kind() != WorktreeOperationKindV1::Inspect
+            || intent.operation_id() != operation_id
+            || intent.operation_id() != worktree_operation_id(
+                intent.owner(), WorktreeOperationKindV1::Inspect,
+                &managed_final_inspect_idempotency_key(attempt_id),
+            )
+            || intent.worktree_id() != pins.worktree.worktree_id
+            || intent.base_revision() != Some(pins.worktree.base_revision.as_str())
+            || intent.root().workspace_binding() != pins.workspace_binding()
+            || intent.expected_workspace_revision() != workspace_revision
+            || guarded_receipt.operation_id() != operation_id
+            || guarded_receipt.host_receipt_ref() != host_receipt_ref
+            || guarded_receipt.workspace_binding() != pins.workspace_binding()
+            || guarded_receipt.registration_generation() != intent.root().registration_generation()
+            || guarded_receipt.observed_workspace_revision() != workspace_revision
+            || matches!(guarded_receipt.status(), WorktreeObservedStatusV1::Missing | WorktreeObservedStatusV1::Unknown)
+            || !guarded_receipt.owned()
+            || !guarded_receipt.no_follow()
+        {
+            return Err(WorkerDurableError::ReplayConflict(
+                "managed settlement final Inspect receipt differs from its exact durable worktree event",
+            ));
+        }
+        if require_worktree_disposition && receipt.disposition_deferred()
+        {
+            self.resolve_managed_worktree_disposition_for_attempt(attempt_id)?
+                .ok_or(WorkerDurableError::Conflict(
+                    "managed settlement is durable but its separate worktree disposition is pending",
+                ))?;
+        }
+        Ok(Some(receipt.clone()))
+    }
+
+    pub(crate) fn resolve_managed_quarantine_for_attempt(
+        &self,
+        attempt_id: &str,
+    ) -> Result<Option<WorkerManagedQuarantineReceiptV1>, WorkerDurableError> {
+        validate_owner_token(attempt_id)?;
+        let mut matches = self.managed_quarantine_receipts.values()
+            .filter(|receipt| receipt.attempt_id() == attempt_id);
+        let Some(receipt) = matches.next() else { return Ok(None); };
+        if matches.next().is_some() {
+            return Err(WorkerDurableError::ReplayConflict(
+                "Attempt maps to multiple managed quarantine receipts",
+            ));
+        }
+        let pins = self.identities.pre_admission_pins.get(receipt.worker_execution_id())
+            .ok_or(WorkerDurableError::ReplayConflict("quarantine receipt has no durable P8 pins"))?;
+        let claim = self.identities.claim_receipts.get(receipt.worker_execution_id())
+            .ok_or(WorkerDurableError::ReplayConflict("quarantine receipt has no durable claim"))?;
+        let worker = self.pool.as_ref().and_then(|pool| pool.worker(receipt.worker_execution_id()))
+            .ok_or(WorkerDurableError::ReplayConflict("quarantine receipt has no durable worker"))?;
+        if pins.attempt_id() != attempt_id
+            || pins.goal_id() != receipt.goal_id()
+            || pins.run_id() != receipt.run_id()
+            || pins.task_id() != receipt.task_id()
+            || pins.owner_epoch() != receipt.owner_epoch()
+            || pins.pins_digest() != claim.pins_digest
+            || claim.attempt_id != attempt_id
+            || worker.state != crate::resource_budget::ReservationState::Quarantined
+            || worker.owner.attempt_id != attempt_id
+            || receipt.owner_log_id() != self.pool_id
+            || !valid_digest(receipt.terminal_proof_digest(), "blake3:")
+            || !valid_digest(receipt.owner_log_event_digest(), "blake3:")
+            || !valid_digest(receipt.receipt_digest(), "blake3:")
+        {
+            return Err(WorkerDurableError::ReplayConflict(
+                "managed quarantine receipt differs from durable P8 claim pins",
+            ));
+        }
         Ok(Some(receipt.clone()))
     }
 
@@ -3845,9 +8078,13 @@ impl WorkerPoolControl {
         proof: WorkerReconciliationProofV1,
         now_ms: u64,
     ) -> Result<WorkerSettlementReceiptV1, WorkerDurableError> {
-        let settlement = proof.settlement();
-        let worker_id = settlement.claim().worker_execution_id().to_owned();
+        let quarantine_proof = proof.quarantine();
+        let worker_id = quarantine_proof.worker_execution_id().to_owned();
         let current_owner = proof.current_owner();
+        let expected_task_state = match quarantine_proof.reason() {
+            WorkerManagedQuarantineReasonV1::FailedAttempt => crate::managed_control::ManagedTaskTerminalStateV1::Failed,
+            WorkerManagedQuarantineReasonV1::CancelledTask => crate::managed_control::ManagedTaskTerminalStateV1::Cancelled,
+        };
         if current_owner.owner_epoch() != self.resumed_epoch
             || !valid_digest(proof.reconciliation_digest(), "blake3:")
         {
@@ -3856,32 +8093,43 @@ impl WorkerPoolControl {
         let combined_proof_digest = {
             let mut h = blake3::Hasher::new();
             h.update(b"horizoncode.logical-worker-reconciliation.v1\0");
-            h.update(settlement.proof_digest().as_bytes());
+            h.update(quarantine_proof.terminal_proof_digest().as_bytes());
             h.update(proof.reconciliation_digest().as_bytes());
             format!("blake3:{}", h.finalize().to_hex())
         };
-        if let Some(receipt) = self.managed_settlement_receipts.get(&worker_id) {
-            return if receipt.proof_digest() == combined_proof_digest
-                && receipt.attempt_id() == settlement.claim().attempt_id()
-            { Ok(receipt.clone()) }
-            else { Err(WorkerDurableError::Conflict("worker already has a different settlement receipt")) };
+        if let Some(receipt) = self.managed_settlement_receipts.get(&worker_id).cloned() {
+            if receipt.proof_digest() == combined_proof_digest
+                && receipt.attempt_id() == quarantine_proof.attempt_id()
+            {
+                self.ensure_managed_worktree_disposition(
+                    &worker_id, quarantine_proof.attempt_id(), Some(current_owner.owner_epoch()),
+                )?;
+                return Ok(receipt);
+            }
+            return Err(WorkerDurableError::Conflict("worker already has a different settlement receipt"));
         }
         // The old settlement root is immutable lineage evidence only. Current
         // reconciliation authority must come from a newly authenticated root
         // proof in the resumed HostKernel epoch.
         let current_root = proof.current_root();
-        let root_owner = self.resolve_worktree_root_owner(current_root, now_ms)?;
+        let root_owner = self.resolve_quarantined_reconciliation_root_owner(current_root, now_ms)?;
         let pins = self.identities.pre_admission_pins.get(&worker_id)
             .ok_or(WorkerDurableError::NotFound("reconciliation worker pins unavailable"))?;
         let claim = self.claimed_worker_dispatch_proof(&worker_id)?;
         let binding = self.identities.delegation_bindings.get(&worker_id)
             .ok_or(WorkerDurableError::Conflict("reconciliation DelegationBinding missing"))?;
-        let prior_owner = settlement.owner();
-        let terminal = settlement.terminal();
+        let prior_owner = pins.owner();
+        let terminal = proof.current_terminal();
+        let quarantine = self.managed_quarantine_receipts.get(&worker_id)
+            .ok_or(WorkerDurableError::Conflict("managed terminal quarantine receipt is unavailable"))?;
+        let current_worktree_receipt = proof.current_worktree_receipt();
         let pool_worker = self.pool.as_ref().and_then(|pool| pool.worker(&worker_id))
             .ok_or(WorkerDurableError::NotFound("reconciliation worker lease missing"))?;
-        if &claim != settlement.claim()
-            || prior_owner != pins.owner()
+        if quarantine != proof.quarantine()
+            || quarantine.attempt_id() != pins.attempt_id()
+            || quarantine.reservation_id() != claim.reservation().budget_lease_id()
+            || quarantine.worktree_lease_id() != claim.reservation().workspace_lease_id()
+            || prior_owner.owner_epoch() != quarantine.owner_epoch()
             || current_owner.principal_ref() != prior_owner.principal_ref()
             || current_owner.workspace_binding() != prior_owner.workspace_binding()
             || current_owner.session_id() != prior_owner.session_id()
@@ -3893,7 +8141,7 @@ impl WorkerPoolControl {
             || current_root.run_id() != pins.run_id()
             || current_root.principal_ref() != pins.principal_ref()
             || current_root.workspace_binding() != pins.workspace_binding()
-            || current_root.session_id() != pins.session_id()
+            || current_root.session_id() != managed_root_session_id(pins.parent_proof())?
             || current_root.location_id() != pins.location_id()
             || current_root.owner_epoch() != current_owner.owner_epoch()
             || current_root.accepted_spec_digest() != pins.accepted_spec_digest()
@@ -3901,52 +8149,58 @@ impl WorkerPoolControl {
             || pool_worker.process_identity.is_some()
             || terminal.task_revision() != pins.task_revision().parse::<u64>()
                 .map_err(|_| WorkerDurableError::Conflict("pinned Task revision is invalid"))?
-            || terminal.admission_workspace_revision() != Some(pins.workspace_revision())
+            || terminal.admission_workspace_revision() != Some(binding.child_workspace_revision()?)
             || terminal.binding_digest() != binding.binding_digest
             || terminal.binding_digest() != claim.binding_digest()
             || terminal.spec_digest() != pins.accepted_spec_digest()
             || terminal.goal_id() != pins.goal_id() || terminal.run_id() != pins.run_id()
             || terminal.task_id() != pins.task_id() || terminal.attempt_id() != pins.attempt_id()
+            || terminal.attempt_state() != crate::managed_control::ManagedAttemptTerminalStateV1::Failed
+            || terminal.task_state() != expected_task_state
+            || terminal.child_prompt_state() != crate::managed_control::ManagedChildPromptStateV1::Quiesced
+            || terminal.effect_chain_state() != crate::managed_control::ManagedAttemptEffectChainStateV1::AllSettled
+            || terminal.effects().iter().any(|effect| effect.outcome().is_none()
+                || effect.outcome() == Some(crate::managed_control::AttemptEffectOutcomeV1::Unknown))
             || root_owner.goal_id() != pins.goal_id() || root_owner.run_id() != pins.run_id()
             || root_owner.principal_ref() != pins.principal_ref()
             || root_owner.workspace_binding() != pins.workspace_binding()
-            || root_owner.session_id() != pins.session_id()
+            || root_owner.session_id() != managed_root_session_id(pins.parent_proof())?
             || root_owner.location_id() != pins.location_id()
             || root_owner.owner_epoch() != current_owner.owner_epoch()
             || root_owner.process_incarnation() != current_root.process_incarnation()
             || root_owner.accepted_spec_digest() != pins.accepted_spec_digest()
+            || !valid_digest(proof.current_host_quiescence_digest(), "blake3:")
         {
             return Err(WorkerDurableError::Conflict(
                 "reconciliation proof does not match the exact quarantined managed child",
             ));
         }
-        let receipt = settlement.final_worktree_receipt();
-        let reusable_worktree = receipt.is_some_and(|receipt| {
-            terminal.observed_workspace_head() == Some(receipt.observed_workspace_revision())
-                && receipt.workspace_binding() == pins.workspace_binding()
-                && receipt.status() == WorktreeObservedStatusV1::Clean
-                && receipt.dirty_entry_count() == 0
-                && !receipt.contains_user_owned_changes()
-                && receipt.owned() && receipt.no_follow()
-        });
-        if receipt.is_some_and(|receipt|
-            terminal.observed_workspace_head() != Some(receipt.observed_workspace_revision())
-                || receipt.workspace_binding() != pins.workspace_binding()
-                || !receipt.owned() || !receipt.no_follow()
-        ) {
-            return Err(WorkerDurableError::Conflict("reconciled workspace proof differs from final guarded observation"));
-        }
+        self.validate_managed_reconciliation_worktree_receipt(
+            current_worktree_receipt, pins, &root_owner,
+        )?;
         let event = ManagedLogicalSettlementEventV1 {
+            schema_version: 4,
             worker_execution_id: worker_id.clone(), attempt_id: pins.attempt_id().to_owned(),
             proof_digest: combined_proof_digest,
-            observed_workspace_revision: receipt.map(|receipt| receipt.observed_workspace_revision().to_owned()),
-            reusable_worktree,
+            observed_workspace_revision: Some(current_worktree_receipt.observed_workspace_revision().to_owned()),
+            final_worktree_operation_id: Some(current_worktree_receipt.operation_id().to_owned()),
+            final_worktree_host_receipt_ref: Some(current_worktree_receipt.host_receipt_ref().to_owned()),
+            evidence_digest: terminal.evidence_digest().map(str::to_owned),
+            evidence_refs: terminal.evidence_refs().to_vec(),
+            verification_run_id: None,
+            set_identity_digest: None,
+            challenge_set_digest: None,
+            reusable_worktree: false,
             reconciliation_owner_epoch: Some(current_owner.owner_epoch()),
+            disposition_deferred: true,
         };
         let revision = self.pool.as_ref().map(WorkerPool::revision)
             .ok_or(WorkerDurableError::Invalid("worker pool unavailable"))?;
         let delivery_id = format!("worker-managed-reconcile-{worker_id}");
         self.apply(revision, &delivery_id, WorkerCommand::ManagedLogicalSettled { event })?;
+        self.ensure_managed_worktree_disposition(
+            &worker_id, pins.attempt_id(), Some(current_owner.owner_epoch()),
+        )?;
         self.managed_settlement_receipts.get(&worker_id).cloned()
             .ok_or(WorkerDurableError::Invalid("reconciliation OwnerLog receipt was not materialized"))
     }
@@ -4159,6 +8413,7 @@ impl WorkerPoolControl {
             attempt_id: pins.attempt_id().to_owned(), worker_execution_id: worker_execution_id.to_owned(),
             ticket_id: ticket_id.to_owned(), budget_lease_id, workspace_lease_id,
             resource_lease_ids, pins_digest: pins.pins_digest().to_owned(),
+            context_selection_digest: pins.context_selection_digest.clone(),
             binding_digest: binding_digest.map(str::to_owned), owner_log_id: cursor.owner_id.clone(),
             owner_log_sequence: cursor.seq.clone(), owner_log_event_digest: cursor.event_digest.clone(),
             worker_pool_revision: proof_pool_revision,
@@ -4179,34 +8434,17 @@ impl WorkerPoolControl {
                     || proof.worker_pool_revision() != revision || proof.expires_at_ms() <= now_ms
                     || proof.owner_epoch() != self.resumed_epoch || proof.goal_id() != pins.goal_id
                     || proof.run_id() != pins.run_id() || proof.principal_ref() != pins.principal_ref()
-                    || proof.workspace_binding() != pins.workspace_binding() || proof.session_id() != pins.session_id()
+                    || proof.workspace_binding() != pins.workspace_binding()
                     || proof.location_id() != pins.location_id || proof.process_incarnation() != pins.process_incarnation
                     || proof.accepted_spec_digest() != pins.accepted_spec_digest
                 {
                     return Err(WorkerDurableError::Conflict("root coordinator proof is stale or outside child scope"));
                 }
             }
-            ManagedParentProofV1::ClaimedWorker(proof) => {
-                if proof.owner_log_id() != cursor.owner_id || proof.owner_log_sequence() != cursor.seq
-                    || proof.owner_log_event_digest() != cursor.event_digest || proof.worker_pool_revision() != revision
-                    || proof.goal_id() != pins.goal_id || proof.owner_epoch() != self.resumed_epoch
-                    || proof.owner.principal_ref != pins.principal_ref()
-                    || proof.owner.workspace_binding != pins.workspace_binding()
-                    || proof.owner.session_id != pins.session_id() || proof.owner.run_id != pins.run_id()
-                {
-                    return Err(WorkerDurableError::Conflict("claimed parent proof is stale or outside child scope"));
-                }
-                let owner = AuthenticatedOwnerContext::rehydrate_from_durable_scope(
-                    proof.owner.principal_ref.clone(), proof.owner.workspace_binding.clone(),
-                    proof.owner.session_id.clone(), proof.owner.run_id.clone(), proof.owner.task_id.clone(),
-                    proof.owner.attempt_id.clone(), proof.owner.owner_epoch,
-                ).map_err(|_| WorkerDurableError::Invalid("parent owner proof invalid"))?;
-                let binding = VerifiedAttemptBinding::from_managed_attempt(
-                    proof.goal_id.clone(), proof.owner.run_id.clone(), proof.owner.task_id.clone(),
-                    proof.owner.attempt_id.clone(), proof.owner.owner_epoch, proof.source_revision.clone(),
-                    proof.accepted_spec_digest.clone(), BindingAttemptPhase::Executing,
-                )?;
-                self.validate_active_parent_execution_proof(proof, &binding, &owner, now_ms)?;
+            ManagedParentProofV1::ClaimedWorker(_) => {
+                return Err(WorkerDurableError::Conflict(
+                    "nested managed admission requires durable authenticated Run root Session lineage",
+                ));
             }
         }
         Ok(())
@@ -4310,6 +8548,7 @@ impl WorkerPoolControl {
             binding: BoundWorkerDelegationV1 {
                 binding_digest,
                 parent_execution_id: delegation.parent_execution_id.clone(),
+                worktree_admission: None,
             },
         })
     }
@@ -4410,6 +8649,156 @@ impl WorkerPoolControl {
         })
     }
 
+    /// Rotate only the authenticated Core owner of one already-quarantined
+    /// logical child. The durable root ID and immutable Run lineage are kept;
+    /// this method returns a capability accepted only by reconciliation APIs.
+    pub(crate) fn reauthorize_quarantined_root_coordinator(
+        &mut self,
+        delivery_id: &str,
+        quarantine: &WorkerManagedQuarantineReceiptV1,
+        current_owner: &AuthenticatedOwnerContext,
+        current_terminal: &crate::managed_control::ManagedAttemptTerminalSnapshotV1,
+        pins: &RootCoordinatorRegistrationPinsV1,
+        now_ms: u64,
+        expires_at_ms: u64,
+    ) -> Result<ReadOnlyReconciliationRootProofV1, WorkerDurableError> {
+        pins.validate()?;
+        if current_owner.owner_epoch() != self.resumed_epoch
+            || pins.owner_epoch() != self.resumed_epoch
+            || pins.owner_epoch() <= quarantine.owner_epoch()
+            || expires_at_ms <= now_ms
+            || expires_at_ms - now_ms > crate::worker_pool::MAX_WORKER_LEASE_MS
+        {
+            return Err(WorkerDurableError::Conflict("read-only root reauthorization epoch or expiry is invalid"));
+        }
+        let durable_quarantine = self.resolve_managed_quarantine_for_attempt(quarantine.attempt_id())?
+            .ok_or(WorkerDurableError::NotFound("durable managed quarantine unavailable"))?;
+        self.validate_quarantined_terminal_snapshot(quarantine, current_owner, current_terminal)?;
+        let worker_id = quarantine.worker_execution_id();
+        let worker_pins = self.identities.pre_admission_pins.get(worker_id)
+            .ok_or(WorkerDurableError::NotFound("quarantined worker pins unavailable"))?;
+        let historical_root_session = managed_root_session_id(worker_pins.parent_proof())?;
+        let (worker_state, worker_has_process) = {
+            let pool = self.pool.as_ref().ok_or(WorkerDurableError::Invalid("worker pool unavailable"))?;
+            let worker = pool.worker(worker_id).ok_or(WorkerDurableError::NotFound("quarantined worker unavailable"))?;
+            (worker.state, worker.process_identity.is_some())
+        };
+        if quarantine != &durable_quarantine
+            || quarantine.goal_id() != worker_pins.goal_id()
+            || quarantine.run_id() != worker_pins.run_id()
+            || quarantine.task_id() != worker_pins.task_id()
+            || quarantine.attempt_id() != worker_pins.attempt_id()
+            || quarantine.owner_epoch() != worker_pins.owner_epoch()
+            || current_owner.principal_ref() != worker_pins.principal_ref()
+            || current_owner.workspace_binding() != worker_pins.workspace_binding()
+            || current_owner.session_id() != worker_pins.session_id()
+            || current_owner.run_id() != worker_pins.run_id()
+            || current_owner.task_id() != worker_pins.task_id()
+            || current_owner.attempt_id() != worker_pins.attempt_id()
+            || current_owner.owner_epoch() <= quarantine.owner_epoch()
+            || pins.goal_id() != worker_pins.goal_id()
+            || pins.run_id() != worker_pins.run_id()
+            || pins.principal_ref() != worker_pins.principal_ref()
+            || pins.workspace_binding() != worker_pins.workspace_binding()
+            || pins.location_id() != worker_pins.location_id()
+            || pins.accepted_spec_digest() != worker_pins.accepted_spec_digest()
+            || pins.process_incarnation() == worker_pins.process_incarnation()
+            || worker_state != crate::resource_budget::ReservationState::Quarantined
+            || worker_has_process
+        {
+            return Err(WorkerDurableError::Conflict("reauthorization does not match the exact quarantined Run and fresh authenticated Core owner"));
+        }
+
+        let mapped_root = self.identities.reconciliation_root_ids.get(quarantine.attempt_id());
+        if mapped_root.is_some_and(|(_, digest)| digest != quarantine.receipt_digest()) {
+            return Err(WorkerDurableError::Conflict("quarantine receipt changed after root reauthorization"));
+        }
+        let prior = if let Some((root_id, _)) = mapped_root {
+            self.identities.root_coordinators.get(root_id)
+                .ok_or(WorkerDurableError::ReplayConflict("reauthorized root mapping is dangling"))?.clone()
+        } else {
+            let mut matching_roots = self.identities.root_coordinators.values().filter(|root| {
+                root.goal_id == quarantine.goal_id()
+                    && root.run_id == quarantine.run_id()
+                    && root.principal_ref == worker_pins.principal_ref()
+                    && root.workspace_binding == worker_pins.workspace_binding()
+                    && root.session_id == historical_root_session
+                    && root.location_id == worker_pins.location_id()
+                    && root.owner_epoch == quarantine.owner_epoch()
+                    && root.process_incarnation == worker_pins.process_incarnation()
+                    && root.accepted_spec_digest == worker_pins.accepted_spec_digest()
+            });
+            let prior = matching_roots.next().cloned()
+                .ok_or(WorkerDurableError::NotFound("historical authenticated root coordinator unavailable"))?;
+            if matching_roots.next().is_some() {
+                return Err(WorkerDurableError::Conflict("quarantined Attempt maps to ambiguous historical root coordinators"));
+            }
+            prior
+        };
+        if pins.session_id() != prior.session_id
+            || prior.session_id != historical_root_session
+            || current_terminal.child_prompt_quiescence().is_none_or(|receipt|
+                receipt.proof().parent_session_id() != prior.session_id
+                    || receipt.proof().session_id() != worker_pins.session_id())
+        {
+            return Err(WorkerDurableError::Conflict(
+                "reauthorized root or child quiescence Session differs from historical lineage",
+            ));
+        }
+        let execution = RootCoordinatorExecutionV1 {
+            worker_execution_id: prior.worker_execution_id.clone(),
+            goal_id: pins.goal_id().to_owned(), run_id: pins.run_id().to_owned(),
+            principal_ref: pins.principal_ref().to_owned(), workspace_binding: pins.workspace_binding().to_owned(),
+            session_id: pins.session_id().to_owned(), location_id: pins.location_id().to_owned(),
+            owner_epoch: pins.owner_epoch(), process_incarnation: pins.process_incarnation().to_owned(),
+            process_identity: pins.process_identity().clone(), source_revision: prior.source_revision.clone(),
+            accepted_spec_digest: pins.accepted_spec_digest().to_owned(), expires_at_ms,
+        };
+        validate_root_execution(&execution)?;
+        let already_current = self.identities.root_coordinators.get(&prior.worker_execution_id)
+            .is_some_and(|existing| existing.goal_id == execution.goal_id
+                && existing.run_id == execution.run_id
+                && existing.principal_ref == execution.principal_ref
+                && existing.workspace_binding == execution.workspace_binding
+                && existing.session_id == execution.session_id
+                && existing.location_id == execution.location_id
+                && existing.owner_epoch == execution.owner_epoch
+                && existing.process_incarnation == execution.process_incarnation
+                && existing.process_identity == execution.process_identity
+                && existing.source_revision == execution.source_revision
+                && existing.accepted_spec_digest == execution.accepted_spec_digest
+                && existing.expires_at_ms > now_ms);
+        let effective_execution = if already_current {
+            self.identities.root_coordinators.get(&prior.worker_execution_id).expect("checked root").clone()
+        } else {
+            let revision = self.pool.as_ref().ok_or(WorkerDurableError::Invalid("worker pool unavailable"))?.revision();
+            self.apply(revision, delivery_id, WorkerCommand::RootCoordinatorReauthorized {
+                attempt_id: quarantine.attempt_id().to_owned(),
+                quarantine_receipt_digest: quarantine.receipt_digest().to_owned(),
+                prior_execution_digest: root_execution_digest(&prior), execution: execution.clone(),
+            })?;
+            execution
+        };
+        self.resolve_read_only_reconciliation_root_proof(&effective_execution, now_ms)
+    }
+
+    fn resolve_read_only_reconciliation_root_proof(
+        &self,
+        execution: &RootCoordinatorExecutionV1,
+        now_ms: u64,
+    ) -> Result<ReadOnlyReconciliationRootProofV1, WorkerDurableError> {
+        let current = self.identities.root_coordinators.get(&execution.worker_execution_id)
+            .ok_or(WorkerDurableError::NotFound("reauthorized root coordinator unavailable"))?;
+        if current != execution || current.owner_epoch != self.resumed_epoch || current.expires_at_ms <= now_ms {
+            return Err(WorkerDurableError::Conflict("read-only reconciliation root proof is stale"));
+        }
+        let (owner_log_id, owner_log_sequence, owner_log_event_digest, worker_pool_revision) = self.owner_log_watermark()?;
+        Ok(ReadOnlyReconciliationRootProofV1 {
+            execution: current.clone(), owner_log_id, owner_log_sequence,
+            owner_log_event_digest, worker_pool_revision,
+        })
+    }
+
     pub(crate) fn resolve_root_coordinator_proof(
         &self,
         pins: &WorkerAdmissionPinsV1,
@@ -4492,56 +8881,15 @@ impl WorkerPoolControl {
         now_ms: u64,
         launcher: &mut dyn crate::worker_pool::IsolatedWorkerLauncher,
     ) -> Result<ProcessIdentity, WorkerDurableError> {
-        if delivery_id.is_empty() || delivery_id.len() > 256
-            || delivery_id.chars().any(char::is_control)
-            || self.deliveries.contains_key(delivery_id)
-        {
-            return Err(WorkerDurableError::Conflict("dispatch delivery is invalid or already used"));
-        }
-        let proof = self.resolve_authenticated_managed_lease_proof(
-            binding, owner, location_id, process_incarnation, now_ms,
-        )?;
-        if proof.worker_state() != crate::resource_budget::ReservationState::Claimed
-            || proof.process_identity().is_some()
-            || proof.delegation_binding_digest() != Some(delegation_binding_digest)
-        {
-            return Err(WorkerDurableError::Conflict("worker is not durably claimed for this delegation"));
-        }
-        // The real projection stays unchanged until BindProcess commits. The
-        // already-durable CLAIMED record covers a crash at any launch point.
-        let mut dispatch_view = self.pool.as_ref()
-            .ok_or(WorkerDurableError::Invalid("worker pool unavailable"))?.clone();
-        let process = match dispatch_view.dispatch_isolated_worker(
-            proof.worker_execution_id(), launcher, owner, proof.worker_pool_revision(),
-        ) {
-            Ok(process) => process,
-            Err(error) => {
-                let quarantine = self.apply(proof.worker_pool_revision(), delivery_id,
-                    WorkerCommand::QuarantineWorker {
-                        scope: OwnerScopeKey::from_owner(owner),
-                        worker_execution_id: proof.worker_execution_id().to_owned(),
-                    });
-                if let Err(persist_error) = quarantine {
-                    if let Some(pool) = self.pool.as_mut() { pool.close_fan_out(); }
-                    return Err(persist_error);
-                }
-                return Err(error.into());
-            }
-        };
-        if let Err(error) = self.apply(proof.worker_pool_revision(), delivery_id,
-            WorkerCommand::BindProcess {
-                scope: OwnerScopeKey::from_owner(owner),
-                worker_execution_id: proof.worker_execution_id().to_owned(),
-                process_identity: process.clone(),
-            })
-        {
-            // P1 retains its supervised process and target receipt. Refuse all
-            // future dispatch if the process-bind append is ambiguous; restart
-            // recovery quarantines the durable claim without relaunching.
-            if let Some(pool) = self.pool.as_mut() { pool.close_fan_out(); }
-            return Err(error);
-        }
-        Ok(process)
+        // V1 managed WorkerExecution is a logical Core Session/Attempt and may
+        // never start a worker-specific process. Keep the generic process-backed
+        // pool primitives for a separately approved future mode, but make this
+        // managed entry point incapable of crossing the P1 ExecutionHost port.
+        // Otherwise a future call-site could accidentally fork a second model
+        // runtime despite the logical-child contract.
+        let _ = (delivery_id, binding, owner, location_id, process_incarnation,
+            delegation_binding_digest, now_ms, launcher);
+        Err(WorkerDurableError::Pool(WorkerPoolError::WrongWorkerClass))
     }
 
     /// Resolve a previously appended intent for one guarded HostKernel call.
@@ -4571,6 +8919,59 @@ impl WorkerPoolControl {
     ) -> Result<GuardedWorktreeRequestV1, WorkerDurableError> {
         let pin = self.worktree_operation_pin_for_dispatch(operation_id, root_proof, now_ms)?;
         Ok(GuardedWorktreeRequestV1::from_durable_intent(pin.intent().clone()))
+    }
+
+    /// Distinguishes a genuinely absent operation from every durable state for
+    /// same-request Inspect recovery. `None` is returned only when the
+    /// authenticated root scope is current and the exact operation ID has no
+    /// OwnerLog intent. A present Pending intent returns its request; all
+    /// post-fence, terminal, quarantined, retired, or stale states have typed
+    /// errors so callers cannot mistake recovery failure for permission to
+    /// create or dispatch a replacement operation.
+    pub(crate) fn resolve_pending_worktree_intent_if_present(
+        &self,
+        operation_id: &str,
+        root_proof: &RootCoordinatorExecutionProofV1,
+        now_ms: u64,
+    ) -> Result<Option<GuardedWorktreeRequestV1>, WorkerDurableError> {
+        self.resolve_pending_worktree_operation_pin_if_present(operation_id, root_proof, now_ms)
+            .map(|pin| pin.map(|pin| GuardedWorktreeRequestV1::from_durable_intent(pin.intent().clone())))
+    }
+
+    /// Pin-preserving form for HostKernel's Guard → durable dispatch-start
+    /// sequence. The returned value is the exact persisted pin that
+    /// `mark_worktree_dispatch_started_and_get_request` must revalidate before
+    /// writing the possible-dispatch fence.
+    pub(crate) fn resolve_pending_worktree_operation_pin_if_present(
+        &self,
+        operation_id: &str,
+        root_proof: &RootCoordinatorExecutionProofV1,
+        now_ms: u64,
+    ) -> Result<Option<WorktreeLifecycleOperationPinV1>, WorkerDurableError> {
+        // Authenticate and re-resolve the root before revealing whether an
+        // operation ID exists in this owner stream.
+        let live_owner = self.resolve_worktree_root_owner(root_proof, now_ms)?;
+        let Some(record) = self.worktree_operations.get(operation_id) else {
+            return Ok(None);
+        };
+        if record.intent().owner() != &live_owner {
+            return Err(WorkerDurableError::WorktreeIntentStale);
+        }
+        match record.state() {
+            WorktreeOperationStateV1::Pending => Ok(Some(
+                WorktreeLifecycleOperationPinV1::from_durable_intent(record.intent().clone()),
+            )),
+            WorktreeOperationStateV1::Unknown => Err(WorkerDurableError::WorktreeIntentUnknown),
+            WorktreeOperationStateV1::Quarantined => {
+                Err(WorkerDurableError::WorktreeIntentQuarantined)
+            }
+            WorktreeOperationStateV1::Completed => {
+                Err(WorkerDurableError::WorktreeIntentCompleted)
+            }
+            WorktreeOperationStateV1::RetiredNoDispatch => {
+                Err(WorkerDurableError::WorktreeIntentRetired)
+            }
+        }
     }
 
     /// Persist the possible-dispatch fence only after P1 has evaluated Guard,
@@ -4930,6 +9331,77 @@ impl WorkerPoolControl {
         Ok(())
     }
 
+    /// Consume a fresh owner-attributed PSS sample against the exact
+    /// HostKernel-minted resource-policy pin. This produces only an opaque
+    /// advisory signal; it is deliberately not persisted and cannot open
+    /// admission, terminate a process, evict a cache, or release a lease.
+    /// Callers must retain the tracker only for its exact owner epoch and
+    /// policy revision. Restart or policy change requires a new calm window.
+    pub(crate) fn observe_authenticated_resource_pressure(
+        &mut self,
+        policy: &crate::resource_budget::AuthenticatedResourcePolicyPinV1,
+        snapshot: &crate::resource_sampler::DurableOwnedResourceSnapshotV1,
+        owner: &AuthenticatedOwnerContext,
+        now_ms: u64,
+        max_age_ms: u64,
+        lower_watermark: u64,
+        required_calm_samples: u16,
+    ) -> Result<crate::resource_budget::AuthenticatedResourcePressureSignalV1, WorkerDurableError> {
+        self.validate_resource_snapshot(snapshot, owner, now_ms, max_age_ms)?;
+        if !policy.matches_owner(owner) {
+            return Err(WorkerDurableError::Conflict(
+                "resource pressure policy belongs to another authenticated Attempt",
+            ));
+        }
+        // Pressure history is process-local advisory state without an
+        // OwnerLog retention contract. Reclaim only entries whose supporting
+        // sample has expired; a returning owner then starts a fresh RECOVERING
+        // window. This bounds owner churn without changing any lease or
+        // admission state.
+        self.resource_pressure_trackers
+            .retain(|_, tracker| !tracker.is_expired_at(now_ms, max_age_ms));
+        let needs_new_tracker = self.resource_pressure_trackers.get(owner).is_none_or(|tracker|
+            !tracker.matches_inputs(
+                policy, owner, crate::resource_budget::BudgetDimension::MemoryBytes,
+                lower_watermark, required_calm_samples,
+            ));
+        if needs_new_tracker {
+            if !self.resource_pressure_trackers.contains_key(owner)
+                && self.resource_pressure_trackers.len() >= crate::worker_pool::MAX_WORKER_RECORDS
+            {
+                return Err(WorkerDurableError::Invalid(
+                    "bounded resource pressure tracker table is full",
+                ));
+            }
+            let tracker = crate::resource_budget::ManagedResourcePressureTrackerV1::from_authenticated_policy(
+                policy, crate::resource_budget::BudgetDimension::MemoryBytes,
+                lower_watermark, required_calm_samples,
+            ).map_err(|_| WorkerDurableError::Conflict(
+                "authenticated memory pressure policy is unavailable or invalid",
+            ))?;
+            self.resource_pressure_trackers.insert(owner.clone(), tracker);
+        }
+        let usage = match &snapshot.aggregate().pss_bytes {
+            crate::resource_sampler::Metric::Measured(value) => u64::try_from(*value).ok(),
+            crate::resource_sampler::Metric::Unknown(_) => None,
+        };
+        let tracker = self.resource_pressure_trackers.get_mut(owner)
+            .ok_or(WorkerDurableError::Invalid("resource pressure tracker was not retained"))?;
+        tracker.observe_verified_usage(
+            policy,
+            owner,
+            snapshot.sample_sequence(),
+            snapshot.sampled_at_ms(),
+            snapshot.owner_log_id(),
+            snapshot.owner_log_sequence(),
+            snapshot.owner_log_event_digest(),
+            snapshot.worker_pool_revision(),
+            usage,
+        ).map_err(|_| WorkerDurableError::Conflict(
+            "resource pressure policy, owner or measured sample is unavailable or stale",
+        ))
+    }
+
     /// Persists one opaque measured PSS observation for its exact worker lease.
     /// This is telemetry only: it does not update admission capacity or claim
     /// any OS-enforced resource quota. No request can construct the usage value
@@ -5031,7 +9503,10 @@ impl WorkerPoolControl {
     /// are not OwnerLog commands; the CAS revisions the ingress reads stay
     /// consistent with the replayed log because callers pass the revision they
     /// just read.
-    pub fn update_capacity(
+    /// Internal telemetry primitive. No RPC accepts caller-supplied limits or
+    /// usage; exposing this through an unauthenticated adapter would turn
+    /// untrusted measurements into admission authority.
+    pub(crate) fn update_capacity(
         &mut self,
         dimension: BudgetDimension,
         hard_limit: Option<u64>,
@@ -5080,6 +9555,30 @@ impl WorkerPoolControl {
             };
         }
         match &command {
+            WorkerCommand::PreAdmissionContextBound { worker_execution_id, ticket_id, pins } => {
+                pins.validate()?;
+                let current = self.identities.pre_admission_pins.get(worker_execution_id)
+                    .ok_or(WorkerDurableError::Conflict("context bind has no Stage-A reservation"))?;
+                let worker = self.pool.as_ref().and_then(|pool| pool.worker(worker_execution_id))
+                    .ok_or(WorkerDurableError::NotFound("context bind worker unavailable"))?;
+                let (expected_ticket, expected_worker, _) = pre_admission_ids(pins);
+                let mut pre_context = pins.clone();
+                pre_context.context_selection_digest = None;
+                pre_context.pins_digest = pre_context.compute_digest();
+                if !pins.staged_pre_admission || pins.context_selection_digest.is_none()
+                    || expected_worker != *worker_execution_id || expected_ticket != *ticket_id
+                    || pre_context != *current || current.context_selection_digest.is_some()
+                        && current != pins
+                    || worker.state != crate::resource_budget::ReservationState::Reserved
+                    || worker.cancellation_requested || worker.unknown_effect
+                    || worker.process_identity.is_some()
+                    || self.identities.delegation_bindings.contains_key(worker_execution_id)
+                {
+                    return Err(WorkerDurableError::Conflict(
+                        "ContextSelection can bind only once to the same unclaimed Stage-A reservation",
+                    ));
+                }
+            }
             WorkerCommand::SettleWorker { worker_execution_id, .. }
             | WorkerCommand::ReconcileRelease { worker_execution_id, .. }
                 if self.identities.pre_admission_pins.contains_key(worker_execution_id) =>
@@ -5194,6 +9693,48 @@ impl WorkerPoolControl {
                     ));
                 }
             }
+            WorkerCommand::ManagedFinalInspectCandidatePinned { pin } => {
+                let operation = self.worktree_operations.get(&pin.operation_id).ok_or(
+                    WorkerDurableError::NotFound("final Inspect intent is not durable"),
+                )?;
+                let matching_pins = self.identities.pre_admission_pins.iter().filter(|(worker_id, pins)| {
+                    pins.attempt_id() == pin.attempt_id
+                        && self.identities.delegation_bindings.get(*worker_id)
+                            .is_some_and(|binding| binding.binding_digest == pin.binding_digest
+                                && binding.worktree_admission.as_ref().is_some_and(|admission|
+                                    admission.worktree_id == pins.worktree.worktree_id
+                                        && admission.base_revision == pins.worktree.base_revision
+                                        && admission.root_location_id == pins.location_id
+                                        && admission.p8_workspace_binding == pins.workspace_binding()))
+                        && pins.worktree.worktree_id == operation.intent().worktree_id()
+                        && pins.worktree.base_revision == operation.intent().base_revision().unwrap_or_default()
+                        && pins.workspace_binding() == operation.intent().root().workspace_binding()
+                        && pins.location_id() == operation.intent().root().location_ref()
+                }).count();
+                if operation.intent().kind() != WorktreeOperationKindV1::Inspect
+                    || operation.intent().expected_workspace_revision() != pin.final_revision
+                    || worktree_operation_id(operation.intent().owner(), WorktreeOperationKindV1::Inspect,
+                        &managed_final_inspect_idempotency_key(&pin.attempt_id)) != pin.operation_id
+                    || self.managed_final_inspect_candidate_pins.contains_key(&pin.operation_id)
+                    || matching_pins != 1
+                    || !valid_digest(&pin.candidate_digest, "blake3:")
+                    || !valid_digest(&pin.binding_digest, "blake3:")
+                    || !valid_digest(&pin.spec_digest, "blake3:")
+                    || !valid_digest(&pin.evidence_digest, "blake3:")
+                    || !valid_digest(&pin.final_revision, "blake3:")
+                    || (pin.verification_run_id.is_some() != pin.set_identity_digest.is_some())
+                    || (pin.verification_run_id.is_some() != pin.challenge_set_digest.is_some())
+                    || pin.verification_run_id.as_deref().is_some_and(|id| validate_owner_token(id).is_err())
+                    || pin.set_identity_digest.as_deref().is_some_and(|digest| !valid_digest(digest, "blake3:"))
+                    || pin.challenge_set_digest.as_deref().is_some_and(|digest| !valid_digest(digest, "blake3:"))
+                    || validate_owner_token(&pin.attempt_id).is_err()
+                    || validate_owner_token(&pin.spec_id).is_err()
+                {
+                    return Err(WorkerDurableError::Conflict(
+                        "final Inspect candidate pin does not match a unique unpinned intent",
+                    ));
+                }
+            }
             WorkerCommand::MemoryUsageObserved { scope, attribution } => {
                 let cursor = self.cursor.as_ref().ok_or(WorkerDurableError::Invalid(
                     "resource usage requires an opened OwnerLog",
@@ -5250,13 +9791,21 @@ impl WorkerPoolControl {
                 }
                 let mut next = pool.clone();
                 command.apply_to(&mut next, ApplyMode::Live)?;
+                if let WorkerCommand::DelegationBound { worker_execution_id, binding } = &command {
+                    if let Some(admission) = binding.worktree_admission.as_ref() {
+                        next.bind_managed_child_workspace_revision(
+                            worker_execution_id, &admission.child_workspace_revision,
+                        )?;
+                    }
+                }
                 next
             }
         };
         let mut next_worktree_operations = self.worktree_operations.clone();
         apply_worktree_journal_command(&mut next_worktree_operations, &command)?;
         let mut next_identities = self.identities.clone();
-        apply_worker_identity_command(&mut next_identities, &next, &next_worktree_operations, &command)?;
+        apply_worker_identity_command(&mut next_identities, &next, &next_worktree_operations,
+            &self.managed_settlement_receipts, &command)?;
         let mut event = OwnerEventInput {
             schema_version: EVENT_SCHEMA_VERSION,
             time_ms: now_ms(),
@@ -5275,6 +9824,9 @@ impl WorkerPoolControl {
         self.pool = Some(next);
         self.worktree_operations = next_worktree_operations;
         self.identities = next_identities;
+        if let WorkerCommand::ManagedFinalInspectCandidatePinned { pin } = &command {
+            self.managed_final_inspect_candidate_pins.insert(pin.operation_id.clone(), pin.clone());
+        }
         self.cursor = Some(receipt.owner_cursor);
         if let WorkerCommand::ClaimWorker { worker_execution_id, .. } = &command {
             let committed_cursor = self.cursor.as_ref().expect("committed command has cursor");
@@ -5287,6 +9839,21 @@ impl WorkerPoolControl {
                 .ok_or(WorkerDurableError::Invalid("worker pool unavailable"))?;
             let receipt = WorkerSettlementReceiptV1::from_committed_event(event, &cursor, revision);
             self.managed_settlement_receipts.insert(event.worker_execution_id.clone(), receipt);
+        }
+        if let WorkerCommand::ManagedWorktreeDisposition { event } = &command {
+            self.managed_worktree_disposition_events.insert(event.worker_execution_id.clone(), event.clone());
+            let cursor = self.cursor.as_ref().expect("committed worktree disposition has cursor").clone();
+            let revision = self.pool.as_ref().map(WorkerPool::revision)
+                .ok_or(WorkerDurableError::Invalid("worker pool unavailable"))?;
+            let receipt = WorkerWorktreeDispositionReceiptV1::from_committed_event(event, &cursor, revision);
+            self.managed_worktree_disposition_receipts.insert(event.worker_execution_id.clone(), receipt);
+        }
+        if let WorkerCommand::ManagedTerminalQuarantined { event } = &command {
+            let cursor = self.cursor.as_ref().expect("committed quarantine has cursor").clone();
+            let revision = self.pool.as_ref().map(WorkerPool::revision)
+                .ok_or(WorkerDurableError::Invalid("worker pool unavailable"))?;
+            let receipt = WorkerManagedQuarantineReceiptV1::from_committed_event(event, &cursor, revision);
+            self.managed_quarantine_receipts.insert(event.worker_execution_id.clone(), receipt);
         }
         if let WorkerCommand::PreAdmissionReconciled { proof } = &command {
             let committed_cursor = self.cursor.as_ref().expect("committed command has cursor");
@@ -5427,6 +9994,23 @@ impl WorkerPoolControl {
                         ));
                     }
                 }
+                if let WorkerCommand::ManagedFinalInspectCandidatePinned { pin } = &command {
+                    let intent = self.worktree_operations.get(&pin.operation_id).ok_or(
+                        WorkerDurableError::ReplayConflict("final Inspect candidate has no prior intent"),
+                    )?;
+                    if intent.intent().kind() != WorktreeOperationKindV1::Inspect
+                        || intent.intent().expected_workspace_revision() != pin.final_revision
+                        || worktree_operation_id(intent.intent().owner(), WorktreeOperationKindV1::Inspect,
+                            &managed_final_inspect_idempotency_key(&pin.attempt_id)) != pin.operation_id
+                        || self.managed_final_inspect_candidate_pins.contains_key(&pin.operation_id)
+                        || (pin.verification_run_id.is_some() != pin.set_identity_digest.is_some())
+                        || (pin.verification_run_id.is_some() != pin.challenge_set_digest.is_some())
+                    {
+                        return Err(WorkerDurableError::ReplayConflict(
+                            "final Inspect candidate pin does not match its unique prior intent",
+                        ));
+                    }
+                }
                 self.deliveries.insert(
                     delivery.to_owned(),
                     logical_command_digest(&event.kind, payload),
@@ -5466,10 +10050,20 @@ impl WorkerPoolControl {
                         other.apply_to(pool, ApplyMode::Replay)?;
                     }
                 }
+                if let WorkerCommand::DelegationBound { worker_execution_id, binding } = &command {
+                    if let Some(admission) = binding.worktree_admission.as_ref() {
+                        self.pool.as_mut().ok_or(WorkerDurableError::ReplayConflict(
+                            "managed child binding precedes worker pool open",
+                        ))?.bind_managed_child_workspace_revision(
+                            worker_execution_id, &admission.child_workspace_revision,
+                        ).map_err(WorkerDurableError::Pool)?;
+                    }
+                }
                 apply_worker_identity_command(
                     &mut self.identities,
                     self.pool.as_ref().ok_or(WorkerDurableError::Invalid("worker pool missing"))?,
                     &self.worktree_operations,
+                    &self.managed_settlement_receipts,
                     &command,
                 )?;
                 if let WorkerCommand::ClaimWorker { worker_execution_id, .. } = &command {
@@ -5505,7 +10099,62 @@ impl WorkerPoolControl {
                         ));
                     }
                 }
+                if let WorkerCommand::ManagedWorktreeDisposition { event: disposition } = &command {
+                    if let Some(previous) = self.managed_worktree_disposition_events
+                        .insert(disposition.worker_execution_id.clone(), disposition.clone())
+                        && previous != *disposition
+                    {
+                        return Err(WorkerDurableError::ReplayConflict(
+                            "managed worktree disposition changed during replay",
+                        ));
+                    }
+                    let event_cursor = CursorV1 {
+                        owner_kind: OWNER_KIND.to_owned(), owner_id: self.pool_id.clone(),
+                        seq: event.seq.to_string(),
+                        event_digest: format!("blake3:{}", event.event_digest.to_hex()),
+                    };
+                    let revision = self.pool.as_ref().map(WorkerPool::revision).unwrap_or_default();
+                    let receipt = WorkerWorktreeDispositionReceiptV1::from_committed_event(
+                        disposition, &event_cursor, revision,
+                    );
+                    if let Some(previous) = self.managed_worktree_disposition_receipts
+                        .insert(disposition.worker_execution_id.clone(), receipt.clone())
+                        && previous != receipt
+                    {
+                        return Err(WorkerDurableError::ReplayConflict(
+                            "managed worktree disposition receipt changed during replay",
+                        ));
+                    }
+                }
+                if let WorkerCommand::ManagedTerminalQuarantined { event: quarantine } = &command {
+                    let event_cursor = CursorV1 {
+                        owner_kind: OWNER_KIND.to_owned(), owner_id: self.pool_id.clone(),
+                        seq: event.seq.to_string(),
+                        event_digest: format!("blake3:{}", event.event_digest.to_hex()),
+                    };
+                    let revision = self.pool.as_ref().map(WorkerPool::revision).unwrap_or_default();
+                    let receipt = WorkerManagedQuarantineReceiptV1::from_committed_event(
+                        quarantine, &event_cursor, revision,
+                    );
+                    if let Some(previous) = self.managed_quarantine_receipts
+                        .insert(quarantine.worker_execution_id.clone(), receipt.clone())
+                        && previous != receipt
+                    {
+                        return Err(WorkerDurableError::ReplayConflict(
+                            "managed terminal quarantine receipt changed during replay",
+                        ));
+                    }
+                }
                 apply_worktree_journal_command(&mut self.worktree_operations, &command)?;
+                if let WorkerCommand::ManagedFinalInspectCandidatePinned { pin } = &command {
+                    if self.managed_final_inspect_candidate_pins.insert(
+                        pin.operation_id.clone(), pin.clone(),
+                    ).is_some() {
+                        return Err(WorkerDurableError::ReplayConflict(
+                            "final Inspect candidate pin was duplicated",
+                        ));
+                    }
+                }
                 if let WorkerCommand::WorktreeRegistrationRemoved { operation_id, worktree_id, .. } = &command {
                     let release_receipt_ref = self.worktree_operations.get(operation_id)
                         .and_then(|record| record.receipt())
@@ -5633,11 +10282,14 @@ fn trusted_pre_admission_value(pins: &TrustedPreAdmissionPinsV1) -> Value {
         "profileId": pins.profile_id,
         "profileRevision": pins.profile_revision.to_string(),
         "profileDigest": pins.profile_digest,
-        "permissionScopeDigest": pins.permission_scope_digest,
+        "profilePermissionCeilingDigest": pins.profile_permission_ceiling_digest,
         "contextSelectionDigest": pins.context_selection_digest,
         "acceptedScopeDigest": pins.accepted_scope_digest,
         "capabilityCeilingDigest": pins.capability_ceiling_digest,
         "specMaxWorkers": pins.spec_max_workers.to_string(),
+        "resourcePolicyRevision": pins.resource_policy_revision.to_string(),
+        "resourcePolicyDigest": pins.resource_policy_digest,
+        "resourceActiveWorkerLimit": pins.resource_active_worker_limit.map(|value| value.to_string()),
         "dimension": pins.dimension.wire_name(),
         "amount": pins.amount,
         "expiresAtMs": pins.expires_at_ms,
@@ -5645,6 +10297,7 @@ fn trusted_pre_admission_value(pins: &TrustedPreAdmissionPinsV1) -> Value {
         "worktreePoolRevision": pins.worktree_pool_revision.to_string(),
         "idempotencyKey": pins.idempotency_key,
         "parentProof": parent,
+        "stagedPreAdmission": pins.staged_pre_admission,
         "pinsDigest": pins.pins_digest,
     })
 }
@@ -5708,10 +10361,60 @@ fn decode_managed_reservation_reconciliation(
     Ok(proof)
 }
 
+fn managed_worktree_admission_pin_value(pin: &ManagedWorktreeAdmissionPinV1) -> Value {
+    json!({
+        "worktreeID": pin.worktree_id,
+        "baseRevision": pin.base_revision,
+        "poolRevision": pin.pool_revision.to_string(),
+        "rootLocationID": pin.root_location_id,
+        "p8WorkspaceBinding": pin.p8_workspace_binding,
+        "childLocationID": pin.child_location_id,
+        "childWorkspaceID": pin.child_workspace_id,
+        "childWorkspaceRef": pin.child_workspace_ref,
+        "childCanonicalRoot": pin.child_canonical_root,
+        "childWorkspaceRevision": pin.child_workspace_revision,
+    })
+}
+
+fn decode_managed_worktree_admission_pin(value: &Value) -> Result<ManagedWorktreeAdmissionPinV1, WorkerDurableError> {
+    let pool_revision = text(value, "poolRevision")?.parse::<u64>()
+        .map_err(|_| WorkerDurableError::Invalid("invalid managed worktree pool revision"))?;
+    if pool_revision.to_string() != text(value, "poolRevision")? {
+        return Err(WorkerDurableError::Invalid("managed worktree pool revision is not canonical decimal"));
+    }
+    let pin = ManagedWorktreeAdmissionPinV1 {
+        worktree_id: text(value, "worktreeID")?,
+        base_revision: text(value, "baseRevision")?,
+        pool_revision,
+        root_location_id: text(value, "rootLocationID")?,
+        p8_workspace_binding: text(value, "p8WorkspaceBinding")?,
+        child_location_id: text(value, "childLocationID")?,
+        child_workspace_id: text(value, "childWorkspaceID")?,
+        child_workspace_ref: text(value, "childWorkspaceRef")?,
+        child_canonical_root: text(value, "childCanonicalRoot")?,
+        child_workspace_revision: text(value, "childWorkspaceRevision")?,
+    };
+    pin.validate()?;
+    Ok(pin)
+}
+
 fn decode_trusted_pre_admission(value: &Value) -> Result<TrustedPreAdmissionPinsV1, WorkerDurableError> {
-    if value.as_object().map(|object| object.len()) != Some(25) {
+    let shape_len = value.as_object().map(|object| object.len());
+    let legacy_without_resource_pin = shape_len == Some(25);
+    let legacy_without_staged_mode = shape_len == Some(28);
+    if !legacy_without_resource_pin && !legacy_without_staged_mode && shape_len != Some(29) {
         return Err(WorkerDurableError::Invalid("invalid pre-admission pin shape"));
     }
+    // Existing durable OwnerLog records used this generic name for the
+    // profile's permission ceiling. Accept that one historical spelling on
+    // replay; new writes always use the semantically precise field name.
+    let profile_permission_ceiling_digest = match (
+        value.get("profilePermissionCeilingDigest"),
+        value.get("permissionScopeDigest"),
+    ) {
+        (Some(Value::String(digest)), None) | (None, Some(Value::String(digest))) => digest.clone(),
+        _ => return Err(WorkerDurableError::Invalid("invalid profile permission-ceiling pin")),
+    };
     let owner = rehydrate(&decode_scope(value.get("owner").ok_or(WorkerDurableError::Invalid("missing pre-admission owner"))?)?)?;
     let worktree = value.get("worktree").ok_or(WorkerDurableError::Invalid("missing pinned worktree"))?;
     if worktree.as_object().map(|object| object.len()) != Some(2) {
@@ -5779,12 +10482,35 @@ fn decode_trusted_pre_admission(value: &Value) -> Result<TrustedPreAdmissionPins
         profile_id: text(value, "profileId")?,
         profile_revision: text(value, "profileRevision")?.parse().map_err(|_| WorkerDurableError::Invalid("invalid pinned profile revision"))?,
         profile_digest: text(value, "profileDigest")?,
-        permission_scope_digest: text(value, "permissionScopeDigest")?,
-        context_selection_digest: text(value, "contextSelectionDigest")?,
+        profile_permission_ceiling_digest,
+        context_selection_digest: match value.get("contextSelectionDigest") {
+            Some(Value::String(digest)) => Some(digest.clone()),
+            Some(Value::Null) if shape_len == Some(29) => None,
+            _ => return Err(WorkerDurableError::Invalid("invalid pre-admission ContextSelection digest")),
+        },
         accepted_scope_digest: text(value, "acceptedScopeDigest")?,
         capability_ceiling_digest: text(value, "capabilityCeilingDigest")?,
         spec_max_workers: text(value, "specMaxWorkers")?.parse()
             .map_err(|_| WorkerDurableError::Invalid("invalid Spec maxWorkers pin"))?,
+        resource_policy_revision: if legacy_without_resource_pin {
+            0
+        } else {
+            parse_canonical_owner_u64(&text(value, "resourcePolicyRevision")?)
+                .ok_or(WorkerDurableError::Invalid("invalid resource policy revision pin"))?
+        },
+        resource_policy_digest: if legacy_without_resource_pin {
+            String::new()
+        } else {
+            text(value, "resourcePolicyDigest")?
+        },
+        resource_active_worker_limit: if legacy_without_resource_pin {
+            None
+        } else {
+            optional_text(value, "resourceActiveWorkerLimit")?
+                .map(|raw| parse_canonical_owner_u64(&raw)
+                    .ok_or(WorkerDurableError::Invalid("invalid active-worker resource limit pin")))
+                .transpose()?
+        },
         dimension,
         amount: unsigned(value, "amount")?,
         expires_at_ms: unsigned(value, "expiresAtMs")?,
@@ -5796,6 +10522,10 @@ fn decode_trusted_pre_admission(value: &Value) -> Result<TrustedPreAdmissionPins
             .map_err(|_| WorkerDurableError::Invalid("invalid worktree pool revision pin"))?,
         idempotency_key: text(value, "idempotencyKey")?,
         parent_proof,
+        staged_pre_admission: if shape_len == Some(29) {
+            value.get("stagedPreAdmission").and_then(Value::as_bool)
+                .ok_or(WorkerDurableError::Invalid("invalid staged pre-admission mode"))?
+        } else { false },
         pins_digest: text(value, "pinsDigest")?,
     };
     pins.validate()?;
@@ -5963,6 +10693,22 @@ fn root_coordinator_value(root: &RootCoordinatorExecutionV1) -> Value {
     })
 }
 
+fn root_execution_digest(root: &RootCoordinatorExecutionV1) -> String {
+    let mut h = blake3::Hasher::new();
+    h.update(b"horizoncode.root-coordinator-execution-digest.v1\0");
+    for value in [root.worker_execution_id.as_str(), root.goal_id.as_str(), root.run_id.as_str(),
+        root.principal_ref.as_str(), root.workspace_binding.as_str(), root.session_id.as_str(),
+        root.location_id.as_str(), root.process_incarnation.as_str(), root.source_revision.as_str(),
+        root.accepted_spec_digest.as_str()] {
+        append_digest_field(&mut h, value);
+    }
+    h.update(&root.owner_epoch.to_be_bytes());
+    h.update(&root.process_identity.pid.to_be_bytes());
+    h.update(&root.process_identity.start_identity.to_be_bytes());
+    h.update(&root.expires_at_ms.to_be_bytes());
+    format!("blake3:{}", h.finalize().to_hex())
+}
+
 fn decode_root_coordinator(value: &Value) -> Result<RootCoordinatorExecutionV1, WorkerDurableError> {
     if value.as_object().map(|v| v.len()) != Some(13) {
         return Err(WorkerDurableError::Invalid("invalid root coordinator shape"));
@@ -6077,6 +10823,18 @@ fn worktree_operation_id(
     format!("wtop_{}", blake3::hash(&bytes).to_hex())
 }
 
+fn quarantined_reconciliation_inspect_key(attempt_id: &str, owner_epoch: u64, owner_log_sequence: &str) -> String {
+    format!("managed-reconcile-inspect-{attempt_id}-{owner_epoch}-{owner_log_sequence}")
+}
+
+fn settled_reconciliation_inspect_key(attempt_id: &str, owner_epoch: u64, owner_log_sequence: &str) -> String {
+    format!("managed-settlement-reconcile-inspect-{attempt_id}-{owner_epoch}-{owner_log_sequence}")
+}
+
+fn managed_final_inspect_idempotency_key(attempt_id: &str) -> String {
+    format!("managed-final-inspect-{attempt_id}")
+}
+
 fn worktree_candidate_id(operation_id: &str) -> String {
     let mut bytes = b"horizoncode.worktree-candidate-id.v1\0".to_vec();
     bytes.extend_from_slice(&(operation_id.len() as u64).to_be_bytes());
@@ -6088,6 +10846,7 @@ fn apply_worker_identity_command(
     journal: &mut WorkerIdentityJournalV1,
     pool: &WorkerPool,
     worktree_operations: &WorktreeOperationJournalV1,
+    settlement_receipts: &BTreeMap<String, WorkerSettlementReceiptV1>,
     command: &WorkerCommand,
 ) -> Result<(), WorkerDurableError> {
     match command {
@@ -6207,7 +10966,11 @@ fn apply_worker_identity_command(
                 || root_owner.run_id() != pins.run_id()
                 || root_owner.principal_ref() != pins.principal_ref()
                 || root_owner.workspace_binding() != pins.workspace_binding()
-                || root_owner.session_id() != pins.session_id()
+                // Historical nested records may have no root Session lineage
+                // projection. Replay preserves committed facts, while live
+                // `validate_managed_parent_pin` now denies new nested admission.
+                || managed_root_session_id(pins.parent_proof())
+                    .is_ok_and(|root_session_id| root_owner.session_id() != root_session_id)
                 || root_owner.location_id() != pins.location_id()
                 || root_owner.owner_epoch() != pins.owner_epoch()
                 || root_owner.process_incarnation() != pins.process_incarnation()
@@ -6228,6 +10991,33 @@ fn apply_worker_identity_command(
                 if journal.pre_admission_pins.len() >= crate::worker_pool::MAX_WORKER_RECORDS {
                     return Err(WorkerDurableError::Invalid("pre-admission pin history full"));
                 }
+                journal.pre_admission_pins.insert(worker_execution_id.clone(), pins.clone());
+            }
+        }
+        WorkerCommand::PreAdmissionContextBound { worker_execution_id, ticket_id, pins } => {
+            pins.validate()?;
+            let existing = journal.pre_admission_pins.get(worker_execution_id)
+                .ok_or(WorkerDurableError::ReplayConflict("context bind has no Stage-A pin record"))?;
+            let worker = pool.worker(worker_execution_id)
+                .ok_or(WorkerDurableError::ReplayConflict("context bind worker is missing"))?;
+            let (expected_ticket, expected_worker, _) = pre_admission_ids(pins);
+            let mut pre_context = pins.clone();
+            pre_context.context_selection_digest = None;
+            pre_context.pins_digest = pre_context.compute_digest();
+            if !pins.staged_pre_admission || pins.context_selection_digest.is_none()
+                || expected_worker != *worker_execution_id || expected_ticket != *ticket_id
+                || &pre_context != existing
+                || existing.context_selection_digest.is_some() && existing != pins
+                || worker.state != crate::resource_budget::ReservationState::Reserved
+                || worker.cancellation_requested || worker.unknown_effect
+                || worker.process_identity.is_some()
+                || journal.delegation_bindings.contains_key(worker_execution_id)
+            {
+                return Err(WorkerDurableError::ReplayConflict(
+                    "ContextSelection bind is not an immutable Stage-A transition",
+                ));
+            }
+            if existing != pins {
                 journal.pre_admission_pins.insert(worker_execution_id.clone(), pins.clone());
             }
         }
@@ -6292,6 +11082,128 @@ fn apply_worker_identity_command(
             {
                 return Err(WorkerDurableError::ReplayConflict("managed settlement differs from claimed P8 identity"));
             }
+            // New successful settlement events carry the verifier ChallengeSet
+            // identity. Revalidate the final Inspect against that durable
+            // event during replay too; a receipt that was dirty outside the
+            // Attempt's ownership or contained user changes cannot release
+            // successful worker capacity after a restart.
+            if event.verification_run_id.is_some()
+                || event.set_identity_digest.is_some()
+                || event.challenge_set_digest.is_some()
+            {
+                let operation_id = event.final_worktree_operation_id.as_deref().ok_or(
+                    WorkerDurableError::ReplayConflict(
+                        "verified settlement event has no final Inspect operation",
+                    ),
+                )?;
+                let operation = worktree_operations.get(operation_id).ok_or(
+                    WorkerDurableError::ReplayConflict(
+                        "verified settlement final Inspect operation is missing",
+                    ),
+                )?;
+                let receipt = operation.receipt().ok_or(
+                    WorkerDurableError::ReplayConflict(
+                        "verified settlement final Inspect receipt is missing",
+                    ),
+                )?;
+                if event.verification_run_id.as_deref().is_none_or(str::is_empty)
+                    || event.set_identity_digest.as_deref()
+                        .is_none_or(|digest| !valid_digest(digest, "blake3:"))
+                    || event.challenge_set_digest.as_deref()
+                        .is_none_or(|digest| !valid_digest(digest, "blake3:"))
+                    || !final_inspect_allows_verified_settlement(receipt)
+                    || event.final_worktree_host_receipt_ref.as_deref()
+                        != Some(receipt.host_receipt_ref())
+                    || event.observed_workspace_revision.as_deref()
+                        != Some(receipt.observed_workspace_revision())
+                {
+                    return Err(WorkerDurableError::ReplayConflict(
+                        "verified settlement event lacks an attributable final Inspect receipt",
+                    ));
+                }
+            }
+        }
+        WorkerCommand::ManagedWorktreeDisposition { event } => {
+            let settlement = settlement_receipts.get(&event.worker_execution_id).ok_or(
+                WorkerDurableError::ReplayConflict("worktree disposition has no preceding settlement receipt"),
+            )?;
+            let pins = journal.pre_admission_pins.get(&event.worker_execution_id).ok_or(
+                WorkerDurableError::ReplayConflict("worktree disposition has no immutable P8 admission pins"),
+            )?;
+            let operation = worktree_operations.get(&event.final_worktree_operation_id).ok_or(
+                WorkerDurableError::ReplayConflict("worktree disposition Inspect operation is missing"),
+            )?;
+            let receipt = operation.receipt().ok_or(
+                WorkerDurableError::ReplayConflict("worktree disposition Inspect receipt is missing"),
+            )?;
+            let expected_receipt_digest = logical_command_digest(
+                "worker_final_inspect_receipt", &worktree_receipt_value(receipt),
+            );
+            let expected_reusable = receipt.status() == WorktreeObservedStatusV1::Clean
+                && receipt.dirty_entry_count() == 0
+                && !receipt.contains_user_owned_changes()
+                && receipt.owned() && receipt.no_follow();
+            let worker = pool.worker(&event.worker_execution_id).ok_or(
+                WorkerDurableError::ReplayConflict("worktree disposition worker is missing"),
+            )?;
+            if settlement.attempt_id() != event.attempt_id
+                || !settlement.disposition_deferred()
+                || event.owner_epoch != pins.owner_epoch()
+                || settlement.receipt_digest() != event.settlement_receipt_digest
+            || match event.reconciliation_owner_epoch {
+                Some(epoch) => {
+                    let legacy_reconciliation = event.reconciliation_proof_digest.is_none()
+                        && settlement.reconciliation_owner_epoch() == Some(epoch)
+                        && settlement.final_worktree_operation_id() == Some(event.final_worktree_operation_id.as_str())
+                        && settlement.final_worktree_host_receipt_ref() == Some(event.final_worktree_host_receipt_ref.as_str())
+                        && settlement.final_workspace_revision() == Some(event.observed_workspace_revision.as_str());
+                    (!legacy_reconciliation && event.reconciliation_proof_digest.as_deref().is_none_or(|digest|
+                        !valid_digest(digest, "blake3:"))) || epoch != pool.owner_epoch()
+                        || epoch <= event.owner_epoch || operation.intent().owner_epoch() != epoch
+                        || (event.reconciliation_proof_digest.is_some()
+                            && (settlement.reconciliation_owner_epoch().is_some()
+                                || settlement.disposition() != WorkerManagedSettlementDispositionV1::Released
+                                || settlement.verification_run_id().is_none()
+                                || settlement.set_identity_digest().is_none()
+                                || settlement.challenge_set_digest().is_none()
+                                || !final_inspect_allows_verified_settlement(receipt)
+                                || operation.intent().worktree_id() != pins.worktree.worktree_id
+                                || operation.intent().base_revision() != Some(pins.worktree.base_revision.as_str())
+                                || operation.intent().owner().workspace_binding() != pins.workspace_binding()
+                                || operation.intent().owner().location_id() != pins.location_id()
+                                || operation.intent().expected_workspace_revision() != event.observed_workspace_revision))
+                        || (event.reconciliation_proof_digest.is_some()
+                            && operation.intent().operation_id() != worktree_operation_id(
+                                operation.intent().owner(), WorktreeOperationKindV1::Inspect,
+                                &settled_reconciliation_inspect_key(
+                                    &event.attempt_id, epoch, operation.intent().owner_log_sequence(),
+                                ),
+                            ))
+                }
+                None => event.reconciliation_proof_digest.is_some()
+                    || settlement.final_worktree_operation_id() != Some(event.final_worktree_operation_id.as_str())
+                    || settlement.final_worktree_host_receipt_ref() != Some(event.final_worktree_host_receipt_ref.as_str())
+                    || settlement.final_workspace_revision() != Some(event.observed_workspace_revision.as_str()),
+            }
+                || expected_receipt_digest != event.inspect_receipt_digest
+                || receipt.operation_id() != event.final_worktree_operation_id
+                || receipt.host_receipt_ref() != event.final_worktree_host_receipt_ref
+                || receipt.observed_workspace_revision() != event.observed_workspace_revision
+                || matches!(receipt.status(), WorktreeObservedStatusV1::Missing | WorktreeObservedStatusV1::Unknown)
+                || event.reusable_worktree != expected_reusable
+                || worker.owner.attempt_id != event.attempt_id
+                || worker.state != crate::resource_budget::ReservationState::Released
+                || worker.process_identity.is_some()
+                || worker.worktree_lease_id.is_none()
+                || match event.reconciliation_owner_epoch {
+                    Some(epoch) => epoch != pool.owner_epoch() || epoch < event.owner_epoch,
+                    None => event.owner_epoch != pool.owner_epoch(),
+                }
+            {
+                return Err(WorkerDurableError::ReplayConflict(
+                    "worktree disposition does not match exact settlement and final Inspect receipts",
+                ));
+            }
         }
         WorkerCommand::ExpireUnlaunched { worker_execution_id, .. }
             if journal.pre_admission_pins.contains_key(worker_execution_id) =>
@@ -6323,6 +11235,40 @@ fn apply_worker_identity_command(
                     if expected_parent_id != binding.parent_execution_id {
                         return Err(WorkerDurableError::Conflict("delegation parent differs from pinned lineage"));
                     }
+                    if let Some(admission) = binding.worktree_admission.as_ref() {
+                        admission.validate()?;
+                        let registration = journal.worktree_registration_records
+                            .get(&admission.worktree_id)
+                            .filter(|registration| registration.owner().goal_id() == pins.goal_id()
+                                && registration.owner().run_id() == pins.run_id()
+                                && registration.owner().workspace_binding() == pins.workspace_binding()
+                                && registration.owner().location_id() == admission.root_location_id
+                                && registration.matches_durable_operations(worktree_operations)
+                                && !journal.removed_worktree_registrations.contains_key(&admission.worktree_id))
+                            .ok_or(WorkerDurableError::Conflict("child worktree admission has no exact registered root provenance"))?;
+                        let provenance = registration.provenance().ok_or(WorkerDurableError::Conflict(
+                            "child worktree admission lacks guarded Create provenance",
+                        ))?;
+                        let create = worktree_operations.get(provenance.create_operation_id())
+                            .filter(|record| record.state() == WorktreeOperationStateV1::Completed
+                                && record.intent().kind() == WorktreeOperationKindV1::Create
+                                && record.intent().worktree_id() == admission.worktree_id
+                                && record.intent().base_revision() == Some(admission.base_revision.as_str())
+                                && record.intent().root().location_ref() == admission.root_location_id
+                                && record.intent().root().workspace_binding() == admission.p8_workspace_binding
+                                && record.receipt().is_some_and(|receipt| receipt.owned() && receipt.no_follow()))
+                            .ok_or(WorkerDurableError::Conflict("child worktree admission Create proof does not match registered target"))?;
+                        if admission.worktree_id != pins.worktree.worktree_id
+                            || admission.base_revision != pins.worktree.base_revision
+                            || admission.root_location_id != pins.location_id
+                            || admission.p8_workspace_binding != pins.workspace_binding()
+                            || admission.pool_revision.checked_add(1) != Some(pool.revision())
+                            || pool.worker_source_revision(worker_execution_id)
+                                != Some(admission.child_workspace_revision.as_str())
+                        {
+                            return Err(WorkerDurableError::Conflict("child worktree admission differs from exact reservation or measured child revision"));
+                        }
+                    }
                 }
                 journal.delegation_bindings.insert(worker_execution_id.clone(), binding.clone());
             }
@@ -6340,6 +11286,43 @@ fn apply_worker_identity_command(
                 }
                 journal.root_coordinators.insert(execution.worker_execution_id.clone(), execution.clone());
             }
+        }
+        WorkerCommand::RootCoordinatorReauthorized { attempt_id, quarantine_receipt_digest, prior_execution_digest, execution } => {
+            validate_root_execution(execution)?;
+            validate_owner_token(attempt_id)?;
+            validate_owner_digest(quarantine_receipt_digest, "blake3:")?;
+            let root_binding = (execution.worker_execution_id.clone(), quarantine_receipt_digest.clone());
+            if journal.reconciliation_root_ids.get(attempt_id)
+                .is_some_and(|previous| previous != &root_binding)
+            {
+                return Err(WorkerPoolError::InvalidTransition.into());
+            }
+            if !journal.reconciliation_root_ids.contains_key(attempt_id)
+                && journal.reconciliation_root_ids.len() >= crate::worker_pool::MAX_WORKER_RECORDS
+            {
+                return Err(WorkerDurableError::Invalid("reconciliation root history full"));
+            }
+            let existing = journal.root_coordinators.get(&execution.worker_execution_id)
+                .ok_or(WorkerPoolError::InvalidTransition)?;
+            if execution.owner_epoch != pool.owner_epoch()
+                || execution.owner_epoch < existing.owner_epoch
+                || (execution.owner_epoch == existing.owner_epoch
+                    && (execution.process_incarnation != existing.process_incarnation
+                        || execution.process_identity != existing.process_identity))
+                || root_execution_digest(existing) != *prior_execution_digest
+                || existing.goal_id != execution.goal_id
+                || existing.run_id != execution.run_id
+                || existing.principal_ref != execution.principal_ref
+                || existing.workspace_binding != execution.workspace_binding
+                || existing.session_id != execution.session_id
+                || existing.location_id != execution.location_id
+                || existing.source_revision != execution.source_revision
+                || existing.accepted_spec_digest != execution.accepted_spec_digest
+            {
+                return Err(WorkerPoolError::InvalidTransition.into());
+            }
+            journal.root_coordinators.insert(execution.worker_execution_id.clone(), execution.clone());
+            journal.reconciliation_root_ids.insert(attempt_id.clone(), root_binding);
         }
         _ => {}
     }
@@ -7027,6 +12010,11 @@ fn unsigned(value: &Value, name: &str) -> Result<u64, WorkerDurableError> {
         ))
 }
 
+fn parse_canonical_owner_u64(value: &str) -> Option<u64> {
+    let parsed = value.parse::<u64>().ok()?;
+    (parsed.to_string() == value).then_some(parsed)
+}
+
 fn usize_value(value: &Value, name: &str) -> Result<usize, WorkerDurableError> {
     usize::try_from(unsigned(value, name)?)
         .map_err(|_| WorkerDurableError::Invalid("worker pool limit exceeds platform range"))
@@ -7072,15 +12060,23 @@ fn list(value: &Value, name: &str) -> Result<Vec<String>, WorkerDurableError> {
 #[cfg(test)]
 mod pool_open_schema_tests {
     use super::{
+        ManagedLogicalSettlementEventV1, ManagedWorktreeDispositionEventV1,
         ManagedParentProofV1, RootCoordinatorExecutionProofV1,
         RootCoordinatorExecutionV1, TrustedPreAdmissionPinsV1, WorkerCommand,
         WorkerDurableError, managed_task_attempt_candidate_id,
+        ManagedTerminalQuarantineEventV1, WorkerManagedQuarantineReasonV1,
     };
     use crate::resource_budget::{AuthenticatedOwnerContext, BudgetDimension};
     use crate::resource_sampler::ProcessIdentity;
     use crate::worker_pool::{WorkerPool, WorkerPoolConfig};
+    use crate::worktree_lifecycle::{
+        GuardedWorktreeReceiptV1, WorktreeOperationIntentV1, WorktreeOperationJournalV1,
+        WorktreeOperationKindV1, WorktreeOperationStateV1, WorktreeObservedStatusV1,
+        WorktreeRootOwnerV1, WorkspaceRootRefV1,
+    };
     use crate::worktree_pool::WorktreeRegistration;
     use serde_json::json;
+    use std::path::PathBuf;
 
     #[test]
     fn v1_pool_open_replays_with_its_original_default_limits() {
@@ -7101,6 +12097,209 @@ mod pool_open_schema_tests {
             ),
             Err(WorkerDurableError::Invalid(_))
         ));
+    }
+
+    #[test]
+    fn logical_settlement_ownerlog_keeps_legacy_and_typed_receipt_shapes() {
+        let legacy = WorkerCommand::decode(
+            "worker_managed_logical_settled",
+            &json!({
+                "workerExecutionId": "worker_1",
+                "attemptId": "attempt_1",
+                "proofDigest": format!("blake3:{}", "a".repeat(64)),
+                "observedWorkspaceRevision": null,
+                "reusableWorktree": false,
+                "reconciliationOwnerEpoch": null,
+            }),
+            1,
+        ).expect("legacy P8 event remains replayable");
+        assert!(matches!(legacy, WorkerCommand::ManagedLogicalSettled { event } if event.schema_version == 1));
+
+        let digest = format!("blake3:{}", "b".repeat(64));
+        let typed = WorkerCommand::ManagedLogicalSettled {
+            event: ManagedLogicalSettlementEventV1 {
+                schema_version: 4,
+                worker_execution_id: "worker_1".to_owned(),
+                attempt_id: "attempt_1".to_owned(),
+                proof_digest: digest.clone(),
+                observed_workspace_revision: Some(digest.clone()),
+                final_worktree_operation_id: Some("inspect_1".to_owned()),
+                final_worktree_host_receipt_ref: Some("host_receipt_1".to_owned()),
+                evidence_digest: Some(digest.clone()),
+                evidence_refs: vec![crate::protocol::ArtifactRefV1 {
+                    artifact_id: "artifact_1".to_owned(),
+                    digest: digest.clone(),
+                    byte_length: "1".to_owned(),
+                    media_type: "application/json".to_owned(),
+                    classification: crate::protocol::ArtifactClassificationV1::Workspace,
+                }],
+                verification_run_id: Some("verification_run_1".to_owned()),
+                set_identity_digest: Some(digest.clone()),
+                challenge_set_digest: Some(digest.clone()),
+                reusable_worktree: false,
+                reconciliation_owner_epoch: None,
+                disposition_deferred: true,
+            },
+        };
+        let (kind, payload) = typed.event();
+        let replayed = WorkerCommand::decode(kind, &payload, 1)
+            .expect("typed P8 settlement event roundtrips");
+        assert_eq!(replayed, typed);
+    }
+
+    #[test]
+    fn managed_worktree_disposition_ownerlog_event_is_typed_and_replayable() {
+        let digest = format!("blake3:{}", "c".repeat(64));
+        let typed = WorkerCommand::ManagedWorktreeDisposition {
+            event: ManagedWorktreeDispositionEventV1 {
+                worker_execution_id: "worker_1".to_owned(),
+                attempt_id: "attempt_1".to_owned(),
+                owner_epoch: 7,
+                settlement_receipt_digest: digest.clone(),
+                final_worktree_operation_id: "inspect_1".to_owned(),
+                final_worktree_host_receipt_ref: "host_receipt_1".to_owned(),
+                observed_workspace_revision: digest.clone(),
+                inspect_receipt_digest: digest,
+                reusable_worktree: false,
+                reconciliation_owner_epoch: None,
+                reconciliation_proof_digest: None,
+            },
+        };
+        let (kind, payload) = typed.event();
+        assert_eq!(kind, "worker_managed_worktree_disposition");
+        assert_eq!(
+            WorkerCommand::decode(kind, &payload, 1)
+                .expect("typed disposition event remains replayable"),
+            typed,
+        );
+        let mut missing_epoch = payload;
+        missing_epoch.as_object_mut().expect("event payload is an object")
+            .remove("ownerEpoch");
+        assert!(matches!(
+            WorkerCommand::decode(kind, &missing_epoch, 1),
+            Err(WorkerDurableError::Invalid(_)),
+        ));
+    }
+
+    #[test]
+    fn managed_terminal_quarantine_event_binds_exact_attempt_lease_epoch_and_reason() {
+        let owner = AuthenticatedOwnerContext::test_fixture(
+            "server_auth:test", "workspace_test", "ses-child", "run-test",
+            "task-test", "attempt-test", 7,
+        );
+        let typed = WorkerCommand::ManagedTerminalQuarantined {
+            event: ManagedTerminalQuarantineEventV1 {
+                scope: super::OwnerScopeKey::from_owner(&owner),
+                worker_execution_id: "worker-test".to_owned(),
+                goal_id: "goal-test".to_owned(), run_id: "run-test".to_owned(),
+                task_id: "task-test".to_owned(), attempt_id: "attempt-test".to_owned(),
+                owner_epoch: 7,
+                reservation_id: "budget-test".to_owned(),
+                worktree_lease_id: "worktree-lease-test".to_owned(),
+                terminal_proof_digest: format!("blake3:{}", "a".repeat(64)),
+                reason: WorkerManagedQuarantineReasonV1::CancelledTask,
+            },
+        };
+        let (kind, payload) = typed.event();
+        assert_eq!(kind, "worker_managed_terminal_quarantined");
+        assert_eq!(payload["ownerEpoch"], 7);
+        assert_eq!(payload["attemptId"], "attempt-test");
+        assert_eq!(payload["reservationId"], "budget-test");
+        assert_eq!(payload["worktreeLeaseId"], "worktree-lease-test");
+        assert_eq!(payload["reason"], "CANCELLED_TASK");
+        assert_eq!(
+            WorkerCommand::decode(kind, &payload, 1).expect("typed quarantine replay"),
+            typed,
+        );
+    }
+
+    #[test]
+    fn replay_restores_exact_guarded_inspect_receipt_and_operation_idempotency() {
+        let digest = format!("blake3:{}", "c".repeat(64));
+        let root_proof = RootCoordinatorExecutionProofV1 {
+            execution: RootCoordinatorExecutionV1 {
+                worker_execution_id: "root-test".to_owned(),
+                goal_id: "goal-test".to_owned(),
+                run_id: "run-test".to_owned(),
+                principal_ref: "server_auth:test".to_owned(),
+                workspace_binding: "workspace_test".to_owned(),
+                session_id: "ses-root".to_owned(),
+                location_id: "location-test".to_owned(),
+                owner_epoch: 7,
+                process_incarnation: "incarnation-test".to_owned(),
+                process_identity: ProcessIdentity::new(123, 456),
+                source_revision: "source-test".to_owned(),
+                accepted_spec_digest: digest.clone(),
+                expires_at_ms: 10_000,
+            },
+            owner_log_id: "worker_pool_test".to_owned(),
+            owner_log_sequence: "1".to_owned(),
+            owner_log_event_digest: digest.clone(),
+            worker_pool_revision: 1,
+        };
+        let owner = WorktreeRootOwnerV1::from_live_root_proof(&root_proof)
+            .expect("valid authenticated root proof binds the worktree owner");
+        let root = WorkspaceRootRefV1::from_host_kernel(
+            "location-test".to_owned(), "workspace_test".to_owned(), 3,
+        ).expect("valid registered root ref");
+        let idempotency_key = managed_final_inspect_idempotency_key("attempt-test");
+        let operation_id = worktree_operation_id(&owner, WorktreeOperationKindV1::Inspect, &idempotency_key);
+        let intent = WorktreeOperationIntentV1::new(
+            operation_id.clone(), WorktreeOperationKindV1::Inspect, owner.clone(), root.clone(),
+            "worktree-test".to_owned(), "base-test".to_owned(),
+            PathBuf::from("worktrees/worktree-test"), digest.clone(),
+            "worker_pool_test".to_owned(), "1".to_owned(), digest.clone(),
+        ).expect("valid final Inspect intent");
+        let receipt = GuardedWorktreeReceiptV1::from_guarded_host(
+            operation_id.clone(), "host_receipt_test".to_owned(), &root, digest,
+            WorktreeObservedStatusV1::Clean, 0, String::new(), false, None, true, true,
+        ).expect("valid clean guarded receipt");
+
+        let commands = [
+            WorkerCommand::WorktreeOperationIntent { intent },
+            WorkerCommand::WorktreeOperationDispatchStarted { operation_id: operation_id.clone() },
+            WorkerCommand::WorktreeOperationReceipt { receipt: receipt.clone() },
+        ];
+        let mut replayed = WorktreeOperationJournalV1::default();
+        for command in commands {
+            let (kind, payload) = command.event();
+            let decoded = WorkerCommand::decode(kind, &payload, 1)
+                .expect("P8 OwnerLog worktree event decodes during restart replay");
+            apply_worktree_journal_command(&mut replayed, &decoded)
+                .expect("P8 OwnerLog worktree event reconstructs journal");
+        }
+        let recovered = replayed.get(&operation_id).expect("Inspect record survives replay");
+        assert_eq!(recovered.state(), WorktreeOperationStateV1::Completed);
+        assert_eq!(recovered.receipt(), Some(&receipt));
+        assert_eq!(
+            worktree_operation_id(recovered.intent().owner(), WorktreeOperationKindV1::Inspect, &idempotency_key),
+            operation_id,
+        );
+        assert_ne!(
+            worktree_operation_id(recovered.intent().owner(), WorktreeOperationKindV1::Inspect, "different-key"),
+            operation_id,
+        );
+        let candidate_pin = WorkerCommand::ManagedFinalInspectCandidatePinned {
+            pin: ManagedFinalInspectCandidatePinV1 {
+                operation_id: operation_id.clone(),
+                candidate_digest: format!("blake3:{}", "d".repeat(64)),
+                attempt_id: "attempt-test".to_owned(),
+                binding_digest: format!("blake3:{}", "e".repeat(64)),
+                spec_id: "spec-test".to_owned(),
+                spec_digest: format!("blake3:{}", "f".repeat(64)),
+                evidence_digest: format!("blake3:{}", "a".repeat(64)),
+                final_revision: format!("blake3:{}", "b".repeat(64)),
+                verification_run_id: Some("verification_run_test".to_owned()),
+                set_identity_digest: Some(format!("blake3:{}", "c".repeat(64))),
+                challenge_set_digest: Some(format!("blake3:{}", "e".repeat(64))),
+            },
+        };
+        let (kind, payload) = candidate_pin.event();
+        assert_eq!(
+            WorkerCommand::decode(kind, &payload, 1),
+            Ok(candidate_pin),
+            "managed final Inspect candidate pins survive OwnerLog event replay",
+        );
     }
 
     #[test]
@@ -7128,6 +12327,29 @@ mod pool_open_schema_tests {
             ),
             Err(WorkerDurableError::Invalid(_))
         ));
+    }
+
+    #[test]
+    fn reconciliation_root_rotation_roundtrips_exact_quarantine_binding() {
+        let execution = RootCoordinatorExecutionV1 {
+            worker_execution_id: "root-stable-v1".to_owned(),
+            goal_id: "goal-v1".to_owned(), run_id: "run-v1".to_owned(),
+            principal_ref: "server_auth:owner-v1".to_owned(),
+            workspace_binding: "workspace-v1".to_owned(), session_id: "session-v1".to_owned(),
+            location_id: "location-v1".to_owned(), owner_epoch: 8,
+            process_incarnation: "incarnation-new-v1".to_owned(),
+            process_identity: ProcessIdentity::new(123, 456),
+            source_revision: "source-revision-v1".to_owned(),
+            accepted_spec_digest: format!("blake3:{}", "a".repeat(64)), expires_at_ms: 99_000,
+        };
+        let command = WorkerCommand::RootCoordinatorReauthorized {
+            attempt_id: "attempt-v1".to_owned(),
+            quarantine_receipt_digest: format!("blake3:{}", "b".repeat(64)),
+            prior_execution_digest: format!("blake3:{}", "c".repeat(64)),
+            execution,
+        };
+        let (kind, payload) = command.event();
+        assert_eq!(WorkerCommand::decode(kind, &payload, EVENT_SCHEMA_VERSION).unwrap(), command);
     }
 
     #[test]
@@ -7160,7 +12382,7 @@ mod pool_open_schema_tests {
             worker_pool_revision: 4,
         });
         let owner = AuthenticatedOwnerContext::test_fixture(
-            "server_auth:owner-v1", "workspace-v1", "session-v1", "run-v1",
+            "server_auth:owner-v1", "workspace-v1", "session-child-v1", "run-v1",
             task_id, &attempt_id, 7,
         );
         let mut pool = WorkerPool::new(WorkerPoolConfig {
@@ -7200,6 +12422,9 @@ mod pool_open_schema_tests {
             format!("blake3:{}", "2".repeat(64)),
             format!("sha256:{}", "3".repeat(64)),
             4,
+            2,
+            format!("blake3:{}", "4".repeat(64)),
+            Some(3),
             BudgetDimension::ActiveWorkers,
             1,
             9_000,
@@ -7216,8 +12441,32 @@ mod pool_open_schema_tests {
         assert_ne!(pins.workspace_revision(), pins.worktree().base_revision);
         assert_ne!(pins.task_revision(), pins.workspace_revision());
         assert_eq!(pins.spec_max_workers(), 4);
+        assert_eq!(pins.resource_policy_revision(), 2);
+        assert_eq!(pins.resource_policy_digest(), format!("blake3:{}", "4".repeat(64)).as_str());
+        assert_eq!(pins.resource_active_worker_limit(), Some(3));
+        assert_eq!(
+            decode_trusted_pre_admission(&trusted_pre_admission_value(&pins)).unwrap(),
+            pins,
+        );
+
+        // Old durable entries remain readable for restart recovery but carry
+        // no active-worker policy authority and cannot be used for new live
+        // admission.
+        let mut legacy = pins.clone();
+        legacy.resource_policy_revision = 0;
+        legacy.resource_policy_digest.clear();
+        legacy.resource_active_worker_limit = None;
+        legacy.pins_digest = legacy.compute_digest();
+        let mut legacy_value = trusted_pre_admission_value(&legacy);
+        let legacy_fields = legacy_value.as_object_mut().expect("legacy pin map");
+        legacy_fields.remove("resourcePolicyRevision");
+        legacy_fields.remove("resourcePolicyDigest");
+        legacy_fields.remove("resourceActiveWorkerLimit");
+        assert_eq!(decode_trusted_pre_admission(&legacy_value).unwrap(), legacy);
         assert_eq!(pins.dimension(), BudgetDimension::ActiveWorkers);
         assert_eq!(pins.amount(), 1);
+        assert_ne!(pins.session_id(), "session-v1", "child Attempt Session is distinct from Run root Session");
+        assert_eq!(managed_root_session_id(pins.parent_proof()).expect("direct root lineage"), "session-v1");
         assert!(pins.worktree_pool_revision() > 0);
         assert_ne!(
             managed_task_attempt_candidate_id(task_id, attempt_count, candidate_generation),
@@ -7227,5 +12476,45 @@ mod pool_open_schema_tests {
             managed_task_attempt_candidate_id(task_id, attempt_count, candidate_generation),
             managed_task_attempt_candidate_id(task_id, attempt_count + 1, candidate_generation),
         );
+    }
+
+    #[test]
+    fn managed_child_worktree_projection_roundtrips_and_legacy_binding_replays_unpinned() {
+        let pin = ManagedWorktreeAdmissionPinV1 {
+            worktree_id: "worktree-v1".to_owned(),
+            base_revision: "git-base-v1".to_owned(),
+            pool_revision: 12,
+            root_location_id: "location-root-v1".to_owned(),
+            p8_workspace_binding: "workspace-v1".to_owned(),
+            child_location_id: "location-child-v1".to_owned(),
+            child_workspace_id: "workspace-child-v1".to_owned(),
+            child_workspace_ref: "workspace-ref-child-v1".to_owned(),
+            child_canonical_root: "/tmp/horizoncode-child-v1".to_owned(),
+            child_workspace_revision: format!("blake3:{}", "a".repeat(64)),
+        };
+        let value = managed_worktree_admission_pin_value(&pin);
+        assert_eq!(decode_managed_worktree_admission_pin(&value).unwrap(), pin);
+
+        let binding = BoundWorkerDelegationV1 {
+            binding_digest: format!("blake3:{}", "b".repeat(64)),
+            parent_execution_id: "root-execution-v1".to_owned(),
+            worktree_admission: Some(pin),
+        };
+        let command = WorkerCommand::DelegationBound {
+            worker_execution_id: "worker-v1".to_owned(),
+            binding,
+        };
+        let (kind, payload) = command.event();
+        assert_eq!(WorkerCommand::decode(kind, &payload, EVENT_SCHEMA_VERSION).unwrap(), command);
+
+        let legacy = json!({
+            "workerExecutionId": "worker-v1",
+            "bindingDigest": format!("blake3:{}", "c".repeat(64)),
+            "parentExecutionId": "root-execution-v1",
+        });
+        let decoded = WorkerCommand::decode("worker_delegation_bound", &legacy, EVENT_SCHEMA_VERSION).unwrap();
+        assert!(matches!(decoded, WorkerCommand::DelegationBound {
+            binding: BoundWorkerDelegationV1 { worktree_admission: None, .. }, ..
+        }));
     }
 }

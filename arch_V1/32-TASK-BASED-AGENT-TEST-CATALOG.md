@@ -4,6 +4,8 @@
 
 The catalog also retains future capability acceptance rows. Under A-V2-31, V1 release evidence is Linux/WSL CLI/TUI only; browser/desktop, visual-edit, deployment and outbound ACP cases are not V1 release gates while those capabilities remain unavailable. Built-in web search is V1 per `DEC-V1-26` (2026-10-18). LSP/DAP/REPL, web search, local guarded workers, provider/settings UX and TUI/resource/performance cases are in V1 scope and must use their owning acceptance rows.
 
+**Runbook:** [`46-V1-VERIFICATION-RUNBOOK.md`](46-V1-VERIFICATION-RUNBOOK.md) — phase order, commands, edge emphasis. **Context/cache empirical law:** `arch_V1/30-CONTEXT-INDEXING-LOCAL-MODELS.md` §30.26.10; `CX-014`–`CX-021` (zero provider `cache_read` on a run ⇒ UNKNOWN, not automatic failure unless UI fabricates a hit).
+
 ## 32.1 Philosophy
 
 HorizonCode must be evaluated on outcomes:
@@ -90,18 +92,21 @@ Unsupported model capability is not automatically agent failure if the harness d
 | RD-003 | Python service: identify test command and package manager | executable commands verified |
 | RD-004 | mixed JS/Go repo: map service boundaries | dependency graph matches manifests/imports |
 | RD-005 | generated files present | agent avoids editing generated output directly |
-| RD-006 | 50K-file synthetic repo | first useful symbol result without full-context scan |
+| RD-006 | large synthetic repo with lexical-only RepoIntel | first useful lexical candidate within bounded source collection; no AST certainty is claimed |
 | RD-007 | symbol renamed during session | stale symbol ID re-resolves or fails explicitly |
 | RD-008 | LSP unavailable | lexical/parser fallback works, limitation visible |
 | RD-009 | ambiguous same-named symbols | candidates shown, no wrong-file edit |
 | RD-010 | path excluded by policy | index/search never exposes forbidden content |
-| RD-011 | five concurrent agents query one symbol under identical repository/workspace/revision/parser/read-scope pins | one in-flight compatible generation build is shared; a changed read-scope pin is not shared; result provenance is exact |
-| RD-012 | two agents have divergent unsaved overlays for the same path and base generation | each receives its own digest-bound result; no cross-owner overlay is read or selected by path/latest |
+| RD-011 | concurrent requests query one structure under identical repository/workspace/revision/read-scope pins | serialized HostKernel requests reuse an exact retained immutable generation after source collection; changed pins do not share; result provenance is exact |
+| RD-012 | caller requests divergent unsaved overlays for the same path and base generation | unsupported until a trusted immutable editor-buffer producer exists; typed UNAVAILABLE before source collection and no cross-owner/path/latest selection |
 | RD-013 | derived index is corrupt during query | index rebuilds from permitted source snapshots without modifying source files |
 | RD-014 | Lightweight profile requests richer language analysis; setting is missing/invalid or changed | explicit Lightweight does not activate LSP; missing/invalid resolves conservatively; config change alone starts no process or provider call |
 | RD-015 | workspace advances after a query or its requested generation is unavailable | result names exact base/overlay provenance and typed freshness/fallback; stale files.patch is rejected by Guard |
 | RD-016 | memory pressure arrives during background indexing | optional indexing is throttled/deferred and direct input/cancellation remains responsive; no model/provider switch |
 | RD-017 | LSP requests document text through RepoIntel with a stale revision, symlink, non-file, invalid UTF-8, cancellation or oversized body | HostKernel returns typed denial/stale/unavailable before text reaches LSP; a valid in-scope read returns the exact content digest and unchanged workspace revision; no Core filesystem fallback |
+| RD-018 | `repo.tree`/`repo.detect` enumerate an authorized workspace with symlinks, depth/entry/byte limits, cancellation, or a concurrent workspace change | exact authenticated principal/Session/Location/owner/revision/read-policy pins; no symlink traversal; bounded sorted entries and typed partial/unavailable outcome; stale/foreign scope denied; no app-process filesystem fallback |
+| RD-019 | `repo.detect` reads a recognized manifest that changes after discovery or contains malformed/oversized content | only exact-revision HostKernel document reads; stale/content-digest mismatch is unavailable, malformed manifest is partial, aggregate byte/output caps hold, and no direct filesystem fallback occurs |
+| RD-020 | A repository contains filenames with ANSI/OSC, control, bidi, or credential-like text | discovery output strips terminal controls and bidi markers, redacts credential-shaped labels, and remains byte-bounded; the canonical path ref used for authenticated reads remains unchanged |
 
 ## 32.5 Focused code change
 
@@ -193,6 +198,20 @@ Unsupported model capability is not automatically agent failure if the harness d
 | CX-009 | failed compaction summary omits criterion | verification rejects summary replacement |
 | CX-010 | multiple child results | parent receives bounded structured results, not full transcripts |
 | CX-013 | repeated turns append user/tool context to a cacheable provider prefix | preserve stable prefix bytes where supported, cap context/token growth, and report cache reads/writes only from provider evidence; unsupported or missing cache telemetry remains UNKNOWN |
+| CX-014 | P3/P6/P7 | Three consecutive direct turns on a cache-capable pinned route with `effective: cache_anchor` | `RepoContextAnchor` digest and static ledger segments unchanged across turns; tail may change; no provider/model switch |
+| CX-015 | P6/P7 | Same as CX-014 on turn 1 vs turn 3 | Usage shows provider-reported `cache_read` **or** UI/analytics mark cache observation UNKNOWN — **test does not fail solely on zero cache_read**; fails if UI claims hit without usage |
+| CX-016 | P6/P7 | Pin Groq-class or local model with `auto` policy | `effective: minimize_tokens`; compressed anchor projection; no cache breakpoints emitted |
+| CX-017 | P6/P7 | Catalog row has `cache_read` but route adapter reports `prefixCacheSupport: none` | `auto` resolves to `minimize_tokens` unless user requested `cache_anchor` (then fail closed before dispatch) |
+| CX-018 | P3/P7 | Workspace file change bumps `sourceRevision` | new anchor epoch; `context_anchor` selection digest changes; prior prefix not reused silently |
+| CX-019 | P7 | Inspect `session.context_ledger` | `compilePolicy` matches resolver output; `catalogHints` reflect ModelsDev snapshot source/freshness |
+| CX-020 | P6 | Stale bundled catalog (`freshness: stale`) with missing `cache_read` | `auto` → `minimize_tokens` (`conservative_default`); context bar shows stale catalog warning |
+| CX-021 | P6/P7 | **Canary matrix** Anthropic direct, OpenAI ephemeral, Groq/local, gateway strip | Document per-route observed cache_read/write or UNKNOWN; **fail** on fabricated hits, anchor mutation, or breakpoint on `none` routes (§30.26.10) |
+| CX-022 | P3 | Session start in monorepo package dir | ancestor `AGENTS.md`/`CLAUDE.md` only (root→cwd); sibling package instruction files absent from ledger |
+| CX-023 | P3 | First Guarded read under `packages/foo/` with `packages/foo/AGENTS.md` | subdir file loads once; digest in ledger `project_instruction`; not in prior turn |
+| CX-024 | P3 | 40 skill dirs installed | system prompt lists metadata only; no `SKILL.md` body until `skill` tool call (`EX-002`) |
+| CX-025 | P3 | project `AGENTS.md` imports path outside workspace | blocked until user approves; denied import never partially loads |
+
+**Testing note (§30.26.10):** cache **hits are empirical**. Acceptance proves stability, policy, and honest telemetry — not a guaranteed `cache_read > 0` on every CI run.
 
 ## 32.11 Local and small models
 
@@ -212,6 +231,7 @@ Unsupported model capability is not automatically agent failure if the harness d
 | LM-015 | selected harness is incompatible with selected model/wire API | typed `UNAVAILABLE`; no provider/model fallback or paid request |
 | LM-016 | weak local model uses `harness.bash-only` to patch and test a small repo | minimal prompt/action loop succeeds or fails truthfully; every shell effect still crosses Guard/ExecutionHost |
 | LM-017 | compare two harnesses on same model/task | report task result plus prompt/tool-schema/context overhead separately; no inference that model changed |
+| LM-018 | user explicitly selects the OpenCode provider's currently eligible free model after quota reset | verify the exact selected provider/model route, stream one response and complete one bounded coding task; retain response/task evidence and route metadata; on 429 stop or retry only within the same approved route; no paid/model fallback; report cost as UNKNOWN unless authoritative usage proves it |
 
 ## 32.12 Agents and subagents
 
@@ -234,6 +254,10 @@ Unsupported model capability is not automatically agent failure if the harness d
 | SA-015 | Browser QA runs a visual + functional journey and captures console/network evidence | browser effects scoped to approved site/session; evidence returned without source edits |
 | SA-016 | Browser QA attempts source edit or unrelated filesystem read | denied unless parent explicitly delegated matching capability |
 | SA-017 | sibling subagents contend for one workspace/file lease while a parent or child cancels/restarts | one current owner wins; stale owner/lock cannot authorize writes or be reclaimed without reconciliation; preserve user edits and dirty worktrees; cancellation cannot transfer a lease to a new Attempt |
+| SA-018 | delegated phase owner is interrupted after partial source writes and the parent resumes/reassigns it | parent inspects tracked, untracked and ambiguous files before retry; retain user changes; resume only remaining work; no duplicate effect or stale Attempt may overwrite the tree |
+| SA-019 | agent host restarts with queued, running, interrupted and completed children | exact child identity, owner, messages and terminal output remain queryable; uncertain active effects become UNKNOWN/reconciliation-only; completed effects are not rerun; dependency queue resumes without duplicating completed work |
+| SA-020 | provider returns 429 while delegated work is active | no implicit provider/model/harness change; record the failed route and stop/back off within policy; resume under a different route only after explicit user selection, with new route provenance and no lost child state |
+| SA-021 | parent delegates a multi-phase dependency graph with fewer execution slots than runnable tasks; one owner is interrupted after partial writes while another completes | parent exposes queued/running/blocked/completed/partial ownership and dependencies; starts independent work up to the admitted concurrency; reserves conflicting source/build/schema ownership; inspects dirty/untracked changes before resuming; keeps completed evidence and does not rerun completed work; never reports the aggregate complete while any required phase is partial or blocked |
 
 ## 32.13 Skills, hooks and MCP
 
@@ -245,6 +269,14 @@ Unsupported model capability is not automatically agent failure if the harness d
 | EX-004 | project hook before workspace trust | not executed |
 | EX-005 | blocking before-tool hook denies operation | operation never dispatched |
 | EX-006 | malicious hook tries policy widening | rejected |
+| INST-001 | P3 | cwd at repo root vs package subdir | instruction union matches §29.23 ancestor walk only |
+| INST-002 | P3 | `prefer_agents_md` with both root files | AGENTS wins; CLAUDE omitted per mode |
+| INST-003 | P3 | compiled instructions exceed `maxCompiledBytes` | head/tail sample + ledger marker; no silent truncate |
+| INST-004 | P3 | child subagent other workspace root | child instruction set uses delivery root, not parent full union |
+| INST-005 | P3 | `config_only` mode | only `instructions[]` globs appear |
+| INST-006 | P3 | exclude glob on `vendor/` | files under vendor never auto-included |
+| INST-007 | P3 | user `~/.claude/CLAUDE.md` present | loads at user scope before project slices |
+| INST-008 | P3 | restart same session | instruction digests stable unless file revision changes |
 | EX-007 | optional telemetry hook times out | work follows declared nonblocking policy |
 | EX-008 | MCP tool list changes mid-turn | current turn remains pinned |
 | EX-009 | MCP reconnect returns new schema | next generation only |
@@ -260,8 +292,8 @@ Unsupported model capability is not automatically agent failure if the harness d
 
 | ID | Task | Acceptance |
 |---|---|---|
-| PS-001 | Ask mode repeated safe reads | scoped grant avoids dialog spam |
-| PS-002 | Safe Auto writes inside approved root | allowed only if policy permits |
+| PS-001 | Repeated reads and writes already covered by an authenticated direct-Session grant | matching operations complete without repeat dialogs; grant is bounded by canonical capability, workspace/path, operation, call/byte/time limits and expiry |
+| PS-002 | Safe Auto writes inside approved root | allowed only if policy permits and the existing scoped grant covers the exact operation; otherwise ask/deny before dispatch |
 | PS-003 | YOLO without enforced sandbox | unavailable |
 | PS-004 | YOLO path traversal | OS deny |
 | PS-005 | symlink/reparse escape | deny |
@@ -274,10 +306,16 @@ Unsupported model capability is not automatically agent failure if the harness d
 | PS-012 | Unsupported effect tool is registered or first-party file write is invoked without a Rust challenge | No executor side effect; unsupported effect omitted from advertised definitions and missing admission denied before dispatch |
 | PS-013 | malformed or over-limit member appears anywhere in a ToolBatch | whole batch is rejected before dispatch; zero effects start |
 | PS-014 | a valid batch fails or is cancelled after some members have dispatched | member failure blocks undispatched dependents; cancellation stops undispatched members; preserve receipt/UNKNOWN per dispatched effect, do not claim rollback, and reconcile uncertainty before retry |
-| QA-001 | ask tool with two questions answered via option selections | exact V2 reply body per question; session continues with the answers |
+| PS-015 | Core control-process launch uses a workspace executable spoofing `hz-kernel`/`session_supervisor`, a replaced/symlinked executable, or an untrusted absolute source path | Trusted executable and source identity are resolved from HostKernel configuration and rechecked at dispatch; every mismatch is denied before process start, with no secret-bearing argv in errors/logs |
+| PS-016 | A direct-session action exceeds a grant's root/capability/budget/expiry or the grant is revoked | Guard asks or denies before dispatch; an agent/profile/extension cannot widen or renew the grant; already-dispatched effects retain normal receipt/UNKNOWN reconciliation |
+| PS-017 | Invoke grep/glob/file search through the Core ripgrep adapter with its route disabled, then attempt to toggle the source gate or invoke it through OpenCode-derived callers | The existing false-by-default gate rejects before argv construction, binary resolution or `AppProcess.spawn`; request/config/plugin input cannot enable it. Re-enable only after authenticated HostKernel read scope and Guard/receipt acceptance exist; no raw process fallback is permitted |
+| QA-001 | ask tool with two questions answered via option selections | exact active question-schema reply body; request and Session identity stay bound; session continues with the answers |
 | QA-002 | multi-question flow with one question left unanswered and review confirmed | review marks `(not answered)`; dismiss claims no answer |
 | QA-003 | question reply/dismiss transport failure | retryable error shown; no transport body leaked; retry succeeds |
 | QA-004 | question answered while the agent turn is in flight | control-only capability; no effect before the reply; answers bound to the exact request |
+| QA-005 | question owner scope across authenticated sessions and direct child Sessions | list exposes only Core-owned lineage; reply/dismiss by another principal returns not found; body-supplied identity never grants access |
+| QA-006 | SSE projection for both active `question.asked/replied/rejected` events and `question.v2.*` events | owning authenticated principal receives events; another principal receives none; missing/malformed Session IDs are dropped; unrelated authorized non-question events still flow |
+| QA-007 | question Session ancestry crosses a different workspace/directory, cycles, exceeds owner-depth bound, or has conflicting owner metadata | list/reply/reject and SSE fail closed without disclosing question contents; same-owner child in the same instance/workspace remains usable |
 
 ## 32.15 Browser, DOM and app creation
 
@@ -315,6 +353,15 @@ Unsupported model capability is not automatically agent failure if the harness d
 | UI-015 | reduced motion | no hidden status loss |
 | UI-016 | user queues or steers input while a provider stream/tool call is active | supported mode is explicit; current pinned request/effect arguments do not mutate; queued input runs in the declared order after the current tool/result boundary; no loss or duplicate after reconnect |
 | UI-017 | terminal closes during a direct-session stream, then the CLI restarts | restore canonical Session history and last acknowledged cursor; show interruption when provider continuation is unavailable; reconcile any possibly dispatched effect before retry; never duplicate a message or effect |
+| UI-018 | export a transcript containing a multi-megabyte message, many tool parts, and more than 10,000 messages | formatting applies byte/node bounds before assembling the output; output never exceeds 1 MiB, sampled/omitted history is labeled, reasoning is opt-in/redacted/capped, and tool input/output/error follows the shared recursive redaction path |
+| UI-019 | timeline/fork selector receives a huge prompt containing terminal controls and credentials | rendered choice label is one-line, terminal-safe, credential-redacted and ≤512 UTF-8 bytes; selection still resolves to the exact canonical message/prompt |
+| UI-024 | P7 | 500-line fenced block in viewport | first paint plain/conceal ≤ 8 ms p95 on reference hardware; highlight optional async (`§31.23`) |
+| UI-025 | P7 | scroll up during stream with long code tail | transcript anchor fixed (`UI-002`); no follow-bottom jump |
+| UI-026 | P7 | open §31.22 review overlay on 5k-line unified diff | virtualized window; interactive ≤ 200 ms; no full-file AST retained |
+| UI-027 | P7 | 200 fenced blocks across 10k messages | syntax cache ≤ 8 MiB / 512 entries per session defaults; idle 30m returns under cap (`§31.23.5`) |
+| UI-028 | P7 | toggle conceal on 80-line block | expand invalidates block rows only (`UI-003`) |
+| UI-029 | P7 | artifact `head_tail_sample` code preview | SAMPLE badge; range read for more; no pretend FULL |
+| UI-030 | P7 | 2 tabs, background tab with huge markdown | foreground highlight jobs capped; background does not allocate unbounded highlight RAM |
 
 ## 32.17 Analytics and cost truth
 
@@ -343,6 +390,12 @@ Unsupported model capability is not automatically agent failure if the harness d
 | AU-006 | scheduled local model unavailable | blocked/logged, no cloud fallback |
 | AU-007 | automation disabled mid-run | current run semantics explicit; no future run |
 | AU-008 | event-trigger loop | recursion/cycle bounded |
+| AU-009 | action schema changes after definition save | exact registry action/version/schema pin mismatch blocks save or dispatch before any effect |
+| AU-010 | malformed, noncanonical, oversized, over-depth, unsafe-number or schema-invalid fixed input | rejected before definition CAS; no occurrence is dispatched |
+| AU-011 | secret field supplied as raw credential or caller-provided schema | reject; only canonical-registry-approved opaque references may be stored |
+| AU-012 | automation definition input changes while occurrence is pending/retrying | exact definition-version and payload digest fence conflicts; no stale input dispatch |
+| AU-013 | model output attempts to replace fixed automation arguments | model-generated arguments are ignored/rejected; the persisted immutable payload is the only candidate |
+| AU-014 | action result lost during restart/cancel after one-use lease | durable receipt reconciliation or UNKNOWN; never blind redispatch |
 
 ## 32.19 Recovery and healing
 
@@ -359,6 +412,7 @@ Unsupported model capability is not automatically agent failure if the harness d
 | RC-009 | process crashed after external effect request | reconcile before retry |
 | RC-010 | disk pressure | cleanup safe caches only; preserve evidence/user work |
 | RC-011 | selected provider returns 429/5xx, drops a stream before terminal completion, or loses the response after accepting a request | keep provider/model pinned; bound retries by route, cost, and idempotency policy; incomplete tool batches dispatch no effects; ambiguous usage is UNKNOWN; no hidden fallback or duplicate effect |
+| MPT-001 | managed provider request settles with an intermediate tool-call response, then a later request finishes; also cancel, lose settlement, or leave an effect unresolved | `managed_provider.complete_turn` is absent for intermediate/error/cancel/UNKNOWN states; it is requested only after the persisted final assistant entry belongs to the current user and no tool work remains, using the exact latest settlement receipt; HostKernel rejects stale or mismatched pins |
 
 ## 32.20 System execution beyond coding
 
@@ -433,6 +487,8 @@ are mandatory where the corresponding capability ships.
 | LS-010 | launch request supplies a changed/stale profile, project-selected executable, raw argv/env/cwd, or caller PID | authenticated Core Config profile projection must be validated by HostKernel; reject before spawn and never create/use a second supervisor |
 | LS-011 | language client opens or resynchronizes a document while workspace changes or the HostKernel reader is unavailable | client uses only authenticated RepoIntel `read_document`; stale/unavailable text is not sent to LSP and no direct filesystem fallback occurs |
 | LS-012 | LSP/DAP protocol cursor gap/eviction, duplicate/out-of-order request sequence, stale process/workspace pin, lost IO receipt, or mismatched server-request reply | deny before dispatch where possible; after possible dispatch mark the generation UNKNOWN and quarantine it; return `resnapshot_required`; never skip/reset a cursor, replay an uncertain operation, or automatically relaunch the process |
+| LS-013 | an LSP code action contains a command, resource operation, unversioned edit, out-of-workspace URI, or oversized payload | return a bounded versioned proposal only when every edit is supported; never execute the command or mutate a file; require the ordinary `files.patch` Guard path |
+| LS-014 | rename proposal arrives after the source document/workspace changes, or is applied from an old proposal | reject stale versions/preimages before mutation; user permission prompt names the requested target; only current, explicitly reviewed text edits may re-enter through `files.patch` |
 | LM-011 | Ollama endpoint connects immediately but model takes minutes to load | distinct cold-start state, cancel works, no cloud fallback/circuit false-positive |
 | LM-012 | tool JSON ends inside a quoted path | rejected; harness invents no closing bytes/path/argument |
 | LM-013 | LiteLLM-compatible stream emits non-contiguous tool indexes | only unambiguous frames assemble; otherwise typed protocol error |
@@ -440,12 +496,19 @@ are mandatory where the corresponding capability ships.
 | CX-012 | reviewed Project Setup memory block changes | revision/provenance visible; old context pins remain deterministic |
 | TM-001 | 100 MB compiler log contains one target error | `terminal.search` finds bounded line refs without context flooding |
 | TM-002 | log rotates/truncates while model holds range ref | stale generation reported; no wrong-line reuse |
+| TM-003 | forged/foreign/unverified ArtifactRef, sensitive classification, UNKNOWN redaction, binary media, cancellation, malformed HostKernel range offsets, invalid UTF-8 and oversized lines | resolve only the exact succeeded+verified managed artifact owned by the current Attempt; refuse sensitive/unknown/failed/non-text content; cancel between bounded HostKernel range reads; report exact digest/fidelity and partial coverage without filesystem fallback |
+| TM-004 | Direct Session searches or opens its own tool-output artifact after restart; another Session supplies the same artifact ID, or the artifact is failed, sampled, redacted, oversized, or stale | Direct retrieval resolves only the current authenticated Session's direct artifact scope in the existing ArtifactStore; managed evidence refs cannot widen it. Reconnect/restart preserves the exact digest, source revision and `full`/`head_tail_sample`/`failed` truth; range reads and rendering stay bounded/redacted, foreign/stale refs deny, and no filesystem fallback occurs. |
+| TM-005 | Replace or rotate a direct artifact while the Session retains its prior artifact ID/generation/source revision; replay an old range cursor | Resolve only the exact current Session-owned artifact generation and source revision; stale-generation and stale-range reads return typed stale status with no bytes from a replacement artifact. |
+| TM-006 | Direct artifact has full, sampled, failed, redacted, or unknown-redaction provenance; request search snippets and UI previews | Preserve fidelity/redaction truth; failed or unknown-redaction artifacts produce no content; snippets/previews are redacted and bounded, and sampled content is never represented as full. |
+| TM-007 | Request direct artifact ranges with invalid UTF-8 boundaries, reversed/overflowing offsets, huge ranges, or concurrent rotation | Reject malformed ranges before read; cap returned bytes; bind response digest/generation to the original immutable artifact and return stale without partial replacement content after rotation. |
+| TM-008 | A managed Attempt is given a direct artifact ID/ref, including an ID whose content is visible to the parent direct Session | HostKernel/Rust refuses both ref resolution and content reads across lanes. If equivalent bytes are needed, a producer under the live Attempt independently creates a managed artifact with its own Attempt owner and evidence refs; no direct-ref promotion/capture path exists. |
 | PTY-001 | model `bash` and root TUI `!` execute through host Guard; only a matching Guard challenge plus explicit `allow_once` permits; denial, missing/mismatched challenge, `Permission` auto-accept/always, or `ctx.ask` cannot authorize | same `terminal.run` PREPARED/lease/receipt path; command/result history preserved; denial leaves no process |
 | PTY-002 | V1 `/pty` and V2 `/api/pty` create using `command`/`args`/`cwd`/`env`, omitted defaults, and existing login-shell behavior | compatibility preserved; public `Pty.Info` remains unchanged; only kernel owns process |
 | PTY-003 | V1 credential and V2 one-use ticket attach/reconnect with allowed and disallowed origins; missing Origin, expired/reused/wrong-principal/location/terminal/origin ticket | exact allowed flow succeeds; all invalid proof/origin attempts deny; ticket/origin authenticate transport only, never Guard |
 | PTY-004 | legacy no-subprotocol and `horizon.terminal.v1` binary framing; malformed/unknown/multiple protocol, bad/oversized frames, duplicate/gapped sequences, replay cursor gaps, slow consumer | legacy framing unchanged; valid envelope and bounded replay work; invalid frame rejected; duplicate not redispatched; explicit gap/backpressure close and reconnect, no silent loss |
 | PTY-005 | host/kernel restart during active PTY, uncertain launch or input, termination observed/unobserved | fence before termination; observed termination reported accurately; uncertain state is `UNKNOWN`/`session-lost`, never `exited`; no uncertain run/input replay; explicit recreation required |
 | PTY-006 | native Windows ConPTY start/input/resize/output/cancel, process-tree child and owner-handle loss | native Windows integration proves pipe authentication, Guarded lifecycle, Job Object tree cleanup and UNKNOWN behavior; WSL/Linux smoke or cross-compilation does not pass |
+| PTY-007 | leader exits while a session/process-group-escaped descendant survives; `/proc` scan is unreadable/truncated or the bounded sweep is exhausted | emit the observed exit only after a complete tree-empty scan; any unprovable or exhausted sweep closes without an exit receipt and remains UNKNOWN; process-tree acceptance is scoped to the exact backend/revision |
 | PL-001 | Plan emits five tasks with dependencies and criteria, then Build starts in another profile | `PlanHandoffV1` preserves graph/scope/criteria exactly |
 | PL-002 | Build discovers assumption false | explicit handoff/spec revision/deviation, not silent plan mutation |
 | CP-001 | checkpoint exists, workspace revision changes afterwards; race workspace/file-kind changes after preview | Full restore is refused; explicit SelectedPaths preview binds exact chosen paths, observed workspace revision, actions/conflicts and HostKernel no-follow file-kind/link facts into previewDigest; stale digest rejects before dispatch; only conflict-free regular single-link captured files can be restored |
@@ -562,13 +625,26 @@ Desktop:
 
 Web search (V1, `DEC-V1-26`):
 - direct-search result includes provider/source URL/retrieved time;
-- grounded-model search is labeled as a different route class;
+- the anonymous no-key built-in route is the default; grounded-model search is not preferred/default and is available only through a supported, explicitly selected and consented route;
 - no credential is exposed to model/log;
 - configured free provider failure cannot silently route to a paid provider;
-- enabled routes cascade in settings order; 401/403/407 failures are recorded and fall through only to another explicitly enabled route; other non-rate-limit 4xx stop; an exhausted chain applies bounded retry behavior and surfaces per-route reasons (no fabricated success);
+- eligible routes cascade in the trusted order; 401/403/407 failures are recorded and fall through only to another explicitly enabled route; other non-rate-limit 4xx stop; retries are route-local and bounded, and exhaustion after one cascade pass surfaces per-route reasons (no fabricated success or second full-cascade pass);
+- a trusted pre-first-send timeout/transport proof produces a durable `NOT_DISPATCHED` route receipt and permits one same-route retry only; cancellation and post-send ambiguity never retry, and a transport failure after any MCP handshake request may have sent is `UNKNOWN`;
+- aggregate `CANCELLED` follows route-plan admission, carries its exact digest and any settled route history, even when cancellation precedes the first route receipt; a known terminal non-auth/non-rate-limit/non-retryable 4xx returns aggregate `FAILED` with its receipt; `EXHAUSTED` means every approved route/retry was consumed;
+- a complete HTTP 2xx with a recognized zero-row provider result array records terminal `EMPTY`, carries its exact route receipt, and advances without retrying that route; contradictory status/result-count receipts are rejected;
+- every known route outcome includes the exact durable route receipt reference; UNKNOWN attempts never invent or reuse a settled route receipt;
 - a disabled or unconfigured provider is never used (enable = consent);
 - built-in default route works with zero configuration or reports an honest unavailable reason;
 - timeout/rate-limit/offline states return stable errors.
+- production broker exposes no callback-based provider executor; with the Guard/runtime gate
+  closed, direct tool invocation produces zero provider requests or route-callback effects;
+- authenticated `web.search.providers` is workspace-scoped, makes zero provider/network calls,
+  and returns neither credential bytes nor raw provider errors; disabled routes with an
+  existing opaque SecretBroker reference remain `configured=true`, while missing references
+  remain unconfigured and all unprobed provider health/freshness is reported honestly;
+- before enabling a BYO route, Settings displays that it may incur charges and that `UNKNOWN`
+  means its current pricing is unverified; route enablement/order persists without storing a
+  credential value.
 
 Resource-limit honesty (`DEC-V1-27`): profiles requiring OS CPU/memory/process-count/FD
 limits are denied before launch when the backend reports those dimensions unsupported;
@@ -674,6 +750,10 @@ Use the same pinned repository, identical task set and selected model/provider o
 | JC-RES-018 | DAG fanout/cycle, critique, conflicting edits, parent restart | Total-member cap; no accepted cycle; typed artifact passing, revision-bound independent verifier |
 | JC-RES-019 | External source import/resume of supported adapters | Explicit ownership choice, provenance, no credential leakage or dual conversation writers |
 | JC-RES-020 | Optional local memory recall under hostile/stale input | Project scope, token caps, source label, failed recall safe, no secret remote injection |
+| JC-RES-021 | Successful managed Task ends at an exact dirty but independently verified revision | Final Guarded Inspect pins the same observed revision and receipt; settlement may retain exact evidence while the worktree remains quarantined; no dirty worktree is reused |
+| JC-RES-022 | Restart/lost response between final Inspect, logical settlement and pool disposition | Replay resolves the exact Inspect operation and HostKernel receipt reference; missing/UNKNOWN/mismatched edges conflict; reservation and worktree disposition recover as separate durable transitions; a cross-epoch pending disposition retains a quarantined lease until fresh authenticated root, quiescent terminal, and Guarded Inspect evidence arrive |
+| JC-RES-023 | Resource admission has measurements but no enforcing OS quota backend | Bounded backpressure/monitoring reports unsupported CPU/memory/FD/disk guarantees; no product copy or receipt claims OS enforcement; native Windows is unavailable until native acceptance |
+| JC-RES-024 | RC0 capture receives fabricated Session/Run/outcome/source-revision metadata | Capture stays provisional and release-ineligible; only configured verifiable HostRun and independent-verifier attestation for the exact revision may promote it |
 
 **Acceptance order:** test current source + numbers before optimization; introduce isolated shared-observer prototype; prove JC-RES-008/009/010 plus existing Guard suites before effect cutover; repeat full task/model/machine benchmark; promote only with correctness and security parity plus measured resource benefit. All platforms absent from the matrix are unverified, not green. Release claims include raw evidence paths, not an overall “fast” adjective.
 
@@ -700,17 +780,53 @@ Each case below must test **real code paths** (unit+cross-language contract+OS p
 | JC-RES-011.A | `FileTouchIndex` + Guard revision | two writers, one reader, user patch, symlink/rename/case path | advisory warns, hard digest/lease rejects stale write, readers don't block by touch alone |
 | JC-RES-012.A | `ResourceAdmission` | low memory/disk/FD, two builds, no process quota data | new workers queued/blocked; no foreign PID kill or source deletion |
 | JC-RES-012.B | `worktree release` | dirty, unknown owner, orphan processes, failed build | quarantined not deleted; only owned fully settled worktree released |
+| JC-RES-021.A | `resolve_managed_final_inspect_receipt_for_terminal` + settlement | verifier accepts exact dirty final revision; then final Inspect returns DIRTY_OWNED; replay after response loss | exact evidence retained with observed revision + operation ID + HostKernel receipt ref + settlement receipt digest; worker capacity settlement does not make dirty tree reusable |
+| JC-RES-021.B | final Inspect | same attempt, but MISSING, UNKNOWN, DIRTY_UNATTRIBUTED, user-owned changes, wrong revision/binding, `owned=false`, or `noFollow=false` | successful settlement rejected; no inferred clean state and no evidence promotion |
+| JC-RES-021.C | final Inspect and settlement replay | substitute verificationRunID, setIdentityDigest, challengeSetDigest, or evidence digest; contrast FAILED/CANCELLED quarantine with forged verifier pins | successful Inspect recovery and settlement require exact persisted SETTLED ChallengeSet tuple; any mismatch conflicts; failed/cancelled settlement rejects every verifier pin and retains capacity/worktree quarantine |
+| JC-RES-022.A | P8 OwnerLog replay | crash after final Inspect, after capacity settlement, and between later pool disposition; truncate/mismatch referenced receipt | each transition recovers independently; exact inspect receipt is re-resolved; missing/unknown/mismatch remains conflict/quarantine with no redispatch |
+| JC-RES-022.B | `WorkerSettlementDispositionRecoveryProofV1` + current-epoch P1/P2 recovery | restart after Inspect or disposition append with lost ACK; stale root/owner epoch, nonterminal or nonquiescent Attempt, mismatched original settlement pins, stale Inspect, user-owned/dirty conflict, missing Host quiescence, or forged receipt | only a fresh authenticated root + owner + verified terminal + Host quiescence + current-epoch Guarded Inspect bound to original settlement/Attempt/worker pins appends the separate disposition; exact retry resolves committed result; every mismatch retains quarantine/lease; no effect redispatch or UNKNOWN clearing |
+| JC-RES-023.A | `ResourceSampler` + admission policy | samples available, per-worker OS enforcement unavailable | report estimates/observations with quality; enforce only bounded admission; explicit quota guarantee remains unavailable and unsupported platform stays disabled |
+| JC-RES-024.A | `scripts/perf/rc0.py` attestation gate | caller supplies valid-looking sessions, runs, outcomes and commit | stays `NOT_ATTESTED`/provisional while trusted sources are absent; fake input never release eligible |
 | JC-RES-013.A | `ProviderDoctor.inspectOffline` | absent/invalid credentials, network deliberately disabled | no socket/credential read/billed inference; config diagnosis truthful |
 | JC-RES-014.A | `probeCatalog/probeFull` | mock and live test account with explicit capped consent | full chat/stream/tool payload, correct token/cost provenance and network count |
 | JC-RES-015.A | `ProviderDoctor` failures | 429, bad route, partial tool stream, stale catalog, cancellation after send | never silently route paid fallback; cost UNKNOWN when not reconcilable |
 | JC-RES-016.A | `UiRedrawScheduler` | ssh/tmux, resize, 10k transcript, input while background streaming | focus/scroll safe; p50/p95 and full-frame reason; no busy animation |
 | JC-RES-017.A | `LiveTailV1` reconnect | streaming → crash/reconnect → canonical result settle | no duplicate MessagePart; tail bounded, true final content |
+| P7-SSE-001 | `boundedJsonSnapshot` + instance event fanout | oversized string/object/key count/sparse array, deep or cyclic JSON, accessor value, mutable event after admission, inherited/undefined/symbol values, multibyte/escaped boundary, slow consumer | key and array traversal stop at per-event and aggregate node caps without `Object.keys`; detached serialized snapshot stays fixed; accepted byte count matches JSON UTF-8; existing owner filtering remains intact and overflow requires reconnect/resnapshot |
 | JC-RES-018.A | `GraphAdmission` | cycle, cross-Run edge, change accepted SpecVersion, breadth limit | rejected before owner-log append; existing Run state unchanged |
 | JC-RES-018.B | `TaskVerifier/finalizer` | verifier checks rev N; user edits rev N+1 before terminal PASS | stale verdict cannot pass; final Run blocked until independent current-rev proof |
 | JC-RES-018.C | `child result collector` | orphan child after cancel, forged artifact/receipt, concurrent worker edit | reject wrong epoch/sha/lease, preserve previous evidence and unknown |
 | JC-RES-019.A | `SessionImportAdapter` | supported external transcript and hostile malformed input | user-selected snapshot/native owner only, source provenance, no credential import or dual writers |
 | JC-RES-020.A | `RecallCompiler` | two projects, poisoned retrieved text, revoked ACL and remote model unselected | no secret/cross-project or instruction injection, bounded tokens, opt-in only |
 | JC-RES-020.B | `cache invalidation` | editor overlay N+1 while asynchronous query for N is pending | N read reports generation; stale N edit denied, no unsafe cache upgrade |
+
+| P6-PROVIDER-001 | provider model catalog and `Provider.getLanguage` | configure env, legacy Auth, provider/model options, custom loader, and a plugin `provider.models` callback; instrument SDK import/fetch and callback counters | each credentialed route returns typed unavailable before SDK construction; plugin model callback is not invoked; no secret in projection/log/artifact; anonymous OpenCode permits only active, explicitly zero-priced models; no paid fallback |
+| P6-PROVIDER-002 | SecretBroker → `Auth.searchCredentialRefs` | absent, revoked, duplicate, malformed, and available provider SecretRefs | exactly one opaque AVAILABLE ref per fixed BYO route; ambiguous/missing routes omitted; keyless routes unaffected; no bytes, route health, or account switching |
+| P6-PROVIDER-003 | provider catalog initialization | configure GitLab credentials and plugin `provider.models`; instrument provider HTTP and plugin callback | catalog reads local Models.dev/config metadata only; automatic authenticated model discovery and plugin callbacks produce zero calls until Guard/SecretBroker mediation |
+
+**P6 source status (2026-10-20; not acceptance evidence):** provider/model metadata and free-only OpenCode eligibility, provider switching UI, Config-owned feature settings, offline Doctor, and owner-scoped `question.ask` paths are source-present. Fixed Auth/ProviderTransport search continuation is also present behind P1 HostKernel authorization and receipt gates. A provider credential put/revoke UI is intentionally absent: current host-JS byte-to-handle helper was removed, and P1 has not supplied the protected native input channel, authenticated write context or Guarded capability. Catalog/full Doctor return zero-network skipped projections until those trusted grants and dispatch exist. FEAT-001..014, QA-001..005, P6-PROVIDER-001..003, JC-RES-013..015, provider/model switch journeys and real free-model use still require integrated source verification and the exact acceptance evidence specified above; none is claimed passed by this source status.
+
+**P6 source clarification (2026-10-21; not acceptance evidence):** the TUI model picker now distinguishes policy-based selection from verified provider dispatch and shows catalog context/input/output limits, using `unknown` when metadata is absent. The OpenCode anonymous zero-price offer remains selectable by policy only; endpoint health is still `not_probed`. Credentialed providers, SecretBroker writes, catalog/full Doctor network probes, FEAT-001..014, QA acceptance and the real free-model response/coding journey remain unverified or Guard-gated. No fixtures were run.
+
+**P6 source continuation (2026-10-21; not acceptance evidence):** legacy HTTP OAuth authorize/callback now reject before calling ProviderAuth, matching the unavailable CLI credential-mutation path until protected native input and Guarded SecretBroker writes exist. Offline Doctor leaves an absent model as `UNKNOWN` when catalog freshness is missing or stale and effective config does not pin that model. No fixture or runtime verification was run. Remaining acceptance is FEAT-001..014, QA-001..007 on the integrated revision, explicit network/spend consent followed by Guarded catalog/full probes when P1 supports them, and LM-018's user-selected OpenCode free-model response plus bounded coding task after the implementation hold lifts.
+
+**P6 source continuation (2026-10-21; no verification):** the provider list now exposes exact anonymous model refs, excluding provider/model credential material and custom model-loader paths; the provider default and TUI selection labels use that same eligibility set. The unguarded experimental plugin small-model selector is disabled pending explicit role binding and Guard admission. TUI session questions now preserve separate lane identities for legacy `question.*` and Core `question.v2.*`, hydrate both, and call each lane's existing owner-authenticated reply/reject route. Existing server-side principal/owner checks and SSE filtering remain the authority boundary. No tests/builds/typechecks were run; QA-006, FEAT-001..014, P6-PROVIDER-001..003, Doctor live probes and the real free-model journey remain unverified or blocked on integrated P1 acceptance.
+
+**P6 Doctor/S1 source continuation (2026-10-21; no verification):** Doctor's TUI projection now states that Offline is zero-request/no-credential, Catalog requires an authenticated network grant plus Guarded dispatch, and Full additionally requires distinct spend consent; consent alone does not enable either unavailable probe and no fallback route is used. The configuration line displays the server's `VALID`/`INVALID`/`UNKNOWN` selection status instead of translating the config probe's `PASS`/`FAIL` outcome. S1 resnapshot deltas are scoped to the Data provider and cleared only after a matching session refresh. This changes source coverage only; QA-006, Doctor catalog/full network acceptance and FEAT-001..014 remain unverified. No fixtures were run.
+
+**P6 provider transport preparation (2026-10-21; source only):** Core now has an internal route-target projection that re-resolves the active bundled model adapter and endpoint revision, plus a no-send Auth helper that bounds the exact SDK request and derives a transport-operation digest while stripping SDK credential headers. This is preparation only. HostKernel does not yet bind this transport digest with the managed ContextSelection request digest, and the one-use begin/SecretBroker send contract remains unavailable. P6 keeps managed provider sends, Doctor catalog/full probes and the P5 cascade runtime disabled pending the dual-digest decision and integrated Guard/SecretBroker acceptance. No tests/builds/typechecks/provider calls were run.
+
+**P6 setting-lock correction (2026-10-21; fixtures authored, not run):** an absent compaction override is explicitly the unlocked built-in default; a configured value with unknown source/lock stays UNKNOWN and cannot be edited through either the TUI or Config update owner. The new fixture covers default/unlocked versus unknown and locked TUI mutability. FEAT-001..014 and final-revision settings precedence/lock acceptance remain open.
+
+**P6 direct transport integration (2026-10-22; source only, not acceptance):** the provider boundary now uses the canonical Core `RequestExecutor.Service` and an internal `DirectProviderTransport.Service`; Auth alone validates the exact selected OpenCode route/request and performs the one-use request-local fetch. Core SessionStore persists the bounded request/context pins and PINNED→DISPATCHING→SETTLED/UNKNOWN journal. Credentialed providers and live Doctor probes remain unavailable. The actual runner still needs P7 to pass `SessionRunnerModel.resolveSelection` into its provider context, atomically settle the canonical assistant/usage EventV2 projection, and invoke restart recovery; until those callsites and acceptance tests land, no real-model journey is claimed or enabled. The `@opencode-ai/llm` route export already exists in the pinned package manifest; only the changed first-party route sources need explicit overlay visibility.
+
+**P6 pending-state correction (2026-10-21; fixtures authored, not run):** feature projection accepts `pending_apply` only with an explicit unlocked policy state. Either direction of requested/effective mismatch with unknown lock projects blocked, preserves UNKNOWN provenance and explains policy uncertainty instead of claiming a deferred update. The apply hook has the same explicit-unlocked prerequisite. FEAT-001..014 remain unverified.
+
+**P6 offline Doctor selection correction (2026-10-21; fixture updated, not run):** no selected model returns `configurationStatus=INVALID`, `localReadiness=INCOMPLETE`, and `selected_model_missing`, with zero network requests. A selected model absent from a stale or unavailable catalog remains UNKNOWN unless effective config pins it. Live Doctor tiers remain unavailable until P1 supplies and accepts Guarded probe authority.
+
+**P6 provider/question projection (2026-10-21; fixtures updated, not run):** the TUI model-picker fixture now checks explicit yes/no/unknown capability labels and unknown price freshness where provider-list freshness is not pinned. It continues to distinguish selectable-by-policy from verified dispatch. New legacy question component cases cover legacy reply/reject callbacks alongside existing V2 callback cases. P2 source now uses the Session-pinned provider/model for title generation unless the title agent explicitly configures a separate model; the source change has not been verified. No verification or provider request ran.
+
+**P6 managed provider transport continuation (2026-10-21; source only):** managed SDK construction now independently rejects resolved provider/environment credentials and credential-bearing provider/model options, uses the same bundled `languageModel` selector as the normal Core provider path, and the bounded request preparer rejects credential-shaped URL query parameters. HostKernel prepare → authenticated Guard approval → begin and the TUI `providers.infer` allow projection remain P1/P2 integration dependencies; managed dispatch stays fail-closed. No tests, typechecks, builds or provider requests were run.
 
 **Required integration pairings:** JC-RES-008/009/010 **plus the existing P1 Guard denial suite** before shared effect-host cutover; JC-RES-012/018 **plus P2 durable restart/UNKNOWN tests** before real managed work; JC-RES-001..006/016..017 **plus a same-machine correctness benchmark** before advertising RAM improvement. A test with a mock network does not qualify full Doctor billing behaviour; a Linux WSL test does not qualify native Windows.
 
@@ -822,10 +938,10 @@ These cases are required acceptance for the existing owners where applicable; ad
 | VEO-006 | P3 | Unsupported parser, partial parse or fallback to lexical/LSP | Report source, parser, coverage and completeness accurately; never claim complete AST evidence |
 | VEO-007 | P6 | Provider omits cache/cost fields or reports conflicting usage; model/provider changes mid-run | Preserve selected route; record unknown/contradiction and provenance; no inferred zero cost/cache hit or hidden fallback |
 | VEO-008 | P6 | Generated skill/profile proposal includes new capability, secret or unsafe command | Keep inert until review, canonical ID/permission validation and explicit activation; no self-registration |
-| VEO-009 | P7/P8 | Reconnect with durable owner transitions plus duplicated/coalesced progress and resource samples | Replay/resnapshot canonical state by cursor; tolerate ephemeral loss; keep exact FULL/SAMPLE/FAILED and measured/estimated/unknown values |
+| VEO-009 | P7/P8 | Reconnect with durable owner transitions plus duplicated/coalesced progress and resource samples | Replay/resnapshot canonical state by cursor; tolerate ephemeral loss; preserve artifact wire fidelity `full`/`head_tail_sample`/`failed` (UI labels FULL/SAMPLE/FAILED) and measured/estimated/unknown resource values |
 | VEO-010 | P2/P8 | Verifier/test execution races user edit or exceeds deadline/resource reservation | Bind evidence to actual final revision; stop/settle or report incomplete/UNKNOWN; do not free reservation or mark PASS early |
 | VEO-011 | P1/P2 | Decode delegation binding/envelope at 2^53+1, u64::MAX, overflow, leading zero, duplicate/unsorted IDs, unknown field or mismatched binding digest | Rust decoder and golden MessagePack fixture agree byte-for-byte; reject invalid shape; admission compares admitted lineage separately from current expected revision and denies before prepare on stale/missing live binding |
-| VEO-012 | P2/P7 | Verifier output includes caller-selected verdict/digest/ref, partial redaction, truncated or oversized artifact, or workspace changes between process exit and evidence append | Accept only supervised settled output captured into immutable ArtifactStore refs; preserve FULL/SAMPLE/FAILED honestly; re-observe current revision immediately before append/finalize; no caller-controlled PASS |
+| VEO-012 | P2/P7 | Verifier output includes caller-selected verdict/digest/ref, partial redaction, truncated or oversized artifact, or workspace changes between process exit and evidence append | Accept only supervised settled output captured into immutable ArtifactStore refs; preserve wire fidelity `full`/`head_tail_sample`/`failed` (UI labels FULL/SAMPLE/FAILED); re-observe current revision immediately before append/finalize; no caller-controlled PASS |
 | VEO-013 | P6 | Usage event carries negative/fractional token metric, unknown with a value, or estimated cost without full pricing/token inputs; local estimate is labeled measured | Reject malformed metric; preserve safe nonnegative integer token values and explicit unknown; provider cost resolves to selected provider/model/request, estimates bind exact pricing tuple/source/digest, algorithm and token inputs; measured cost is unavailable without a real billing/receipt source; old scalar fields cannot override unknown |
 | VEO-014 | P1/P2 | Attempt admission supplies a different AgentProfile ID/revision/definition digest from the Task's immutable `agentProfileRevision`, including a newer valid profile revision | Reject before preparation and OwnerLog mutation; resolve only the Task-pinned profile definition; recompute its digest and effective capability ceiling from accepted Task/Spec and current Guard policy |
 | VEO-015 | P1/P2 | Another authenticated ServerAuth subject attempts to create/admit a Task using a `source=user` profile, or caller JSON supplies/changes a profile owner | Resolve user profiles only through Core Config under the authenticated subject; persist the HostKernel-derived owner binding with the Task; reject cross-subject/forged-owner admission before OwnerLog mutation; permit only the explicit built-in owner class for built-in profiles |
@@ -845,3 +961,395 @@ P1/P2/P3/P6/P7/P8 owners add executable Rust/TypeScript/TUI fixtures in their ex
 | VEO-022 | P1/P2 | Managed verifier or ToolBatch requires reviewer approval; inspect Attempt OwnerLog before approval, deny/expire/stale approval, retry approval, race owner/workspace mutation, cancel or crash around binding/lease | PREPARE may retain only a challenge-bound candidate intent and must leave Attempt OwnerLog unchanged with no lease/dispatch. After exact approval, atomically bind the full authorized edge/intent set, refresh and revalidate current scope/approval/workspace, then issue one-use leases. Unchallenged ALLOW uses the same post-evaluation bind/refresh/recheck sequence. Denial, stale approval, conflict or uncertain restart cannot create a dispatchable Attempt or replay effects |
 | VEO-023 | P1/P2 | Call `goal.start` before SpecVersion acceptance, with another principal, stale Goal revision, altered SpecVersion digest, missing/partial/changed Task plan, duplicate exact idempotency key, conflicting key reuse, after supersession, race start against Goal update, or legacy `start_run`/`add_task` ingress; inspect OwnerLog and scheduler before readiness/admission | Only authenticated actor on the exact current accepted SpecVersion starts its complete persisted PLANNED Run; one OwnerLog transition includes the owner-recomputed exact Task-plan digest, moves Run to RUNNING and readies only dependency roots. Exact retries return the same transition. Conflicting key reuse, stale/superseded/unauthorized/incomplete input rejects with plan still PLANNED and Tasks unready. Legacy ingress cannot create a dispatchable bypass. `goal.plan` and acceptance alone dispatch nothing. Start creates no Attempt, worker dispatch or effect lease; those require their own admission and Guard gates |
 | VEO-024 | P1/P2/P8 | Lose or crash around P8 pre-admission reservation/reconciliation; replay an exact tombstone receipt, forge its OwnerLog cursor or EXPIRED outcome, reuse the tombstoned Attempt/token, change pins or Task revision, skip candidate generations, or replay a delivery with changed proof | P8 emits a durable opaque tombstone receipt only after `NotAdmittedNoDispatch` and terminal `EXPIRED`; P2 advances the exact READY Task's candidate generation once from that receipt while binding the current admitted attempt count. Exact delivery replay returns the same result, mismatched/stale proof conflicts. P1 derives candidates only from persisted Task ID + `attempt_count` + `candidate_generation`; admission increments `attempt_count` and pre-admission tombstoning increments `candidate_generation`, so retries cannot collide. Old ticket/worker/Attempt identity is never reused, no request identity grants a reservation, and no Attempt/effect/provider dispatch is created by generation advance |
+| VEO-025 | P2/P8 | After the accepted single-Task vertical, execute a bounded valid multi-Task DAG; also submit zero-task, cyclic, over-limit, cross-Run, stale-revision and overlapping-write plans | Rust commits one canonical graph revision, admits only READY tasks whose required predecessors have exact-revision independent PASS, and binds each Attempt to its Task/profile/scope/budget/workspace. Valid disjoint or serialized work completes independently; invalid plans reject before Goal/Run mutation or dispatch. Run success requires every required Task, exact-revision aggregate verification, all receipts settled and no UNKNOWN. Preserve historical event replay and keep multi-Task dispatch unavailable until the complete acceptance matrix passes. |
+| VEO-026 | P1/P2 | Pin a profile `tokenBudget` below/above the accepted SpecVersion `maxTokens`; consume usage across multiple provider steps, reach exact zero, replay usage after restart, or refresh a scope with stale profile/Spec pins | HostKernel persists the immutable effective ceiling `min(SpecVersion.maxTokens, profile.limits.tokenBudget)` for present limits and a digest-bound durable remainder. Core clamps every managed provider step (native and AI SDK) to that remainder; a zero remainder is accepted only as terminal stopped-accounting projection, and no following provider step, ToolBatch preparation, Guard request, or lease is issued. A stopped returned child is marked error and settles FAILED after exact quiescence; replay is idempotent, unknown usage remains stopped/UNKNOWN, and stale profile/Spec pins reject before prompt or effect. Direct-session budgets remain unchanged; no OS quota is inferred. |
+| VEO-027 | P2 | With integrated verifier readiness still false, call authenticated `POST /experimental/control-plane/goal-verification` using a scoped workspace and a valid Goal/Run request; inspect HostKernel operations | The endpoint returns unavailable before taking a managed snapshot or invoking verifier/finalization operations; request data cannot enable readiness. Keep this regression fixture unrun until the source-only hold is lifted. |
+| VEO-028 | P1/P2/P7 | For a managed child, alter any request selection/ref, route/provider/model/harness/endpoint revision, request digest, Attempt/session/profile/owner epoch or budget between prepare/begin; replay begin; lose the provider reply, assistant-entry commit, settlement reply; restart with PREPARED or DISPATCHING | Only exact PREPARED pins replay; mismatch conflicts. Fresh begin alone returns one-use send authority after live Guard/route/consent/budget recheck; exact begin replay carries no send authority. Settlement binds the already durable exact child assistant-entry ID/digest and reported usage. PREPARED can be abandoned; unresolved DISPATCHING becomes UNKNOWN and is never resent. Sequence 2+ cannot dispatch from ContextSelection advance alone. Keep all real-provider/dispatch checks unrun until Guarded Rust transport exists; source fixtures are not acceptance. |
+
+## 32.40 Paired harness-uplift evaluation (P8)
+
+This measures HorizonCode's contribution for a fixed model. It does not establish that one
+model is generally equivalent to another, and a public benchmark score is not a substitute
+for this paired experiment.
+
+For each pinned clean-room task set, run the same selected model, provider/endpoint, model
+revision or local quantization, repository image, task prompt, acceptance oracle, tool/effect
+allowlist, sampling settings, and per-task token, wall-time, retry, and cost ceilings in two
+arms: (A) a documented minimal single-turn/tool baseline and (B) the HorizonCode harness.
+Randomize arm order, keep task IDs paired, preserve raw outcomes, and repeat stochastic runs
+with recorded seeds where the provider supports them. A baseline must not receive capabilities
+or permissions that are absent from its declared setup; a harness arm must use the selected
+route and may not hide paid fallback or unapproved retries.
+
+Report, at minimum, `PASS_VERIFIED` counts and absolute percentage-point change on the exact
+paired tasks, with a paired uncertainty interval; also report regression/security failures,
+false completion, interventions, time, tokens, measured/estimated/unknown cost, tool calls,
+retries, and resource use. State denominators and excluded/infra-failed tasks. Report relative
+uplift only alongside the absolute rates and define it as `(harness rate - baseline rate) /
+baseline rate`; when baseline rate is zero, report it as undefined. Never combine model
+capability failures, unsupported capabilities, or infrastructure failures into a silent pass.
+
+Use controlled ablations to attribute changes: subagent delegation, RepoIntel, CodeMode, and
+verification/retry are each disabled or restricted one at a time against the same full-harness
+configuration, then optionally tested in predeclared combinations. Absent capabilities remain
+unavailable; an ablation must not bypass Guard, permission, lease, receipt, or recovery rules.
+Freeze the task set, acceptance oracle, and analysis before inspecting results; keep tuning and
+benchmark-development tasks separate from the held-out evaluation set.
+
+Every report pins the benchmark name and exact release/version, split and split digest, task
+IDs, scoring field (for example `resolved` versus `passed`), evaluator/container image, model
+revision/quantization, harness commit/configuration, tool and permission profile, sampling
+settings/seeds, budgets, date, platform, raw artifact digests, and failure/exclusion policy.
+Public scores from different versions, splits, scoring fields, model efforts, or harnesses must
+be shown as separate provenance-qualified records, never as a directly measured HorizonCode
+uplift. Do not tune against hidden evaluation tasks or publish unofficial subsets as official
+benchmark scores.
+
+| ID | Comparison | Required evidence |
+|---|---|---|
+| HUP-001 | Fixed-model minimal baseline vs full HorizonCode harness | Paired per-task results, exact frozen configuration, acceptance evidence, uncertainty interval, and all cost/resource/failure measures above |
+| HUP-002 | Full harness vs each single-feature ablation | One changed factor per comparison; no authority bypass; paired task outcomes and resource/cost deltas |
+| HUP-003 | Public benchmark score comparison | Exact version/split/scoring/evaluator/model/harness/budget provenance; otherwise label incomparable and do not infer uplift |
+| HUP-004 | Rate limit, provider failure, and capability-incomplete model | Honest failure/unsupported classification, bounded stop behavior, no hidden provider/model fallback, and no false-completion PASS |
+
+These are evaluation contracts, not evidence that a benchmark adapter, score, or uplift has
+been measured. `scripts/eval/eval_harness.py` supplies an offline, fake-only HUP-005 protocol
+self-check with frozen paired manifests, seeded randomized task and balanced arm ordering,
+oracle result classification, cancellation, separate capability-incomplete outcomes, and a
+bounded fsynced append-only artifact journal with exact-trial resume. The summary includes a
+predeclared repository-cluster paired interval when enough independent groups exist, but its
+fake-only output can never complete HUP-001. Its summary retains per-arm status,
+failure-stage, and accounting totals across all invoked work (including incomplete
+pairs); fixture cost is explicitly `FIXTURE_REPORTED`, not measured or estimated
+provider cost, and OS resource use remains `UNKNOWN`. The self-check has not been run;
+it is not a provider adapter, benchmark runner, trusted HostRun/verifier attestation,
+or release-eligible result. Real HUP-001/002 runs remain unavailable until the implementation
+hold is lifted and trusted managed-run evidence and explicitly authorized model/effect routes
+exist.
+
+The fake runner's source contract also requires bounded no-follow manifest ingestion,
+strict frozen-schema validation, and rejection of duplicate, stale-manifest, or
+out-of-manifest result rows before paired scoring. Accounting totals cover every
+invoked arm, including incomplete pairs; any missing metric is reported as unknown.
+The fake self-check also classifies a fixture that exceeds its pinned token, wall-time,
+tool-call, retry, or known-cost ceiling as a budget-exhaustion failure, never PASS.
+The manifest/report schema supports both baseline-versus-full and full-versus-one
+predeclared-feature ablation comparisons with explicit reference/candidate roles; this
+does not mean real ablation execution is implemented.
+The generated report carries exact benchmark provenance, task partitions, arm source
+commits/configuration digests, provider/model/image/prompt/oracle/permission/budget
+pins, run timestamp/platform, policy, and raw artifact digest. Status and failure-stage
+counts, false-completion/security/intervention evidence, and measured/unknown accounting
+remain separate; fake-only process resource use is explicitly `UNKNOWN`.
+These checks improve report integrity but do not authenticate mutable local artifacts
+or make a fake-provider result benchmark evidence.
+The randomized pair order is derived only from the manifest's frozen seed; a library
+caller cannot override the seed while retaining the same manifest/run digest.
+The fake journal distinguishes pre-dispatch cancellation from an adapter invocation:
+only rows with an actual provider-call index contribute to invocation totals, while
+pre-dispatch cancellation remains a cancellation row without a fabricated call index.
+
+**2026-10-22 source reconciliation (not run):** `eval_harness.py` now also defines a
+library-only `HOST_RUN_PAIRED` boundary for the same frozen per-task baseline/full or
+full/ablation plan. It passes only bounded, digest-checked task input and frozen route,
+model, arm and manifest pins to a future authenticated HostKernel adapter. Exceptions
+after bridge entry persist as indexed `UNKNOWN` and are not retried in-process; a stable
+digest-derived manifest/task/arm idempotency key lets an integrated HostRun adapter
+reconcile the same Attempt after a process restart. Pre-dispatch
+cancellation is unindexed and all remaining pairs are `NOT_RUN`. The code has no
+installed HostKernel bridge or provider transport. `RepositoryTaskImageResolver` now
+loads only a no-follow repository-local JSONL task catalog whose benchmark-provenance
+header, repository-image digest and exact task IDs/groups/input digests match the frozen manifest; data reads are
+bounded. The code still has no independent
+attestation validator, so this seam is not executable from the CLI and cannot produce
+official or release-eligible evidence. RC0 remains `UNKNOWN`; HUP-001/002 remain
+unverified until P1/P2 integrate authenticated HostRun and independent-verifier
+evidence. Source fixtures were added but not run.
+
+P8 is **SOURCE-COMPLETE FOR CURRENTLY UNBLOCKED WORK; NOT PHASE-ACCEPTED**. HUP-001/002
+and RC0 acceptance remain blocked on authenticated P1/P2 HostRun and independent-verifier
+integration and are not satisfied by this source seam.
+
+**Reference/version note (reviewed 2026-10-20):** the numbers in planning notes must not be
+treated as one directly comparable leaderboard. NVIDIA's [Nemotron 3 Ultra technical report](https://research.nvidia.com/labs/nemotron/files/NVIDIA-Nemotron-3-Ultra-Technical-Report.pdf)
+reports SWE-bench Verified 70.7% BF16 / 69.5% NVFP4 and Terminal-Bench 2.1 56.4 / 53.9 for
+those configurations; the older 71.9% and estimated 20–25% figures are not the report's corresponding
+results. Its Terminal-Bench 2.1 run is not automatically comparable with a separate Claude Code score
+unless benchmark release, harness, image and budget match. Anthropic's [Opus 4.5 system card](https://assets.anthropic.com/m/64823ba7485345a7/Claude-Opus-4-5-System-Card.pdf)
+reports 80.60% with 64k thinking and 80.90% with thinking off on its stated SWE-bench Verified setup;
+these are separate configurations. [Epoch's evaluation page](https://epoch.ai/benchmarks/swe-bench-verified)
+documents a substantial February 2026 scaffold change, so older and current leaderboard numbers need
+separate provenance. [FeatureBench's paper](https://arxiv.org/abs/2602.10975) introduces a 200-task full
+set; its [official repository](https://github.com/LiberCoders/FeatureBench) currently identifies Dataset
+V1.1 and a 100-instance fast split designed for rapid/no-GPU evaluation, plus lite and full splits, and
+reports both `passed` and `resolved`. Its displayed Lite leaderboard is explicitly Dataset V1.0 and
+lists Opus 4.5 with OpenHands at 67.2% passed / 20% resolved and Claude Code at 59.1% passed / 20%
+resolved; that does not support a generic “Opus only 11%” claim, nor is it a Nemotron comparison. The
+repository lists OpenHands, Claude Code, Codex, Gemini CLI and mini-swe-agent inference integrations,
+making it useful for scaffold comparisons only when dataset version, split, score field, model route and
+harness configuration are pinned. [Meta-Harness](https://arxiv.org/abs/2603.28052)
+reports its 7.7-point gain on online text classification; its coding result is a separate
+TerminalBench-2 experiment. Record each exact run as specified above rather than inheriting any
+of these figures as a HorizonCode target or guaranteed harness uplift.
+
+For HorizonCode's paired result, make absolute pass-rate percentage-point change the primary
+comparison and relative uplift secondary. Report the per-task paired outcome table (improved,
+regressed, unchanged) and a task-level uncertainty interval; bootstrap by repository/task group when
+several issues come from one repository. Predeclare the interval method and minimum meaningful
+difference, and do not claim a harness gain when the interval includes no improvement. Repeat
+stochastic runs with declared seeds and show run-to-run variation. FeatureBench's fast split being
+GPU-free refers to its evaluation setup; the repository's 57.2-second figure is gold-patch scoring on
+a large-memory CPU server, not an inference-time estimate for HorizonCode.
+
+Before spending model or benchmark budget, validate the runner and outcome pipeline on a small,
+publicly documented development set that is disjoint from the held-out evaluation set. Confirm
+that task images, prompts, permissions, budget caps, cancellation, raw result capture, scoring,
+and provenance survive a dry-run with a deterministic fake provider. Then run a small pinned
+benchmark smoke subset to validate real provider/tool compatibility; label it a smoke result,
+not an official score. Run the held-out paired evaluation only after the smoke path is stable.
+Keep benchmark tuning, development tasks, smoke tasks, and held-out tasks in separate manifests.
+
+Recommended execution order once the implementation hold is lifted: (1) HUP-005 fake-provider
+self-check, with no provider traffic; (2) one manually selected free-model response and bounded
+coding task on the explicitly selected OpenCode provider route, recording 429/error honestly and
+never switching to a paid or different provider; (3) the pinned FeatureBench V1.1 fast split
+(100 instances, as currently documented by its repository) to shake out the runner, then small
+development-only samples from SWE-bench Lite and Terminal-Bench 2.1 for repository-fix and
+terminal-use coverage; (4) HUP-001/002 paired runs and ablations on a frozen holdout, including
+the full 500-task SWE-bench Verified split only when compute/time allow. A smoke subset stays
+non-official regardless of its size. Compare `passed` and `resolved` separately where a
+benchmark exposes both, and keep Terminal-Bench release/harness provenance exact.
+
+| ID | Comparison | Required evidence |
+|---|---|---|
+| HUP-005 | Evaluation runner self-check before model use | Deterministic fake-provider replay proves task isolation, frozen arm configuration, oracle/scorer behavior, result/artifact persistence, cancellation, and correct infrastructure-failure classification; no provider call is needed |
+| HUP-006 | Paired-arm parity and contamination check | Per-task prompts, repository image, model route/revision, permissions, tool allowlist, sampling, and budgets are identical except for the declared harness factor; arm order is randomized; development/smoke IDs cannot enter held-out results |
+| HUP-007 | Failure-stage attribution | Each failed or incomplete task is classified from persisted events and verifier evidence as task interpretation/planning, context/retrieval, tool selection/arguments, effect execution, patch quality, test/verification, budget exhaustion, or infrastructure; do not use model self-report as the classification source |
+| HUP-008 | Optional scaffold-reference arm | OpenCode or Codex may be reported as a separate harness arm only when task manifest, exact model/provider revision, repository image, permissions, tools, sampling and budget are matched; otherwise show it as contextual provenance, not a causal comparison |
+
+Use HUP-007 to identify what the harness changed: report stage-level failure counts for the minimal and full-harness arms and for each predeclared ablation. Keep classification rules fixed before the held-out run; retain an `unknown` category where evidence does not distinguish causes. HUP-008 is optional and does not replace the paired minimal-baseline comparison. A free-model route is still an explicitly selected route: record rate limits and stop honestly rather than silently switching to another provider or a paid model.
+
+## 32.41 Guarded CodeMode orchestration acceptance
+
+The existing CodeMode interpreter is source-present. Wire it into the model tool registry only
+when the private versioned stdio helper protocol and canonical Rust Guard/ExecutionHost nested
+dispatcher are implemented. These integrated cases are release acceptance; interpreter package tests alone do
+not prove Horizon authorization, receipt, or recovery behavior.
+
+| Case | Owner | Setup/fault | Required assertion |
+|---|---|---|---|
+| CM-001 | P1/P5/P6 | Inspect the tool catalog with CodeMode disabled, feature flags set, MCP connected, or a plugin registering `execute` | No model-visible `execute` tool or dispatch path unless every nested tool is Guard-compatible; flags and extension registration cannot enable a bypass |
+| CM-002 | P1/P5/P6 | Script calls a nested effect with missing, stale, wrong-scope, expired, revoked, or replayed authority | HostKernel denies before transport/provider/MCP dispatch; no receipt claims success and no direct Core/plugin fallback occurs |
+| CM-003 | P1/P2/P5/P6 | One script creates multiple dependent and parallel effect calls; include one malformed/over-limit call or lease conflict | At most 64 nested calls across at most 64 sequential waves of up to 32 concurrent calls; validate each complete wave before dispatch, reject the whole unprepared wave on failure, or preserve exact per-call receipts/UNKNOWN after dispatch begins; managed waves append `attempt_effect_wave_bound` before leases; script-wide bounds cannot reset between waves |
+| CM-004 | P1/P7 | Supply secrets and large nested arguments/results, then inspect live metadata, logs, persisted messages, and rendered tool output | Metadata contains only bounded tool identity/status; arguments, credentials, reasoning, and unapproved raw results never leak; output follows aggregate byte/node limits |
+| CM-005 | P1/P5/P6 | Cancel, restart, or lose a nested-call response before/after PREPARED and after possible dispatch | Stop undispatched work; retain UNKNOWN when dispatch may have occurred; reconcile by exact operation digest/lease/receipt without rerunning an ambiguous effect |
+| CM-006 | P1/P5/P6 | Program uses unknown tool, denied permission, timeout, max-call limit, unawaited call, or host cancellation | Return a safe bounded diagnostic; no unlisted capability is callable; cancellation interrupts child fibers and no tool call is left running after outer settlement |
+| CM-007 | P1/P5/P6 | Attempt prompt/prose or generated-code privilege escalation and ambient filesystem/process/network/credential access | Interpreter remains confined to supplied tool definitions; only Guard-authorized tool calls can produce external effects |
+| CM-008 | P1/P5/P6 | Inspect the actual CodeMode construction and execute busy loops, parallel/unawaited calls, oversized logs and return values | Before any enablement, supply explicit finite trusted `timeoutMs=30000`, `maxToolCalls=64`, `maxCallsPerAdmittedWave=32`, and `maxOutputBytes=65536`; prove timeout interrupts and joins nested effects, later waves revalidate scope after prior receipts settle, and output is bounded/redacted. Missing package defaults are not limits. |
+| CM-009 | P1/P5 | Run adversarial allocation and synchronous-loop programs inside the helper process launched by the existing ExecutionHost under `CodeModeResourceProfileV1`: cgroup-v2 memory 536870912 bytes, CPU `100000 100000`, PIDs 64 and nofile 256. The host remains responsive; the supervisor terminates and reaps only the helper at 30 seconds or cancellation; no pending tool call settles until its receipt or UNKNOWN state is reconciled. Prove the configured OS limits are applied and read back before the helper’s first instruction and resource exhaustion cannot destabilize Core/Rust. If any required limit cannot be verified, prove CodeMode is unavailable before spawn. |
+| CM-010 | P1/P5/P6 | With a mixed authorized/denied/disabled Core and MCP tool catalog, call existing `$codemode.search`, then try a disabled tool, a raw MCP connection and an enabled MCP adapter | Discovery returns only exact currently authorized entries; disabled entries remain undiscoverable, raw MCP client creation is impossible, and enabled adapters return through Core's same ToolBatch/Guard/lease/receipt path |
+| CM-011 | P1/P5 | Execute a bounded pure-computation script that returns without calling a nested tool, then inspect the execution result and outer process settlement | The result is `completed` with `waves=[]` and `totalCalls=0`, omits nested `receiptDigest`, and claims no nested-effect receipt; the helper process still has its ordinary Guarded process-effect receipt. A script with nested calls requires every wave's exact per-call receipts and the ordered aggregate nested receipt digest |
+| CM-012 | P1/P5/P6 | Direct: explicitly enable CodeMode, then invoke it repeatedly; change principal, Session/owner epoch, helper/runtime digest, resource-profile digest, backend guarantee or policy; revoke/expire the enablement. Managed: try launch with a missing Spec capability, profile ceiling, stale Task/Attempt or mismatched resource-profile digest. In either lane, submit grant/enablement token or identity pins as model input. | Direct launch requires exact host-authenticated `CodeModeEnablementV1`; repeated invocations need no per-invocation enablement prompt while pins remain current. Any revocation/expiry or pin drift fences before spawn. Managed launch is allowed only when the accepted SpecVersion and Task-pinned AgentProfileV2 both include `codemode.execute` and HostKernel validates the exact resource digest against the live Attempt. A direct grant cannot authorize managed work. Model arguments remain code/input only; no enablement token or caller identity is accepted. Neither lane grants arbitrary child-process or nested-effect authority. |
+
+CM-001..012 are integrated release acceptance requirements. Their source implementation is a V1
+goal; they are not proof of runtime behavior. Keep `execute` hidden until the nested dispatcher and
+stdio protocol are wired, then expose it only on the fixed packaged runtime with the complete accepted cgroup-v2 containment profile.
+
+**Source checkpoint (2026-10-21):** the production CodeMode wrapper now supplies trusted finite
+host limits of 30 seconds, 64 admitted nested calls, and 64 KiB of output, then applies a final
+UTF-8 output cap after host formatting. This closes the configuration portion of CM-008 only;
+timeout/cancellation joining, adversarial output behavior, Guard mediation, and integrated
+acceptance remain unverified. The model-visible `execute` tool remains absent. The interpreter
+has no configured hard memory ceiling; CM-009 remains unsupported and must not be claimed.
+
+## 32.42 Direct and managed runtime-lane parity
+
+These cases prevent an adapter for managed Attempt authority from silently becoming the
+ordinary direct TUI runtime, and check that the two lanes preserve the same user-visible
+provider/tool behavior where their authority contracts permit it.
+
+| ID | Owner | Setup/fault | Required assertion |
+|---|---|---|---|
+| LANE-001 | P0/P2/P6/P7 | Submit, continue, cancel and resume through the public TUI/CLI direct entrypoint with provider/tool tracing | Every direct turn is owned by Core `SessionRunner`; it writes canonical Core Session messages/parts and uses the selected provider/model/harness. No managed `SessionPrompt`, Goal, Task, or Attempt is implicitly created. |
+| LANE-002 | P2/P6/P7 | Run equivalent direct and managed turns with identical selected provider/model/harness, prompt, context fixture, tool schemas and supported capabilities | Compare prompt/tool projection, stream and final parts, usage/cost provenance, cancellation, error classification and supported multimodal fidelity; differences are explicit. Managed requests remain bound to the live Attempt, direct requests remain direct Core Sessions. |
+| LANE-003 | P1/P2/P6 | Attempt to send a managed request without live Attempt/context/route binding, or route a direct turn through managed dispatch | Managed provider dispatch is denied before send; direct turns do not gain managed authority and cannot fabricate managed receipts/evidence. |
+| LANE-004 | P1/P2/P6/P7 | Send one authenticated direct prompt whose turn requires several ordinary provider round-trips; inspect provider requests, approvals, SessionStore and HostKernel traces | One explicit user prompt/continue authorizes the bounded turn on the exact selected provider/model/account/harness and pinned privacy/cost/token/network policy; no per-round-trip prompt or direct HostKernel context-bind RPC occurs. Every provider request has its own Core request pin; tool effects still use Guard. |
+| LANE-005 | P1/P2/P6/P7 | Replay a direct request ID exactly, then change prompt bytes, ContextSelection, source cursor, provider/model/account/credential revision, harness, endpoint, or policy; inject route/catalog/policy drift immediately before transport | Exact identical replay returns existing state without a second send/charge. Any changed pin conflicts or denies before bytes leave; no route rebuild, account substitution, free/paid fallback or stale prompt dispatch occurs. Managed requests continue to require exact live Attempt binding and HostKernel receipt. |
+| LANE-006 | P1/P2/P6/P7 | Crash after direct PINNED but before DISPATCHING, after DISPATCHING but before the atomic assistant/usage/SETTLED commit, and immediately after that commit; restart and replay | PINNED may resume only with the exact stored immutable payload and route. DISPATCHING without the exact atomic settlement becomes UNKNOWN and is never automatically resent; an explicit user continuation uses a fresh request ID. A committed SETTLED transaction replays the exact assistant entry/usage without another provider request. |
+
+These are release acceptance targets. Existing source presence or unit-level provider mocks do
+not establish public-entrypoint ownership or direct/managed parity.
+
+## 32.43 Low-friction direct-session grants
+
+| ID | Owner | Setup/fault | Required assertion |
+|---|---|---|---|
+| GRANT-001 | P1/P6 | Start a fresh direct Session under default mode; issue routine workspace read/edit and supported local build/test, then attempt network or outside-root access | Default is `workspace-write` + `on-request`; supported in-workspace coding actions proceed without per-effect prompts; crossing the sandbox boundary presents the exact effect for approval before dispatch |
+| GRANT-002 | P1/P6 | Explicitly grant bounded `workspace-code` on a supported confined backend, then run routine workspace reads/edits repeatedly | Each action is still Guarded and receives its own durable intent, one-use lease and receipt, but no repeated dialog occurs within exact scope |
+| GRANT-003 | P1/P6 | Attempt network, secret access, publish, destructive reset, out-of-root path, unselected command class, or over-limit payload | Grant does not cover it; the exact operation/batch asks or immutable policy denies before dispatch; no legacy `PermissionV1` setting suppresses Guard |
+| GRANT-004 | P1/P6 | Change principal/owner epoch, Session, workspace root, policy, profile, backend or confinement guarantees; expire or revoke a grant | HostKernel invalidates the grant before dispatch; no stale lease is issued and UI shows the current reason |
+| GRANT-005 | P1/P6 | Request a persistent workspace grant, restart, reconnect and revoke from Settings | Persisted grant retains exact pins and at most 30-day expiry; authenticated ownership is host-derived; revoke fences admission immediately |
+| GRANT-006 | P1/P5/P6 | Use CodeMode within grant, then cross its scope in a later wave | Routine nested calls avoid repeat prompts; boundary crossing raises one exact-wave challenge; each wave remains atomic, within 32 calls, within the script-wide 64-call/time/output budget and receipt-bound |
+| GRANT-007 | P1/P5/P6 | Revoke during CodeMode, cancel, crash after dispatch, lose a receipt, or force UNKNOWN | No later wave begins; undispatched calls stop; possible effects remain UNKNOWN until exact reconciliation; no effect replays automatically |
+| GRANT-008 | P1/P5/P6 | Attempt memory/CPU/PID exhaustion in CodeMode and run on a backend without required OS containment | Fixed versioned CodeModeResourceProfileV1 limits (512 MiB, 1 CPU, 64 PIDs, 256 FDs) apply before first instruction and affect only the helper process tree; supervisor recovers/reaps it without destabilizing the host. CodeMode remains unavailable if any limit is unsupported or cannot be verified; no other coding action is falsely labeled as hard-quota protected |
+| GRANT-009 | P1/P6 | Request dependency download with network disabled, then explicitly grant a named destination/protocol and finite request/byte budget | First request is denied or asks before dispatch; exact bounded egress is prompt-free only within the new grant; wildcard destinations, secrets and publication remain outside its scope |
+| GRANT-010 | P1/P2/P6 | On an ASK, choose Allow this Session or Remember for this workspace while the triggering operation is pending; concurrently change workspace revision or policy | Grant issuance alone dispatches nothing and discards the pending operation. A later submitted operation is re-prepared against current workspace/policy and evaluated by Guard; stale scope conflicts before dispatch, while a fresh matching grant may avoid another dialog |
+
+These acceptance cases are required before a workspace grant is persisted or CodeMode is declared
+release-ready. They do not mandate a dialog for every safe in-scope effect;
+the admission, lease and receipt checks always remain active. Current behavior is established
+only by final integrated source and observed test evidence, not this catalog.
+
+Direct-session permission-mode acceptance:
+
+| ID | Owner | Setup/fault | Required assertion |
+|---|---|---|---|
+| PERM-001 | P1/P6 | Read the permission projection for a new direct Session | Default is `workspace-write` + `on-request`; mode is visible in `/permissions` and the TUI status bar |
+| PERM-002 | P1/P6 | Choose `always`, then perform workspace read/edit/build effects | Each effect asks before dispatch; denial creates no lease or process start |
+| PERM-003 | P1/P6 | Choose `never` with `workspace-write`; perform in-scope work and cross to network/outside-root | No prompts occur inside the selected sandbox; crossing it does not silently widen the sandbox |
+| PERM-004 | P1/P6 | Explicitly choose `danger-full-access` + `never`; invoke local commands using workspace/outside files and network | Supported actions run without approval prompts through Guard/ExecutionHost and produce receipts; UI warns that no HorizonCode sandbox applies |
+| PERM-005 | P1/P2/P6 | Change mode while an effect is prepared, then reconnect with stale UI state | Mode revision advances; stale work conflicts before lease/dispatch; reconnect receives the current projection |
+| PERM-006 | P1/P5/P6 | Use Full access and select a paid provider/search route | File/network scope follows the mode; paid-route consent remains separate and no fallback is silently selected |
+
+| GRANT-011 | P1/P6 | Configure and select an enabled user-owned build/test profile; exercise allowed args and attempt arbitrary shell text, substitution, extra argv, cwd/env override | Only the exact configured argv positions launch under the profile; malformed or extra args are denied before process start; no string is shell-interpreted |
+| GRANT-012 | P1/P6 | Change profile revision, resolved executable digest, workspace root, backend guarantee set or policy after grant; replay old grant | Old grant becomes stale before dispatch; no process starts; current exact profile revision must be explicitly granted |
+| GRANT-013 | P1/P6 | Project config, model output, plugin or MCP attempts to create/widen a command profile or profile grant | Core Config rejects non-user-owned mutation and HostKernel rejects forged owner/digest; no grant/profile state changes |
+| GRANT-014 | P1/P6 | Run a profile requiring CPU/memory/PID/FD/write/network enforcement on a backend missing one guarantee | Profile is unavailable before spawn; monitoring/admission estimates are not accepted as OS enforcement |
+| GRANT-015 | P1/P6 | Run build/test repeatedly under a valid exact grant, then invoke an unselected profile/action or exceed its time/output/process bound | Covered operations receive fresh Guard intent, lease, receipt without repeat dialog; out-of-scope operation asks/denies, and bound breach settles failure/UNKNOWN without replay |
+| GRANT-016 | P1/P2/P6 | At a Guard challenge choose `allow_once` or a persistent Session/workspace grant; retry after the decision and race a workspace/policy change | `allow_once` authorizes only that exact pending action/batch and dispatches only after fresh validation. A Session/workspace grant choice only persists the grant: it neither dispatches nor resumes the pending action. That batch is discarded; a later submitted action is freshly prepared and evaluated by Guard, which may then use the grant. Approval frequency remains the independent `/permissions` policy. Changed scope denies/conflicts before dispatch. |
+| GRANT-017 | P1/P6 | Crash after launch, lose receipt, cancel, then restart and attempt same command again | Exact containment and durable receipt reconciliation determine settled result; unresolved dispatch remains UNKNOWN and is never automatically repeated |
+
+## 32.44 External editor profiles and CLI/TUI handoff (DEC-V1-33)
+
+| ID | Owner | Setup/fault | Required assertion |
+|---|---|---|---|
+| EDITOR-001 | P1/P2/P4/P6 | Configure `nano` and `vim` terminal profiles, launch a prompt edit | User-selected profile runs in the foreground terminal through HostKernel/ExecutionHost; TUI suspends then restores; prompt text is imported only on successful exit |
+| EDITOR-002 | P1/P2/P4/P6 | Configure `subl`, `code --wait`, or `zed --wait` with argv vector | Exact configured launcher runs and remains tracked until close; an early-returning daemon launcher is rejected for workspace editing |
+| EDITOR-003 | P1/P2/P4/P6 | Set `EDITOR` to a shell string with flags/substitution, or have model request a binary/path | No command-string parsing or model launch is accepted; only an explicitly saved profile and user action can launch |
+| EDITOR-004 | P1/P2/P4 | Launch workspace editor under `workspace-write` on a backend with and without OS filesystem/process-tree containment | Verified in-root backend launches under selected permission policy; missing containment returns unavailable before process start, with no misleading approval prompt |
+| EDITOR-005 | P1/P2/P4/P6 | Explicitly choose Full access and launch the configured profile | Editor runs with ordinary user rights and no HorizonCode sandbox; UI shows Full access warning; ordinary process receipt and UNKNOWN rules remain |
+| EDITOR-006 | P1/P2/P4 | Modify the selected file while editor is open and concurrently attempt agent workspace write | Exclusive workspace fence prevents agent overwrite; editor launch settles its changed-path receipt against the pinned base; workspace drift produces conflict/reconciliation, never a silent overwrite |
+| EDITOR-007 | P1/P2/P4 | Crash after launch dispatch, lose receipt, cancel or restart HostKernel | Same launch is reconciled by exact process identity; no editor relaunch occurs; unresolved state stays UNKNOWN |
+| EDITOR-008 | P1/P2/P4/P6 | Attempt symlink/path traversal, oversized args/output, executable replacement, stale profile, unsupported platform | HostKernel rejects before start or reports typed conflict/unavailable; no shell fallback, path escape, hidden retry or raw content in events |
+| EDITOR-009 | P1/P2/P4/P6 | Edit prompt scratch and cancel/fail editor | Scratch is bounded/private and removed on exit; failed/cancelled output is not silently inserted into prompt |
+| EDITOR-010 | P4/P6 | Start a new session with default settings and inspect visible/mounted surfaces | Session is single pane; no workspace Explorer, editor pane, persistent sidebar, or always-visible external-editor action is mounted |
+| EDITOR-011 | P4/P6 | Invoke `/editor` and then close Explorer | Explorer opens as an overlay only on command and returns to the single-pane session on close |
+| EDITOR-012 | P4/P6 | Invoke `/editor --side`, then close the side pane | Right-side Explorer/editor appears only after explicit command and is per-session; close restores single pane |
+| EDITOR-013 | P4/P6 | Invoke `/settings` → Editors, change profile, then open a file through `/editor` | Selected user-owned profile is used; no model-selected editor or hidden environment-string execution |
+
+## 32.45 Request-bound ContextLedger and context bar
+
+| ID | Owner | Setup/fault | Required assertion |
+|---|---|---|---|
+| CTX-001 | P3/P7 | Compile a direct and managed ledger from the exact normalized provider params, request ID, source revision and ContextSelection; alter one pin or payload byte | Digest and exact byte count bind the normalized params; any selection/request/revision mismatch fails before transport. Managed capture requires the exact HostKernel ContextSelection digest. |
+| CTX-002 | P3/P7 | Supply exact, estimated and unavailable byte/token evidence, including a tokenizer that is not selected or known | Ledger preserves each evidence class; unknown values remain absent, exact token counts name their tokenizer, and the UI never renders unknown as zero or a fabricated percentage. |
+| CTX-003 | P3/P7 | Include and exclude bounded source refs with trust, protection and cache metadata; inject an unpinned included source | Every included entry maps to the exact ContextSelection; unpinned inclusion is rejected; exclusion reasons and protected/cache state survive the event projection. |
+| CTX-004 | P3/P7 | Observe `session.context_ledger` through the live Session stream and inspect transcript, persistence, and event payload | Event is ephemeral, request/source-generation fenced, bounded and typed; it contains no raw prompt, normalized provider params, credentials or duplicate transcript record. Missing event cannot change dispatch or authority. |
+| CTX-005 | P7 | Reconnect during an active provider request after ledger publication, then reconnect after process restart | The current bounded in-memory projection may be resnapshotted for the live request; if unavailable, TUI reports no current ledger until a new request. It never treats an old generation or best-effort event as current. |
+
+## 32.46 Direct-session Git workspace read (§17.31)
+
+| ID | Owner | Setup/fault | Required assertion |
+|---|---|---|---|
+| GIT-002 | P1/P2 | Run `git.status` on a clean workspace under default Ask mode with valid `files.read` scope | Fixed argv template only; bounded output; durable receipt; no shell text from model |
+| GIT-003 | P1/P2 | Run `git.diff`/`git.log`/`git.show` with path outside grant or stale workspace revision | Typed denial before dispatch; no partial leak of forbidden paths |
+| GIT-004 | P1/P2 | Truncate output beyond byte cap; cancel mid-command; lose receipt after possible dispatch | Truncation labeled; cancel settles; UNKNOWN without blind retry |
+| GIT-005 | P1/P2 | Model or plugin supplies executable, cwd, env, or raw argv | HostKernel rejects before spawn; no Guard bypass |
+| GIT-006 | P1/P3 | Request tree listing for navigation | Caller receives explicit unavailable or is routed to RepoIntel `repo.tree`, not `git ls-tree` on this seam |
+| GIT-007 | P1/P2 | Attempt `git.commit` or branch mutation through read operation ID | Operation ID mismatch denies; mutating tools require separate guarded capability |
+
+## 32.47 V1 competitive adaptation traceability (`DEC-V1-35`, §10.18)
+
+These rows prove the §10.18.1 release-critical adaptation list is owned by normative documents and existing acceptance families. They do **not** add new product requirements beyond P1–P9 scope.
+
+| ID | §10.18 prio | Phase / topic | Normative owners | Primary acceptance families |
+|---|---:|---|---|---|
+| V1-ADAPT-001 | 1 | P1 Guard/sandbox/receipts + **migration parity** (`DEC-V1-36`) | §14 §14.3.1, §10.3, §03.2, §31.24 | §32.14, §32.20, §32.49 PERF-DIRECT-*, PS-*, LH-* |
+| V1-ADAPT-002 | 2 | P2 managed + DAG | §11, §29.18, `DEC-V1-31` | §32.9, §32.12, SA-* |
+| V1-ADAPT-003 | 3 | Context ledger/selection/ops | §30.2–30.6, §30.21, §30.26 | §32.10–11 (`CX-014`..`021`), CTX-* §32.45 |
+| V1-ADAPT-004 | 4 | RepoIntel / `indexd` | §30.7–10, §30.22–25, §42.11 | §32.4, RD-*, repo tool rows |
+| V1-ADAPT-005 | 5 | LSP/DAP/REPL | §30.7, §37.6–8, A-V2-25 | §32.28, LS-* |
+| V1-ADAPT-006 | 6 | Built-in web search | §37.5, `DEC-V1-26` | §32.28, WS-* / search rows |
+| V1-ADAPT-007 | 7 | Providers/settings/Doctor | §16, §37.16–19 | §32.21, §32.31, PD-* |
+| V1-ADAPT-008 | 8 | TUI streaming/artifacts | §31.1–31.22, §16.21 | §32.16–17, §32.48, FEAT-* |
+| V1-ADAPT-009 | 9 | Worktrees/resources | §21, §18.17–18 | §32.32–33, JC-RES-*, GS-* |
+| V1-ADAPT-010 | 10 | Grants + CodeMode | `DEC-V1-28/29`, §32.41 | CM-*, GRANT-* |
+| V1-ADAPT-011 | 11 | Packaging/release | §18, §10.11 | Release/clean-install gates in plan §10 |
+
+**Post-V1 exclusion checks:** enabling mgrep/CRG/Windsurf IDE/browser/LanceDB/Wasm as **required** V1 paths fails `DEC-V1-35` and A-V2-31 without a new §17 decision.
+
+## 32.48 Activity digest cards and review overlay (§31.22, §16.21)
+
+| ID | Task | Acceptance |
+|---|---|---|
+| ACT-001 | assistant turn performs three file patches | digest shows three `file_edit` cards with distinct `pathRef`, `+N −M` stats, collapsed `▎+` preview ≤6 lines each |
+| ACT-002 | same turn as ACT-001 | transcript shows assistant prose only; full patch bodies are not duplicated in transcript |
+| ACT-003 | patch adds 48 lines to a markdown file | title `Edited {path} +48 −0` (or `Patched` when patch tool); duration and `✓` on settled receipt |
+| ACT-004 | focus file_edit card, press Ctrl+R | review overlay opens with unified diff or artifact bytes; Esc closes; focus returns to same card |
+| ACT-005 | preview truncated (38 lines omitted) | collapsed footer reads `… truncated (38 more lines) · Ctrl+R to review`; overlay shows full bounded content |
+| ACT-006 | artifact fidelity `head_tail_sample` | card shows `SAMPLE` badge; never labeled `FULL` |
+| ACT-007 | effect receipt missing after restart | card state `unknown` with `UNKNOWN` label; review overlay shows non-authoritative banner |
+| ACT-008 | tool result contains API key in diff | preview and title redacted per §31.2; no secret substring in activity pane |
+| ACT-009 | user scrolls transcript up during stream | activity `↑`/`↓` scroll digest only; transcript anchor unchanged (`UI-002`) |
+| ACT-010 | Tab from composer | focus lands on newest activity card, not transcript |
+| ACT-011 | five consecutive reads within 30s | single `read_group` card `Read 5 paths`; Enter lists paths; no five separate rows |
+| ACT-012 | read group interrupted by shell | reads before shell grouped; shell separate; reads after not merged across shell |
+| ACT-013 | long `bash` output | running card updates elapsed in place; expanded preview ≤40 lines; tail bounded by §31.16 |
+| ACT-014 | shell completes exit 1 | card `failed` with short error class; no stack dump in title line |
+| ACT-015 | web search returns 5 hits | `web_search` card with two title lines preview; route label present |
+| ACT-016 | child `task` session | `subagent` row shows child id, profile, state; parent can open child via canonical action |
+| ACT-017 | Guard asks for patch | `permission` card + modal; focus trapped until choice |
+| ACT-018 | turn exceeds 64 cards | `limit_marker` row with omitted count; oldest cards dropped per §31.22.3 sliding window |
+| ACT-019 | turn exceeds 64 KiB preview budget | additional previews truncated; marker or per-card truncation footer present |
+| ACT-020 | 1000 tool progress events in 10s | UI coalesces repaints; activity frame diagnostics show `activityRepaintReason`; composer remains responsive (`UI-007`) |
+| ACT-021 | ASCII-only terminal theme | `OK`/`FAIL` replace glyphs; gutter fallback `|+` still distinguishes add/context/remove |
+| ACT-022 | terminal 80×24 | layout respects §16.21.4 minimum rows; composer usable |
+| ACT-023 | `/view activity off` then on | digest hides/shows without losing card state or transcript cursor |
+| ACT-024 | background session emits tool event | no focus/scroll theft on foreground session (`UI-012`) |
+
+## 32.49 Direct-mode migration parity and effect latency (`DEC-V1-36`, §31.24)
+
+Baseline arm: pinned OpenCode-derived host on the **same** model/route/workspace with in-process
+tools and **Coding (recommended)** preset on Horizon. Run on reference WSL2 hardware; record
+commit, kernel build, and cold vs warm kernel separately.
+
+| ID | Task | Acceptance |
+|---|---|---|
+| PERF-DIRECT-001 | provider-only turn (no tools) | Horizon p95 send→first-byte within **+5%** of baseline; kernel not on critical path |
+| PERF-DIRECT-002 | 5× `files.read` one tool response | Read fast path used; batched RPC when N>1; p95 within **+10%** of baseline total read phase |
+| PERF-DIRECT-003 | in-grant `files.write` after session grant | ≤1 approval prompt in turn; Guard+lease p95 ≤40 ms before ExecutionHost (warm kernel) |
+| PERF-DIRECT-004 | read starts before provider response end | telemetry shows read dispatch before final tool-call close; mutation waits for batch close |
+| PERF-DIRECT-005 | fresh install default | **Coding (recommended)** preset active; help states Goal optional; `/goal-*` under Advanced |
+| PERF-DIRECT-006 | competitor checklist | [`46-V1-MIGRATION-PARITY.md`](46-V1-MIGRATION-PARITY.md) matrix rows for OpenCode, Cursor CLI, Claude Code, Codex — no required Goal, no extra prompt on in-grant edit |
+
+## 32.50 Speed compiler (`DEC-V1-37`, §30.28)
+
+| ID | Task | Acceptance |
+|---|---|---|
+| SPD-A | send with unchanged ledger digest | context compile overlaps provider start; telemetry `compileOverlapMs` |
+| SPD-B | cold repo on first open | Send not blocked; `index_warming` shown; symbol-first tools suggested |
+| SPD-C | 8k context model selected | harness resolves `native-minimal` without user action |
+| SPD-D | symbol-first turn | `repo.tree` or `symbols.search` before whole-file read in traced plan (fixture) |
+
+## 32.51 Tool/skill exposure (`DEC-V1-38`, §33.32)
+
+| ID | Task | Acceptance |
+|---|---|---|
+| EXP-001 | default Build profile | system prompt lists all built-in skill metadata; `skills.search` + `skill` in Core |
+| EXP-002 | load `builtin.horizoncode` | body lists tiers, lanes, slash map; no full 230-cap dump |
+| EXP-003 | browser capability | effective count excludes post-V1; status chip explains |
+| EXP-004 | Extended tier off | `tools.search` does not return experimental IDs |
+| EXP-005 | OpenCode parity | skill metadata count ≥ OpenCode baseline for same project skills + built-ins |
+
+## 32.52 Accuracy, reliability, long horizon (§30.29–30.30, §10.19)
+
+| ID | Task | Acceptance |
+|---|---|---|
+| ACC-001 | patch with stale revision | typed fence error; no silent write |
+| ACC-002 | patch + LSP enabled | diagnostics in tool result within bound |
+| ACC-003 | managed Task complete | no PASS without verifier evidence row |
+| REL-001 | UNKNOWN receipt | user-facing reconcile copy; not empty success |
+| REL-002 | soft pressure | auto-trim once; Goal line preserved |
+| LHR-001 | `/clear` vs `/compact` | epoch table behavior per §30.27 |
+| LHR-002 | activity digest | card bytes not in ContextLedger compile |
+| LHR-003 | `job` verify locally | structured pass/fail; chat does not claim PASS |

@@ -49,8 +49,8 @@ const catalog: Record<string, ModelsDev.Provider> = {
     name: "OpenCode Default",
     env: ["OPENCODE_API_KEY"],
     models: {
-      "big-pickle": catalogModel({ input: 0, output: 0 }),
-      "mimo-v2.5-free": { ...catalogModel({ input: 0, output: 0 }), id: "mimo-v2.5-free" },
+      "big-pickle": catalogModel({ input: 0, output: 0, cache_read: 0, cache_write: 0 }),
+      "mimo-v2.5-free": { ...catalogModel({ input: 0, output: 0, cache_read: 0, cache_write: 0 }), id: "mimo-v2.5-free" },
       "gpt-5": { ...catalogModel({ input: 1, output: 2 }), id: "gpt-5" },
       "claude-sonnet-4-5": { ...catalogModel({ input: 1, output: 2 }), id: "claude-sonnet-4-5" },
     },
@@ -87,6 +87,8 @@ const auth = LayerNode.make({
       remove: () => Effect.void,
       putCredential: () => Effect.die("unused credential write in provider pricing fixture"),
       describeCredential: () => Effect.die("unused credential read in provider pricing fixture"),
+      searchCredentialRefs: () => Effect.succeed({}),
+      credentialRefsForProviders: () => Effect.succeed({}),
       revokeCredential: () => Effect.die("unused credential revoke in provider pricing fixture"),
       authorizeCredentialUse: () => Effect.die("unused provider credential lease in free-model fixture"),
     }),
@@ -137,7 +139,7 @@ function malformedCost(cost: Partial<NonNullable<ModelsDev.Model["cost"]>>): Mod
 describe("isFreeModel pricing gate (AN-002)", () => {
   test("explicit zero pricing across every tier is free", () => {
     expect(Provider.isFreeModel(model({ input: 0, output: 0, cache_read: 0, cache_write: 0 }))).toBe(true)
-    expect(Provider.isFreeModel(model({ input: 0, output: 0 }))).toBe(true)
+    expect(Provider.isFreeModel(model({ input: 0, output: 0 }))).toBe(false)
   })
 
   test("absent pricing is never free", () => {
@@ -206,7 +208,7 @@ describe("opencode provider keyless free access", () => {
         provider: {
           opencode: {
             models: {
-              "injected-free": { name: "Injected Free", cost: { input: 0, output: 0 } },
+              "injected-free": { name: "Injected Free", cost: { input: 0, output: 0, cache_read: 0, cache_write: 0 } },
               "injected-beta-free": { name: "Injected Beta", status: "beta", cost: { input: 0, output: 0 } },
               "injected-alpha-free": { name: "Injected Alpha", status: "alpha", cost: { input: 0, output: 0 } },
               "injected-paid": { name: "Injected Paid", cost: { input: 1, output: 2 } },

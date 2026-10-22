@@ -19,6 +19,7 @@ the Core/Rust session owner supplies independently verifiable live Session and R
 task evidence.
 """
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -26,6 +27,7 @@ import platform
 import subprocess
 import re
 import sys
+import stat
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,10 +37,80 @@ MAX_BYTES = 1_048_576
 MAX_WORK = 4096
 MAX_OWNER_SNAPSHOT_BYTES = 1_048_576
 MAX_OWNER_SNAPSHOTS = 20
+MAX_OUTCOMES_BYTES = 1_048_576
+MAX_SESSION_ID_BYTES = 128
+MAX_CAPTURE_OUTPUT_BYTES = 64 * 1_048_576
+MAX_CAPTURE_FILE_BYTES = 256 * 1_048_576
 SCENARIOS = (1, 5, 10, 20)
 REQUIRED_LINUX_METRICS = ("pss_bytes", "rss_bytes", "cpu_ns", "thread_count", "fd_count")
 AGGREGATE_LINUX_METRICS = REQUIRED_LINUX_METRICS + ("private_bytes",)
 PROC_ROOT = Path("/proc")
+
+
+def append_capture_output(path, payload):
+    """Append bounded JSONL under the checkout using no-follow directory handles."""
+    root = Path(__file__).resolve().parents[2]
+    requested = Path(path)
+    if ".." in requested.parts:
+        raise ValueError("RC0 output path cannot contain parent traversal")
+    candidate = Path(os.path.abspath(requested if requested.is_absolute() else root / requested))
+    try:
+        relative = candidate.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("RC0 output must remain inside the repository") from exc
+    parts = relative.parts
+    if not parts or any(part in ("", ".", "..") for part in parts):
+        raise ValueError("RC0 output must name a repository-contained file")
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY") or os.open not in os.supports_dir_fd:
+        raise ValueError("safe descriptor-relative RC0 output is unavailable on this platform")
+    root_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    parent_fd = os.open(root, root_flags)
+    parent_device = os.fstat(parent_fd).st_dev
+    output_fd = -1
+    try:
+        for component in parts[:-1]:
+            child_fd = os.open(component, root_flags, dir_fd=parent_fd)
+            child_stat = os.fstat(child_fd)
+            if not stat.S_ISDIR(child_stat.st_mode) or child_stat.st_dev != parent_device:
+                os.close(child_fd)
+                raise ValueError("RC0 output parent is not a repository-local directory")
+            os.close(parent_fd)
+            parent_fd = child_fd
+        name = parts[-1]
+        flags = os.O_RDWR | os.O_APPEND | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+        try:
+            output_fd = os.open(name, flags, dir_fd=parent_fd)
+        except FileNotFoundError:
+            output_fd = os.open(name, flags | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=parent_fd)
+        info = os.fstat(output_fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or info.st_dev != parent_device or info.st_size + len(payload) > MAX_CAPTURE_FILE_BYTES):
+            raise ValueError("RC0 output is not a bounded private repository file")
+        try:
+            import fcntl
+        except ImportError as exc:
+            raise ValueError("safe locked RC0 output is unavailable on this platform") from exc
+        fcntl.flock(output_fd, fcntl.LOCK_EX)
+        after_lock = os.fstat(output_fd)
+        if (after_lock.st_dev, after_lock.st_ino) != (info.st_dev, info.st_ino):
+            raise ValueError("RC0 output identity changed while acquiring its append lock")
+        if after_lock.st_size:
+            if not hasattr(os, "pread") or os.pread(output_fd, 1, after_lock.st_size - 1) != b"\n":
+                raise ValueError("RC0 output has an incomplete trailing record; refusing to append")
+        if after_lock.st_size + len(payload) > MAX_CAPTURE_FILE_BYTES:
+            raise ValueError("RC0 output exceeds its repository artifact bound")
+        view = memoryview(payload)
+        while view:
+            written = os.write(output_fd, view)
+            if written <= 0:
+                raise OSError(errno.EIO, "short RC0 output append")
+            view = view[written:]
+        os.fsync(output_fd)
+    finally:
+        if output_fd >= 0:
+            os.close(output_fd)
+        if parent_fd >= 0:
+            os.close(parent_fd)
 
 # --- Provenance gate -----------------------------------------------------------------
 # A release-eligible RC0 baseline requires an attestation produced by a locally
@@ -364,9 +436,10 @@ def ancestors_match(expected_ancestors, budget):
     return True
 
 def sample_tree(root_pid, root_start):
-    if platform.system() != "Linux":
+    system = platform.system()
+    if system != "Linux":
         result = {"processes": [], "quality": "UNKNOWN", "truncated": True,
-                  "reason": "native Windows sampler is unavailable to this harness"}
+                  "reason": f"native {system or 'unknown-platform'} sampler is unavailable to this harness"}
         result["process_tree_totals"] = aggregate_process_tree(result)
         return result
     budget = Budget()
@@ -593,24 +666,69 @@ def identity_arg(value):
         session, encoded = value.split("=", 1)
         pid, start = encoded.split(":", 1)
         result = (session, int(pid), int(start))
-        if not session or result[1] <= 0 or result[2] <= 0:
+        if (not session or len(session.encode("utf-8")) > MAX_SESSION_ID_BYTES
+                or result[1] <= 0 or result[2] <= 0):
             raise ValueError
         return result
     except ValueError as error:
-        raise argparse.ArgumentTypeError("expected SESSION=PID:START_IDENTITY") from error
+        raise argparse.ArgumentTypeError(
+            f"expected SESSION=PID:START_IDENTITY with a Session ID no longer than {MAX_SESSION_ID_BYTES} UTF-8 bytes"
+        ) from error
+
+
+def _reject_duplicate_json_properties(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON property: {key}")
+        result[key] = value
+    return result
+
+
+def load_outcomes(path):
+    """Load a small bounded caller-input outcome map; it never establishes attestation."""
+    data = read_repository_input(path, MAX_OUTCOMES_BYTES, "outcomes")
+    if len(data) > MAX_OUTCOMES_BYTES:
+        raise ValueError("outcomes file exceeds the 1 MiB input bound")
+    try:
+        value = json.loads(data.decode("utf-8", errors="strict"),
+                           object_pairs_hook=_reject_duplicate_json_properties)
+    except RecursionError as error:
+        raise ValueError("outcomes JSON nesting exceeds parser bounds") from error
+    if not isinstance(value, dict):
+        raise ValueError("outcomes must contain a JSON object mapping Session IDs to outcomes")
+    if len(value) > 20:
+        raise ValueError("outcomes contain more than 20 Session IDs")
+    for session in value:
+        if (not isinstance(session, str) or not session
+                or len(session.encode("utf-8")) > MAX_SESSION_ID_BYTES):
+            raise ValueError("outcome Session ID is invalid or exceeds the 128-byte bound")
+    return value
 
 
 def _validate_owner_metric(item, label):
-    if not isinstance(item, dict) or set(item) != {"quality", "value"}:
+    if not isinstance(item, dict) or item.get("quality") not in ("UNKNOWN", "MEASURED"):
         raise ValueError(f"{label} metric shape is invalid")
-    quality, value = item["quality"], item["value"]
+    quality, value = item["quality"], item.get("value")
     if quality == "UNKNOWN":
-        if value is not None:
-            raise ValueError(f"{label} UNKNOWN metric must not carry a value")
+        # Rust's canonical projection carries a bounded enum reason for UNKNOWN
+        # metrics and omits value. Never coerce UNKNOWN to zero.
+        if (set(item) != {"quality", "reason"} or not isinstance(item.get("reason"), str)
+                or item["reason"] not in {
+                    "UNSUPPORTED", "PERMISSION_DENIED", "EXITED", "IDENTITY_CHANGED",
+                    "UNAVAILABLE", "MALFORMED", "BUDGET_EXCEEDED", "ATTRIBUTION_CONFLICT",
+                }):
+            raise ValueError(f"{label} UNKNOWN metric must carry a canonical reason and no value")
         return
-    if (quality != "MEASURED" or not isinstance(value, str) or not value.isdigit()
-            or (len(value) > 1 and value.startswith("0"))):
+    if set(item) != {"quality", "value"} or not is_canonical_decimal(value):
         raise ValueError(f"{label} MEASURED metric must carry a canonical nonnegative decimal")
+
+
+def is_canonical_decimal(value, *, positive=False):
+    """Accept only ASCII canonical base-10 strings; Python's isdigit accepts Unicode."""
+    if not isinstance(value, str) or re.fullmatch(r"(?:0|[1-9][0-9]*)", value) is None:
+        return False
+    return not positive or int(value) > 0
 
 
 def load_owner_snapshot(path):
@@ -621,8 +739,7 @@ def load_owner_snapshot(path):
     attest the live Session process and P2 must supply independent final-Run
     verifier evidence before a release baseline can be admitted.
     """
-    with open(path, "rb") as stream:
-        data = stream.read(MAX_OWNER_SNAPSHOT_BYTES + 1)
+    data = read_repository_input(path, MAX_OWNER_SNAPSHOT_BYTES, "owner snapshot")
     if len(data) > MAX_OWNER_SNAPSHOT_BYTES:
         raise ValueError("owner snapshot exceeds the 1 MiB ingestion bound")
     def unique_object(pairs):
@@ -643,8 +760,10 @@ def load_owner_snapshot(path):
         )
     except RecursionError as error:
         raise ValueError("owner snapshot JSON nesting exceeds parser bounds") from error
-    if not isinstance(value, dict) or value.get("schemaVersion") != 1:
-        raise ValueError("owner snapshot schemaVersion must be 1")
+    if (not isinstance(value, dict) or type(value.get("schemaVersion")) is not int
+            or value.get("schemaVersion") not in (1, 2, 3)):
+        raise ValueError("owner snapshot schemaVersion must be 1, 2, or 3")
+    schema_version = value["schemaVersion"]
     if value.get("producer") != "horizoncode.worker-owner.resource-sampler":
         raise ValueError("owner snapshot producer is not the P8 sampler schema")
     owner = value.get("owner")
@@ -652,25 +771,39 @@ def load_owner_snapshot(path):
     workers = value.get("workers")
     if not isinstance(owner, dict) or not isinstance(log, dict) or not isinstance(workers, list):
         raise ValueError("owner snapshot is missing owner, ownerLog, or workers")
-    for key in ("principalRef", "workspaceBinding", "sessionId", "runId"):
+    owner_keys = ("principalRef", "workspaceBinding", "sessionId", "runId")
+    if schema_version == 2:
+        owner_keys += ("taskId", "attemptId")
+    if schema_version == 3:
+        owner_keys += ("taskId", "attemptId")
+    for key in owner_keys:
         if not isinstance(owner.get(key), str) or not owner[key] or len(owner[key]) > 256:
             raise ValueError(f"owner snapshot owner.{key} is invalid")
+    if schema_version == 1:
+        for key in ("taskId", "attemptId"):
+            if key in owner and (not isinstance(owner[key], str) or not owner[key] or len(owner[key]) > 256):
+                raise ValueError(f"owner snapshot owner.{key} is invalid")
     for key in ("ownerEpoch",):
-        if not isinstance(owner.get(key), str) or not owner[key].isdigit() or int(owner[key]) <= 0:
+        if not is_canonical_decimal(owner.get(key), positive=True):
             raise ValueError(f"owner snapshot owner.{key} must be a positive decimal string")
     if (not isinstance(log.get("ownerId"), str) or not log["ownerId"]
-            or not isinstance(log.get("sequence"), str) or not log["sequence"].isdigit()
+            or not is_canonical_decimal(log.get("sequence"))
             or not isinstance(log.get("eventDigest"), str)
             or not re.fullmatch(r"blake3:[0-9a-f]{64}", log["eventDigest"])
-            or not isinstance(log.get("workerPoolRevision"), str)
-            or not log["workerPoolRevision"].isdigit()):
+            or not is_canonical_decimal(log.get("workerPoolRevision"), positive=True)):
         raise ValueError("owner snapshot OwnerLog watermark is invalid")
     sample_sequence = value.get("sampleSequence")
-    if not isinstance(sample_sequence, str) or not sample_sequence.isdigit() or int(sample_sequence) <= 0:
+    if not is_canonical_decimal(sample_sequence, positive=True):
         raise ValueError("owner snapshot sample sequence is invalid")
+    if not is_canonical_decimal(value.get("sampledAtMs")):
+        raise ValueError("owner snapshot sampledAtMs is invalid")
     if len(workers) > MAX_PROCESSES:
         raise ValueError("owner snapshot worker count exceeds the process bound")
     process_identity_records = []
+    seen_worker_ids = set()
+    seen_attempt_ids = set()
+    seen_worker_processes = set()
+    worker_records = []
     total_processes = 0
     for worker in workers:
         if not isinstance(worker, dict) or worker.get("reservationState") not in (
@@ -678,11 +811,40 @@ def load_owner_snapshot(path):
         ):
             raise ValueError("owner snapshot worker is invalid or not capacity-holding")
         if (not isinstance(worker.get("workerExecutionId"), str)
+                or not worker["workerExecutionId"] or len(worker["workerExecutionId"]) > 256
                 or not isinstance(worker.get("taskId"), str)
+                or not worker["taskId"] or len(worker["taskId"]) > 256
                 or not isinstance(worker.get("attemptId"), str)
+                or not worker["attemptId"] or len(worker["attemptId"]) > 256
                 or worker.get("quality") not in ("MEASURED", "UNKNOWN")
                 or not isinstance(worker.get("processes"), list)):
             raise ValueError("owner snapshot worker fields are invalid")
+        worker_id = worker["workerExecutionId"]
+        attempt_identity = (worker["taskId"], worker["attemptId"])
+        if worker_id in seen_worker_ids:
+            raise ValueError("owner snapshot contains a duplicate workerExecutionId")
+        if attempt_identity in seen_attempt_ids:
+            raise ValueError("owner snapshot contains a duplicate Task/Attempt identity")
+        seen_worker_ids.add(worker_id)
+        seen_attempt_ids.add(attempt_identity)
+        if schema_version == 3 and (
+                not isinstance(worker.get("sourceRevision"), str)
+                or not re.fullmatch(r"blake3:[0-9a-f]{64}", worker["sourceRevision"])):
+            raise ValueError("owner snapshot worker source revision is invalid")
+        metrics = worker.get("metrics")
+        if not isinstance(metrics, dict):
+            raise ValueError("owner snapshot worker metrics are missing")
+        for metric in ("pssBytes", "rssBytes", "cpuNs", "threadCount", "fdCount", "privateBytes"):
+            _validate_owner_metric(metrics.get(metric), f"worker.metrics.{metric}")
+        worker_records.append({
+            "worker_execution_id": worker["workerExecutionId"],
+            "task_id": worker["taskId"],
+            "attempt_id": worker["attemptId"],
+            "source_revision": worker.get("sourceRevision"),
+            "reservation_state": worker["reservationState"],
+            "quality": worker["quality"],
+            "metrics": metrics,
+        })
         if len(worker["processes"]) > MAX_PROCESSES:
             raise ValueError("owner snapshot process count exceeds the bound")
         for process in worker["processes"]:
@@ -692,9 +854,13 @@ def load_owner_snapshot(path):
             if not isinstance(process, dict):
                 raise ValueError("owner snapshot process entry is invalid")
             pid, start = process.get("pid"), process.get("startIdentity")
-            if (not isinstance(pid, int) or pid <= 0 or not isinstance(start, str)
-                    or not start.isdigit() or int(start) <= 0):
+            if (type(pid) is not int or pid <= 0
+                    or not is_canonical_decimal(start, positive=True)):
                 raise ValueError("owner snapshot process identity is invalid")
+            process_identity = (pid, start)
+            if process_identity in seen_worker_processes:
+                raise ValueError("owner snapshot contains overlapping worker process identities")
+            seen_worker_processes.add(process_identity)
             process_identity_records.append({"pid": pid, "start_identity": start})
     if not isinstance(value.get("aggregate"), dict):
         raise ValueError("owner snapshot aggregate metrics are missing")
@@ -713,10 +879,10 @@ def load_owner_snapshot(path):
         if not isinstance(process, dict) or not isinstance(metrics, dict):
             raise ValueError("measured Core process owner must include identity and metrics")
         pid, start = process.get("pid"), process.get("startIdentity")
-        if (not isinstance(pid, int) or pid <= 0 or not isinstance(start, str)
-                or not start.isdigit() or int(start) <= 0
+        if (type(pid) is not int or pid <= 0
+                or not is_canonical_decimal(start, positive=True)
                 or not isinstance(process.get("ownerEpoch"), str)
-                or not process["ownerEpoch"].isdigit()
+                or not is_canonical_decimal(process["ownerEpoch"], positive=True)
                 or int(process["ownerEpoch"]) != int(owner["ownerEpoch"])
                 or not isinstance(process.get("processIncarnation"), str)
                 or not process["processIncarnation"] or len(process["processIncarnation"]) > 128
@@ -740,41 +906,189 @@ def load_owner_snapshot(path):
     for metric in ("pssBytes", "rssBytes", "cpuNs", "threadCount", "fdCount", "privateBytes"):
         item = value["aggregate"].get(metric)
         _validate_owner_metric(item, f"owner snapshot aggregate.{metric}")
+    resource_limits = value.get("resourceLimits")
+    if schema_version == 2 and resource_limits is not None:
+        required_limits = {"cpuTime", "memory", "processCount", "fileDescriptors"}
+        if not isinstance(resource_limits, list) or len(resource_limits) != len(required_limits):
+            raise ValueError("owner snapshot resourceLimits must report all four dimensions")
+        by_dimension = {}
+        for row in resource_limits:
+            if not isinstance(row, dict):
+                raise ValueError("owner snapshot resource limit row is invalid")
+            dimension = row.get("dimension")
+            status = row.get("status")
+            enforced = row.get("enforced")
+            if dimension not in required_limits or dimension in by_dimension:
+                raise ValueError("owner snapshot resource limit dimension is missing or duplicated")
+            if type(enforced) is not bool or status not in ("ENFORCED", "MONITORING_ONLY", "UNSUPPORTED"):
+                raise ValueError("owner snapshot resource limit status is invalid")
+            if status == "ENFORCED":
+                if set(row) != {"dimension", "status", "enforced", "limit", "reason"}:
+                    raise ValueError("enforced resource limit fields are not canonical")
+                if enforced is not True or not is_canonical_decimal(row.get("limit"), positive=True) or row.get("reason") is not None:
+                    raise ValueError("enforced resource limit lacks a positive verified limit")
+            elif status == "MONITORING_ONLY":
+                if set(row) != {"dimension", "status", "enforced", "observed", "reason"}:
+                    raise ValueError("monitoring-only resource limit fields are not canonical")
+                if enforced is not False or row.get("limit") is not None or row.get("reason") is not None:
+                    raise ValueError("monitoring-only resource limit claims enforcement")
+                observed = row.get("observed")
+                if observed is not None and not is_canonical_decimal(observed):
+                    raise ValueError("monitoring-only observation must be a canonical decimal or null")
+            else:
+                if set(row) != {"dimension", "status", "enforced", "reason"}:
+                    raise ValueError("unsupported resource limit fields are not canonical")
+                if enforced is not False or not isinstance(row.get("reason"), str) or not row["reason"]:
+                    raise ValueError("unsupported resource limit must include a reason and no limit")
+            by_dimension[dimension] = row
+        if set(by_dimension) != required_limits:
+            raise ValueError("owner snapshot resource limit dimensions are incomplete")
+    elif resource_limits is not None and not isinstance(resource_limits, list):
+        raise ValueError("legacy owner snapshot resourceLimits must be a list when present")
     attestation = value.get("productAttestation")
+    required_attestation = [
+        "hostRunReceiptRef", "independentVerifierEvidenceRef", "sourceCommit",
+    ]
     if (not isinstance(attestation, dict)
+            or set(attestation) != {
+                "status", "hostRunReceiptRef", "independentVerifierEvidenceRef",
+                "sourceCommit", "required",
+            }
             or attestation.get("status") != "NOT_ATTESTED"
             or attestation.get("hostRunReceiptRef") is not None
-            or attestation.get("independentVerifierEvidenceRef") is not None):
+            or attestation.get("independentVerifierEvidenceRef") is not None
+            or attestation.get("sourceCommit") is not None
+            or attestation.get("required") != required_attestation):
         raise ValueError("owner snapshot must accurately state NOT_ATTESTED")
     return {
         "session_id": owner["sessionId"],
         "run_id": owner["runId"],
+        "task_id": owner.get("taskId"),
+        "attempt_id": owner.get("attemptId"),
         "owner_log_id": log["ownerId"],
         "owner_log_sequence": log["sequence"],
         "owner_log_event_digest": log["eventDigest"],
         "sample_sequence": sample_sequence,
         "snapshot_digest": "sha256:" + hashlib.sha256(data).hexdigest(),
         "worker_count": len(workers),
+        "workers": worker_records,
         "process_identities": process_identity_records,
         "aggregate": value["aggregate"],
+        "resource_limits": resource_limits,
+        # Like every field in a JSON snapshot file, these rows are caller input
+        # until the HostRun/OwnerLog attestation chain is independently checked.
+        "resource_limits_provenance": (
+            "UNVERIFIED_CALLER_SUPPLIED" if resource_limits is not None
+            else "UNAVAILABLE_LEGACY_SNAPSHOT"
+        ),
         "product_attestation": "NOT_ATTESTED",
         "session_process_owner": session_process_identity,
         "session_process_metrics": session_process_metrics,
     }
 
 
+def read_repository_input(path, limit, label):
+    """Read one bounded regular input through repository-relative no-follow handles.
+
+    RC0 inputs are local fixtures/evidence envelopes. A caller-supplied path may
+    never make this harness read outside the checkout or follow a symlink out of
+    it. This remains an input-integrity boundary only; the bytes do not attest
+    Session ownership, Run completion, or release eligibility.
+    """
+    root = Path(__file__).resolve().parents[2]
+    requested = Path(path)
+    if ".." in requested.parts:
+        raise ValueError(f"{label} path cannot contain parent traversal")
+    candidate = Path(os.path.abspath(requested if requested.is_absolute() else root / requested))
+    try:
+        relative = candidate.relative_to(root)
+    except ValueError as error:
+        raise ValueError(f"{label} input must remain inside the repository") from error
+    parts = relative.parts
+    if not parts or any(part in ("", ".", "..") for part in parts):
+        raise ValueError(f"{label} path must name a repository-contained file")
+    if (not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY")
+            or os.open not in os.supports_dir_fd):
+        raise ValueError(f"safe repository-local {label} reads are unavailable on this platform")
+
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    try:
+        parent_fd = os.open(root, flags)
+    except OSError as error:
+        raise ValueError(f"repository root cannot be opened safely for {label}") from error
+    root_device = os.fstat(parent_fd).st_dev
+    file_fd = -1
+    try:
+        for component in parts[:-1]:
+            try:
+                child_fd = os.open(component, flags, dir_fd=parent_fd)
+            except OSError as error:
+                raise ValueError(f"{label} directory traversal failed safely") from error
+            child_stat = os.fstat(child_fd)
+            if not stat.S_ISDIR(child_stat.st_mode) or child_stat.st_dev != root_device:
+                os.close(child_fd)
+                raise ValueError(f"{label} directory is not repository-local")
+            os.close(parent_fd)
+            parent_fd = child_fd
+
+        # O_NONBLOCK prevents a malicious repository-local FIFO from hanging
+        # the preflight process before fstat can reject its file type.
+        file_flags = (os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+                      | getattr(os, "O_NONBLOCK", 0))
+        try:
+            file_fd = os.open(parts[-1], file_flags, dir_fd=parent_fd)
+        except OSError as error:
+            raise ValueError(f"{label} file cannot be opened without following links") from error
+        before = os.fstat(file_fd)
+        if before.st_size > limit:
+            raise ValueError(f"{label} file exceeds the 1 MiB input bound")
+        if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                or before.st_dev != root_device):
+            raise ValueError(f"{label} is not a bounded repository-local regular file")
+        chunks = []
+        remaining = limit + 1
+        while remaining:
+            chunk = os.read(file_fd, min(65_536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+        after = os.fstat(file_fd)
+        if ((before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+                or after.st_size != len(data) or len(data) > limit):
+            raise ValueError(f"{label} changed or exceeded its byte limit while being read")
+        return data
+    finally:
+        if file_fd >= 0:
+            os.close(file_fd)
+        os.close(parent_fd)
+
+
 def aggregate_owner_samples(samples):
-    """Sum worker trees and count each authenticated shared Core process once."""
+    """Sum worker trees and count each reported shared Core process once.
+
+    The Rust owner-snapshot `aggregate` includes both worker trees and the Core
+    process. Summing that aggregate per Session would count a shared Core
+    process repeatedly, then adding its deduplicated sample below would count
+    it once more. Build the worker total exclusively from the per-worker rows;
+    the Core total is built from its separately reported identity. Metric
+    quality does not establish product ownership or attestation because these
+    snapshots are caller-supplied JSON.
+    """
     totals = {}
     for name in ("pssBytes", "rssBytes", "cpuNs", "threadCount", "fdCount", "privateBytes"):
         values = []
         complete = bool(samples)
         for sample in samples:
-            metric = sample["aggregate"].get(name, {})
-            if metric.get("quality") != "MEASURED" or not str(metric.get("value", "")).isdigit():
-                complete = False
+            for worker in sample.get("workers", ()):
+                metric = worker.get("metrics", {}).get(name, {})
+                if metric.get("quality") != "MEASURED" or not is_canonical_decimal(metric.get("value")):
+                    complete = False
+                    break
+                values.append(int(metric["value"]))
+            if not complete:
                 break
-            values.append(int(metric["value"]))
         totals[name] = ({"quality": "MEASURED", "value": str(sum(values))}
                         if complete else {"quality": "UNKNOWN", "value": None})
     identities = set()
@@ -795,21 +1109,28 @@ def aggregate_owner_samples(samples):
             continue
         key = (process["pid"], process["start_identity"])
         prior = core_by_identity.get(key)
+        sample_sequence = int(sample.get("sample_sequence", 0))
         if prior is None:
-            core_by_identity[key] = (process, metrics)
+            core_by_identity[key] = (process, metrics, sample_sequence)
         else:
-            # The same authenticated Core PID/start generation is shared by
-            # Session snapshots. Keep one sample; never add it once per Session.
+            # The same reported Core PID/start generation is shared by
+            # Session snapshots. Keep its latest sampler sequence;
+            # never add it once per Session or let an older good sample hide a
+            # newer UNKNOWN sample.
             if prior[0] != process:
+                core_conflict = True
+            elif sample_sequence > prior[2]:
+                core_by_identity[key] = (process, metrics, sample_sequence)
+            elif sample_sequence == prior[2] and metrics != prior[1]:
                 core_conflict = True
         if key in identities:
             core_overlap = True
     core_totals = {}
     for name in ("pssBytes", "rssBytes", "cpuNs", "threadCount", "fdCount", "privateBytes"):
         values = []
-        for _process, metrics in core_by_identity.values():
+        for _process, metrics, _sequence in core_by_identity.values():
             metric = (metrics or {}).get(name, {})
-            if metric.get("quality") != "MEASURED" or not str(metric.get("value", "")).isdigit():
+            if metric.get("quality") != "MEASURED" or not is_canonical_decimal(metric.get("value")):
                 values = []
                 break
             values.append(int(metric["value"]))
@@ -835,6 +1156,12 @@ def aggregate_owner_samples(samples):
         "quality": "UNKNOWN" if overlap or core_overlap or core_conflict or not samples or any(
             metric["quality"] != "MEASURED" for metric in combined.values()
         ) else "MEASURED",
+        # Metric quality describes bounded raw observations only. This aggregate
+        # is never product attribution or acceptance evidence without a trusted
+        # HostRun and independent-verifier attestation.
+        "source_provenance": "UNVERIFIED_CALLER_SUPPLIED",
+        "attestation": "NOT_ATTESTED",
+        "product_attribution": "UNAVAILABLE",
         "overlapping_process_identity": overlap,
         "core_process_overlap": core_overlap,
         "core_process_identity_conflict": core_conflict,
@@ -887,6 +1214,16 @@ def preflight(selected, outcomes, args, commit, clean_tree, machine, min_session
     attestation covers these sessions at this commit."""
     missing = []
     sessions = []
+    linux_proc_supported = platform.system() == "Linux"
+    if not linux_proc_supported:
+        missing.append(
+            "UNSUPPORTED_PLATFORM: RC0 preflight liveness checks require Linux /proc; "
+            "native Windows/macOS capture is unavailable (WSL is Linux evidence, not native Windows evidence)"
+        )
+    if not isinstance(min_sessions, int) or isinstance(min_sessions, bool) or not 1 <= min_sessions <= 20:
+        missing.append("--min-sessions must be between 1 and 20")
+    if len(selected) > 20:
+        missing.append("at most 20 Session identities are supported for the 1/5/10/20 matrix")
     if len(selected) < min_sessions:
         missing.append(
             f"caller-supplied live session identities: {len(selected)} supplied, "
@@ -898,18 +1235,21 @@ def preflight(selected, outcomes, args, commit, clean_tree, machine, min_session
     for session, (pid, start) in sorted(selected.items()):
         entry = {"session_id": session, "pid": pid, "identity_alive": False,
                  "identity_matches": False, "task_outcome": None}
-        try:
-            observed_start, _parent = proc_identity(pid, Budget())
-            entry["identity_alive"] = True
-            entry["identity_matches"] = int(observed_start) == int(start)
-        except (OSError, ValueError):
-            entry["identity_alive"] = False
-        if not entry["identity_alive"]:
-            missing.append(f"session {session!r}: owner process {pid} is not live")
-        elif not entry["identity_matches"]:
-            missing.append(
-                f"session {session!r}: start identity mismatch for pid {pid} (pid reuse or wrong identity)"
-            )
+        if linux_proc_supported:
+            try:
+                observed_start, _parent = proc_identity(pid, Budget())
+                entry["identity_alive"] = True
+                entry["identity_matches"] = int(observed_start) == int(start)
+            except (OSError, ValueError):
+                entry["identity_alive"] = False
+            if not entry["identity_alive"]:
+                missing.append(f"session {session!r}: owner process {pid} is not live")
+            elif not entry["identity_matches"]:
+                missing.append(
+                    f"session {session!r}: start identity mismatch for pid {pid} (pid reuse or wrong identity)"
+                )
+        else:
+            entry["identity_status"] = "UNSUPPORTED_PLATFORM"
         outcome = outcomes.get(session)
         if not isinstance(outcome, dict) or outcome.get("expected") is None:
             missing.append(f"session {session!r}: matching task outcome is missing")
@@ -939,18 +1279,21 @@ def preflight(selected, outcomes, args, commit, clean_tree, machine, min_session
                 "identity_alive": False,
                 "identity_matches": False,
             }
-            try:
-                observed_start, _parent = proc_identity(pid, Budget())
-                local_inference_owner["identity_alive"] = True
-                local_inference_owner["identity_matches"] = int(observed_start) == int(start)
-            except (OSError, ValueError):
-                pass
-            if not local_inference_owner["identity_alive"]:
-                missing.append(f"local inference owner process {pid} is not live")
-            elif not local_inference_owner["identity_matches"]:
-                missing.append(
-                    f"local inference start identity mismatch for pid {pid} (pid reuse or wrong identity)"
-                )
+            if linux_proc_supported:
+                try:
+                    observed_start, _parent = proc_identity(pid, Budget())
+                    local_inference_owner["identity_alive"] = True
+                    local_inference_owner["identity_matches"] = int(observed_start) == int(start)
+                except (OSError, ValueError):
+                    pass
+                if not local_inference_owner["identity_alive"]:
+                    missing.append(f"local inference owner process {pid} is not live")
+                elif not local_inference_owner["identity_matches"]:
+                    missing.append(
+                        f"local inference start identity mismatch for pid {pid} (pid reuse or wrong identity)"
+                    )
+            else:
+                local_inference_owner["identity_status"] = "UNSUPPORTED_PLATFORM"
             if (pid, str(start)) in set(identities):
                 missing.append("local inference owner identity duplicates a Session owner identity")
     elif args.local_inference_identity is not None:
@@ -1088,13 +1431,16 @@ def main():
         if session in grouped:
             parser.error(f"duplicate caller-supplied identity for session {session!r}")
         grouped[session] = (pid, start)
-    if args.preflight and args.min_sessions < 1:
-        parser.error("--min-sessions must be at least 1")
+    if len(args.identity) > 20:
+        parser.error("at most 20 --identity values are supported for the 1/5/10/20 matrix")
+    if args.preflight and not 1 <= args.min_sessions <= 20:
+        parser.error("--min-sessions must be between 1 and 20")
     outcomes = {}
     if args.outcomes:
-        outcomes = json.loads(args.outcomes.read_text(encoding="utf-8"))
-        if not isinstance(outcomes, dict):
-            parser.error("--outcomes must contain a JSON object mapping session IDs to outcomes")
+        try:
+            outcomes = load_outcomes(args.outcomes)
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+            parser.error(f"invalid --outcomes: {error}")
     if len(args.owner_snapshot) > MAX_OWNER_SNAPSHOTS:
         parser.error(f"at most {MAX_OWNER_SNAPSHOTS} owner snapshots may be ingested")
     owner_samples = []
@@ -1115,6 +1461,11 @@ def main():
         record["owner_samples_ingested"] = len(owner_samples)
         record["owner_sample_digests"] = [sample["snapshot_digest"] for sample in owner_samples]
         record["owner_sample_attestation"] = "NOT_ATTESTED"
+        record["owner_resource_limits"] = [{
+            "session_id": sample["session_id"],
+            "limits": sample.get("resource_limits"),
+            "provenance": sample.get("resource_limits_provenance", "UNAVAILABLE"),
+        } for sample in owner_samples]
         if owner_samples:
             record["blocked_reason"] = (
                 ATTESTATION_BLOCKED_REASON
@@ -1133,8 +1484,9 @@ def main():
         }
 
     records = []
+    ordered_sessions = sorted(grouped.items())
     for session_count in SCENARIOS:
-        selected = list(grouped.items())[:session_count]
+        selected = ordered_sessions[:session_count]
         selected_sessions = {session for session, _identity in selected}
         selected_owner_samples = [owner_samples_by_session[session]
                                   for session in sorted(selected_sessions)
@@ -1167,6 +1519,11 @@ def main():
             "task_outcomes_passed": bool(selected) and all(
                 isinstance(outcomes.get(session), dict) and outcomes[session].get("expected") == outcomes[session].get("actual")
                 and outcomes[session].get("status") == "passed" for session, _ in selected),
+            "owner_resource_limits": [{
+                "session_id": sample["session_id"],
+                "limits": sample.get("resource_limits"),
+                "provenance": sample.get("resource_limits_provenance", "UNAVAILABLE"),
+            } for sample in selected_owner_samples],
             "baseline_eligible": eligible, "status": "NOT_BASELINE",
             "provisional_raw_sample": True,
             "input_provenance": "UNVERIFIED_CALLER_SUPPLIED",
@@ -1176,19 +1533,28 @@ def main():
             "owner_sample_digests": [sample["snapshot_digest"] for sample in owner_samples],
             "owner_sample_attestation": "NOT_ATTESTED",
             "owner_worker_samples": [{key: sample[key] for key in (
-                "session_id", "run_id", "owner_log_id", "owner_log_sequence",
+                "session_id", "run_id", "task_id", "attempt_id", "owner_log_id", "owner_log_sequence",
                 "owner_log_event_digest", "snapshot_digest", "worker_count",
-                "product_attestation", "session_process_owner")}
+                "workers", "product_attestation", "session_process_owner")}
                 for sample in selected_owner_samples],
             "owner_worker_aggregate": aggregate_owner_samples(selected_owner_samples),
             "sessions": session_results})
-    out = open(args.output, "a", encoding="utf-8") if args.output else sys.stdout
-    try:
-        for record in records:
-            out.write(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
-    finally:
-        if args.output:
-            out.close()
+    serialized_records = [json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
+                          for record in records]
+    output_bytes = sum(len(record.encode("utf-8")) for record in serialized_records)
+    if output_bytes > MAX_CAPTURE_OUTPUT_BYTES:
+        parser.error(
+            f"capture output exceeds the {MAX_CAPTURE_OUTPUT_BYTES // (1024 * 1024)} MiB per-invocation bound; no records were written"
+        )
+    payload = "".join(serialized_records).encode("utf-8")
+    if args.output:
+        try:
+            append_capture_output(args.output, payload)
+        except (OSError, ValueError) as error:
+            parser.error(f"unable to append RC0 output safely: {error}")
+    else:
+        sys.stdout.buffer.write(payload)
+        sys.stdout.buffer.flush()
     return 0
 
 if __name__ == "__main__":

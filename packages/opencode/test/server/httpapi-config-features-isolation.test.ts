@@ -7,9 +7,11 @@ import { Authorization } from "../../src/server/routes/instance/httpapi/middlewa
 import { InstanceContextMiddleware } from "../../src/server/routes/instance/httpapi/middleware/instance-context"
 import { WorkspaceRoutingMiddleware } from "../../src/server/routes/instance/httpapi/middleware/workspace-routing"
 import { schemaErrorLayer } from "../../src/server/routes/instance/httpapi/middleware/schema-error"
+import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 
 test("config feature reads do not require or resolve Provider.Service", async () => {
   const features = [{ featureId: "compaction.auto" }]
+  const resourcePolicy = ConfigV1.ConfigResourcePolicyV1.project({})
   let reads = 0
   const config = {
     getFeatures: () =>
@@ -17,6 +19,7 @@ test("config feature reads do not require or resolve Provider.Service", async ()
         reads++
         return features as never
       }),
+    getResourcePolicy: () => Effect.succeed(resourcePolicy),
   }
   const passthrough = ((effect: unknown) => effect) as never
   const dependencies = Layer.mergeAll(
@@ -35,11 +38,15 @@ test("config feature reads do not require or resolve Provider.Service", async ()
           handlers: Map<string, { handler: (input: unknown) => Effect.Effect<unknown> }>
         }
         const handler = built.handlers.get("features")
+        const resourceHandler = built.handlers.get("resourcePolicy")
         expect(handler).toBeDefined()
-        return yield* handler!.handler({})
+        expect(resourceHandler).toBeDefined()
+        const response = yield* handler!.handler({})
+        const resourceResponse = yield* resourceHandler!.handler({})
+        return { response, resourceResponse }
       }),
     ),
   )
-  expect(result).toBe(features)
+  expect(result).toEqual({ response: features, resourceResponse: resourcePolicy })
   expect(reads).toBe(1)
 })

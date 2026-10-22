@@ -15,32 +15,48 @@
     "status"
   ],
   "properties": {
-    "schemaVersion": { "const": 1 },
+    "schemaVersion": {
+      "const": 1
+    },
     "hostProcessRef": {
       "$ref": "execution-launch-profile-v1.schema.json#/$defs/HostProcessRefV1"
     },
     "requestSequence": {
       "allOf": [
-        { "$ref": "execution-launch-profile-v1.schema.json#/$defs/DecimalU64" },
-        { "not": { "const": "0" } }
+        {
+          "$ref": "execution-launch-profile-v1.schema.json#/$defs/DecimalU64"
+        },
+        {
+          "not": {
+            "const": "0"
+          }
+        }
       ],
       "description": "Positive per-process Core-to-HostKernel sequence shared by protocol_op and protocol_reply."
     },
     "processIOSequence": {
       "allOf": [
-        { "$ref": "execution-launch-profile-v1.schema.json#/$defs/DecimalU64" },
-        { "not": { "const": "0" } }
+        {
+          "$ref": "execution-launch-profile-v1.schema.json#/$defs/DecimalU64"
+        },
+        {
+          "not": {
+            "const": "0"
+          }
+        }
       ],
       "description": "Positive HostKernel-to-process stdin-frame sequence, distinct from requestSequence and inbound eventSequence."
     },
     "operationDigest": {
       "$ref": "execution-launch-profile-v1.schema.json#/$defs/Digest",
-      "description": "BLAKE3 over canonical MessagePack [ExecutionProtocolOperationV1, protocol, requestSequence, operation], where protocol is lsp or dap and operation is the strict typed operation value."
+      "description": "BLAKE3 over canonical MessagePack [ExecutionProtocolOperationV1, protocol, requestSequence, operation], where protocol is lsp or dap and operation is a strict typed LSP/DAP operation or method-scoped LSP reply subject. For an LSP reply, operation is the nested LanguageProtocolReplyV1 value; its retained server-request event correlation is checked internally and excluded from this digest."
     },
     "dispatchReceiptDigest": {
       "$ref": "execution-launch-profile-v1.schema.json#/$defs/Digest",
       "description": "BLAKE3 over canonical MessagePack [ExecutionProtocolDispatchReceiptV1.dispatch, hostProcessRef, effectID, challengeID, capabilityID, capabilityLeaseDigest, requestSequence, processIOSequence, operationDigest, acceptedFrameBytes]. HostProcessRef carries owner/profile/executable pins."
     },
-    "status": { "const": "DISPATCHED" }
+    "status": {
+      "const": "DISPATCHED"
+    }
   }
 }

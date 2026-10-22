@@ -42,7 +42,6 @@ import { webSearchProviderLabel } from "../../util/tool-display"
 import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import { useSDK } from "../../context/sdk"
 import { useEditorContext } from "../../context/editor"
-import { openEditor } from "../../editor"
 import { useDialog } from "../../ui/dialog"
 import { DialogAlert } from "../../ui/dialog-alert"
 import { TodoItem } from "../../component/todo-item"
@@ -52,7 +51,15 @@ import { DialogConfirm } from "../../ui/dialog-confirm"
 import { DialogTimeline } from "./dialog-timeline"
 import { DialogForkFromTimeline } from "./dialog-fork-from-timeline"
 import { DialogSessionRename } from "../../component/dialog-session-rename"
+import { DialogSubagents } from "../../component/dialog-subagents"
+import { DialogCheckpoint } from "../../component/dialog-checkpoint"
+import { DialogGoalReviewInbox } from "../../component/dialog-goal-review-inbox"
+import { DialogGoalProposal } from "../../component/dialog-goal-proposal"
+import { DialogGoalRunPlan } from "../../component/dialog-goal-run-plan"
 import { Sidebar } from "./sidebar"
+import { DialogEditorExplorer, EditorExplorerPane } from "../../component/dialog-editor-explorer"
+import { DialogPermissions } from "../../component/dialog-permissions"
+import { DialogSessionSettings } from "./dialog-settings"
 import { SubagentFooter } from "./subagent-footer.tsx"
 import { filetype } from "../../util/filetype"
 import parsers from "../../parsers-config"
@@ -76,6 +83,7 @@ import { getScrollAcceleration } from "../../util/scroll"
 import {
   boundToolOutput,
   collapseToolOutput,
+  redactToolText,
   sanitizeToolDisplayValue,
   toolArgumentPreview,
 } from "../../util/collapse-tool-output"
@@ -137,7 +145,6 @@ const sessionBindingCommands = [
   "session.unshare",
   "session.undo",
   "session.redo",
-  "session.sidebar.toggle",
   "session.toggle.conceal",
   "session.toggle.timestamps",
   "session.toggle.thinking",
@@ -297,7 +304,7 @@ export function Session() {
   })
   const questions = createMemo(() => {
     if (session()?.parentID) return []
-    return children().flatMap((x) => data.session.question.list(x.id) ?? [])
+    return children().flatMap((x) => data.session.question.prompts(x.id))
   })
   const visible = createMemo(() => !session()?.parentID && permissions().length === 0 && questions().length === 0)
   const disabled = createMemo(() => permissions().length > 0 || questions().length > 0)
@@ -328,8 +335,12 @@ export function Session() {
   })
 
   const dimensions = useTerminalDimensions()
-  const [sidebar, setSidebar] = kv.signal<"auto" | "hide">("sidebar", "auto")
+  // Keep the session focused on the conversation by default. Workspace browsing
+  // is an explicit /editor action, not an adaptive startup sidebar.
+  const [, setSidebar] = kv.signal<"auto" | "hide">("sidebar", "hide")
   const [sidebarOpen, setSidebarOpen] = createSignal(false)
+  const [editorSideOpen, setEditorSideOpen] = createSignal(false)
+  createEffect(on(() => route.sessionID, () => setEditorSideOpen(false)))
   const [conceal, setConceal] = createSignal(true)
   const thinking = useThinkingMode()
   const thinkingMode = thinking.mode
@@ -344,13 +355,12 @@ export function Session() {
 
   const wide = createMemo(() => dimensions().width > 120)
   const sidebarVisible = createMemo(() => {
-    if (session()?.parentID) return false
+    if (session()?.parentID || editorSideOpen()) return false
     if (sidebarOpen()) return true
-    if (sidebar() === "auto" && wide()) return true
     return false
   })
   const showTimestamps = createMemo(() => timestamps() === "show")
-  const contentWidth = createMemo(() => dimensions().width - (sidebarVisible() ? 42 : 0) - 4)
+  const contentWidth = createMemo(() => dimensions().width - (sidebarVisible() || editorSideOpen() ? 42 : 0) - 4)
   const providers = createMemo(() => Model.index(sync.data.provider))
 
   const scrollAcceleration = createMemo(() => getScrollAcceleration(tuiConfig))
@@ -600,6 +610,90 @@ export function Session() {
 
   const sessionCommandList = createMemo(() => [
     {
+      title: "Settings",
+      value: "session.settings",
+      category: "Settings",
+      slash: { name: "settings" },
+      run: () => dialog.replace(() => <DialogSessionSettings sessionID={route.sessionID} />),
+    },
+    {
+      title: "Permission mode",
+      value: "session.permissions",
+      category: "Settings",
+      slash: { name: "permissions" },
+      run: () => dialog.replace(() => <DialogPermissions sessionID={route.sessionID} />),
+    },
+    {
+      title: "Open workspace Explorer",
+      value: "session.editor.open",
+      category: "Workspace",
+      hidden: true,
+      run: () => {
+        setEditorSideOpen(false)
+        dialog.replace(() => <DialogEditorExplorer />)
+      },
+    },
+    {
+      title: "Open workspace Explorer in right pane",
+      value: "session.editor.open.side",
+      category: "Workspace",
+      hidden: true,
+      run: () => {
+        setSidebarOpen(false)
+        setEditorSideOpen(true)
+        dialog.clear()
+      },
+    },
+    {
+      title: "Close workspace Explorer pane",
+      value: "session.editor.close",
+      category: "Workspace",
+      hidden: true,
+      run: () => {
+        setEditorSideOpen(false)
+        dialog.clear()
+      },
+    },
+    {
+      title: "Plan and explicitly start a managed Run",
+      value: "session.goal.start",
+      category: "Managed Goal",
+      slash: { name: "goal-start" },
+      enabled: !session()?.parentID,
+      run: () => dialog.push(<DialogGoalRunPlan directory={project.instance.directory()} workspace={project.workspace.current()} sessionID={route.sessionID} />),
+    },
+    {
+      title: "Propose a managed Goal",
+      value: "session.goal.propose",
+      category: "Managed Goal",
+      slash: { name: "goal-propose" },
+      enabled: !session()?.parentID,
+      run: () => dialog.push(<DialogGoalProposal directory={project.instance.directory()} workspace={project.workspace.current()} />),
+    },
+    {
+      title: "Review managed Goal proposals",
+      value: "session.goal.review",
+      category: "Managed Goal",
+      slash: { name: "goal-review" },
+      enabled: !session()?.parentID,
+      run: () => dialog.push(<DialogGoalReviewInbox directory={project.instance.directory()} workspace={project.workspace.current()} />),
+    },
+    {
+      title: "Inspect checkpoints",
+      value: "session.checkpoints",
+      category: "Session",
+      slash: { name: "checkpoints" },
+      run: () => dialog.replace(() => <DialogCheckpoint sessionID={route.sessionID} />),
+    },
+    {
+      title: "Inspect child agents",
+      value: "session.agents",
+      category: "Session",
+      enabled: !session()?.parentID,
+      slash: { name: "agents" },
+      run: () => dialog.replace(() => <DialogSubagents sessionID={route.sessionID} onOpenChild={enterChild} />),
+    },
+    {
       title: session()?.share?.url ? "Copy share link" : "Share session",
       value: "session.share",
       suggested: route.type === "session",
@@ -839,6 +933,7 @@ export function Session() {
       title: sidebarVisible() ? "Hide sidebar" : "Show sidebar",
       value: "session.sidebar.toggle",
       category: "Session",
+      hidden: true,
       run: () => {
         batch(() => {
           const isVisible = sidebarVisible()
@@ -1130,7 +1225,6 @@ export function Session() {
             showThinking(),
             showDetails(),
             showAssistantMetadata(),
-            false,
           )
 
           if (options === null) return
@@ -1146,38 +1240,11 @@ export function Session() {
             },
           )
 
-          if (options.openWithoutSaving) {
-            // Just open in editor without saving
-            await openEditor({
-              renderer,
-              value: transcript,
-              cwd:
-                (project.instance.path().worktree === "/" ? undefined : project.instance.path().worktree) ||
-                project.instance.directory() ||
-                paths.cwd,
-            })
-          } else {
-            const exportDir = paths.cwd
-            const filename = options.filename.trim()
-            const filepath = path.join(exportDir, filename)
-
-            await writeExport(filepath, transcript)
-
-            // Open with EDITOR if available
-            const result = await openEditor({
-              renderer,
-              value: transcript,
-              cwd:
-                (project.instance.path().worktree === "/" ? undefined : project.instance.path().worktree) ||
-                project.instance.directory() ||
-                paths.cwd,
-            })
-            if (result !== undefined) {
-              await writeExport(filepath, result)
-            }
-
-            toast.show({ message: `Session exported to ${filename}`, variant: "success" })
-          }
+          const exportDir = paths.cwd
+          const filename = options.filename.trim()
+          const filepath = path.join(exportDir, filename)
+          await writeExport(filepath, transcript)
+          toast.show({ message: `Session exported to ${filename}`, variant: "success" })
         } catch {
           toast.show({ message: "Failed to export session", variant: "error" })
         }
@@ -1530,6 +1597,9 @@ export function Session() {
               </Match>
             </Switch>
           </Show>
+          <Show when={editorSideOpen()}>
+            <EditorExplorerPane onClose={() => setEditorSideOpen(false)} />
+          </Show>
         </box>
       </context.Provider>
     </LocationProvider>
@@ -1648,6 +1718,10 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
   const sync = useSync()
   const messages = createMemo(() => sync.data.message[props.message.sessionID] ?? [])
   const model = createMemo(() => Model.name(ctx.providers(), props.message.providerID, props.message.modelID))
+  const displayedError = createMemo(() => {
+    const error = props.message.error
+    return error ? boundToolOutput(errorMessage(error), 8 * 1024, 32).output : ""
+  })
 
   const final = createMemo(() => {
     return props.message.finish && !["tool-calls", "unknown"].includes(props.message.finish)
@@ -1715,7 +1789,7 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
           customBorderChars={SplitBorder.customBorderChars}
           borderColor={theme.error}
         >
-          <text fg={theme.textMuted}>{errorMessage(props.message.error)}</text>
+          <text fg={theme.textMuted}>{displayedError()}</text>
         </box>
       </Show>
       <Switch>
@@ -1771,10 +1845,16 @@ function TextPart(props: { last: boolean; part: TextPart; message: AssistantMess
 
 function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMessage }) {
   const ctx = use()
-  const display = createMemo(() => toolDisplay(props.part.tool))
   const safePart = createMemo(() => {
     const sanitized = sanitizeToolDisplayValue(props.part) as ToolPart | undefined
-    if (!sanitized) return props.part
+    if (!sanitized) {
+      const state = props.part.state
+      const input = {}
+      if (state.status === "pending") return { ...props.part, tool: "tool", metadata: undefined, state: { ...state, input, raw: "" } }
+      if (state.status === "running") return { ...props.part, tool: "tool", metadata: undefined, state: { ...state, input, title: "Tool details unavailable", metadata: {} } }
+      if (state.status === "completed") return { ...props.part, tool: "tool", metadata: undefined, state: { ...state, input, output: "Tool details unavailable", title: "Tool details unavailable", metadata: {} } }
+      return { ...props.part, tool: "tool", metadata: undefined, state: { ...state, input, error: "Tool details unavailable", metadata: {} } }
+    }
     const state = sanitized.state
     if (state.status === "completed" && typeof state.output === "string") {
       return { ...sanitized, state: { ...state, output: boundToolOutput(state.output).output } }
@@ -1784,6 +1864,7 @@ function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMess
     }
     return sanitized
   })
+  const display = createMemo(() => toolDisplay(safePart().tool))
 
   // Hide tool if showDetails is false and tool completed successfully
   const shouldHide = createMemo(() => {
@@ -2326,7 +2407,19 @@ function Task(props: ToolProps) {
     return messages().flatMap((msg) =>
       (sync.data.part[msg.id] ?? [])
         .filter((part): part is ToolPart => part.type === "tool")
-        .map((part) => ({ tool: part.tool, state: part.state })),
+        .map((part) => {
+          // Child activity is summarized here instead of through ToolPart, so
+          // sanitize it before displaying tool names, titles, or metadata.
+          const safe = sanitizeToolDisplayValue(part) as ToolPart | undefined
+          if (!safe) {
+            const state = part.state
+            if (state.status === "pending") return { tool: "tool", state: { ...state, input: {}, raw: "" } }
+            if (state.status === "running") return { tool: "tool", state: { ...state, input: {}, title: "Tool details unavailable", metadata: {} } }
+            if (state.status === "completed") return { tool: "tool", state: { ...state, input: {}, output: "Tool details unavailable", title: "Tool details unavailable", metadata: {} } }
+            return { tool: "tool", state: { ...state, input: {}, error: "Tool details unavailable", metadata: {} } }
+          }
+          return { tool: safe.tool, state: safe.state }
+        }),
     )
   })
 
@@ -2368,7 +2461,8 @@ function Task(props: ToolProps) {
 
     const retrying = retry()
     if (isRunning() && retrying) {
-      content.push(`↳ ${formatSubagentRetry(retrying.attempt, Locale.truncate(retrying.message, 80))}`)
+      const message = boundToolOutput(redactToolText(retrying.message), 256).output
+      content.push(`↳ ${formatSubagentRetry(retrying.attempt, Locale.truncate(message, 80))}`)
     } else if (isRunning() && tools().length > 0) {
       if (current()) {
         const state = current()!.state
@@ -2398,7 +2492,7 @@ function Task(props: ToolProps) {
           navigate({ type: "session", sessionID: sessionID()! })
         }
         const status = retry()
-        if (status) void DialogAlert.show(dialog, "Retry Error", status.message)
+        if (status) void DialogAlert.show(dialog, "Retry Error", boundToolOutput(redactToolText(status.message), 256).output)
       }}
     >
       {content()}
@@ -2427,7 +2521,7 @@ type ExecuteCall = { tool: string; status: "running" | "completed" | "error"; in
 
 function executeCalls(value: unknown): ExecuteCall[] {
   if (!Array.isArray(value)) return []
-  return value.flatMap((call) => {
+  return value.slice(0, 32).flatMap((call) => {
     const item = recordValue(call)
     const tool = stringValue(item?.tool)
     const status = stringValue(item?.status)
@@ -2442,6 +2536,7 @@ function Execute(props: ToolProps) {
   const { theme } = useTheme()
   const isLoading = createMemo(() => props.part.state.status === "pending" || props.part.state.status === "running")
   const calls = createMemo(() => executeCalls(props.metadata.toolCalls))
+  const omittedCalls = createMemo(() => Array.isArray(props.metadata.toolCalls) ? Math.max(0, props.metadata.toolCalls.length - 32) : 0)
   const output = createMemo(() => boundToolOutput(props.output?.trim() ?? "").output)
   const hasRuntimeError = createMemo(() => props.metadata.error === true)
   const outputPreview = createMemo(() => collapseToolOutput(output(), 4, 4 * Math.max(20, ctx.width - 6)).output)
@@ -2450,8 +2545,10 @@ function Execute(props: ToolProps) {
     const lines = ["execute"]
     for (const call of calls()) {
       const args = toolArgumentPreview(call.input ?? {})
-      lines.push(`↳ ${call.tool}${args ? ` ${args}` : ""}${call.status === "error" ? " (failed)" : ""}`)
+      const tool = boundToolOutput(redactToolText(call.tool), 96).output
+      lines.push(`↳ ${tool}${args ? ` ${args}` : ""}${call.status === "error" ? " (failed)" : ""}`)
     }
+    if (omittedCalls() > 0) lines.push(`↳ ${omittedCalls()} additional calls omitted`)
     return lines.join("\n")
   })
 

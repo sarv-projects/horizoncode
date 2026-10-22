@@ -6,7 +6,9 @@ description: Retrieve the installed HorizonCode architecture, contracts, impleme
 # Horizon Docs
 
 This is the canonical HorizonCode product skill for architecture/status retrieval.
-The .opencode/skills/horizon-docs/SKILL.md file is only a discovery compatibility shim.
+For **tools, skills, tiers, and product integration**, load **`builtin.horizoncode`**
+(`packages/core/src/horizon/skills/horizoncode/SKILL.md`). The `.opencode/skills/*` shims
+are discovery compatibility only.
 
 ## Authority
 

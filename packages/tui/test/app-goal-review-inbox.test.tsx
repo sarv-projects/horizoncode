@@ -115,7 +115,6 @@ test("goal.review fetches a pending proposal and posts only its revision-bound d
     await setup.renderOnce()
     setup.mockInput.pressKey("ARROW_DOWN")
     setup.mockInput.pressKey("ARROW_DOWN")
-    setup.mockInput.pressKey("ARROW_DOWN")
     setup.mockInput.pressEnter()
     const decisionDeadline = Date.now() + 3000
     while (!requests.some((item) => item.url.endsWith("/goal-review/decision")) && Date.now() < decisionDeadline) {
@@ -259,6 +258,10 @@ test("goal.verify requests verification through authenticated API without caller
         status: "UNKNOWN",
         goalID: "goal-managed",
         runID: "run-current",
+        taskID: "task-1",
+        attemptID: "attempt_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        finalRevision: "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        challengeSetDigest: "blake3:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
         verificationRunID: "verify-1",
         revision: "workspace-revision-17",
       })
@@ -369,6 +372,8 @@ test("goal.plan preserves decimal revisions and reports that the plan has no exe
       runID: "run-plan",
       tasks: [{
         taskID: "task-one",
+        title: "Implement acceptance behavior",
+        purpose: "Implement the behavior needed to satisfy the accepted criterion.",
         dependencies: [],
         criterionIDs: ["tests-pass"],
         requiredCapabilities: ["files.read"],
@@ -414,7 +419,7 @@ test("goal.control confirms against the observed Goal revision and submits a fen
         workspaceRef: "workspace-main",
         proposals: [],
         acceptedSpecs: [],
-        runs: [{ runID: "run-current", specID: "spec-current", runPhase: "PAUSED" }],
+        runs: [{ runID: "run-current", specID: "spec-current", runPhase: "RUNNING" }],
       })
     }
     if (url.pathname === "/experimental/control-plane/goal-run-control") {
@@ -423,9 +428,10 @@ test("goal.control confirms against the observed Goal revision and submits a fen
         schemaVersion: 1,
         goalID: "goal-managed",
         runID: "run-current",
-        status: "RUNNING",
-        runPhase: "RUNNING",
+        status: "PAUSED",
+        runPhase: "PAUSED",
         revision: "9007199254740994",
+        dispatchStatus: "DISABLED",
       })
     }
     return fallback.fetch(request)
@@ -471,6 +477,93 @@ test("goal.control confirms against the observed Goal revision and submits a fen
     expect(requests[1].body).toEqual({
       schemaVersion: 1,
       action: "pause",
+      goalID: "goal-managed",
+      runID: "run-current",
+      expectedRevision: "9007199254740993",
+    })
+    const exit = api?.keymap.dispatchCommand("app.exit")
+    expect(exit?.ok).toBe(true)
+    await task
+  } finally {
+    if (!setup.renderer.isDestroyed) setup.renderer.destroy()
+    mock.restore()
+  }
+}, { timeout: 30_000 })
+
+test("goal.control requires confirmation before cancelling and carries the observed revision", async () => {
+  const setup = await createTestRenderer({ width: 120, height: 60, useThread: false })
+  const core = await import("@opentui/core")
+  mock.module("@opentui/core", () => ({ ...core, createCliRenderer: async () => setup.renderer }))
+  const events = createEventSource()
+  const fallback = createFetch()
+  const requests: Array<{ url: string; body?: Record<string, unknown> }> = []
+  const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = input instanceof Request ? input : new Request(input, init)
+    const url = new URL(request.url)
+    if (url.pathname === "/experimental/control-plane/goal-review") {
+      requests.push({ url: url.toString() })
+      return json({
+        goalID: "goal-managed",
+        goalRevision: "9007199254740993",
+        projectRef: "proj_test",
+        workspaceRef: "workspace-main",
+        proposals: [],
+        acceptedSpecs: [],
+        runs: [{ runID: "run-current", specID: "spec-current", runPhase: "RUNNING" }],
+      })
+    }
+    if (url.pathname === "/experimental/control-plane/goal-run-control") {
+      requests.push({ url: url.toString(), body: await request.clone().json() })
+      return json({
+        schemaVersion: 1,
+        goalID: "goal-managed",
+        runID: "run-current",
+        status: "CANCELLING",
+        runPhase: "CANCELLING",
+        revision: "9007199254740994",
+      })
+    }
+    return fallback.fetch(request)
+  }) as typeof globalThis.fetch
+  let api: TuiPluginApi | undefined
+  let started!: () => void
+  const ready = new Promise<void>((resolve) => { started = resolve })
+  try {
+    const { run } = await import("../src/app")
+    const task = Effect.runPromise(
+      run({
+        url: "http://test",
+        directory,
+        config: createTuiResolvedConfig({ plugin_enabled: {} }),
+        fetch,
+        events: events.source,
+        args: {},
+        pluginHost: { async start(input) { api = input.api; started() }, async dispose() {} },
+      }).pipe(Effect.provide(AppNodeBuilder.build(Global.node))),
+    )
+    await ready
+    await setup.renderOnce()
+    expect(api?.keymap.dispatchCommand("goal.control").ok).toBe(true)
+    await setup.renderOnce()
+    await setup.mockInput.typeText("goal-managed run-current cancel")
+    setup.mockInput.pressEnter()
+    const readDeadline = Date.now() + 3000
+    while (requests.length === 0 && Date.now() < readDeadline) {
+      await setup.renderOnce()
+      await Bun.sleep(10)
+    }
+    expect(requests).toHaveLength(1)
+    expect(setup.captureCharFrame()).toContain("Confirm cancel")
+    expect(requests[0]?.body).toBeUndefined()
+    setup.mockInput.pressEnter()
+    const writeDeadline = Date.now() + 3000
+    while (requests.length < 2 && Date.now() < writeDeadline) {
+      await setup.renderOnce()
+      await Bun.sleep(10)
+    }
+    expect(requests[1]?.body).toEqual({
+      schemaVersion: 1,
+      action: "cancel",
       goalID: "goal-managed",
       runID: "run-current",
       expectedRevision: "9007199254740993",

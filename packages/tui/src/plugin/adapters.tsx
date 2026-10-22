@@ -143,7 +143,7 @@ function stateApi(sync: ReturnType<typeof useSync>, data: ReturnType<typeof useD
       },
       question(sessionID) {
         // Session question state is owned by the Data context; sync no longer tracks questions.
-        return data.session.question.list(sessionID) ?? []
+        return data.session.question.list(sessionID)
       },
     },
     part(messageID) {

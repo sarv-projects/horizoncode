@@ -12,7 +12,8 @@
     },
     "cursor": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "description": "Opaque cursor for ordering/deduplicating this subscribed UI event envelope. It is not an SSE id, Last-Event-ID token, durable replay cursor, or authority to reconstruct missed state. Reconnect recovery uses canonical owner resnapshot."
     },
     "lane": {
       "type": "string",
@@ -41,14 +42,16 @@
       "type": "number",
       "minimum": 0
     },
-    "payload": {},
+    "payload": {
+      "description": "Event-kind-specific projection. Session part delta payloads carry sourceGeneration and sequence for source-local gap/duplicate fencing; they are distinct from the envelope cursor and are validated by the owning typed event contract."
+    },
     "subscriptionId": {
       "type": "string",
       "minLength": 1
     },
     "ownerEpoch": {
-      "type": "integer",
-      "minimum": 0
+      "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64",
+      "description": "Unsigned 64-bit JSON counter/budget; encoded as canonical decimal string."
     }
   },
   "required": [

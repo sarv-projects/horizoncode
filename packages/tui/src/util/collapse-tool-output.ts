@@ -217,7 +217,7 @@ function sliceUtf8(value: string, maxBytes: number) {
 /** Redact common credential forms and remove terminal/control characters before display. */
 export function redactToolText(value: string) {
   return stripAnsi(value)
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u202A-\u202E\u2066-\u2069]/g, "")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u061C\u200E\u200F\u202A-\u202E\u2066-\u206F]/g, "")
     .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/gi, "[REDACTED PRIVATE KEY]")
     .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, "Bearer [REDACTED]")
     .replace(/\b(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_]{8,}|github_pat_[A-Za-z0-9_]{8,}|xox[baprs]-[A-Za-z0-9-]{8,})\b/g, "[REDACTED]")
@@ -232,6 +232,14 @@ export function redactToolText(value: string) {
       "$1[REDACTED]",
     )
     .replace(/([a-z][a-z0-9+.-]*:\/\/)[^/@\s:]+:[^/@\s]+@/gi, "$1[REDACTED]@")
+}
+
+/** Keep only canonical, printable capability-style tool identifiers in labels. */
+export function safeToolName(value: unknown) {
+  if (typeof value !== "string" || value.length === 0 || value.length > 80) return "tool"
+  // Provider-controlled names are rendered into the terminal. ASCII capability
+  // identifiers avoid ANSI/OSC, bidi, and other control/formatting injection.
+  return /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/.test(value) ? value : "tool"
 }
 
 /** Keep the executable identity while omitting shell arguments that may contain secrets or private input. */
@@ -325,6 +333,11 @@ export function boundToolOutput(value: string, maxBytes = 64 * 1024, maxLines = 
     truncated,
     limitedBy: byteTruncated && lineTruncated ? "bytes_and_lines" : byteTruncated ? "bytes" : lineTruncated ? "lines" : undefined,
   }
+}
+
+/** Small terminal-safe one-line preview for prompt text used as a list label. */
+export function safeTimelineTitle(value: string, maxBytes = 512) {
+  return boundToolOutput(value, Math.max(0, Math.min(512, Math.floor(maxBytes))), 1).output.replace(/\n/g, " ")
 }
 
 /** Recursively redact and byte-cap a tool part before handing it to detail renderers. */

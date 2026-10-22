@@ -4,27 +4,87 @@
   "title": "SessionLinkV1",
   "type": "object",
   "properties": {
-    "sessionId": { "type": "string", "minLength": 1, "maxLength": 256 },
-    "sourceStoreId": { "type": "string", "minLength": 1, "maxLength": 256 },
-    "sourceInstanceId": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "sessionId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "sourceStoreId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "sourceInstanceId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
     "sourceCursor": {
       "type": "object",
       "properties": {
-        "ownerKind": { "const": "session" },
-        "ownerId": { "type": "string", "minLength": 1, "maxLength": 256 },
-        "seq": { "type": "string", "pattern": "^(0|[1-9][0-9]{0,19})$" },
-        "eventDigest": { "type": "string", "pattern": "^blake3:[0-9a-f]{64}$" }
+        "ownerKind": {
+          "const": "session"
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "seq": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$"
+        },
+        "eventDigest": {
+          "type": "string",
+          "pattern": "^blake3:[0-9a-f]{64}$"
+        }
       },
-      "required": ["ownerKind", "ownerId", "seq", "eventDigest"],
+      "required": [
+        "ownerKind",
+        "ownerId",
+        "seq",
+        "eventDigest"
+      ],
       "additionalProperties": false
     },
-    "sourceEpoch": { "type": "integer", "minimum": 1 },
-    "latestObservedMessageId": { "type": ["string", "null"], "minLength": 1, "maxLength": 256 },
-    "latestObservedPartId": { "type": ["string", "null"], "minLength": 1, "maxLength": 256 },
-    "sourceDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
-    "redactionProfile": { "type": "string", "minLength": 1, "maxLength": 256 },
-    "ownerEpoch": { "type": "integer", "minimum": 1 },
-    "protocolVersion": { "type": "integer", "minimum": 1, "maximum": 65535 }
+    "sourceEpoch": {
+      "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64",
+      "description": "Unsigned 64-bit JSON counter/budget; encoded as canonical decimal string."
+    },
+    "latestObservedMessageId": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "latestObservedPartId": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "sourceDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "redactionProfile": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "ownerEpoch": {
+      "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64",
+      "description": "Unsigned 64-bit JSON counter/budget; encoded as canonical decimal string."
+    },
+    "protocolVersion": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535
+    }
   },
   "required": [
     "sessionId",

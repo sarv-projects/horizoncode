@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "horizon://schemas/direct-session-permission-mode-v1",
+  "title": "DirectSessionPermissionModeV1",
+  "description": "Authenticated user's direct-session choice. Sandbox scope and approval frequency are orthogonal. This is a policy input to the canonical Rust Guard, never an alternate effect executor or authority bypass.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "sessionId", "ownerEpoch", "locationId", "workspaceId", "workspaceRootDigest", "executionBackendId", "policyDigest", "sandboxMode", "approvalPolicy", "source", "revision", "digest"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "sessionId": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9._:-]+$" },
+    "ownerEpoch": { "$ref": "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64" },
+    "locationId": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9._:-]+$" },
+    "workspaceId": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9._:-]+$" },
+    "workspaceRootDigest": { "type": "string", "pattern": "^blake3:[a-f0-9]{64}$" },
+    "executionBackendId": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9._:-]+$" },
+    "policyDigest": { "type": "string", "pattern": "^blake3:[a-f0-9]{64}$" },
+    "sandboxMode": { "enum": ["read-only", "workspace-write", "danger-full-access"] },
+    "approvalPolicy": { "enum": ["on-request", "always", "never"] },
+    "source": { "enum": ["default", "user-session", "user-config"] },
+    "revision": { "$ref": "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64" },
+    "digest": { "type": "string", "pattern": "^blake3:[a-f0-9]{64}$" }
+  },
+  "x-horizon-validation": [
+    "default-is-workspace-write-and-on-request",
+    "host-derives-session-owner-location-workspace-root-backend-and-policy-bindings-from-authenticated-trusted-state",
+    "digest-is-blake3-domain-horizoncode.direct-session-permission-mode.v1-nul-plus-canonical-msgpack-of-all-fields-except-digest",
+    "ask-for-approval-preset-is-workspace-write-and-on-request",
+    "full-access-preset-is-danger-full-access-and-never-and-requires-explicit-user-selection-for-current-session",
+    "always-prompts-before-every-effect-including-effects-otherwise-inside-sandbox",
+    "on-request-allows-actions-inside-selected-sandbox-and-asks-only-at-its-boundary",
+    "never-does-not-prompt-and-allows-actions-inside-selected-sandbox",
+    "danger-full-access-means-no-filesystem-or-network-sandbox-and-allows-process-actions-subject-to-ordinary-host-platform-and-resource-limits",
+    "user-mode-does-not-bypass-Guard-authenticated-scope-budget-lease-receipt-cancellation-or-unknown-reconciliation",
+    "technical-invalidity-stale-authority-unsupported-platform-and-unavailable-execution-boundary-remain-unavailable-without-claiming-user-approval-would-fix-them",
+    "paid-provider-search-and-other-separately-priced-actions-keep-their-own-explicit-cost-consent",
+    "managed-attempts-use-their-authorized-attempt-profile-and-do-not-inherit-direct-session-mode"
+  ]
+}

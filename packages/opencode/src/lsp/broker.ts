@@ -230,6 +230,8 @@ function managedAttemptScopeKey(scope: ManagedAttemptScopeV1 | undefined): strin
     scope.locationID,
     scope.sessionID,
     scope.workspaceRevision,
+    scope.effectiveMaxTokens,
+    scope.remainingTokens,
     scope.delegationBindingDigest,
   ])
 }

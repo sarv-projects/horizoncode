@@ -31,6 +31,8 @@ type PrepareInput = {
   readonly plugin: Plugin.Interface
   readonly flags: RuntimeFlags.Info
   readonly isWorkflow: boolean
+  /** Managed requests use the deterministic Core compiler; extension hooks are not run. */
+  readonly managedRequest?: boolean
 }
 
 export type Prepared = {
@@ -64,11 +66,13 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
   ]
 
   const header = system[0]
-  yield* input.plugin.trigger(
-    "experimental.chat.system.transform",
-    { sessionID: input.sessionID, model: input.model },
-    { system },
-  )
+  if (!input.managedRequest) {
+    yield* input.plugin.trigger(
+      "experimental.chat.system.transform",
+      { sessionID: input.sessionID, model: input.model },
+      { system },
+    )
+  }
   if (system.length > 2 && system[0] === header) {
     const rest = system.slice(1)
     system.length = 0
@@ -109,39 +113,44 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
           ...input.messages,
         ]
 
-  const params = yield* input.plugin.trigger(
-    "chat.params",
-    {
-      sessionID: input.sessionID,
-      agent: input.agent.name,
-      model: input.model,
-      provider: input.provider,
-      message: input.user,
-    },
-    {
-      temperature: input.model.capabilities.temperature
-        ? (input.agent.temperature ?? ProviderTransform.temperature(input.model))
-        : undefined,
-      topP: input.agent.topP ?? ProviderTransform.topP(input.model),
-      topK: ProviderTransform.topK(input.model),
-      maxOutputTokens: ProviderTransform.maxOutputTokens(input.model, input.flags.outputTokenMax),
-      options,
-    },
-  )
+  const baseParams = {
+    temperature: input.model.capabilities.temperature
+      ? (input.agent.temperature ?? ProviderTransform.temperature(input.model))
+      : undefined,
+    topP: input.agent.topP ?? ProviderTransform.topP(input.model),
+    topK: ProviderTransform.topK(input.model),
+    maxOutputTokens: ProviderTransform.maxOutputTokens(input.model, input.flags.outputTokenMax),
+    options,
+  }
+  const params = input.managedRequest
+    ? baseParams
+    : yield* input.plugin.trigger(
+        "chat.params",
+        {
+          sessionID: input.sessionID,
+          agent: input.agent.name,
+          model: input.model,
+          provider: input.provider,
+          message: input.user,
+        },
+        baseParams,
+      )
 
-  const { headers } = yield* input.plugin.trigger(
-    "chat.headers",
-    {
-      sessionID: input.sessionID,
-      agent: input.agent.name,
-      model: input.model,
-      provider: input.provider,
-      message: input.user,
-    },
-    {
-      headers: {},
-    },
-  )
+  const { headers } = input.managedRequest
+    ? { headers: {} }
+    : yield* input.plugin.trigger(
+        "chat.headers",
+        {
+          sessionID: input.sessionID,
+          agent: input.agent.name,
+          model: input.model,
+          provider: input.provider,
+          message: input.user,
+        },
+        {
+          headers: {},
+        },
+      )
 
   const tools = resolveTools(input)
   // Codex parity: OpenAI Responses-family providers hardcode `strict: false`

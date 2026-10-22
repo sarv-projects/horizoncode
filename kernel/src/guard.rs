@@ -6,12 +6,169 @@
 
 use std::path::{Component, Path};
 
+/// HostKernel-derived direct-session permission mode. This projection is private to the
+/// Rust host boundary: callers may request a mode change, but cannot provide these pins.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DirectSandboxModeV1 {
+    ReadOnly,
+    WorkspaceWrite,
+    DangerFullAccess,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DirectApprovalPolicyV1 {
+    OnRequest,
+    Always,
+    Never,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DirectPermissionModeSourceV1 {
+    Default,
+    UserSession,
+    UserConfig,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DirectSessionPermissionModeProjectionV1 {
+    pub(crate) session_id: String,
+    pub(crate) owner_epoch: u64,
+    pub(crate) location_id: String,
+    pub(crate) workspace_id: String,
+    pub(crate) workspace_root_digest: String,
+    pub(crate) execution_backend_id: String,
+    pub(crate) policy_digest: String,
+    pub(crate) sandbox_mode: DirectSandboxModeV1,
+    pub(crate) approval_policy: DirectApprovalPolicyV1,
+    pub(crate) source: DirectPermissionModeSourceV1,
+    pub(crate) revision: u64,
+    pub(crate) digest: String,
+}
+
+impl DirectSessionPermissionModeProjectionV1 {
+    /// Decode only the exact strict HostKernel projection shape. This parser is for the
+    /// private in-process HostKernel -> EffectHost boundary, never a public RPC body.
+    pub(crate) fn from_value(value: &crate::messagepack::Value) -> Option<Self> {
+        use crate::messagepack::Value;
+        let Value::Map(fields) = value else { return None; };
+        const KEYS: [&str; 13] = [
+            "schemaVersion", "sessionId", "ownerEpoch", "locationId", "workspaceId",
+            "workspaceRootDigest", "executionBackendId", "policyDigest", "sandboxMode",
+            "approvalPolicy", "source", "revision", "digest",
+        ];
+        if fields.len() != KEYS.len() || KEYS.iter().any(|key| !fields.contains_key(*key)) {
+            return None;
+        }
+        let text = |key: &str| match fields.get(key) { Some(Value::String(value)) => Some(value.as_str()), _ => None };
+        let decimal = |key: &str| -> Option<u64> {
+            let value = text(key)?;
+            if value.is_empty() || value.len() > 20 || value.starts_with('0') || !value.bytes().all(|b| b.is_ascii_digit()) { return None; }
+            value.parse::<u64>().ok().filter(|value| *value > 0)
+        };
+        if !matches!(fields.get("schemaVersion"), Some(Value::Unsigned(1))) { return None; }
+        let sandbox_mode = match text("sandboxMode")? {
+            "read-only" => DirectSandboxModeV1::ReadOnly,
+            "workspace-write" => DirectSandboxModeV1::WorkspaceWrite,
+            "danger-full-access" => DirectSandboxModeV1::DangerFullAccess,
+            _ => return None,
+        };
+        let approval_policy = match text("approvalPolicy")? {
+            "on-request" => DirectApprovalPolicyV1::OnRequest,
+            "always" => DirectApprovalPolicyV1::Always,
+            "never" => DirectApprovalPolicyV1::Never,
+            _ => return None,
+        };
+        let source = match text("source")? {
+            "default" => DirectPermissionModeSourceV1::Default,
+            "user-session" => DirectPermissionModeSourceV1::UserSession,
+            "user-config" => DirectPermissionModeSourceV1::UserConfig,
+            _ => return None,
+        };
+        let projection = Self {
+            session_id: text("sessionId")?.to_owned(),
+            owner_epoch: decimal("ownerEpoch")?,
+            location_id: text("locationId")?.to_owned(),
+            workspace_id: text("workspaceId")?.to_owned(),
+            workspace_root_digest: text("workspaceRootDigest")?.to_owned(),
+            execution_backend_id: text("executionBackendId")?.to_owned(),
+            policy_digest: text("policyDigest")?.to_owned(),
+            sandbox_mode,
+            approval_policy,
+            source,
+            revision: decimal("revision")?,
+            digest: text("digest")?.to_owned(),
+        };
+        projection.validate().then_some(projection)
+    }
+
+    pub(crate) fn validate(&self) -> bool {
+        let valid_id = |value: &str| !value.is_empty() && value.len() <= 256
+            && value.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-'));
+        self.owner_epoch > 0 && self.revision > 0
+            && valid_id(&self.session_id) && valid_id(&self.location_id)
+            && valid_id(&self.workspace_id) && valid_id(&self.execution_backend_id)
+            && self.execution_backend_id == DIRECT_SESSION_EFFECT_BACKEND_ID
+            && is_digest(&self.workspace_root_digest) && is_digest(&self.policy_digest)
+            && is_digest(&self.digest)
+            && (self.source != DirectPermissionModeSourceV1::Default
+                || (self.sandbox_mode == DirectSandboxModeV1::WorkspaceWrite
+                    && self.approval_policy == DirectApprovalPolicyV1::OnRequest))
+            && (self.sandbox_mode != DirectSandboxModeV1::DangerFullAccess
+                || (self.source == DirectPermissionModeSourceV1::UserSession
+                    && self.approval_policy == DirectApprovalPolicyV1::Never))
+            && self.digest == self.recompute_digest()
+    }
+
+    pub(crate) fn recompute_digest(&self) -> String {
+        use crate::messagepack::Value;
+        let sandbox = match self.sandbox_mode {
+            DirectSandboxModeV1::ReadOnly => "read-only",
+            DirectSandboxModeV1::WorkspaceWrite => "workspace-write",
+            DirectSandboxModeV1::DangerFullAccess => "danger-full-access",
+        };
+        let approval = match self.approval_policy {
+            DirectApprovalPolicyV1::OnRequest => "on-request",
+            DirectApprovalPolicyV1::Always => "always",
+            DirectApprovalPolicyV1::Never => "never",
+        };
+        let source = match self.source {
+            DirectPermissionModeSourceV1::Default => "default",
+            DirectPermissionModeSourceV1::UserSession => "user-session",
+            DirectPermissionModeSourceV1::UserConfig => "user-config",
+        };
+        let value = Value::Map(std::collections::BTreeMap::from([
+            ("schemaVersion".to_owned(), Value::Unsigned(1)),
+            ("sessionId".to_owned(), Value::String(self.session_id.clone())),
+            ("ownerEpoch".to_owned(), Value::String(self.owner_epoch.to_string())),
+            ("locationId".to_owned(), Value::String(self.location_id.clone())),
+            ("workspaceId".to_owned(), Value::String(self.workspace_id.clone())),
+            ("workspaceRootDigest".to_owned(), Value::String(self.workspace_root_digest.clone())),
+            ("executionBackendId".to_owned(), Value::String(self.execution_backend_id.clone())),
+            ("policyDigest".to_owned(), Value::String(self.policy_digest.clone())),
+            ("sandboxMode".to_owned(), Value::String(sandbox.to_owned())),
+            ("approvalPolicy".to_owned(), Value::String(approval.to_owned())),
+            ("source".to_owned(), Value::String(source.to_owned())),
+            ("revision".to_owned(), Value::String(self.revision.to_string())),
+        ]));
+        let encoded = crate::messagepack::encode(&value, crate::messagepack::FRAME_LIMITS)
+            .expect("validated direct permission mode projection is bounded");
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"horizoncode.direct-session-permission-mode.v1\0");
+        hasher.update(&encoded);
+        format!("blake3:{}", hasher.finalize().to_hex())
+    }
+}
+
 pub const FILES_WRITE_ID: &str = "files.write";
 pub const FILES_PATCH_ID: &str = "files.patch";
 pub const FILES_READ_ID: &str = "files.read";
 pub const TERMINAL_RUN_ID: &str = "terminal.run";
 pub const TERMINAL_START_ID: &str = "terminal.start";
 pub const WEB_SEARCH_ID: &str = "web.search";
+/// Internal authorization for one managed model-provider request. This action is
+/// never projected as a model tool and is accepted only with HostKernel-minted
+/// ManagedRun Attempt scope and exact selected route/request pins.
+pub const PROVIDERS_INFER_ID: &str = "providers.infer";
 /// Supervised language-service process control (§30.14/§33.23). The executable is never
 /// model-chosen: it must match a host-configured trusted executable profile exactly.
 /// The canonical lifecycle capabilities are `language.start` and `language.stop`.
@@ -22,6 +179,15 @@ pub const DEFINITIONS_FIND_ID: &str = "definitions.find";
 pub const REFERENCES_FIND_ID: &str = "references.find";
 pub const SYMBOLS_OUTLINE_ID: &str = "symbols.outline";
 pub const SYMBOLS_SEARCH_ID: &str = "symbols.search";
+/// Guard action for the existing public `agents.message` capability. The private
+/// direct.message.v1 RPC never introduces a second public authority surface.
+pub const AGENTS_MESSAGE_ID: &str = "agents.message";
+/// User-authenticated automation definition mutations. This policy never authorizes
+/// runNow/invocation, which remains a separate supervised effect.
+pub const AUTOMATION_CREATE_ID: &str = "automations.create";
+pub const AUTOMATION_UPDATE_ID: &str = "automations.update";
+pub const AUTOMATION_ENABLE_ID: &str = "automations.enable";
+pub const AUTOMATION_DISABLE_ID: &str = "automations.disable";
 /// Debug-adapter session control and expression evaluation (§33.9/§37.7). IDs are the
 /// canonical `debug.*` family from the capability catalog.
 pub const DEBUG_START_ID: &str = "debug.start";
@@ -42,6 +208,12 @@ pub const REPL_START_ID: &str = "repl.start";
 pub const REPL_EXECUTE_ID: &str = "repl.execute";
 pub const REPL_RESET_ID: &str = "repl.reset";
 pub const REPL_STOP_ID: &str = "repl.stop";
+/// Outer CodeMode capability. Nested calls must use their original canonical IDs.
+pub const CODE_MODE_EXECUTE_ID: &str = "codemode.execute";
+/// User-only external editor launch. HostKernel must bind this action to an
+/// authenticated root Session and a trusted immutable Core Config profile;
+/// it is never a model-visible tool or an implicit file-open side effect.
+pub const EDITOR_LAUNCH_ID: &str = "editor.launch";
 /// Host-registered verifier execution. Requests must bind to an immutable host profile;
 /// model-originated batches cannot initiate verification.
 pub const BUILTIN_VERIFIER_ID: &str = "builtin.verifier";
@@ -53,7 +225,13 @@ pub const GIT_WORKTREE_RELEASE_ID: &str = "git.worktree.release";
 pub const WORKSPACE_WRITE_POLICY_ID: &str = "workspace-write.local.v1";
 pub const WORKSPACE_READ_POLICY_ID: &str = "workspace-read.local.v1";
 pub const BROKER_PROCESS_POLICY_ID: &str = "broker-process.local.v1";
+pub const PROTOCOL_IO_POLICY_ID: &str = "protocol-io.local.v1";
 pub const OUTBOUND_HTTP_POLICY_ID: &str = "outbound-http.local.v1";
+pub const PROVIDER_INFERENCE_POLICY_ID: &str = "provider-inference.managed.v1";
+pub const AGENT_MESSAGE_POLICY_ID: &str = "agent-message.local.v1";
+pub const AUTOMATION_POLICY_ID: &str = "automation-definition.local.v1";
+pub const CODE_MODE_POLICY_ID: &str = "codemode-helper.local.v1";
+pub const EDITOR_PROCESS_POLICY_ID: &str = "external-editor.local.v1";
 const POLICY_BYTES: &[u8] =
     b"horizoncode.guard.workspace-write.local.v1:ask;beneath-root;no-symlink;no-hardlink;one-use";
 const READ_POLICY_BYTES: &[u8] =
@@ -65,6 +243,7 @@ const GUARANTEES: &[&str] = &[
     "one_use",
 ];
 const BROKER_POLICY_BYTES: &[u8] = b"horizoncode.guard.broker-process.local.v1:ask;configured-executable;bounded-argv-env;beneath-root;one-use";
+const PROTOCOL_IO_POLICY_BYTES: &[u8] = b"horizoncode.guard.protocol-io.local.v1:ask;authenticated-process-generation;current-workspace-revision;bounded-protocol-payload;one-use";
 pub(crate) const BROKER_GUARANTEES: &[&str] = &[
     "configured_executable",
     "bounded_argv_env",
@@ -72,7 +251,22 @@ pub(crate) const BROKER_GUARANTEES: &[&str] = &[
     "one_use",
 ];
 const HTTP_POLICY_BYTES: &[u8] = b"horizoncode.guard.outbound-http.local.v1:https-only;host-allowlist;dns-pin;no-redirect;bounded;one-use";
-const HTTP_GUARANTEES: &[&str] = &[
+const PROVIDER_INFERENCE_POLICY_BYTES: &[u8] = b"horizoncode.guard.provider-inference.managed.v1:managed-attempt;selected-provider-model-harness-route-endpoint;request-transport-secret-operation-digests;consent-budget;one-use;no-fallback";
+const AGENT_MESSAGE_POLICY_BYTES: &[u8] = b"horizoncode.guard.agent-message.local.v1:authenticated-parent-child;profile-pinned;bounded-mailbox;one-use";
+const AUTOMATION_POLICY_BYTES: &[u8] = b"horizoncode.guard.automation-definition.local.v1:server-auth-owner;definition-cas;durable-idempotent-receipt;one-use";
+const CODE_MODE_POLICY_BYTES: &[u8] = b"horizoncode.guard.codemode-helper.local.v1:ask;explicit-enablement;fixed-host-resolved-helper;exact-resource-profile;bounded-source-tool-set;one-use";
+const EDITOR_PROCESS_POLICY_BYTES: &[u8] = b"horizoncode.guard.external-editor.local.v1:user-only;root-session;trusted-profile;literal-argv;permission-mode;process-tree-containment;workspace-fence;one-use";
+pub(crate) const CODE_MODE_GUARANTEES: &[&str] = &["explicit_codemode_enablement","fixed_host_resolved_helper","exact_resource_profile","bounded_source_tool_set","one_use"];
+pub(crate) const EDITOR_PROCESS_GUARANTEES: &[&str] = &[
+    "authenticated_root_session_user_action",
+    "trusted_profile_revision_and_executable",
+    "literal_bounded_argv_and_sanitized_environment",
+    "permission_mode_bound",
+    "process_tree_containment",
+    "workspace_write_fence",
+    "one_use",
+];
+pub(crate) const HTTP_GUARANTEES: &[&str] = &[
     "https_only",
     "host_allowlisted",
     "public_dns_pinned",
@@ -80,11 +274,112 @@ const HTTP_GUARANTEES: &[&str] = &[
     "bounded_request_response",
     "one_use",
 ];
+pub(crate) const PROVIDER_INFERENCE_GUARANTEES: &[&str] = &[
+    "live_managed_attempt", "selected_route_revision", "normalized_request_digest",
+    "transport_request_digest", "secret_operation_digest", "explicit_route_consent",
+    "budget_bound", "one_use", "no_fallback",
+];
+pub(crate) const AGENT_MESSAGE_GUARANTEES: &[&str] = &[
+    "authenticated_parent_child_sessions",
+    "immutable_profile_and_permission_scope",
+    "bounded_mailbox",
+    "one_use",
+];
+pub(crate) const AUTOMATION_GUARANTEES: &[&str] = &[
+    "authenticated_workspace_owner",
+    "definition_compare_and_swap",
+    "durable_idempotent_receipt",
+    "one_use",
+];
+pub(crate) const PROTOCOL_IO_GUARANTEES: &[&str] = &[
+    "authenticated_process_generation",
+    "current_workspace_revision",
+    "bounded_protocol_payload",
+    "one_use",
+];
+pub const PROTOCOL_IO_CAPABILITY_IDS: &[&str] = &[
+    LANGUAGE_SERVER_START_ID,
+    LANGUAGE_SERVER_STOP_ID,
+    LANGUAGE_DIAGNOSTICS_ID,
+    DEFINITIONS_FIND_ID,
+    REFERENCES_FIND_ID,
+    SYMBOLS_OUTLINE_ID,
+    SYMBOLS_SEARCH_ID,
+    DEBUG_START_ID,
+    DEBUG_STOP_ID,
+    DEBUG_BREAKPOINT_SET_ID,
+    DEBUG_CONTINUE_ID,
+    DEBUG_PAUSE_ID,
+    DEBUG_STEP_OVER_ID,
+    DEBUG_STEP_INTO_ID,
+    DEBUG_STEP_OUT_ID,
+    DEBUG_STACK_ID,
+    DEBUG_SCOPES_ID,
+];
+
+pub const fn is_automation_definition_action(action_id: &str) -> bool {
+    matches!(action_id, AUTOMATION_CREATE_ID | AUTOMATION_UPDATE_ID | AUTOMATION_ENABLE_ID | AUTOMATION_DISABLE_ID)
+}
+
+/// Internal managed provider dispatch action. Deliberately not a model tool.
+pub const fn is_provider_inference_action(action_id: &str) -> bool {
+    matches!(action_id, PROVIDERS_INFER_ID)
+}
+
+/// Per-operation LSP/DAP effects on a HostKernel-minted process. These actions
+/// still require fresh Guard admission, but their process/profile pins come from
+/// the retained HostProcessRef rather than a caller-supplied executable.
+pub fn is_protocol_io_action(action_id: &str) -> bool {
+    PROTOCOL_IO_CAPABILITY_IDS.contains(&action_id)
+}
+
+/// Direct workspace-code grants cover only typed, read-only protocol queries.
+/// Process lifecycle, document synchronization, debugger control, mutation
+/// proposals, and server callbacks still require an exact approval.
+pub fn is_direct_grant_read_protocol_action(action_id: &str) -> bool {
+    matches!(
+        action_id,
+        LANGUAGE_DIAGNOSTICS_ID
+            | DEFINITIONS_FIND_ID
+            | REFERENCES_FIND_ID
+            | SYMBOLS_OUTLINE_ID
+            | SYMBOLS_SEARCH_ID
+            | DEBUG_STACK_ID
+            | DEBUG_SCOPES_ID
+    )
+}
+
+/// Grant eligibility is method-level, not just capability-level: several LSP
+/// notifications share `language.diagnostics` but send workspace content to a
+/// process and therefore must not inherit a read-query grant.
+pub fn is_direct_grant_read_protocol_operation(
+    operation: &crate::protocol::ExecutionProtocolOperationV1,
+) -> bool {
+    use crate::protocol::ExecutionProtocolOperationV1;
+    match operation {
+        ExecutionProtocolOperationV1::Lsp(operation) => matches!(
+            operation.method.as_str(),
+            "textDocument/diagnostic"
+                | "workspace/diagnostic"
+                | "textDocument/definition"
+                | "textDocument/references"
+                | "textDocument/codeAction"
+                | "textDocument/rename"
+                | "textDocument/documentSymbol"
+                | "workspace/symbol"
+        ),
+        ExecutionProtocolOperationV1::Dap(operation) => {
+            matches!(operation.command.as_str(), "threads" | "stackTrace" | "scopes")
+        }
+        ExecutionProtocolOperationV1::LspReply(_) => false,
+    }
+}
 
 /// Canonical actions that start or control a supervised broker process (language server,
-/// debug adapter/debuggee, REPL interpreter, or host-registered verifier). Their Guard
-/// decision additionally requires a host-resolved trusted executable binding: implementors
-/// must never let a caller-supplied executable string establish authority.
+/// debug adapter/debuggee, REPL interpreter, CodeMode helper, external editor, or
+/// host-registered verifier). Their Guard decision additionally requires a host-resolved
+/// trusted executable binding: implementors must never let a caller-supplied executable
+/// string establish authority.
 pub fn is_broker_process_action(action_id: &str) -> bool {
     matches!(
         action_id,
@@ -98,6 +393,8 @@ pub fn is_broker_process_action(action_id: &str) -> bool {
             | REPL_EXECUTE_ID
             | REPL_RESET_ID
             | REPL_STOP_ID
+            | CODE_MODE_EXECUTE_ID
+            | EDITOR_LAUNCH_ID
             | BUILTIN_VERIFIER_ID
             | GIT_WORKTREE_ACQUIRE_ID
             | GIT_WORKTREE_LIST_ID
@@ -125,6 +422,10 @@ pub fn language_protocol_capability(method: &str) -> Option<&'static str> {
         "workspace/diagnostic" => Some(LANGUAGE_DIAGNOSTICS_ID),
         "textDocument/definition" => Some(DEFINITIONS_FIND_ID),
         "textDocument/references" => Some(REFERENCES_FIND_ID),
+        // These return proposed edits only. Core must route an accepted proposal
+        // through the ordinary versioned files.patch Guard flow.
+        "textDocument/codeAction" => Some(LANGUAGE_DIAGNOSTICS_ID),
+        "textDocument/rename" => Some(REFERENCES_FIND_ID),
         "textDocument/documentSymbol" => Some(SYMBOLS_OUTLINE_ID),
         "workspace/symbol" => Some(SYMBOLS_SEARCH_ID),
         _ => None,
@@ -141,6 +442,8 @@ pub fn language_protocol_is_request(method: &str) -> Option<bool> {
         | "workspace/diagnostic"
         | "textDocument/definition"
         | "textDocument/references"
+        | "textDocument/codeAction"
+        | "textDocument/rename"
         | "textDocument/documentSymbol"
         | "workspace/symbol" => Some(true),
         "initialized"
@@ -187,7 +490,6 @@ pub fn language_server_event_capability(method: &str) -> Option<&'static str> {
 pub fn debug_protocol_capability(command: &str) -> Option<&'static str> {
     match command {
         "initialize" | "configurationDone" => Some(DEBUG_START_ID),
-        "attach" => Some(DEBUG_ATTACH_ID),
         "setBreakpoints" | "setFunctionBreakpoints" | "setExceptionBreakpoints" => {
             Some(DEBUG_BREAKPOINT_SET_ID)
         }
@@ -198,10 +500,11 @@ pub fn debug_protocol_capability(command: &str) -> Option<&'static str> {
         "stepOut" => Some(DEBUG_STEP_OUT_ID),
         "threads" | "stackTrace" => Some(DEBUG_STACK_ID),
         "scopes" => Some(DEBUG_SCOPES_ID),
-        // Many adapters evaluate getters or lazy formatters while enumerating
-        // variables. Keep this unavailable until the selected adapter profile
-        // proves a side-effect-free inspection mode.
+        "attach" => Some(DEBUG_ATTACH_ID),
         "evaluate" => Some(DEBUG_EVALUATE_ID),
+        // `attach` and `evaluate` are accepted only by the strict typed DAP
+        // envelope, which binds a HostKernel-minted target and bounded expression.
+        // Variables can invoke lazy getters/formatters and remain unavailable.
         "disconnect" | "terminate" => Some(DEBUG_STOP_ID),
         _ => None,
     }
@@ -249,6 +552,10 @@ pub enum EffectOriginKindV1 {
     /// accepted Run and is never supplied by a client; only the built-in verifier action
     /// may use it, with a distinct authenticated reviewer and explicit approval.
     ManagedRun,
+    /// HostKernel-owned pre-Task worktree lifecycle, scoped to an authenticated P8
+    /// root-coordinator operation. This is never a user/model supplied origin and may
+    /// authorize only the three canonical Git worktree broker capabilities.
+    ManagedRoot,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -257,6 +564,9 @@ pub struct EffectOriginV1<'a> {
     pub session_id: &'a str,
     pub batch_id: &'a str,
     pub call_id: &'a str,
+    /// Digest of the opaque P8 root lifecycle operation and current authenticated root
+    /// proof. Required only for ManagedRoot; never accepted from RPC request fields.
+    pub scope_digest: Option<&'a str>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -666,6 +976,34 @@ fn current_capability_policy_revision() -> String {
     format!("blake3:{}", hasher.finalize().to_hex())
 }
 
+/// Stable direct filesystem Guard backend identity used only for DirectSessionGrant
+/// pinning. This names the existing handle-relative workspace effect boundary; it
+/// makes no claim that arbitrary child processes are OS confined.
+pub(crate) const DIRECT_SESSION_EFFECT_BACKEND_ID: &str = "horizoncode.effect-host.workspace-root.v1";
+
+/// Canonical policy digest for grant issuance and exact-pin lookup. The grant
+/// schema stores the digest, not a caller-controlled numeric revision.
+pub(crate) fn direct_session_policy_digest() -> String {
+    current_capability_policy_revision()
+}
+
+/// Digest the exact Guarded workspace-root guarantees that ordinary direct
+/// read/edit operations currently enforce. Process/build/test actions remain
+/// independently gated by their own OS-enforced backend evidence.
+pub(crate) fn direct_session_guarantee_set_digest() -> String {
+    let mut guarantees = GUARANTEES.to_vec();
+    guarantees.sort_unstable();
+    let value = crate::messagepack::Value::Array(
+        guarantees.into_iter().map(|value| crate::messagepack::Value::String(value.to_owned())).collect(),
+    );
+    let encoded = crate::messagepack::encode(&value, crate::messagepack::FRAME_LIMITS)
+        .expect("small Guard guarantee set must encode");
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"horizoncode.direct-session-guarantees.v1\0");
+    hasher.update(&encoded);
+    format!("blake3:{}", hasher.finalize().to_hex())
+}
+
 fn effective_capability_ceiling_digest(
     attempt_id: &str,
     owner_epoch: u64,
@@ -858,7 +1196,16 @@ pub(crate) fn location_principal_binding(subject: &str) -> String {
 /// Stable host policy facts used to build a bounded consent projection. These values come
 /// only from the canonical Guard policy table; they are never decoded from RPC input.
 pub fn approval_policy(action_id: &str) -> Option<(&'static str, String, Vec<&'static str>)> {
-    let (policy_id, policy_bytes, guarantees) = if is_broker_process_action(action_id) {
+    if !crate::managed_control::canonical_capability_id_is_registered(action_id) {
+        return None;
+    }
+    let (policy_id, policy_bytes, guarantees) = if action_id == EDITOR_LAUNCH_ID {
+        (EDITOR_PROCESS_POLICY_ID, EDITOR_PROCESS_POLICY_BYTES, EDITOR_PROCESS_GUARANTEES)
+    } else if is_protocol_io_action(action_id) {
+        (PROTOCOL_IO_POLICY_ID, PROTOCOL_IO_POLICY_BYTES, PROTOCOL_IO_GUARANTEES)
+    } else if action_id == CODE_MODE_EXECUTE_ID {
+        (CODE_MODE_POLICY_ID, CODE_MODE_POLICY_BYTES, CODE_MODE_GUARANTEES)
+    } else if is_broker_process_action(action_id) {
         (
             BROKER_PROCESS_POLICY_ID,
             BROKER_POLICY_BYTES,
@@ -866,6 +1213,12 @@ pub fn approval_policy(action_id: &str) -> Option<(&'static str, String, Vec<&'s
         )
     } else if action_id == WEB_SEARCH_ID {
         (OUTBOUND_HTTP_POLICY_ID, HTTP_POLICY_BYTES, HTTP_GUARANTEES)
+    } else if is_provider_inference_action(action_id) {
+        (PROVIDER_INFERENCE_POLICY_ID, PROVIDER_INFERENCE_POLICY_BYTES, PROVIDER_INFERENCE_GUARANTEES)
+    } else if action_id == AGENTS_MESSAGE_ID {
+        (AGENT_MESSAGE_POLICY_ID, AGENT_MESSAGE_POLICY_BYTES, AGENT_MESSAGE_GUARANTEES)
+    } else if is_automation_definition_action(action_id) {
+        (AUTOMATION_POLICY_ID, AUTOMATION_POLICY_BYTES, AUTOMATION_GUARANTEES)
     } else if action_id == FILES_WRITE_ID
         || action_id == FILES_PATCH_ID
         || action_id == TERMINAL_RUN_ID
@@ -879,9 +1232,23 @@ pub fn approval_policy(action_id: &str) -> Option<(&'static str, String, Vec<&'s
 }
 
 pub fn authorize(request: &AuthorizationRequestV1<'_>, decision_id: &str) -> GuardDecisionV1 {
-    let broker_action = is_broker_process_action(request.action_id);
+    let protocol_io_action = is_protocol_io_action(request.action_id);
+    let broker_action = is_broker_process_action(request.action_id) && !protocol_io_action;
+    let code_mode_action = request.action_id == CODE_MODE_EXECUTE_ID;
+    let editor_action = request.action_id == EDITOR_LAUNCH_ID;
     let http_action = request.action_id == WEB_SEARCH_ID;
-    let (policy_bytes, expected_policy_id, expected_guarantees) = if broker_action {
+    let provider_inference_action = is_provider_inference_action(request.action_id);
+    let agent_message_action = request.action_id == AGENTS_MESSAGE_ID;
+    let automation_action = is_automation_definition_action(request.action_id);
+    let (policy_bytes, expected_policy_id, expected_guarantees) = if agent_message_action {
+        (AGENT_MESSAGE_POLICY_BYTES, AGENT_MESSAGE_POLICY_ID, AGENT_MESSAGE_GUARANTEES)
+    } else if protocol_io_action {
+        (PROTOCOL_IO_POLICY_BYTES, PROTOCOL_IO_POLICY_ID, PROTOCOL_IO_GUARANTEES)
+    } else if editor_action {
+        (EDITOR_PROCESS_POLICY_BYTES, EDITOR_PROCESS_POLICY_ID, EDITOR_PROCESS_GUARANTEES)
+    } else if code_mode_action {
+        (CODE_MODE_POLICY_BYTES, CODE_MODE_POLICY_ID, CODE_MODE_GUARANTEES)
+    } else if broker_action {
         (
             BROKER_POLICY_BYTES,
             BROKER_PROCESS_POLICY_ID,
@@ -889,17 +1256,27 @@ pub fn authorize(request: &AuthorizationRequestV1<'_>, decision_id: &str) -> Gua
         )
     } else if http_action {
         (HTTP_POLICY_BYTES, OUTBOUND_HTTP_POLICY_ID, HTTP_GUARANTEES)
+    } else if provider_inference_action {
+        (PROVIDER_INFERENCE_POLICY_BYTES, PROVIDER_INFERENCE_POLICY_ID, PROVIDER_INFERENCE_GUARANTEES)
+    } else if automation_action {
+        (AUTOMATION_POLICY_BYTES, AUTOMATION_POLICY_ID, AUTOMATION_GUARANTEES)
     } else {
         (POLICY_BYTES, WORKSPACE_WRITE_POLICY_ID, GUARANTEES)
     };
     let policy_digest = digest(&[policy_bytes]);
     let normalized_action = request.action_id.to_owned();
-    // A terminal-style action resolves a working directory, so the workspace root itself
-    // is a valid resource (`.`). Filesystem actions keep the stricter non-empty relative
-    // path rule. Broker actions follow the same directory rule as terminal actions.
+    // Process, HTTP and mailbox actions use the registered workspace root as their
+    // resource boundary (`.`). Filesystem actions keep the stricter non-empty relative
+    // path rule; mailbox payload authority is separately pinned to child/profile facts.
     let terminal_like = request.action_id == TERMINAL_RUN_ID
         || request.action_id == TERMINAL_START_ID
+        || code_mode_action
+        || editor_action
+        || automation_action
         || http_action
+        || provider_inference_action
+        || agent_message_action
+        || protocol_io_action
         || broker_action;
     let resolved_relative = if terminal_like
         && request.resource_resolution.target == request.resource_resolution.workspace_root
@@ -921,12 +1298,19 @@ pub fn authorize(request: &AuthorizationRequestV1<'_>, decision_id: &str) -> Gua
             .map(|relative| relative.replace('\\', "/"))
     };
     let resource_digest = resource_digest(request);
-    let supported_action = request.action_id == FILES_WRITE_ID
+    let supported_action = crate::managed_control::canonical_capability_id_is_registered(request.action_id)
+        && (request.action_id == FILES_WRITE_ID
         || request.action_id == FILES_PATCH_ID
         || request.action_id == TERMINAL_RUN_ID
         || request.action_id == TERMINAL_START_ID
+        || code_mode_action
+        || editor_action
         || http_action
-        || broker_action;
+        || provider_inference_action
+        || agent_message_action
+        || automation_action
+        || protocol_io_action
+        || broker_action);
     // A Session label is optional for actions that a human can originate directly
     // (`terminal.run`/`terminal.start`, and broker process control from a user action);
     // their authority then comes from the principal plus explicit approval. A
@@ -934,10 +1318,13 @@ pub fn authorize(request: &AuthorizationRequestV1<'_>, decision_id: &str) -> Gua
     // `origin_binding_missing` below.
     let session_optional = request.action_id == TERMINAL_RUN_ID
         || request.action_id == TERMINAL_START_ID
+        || provider_inference_action
+        || automation_action
         || (broker_action
             && matches!(
                 request.origin.kind,
                 EffectOriginKindV1::UserAction | EffectOriginKindV1::ManagedRun
+                    | EffectOriginKindV1::ManagedRoot
             ));
     let session_missing = request.origin.session_id.is_empty() && !session_optional;
     // The origin kind decides which binding the effect must carry. A model-originated
@@ -949,21 +1336,48 @@ pub fn authorize(request: &AuthorizationRequestV1<'_>, decision_id: &str) -> Gua
             request.origin.session_id.is_empty() || !is_sha256_digest(request.turn_context_digest)
         }
         EffectOriginKindV1::UserAction => !request.turn_context_digest.is_empty(),
+        EffectOriginKindV1::ManagedRun if provider_inference_action => {
+            request.origin.session_id.is_empty() || !request.turn_context_digest.is_empty()
+                || request.origin.scope_digest.is_none_or(|digest| !is_digest(digest))
+        }
         EffectOriginKindV1::ManagedRun => {
             !request.origin.session_id.is_empty() || !request.turn_context_digest.is_empty()
+        }
+        EffectOriginKindV1::ManagedRoot => {
+            request.origin.session_id.is_empty()
+                || !request.turn_context_digest.is_empty()
+                || request.origin.scope_digest.is_none_or(|digest| !is_digest(digest))
+                || !matches!(request.action_id,
+                    GIT_WORKTREE_ACQUIRE_ID | GIT_WORKTREE_LIST_ID | GIT_WORKTREE_RELEASE_ID)
         }
     };
     let executable_reason = executable_reason(request, broker_action);
     let reason_code = if !supported_action {
         Some("unsupported_action")
+    } else if provider_inference_action && request.origin.kind != EffectOriginKindV1::ManagedRun {
+        Some("provider_inference_requires_managed_attempt")
     } else if request.origin.kind == EffectOriginKindV1::UserAction
         && request.action_id != TERMINAL_RUN_ID
         && request.action_id != TERMINAL_START_ID
+        && !agent_message_action
+        && !automation_action
+        && !protocol_io_action
         && !broker_action
     {
         Some("unsupported_user_action")
-    } else if request.origin.kind == EffectOriginKindV1::ManagedRun && !broker_action {
+    } else if request.origin.kind == EffectOriginKindV1::ManagedRun
+        && !provider_inference_action
+        && !broker_action
+        && !protocol_io_action
+    {
         Some("unsupported_managed_run_action")
+    } else if request.origin.kind == EffectOriginKindV1::ManagedRoot
+        && (!broker_action || !matches!(request.action_id,
+            GIT_WORKTREE_ACQUIRE_ID | GIT_WORKTREE_LIST_ID | GIT_WORKTREE_RELEASE_ID))
+    {
+        Some("unsupported_managed_root_action")
+    } else if automation_action && request.origin.kind != EffectOriginKindV1::UserAction {
+        Some("automation_requires_authenticated_user_action")
     } else if broker_action
         && request.origin.kind == EffectOriginKindV1::SessionBatch
         && is_model_control_denied(request.action_id)
@@ -1058,6 +1472,7 @@ pub fn intent_digest(request: &AuthorizationRequestV1<'_>, decision: &GuardDecis
         EffectOriginKindV1::SessionBatch => b"session_batch".as_slice(),
         EffectOriginKindV1::UserAction => b"user_action".as_slice(),
         EffectOriginKindV1::ManagedRun => b"managed_run".as_slice(),
+        EffectOriginKindV1::ManagedRoot => b"managed_root".as_slice(),
     };
     for value in [
         request.request_id.as_bytes(),
@@ -1066,6 +1481,7 @@ pub fn intent_digest(request: &AuthorizationRequestV1<'_>, decision: &GuardDecis
         request.origin.session_id.as_bytes(),
         request.origin.batch_id.as_bytes(),
         request.origin.call_id.as_bytes(),
+        request.origin.scope_digest.unwrap_or("").as_bytes(),
         request.action_id.as_bytes(),
         request.argument_digest.as_bytes(),
         request
@@ -1208,6 +1624,100 @@ mod tests {
     use super::*;
     use std::path::Path;
 
+    #[test]
+    fn external_editor_is_a_distinct_registered_user_process_effect() {
+        assert!(crate::managed_control::canonical_capability_id_is_registered(
+            EDITOR_LAUNCH_ID
+        ));
+        assert!(is_broker_process_action(EDITOR_LAUNCH_ID));
+        let (policy_id, policy_digest, guarantees) =
+            approval_policy(EDITOR_LAUNCH_ID).expect("canonical editor policy");
+        assert_eq!(policy_id, EDITOR_PROCESS_POLICY_ID);
+        assert!(is_digest(&policy_digest));
+        for required in [
+            "authenticated_root_session_user_action",
+            "trusted_profile_revision_and_executable",
+            "literal_bounded_argv_and_sanitized_environment",
+            "permission_mode_bound",
+            "process_tree_containment",
+            "workspace_write_fence",
+            "one_use",
+        ] {
+            assert!(guarantees.contains(&required), "missing {required}");
+        }
+    }
+
+    #[test]
+    fn direct_workspace_grants_cover_only_read_only_protocol_queries() {
+        for action in [
+            LANGUAGE_DIAGNOSTICS_ID,
+            DEFINITIONS_FIND_ID,
+            REFERENCES_FIND_ID,
+            SYMBOLS_OUTLINE_ID,
+            SYMBOLS_SEARCH_ID,
+            DEBUG_STACK_ID,
+            DEBUG_SCOPES_ID,
+        ] {
+            assert!(is_direct_grant_read_protocol_action(action), "{action}");
+        }
+        for action in [
+            LANGUAGE_SERVER_START_ID,
+            LANGUAGE_SERVER_STOP_ID,
+            DEBUG_START_ID,
+            DEBUG_ATTACH_ID,
+            DEBUG_EVALUATE_ID,
+            DEBUG_CONTINUE_ID,
+            DEBUG_BREAKPOINT_SET_ID,
+            FILES_PATCH_ID,
+            "unknown",
+        ] {
+            assert!(!is_direct_grant_read_protocol_action(action), "{action}");
+        }
+    }
+
+    #[test]
+    fn direct_workspace_grants_do_not_cover_lsp_notifications_or_callbacks() {
+        use crate::protocol::{
+            DebugProtocolOperationV1, ExecutionProtocolOperationV1,
+            LanguageProtocolOperationV1, LanguageProtocolReplyV1, Value,
+        };
+        let lsp = |method: &str| ExecutionProtocolOperationV1::Lsp(LanguageProtocolOperationV1 {
+            request_sequence: 1,
+            method: method.to_owned(),
+            request_id: Some(Value::Unsigned(1)),
+            params: Value::Map(std::collections::BTreeMap::new()),
+        });
+        for method in ["textDocument/definition", "textDocument/diagnostic", "workspace/symbol"] {
+            assert!(is_direct_grant_read_protocol_operation(&lsp(method)));
+        }
+        for method in ["textDocument/didOpen", "textDocument/didChange", "workspace/didChangeWatchedFiles", "initialized"] {
+            assert!(!is_direct_grant_read_protocol_operation(&lsp(method)));
+        }
+        let callback = ExecutionProtocolOperationV1::LspReply(LanguageProtocolReplyV1 {
+            request_sequence: 1,
+            server_request_id: Value::Unsigned(1),
+            method: "workspace/configuration".to_owned(),
+            result: Value::Array(Vec::new()),
+        });
+        assert!(!is_direct_grant_read_protocol_operation(&callback));
+        for command in ["threads", "stackTrace", "scopes"] {
+            let operation = ExecutionProtocolOperationV1::Dap(DebugProtocolOperationV1 {
+                request_sequence: 1,
+                request_id: 1,
+                command: command.to_owned(),
+                arguments: Value::Map(std::collections::BTreeMap::new()),
+            });
+            assert!(is_direct_grant_read_protocol_operation(&operation));
+        }
+        let continue_operation = ExecutionProtocolOperationV1::Dap(DebugProtocolOperationV1 {
+            request_sequence: 1,
+            request_id: 1,
+            command: "continue".to_owned(),
+            arguments: Value::Map(std::collections::BTreeMap::new()),
+        });
+        assert!(!is_direct_grant_read_protocol_operation(&continue_operation));
+    }
+
     const ARGUMENT_DIGEST: &str =
         "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const WORKSPACE_BINDING: &str =
@@ -1227,6 +1737,7 @@ mod tests {
                 session_id: "ses_1",
                 batch_id: "batch_1",
                 call_id: "call_1",
+                scope_digest: None,
             },
             action_id: FILES_WRITE_ID,
             argument_digest: ARGUMENT_DIGEST,
@@ -1261,6 +1772,7 @@ mod tests {
                 session_id: "ses_1",
                 batch_id: "batch_1",
                 call_id: "call_1",
+                scope_digest: None,
             },
             action_id,
             argument_digest: ARGUMENT_DIGEST,
@@ -1674,6 +2186,10 @@ mod tests {
             session_id: "ses_1".to_owned(),
             workspace_revision: format!("blake3:{}", "a".repeat(64)),
             delegation_binding_digest: format!("blake3:{}", "b".repeat(64)),
+            effective_max_tokens: 100,
+            remaining_tokens: 100,
+            request_id: None, request_sequence: None, context_selection_digest: None,
+            worktree_target: None,
         };
         let scope_digest = scope.digest().unwrap();
         let first = intent_digest_with_managed_scope(&request, &decision, Some(&scope_digest));

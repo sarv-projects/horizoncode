@@ -1,4 +1,4 @@
-import { Layer, ManagedRuntime } from "effect"
+import { Effect, Layer, ManagedRuntime } from "effect"
 import { attach } from "./run-service"
 import * as Observability from "@opencode-ai/core/observability"
 
@@ -51,9 +51,26 @@ import { BackgroundJob } from "@/background/job"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { makeGlobalNode } from "@opencode-ai/core/effect/app-node"
 import { AppNodeBuilderV1 } from "./app-node-builder-v1"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { SessionSupervisor } from "@opencode-ai/core/session/supervisor"
+import { DirectProviderTransport } from "@opencode-ai/llm/route"
+import { LayerNodePlatform } from "@opencode-ai/core/effect/app-node-platform"
+
+const directProviderTransportNode = makeGlobalNode({
+  service: DirectProviderTransport.Service,
+  layer: Layer.effect(
+    DirectProviderTransport.Service,
+    Effect.gen(function* () {
+      const auth = yield* Auth.Service
+      return DirectProviderTransport.Service.of({
+        dispatch: (input) => auth.dispatchPinnedDirectProviderRequest(input),
+      })
+    }),
+  ),
+  deps: [Auth.node],
+})
 
 export const AppLayer = AppNodeBuilderV1.build(
   LayerNode.group([
@@ -106,6 +123,7 @@ export const AppLayer = AppNodeBuilderV1.build(
     ShareNext.node,
     SessionShare.node,
   ]),
+  [[LayerNodePlatform.directProviderTransport, directProviderTransportNode]],
 ).pipe(Layer.provideMerge(AppNodeBuilderV1.build(Ripgrep.node)), Layer.provideMerge(Observability.layer))
 
 const rt = ManagedRuntime.make(AppLayer, { memoMap })

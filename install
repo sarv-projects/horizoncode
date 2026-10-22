@@ -1,41 +1,39 @@
 #!/usr/bin/env bash
 set -euo pipefail
-APP=opencode
+
+# Preserve the existing vendor-era install directory for in-place CLI upgrades;
+# the public command names both resolve to the same installed candidate/runtime.
 COMMAND=horizoncode
-# Short command name for the same CLI entrypoint (no second runtime).
 ALIAS=hzcode
-REPOSITORY="${HORIZONCODE_RELEASE_REPOSITORY:-sarv-projects/horizoncode}"
 
 MUTED='\033[0;2m'
 RED='\033[0;31m'
-ORANGE='\033[38;5;214m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 usage() {
-    cat <<EOF
+    cat <<'EOF'
 HorizonCode Installer
 
-Installs the HorizonCode CLI. Both 'horizoncode' and 'hzcode' start the same CLI.
+Installs a local Linux CLI candidate. Both 'horizoncode' and 'hzcode' start the
+same CLI entrypoint. Remote installation is disabled until a release signing
+trust policy is approved.
 
-Usage: install.sh [options]
+Usage: install [options]
 
 Options:
     -h, --help              Display this help message
-    -v, --version <version> Install a specific version (e.g., 1.0.180)
-    -b, --binary <path>     Install from a local binary instead of downloading
-        --no-modify-path    Don't modify shell config files (.zshrc, .bashrc, etc.)
+    -v, --version <version> Select a version (remote installation unavailable)
+    -b, --binary <path>     Install from a local executable candidate
+        --no-modify-path    Don't modify shell config files
 
-Examples:
-    curl -fsSL https://raw.githubusercontent.com/sarv-projects/horizoncode/main/install | bash
-    curl -fsSL https://raw.githubusercontent.com/sarv-projects/horizoncode/main/install | bash -s -- --version 1.0.180
+Example:
     ./install --binary /path/to/horizoncode
 EOF
 }
 
-requested_version=${VERSION:-}
-no_modify_path=false
 binary_path=""
-
+no_modify_path=false
+requested_version=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -h|--help)
@@ -43,435 +41,205 @@ while [[ $# -gt 0 ]]; do
             exit 0
             ;;
         -v|--version)
-            if [[ -n "${2:-}" ]]; then
-                requested_version="$2"
-                shift 2
-            else
-                echo -e "${RED}Error: --version requires a version argument${NC}"
+            if [[ -z "${2:-}" ]]; then
+                echo "Error: --version requires a version argument" >&2
                 exit 1
             fi
+            requested_version="$2"
+            shift 2
             ;;
         -b|--binary)
-            if [[ -n "${2:-}" ]]; then
-                binary_path="$2"
-                shift 2
-            else
-                echo -e "${RED}Error: --binary requires a path argument${NC}"
+            if [[ -z "${2:-}" ]]; then
+                echo "Error: --binary requires a path argument" >&2
                 exit 1
             fi
+            binary_path="$2"
+            shift 2
             ;;
         --no-modify-path)
             no_modify_path=true
             shift
             ;;
         *)
-            echo -e "${ORANGE}Warning: Unknown option '$1'${NC}" >&2
-            shift
+            echo "Error: unknown option '$1'" >&2
+            exit 1
             ;;
     esac
 done
 
-INSTALL_DIR=$HOME/.opencode/bin
+raw_os=$(uname -s)
+case "$raw_os" in
+    Linux*) ;;
+    *)
+        echo -e "${RED}HorizonCode V1 installer supports Linux/WSL only; native Windows is unavailable and macOS is out of scope.${NC}" >&2
+        exit 1
+        ;;
+esac
+
+if [[ -n "$requested_version" && -n "$binary_path" ]]; then
+    echo "Error: --version cannot be combined with --binary; version selection is unavailable until signed remote installs are approved." >&2
+    exit 1
+fi
+
+if [[ -z "$binary_path" ]]; then
+    echo -e "${RED}Network installation is unavailable until the HorizonCode release signing trust policy is approved.${NC}" >&2
+    if [[ -n "$requested_version" ]]; then
+        echo -e "${MUTED}Requested version: ${requested_version}${NC}" >&2
+    fi
+    echo -e "${MUTED}Use --binary only with a locally built candidate during release acceptance.${NC}" >&2
+    exit 1
+fi
+
+if [[ ! -f "$binary_path" || ! -x "$binary_path" || -L "$binary_path" ]]; then
+    echo -e "${RED}Error: Binary must be a regular executable file: ${binary_path}${NC}" >&2
+    exit 1
+fi
+
+INSTALL_DIR=${HORIZONCODE_INSTALL_DIR:-$HOME/.opencode/bin}
+if [[ -L "$INSTALL_DIR" ]]; then
+    echo -e "${RED}Error: Install directory must not be a symlink: ${INSTALL_DIR}${NC}" >&2
+    exit 1
+fi
 mkdir -p "$INSTALL_DIR"
 
-# If --binary is provided, skip all download/detection logic
-if [ -n "$binary_path" ]; then
-    if [ ! -f "$binary_path" ]; then
-        echo -e "${RED}Error: Binary not found at ${binary_path}${NC}"
+for destination in "$COMMAND" "$ALIAS"; do
+    current="${INSTALL_DIR}/${destination}"
+    if [[ -d "$current" && ! -L "$current" ]]; then
+        echo -e "${RED}Error: Install destination must not be a directory: ${current}${NC}" >&2
         exit 1
     fi
-    specific_version="local"
-else
-    raw_os=$(uname -s)
-    os=$(echo "$raw_os" | tr '[:upper:]' '[:lower:]')
-    case "$raw_os" in
-      Darwin*) os="darwin" ;;
-      Linux*) os="linux" ;;
-      MINGW*|MSYS*|CYGWIN*) os="windows" ;;
-    esac
+done
 
-    arch=$(uname -m)
-    if [[ "$arch" == "aarch64" ]]; then
-      arch="arm64"
-    fi
-    if [[ "$arch" == "x86_64" ]]; then
-      arch="x64"
-    fi
+# Copy into the destination filesystem, then replace the canonical path with a
+# single rename. A failed copy/chmod leaves the previous install untouched.
+staged=$(mktemp "${INSTALL_DIR}/.horizoncode-install.XXXXXX")
+if ! cp -- "$binary_path" "$staged" || ! chmod 755 "$staged"; then
+    rm -f -- "$staged"
+    exit 1
+fi
 
-    if [ "$os" = "darwin" ] && [ "$arch" = "x64" ]; then
-      rosetta_flag=$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)
-      if [ "$rosetta_flag" = "1" ]; then
-        arch="arm64"
-      fi
-    fi
-
-    combo="$os-$arch"
-    case "$combo" in
-      linux-x64|linux-arm64|darwin-x64|darwin-arm64|windows-x64)
-        ;;
-      *)
-        echo -e "${RED}Unsupported OS/Arch: $os/$arch${NC}"
+# Keep the short command a symlink to the canonical executable. The copy
+# fallback is a hard link to the staged candidate so both names initially
+# refer to the same inode and cannot differ at installation time.
+alias_stage=$(mktemp "${INSTALL_DIR}/.${ALIAS}.install.XXXXXX")
+rm -f -- "$alias_stage"
+if ! ln -s "$COMMAND" "$alias_stage" 2>/dev/null; then
+    if ! ln -- "$staged" "$alias_stage"; then
+        rm -f -- "$staged" "$alias_stage"
+        echo -e "${RED}Error: Could not create the shared hzcode entrypoint.${NC}" >&2
         exit 1
-        ;;
-    esac
-
-    archive_ext=".zip"
-    if [ "$os" = "linux" ]; then
-      archive_ext=".tar.gz"
-    fi
-
-    is_musl=false
-    if [ "$os" = "linux" ]; then
-      if [ -f /etc/alpine-release ]; then
-        is_musl=true
-      fi
-
-      if command -v ldd >/dev/null 2>&1; then
-        if ldd --version 2>&1 | grep -qi musl; then
-          is_musl=true
-        fi
-      fi
-    fi
-
-    needs_baseline=false
-    if [ "$arch" = "x64" ]; then
-      if [ "$os" = "linux" ]; then
-        if ! grep -qwi avx2 /proc/cpuinfo 2>/dev/null; then
-          needs_baseline=true
-        fi
-      fi
-
-      if [ "$os" = "darwin" ]; then
-        avx2=$(sysctl -n hw.optional.avx2_0 2>/dev/null || echo 0)
-        if [ "$avx2" != "1" ]; then
-          needs_baseline=true
-        fi
-      fi
-
-      if [ "$os" = "windows" ]; then
-        ps="(Add-Type -MemberDefinition \"[DllImport(\"\"kernel32.dll\"\")] public static extern bool IsProcessorFeaturePresent(int ProcessorFeature);\" -Name Kernel32 -Namespace Win32 -PassThru)::IsProcessorFeaturePresent(40)"
-        out=""
-        if command -v powershell.exe >/dev/null 2>&1; then
-          out=$(powershell.exe -NoProfile -NonInteractive -Command "$ps" 2>/dev/null || true)
-        elif command -v pwsh >/dev/null 2>&1; then
-          out=$(pwsh -NoProfile -NonInteractive -Command "$ps" 2>/dev/null || true)
-        fi
-        out=$(echo "$out" | tr -d '\r' | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
-        if [ "$out" != "true" ] && [ "$out" != "1" ]; then
-          needs_baseline=true
-        fi
-      fi
-    fi
-
-    target="$os-$arch"
-    if [ "$needs_baseline" = "true" ]; then
-      target="$target-baseline"
-    fi
-    if [ "$is_musl" = "true" ]; then
-      target="$target-musl"
-    fi
-
-    filename="$APP-$target$archive_ext"
-
-
-    if [ "$os" = "linux" ]; then
-        if ! command -v tar >/dev/null 2>&1; then
-             echo -e "${RED}Error: 'tar' is required but not installed.${NC}"
-             exit 1
-        fi
-    else
-        if ! command -v unzip >/dev/null 2>&1; then
-            echo -e "${RED}Error: 'unzip' is required but not installed.${NC}"
-            exit 1
-        fi
-    fi
-
-    if [ -z "$requested_version" ]; then
-        url="https://github.com/${REPOSITORY}/releases/latest/download/$filename"
-        specific_version=$(curl -s "https://api.github.com/repos/${REPOSITORY}/releases/latest" | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
-
-        if [[ $? -ne 0 || -z "$specific_version" ]]; then
-            echo -e "${RED}Failed to fetch version information${NC}"
-            exit 1
-        fi
-    else
-        # Strip leading 'v' if present
-        requested_version="${requested_version#v}"
-        url="https://github.com/${REPOSITORY}/releases/download/v${requested_version}/$filename"
-        specific_version=$requested_version
-
-        # Verify the release exists before downloading
-        http_status=$(curl -sI -o /dev/null -w "%{http_code}" "https://github.com/${REPOSITORY}/releases/tag/v${requested_version}")
-        if [ "$http_status" = "404" ]; then
-            echo -e "${RED}Error: Release v${requested_version} not found${NC}"
-            echo -e "${MUTED}Available releases: https://github.com/${REPOSITORY}/releases${NC}"
-            exit 1
-        fi
     fi
 fi
 
-print_message() {
-    local level=$1
-    local message=$2
-    local color=""
-
-    case $level in
-        info) color="${NC}" ;;
-        warning) color="${NC}" ;;
-        error) color="${RED}" ;;
-    esac
-
-    echo -e "${color}${message}${NC}"
-}
-
-check_version() {
-    if command -v "$COMMAND" >/dev/null 2>&1; then
-        opencode_path=$(command -v "$COMMAND")
-
-        ## Check the installed version
-        installed_version=$("$COMMAND" --version 2>/dev/null || echo "")
-
-        if [[ "$installed_version" != "$specific_version" ]]; then
-            print_message info "${MUTED}Installed version: ${NC}$installed_version."
-        else
-            print_message info "${MUTED}Version ${NC}$specific_version${MUTED} already installed"
-            provision_command_names
-            exit 0
+# Prepare recoverable snapshots before replacing either public command. The
+# two renames cannot form one filesystem transaction; retaining these snapshots
+# lets us restore the old canonical command if alias activation fails.
+canonical_path="${INSTALL_DIR}/${COMMAND}"
+alias_path="${INSTALL_DIR}/${ALIAS}"
+canonical_backup=""
+alias_backup=""
+cleanup_install_stages() {
+    rm -f -- "$staged" "$alias_stage"
+    for backup in "$canonical_backup" "$alias_backup"; do
+        if [[ -n "$backup" ]]; then
+            rm -f -- "$backup"
         fi
+    done
+}
+if [[ -e "$canonical_path" || -L "$canonical_path" ]]; then
+    canonical_backup=$(mktemp "${INSTALL_DIR}/.${COMMAND}.backup.XXXXXX")
+    if ! cp -a -- "$canonical_path" "$canonical_backup"; then
+        cleanup_install_stages
+        echo -e "${RED}Error: Could not preserve the existing ${COMMAND} command.${NC}" >&2
+        exit 1
     fi
-}
-
-unbuffered_sed() {
-    if echo | sed -u -e "" >/dev/null 2>&1; then
-        sed -nu "$@"
-    elif echo | sed -l -e "" >/dev/null 2>&1; then
-        sed -nl "$@"
-    else
-        local pad="$(printf "\n%512s" "")"
-        sed -ne "s/$/\\${pad}/" "$@"
+fi
+if [[ -e "$alias_path" || -L "$alias_path" ]]; then
+    alias_backup=$(mktemp "${INSTALL_DIR}/.${ALIAS}.backup.XXXXXX")
+    if ! cp -a -- "$alias_path" "$alias_backup"; then
+        cleanup_install_stages
+        echo -e "${RED}Error: Could not preserve the existing ${ALIAS} command.${NC}" >&2
+        exit 1
     fi
-}
-
-print_progress() {
-    local bytes="$1"
-    local length="$2"
-    [ "$length" -gt 0 ] || return 0
-
-    local width=50
-    local percent=$(( bytes * 100 / length ))
-    [ "$percent" -gt 100 ] && percent=100
-    local on=$(( percent * width / 100 ))
-    local off=$(( width - on ))
-
-    local filled=$(printf "%*s" "$on" "")
-    filled=${filled// /■}
-    local empty=$(printf "%*s" "$off" "")
-    empty=${empty// /･}
-
-    printf "\r${ORANGE}%s%s %3d%%${NC}" "$filled" "$empty" "$percent" >&4
-}
-
-download_with_progress() {
-    local url="$1"
-    local output="$2"
-
-    if [ -t 2 ]; then
-        exec 4>&2
-    else
-        exec 4>/dev/null
-    fi
-
-    local tmp_dir=${TMPDIR:-/tmp}
-    local basename="${tmp_dir}/opencode_install_$$"
-    local tracefile="${basename}.trace"
-
-    rm -f "$tracefile"
-    mkfifo "$tracefile"
-
-    # Hide cursor
-    printf "\033[?25l" >&4
-
-    trap "trap - RETURN; rm -f \"$tracefile\"; printf '\033[?25h' >&4; exec 4>&-" RETURN
-
-    (
-        curl --trace-ascii "$tracefile" -s -L -o "$output" "$url"
-    ) &
-    local curl_pid=$!
-
-    unbuffered_sed \
-        -e 'y/ACDEGHLNORTV/acdeghlnortv/' \
-        -e '/^0000: content-length:/p' \
-        -e '/^<= recv data/p' \
-        "$tracefile" | \
-    {
-        local length=0
-        local bytes=0
-
-        while IFS=" " read -r -a line; do
-            [ "${#line[@]}" -lt 2 ] && continue
-            local tag="${line[0]} ${line[1]}"
-
-            if [ "$tag" = "0000: content-length:" ]; then
-                length="${line[2]}"
-                length=$(echo "$length" | tr -d '\r')
-                bytes=0
-            elif [ "$tag" = "<= recv" ]; then
-                local size="${line[3]}"
-                bytes=$(( bytes + size ))
-                if [ "$length" -gt 0 ]; then
-                    print_progress "$bytes" "$length"
-                fi
-            fi
-        done
-    }
-
-    wait $curl_pid
-    local ret=$?
-    echo "" >&4
-    return $ret
-}
-
-download_and_install() {
-    print_message info "\n${MUTED}Installing ${NC}HorizonCode ${MUTED}version: ${NC}$specific_version"
-    local tmp_dir="${TMPDIR:-/tmp}/opencode_install_$$"
-    mkdir -p "$tmp_dir"
-
-    if [[ "$os" == "windows" ]] || ! [ -t 2 ] || ! download_with_progress "$url" "$tmp_dir/$filename"; then
-        # Fallback to standard curl on Windows, non-TTY environments, or if custom progress fails
-        curl -# -L -o "$tmp_dir/$filename" "$url"
-    fi
-
-    if [ "$os" = "linux" ]; then
-        tar -xzf "$tmp_dir/$filename" -C "$tmp_dir"
-    else
-        unzip -q "$tmp_dir/$filename" -d "$tmp_dir"
-    fi
-
-    mv "$tmp_dir/opencode" "${INSTALL_DIR}/${COMMAND}"
-    chmod 755 "${INSTALL_DIR}/${COMMAND}"
-    rm -rf "$tmp_dir"
-}
-
-install_from_binary() {
-    print_message info "\n${MUTED}Installing ${NC}HorizonCode ${MUTED}from: ${NC}$binary_path"
-    cp "$binary_path" "${INSTALL_DIR}/${COMMAND}"
-    chmod 755 "${INSTALL_DIR}/${COMMAND}"
-}
-
-provision_command_names() {
-    # 'horizoncode' and 'hzcode' must both start the same CLI entrypoint.
-    # Prefer a symlink; fall back to a copy where symlinks are unavailable.
-    ln -sf "$COMMAND" "${INSTALL_DIR}/${ALIAS}" 2>/dev/null || cp -f "${INSTALL_DIR}/${COMMAND}" "${INSTALL_DIR}/${ALIAS}"
-    chmod 755 "${INSTALL_DIR}/${ALIAS}"
-}
-
-if [ -n "$binary_path" ]; then
-    install_from_binary
-else
-    check_version
-    download_and_install
 fi
 
-provision_command_names
-
+if ! mv -f -- "$staged" "${INSTALL_DIR}/${COMMAND}"; then
+    cleanup_install_stages
+    exit 1
+fi
+if ! mv -f -- "$alias_stage" "${INSTALL_DIR}/${ALIAS}"; then
+    restore_failed=false
+    if [[ -n "$canonical_backup" ]]; then
+        if ! mv -f -- "$canonical_backup" "$canonical_path"; then
+            restore_failed=true
+        fi
+    elif ! rm -f -- "$canonical_path"; then
+        restore_failed=true
+    fi
+    if [[ -n "$alias_backup" ]]; then
+        if ! mv -f -- "$alias_backup" "$alias_path"; then
+            restore_failed=true
+        fi
+    elif ! rm -f -- "$alias_path"; then
+        restore_failed=true
+    fi
+    rm -f -- "$alias_stage"
+    if [[ "$restore_failed" == true ]]; then
+        echo -e "${RED}Error: Alias activation failed and full rollback could not be restored; recovery copies: ${canonical_backup} ${alias_backup}${NC}" >&2
+        exit 1
+    fi
+    cleanup_install_stages
+    echo -e "${RED}Error: Could not activate the ${ALIAS} command; prior ${COMMAND} was restored.${NC}" >&2
+    exit 1
+fi
+cleanup_install_stages
 
 add_to_path() {
     local config_file=$1
     local command=$2
-
     if grep -Fxq "$command" "$config_file"; then
-        print_message info "Command already exists in $config_file, skipping write."
-    elif [[ -w $config_file ]]; then
-        echo -e "\n# horizoncode" >> "$config_file"
-        echo "$command" >> "$config_file"
-        print_message info "${MUTED}Successfully added ${NC}horizoncode ${MUTED}to \$PATH in ${NC}$config_file"
-    else
-        print_message warning "Manually add the directory to $config_file (or similar):"
-        print_message info "  $command"
+        return 0
     fi
+    if [[ -w "$config_file" ]]; then
+        printf '\n# HorizonCode CLI\n%s\n' "$command" >> "$config_file"
+        return 0
+    fi
+    echo "Add this to your shell configuration: $command" >&2
 }
 
 XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-$HOME/.config}
-
-current_shell=$(basename "$SHELL")
-case $current_shell in
-    fish)
-        config_files="$HOME/.config/fish/config.fish"
-    ;;
-    zsh)
-        config_files="${ZDOTDIR:-$HOME}/.zshrc ${ZDOTDIR:-$HOME}/.zshenv $XDG_CONFIG_HOME/zsh/.zshrc $XDG_CONFIG_HOME/zsh/.zshenv"
-    ;;
-    bash)
-        config_files="$HOME/.bashrc $HOME/.bash_profile $HOME/.profile $XDG_CONFIG_HOME/bash/.bashrc $XDG_CONFIG_HOME/bash/.bash_profile"
-    ;;
-    ash)
-        config_files="$HOME/.ashrc $HOME/.profile /etc/profile"
-    ;;
-    sh)
-        config_files="$HOME/.ashrc $HOME/.profile /etc/profile"
-    ;;
-    *)
-        # Default case if none of the above matches
-        config_files="$HOME/.bashrc $HOME/.bash_profile $XDG_CONFIG_HOME/bash/.bashrc $XDG_CONFIG_HOME/bash/.bash_profile"
-    ;;
+current_shell=$(basename "${SHELL:-sh}")
+case "$current_shell" in
+    fish) config_files=("$HOME/.config/fish/config.fish") ;;
+    zsh) config_files=("${ZDOTDIR:-$HOME}/.zshrc" "${ZDOTDIR:-$HOME}/.zshenv" "$XDG_CONFIG_HOME/zsh/.zshrc" "$XDG_CONFIG_HOME/zsh/.zshenv") ;;
+    bash) config_files=("$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.profile" "$XDG_CONFIG_HOME/bash/.bashrc" "$XDG_CONFIG_HOME/bash/.bash_profile") ;;
+    ash|sh) config_files=("$HOME/.ashrc" "$HOME/.profile") ;;
+    *) config_files=("$HOME/.bashrc" "$HOME/.profile") ;;
 esac
 
-if [[ "$no_modify_path" != "true" ]]; then
+if [[ "$no_modify_path" != true && ":${PATH:-}:" != *":${INSTALL_DIR}:"* ]]; then
     config_file=""
-    for file in $config_files; do
-        if [[ -f $file ]]; then
-            config_file=$file
+    for file in "${config_files[@]}"; do
+        if [[ -f "$file" ]]; then
+            config_file="$file"
             break
         fi
     done
-
-    if [[ -z $config_file ]]; then
-        print_message warning "No config file found for $current_shell. You may need to manually add to PATH:"
-        print_message info "  export PATH=$INSTALL_DIR:\$PATH"
-    elif [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
-        case $current_shell in
-            fish)
-                add_to_path "$config_file" "fish_add_path $INSTALL_DIR"
-            ;;
-            zsh)
-                add_to_path "$config_file" "export PATH=$INSTALL_DIR:\$PATH"
-            ;;
-            bash)
-                add_to_path "$config_file" "export PATH=$INSTALL_DIR:\$PATH"
-            ;;
-            ash)
-                add_to_path "$config_file" "export PATH=$INSTALL_DIR:\$PATH"
-            ;;
-            sh)
-                add_to_path "$config_file" "export PATH=$INSTALL_DIR:\$PATH"
-            ;;
-            *)
-                export PATH=$INSTALL_DIR:$PATH
-                print_message warning "Manually add the directory to $config_file (or similar):"
-                print_message info "  export PATH=$INSTALL_DIR:\$PATH"
-            ;;
+    if [[ -n "$config_file" ]]; then
+        case "$current_shell" in
+            fish) add_to_path "$config_file" "fish_add_path $INSTALL_DIR" ;;
+            *) add_to_path "$config_file" "export PATH=$INSTALL_DIR:\$PATH" ;;
         esac
+    else
+        echo "Add $INSTALL_DIR to PATH in your shell configuration."
     fi
 fi
 
-if [ -n "${GITHUB_ACTIONS-}" ] && [ "${GITHUB_ACTIONS}" == "true" ]; then
-    echo "$INSTALL_DIR" >> $GITHUB_PATH
-    print_message info "Added $INSTALL_DIR to \$GITHUB_PATH"
+if [[ "${GITHUB_ACTIONS:-}" == true && -n "${GITHUB_PATH:-}" ]]; then
+    printf '%s\n' "$INSTALL_DIR" >> "$GITHUB_PATH"
 fi
 
-echo -e ""
-echo -e "${MUTED}                    ${NC}             ▄     "
-echo -e "${MUTED}█▀▀█ █▀▀█ █▀▀█ █▀▀▄ ${NC}█▀▀▀ █▀▀█ █▀▀█ █▀▀█"
-echo -e "${MUTED}█░░█ █░░█ █▀▀▀ █░░█ ${NC}█░░░ █░░█ █░░█ █▀▀▀"
-echo -e "${MUTED}▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀  ▀ ${NC}▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀"
-echo -e ""
-echo -e ""
-echo -e "${MUTED}HorizonCode includes free models, to start:${NC}"
-echo -e ""
-echo -e "cd <project>  ${MUTED}# Open directory${NC}"
-echo -e "horizoncode   ${MUTED}# Run command${NC}"
-echo -e "hzcode        ${MUTED}# Same CLI, short command${NC}"
-echo -e ""
-echo -e "${MUTED}For more information visit ${NC}https://opencode.ai/docs"
-echo -e ""
-echo -e ""
+echo "Installed HorizonCode in ${INSTALL_DIR}"
+echo "Both horizoncode and hzcode start the same CLI."
+echo "Linux/WSL install path selected; platform acceptance is still pending. Native Windows remains unavailable."
+echo "Documentation: https://github.com/sarv-projects/horizoncode/tree/main/docs"

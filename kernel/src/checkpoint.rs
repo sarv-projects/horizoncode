@@ -852,13 +852,14 @@ impl CheckpointJournalV1 {
     }
 
     /// Reconcile exact per-path receipts for a previously dispatched restore.
-    /// The HostKernel invokes this only after Guard/lease settlement; missing,
-    /// failed, or uncertain paths keep the overall restore UNKNOWN.
+    /// The HostKernel invokes this only after Guard/lease settlement and passes
+    /// a fresh opaque no-follow observation after dispatch. Missing, failed,
+    /// uncertain, or content-mismatched paths keep the restore UNKNOWN.
     pub(crate) fn record_restore_receipts(
         &mut self,
         effect_id: &str,
         receipts: Vec<RestorePathReceiptV1>,
-        final_observation: bool,
+        final_observation: Option<&TrustedWorkspaceObservationV1>,
         now_ms: u64,
     ) -> Result<RestoreAttemptStatusV1, CheckpointErrorV1> {
         if !valid_component(effect_id, MAX_CHECKPOINT_ID_BYTES)
@@ -905,8 +906,40 @@ impl CheckpointJournalV1 {
                 .path_receipts
                 .iter()
                 .all(|receipt| receipt.outcome == RestorePathOutcomeV1::Applied);
-        if final_observation {
-            attempt.status = if all_applied {
+        if let Some(observation) = final_observation {
+            let observation = checkpoint_observation_from_host(observation).ok();
+            let checkpoint = next
+                .checkpoints
+                .iter()
+                .find(|record| record.capture.checkpoint_id == attempt.checkpoint_id)
+                .ok_or(CheckpointErrorV1::NotFound)?;
+            let final_files: std::collections::BTreeMap<_, _> = observation
+                .as_ref()
+                .map(|value| {
+                    value
+                        .files
+                        .iter()
+                        .map(|file| (file.path.as_str(), file))
+                        .collect()
+                })
+                .unwrap_or_default();
+            // Per-path receipts report dispatch outcomes; only a fresh HostKernel
+            // no-follow observation of the actual restored bytes can settle the
+            // operation. This deliberately does not accept a caller boolean as
+            // evidence that restoration completed.
+            let observed_targets_match = observation.is_some() && attempt.planned_paths.iter().all(|path| {
+                let expected = checkpoint.capture.files.iter().find(|file| file.path == *path);
+                let actual = final_files.get(path.as_str());
+                matches!((expected, actual), (Some(expected), Some(actual))
+                    if expected.kind == CheckpointFileKindV1::RegularFile
+                        && expected.link_count == 1
+                        && actual.kind == WorkspaceFileKindV1::RegularFile
+                        && actual.link_count == 1
+                        && actual.digest == expected.digest
+                        && actual.byte_length == expected.byte_length
+                        && actual.executable == expected.executable)
+            });
+            attempt.status = if all_applied && observed_targets_match {
                 RestoreAttemptStatusV1::Succeeded
             } else {
                 RestoreAttemptStatusV1::Unknown
@@ -1888,7 +1921,7 @@ mod tests {
                     outcome: RestorePathOutcomeV1::Applied,
                     receipt_ref: "receipt-path-1".to_owned(),
                 }],
-                false,
+                None,
                 102,
             )
             .unwrap();
@@ -1939,9 +1972,14 @@ mod tests {
                 receipt_ref: format!("receipt-{index}"),
             })
             .collect();
+        let workspace = root.0.join("restored-workspace");
+        fs::create_dir_all(workspace.join("src")).unwrap();
+        fs::write(workspace.join("src/main.rs"), b"checkpoint bytes").unwrap();
+        fs::write(workspace.join("src/other.rs"), b"other baseline").unwrap();
+        let final_observation = crate::host_kernel::observe_trusted_workspace(&workspace).unwrap();
         assert_eq!(
             journal
-                .record_restore_receipts("effect-complete", receipts, true, 102)
+                .record_restore_receipts("effect-complete", receipts, Some(&final_observation), 102)
                 .unwrap(),
             RestoreAttemptStatusV1::Succeeded
         );

@@ -4,9 +4,15 @@
   "title": "HorizonCode authenticated ExecutionHost launch profile v1",
   "description": "Private Core Config to HostKernel projection plus the logical profile reference carried by P4. The definition is not a public API and does not itself authorize process launch.",
   "oneOf": [
-    { "$ref": "#/$defs/ExecutionLaunchProfileDefinitionV1" },
-    { "$ref": "#/$defs/ExecutionLaunchProfileRefV1" },
-    { "$ref": "#/$defs/HostProcessRefV1" }
+    {
+      "$ref": "#/$defs/ExecutionLaunchProfileDefinitionV1"
+    },
+    {
+      "$ref": "#/$defs/ExecutionLaunchProfileRefV1"
+    },
+    {
+      "$ref": "#/$defs/HostProcessRefV1"
+    }
   ],
   "$defs": {
     "Identifier": {
@@ -18,17 +24,21 @@
     "ProcessIdentifier": {
       "type": "string",
       "minLength": 1,
-      "maxLength": 160,
+      "maxLength": 256,
       "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+    },
+    "ProfileIdentifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._-]+$"
     },
     "Digest": {
       "type": "string",
       "pattern": "^blake3:[0-9a-f]{64}$"
     },
     "DecimalU64": {
-      "type": "string",
-      "pattern": "^(0|[1-9][0-9]{0,19})$",
-      "description": "Canonical unsigned decimal string; decoders must reject values greater than 18446744073709551615."
+      "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64"
     },
     "ExecutionLaunchProfileDefinitionV1": {
       "type": "object",
@@ -44,15 +54,22 @@
         "environmentPolicy"
       ],
       "properties": {
-        "schemaVersion": { "const": 1 },
-        "profileId": { "$ref": "#/$defs/Identifier" },
+        "schemaVersion": {
+          "const": 1
+        },
+        "profileId": {
+          "$ref": "#/$defs/Identifier"
+        },
         "revision": {
-          "allOf": [
-            { "$ref": "#/$defs/DecimalU64" },
-            { "not": { "const": "0" } }
+          "$ref": "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64"
+        },
+        "kind": {
+          "enum": [
+            "lsp",
+            "dap",
+            "repl"
           ]
         },
-        "kind": { "enum": ["lsp", "dap", "repl"] },
         "executableSelector": {
           "type": "string",
           "minLength": 1,
@@ -68,23 +85,67 @@
             "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
           }
         },
-        "workingDirectoryPolicy": { "const": "registered_location_root" },
-        "environmentPolicy": { "const": "sanitized_host" }
-      }
+        "dapPolicy": {
+          "description": "Immutable DAP-only policy. Omission and explicit false both deny evaluation; either representation remains distinct in the profile digest.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "allowEvaluate"
+          ],
+          "properties": {
+            "allowEvaluate": {
+              "type": "boolean"
+            }
+          }
+        },
+        "workingDirectoryPolicy": {
+          "const": "registered_location_root"
+        },
+        "environmentPolicy": {
+          "const": "sanitized_host"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "dap"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {},
+          "else": {
+            "not": {
+              "required": [
+                "dapPolicy"
+              ]
+            }
+          }
+        }
+      ]
     },
     "ExecutionLaunchProfileRefV1": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["profileId", "revision", "profileDigest"],
+      "required": [
+        "profileId",
+        "revision",
+        "profileDigest"
+      ],
       "properties": {
-        "profileId": { "$ref": "#/$defs/Identifier" },
-        "revision": {
-          "allOf": [
-            { "$ref": "#/$defs/DecimalU64" },
-            { "not": { "const": "0" } }
-          ]
+        "profileId": {
+          "$ref": "#/$defs/Identifier"
         },
-        "profileDigest": { "$ref": "#/$defs/Digest" }
+        "revision": {
+          "$ref": "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64"
+        },
+        "profileDigest": {
+          "$ref": "#/$defs/Digest"
+        }
       }
     },
     "HostProcessRefV1": {
@@ -102,31 +163,37 @@
         "executableDigest"
       ],
       "properties": {
-        "executionID": { "$ref": "#/$defs/ProcessIdentifier" },
+        "executionID": {
+          "$ref": "#/$defs/ProcessIdentifier"
+        },
         "generation": {
-          "allOf": [
-            { "$ref": "#/$defs/DecimalU64" },
-            { "not": { "const": "0" } }
-          ]
+          "$ref": "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64"
         },
         "ownerEpoch": {
-          "allOf": [
-            { "$ref": "#/$defs/DecimalU64" },
-            { "not": { "const": "0" } }
-          ]
+          "$ref": "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64"
         },
         "kind": {
-          "enum": ["terminal_run", "language_server", "debug_adapter", "interpreter", "managed_verifier"]
-        },
-        "profileID": { "$ref": "#/$defs/ProcessIdentifier" },
-        "profileRevision": {
-          "allOf": [
-            { "$ref": "#/$defs/DecimalU64" },
-            { "not": { "const": "0" } }
+          "enum": [
+            "terminal_run",
+          "external_editor",
+            "language_server",
+            "debug_adapter",
+            "interpreter",
+            "managed_verifier"
           ]
         },
-        "profileDigest": { "$ref": "#/$defs/Digest" },
-        "executableDigest": { "$ref": "#/$defs/Digest" }
+        "profileID": {
+          "$ref": "#/$defs/ProfileIdentifier"
+        },
+        "profileRevision": {
+          "$ref": "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64"
+        },
+        "profileDigest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "executableDigest": {
+          "$ref": "#/$defs/Digest"
+        }
       }
     }
   }

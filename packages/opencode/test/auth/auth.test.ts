@@ -95,13 +95,19 @@ it.effect("exposes only SecretBroker metadata operations and keeps legacy raw au
       revokedAt: new Date(0).toISOString(),
       receiptId: "receipt_test",
     })
+    let putCalls = 0
+    let revokeCalls = 0
     const broker = {
-      put: async (input: SecretBrokerV1.PutRequestV1) => {
-        expect(input.secureInputHandle).toBe("opaque-handle-not-secret-content")
+      put: async (_input: SecretBrokerV1.PutRequestV1) => {
+        putCalls++
         return metadata
       },
       describe: async () => metadata,
-      revoke: async () => receipt,
+      listByProviderIds: async () => [metadata],
+      revoke: async () => {
+        revokeCalls++
+        return receipt
+      },
       authorizeUse: async () => { throw new Error("unused credential lease fixture") },
     }
     const auth = Auth.makeService(broker)
@@ -111,12 +117,20 @@ it.effect("exposes only SecretBroker metadata operations and keeps legacy raw au
       secureInputHandle: "opaque-handle-not-secret-content",
       idempotencyKey: "put_test",
     }))
-    expect(Exit.isSuccess(put)).toBe(true)
-    if (Exit.isSuccess(put)) expect(put.value).toEqual(metadata)
+    expect(Exit.isFailure(put)).toBe(true)
+    if (Exit.isFailure(put)) {
+      expect(Cause.prettyErrors(put.cause).map(String).join(" ")).toContain("Secure credential storage is unavailable")
+    }
     expect(yield* auth.get("test-provider")).toBeUndefined()
     expect(yield* auth.all()).toEqual({})
     expect(yield* auth.describeCredential(metadata.secretRef)).toEqual(metadata)
-    expect(yield* auth.revokeCredential(metadata.secretRef, 1)).toEqual(receipt)
+    const revoke = yield* Effect.exit(auth.revokeCredential(metadata.secretRef, 1))
+    expect(Exit.isFailure(revoke)).toBe(true)
+    if (Exit.isFailure(revoke)) {
+      expect(Cause.prettyErrors(revoke.cause).map(String).join(" ")).toContain("Secure credential storage is unavailable")
+    }
+    expect(putCalls).toBe(0)
+    expect(revokeCalls).toBe(0)
     const lease = yield* Effect.exit(auth.authorizeCredentialUse({
       schemaVersion: 1,
       secretRef: metadata.secretRef,
@@ -141,6 +155,7 @@ it.effect("redacts lower-level keyring details from Auth errors", () =>
     const auth = Auth.makeService({
       put: async () => { throw new Error("credential bytes and private D-Bus details") },
       describe: async () => { throw new Error("credential bytes and private D-Bus details") },
+      listByProviderIds: async () => { throw new Error("credential bytes and private D-Bus details") },
       revoke: async () => { throw new Error("credential bytes and private D-Bus details") },
       authorizeUse: async () => { throw new Error("credential bytes and private D-Bus details") },
     })
@@ -152,5 +167,75 @@ it.effect("redacts lower-level keyring details from Auth errors", () =>
       expect(message).not.toContain("credential bytes")
       expect(message).not.toContain("private D-Bus")
     }
+  }),
+)
+
+it.effect("projects only one available opaque search credential per fixed route", () =>
+  Effect.gen(function* () {
+    const metadata = (secretRef: string, providerId: string, status: SecretBrokerV1.SecretStatusV1 = "AVAILABLE") =>
+      Schema.decodeUnknownSync(SecretBrokerV1.MetadataV1)({
+        schemaVersion: 1,
+        secretRef: secretRef as SecretBrokerV1.SecretRef,
+        providerId,
+        status,
+        version: 1,
+        createdAt: new Date(0).toISOString(),
+        updatedAt: new Date(0).toISOString(),
+      })
+    const auth = Auth.makeService({
+      put: async () => metadata("secret_put", "brave"),
+      describe: async () => metadata("secret_describe", "brave"),
+      listByProviderIds: async () => [
+        metadata("secret_brave", "brave"),
+        metadata("secret_exa_a", "exa"),
+        metadata("secret_exa_b", "exa"),
+        metadata("secret_revoked", "tavily", "REVOKED"),
+        metadata("secret_unrelated", "chat-provider"),
+      ],
+      revoke: async () => Schema.decodeUnknownSync(SecretBrokerV1.RevocationReceiptV1)({
+        schemaVersion: 1,
+        secretRef: "secret_put",
+        revokedVersion: 2,
+        revokedAt: new Date(0).toISOString(),
+        receiptId: "receipt_test",
+      }),
+      authorizeUse: async () => { throw new Error("unused credential lease fixture") },
+    })
+    expect(yield* auth.searchCredentialRefs()).toEqual({ brave: "secret_brave" })
+  }),
+)
+
+it.effect("projects one metadata-only credential ref only for canonical provider IDs requested by the registry", () =>
+  Effect.gen(function* () {
+    const metadata = (secretRef: string, providerId: string, status: SecretBrokerV1.SecretStatusV1 = "AVAILABLE") =>
+      Schema.decodeUnknownSync(SecretBrokerV1.MetadataV1)({
+        schemaVersion: 1,
+        secretRef: secretRef as SecretBrokerV1.SecretRef,
+        providerId,
+        status,
+        version: 1,
+        createdAt: new Date(0).toISOString(),
+        updatedAt: new Date(0).toISOString(),
+      })
+    const auth = Auth.makeService({
+      put: async () => metadata("secret_put", "provider-a"),
+      describe: async () => metadata("secret_describe", "provider-a"),
+      listByProviderIds: async (providerIDs) => {
+        expect(providerIDs).toEqual(["provider-a", "provider-b"])
+        return [
+          metadata("secret_a", "provider-a"),
+          metadata("secret_b_one", "provider-b"),
+          metadata("secret_b_two", "provider-b"),
+          metadata("secret_revoked", "provider-c", "REVOKED"),
+        ]
+      },
+      revoke: async () => { throw new Error("unused") },
+      authorizeUse: async () => { throw new Error("unused") },
+    })
+    expect(yield* auth.credentialRefsForProviders(["provider-a", "provider-b"])).toEqual({
+      "provider-a": "secret_a",
+    })
+    expect(yield* auth.credentialRefsForProviders(["provider-a", "invalid\nprovider"])).toEqual({})
+    expect(yield* auth.credentialRefsForProviders(Array.from({ length: 257 }, (_, index) => `provider-${index}`))).toEqual({})
   }),
 )

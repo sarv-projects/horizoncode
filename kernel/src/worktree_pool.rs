@@ -848,6 +848,107 @@ impl WorktreePool {
         Ok(next)
     }
 
+    /// Apply the second, independently durable transition for a managed
+    /// logical child. Worker capacity must already be settled; this transition
+    /// alone releases the worktree lease and makes it Free only when the exact
+    /// final Inspect proved a clean, no-user-change revision.
+    pub(crate) fn finalize_logical_managed_worktree_disposition(
+        &mut self,
+        lease_id: &str,
+        owner: &AuthenticatedOwnerContext,
+        current_owner_epoch: Option<u64>,
+        observed_revision: &str,
+        reusable: bool,
+        expected_revision: u64,
+    ) -> Result<u64, WorktreePoolError> {
+        let record = self.leases.get(lease_id).ok_or(WorktreePoolError::ReservationNotFound)?;
+        if let Some(epoch) = current_owner_epoch {
+            if &record.lease.owner != owner || epoch != self.owner_epoch
+                || epoch < owner.owner_epoch() || record.process_identity.is_some()
+                || !matches!(record.state, ReservationState::Claimed | ReservationState::Quarantined)
+            {
+                return Err(WorktreePoolError::InvalidTransition);
+            }
+        } else {
+            self.check_owner(owner)?;
+            self.check_lease_owner(record, owner)?;
+            if record.process_identity.is_some()
+                || !matches!(record.state, ReservationState::Claimed | ReservationState::Quarantined)
+            {
+                return Err(WorktreePoolError::InvalidTransition);
+            }
+        }
+        validate_revision(observed_revision)?;
+        self.check_revision(expected_revision)?;
+        let next = self.next_revision()?;
+        let worktree_id = record.lease.worktree_id.clone();
+        self.leases.get_mut(lease_id).expect("lease checked").state = ReservationState::Released;
+        let worktree = self.worktrees.get_mut(&worktree_id)
+            .expect("registered worktree retained for lease lifetime");
+        worktree.status = if reusable { WorktreeStatus::Free } else { WorktreeStatus::Quarantined };
+        worktree.reservation_state = Some(ReservationState::Released);
+        worktree.registration.observed_revision = Some(observed_revision.to_owned());
+        worktree.registration.clean = Some(reusable);
+        // A dirty final Inspect can include modified tracked files or
+        // user-owned changes. The bounded Inspect summary does not identify
+        // untracked entries separately, so quarantine must not fabricate
+        // `has_untracked=true`; only a clean reusable observation proves
+        // that it is false.
+        worktree.registration.has_untracked = reusable.then_some(false);
+        worktree.active_lease_id = None;
+        self.revision = next;
+        Ok(next)
+    }
+
+    /// Keep a settled worker's worktree unavailable while the second durable
+    /// disposition event is pending. The lease remains attached so a crash in
+    /// the gap cannot make the worktree selectable or infer a clean state.
+    pub(crate) fn quarantine_managed_disposition_pending(
+        &mut self,
+        lease_id: &str,
+        owner: &AuthenticatedOwnerContext,
+        current_owner_epoch: Option<u64>,
+        expected_revision: u64,
+    ) -> Result<u64, WorktreePoolError> {
+        let record = self.leases.get(lease_id).ok_or(WorktreePoolError::ReservationNotFound)?;
+        if let Some(epoch) = current_owner_epoch {
+            if &record.lease.owner != owner || epoch != self.owner_epoch
+                || epoch < owner.owner_epoch() || record.process_identity.is_some()
+            {
+                return Err(WorktreePoolError::InvalidTransition);
+            }
+        } else {
+            self.check_owner(owner)?;
+            self.check_lease_owner(record, owner)?;
+            if record.process_identity.is_some() {
+                return Err(WorktreePoolError::InvalidTransition);
+            }
+        }
+        self.check_revision(expected_revision)?;
+        if record.state == ReservationState::Quarantined {
+            let worktree_id = record.lease.worktree_id.as_str();
+            let worktree = self.worktrees.get(worktree_id).ok_or(WorktreePoolError::ReservationNotFound)?;
+            if worktree.status == WorktreeStatus::Quarantined
+                && worktree.active_lease_id.as_deref() == Some(lease_id)
+            {
+                return Ok(self.revision);
+            }
+            return Err(WorktreePoolError::InvalidTransition);
+        }
+        if record.state != ReservationState::Claimed {
+            return Err(WorktreePoolError::InvalidTransition);
+        }
+        let next = self.next_revision()?;
+        let worktree_id = record.lease.worktree_id.clone();
+        self.leases.get_mut(lease_id).expect("lease checked").state = ReservationState::Quarantined;
+        let worktree = self.worktrees.get_mut(&worktree_id)
+            .expect("registered worktree retained for lease lifetime");
+        worktree.status = WorktreeStatus::Quarantined;
+        worktree.reservation_state = Some(ReservationState::Quarantined);
+        self.revision = next;
+        Ok(next)
+    }
+
     /// Reconciliation-only release for a quarantined lease whose OS process
     /// generation was never bound (crash window between the durable claim and
     /// the process bind). The trusted reconciler must supply target-side

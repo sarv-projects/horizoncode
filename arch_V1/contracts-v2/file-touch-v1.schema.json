@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "horizon://schemas/file-touch-v1",
+  "title": "FileTouchV1",
+  "description": "Advisory file activity index record (A-V2-30 §12.16). Not write authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "producerId",
+    "ownerEpoch",
+    "workspaceRef",
+    "sourceGeneration",
+    "pathRef",
+    "accessKind",
+    "observedAt"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "producerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "ownerEpoch": { "$ref": "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64" },
+    "workspaceRef": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "sourceGeneration": { "type": "string", "minLength": 8, "maxLength": 128 },
+    "pathRef": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "sessionRef": { "type": ["string", "null"], "maxLength": 256 },
+    "attemptRef": { "type": ["string", "null"], "maxLength": 256 },
+    "accessKind": { "enum": ["READ", "WRITE"] },
+    "lineStart": { "type": ["integer", "null"], "minimum": 1 },
+    "lineEnd": { "type": ["integer", "null"], "minimum": 1 },
+    "observedAt": { "type": "string", "format": "date-time" },
+    "ttlSeconds": { "type": "integer", "minimum": 1, "maximum": 86400 }
+  }
+}

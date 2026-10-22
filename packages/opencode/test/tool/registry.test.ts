@@ -4,6 +4,7 @@ import fs from "fs/promises"
 import { Effect, Layer } from "effect"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { ToolRegistry } from "@/tool/registry"
+import { hostProtocolRouteAvailable, languageServiceProcessRouteAvailable } from "@/lsp/launch"
 import { disposeAllInstances, TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { TestConfig } from "../fixture/config"
@@ -57,6 +58,12 @@ const withCodeMode = testEffect(
         clients: () => Effect.succeed({ weather: {} as any }),
       }),
     ],
+  ]),
+)
+const withLspEnabled = testEffect(
+  LayerNode.compile(root, [
+    [Config.node, configLayer],
+    [RuntimeFlags.node, RuntimeFlags.layer({ experimentalLspTool: true })],
   ]),
 )
 const withEmptyCodeMode = testEffect(
@@ -187,6 +194,22 @@ afterEach(async () => {
 })
 
 describe("tool.registry", () => {
+  it.instance("exposes bounded current-Session history retrieval without attachment authority", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const tools = yield* registry.all()
+      const ids = tools.map((tool) => tool.id)
+
+      expect(ids).toContain("history.search")
+      expect(ids).toContain("history.read_range")
+      expect(ids).not.toContain("history.attach")
+      expect(tools.find((tool) => tool.id === "history.search")?.capability).toEqual({
+        id: "history.search",
+        effectClass: "read_only",
+      })
+    }),
+  )
+
   it.instance("does not expose task_status", () =>
     Effect.gen(function* () {
       const registry = yield* ToolRegistry.Service
@@ -196,7 +219,7 @@ describe("tool.registry", () => {
     }),
   )
 
-  it.instance("does not expose execute unless code mode is enabled", () =>
+  it.instance("does not expose execute while Guard-mediated CodeMode is unavailable", () =>
     Effect.gen(function* () {
       const registry = yield* ToolRegistry.Service
       const ids = yield* registry.ids()
@@ -205,8 +228,21 @@ describe("tool.registry", () => {
     }),
   )
 
+  withLspEnabled.instance(
+    "does not expose the experimental LSP tool while either supervised readiness gate is closed",
+    () =>
+      Effect.gen(function* () {
+        const registry = yield* ToolRegistry.Service
+        const ids = yield* registry.ids()
+
+        expect(languageServiceProcessRouteAvailable()).toBe(false)
+        expect(hostProtocolRouteAvailable()).toBe(false)
+        expect(ids).not.toContain("lsp")
+      }),
+  )
+
   withCodeMode.instance(
-    "exposes execute when code mode is enabled",
+    "keeps execute unavailable even when the experimental flag is enabled",
     () =>
       Effect.gen(function* () {
         const registry = yield* ToolRegistry.Service
@@ -219,9 +255,9 @@ describe("tool.registry", () => {
         })
         const execute = tools.find((tool) => tool.id === "execute")
 
-        expect(ids).toContain("execute")
-        expect(tools.map((tool) => tool.id)).toContain("execute")
-        expect(execute?.description).toContain("tools.weather.current(input: {\n  city: string,\n})")
+        expect(ids).not.toContain("execute")
+        expect(tools.map((tool) => tool.id)).not.toContain("execute")
+        expect(execute).toBeUndefined()
       }),
     20000,
   )
@@ -359,7 +395,7 @@ describe("tool.registry origin exposure", () => {
         expect(yield* mcp.clients()).toEqual({})
 
         const registry = yield* ToolRegistry.Service
-        expect(yield* registry.ids()).toContain("execute")
+        expect(yield* registry.ids()).not.toContain("execute")
 
         const { defs, resolved } = yield* resolveExposure()
         expect(defs.map((tool) => tool.id)).not.toContain("execute")

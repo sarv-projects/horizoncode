@@ -22,6 +22,7 @@ export type Event =
   | EventSessionNextPrompted
   | EventSessionNextPromptAdmitted
   | EventSessionNextContextUpdated
+  | EventSessionContextLedger
   | EventSessionNextSynthetic
   | EventSessionNextShellStarted
   | EventSessionNextShellEnded
@@ -374,9 +375,48 @@ export type AssistantMessage = {
       write: number
     }
   }
+  usageProvenance?: UsageProvenanceV1
   structured?: unknown
   variant?: string
   finish?: string
+}
+
+/** Canonical metric provenance; UNKNOWN has no fabricated numeric value. */
+export type UsageProvenanceMetricV1 =
+  | { status: "provider-reported" | "measured" | "estimated"; value: number }
+  | { status: "unknown" }
+
+export type UsageProvenanceCostV1 =
+  | { status: "provider-reported"; value: number }
+  | {
+      status: "measured"
+      value: number
+      measurementSource: "provider-billing-receipt-v1"
+      evidenceRef: string
+    }
+  | {
+      status: "estimated"
+      value: number
+      priceSource: string
+      pricingRevision: string
+      pricing: { input: number; output: number; cacheRead: number; cacheWrite: number }
+      algorithm: "per-million-linear-v1"
+      tokenInputs: { input: number; output: number; reasoning: number; cacheRead: number; cacheWrite: number }
+    }
+  | { status: "unknown" }
+
+export type UsageProvenanceV1 = {
+  providerID: string
+  modelID: string
+  operationID?: string
+  requestID?: string
+  cost: UsageProvenanceCostV1
+  tokens: {
+    input: UsageProvenanceMetricV1
+    output: UsageProvenanceMetricV1
+    reasoning: UsageProvenanceMetricV1
+    cache: { read: UsageProvenanceMetricV1; write: UsageProvenanceMetricV1 }
+  }
 }
 
 export type Message = UserMessage | AssistantMessage
@@ -2068,6 +2108,10 @@ export type FeatureExposure = {
   schemaVersion: 1
   featureId: "compaction.auto" | "compaction.prune" | "native_search" | "hashline_edit" | "cow_worktrees"
   settingKey: string
+  owner: {
+    config: string
+    runtime: string
+  }
   title: string
   description: string
   releaseClass: "stable" | "beta" | "experimental"
@@ -2075,6 +2119,10 @@ export type FeatureExposure = {
   audience: "public" | "developer"
   defaultEnabled: boolean
   supportedScopes: Array<"user" | "project" | "session">
+  prerequisites: Array<string>
+  supportedPlatforms: Array<"linux" | "windows" | "darwin">
+  supportedModelRefs: Array<string>
+  supportedHarnessRefs: Array<string>
   applyBoundary: "live" | "next_turn" | "next_session" | "restart"
   capabilityIds: Array<string>
   riskNotes?: string
@@ -3335,6 +3383,7 @@ export type SessionDurableEvent =
   | SessionNextPrompted
   | SessionNextPromptAdmitted
   | SessionNextContextUpdated
+  | SessionContextLedger
   | SessionNextSynthetic
   | SessionNextShellStarted
   | SessionNextShellEnded
@@ -4915,6 +4964,22 @@ export type SessionNextContextUpdated = {
     sessionID: string
     messageID: string
     text: string
+  }
+}
+
+export type SessionContextLedger = {
+  id: string
+  metadata?: { [key: string]: unknown }
+  type: "session.context_ledger"
+  location?: LocationRef
+  data: {
+    timestamp: number
+    sessionID: string
+    requestID: string
+    sourceRevision: string
+    sourceGeneration: string
+    ledger: Record<string, unknown>
+    ledgerDigest: string
   }
 }
 
@@ -6971,6 +7036,20 @@ export type EventSessionNextContextUpdated = {
   }
 }
 
+export type EventSessionContextLedger = {
+  id: string
+  type: "session.context_ledger"
+  properties: {
+    timestamp: number
+    sessionID: string
+    requestID: string
+    sourceRevision: string
+    sourceGeneration: string
+    ledger: Record<string, unknown>
+    ledgerDigest: string
+  }
+}
+
 export type EventSessionNextSynthetic = {
   id: string
   type: "session.next.synthetic"
@@ -8212,6 +8291,195 @@ export type ConfigFeatureUpdateResponses = {
 }
 
 export type ConfigFeatureUpdateResponse = ConfigFeatureUpdateResponses[keyof ConfigFeatureUpdateResponses]
+
+export type RepoIntelProfileProjection = {
+  requested: "lightweight" | "adaptive" | "full"
+  requestedValue: string | null
+  effective: "lightweight" | "adaptive" | "full"
+  configurationSource: "default" | "user" | "project" | "system_policy" | "unknown"
+  effectiveSource: "default" | "settings" | "platform" | "policy" | "resource"
+  policyLock: "locked" | "unlocked" | "unknown"
+  reason?: "policy_restriction" | "platform_unavailable" | "resource_pressure" | "feature_unavailable" | "invalid_configuration"
+}
+
+export type ConfigRepoIntelProfileData = {
+  body?: never
+  path?: never
+  query?: { directory?: string; workspace?: string }
+  url: "/config/repo-intelligence/profile"
+}
+export type ConfigRepoIntelProfileErrors = { 400: BadRequestError }
+export type ConfigRepoIntelProfileError = ConfigRepoIntelProfileErrors[keyof ConfigRepoIntelProfileErrors]
+export type ConfigRepoIntelProfileResponses = { 200: RepoIntelProfileProjection }
+export type ConfigRepoIntelProfileResponse = ConfigRepoIntelProfileResponses[keyof ConfigRepoIntelProfileResponses]
+
+export type ConfigUpdateRepoIntelProfileData = {
+  body?: { expectedProfile: string | null; profile: "lightweight" | "adaptive" | "full" }
+  path?: never
+  query?: { directory?: string; workspace?: string }
+  url: "/config/repo-intelligence/profile"
+}
+export type ConfigUpdateRepoIntelProfileErrors = {
+  400: BadRequestError
+  403: ForbiddenError
+  409: ConflictError
+  500: EffectHttpApiErrorInternalServerError
+}
+export type ConfigUpdateRepoIntelProfileError = ConfigUpdateRepoIntelProfileErrors[keyof ConfigUpdateRepoIntelProfileErrors]
+export type ConfigUpdateRepoIntelProfileResponses = { 200: RepoIntelProfileProjection }
+export type ConfigUpdateRepoIntelProfileResponse = ConfigUpdateRepoIntelProfileResponses[keyof ConfigUpdateRepoIntelProfileResponses]
+
+export type ExternalEditorProfileRefV1 = {
+  profileId: string
+  revision: string
+  profileDigest: string
+}
+
+export type ExternalEditorProfileDefinitionV1 = {
+  schemaVersion: 1
+  profileId: string
+  revision: string
+  executableSelector: string
+  argv: string[]
+  targetArgIndex: number
+  launchMode: "foreground_tty" | "wait"
+  targetKinds: ("prompt_scratch" | "workspace_file")[]
+  environmentPolicy: "sanitized_host"
+}
+
+export type ExternalEditorProfilesProjectionV1 = {
+  schemaVersion: 1
+  source: "global_user_config"
+  profiles: { definition: ExternalEditorProfileDefinitionV1; profileRef: ExternalEditorProfileRefV1 }[]
+  selected: ExternalEditorProfileRefV1 | null
+}
+
+export type ConfigExternalEditorProfilesData = {
+  body?: never
+  path?: never
+  query?: { directory?: string; workspace?: string }
+  url: "/config/external-editor-profiles"
+}
+export type ConfigExternalEditorProfilesErrors = { 400: BadRequestError }
+export type ConfigExternalEditorProfilesError = ConfigExternalEditorProfilesErrors[keyof ConfigExternalEditorProfilesErrors]
+export type ConfigExternalEditorProfilesResponses = { 200: ExternalEditorProfilesProjectionV1 }
+export type ConfigExternalEditorProfilesResponse = ConfigExternalEditorProfilesResponses[keyof ConfigExternalEditorProfilesResponses]
+
+export type ConfigUpdateExternalEditorProfilesData = {
+  body?: {
+    expectedSelection: ExternalEditorProfileRefV1 | null
+    addProfile?: ExternalEditorProfileDefinitionV1
+    select: ExternalEditorProfileRefV1 | null
+  }
+  path?: never
+  query?: { directory?: string; workspace?: string }
+  url: "/config/external-editor-profiles"
+}
+export type ConfigUpdateExternalEditorProfilesErrors = {
+  400: BadRequestError
+  403: ForbiddenError
+  409: ConflictError
+  500: EffectHttpApiErrorInternalServerError
+}
+export type ConfigUpdateExternalEditorProfilesError = ConfigUpdateExternalEditorProfilesErrors[keyof ConfigUpdateExternalEditorProfilesErrors]
+export type ConfigUpdateExternalEditorProfilesResponses = { 200: ExternalEditorProfilesProjectionV1 }
+export type ConfigUpdateExternalEditorProfilesResponse = ConfigUpdateExternalEditorProfilesResponses[keyof ConfigUpdateExternalEditorProfilesResponses]
+
+export type ResourceBudgetDimensionV1 =
+  | "memoryBytes"
+  | "cpuMillicores"
+  | "processes"
+  | "fds"
+  | "diskBytes"
+  | "toolOutputBytes"
+  | "activeWorkers"
+  | "tokens"
+  | "providerCostMicros"
+
+export type ResourceLimitStateV1 = {
+  dimension: ResourceBudgetDimensionV1
+  requested?: { soft?: string; hard?: string }
+  effective?: ResourceLimitV1
+  configurationSource: "default" | "user" | "project" | "run" | "system_policy" | "unknown"
+  policyLock: "locked" | "unlocked" | "unknown"
+  enforcement: "HARD_OS" | "ADMISSION_ONLY" | "OBSERVE_ONLY" | "UNSUPPORTED"
+  reason?: string
+}
+
+export type ResourceLimitV1 = {
+  dimension: ResourceBudgetDimensionV1
+  soft?: string
+  hard?: string
+  source: "OS_QUOTA" | "USER" | "WORKSPACE" | "RUN" | "SYSTEM_DEFAULT"
+  enforcement: "HARD_OS" | "ADMISSION_ONLY" | "OBSERVE_ONLY" | "UNSUPPORTED"
+}
+
+/** Canonical §18.18 effective resource limits. */
+export type ResourcePolicyV1 = { limits: ResourceLimitV1[] }
+
+/** Requested/effective settings and diagnostics; never an admission authority. */
+export type ResourcePolicyProjectionV1 = {
+  schemaVersion: 1
+  limits: ResourceLimitStateV1[]
+}
+
+export type ConfigResourcePolicyData = {
+  body?: never
+  path?: never
+  query?: { directory?: string; workspace?: string }
+  url: "/config/resources"
+}
+export type ConfigResourcePolicyErrors = { 400: BadRequestError }
+export type ConfigResourcePolicyError = ConfigResourcePolicyErrors[keyof ConfigResourcePolicyErrors]
+export type ConfigResourcePolicyResponses = { 200: ResourcePolicyProjectionV1 }
+export type ConfigResourcePolicyResponse = ConfigResourcePolicyResponses[keyof ConfigResourcePolicyResponses]
+
+export type DirectSessionPermissionModeV1 = {
+  schemaVersion: 1
+  sessionId: string
+  ownerEpoch: string
+  locationId: string
+  workspaceId: string
+  workspaceRootDigest: string
+  executionBackendId: string
+  policyDigest: string
+  sandboxMode: "read-only" | "workspace-write" | "danger-full-access"
+  approvalPolicy: "on-request" | "always" | "never"
+  source: "default" | "user-session" | "user-config"
+  revision: string
+  digest: string
+}
+
+export type DirectSessionPermissionModeUpdateV1 = {
+  sandboxMode: DirectSessionPermissionModeV1["sandboxMode"]
+  approvalPolicy: DirectSessionPermissionModeV1["approvalPolicy"]
+  expectedRevision: string
+}
+
+export type ConfigDirectSessionPermissionModeData = {
+  body?: never
+  path?: never
+  query?: { directory?: string; workspace?: string; sessionID: string }
+  url: "/config/direct-session-permission-mode"
+}
+export type ConfigDirectSessionPermissionModeErrors = {
+  403: ForbiddenError
+  503: ServiceUnavailableError
+}
+export type ConfigDirectSessionPermissionModeResponses = { 200: DirectSessionPermissionModeV1 }
+
+export type ConfigUpdateDirectSessionPermissionModeData = {
+  body?: DirectSessionPermissionModeUpdateV1
+  path?: never
+  query?: { directory?: string; workspace?: string; sessionID: string }
+  url: "/config/direct-session-permission-mode"
+}
+export type ConfigUpdateDirectSessionPermissionModeErrors = {
+  403: ForbiddenError
+  409: ConflictError
+  503: ServiceUnavailableError
+}
+export type ConfigUpdateDirectSessionPermissionModeResponses = { 200: DirectSessionPermissionModeV1 }
 
 export type ConfigProvidersData = {
   body?: never
@@ -10176,6 +10444,13 @@ export type ProviderListResponses = {
       [key: string]: string
     }
     connected: Array<string>
+    catalogSnapshot: {
+      source: "cache" | "bundled" | "override" | "unavailable"
+      freshness: "fresh" | "stale" | "unknown"
+      updatedAt?: number
+    }
+    anonymousFreeProviders?: Array<string>
+    anonymousFreeModels?: Array<string>
   }
 }
 
@@ -10585,6 +10860,99 @@ export type SessionChildrenResponses = {
 }
 
 export type SessionChildrenResponse = SessionChildrenResponses[keyof SessionChildrenResponses]
+
+export type HorizonSubagentStatusV1ChildV1 = {
+  schemaVersion: 1
+  sessionId: string
+  parentSessionId: string
+  title: string
+  state: "running" | "completed" | "failed" | "cancelled" | "unknown"
+  activeRequest: boolean
+  profileId: string
+  profileRevision: string
+  profileDigest: string
+  permissionScopeDigest: string
+  directAttemptId: string
+  pendingMessages: number
+  deliveryAckState: "queued" | "delivered" | "acknowledged" | "expired" | "unknown"
+  lastSequence: string
+  resultDigest: string | null
+  receiptDigest: string | null
+  failureCode: string | null
+  createdAt: number
+  updatedAt: number
+}
+
+export type HorizonSubagentStatusV1ListV1 = {
+  schemaVersion: 1
+  parentSessionId: string
+  children: Array<HorizonSubagentStatusV1ChildV1>
+  truncated: boolean
+}
+
+export type HorizonSubagentStatusV1WaitResultV1 = {
+  schemaVersion: 1
+  child: HorizonSubagentStatusV1ChildV1
+  outcome: "terminal" | "activity" | "timeout"
+}
+
+export type SessionSubagentsData = {
+  body?: never
+  path: { sessionID: string }
+  query?: { directory?: string; workspace?: string }
+  url: "/session/{sessionID}/subagents"
+}
+
+export type SessionSubagentsErrors = {
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  403: ForbiddenError
+  404: NotFoundError
+}
+export type SessionSubagentsError = SessionSubagentsErrors[keyof SessionSubagentsErrors]
+
+export type SessionSubagentsResponses = { 200: HorizonSubagentStatusV1ListV1 }
+export type SessionSubagentsResponse = SessionSubagentsResponses[keyof SessionSubagentsResponses]
+
+export type SessionSubagentWaitData = {
+  body?: never
+  path: { sessionID: string; childSessionID: string }
+  query: { timeoutMs: number; directory?: string; workspace?: string }
+  url: "/session/{sessionID}/subagents/{childSessionID}/wait"
+}
+export type SessionSubagentWaitErrors = {
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  403: ForbiddenError
+  404: NotFoundError
+}
+export type SessionSubagentWaitError = SessionSubagentWaitErrors[keyof SessionSubagentWaitErrors]
+export type SessionSubagentWaitResponses = { 200: HorizonSubagentStatusV1WaitResultV1 }
+export type SessionSubagentWaitResponse = SessionSubagentWaitResponses[keyof SessionSubagentWaitResponses]
+
+export type HorizonSubagentMessageV1Result = {
+  status: "QUEUED" | "FOLLOW_UP_SCHEDULED" | "UNKNOWN" | "NEEDS_APPROVAL" | "UNAVAILABLE" | "DENIED"
+  messageId: string | null
+  mailboxSequence: string | null
+  reason: string | null
+  challengeId: string | null
+  effectId: string | null
+}
+
+export type SessionSubagentMessageData = {
+  body: { requestId: string; mode: "queued" | "follow_up"; content: string }
+  path: { sessionID: string; childSessionID: string }
+  query?: { directory?: string; workspace?: string }
+  url: "/session/{sessionID}/subagents/{childSessionID}/message"
+}
+export type SessionSubagentMessageErrors = {
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  403: ForbiddenError
+  404: NotFoundError
+  409: ConflictError
+  503: ServiceUnavailableError
+}
+export type SessionSubagentMessageError = SessionSubagentMessageErrors[keyof SessionSubagentMessageErrors]
+export type SessionSubagentMessageResponses = { 200: HorizonSubagentMessageV1Result }
+export type SessionSubagentMessageResponse = SessionSubagentMessageResponses[keyof SessionSubagentMessageResponses]
 
 export type SessionTodoData = {
   body?: never
@@ -12337,7 +12705,34 @@ export type ExperimentalGoalReviewGoalReviewResponses = {
       sourceDigests: Array<string>
     }>
     runs: Array<{ runID: string; specID: string; runPhase: string }>
-    acceptedSpecs: Array<{ specID: string; specDigest: string }>
+    acceptedSpecs: Array<{
+      specID: string
+      specDigest: string
+      objective: string
+      scope: Array<string>
+      capabilityScope: Array<string>
+      constraints: Array<string>
+      criteria: Array<{ id: string; description: string }>
+      budget: {
+        maxTasks: number
+        maxAttemptsPerTask: number
+        maxRunDurationMs: number
+        maxWorkers: number
+        maxMemoryBytes: string | null
+        maxDiskBytes: string | null
+        maxTokens: string | null
+        maxCostMicros: string | null
+      }
+    }>
+    eligibleProfiles: Array<{
+      profileId: string
+      revision: string
+      name: string
+      roles: Array<string>
+      capabilityCeiling: Array<string>
+      tokenBudget: number | null
+    }>
+    eligibleProfilesTruncated: boolean
   }
 }
 
@@ -12430,7 +12825,34 @@ export type ExperimentalGoalReviewGoalReviewsResponses = {
         sourceDigests: Array<string>
       }>
       runs: Array<{ runID: string; specID: string; runPhase: string }>
-      acceptedSpecs: Array<{ specID: string; specDigest: string }>
+      acceptedSpecs: Array<{
+        specID: string
+        specDigest: string
+        objective: string
+        scope: Array<string>
+        capabilityScope: Array<string>
+        constraints: Array<string>
+        criteria: Array<{ id: string; description: string }>
+        budget: {
+          maxTasks: number
+          maxAttemptsPerTask: number
+          maxRunDurationMs: number
+          maxWorkers: number
+          maxMemoryBytes: string | null
+          maxDiskBytes: string | null
+          maxTokens: string | null
+          maxCostMicros: string | null
+        }
+      }>
+      eligibleProfiles: Array<{
+        profileId: string
+        revision: string
+        name: string
+        roles: Array<string>
+        capabilityCeiling: Array<string>
+        tokenBudget: number | null
+      }>
+      eligibleProfilesTruncated: boolean
     }>
     nextAfterGoalID: string | null
   }
@@ -12632,14 +13054,129 @@ export type ExperimentalGoalReviewGoalVerificationResponses = {
       | "CANCELLED"
     goalID: string
     runID: string
+    taskID: string
+    attemptID: string
     verificationRunID: string
     reason?: "reviewer_denied" | "cancelled" | "expired" | "transport_lost"
     revision: string
+    finalRevision: string
+    setIdentityDigest: string
+    challengeSetDigest: string
+    sourceRevision?: string
+    evidenceDigest?: string
+    artifactRefs?: Array<{
+      criterionID: string
+      artifactRefs: Array<{
+        artifactID: string
+        digest: string
+        byteLength: string
+        mediaType: string
+        classification: "PUBLIC" | "WORKSPACE" | "SENSITIVE"
+      }>
+    }>
+    recoveredArtifactRefs?: Array<{
+      artifactID: string
+      digest: string
+      byteLength: string
+      mediaType: string
+      classification: "PUBLIC" | "WORKSPACE" | "SENSITIVE"
+    }>
+    usageAccounting?: {
+      accountingCursor: string
+      tokenKnownSubtotal: string
+      costKnownSubtotalMicros: string
+      tokenRemainderStatus: "KNOWN" | "ESTIMATED" | "UNKNOWN"
+      costRemainderStatus: "KNOWN" | "ESTIMATED" | "UNKNOWN"
+      usageState: "KNOWN" | "ESTIMATED" | "UNKNOWN"
+      stopReason: "NONE" | "TOKEN_CEILING" | "COST_CEILING" | "USAGE_UNCERTAIN"
+      ceilingDigest: string
+      costStatus: "provider-reported" | "measured" | "estimated" | "unknown" | "mixed"
+      metricStatuses: Record<string, "provider-reported" | "measured" | "estimated" | "unknown" | "mixed">
+      receiptCount: string
+      receiptChainDigest: string
+    }
+    dispatchSettlement?: {
+      status: "SETTLED"
+      goalID: string
+      runID: string
+      taskID: string
+      attemptID: string
+      verificationRunID: string
+      setIdentityDigest: string
+      challengeSetDigest: string
+      workerExecutionID: string
+      disposition: "RELEASED" | "WORKTREE_QUARANTINED"
+      proofDigest: string
+      ownerLogID: string
+      ownerLogSequence: string
+      ownerLogEventDigest: string
+      workerPoolRevision: string
+      receiptDigest: string
+      worktreeDisposition: {
+        ownerEpoch: string
+        disposition: "REUSABLE" | "QUARANTINED"
+        settlementReceiptDigest: string
+        finalWorktreeOperationID: string
+        finalWorktreeHostReceiptRef: string
+        observedWorkspaceRevision: string
+        inspectReceiptDigest: string
+        ownerLogID: string
+        ownerLogSequence: string
+        ownerLogEventDigest: string
+        workerPoolRevision: string
+        receiptDigest: string
+      }
+    } | {
+      status: "QUARANTINED"
+      goalID: string
+      runID: string
+      taskID: string
+      attemptID: string
+      workerExecutionID: string
+      ownerEpoch: string
+      reservationID: string
+      worktreeLeaseID: string
+      reason: "FAILED_ATTEMPT" | "CANCELLED_TASK"
+      terminalProofDigest: string
+      ownerLogID: string
+      ownerLogSequence: string
+      ownerLogEventDigest: string
+      workerPoolRevision: string
+      receiptDigest: string
+    }
+    sessionID?: string
+    dispatchStatus?: "DISABLED" | "NO_TASK" | "PROMPT_RETURNED" | "PROMPT_RETURNED_ERROR" | "PROMPT_UNKNOWN" | "UNAVAILABLE"
   }
 }
 
 export type ExperimentalGoalReviewGoalVerificationResponse =
   ExperimentalGoalReviewGoalVerificationResponses[keyof ExperimentalGoalReviewGoalVerificationResponses]
+
+export type VerifiedArtifactRefV1 = {
+  artifactID: string
+  digest: string
+  byteLength: string
+  mediaType: string
+  classification: "PUBLIC" | "WORKSPACE" | "SENSITIVE"
+}
+
+export type VerifiedArtifactMetadataV1 = {
+  artifactRef: VerifiedArtifactRefV1
+  retentionClass: string
+  createdAt: string
+  fidelity: "FULL" | "SAMPLE" | "FAILED"
+  droppedByteCount: string
+  encryption: "NONE" | "STATE_KEY"
+  redaction: "NOT_NEEDED" | "APPLIED" | "UNKNOWN"
+}
+
+export type VerifiedArtifactRangeV1 = {
+  artifactRef: VerifiedArtifactRefV1
+  offset: string
+  nextOffset: string
+  complete: boolean
+  bytesBase64: string
+}
 
 export type ExperimentalGoalReviewGoalRunControlData = {
   body?: {
@@ -12692,6 +13229,8 @@ export type ExperimentalGoalReviewGoalRunPlanData = {
     runID: string
     tasks: Array<{
       taskID: string
+      title: string
+      purpose: string
       dependencies: Array<string>
       criterionIDs: Array<string>
       requiredCapabilities: Array<string>
@@ -12725,9 +13264,23 @@ export type ExperimentalGoalReviewGoalRunPlanResponses = {
     goalID: string
     runID: string
     specID: string
+    specDigest: string
     revision: string
     runPhase: string
     taskIDs: Array<string>
+    taskPins: Array<{
+      taskID: string
+      goalID: string
+      runID: string
+      runRevision: string
+      specID: string
+      specDigest: string
+      profileID: string
+      profileRevision: string
+      profileDigest: string
+      acceptedScopeDigest: string
+      profilePermissionCeilingDigest: string
+    }>
     tasksReady: false
     reason: string
   }
@@ -15387,3 +15940,49 @@ export type PtyConnectResponses = {
 }
 
 export type PtyConnectResponse = PtyConnectResponses[keyof PtyConnectResponses]
+
+export type RepoExplorerEntryV1 = {
+  pathRef: string
+  kind: "file" | "directory" | "symlink" | "other"
+  depth: number
+  sizeBytes: string
+  manifestKind?: string
+  languageHint?: string
+}
+
+export type RepoExplorerDiscoveryV1 = {
+  schemaVersion: 1
+  messageType: "discovery"
+  requestId: string
+  status: "CURRENT" | "PARTIAL" | "UNAVAILABLE"
+  freshness: "current" | "unknown"
+  completeness: "complete" | "partial" | "unavailable"
+  unavailableReason?: "read_unavailable" | "deadline_exceeded" | "workspace_changed"
+  partialReason?: "entry_limit" | "byte_limit" | "depth_limit"
+  authority: {
+    principalBinding: string
+    sessionID: string
+    locationID: string
+    ownerEpoch: string
+    workspaceBinding: string
+    sourceRevision: string
+    readPolicyDigest: string
+    rootRef: string
+    mode: "tree" | "manifests"
+    maxEntries: number
+    maxBytes: number
+    maxDepth: number
+  }
+  coverage: { entries: number; bytes: number; depth: number }
+  entries: RepoExplorerEntryV1[]
+}
+
+export type RepoExplorerDocumentV1 = {
+  schemaVersion: 1
+  status: "OK"
+  pathRef: string
+  revisionKind: "workspace" | "discovery_observation"
+  text: string
+  contentDigest: string
+  observedWorkspaceRevision: string
+}

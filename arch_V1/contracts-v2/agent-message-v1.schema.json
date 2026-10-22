@@ -1,0 +1,244 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "horizon://schemas/agent-message-v1",
+  "title": "AgentMessageV1",
+  "description": "Strict public input for the existing agents.message capability. Authority and receipt fields are trusted-owner projections, never caller assertions.",
+  "$ref": "#/$defs/RequestV1",
+  "$defs": {
+    "Identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\s\\u0000-\\u001f\\u007f]+$"
+    },
+    "DirectAttemptId": {
+      "type": "string",
+      "pattern": "^att_[a-z0-9]{16,64}$"
+    },
+    "DecimalU64": {
+      "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64"
+    },
+    "PositiveDecimalU64": {
+      "$ref": "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64"
+    },
+    "Digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "AnyDigest": {
+      "type": "string",
+      "pattern": "^(sha256|blake3):[0-9a-f]{64}$"
+    },
+    "RequestV1": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "childSessionId": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "deliveryMode": {
+          "enum": [
+            "queued",
+            "follow_up"
+          ]
+        },
+        "content": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16384
+        },
+        "idempotencyKey": {
+          "$ref": "#/$defs/Identifier"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "childSessionId",
+        "deliveryMode",
+        "content",
+        "idempotencyKey"
+      ],
+      "additionalProperties": false
+    },
+    "AuthorityPinsV1": {
+      "type": "object",
+      "properties": {
+        "parentSessionId": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "childSessionId": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "childOwnerEpoch": {
+          "$ref": "#/$defs/PositiveDecimalU64"
+        },
+        "profileId": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "profileRevision": {
+          "$ref": "#/$defs/PositiveDecimalU64"
+        },
+        "profileDigest": {
+          "type": "string",
+          "pattern": "^blake3:[0-9a-f]{64}$"
+        },
+        "permissionScopeDigest": {
+          "type": "string",
+          "pattern": "^(sha256|blake3):[0-9a-f]{64}$"
+        },
+        "directAttemptId": {
+          "$ref": "#/$defs/DirectAttemptId"
+        },
+        "messageId": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "deliveryMode": {
+          "enum": [
+            "queued",
+            "follow_up"
+          ]
+        },
+        "payloadDigest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "payloadBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16384
+        },
+        "mailboxSequence": {
+          "$ref": "#/$defs/PositiveDecimalU64"
+        },
+        "mailboxCapacity": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32
+        }
+      },
+      "required": [
+        "parentSessionId",
+        "childSessionId",
+        "childOwnerEpoch",
+        "profileId",
+        "profileRevision",
+        "profileDigest",
+        "permissionScopeDigest",
+        "directAttemptId",
+        "messageId",
+        "deliveryMode",
+        "payloadDigest",
+        "payloadBytes",
+        "mailboxSequence",
+        "mailboxCapacity"
+      ],
+      "additionalProperties": false
+    },
+    "ReceiptV1": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "status": {
+          "enum": [
+            "QUEUED",
+            "FOLLOW_UP_SCHEDULED",
+            "UNKNOWN"
+          ]
+        },
+        "messageId": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "parentSessionId": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "childSessionId": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "deliveryMode": {
+          "enum": [
+            "queued",
+            "follow_up"
+          ]
+        },
+        "mailboxSequence": {
+          "$ref": "#/$defs/DecimalU64"
+        },
+        "receiptDigest": {
+          "$ref": "#/$defs/AnyDigest"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "status",
+        "messageId",
+        "parentSessionId",
+        "childSessionId",
+        "deliveryMode",
+        "mailboxSequence",
+        "receiptDigest"
+      ],
+      "additionalProperties": false
+    },
+    "ChildStatusV1": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "sessionId": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "state": {
+          "enum": [
+            "queued",
+            "running",
+            "completed",
+            "failed",
+            "cancelled",
+            "unknown"
+          ]
+        },
+        "ownerEpoch": {
+          "$ref": "#/$defs/PositiveDecimalU64"
+        },
+        "profileId": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "profileRevision": {
+          "$ref": "#/$defs/PositiveDecimalU64"
+        },
+        "profileDigest": {
+          "type": "string",
+          "pattern": "^blake3:[0-9a-f]{64}$"
+        },
+        "pendingMessages": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 32
+        },
+        "activeRequest": {
+          "type": "boolean"
+        },
+        "lastSequence": {
+          "$ref": "#/$defs/DecimalU64"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "sessionId",
+        "state",
+        "ownerEpoch",
+        "profileId",
+        "profileRevision",
+        "profileDigest",
+        "pendingMessages",
+        "activeRequest",
+        "lastSequence"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

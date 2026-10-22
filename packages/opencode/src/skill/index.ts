@@ -1,6 +1,7 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import path from "path"
 import { createHash } from "node:crypto"
+import horizonCodeContent from "../../../core/src/horizon/skills/horizoncode/SKILL.md" with { type: "text" }
 import horizonDocsContent from "../../../core/src/horizon/skills/horizon-docs/SKILL.md" with { type: "text" }
 import { Effect, Layer, Context, Schema } from "effect"
 import { NamedError } from "@opencode-ai/core/util/error"
@@ -299,6 +300,16 @@ const layer = Layer.effect(
           description: CUSTOMIZE_OPENCODE_SKILL_DESCRIPTION,
           location: "<built-in>",
           content: CUSTOMIZE_OPENCODE_SKILL_BODY,
+        }
+        s.skills["builtin.horizoncode"] = {
+          id: "builtin.horizoncode",
+          sealed: true,
+          definitionDigest: createHash("sha256").update(horizonCodeContent).digest("hex"),
+          name: "horizoncode",
+          description:
+            "Deep integration map for HorizonCode — built-in tools, skills, capability tiers, Guard lanes, and product surface.",
+          location: "<built-in>",
+          content: horizonCodeContent,
         }
         s.skills["builtin.horizon-docs"] = {
           id: "builtin.horizon-docs",

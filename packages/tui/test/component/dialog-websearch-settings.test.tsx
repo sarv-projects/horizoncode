@@ -57,7 +57,7 @@ test("web-search settings record route consent and ordering without invoking an 
 
   let config: Record<string, unknown> = {
     model: "keep-this-setting",
-    websearch: { enabled: ["exa_keyless", "youcom_free", "firecrawl_keyless"], order: ["exa_keyless", "youcom_free", "firecrawl_keyless"] },
+    websearch: {},
   }
   const configWrites: Record<string, unknown>[] = []
   const authWrites: { providerID: string; body: unknown }[] = []
@@ -72,6 +72,29 @@ test("web-search settings record route consent and ordering without invoking an 
       configWrites.push(body)
       config = body
       return json(config)
+    }
+    if (url.pathname === "/websearch/providers" && request.method === "GET") {
+      const routeIDs = ["exa_keyless", "youcom_free", "firecrawl_keyless", "parallel_keyless", "brave", "exa", "youcom", "tavily", "firecrawl", "parallel"]
+      const enabled = new Set((config.websearch as { enabled?: string[] } | undefined)?.enabled ?? [])
+      return json(routeIDs.map((provider) => {
+        const keyless = provider.endsWith("_keyless") || provider === "youcom_free"
+        const configured = keyless
+        const active = enabled.has(provider)
+        return {
+          provider,
+          routeClass: "DIRECT_SEARCH",
+          costClass: keyless ? "FREE" : "UNKNOWN",
+          authSource: keyless ? "none" : "secret_broker",
+          enabled: active,
+          configured,
+          status: !active ? "disabled" : configured ? "unavailable" : "unconfigured",
+          available: false,
+          providerHealth: "not_probed",
+          stateSource: "process_local",
+          freshness: "unknown",
+          ...(!configured ? { unavailableReason: "No available SecretBroker reference is configured for this route." } : {}),
+        }
+      }))
     }
     if (url.pathname === "/auth/horizoncode-search-brave" && request.method === "PUT") {
       authWrites.push({ providerID: "horizoncode-search-brave", body: await request.json() })
@@ -138,23 +161,50 @@ test("web-search settings record route consent and ordering without invoking an 
     await waitFor(() => dialog?.stack.length === 1)
     const initial = await waitForFrame(app, (frame) => frame.includes("Brave Search"))
     expect(initial).toContain("Built-in default")
-    expect(initial).toContain("BYO routes remain unavailable")
+    expect(initial).toContain("Dispatch stays unavailable")
+    expect(initial).toContain("separate consent prompt")
+    expect(initial).toContain("Cost and freshness")
     expect(initial).toContain("Disabled")
 
-    // Selecting Brave records explicit consent in route settings. No generic
-    // auth credential is created and the absent SecretBroker/Guard transport
-    // keeps the provider from receiving a request.
-    app.mockInput.pressKey("ARROW_DOWN")
-    app.mockInput.pressKey("ARROW_DOWN")
-    app.mockInput.pressKey("ARROW_DOWN")
+    // First-use query-sharing consent enables the exact four-route free
+    // cascade. Consent does not bypass the unavailable Guarded release gate.
+    app.mockInput.pressEnter()
+    await waitForFrame(app, (frame) => frame.includes("Allow anonymous web search"))
     app.mockInput.pressEnter()
     await waitFor(() => configWrites.length === 1)
-    await waitForFrame(app, (frame) => frame.includes("Enabled · route 2 · unconfigured"))
-    expect(authWrites).toEqual([])
     expect(configWrites[0]?.websearch).toEqual({
-      enabled: ["exa_keyless", "youcom_free", "firecrawl_keyless", "brave"],
-      order: ["exa_keyless", "youcom_free", "firecrawl_keyless", "brave"],
+      querySharingConsent: "anonymous_free_v1",
+      enabled: ["exa_keyless", "youcom_free", "firecrawl_keyless", "parallel_keyless"],
+      order: ["exa_keyless", "youcom_free", "firecrawl_keyless", "parallel_keyless"],
     })
+
+    // Each BYO route has independent consent for SecretBroker use and unknown
+    // possible charges. No credential is created by this settings action.
+    for (let index = 0; index < 4; index++) app.mockInput.pressKey("ARROW_DOWN")
+    app.mockInput.pressEnter()
+    await waitForFrame(app, (frame) => frame.includes("Enable Brave Search"))
+    app.mockInput.pressEnter()
+    await waitFor(() => configWrites.length === 2)
+    await waitForFrame(app, (frame) => frame.includes("Enabled · route 5 · unconfigured · configured=no"))
+    expect(authWrites).toEqual([])
+    expect(configWrites[1]?.websearch).toEqual({
+      querySharingConsent: "anonymous_free_v1",
+      byoConsents: [{ route: "brave", consent: "secret_broker_unknown_cost_v1" }],
+      enabled: ["exa_keyless", "youcom_free", "firecrawl_keyless", "parallel_keyless", "brave"],
+      order: ["exa_keyless", "youcom_free", "firecrawl_keyless", "parallel_keyless", "brave"],
+    })
+    expect(searchRequests).toEqual([])
+
+    // A distinct Settings action removes the saved BYO consent and disables
+    // the route, so consent cannot silently survive a user-requested revocation.
+    app.mockInput.pressKey("ARROW_DOWN")
+    await waitForFrame(app, (frame) => frame.includes("Forget saved consent · Brave Search"))
+    app.mockInput.pressEnter()
+    await waitForFrame(app, (frame) => frame.includes("Forget Brave Search consent"))
+    app.mockInput.pressEnter()
+    await waitFor(() => configWrites.length === 3)
+    expect((configWrites[2]?.websearch as { byoConsents?: unknown[] }).byoConsents).toBeUndefined()
+    expect((configWrites[2]?.websearch as { enabled?: string[] }).enabled).not.toContain("brave")
     expect(searchRequests).toEqual([])
   } finally {
     app.renderer.destroy()

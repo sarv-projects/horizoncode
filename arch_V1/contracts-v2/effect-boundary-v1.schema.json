@@ -43,8 +43,8 @@
       "minLength": 1
     },
     "policyEpoch": {
-      "type": "integer",
-      "minimum": 0
+      "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64",
+      "description": "Unsigned 64-bit JSON counter/budget; encoded as canonical decimal string."
     },
     "expectedSourceRevision": {
       "type": [

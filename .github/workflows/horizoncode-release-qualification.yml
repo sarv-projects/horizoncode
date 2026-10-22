@@ -26,18 +26,22 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Select the repository's local models catalog fixture
-        shell: bash
-        run: |
-          install -d -m 700 /tmp/opencode
-          printf 'MODELS_DEV_API_JSON=%s/opencode/packages/opencode/test/tool/fixtures/models-api.json\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+        env:
+          MODELS_DEV_API_JSON: ${{ github.workspace }}/opencode/packages/opencode/test/tool/fixtures/models-api.json
+        run: test -f "$MODELS_DEV_API_JSON"
 
       - name: Build and audit an isolated candidate
         shell: bash
         run: |
           set -euo pipefail
-          build_root="/tmp/opencode/horizoncode-p9-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          build_report="$RUNNER_TEMP/horizoncode-p9-build.json"
-          gate_report="$RUNNER_TEMP/horizoncode-p9-gate.json"
+          artifact_root="$GITHUB_WORKSPACE/kernel/target/horizoncode-release"
+          run_root="$artifact_root/ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          install -d -m 700 "$artifact_root"
+          install -d -m 700 "$run_root"
+          build_root="$run_root/source"
+          build_report="$run_root/build.json"
+          gate_report="$run_root/gate.json"
+          summary_report="$run_root/qualification-summary.md"
 
           python3 scripts/release/prepare_build.py \
             --source "$GITHUB_WORKSPACE" \
@@ -62,7 +66,7 @@ jobs:
             exit "$gate_exit"
           fi
 
-          python3 - "$build_report" "$gate_report" "$GITHUB_STEP_SUMMARY" <<'PY'
+          python3 - "$build_report" "$gate_report" "$summary_report" <<'PY'
           import json
           import sys
           from pathlib import Path
@@ -86,7 +90,8 @@ jobs:
               "",
               "This manual workflow records qualification evidence only; it is not a release approval.",
           ]
-          Path(sys.argv[3]).write_text("\n".join(lines) + "\n", encoding="utf-8")
+          Path(sys.argv[3]).write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+          print(Path(sys.argv[3]).read_text(encoding="utf-8"), end="")
           if gate["status"] == "BLOCKED":
               print(f"::warning title=Release gate blocked::{len(gate['blockers'])} release blockers remain")
           PY

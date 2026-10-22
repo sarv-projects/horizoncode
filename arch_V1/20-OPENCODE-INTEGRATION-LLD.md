@@ -27,6 +27,11 @@ Do not invent a parallel direct-session/provider runtime, second Session store o
 
 Keep the existing SessionV2/direct continuation owner. `packages/llm` is the current provider transport, not a permanent authority: A-V2-27 may replace transport/catalog beneath the same Session owner. Horizon adds observation/correlation and guarded tool execution, never another direct transcript.
 
+Core `SessionRunner` remains the ordinary direct TUI turn path. Managed work may enter through
+the distinct `SessionPrompt` path to bind an Attempt; that entry must share the behavior and
+acceptance contract in §15.21 rather than becoming a second provider/session runtime.
+ContextService compilation is V1 for both paths.
+
 The provider runner must:
 - pin tool registry per request;
 - collect the complete local tool batch;
@@ -50,6 +55,24 @@ Use one canonical capability ID namespace from 33.
 
 Existing ToolRegistry remains the host tool source; ActionDescriptor adds human/API presentation metadata. Aliases resolve to one canonical target before permission/effect classification.
 
+CodeMode is V1 and belongs at the existing `packages/opencode/src/tool/code-mode.ts` / Core tool
+composition seam over the pinned `opencode/packages/codemode` interpreter. It exposes the existing
+`$codemode.search` progressive discovery surface over the exact currently authorized tool tree;
+discovery never grants permission. Existing MCP tools may participate only as Core-owned adapters
+routed through the same dispatcher, never through a helper-owned MCP client. Exact in-grant
+workspace reads/edits do not prompt per call. Run the existing interpreter in a short-lived helper
+process launched by the existing Rust ExecutionHost supervisor; do not add a Worker-thread runtime
+or second supervisor. The fixed trusted packaged-runtime selector is
+`horizoncode:codemode:bun`; V1 has no Node fallback. A bounded versioned stdio protocol carries
+code, bounded tool definitions, call requests/results, cancellation and terminal status. Core
+handles each complete wave through SessionSupervisor and the existing atomic ToolBatch/Guard/lease/
+receipt path. HostKernel applies the fixed `CodeModeResourceProfileV1` before first instruction:
+cgroup-v2 memory 536870912 bytes, CPU `100000 100000`, PIDs 64, and nofile 256; all are mandatory;
+the schema-versioned profile digest binds these values. Retain one interpreter, with §15.5 limits:
+64 calls across at most 64 sequential waves of up to 32 concurrent calls, 30 seconds, 64 KiB
+source/output and the §37.24 payload bound. Without verified limits or packaged runtime, CodeMode
+is unavailable on that backend.
+
 ### Guard bridge
 
 Logical host interface:
@@ -66,7 +89,7 @@ The actual function names should follow existing package conventions rather than
 | Logical service | Placement |
 |---|---|
 | AgentProfile/Harness registry | packages/core/src/horizon or existing config composition |
-| ContextService | packages/core/src/horizon integrated with Session/context code |
+| ContextService compiler (V1) | Core context assembly integrated with direct `SessionRunner` and managed `SessionPrompt`; canonical Session history stays with Core |
 | RepoIntelService | host adapter over indexd/LSP/parser |
 | ToolCatalog/ActionDescriptor projection | host over ToolRegistry + capability registry |
 | Skill/Hook/MCP registry | host config/extension layer |
@@ -143,6 +166,12 @@ Current progress belongs in HANDOFF.md.
 
 Keep one canonical owner per conversation. The direct Core session may call a selective OMP pi-ai/pi-catalog transport, but must never import OMP AgentSession or a second tool executor. The native OpenCode adapter is an independent process/client for the official upstream binary, with version probe, health, session linking, event stream, cancellation, approval, restart and error handling. Test both modes without dual ownership. No free-Zen client impersonation. See decision A-V2-27 and session/Guard acceptance gates before enabling effects.
 
+## 20.9 Reserved section number
+
+This numbered heading is intentionally unallocated after the 2026-10-11 lean consolidation.
+Do not cite `§20.9` as a product requirement. Use `§20.12` for the source wiring map and
+`§20.13` for post-V1 adapter seams.
+
 ## 20.10 Optional Settings / Experimental metadata implementation seam (A-V2-29)
 
 Feature exposure is a **projection of existing OpenCode/Horizon settings and §33 canonical capability metadata**, not an extra registry or authorization owner. Extend the existing config/settings descriptor materialization (locate live source/callers first) with `FeatureExposureV1` release class, optional setting ID, eligibility, scope, apply boundary, capability links and current resolved state. Reuse existing V1 TUI/CLI settings and command discovery; app/web/desktop settings presentation is post-V1. No new store or independent toggle dispatch. One config change projects into each available surface; Guard/capability availability remains authoritative at action time. Do not create toggles for proposal-only services that appear executable. Required tests: §32 FEAT-001..010.
@@ -207,7 +236,7 @@ Do not migrate JCode's entire agent/session tool runtime. Preserve exact Horizon
 
 **Measured branch migration:** zero changes to canonical Session storage or provider catalog, no second Rust Task database, no extra independent shared daemon besides one selected host-kernel effect owner. Shared observer prototype is intentionally read-only; effect cutover is a **separate** guarded, fully tested commit. Keep feature flag OFF on unsupported OS and preserve old supervisor for rollback. Record exact current source paths, hydrated-file diffs, tasks/test IDs, CI runs and benchmark before marking WIRED.
 
-**Snapcompact source boundary:** OMP provides both a transient outgoing-context imaging transform and a separate persisted archive-compaction method; neither is inherited from the pinned OpenCode substrate. The only future Horizon target is a derived projection owned by the §30 ContextService in the existing Core direct Session. Do not import OMP `AgentSession`, add a second compaction/history owner, or enable a transform before exact selected-model capability and image-aware budget checks. Current feasibility and source provenance are §16.15.2, §30.4 and §42 SRC-024.
+**Snapcompact source boundary:** OMP provides both a transient outgoing-context imaging transform and a separate persisted archive-compaction method; neither is inherited from the pinned OpenCode substrate. The only future Horizon target is a derived projection owned by the existing V1 §30 ContextService in the existing Core direct Session. Do not import OMP `AgentSession`, add a second compaction/history owner, or enable a transform before exact selected-model capability and image-aware budget checks. Current feasibility and source provenance are §16.15.2, §30.4 and §42 SRC-024.
 
 ## 20.13 Previously under-specified ACP client, visual-source and deployment wiring
 
@@ -224,3 +253,59 @@ The active §03.16–18 user journeys and §29 AgentProfileV2 adapter kinds alre
 **Do not retrofit authority into upstream ACP code.** ACP session-creation, resume and outbound tool-capability support must be feature-negotiated; an agent reporting tools does not establish their mediation or permission safety. Treat external agent messages and DOM/hosted deployment responses as untrusted inputs. All effectful launches/upload/rollback must first pass existing §14 Guard; unsupported hosted/native effects are unavailable in governed mode. Reuse current §33/`contracts-v2` registries rather than adding an unofficial capability namespace.
 
 **Source verification procedure:** bootstrap pinned source in disposable, unmodified checkout; enumerate effective root files; locate exact server/host/worker entry points and tests; bind candidate §33.30 IDs only after implementing adapters; generate machine schemas; add §32.35 negative platform/security/protocol/remote-failure cases; record code-path, CI, release support and stage (DESIGNED versus WIRED) in HANDOFF.
+### CodeMode integration seam status (2026-10-22)
+
+The existing CodeMode package and interpreter are retained. The model-visible registry
+currently assigns CodeMode as unavailable; the wrapper executes in-process and nested MCP
+calls fail before dispatch. Therefore this package is not an integrated agent feature.
+P5 owns the Core adapter, exact authorized catalog/discovery and model-visible registry;
+P1 owns the helper-process protocol, ExecutionHost/cgroup admission, nested ToolBatch
+mediation and recovery. The adapter must reuse the existing interpreter and Core tool
+tree, with no raw MCP client or parallel permission path. Do not expose the tool until
+the full CM-001..012 contract in §32.41 passes. See §37.24.
+
+### 20.14 External editor integration (DEC-V1-33)
+
+Keep prompt composition in the existing TUI editor. The normal TUI starts in a single-pane
+session and does not mount an Explorer/editor pane or persistent sidebar. `/editor` is the
+explicit command that opens the workspace Explorer as an overlay; `/editor --side` opts
+into a right-side Explorer/editor pane for that session. File selection plus Open invokes
+the user-only `editor.launch` action with the configured profile. Prompt scratch editing is
+available only inside this command flow. Settings → Editors is reached through `/settings`.
+`packages/tui/src/editor.ts` adapts `editor.launch`: suspend/resume the renderer for
+terminal profiles, and wait for the supervised process for GUI profiles. It does not call
+Node/Bun `spawn`, parse `$EDITOR`, construct shell text, or decide Guard policy. Core
+Config projects `ExternalEditorProfileRefV1`; HostKernel resolves it and routes launch
+through the existing ExecutionHost. The registered file chooser supplies the target and
+expected revision. The operation is available only in an interactive TTY and only when
+the selected permission mode/backend supports the required containment. Prompt scratch
+and workspace file paths are separate target kinds. See §§12.22/14.29/16.20/37.28 and
+`contracts-v2/external-editor-profile-v1.schema.json`.
+
+**Current source status (2026-10-22):** `/editor` command registration opens the P3
+authenticated Explorer overlay and default rendering stays single-pane. Global immutable
+profile selection is exposed through Core Config and `/settings` → Editors. The P1
+EffectHost journal seam exists, but P2 has not yet landed public HostKernel
+`editor.prepare/begin/settle/reconcile` plus existing `terminal.v1` attachment routing;
+the TUI does not yet suspend/resume into an editor process, and no post-exit content
+digest/revision check feeds `files.patch`. Keep file Open launch disabled until those
+bridges and OS containment acceptance land. Never use the legacy OpenCode `openEditor`
+or any Core spawn path as a substitute.
+
+## 20.15 Git workspace read integration seam (V1, §17.31)
+
+**Owner:** Core tool handlers for `git.status`, `git.diff`, `git.log`, `git.show`, and
+`git.branch.list` project bounded arguments only; HostKernel `GitWorkspaceReadServiceV1`
+(`§37.29`) is the sole execution authority.
+
+**Call path:** `packages/core` / `packages/opencode` tool registry → authenticated
+HostKernel private IPC (`execution.v1/git_workspace_read` or equivalent negotiated feature) →
+Guard read admission → fixed argv `git` launch via existing `TerminalExecutionServiceV1` /
+ExecutionHost → bounded stdout/stderr capture → EffectHost receipt or artifact ref.
+
+**Non-goals:** no Core `AppProcess.spawn` of `git`, no shell string assembly, no RepoIntel
+`repo.tree` substitution, no network `fetch`/`push`/`pull`, no write operations on this seam.
+
+**Contracts:** operation IDs and argument bounds align with `§14.28`; acceptance `§32.46`.
+Mutating `git.*` capabilities remain on the ordinary guarded tool path with separate handlers.
+

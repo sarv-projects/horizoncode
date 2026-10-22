@@ -4,6 +4,7 @@ import { makeLocationNode } from "./effect/app-node"
 import path from "path"
 import { createHash } from "node:crypto"
 import { fileURLToPath } from "node:url"
+import horizonCodeContent from "./horizon/skills/horizoncode/SKILL.md" with { type: "text" }
 import horizonDocsContent from "./horizon/skills/horizon-docs/SKILL.md" with { type: "text" }
 import { Context, Effect, Layer, Schema, Types } from "effect"
 import { Skill } from "@opencode-ai/schema/skill"
@@ -34,9 +35,23 @@ export type Info = Skill.Info
 export const Identity = Skill.Identity
 export type Identity = Skill.Identity
 
+const HORIZON_CODE_IDENTITY = Skill.HorizonCodeIdentityV1
 const HORIZON_DOCS_IDENTITY = Skill.HorizonDocsIdentityV1
 
 const sha256 = (content: string) => createHash("sha256").update(content).digest("hex")
+
+function verifySealedBuiltinRevision(
+  identity: typeof HORIZON_DOCS_IDENTITY | typeof HORIZON_CODE_IDENTITY,
+  content: string,
+  expectedRevision?: string,
+) {
+  const actual = `sha256:${sha256(content)}`
+  const expected = expectedRevision ?? identity.revision
+  if (expected !== identity.revision || actual !== identity.revision) {
+    throw new Error(`canonical ${identity.alias} skill digest mismatch`)
+  }
+  return actual
+}
 
 export function identityFor(input: {
   source: "project" | "user" | "remote"
@@ -56,16 +71,32 @@ export function identityFor(input: {
 }
 
 export function verifyCanonicalBuiltin(content: string, expectedRevision: string) {
-  const actual = `sha256:${sha256(content)}`
-  if (expectedRevision !== HORIZON_DOCS_IDENTITY.revision || actual !== HORIZON_DOCS_IDENTITY.revision) {
-    throw new Error("canonical Horizon docs skill digest mismatch")
-  }
-  return actual
+  return verifySealedBuiltinRevision(HORIZON_DOCS_IDENTITY, content, expectedRevision)
 }
 
-export function horizonDocs(input?: { content: string; expectedRevision: string }): Info {
+export function horizonCode(input?: { content: string; expectedRevision?: string }): Info {
+  const content = input?.content ?? horizonCodeContent
+  const revision = verifySealedBuiltinRevision(HORIZON_CODE_IDENTITY, content, input?.expectedRevision)
+  return Info.make({
+    name: HORIZON_CODE_IDENTITY.alias,
+    description:
+      "Deep integration map for HorizonCode — built-in tools, skills, capability tiers, Guard lanes, and product surface.",
+    location: AbsolutePath.make(fileURLToPath(new URL("./horizon/skills/horizoncode/SKILL.md", import.meta.url))),
+    content,
+    identity: {
+      schemaVersion: 1,
+      id: HORIZON_CODE_IDENTITY.id,
+      alias: HORIZON_CODE_IDENTITY.alias,
+      source: "builtin",
+      trust: "sealed_builtin",
+      revision,
+    },
+  })
+}
+
+export function horizonDocs(input?: { content: string; expectedRevision?: string }): Info {
   const content = input?.content ?? horizonDocsContent
-  const revision = verifyCanonicalBuiltin(content, input?.expectedRevision ?? HORIZON_DOCS_IDENTITY.revision)
+  const revision = verifySealedBuiltinRevision(HORIZON_DOCS_IDENTITY, content, input?.expectedRevision)
   return Info.make({
     name: HORIZON_DOCS_IDENTITY.alias,
     description: "Retrieve installed HorizonCode architecture, contracts and implementation status.",
@@ -203,7 +234,7 @@ const layer = Layer.effect(
     // events, following the reload policy chosen for other context sources?
     const cache = new Map<string, Info[]>()
     const list = Effect.fn("SkillV2.list")(function* () {
-      const skills: Info[] = [horizonDocs()]
+      const skills: Info[] = [horizonCode(), horizonDocs()]
       for (const source of state.get().sources) {
         const key = Source.key(source)
         const loaded = cache.get(key) ?? (yield* load(source))

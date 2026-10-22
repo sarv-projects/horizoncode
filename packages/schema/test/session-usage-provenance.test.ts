@@ -110,3 +110,25 @@ test("assistant usage metadata accepts estimates, unknowns, and legacy rows", ()
   delete (legacy as { usageProvenance?: unknown }).usageProvenance
   expect(Schema.decodeUnknownSync(SessionMessage.Assistant)(legacy).cost).toBe(0)
 })
+
+test("usage provenance projection is strict and preserves unavailable cost truth", () => {
+  const strict = Schema.decodeUnknownSync(SessionMessage.UsageProvenance, { onExcessProperty: "error" })
+  const projection = {
+    providerID: "provider-a",
+    modelID: "model-a",
+    cost: unknown,
+    tokens: {
+      input: { status: "provider-reported", value: 0 },
+      output: unknown,
+      reasoning: unknown,
+      cache: { read: unknown, write: unknown },
+    },
+  }
+  expect(strict(projection).cost).toEqual({ status: "unknown" })
+  expect(() => strict({ ...projection, cost: { status: "unknown", value: 0 } })).toThrow()
+  expect(() => strict({ ...projection, untrusted: "extra" })).toThrow()
+  expect(() => strict({
+    ...projection,
+    cost: { status: "measured", value: 0 },
+  })).toThrow()
+})

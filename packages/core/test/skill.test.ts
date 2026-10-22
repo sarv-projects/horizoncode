@@ -141,7 +141,7 @@ describe("SkillV2", () => {
           yield* skill.transform((editor) => editor.source({ type: "url", url: "https://example.test/skills/" }))
 
           const listed = yield* skill.list()
-          expect(listed.map((item) => item.name)).toEqual(["horizon-docs", "deploy"])
+          expect(listed.map((item) => item.name)).toEqual(["horizoncode", "horizon-docs", "deploy"])
           expect((yield* skill.list()).map((item) => item.identity.id)).toEqual(listed.map((item) => item.identity.id))
           expect(pulls).toBe(1)
           const loadedDeploy = listed.find((item) => item.identity.alias === "deploy")!

@@ -10,6 +10,12 @@ export type LanguageServiceProcessOperation =
   | "server.restart"
   | "server.stop"
   | "server.probe"
+  | "debug.start"
+  | "debug.stop"
+  | "repl.start"
+  | "repl.execute"
+  | "repl.reset"
+  | "repl.stop"
 
 export type LanguageServiceProcessReason = "guard_not_verified"
 
@@ -19,7 +25,7 @@ export class LanguageServiceProcessError extends Error {
   readonly reason: LanguageServiceProcessReason = "guard_not_verified"
   constructor(operation: LanguageServiceProcessOperation) {
     super(
-      `Language-service process effect ${operation} is unavailable: the canonical Guard/ExecutionHost route is not registered`,
+      `Editor process effect ${operation} is unavailable: the canonical Guard/ExecutionHost route is not registered`,
     )
     this.name = "LanguageServiceProcessError"
     this.operation = operation
@@ -29,6 +35,23 @@ export class LanguageServiceProcessError extends Error {
 /** True only when the single HostKernel-backed route is integrated and verified. */
 export function languageServiceProcessRouteAvailable(): boolean {
   return false
+}
+
+/** True only after the single P1 journaled protocol dispatcher passes acceptance. */
+export function hostProtocolRouteAvailable(): boolean {
+  return false
+}
+
+export class HostProtocolUnavailableError extends Error {
+  readonly _tag = "HostProtocolUnavailableError"
+  constructor() {
+    super("LSP/DAP protocol IO is unavailable until the shared Guarded HostKernel journal route is verified")
+    this.name = "HostProtocolUnavailableError"
+  }
+}
+
+export function assertHostProtocolAllowed(): void {
+  if (!hostProtocolRouteAvailable()) throw new HostProtocolUnavailableError()
 }
 
 /** Fail-closed gate for every language-service process effect. */

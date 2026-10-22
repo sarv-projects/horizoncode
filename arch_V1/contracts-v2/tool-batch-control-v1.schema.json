@@ -8,27 +8,32 @@
     },
     "batchId": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "maxLength": 256
     },
     "sessionId": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "maxLength": 256
     },
     "providerResponseRef": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "maxLength": 256
     },
     "providerResponseDigest": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "maxLength": 256
     },
     "toolRegistryGeneration": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "maxLength": 256
     },
     "policyEpoch": {
-      "type": "integer",
-      "minimum": 0
+      "$ref": "horizon://schemas/wire-primitives-v1#/$defs/DecimalU64",
+      "description": "Unsigned 64-bit JSON counter/budget; encoded as canonical decimal string."
     },
     "status": {
       "enum": [
@@ -46,24 +51,29 @@
     "calls": {
       "type": "array",
       "minItems": 1,
+      "maxItems": 32,
       "items": {
         "type": "object",
         "properties": {
           "callId": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "maxLength": 256
           },
           "capabilityId": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "maxLength": 256
           },
           "schemaDigest": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "maxLength": 256
           },
           "argumentsDigest": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "maxLength": 256
           },
           "effectClass": {
             "enum": [
@@ -85,11 +95,34 @@
     },
     "effectRefs": {
       "type": "array",
+      "maxItems": 32,
       "items": {
         "type": "string",
-        "minLength": 1
+        "minLength": 1,
+        "maxLength": 256
       },
       "uniqueItems": true
+    },
+    "payloadBytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1048576,
+      "description": "Canonical encoded aggregate argument payload bytes; fixed bounded JSON-safe number."
+    },
+    "deadlineMs": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 30000,
+      "description": "Trusted monotonic aggregate deadline; callers cannot extend it."
+    },
+    "cancellationId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "receiptDigest": {
+      "type": "string",
+      "pattern": "^blake3:[a-f0-9]{64}$"
     }
   },
   "required": [
@@ -102,7 +135,63 @@
     "policyEpoch",
     "status",
     "calls",
-    "effectRefs"
+    "effectRefs",
+    "payloadBytes",
+    "deadlineMs",
+    "cancellationId"
   ],
-  "additionalProperties": false
+  "additionalProperties": false,
+  "description": "Design contract for an atomic admitted ToolBatch. Each batch has at most 32 calls. One CodeMode script may submit at most 64 sequential waves, each containing at most 32 calls, for at most 64 total calls; script-wide payload and deadline bounds do not reset between waves.",
+  "x-horizon-validation": [
+    "atomic-admission-all-calls-or-none",
+    "one-use-lease-per-authorized-effect",
+    "admission-payload-at-most-1048576-bytes",
+    "trusted-30-second-deadline-and-cancellation-stop-new-dispatch",
+    "settlement-receipt-required-for-terminal-success",
+    "unknown-effect-remains-UNKNOWN-until-exact-reconciliation",
+    "no-retry-or-next-wave-after-UNKNOWN",
+    "terminal-settlement-denial-and-cancellation-have-durable-batch-receipts;-unknown-has-no-fabricated-receipt-until-reconciled"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "settled",
+              "rejected",
+              "cancelled"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "required": [
+          "receiptDigest"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "unknown_reconciliation"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "not": {
+          "required": [
+            "receiptDigest"
+          ]
+        }
+      }
+    }
+  ]
 }
