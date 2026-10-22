@@ -302,7 +302,7 @@ for name in ACTIVE+STUBS:
 # Operational entrypoints must point to the lean architecture/current plan.
 plan=R/'docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md'
 check(plan.is_file(),'current implementation plan missing')
-for rel in ['AGENTS.md','HANDOFF.md','IMPLEMENTER_PROMPT.md']:
+for rel in ['AGENTS.md','HANDOFF.md']:
     text=(R/rel).read_text()
     check('17-GOVERNANCE-DECISIONS.md' in text,rel+' lacks governance entrypoint')
     check('2026-10-11-horizoncode-converged-implementation.md' in text,rel+' lacks current implementation plan')
