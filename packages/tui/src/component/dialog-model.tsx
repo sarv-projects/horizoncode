@@ -26,21 +26,55 @@ type ListedModelLimits = {
 
 const tokenLimitFormatter = new Intl.NumberFormat("en-US")
 
+/** The largest millisecond instant `Date` can represent; anything beyond it is not a usable retrieval time. */
+const MAX_DATE_MS = 8_640_000_000_000_000
+
+function provenanceText(value: unknown) {
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined
+}
+
+/**
+ * Advisory catalog provenance for the model dialog. This is not endpoint
+ * health and grants no route authority.
+ *
+ * The contract for a missing snapshot — or a missing field on it — is
+ * *unknown, never current*: the label must not throw inside the dialog, must
+ * not invent a source or freshness, and must not fall back to a success-looking
+ * default. Only values the server actually sent are rendered.
+ */
 export function catalogProvenanceLabel(snapshot: {
-  source: string
-  freshness: string
+  source?: string
+  freshness?: string
   sourceURL?: string
   retrievedAt?: number
   contentDigest?: string
   license?: string
   attribution?: string
-}) {
-  const parts = [`Catalog ${snapshot.source}/${snapshot.freshness}`]
-  if (snapshot.sourceURL) parts.push(snapshot.sourceURL)
-  if (snapshot.retrievedAt !== undefined) parts.push(`retrieved ${new Date(snapshot.retrievedAt).toISOString()}`)
-  if (snapshot.contentDigest) parts.push(`digest ${snapshot.contentDigest.slice(0, 12)}`)
-  if (snapshot.license) parts.push(`license ${snapshot.license}`)
-  if (snapshot.attribution) parts.push(snapshot.attribution)
+} | undefined | null) {
+  if (snapshot === undefined || snapshot === null || typeof snapshot !== "object") {
+    return "Catalog provenance unknown"
+  }
+  const source = provenanceText(snapshot.source)
+  const freshness = provenanceText(snapshot.freshness)
+  if (source === undefined && freshness === undefined) return "Catalog provenance unknown"
+
+  const parts = [`Catalog ${source ?? "unknown"}/${freshness ?? "unknown"}`]
+  const sourceURL = provenanceText(snapshot.sourceURL)
+  if (sourceURL) parts.push(sourceURL)
+  const retrievedAt =
+    typeof snapshot.retrievedAt === "number" &&
+    Number.isFinite(snapshot.retrievedAt) &&
+    snapshot.retrievedAt >= 0 &&
+    snapshot.retrievedAt <= MAX_DATE_MS
+      ? snapshot.retrievedAt
+      : undefined
+  if (retrievedAt !== undefined) parts.push(`retrieved ${new Date(retrievedAt).toISOString()}`)
+  const contentDigest = provenanceText(snapshot.contentDigest)
+  if (contentDigest) parts.push(`digest ${contentDigest.slice(0, 12)}`)
+  const license = provenanceText(snapshot.license)
+  if (license) parts.push(`license ${license}`)
+  const attribution = provenanceText(snapshot.attribution)
+  if (attribution) parts.push(attribution)
   return parts.join(" · ")
 }
 
@@ -79,13 +113,7 @@ export function modelAvailabilityLabel(input: {
         : "No Guarded credential reference or anonymous route detected",
     `Catalog ${input.status ?? "status unknown"}`,
     "Endpoint not probed",
-    modelSelectableInV1({
-      providerID: input.providerID ?? "",
-      credentialSourceDetected: input.connected,
-      anonymousOffer: input.anonymousOffer,
-      status: input.status,
-      cost: input.cost,
-    }) ? "Selectable by HorizonCode V1 policy; dispatch unverified" : "Dispatch unavailable in HorizonCode V1",
+    modelDispatchVerdictV1(input),
   ]
   labels.push(
     `Catalog limits: context ${tokenLimit(input.limits?.context)} · input ${tokenLimit(input.limits?.input)} · output ${tokenLimit(input.limits?.output)}`,
@@ -143,23 +171,24 @@ export function DialogModel(props: { providerID?: string }) {
             title: model.name ?? item.modelID,
             description: provider.name,
             category,
-            disabled: !modelSelectableInV1({
-              providerID: provider.id,
-              credentialSourceDetected: sync.data.provider_next.connected.includes(provider.id),
-              anonymousOffer: sync.data.provider_next.anonymousFreeModels?.includes(`${provider.id}/${model.id}`),
-              status: model.status,
+            disabled: !modelListedInV1({
               cost: model.cost,
+              anonymousOffer: sync.data.provider_next.anonymousFreeModels?.includes(`${provider.id}/${model.id}`),
             }),
-            footer: `${modelPriceLabel(model.cost)} · ${modelAvailabilityLabel({
-              providerID: provider.id,
-              connected: sync.data.provider_next.connected.includes(provider.id),
-              source: provider.source,
-              anonymousOffer: sync.data.provider_next.anonymousFreeModels?.includes(`${provider.id}/${model.id}`),
-              status: model.status,
-              cost: model.cost,
-              capabilities: model.capabilities,
-              limits: model.limit,
-            })} · ${catalogProvenanceLabel(sync.data.provider_next.catalogSnapshot)}`,
+            footer: modelPriceLabel(model.cost),
+            details: modelRowDetails(
+              {
+                providerID: provider.id,
+                connected: sync.data.provider_next.connected.includes(provider.id),
+                source: provider.source,
+                anonymousOffer: sync.data.provider_next.anonymousFreeModels?.includes(`${provider.id}/${model.id}`),
+                status: model.status,
+                cost: model.cost,
+                capabilities: model.capabilities,
+                limits: model.limit,
+              },
+              sync.data.provider_next.catalogSnapshot,
+            ),
             onSelect: () => {
               onSelect(provider.id, model.id)
             },
@@ -204,23 +233,24 @@ export function DialogModel(props: { providerID?: string }) {
                 .filter(Boolean)
                 .join(" ") || undefined,
             category: connected() ? provider.name : undefined,
-            disabled: !modelSelectableInV1({
-              providerID: provider.id,
-              credentialSourceDetected: sync.data.provider_next.connected.includes(provider.id),
-              anonymousOffer: sync.data.provider_next.anonymousFreeModels?.includes(`${provider.id}/${model}`),
-              status: info.status,
+            disabled: !modelListedInV1({
               cost: info.cost,
+              anonymousOffer: sync.data.provider_next.anonymousFreeModels?.includes(`${provider.id}/${model}`),
             }),
-            footer: `${modelPriceLabel(info.cost)} · ${modelAvailabilityLabel({
-              providerID: provider.id,
-              connected: sync.data.provider_next.connected.includes(provider.id),
-              source: provider.source,
-              anonymousOffer: sync.data.provider_next.anonymousFreeModels?.includes(`${provider.id}/${model}`),
-              status: info.status,
-              cost: info.cost,
-              capabilities: info.capabilities,
-              limits: info.limit,
-            })} · ${catalogProvenanceLabel(sync.data.provider_next.catalogSnapshot)}`,
+            footer: modelPriceLabel(info.cost),
+            details: modelRowDetails(
+              {
+                providerID: provider.id,
+                connected: sync.data.provider_next.connected.includes(provider.id),
+                source: provider.source,
+                anonymousOffer: sync.data.provider_next.anonymousFreeModels?.includes(`${provider.id}/${model}`),
+                status: info.status,
+                cost: info.cost,
+                capabilities: info.capabilities,
+                limits: info.limit,
+              },
+              sync.data.provider_next.catalogSnapshot,
+            ),
             onSelect() {
               onSelect(provider.id, model)
             },
@@ -281,6 +311,18 @@ export function DialogModel(props: { providerID?: string }) {
   })
 
   function onSelect(providerID: string, modelID: string) {
+    // A listed row can still be unavailable: choosing one must never change the
+    // selected model or start an auth flow (arch_V1/16 provider/model hub).
+    // Fail closed when the projection itself is missing.
+    const model = sync.data.provider.find((item) => item.id === providerID)?.models[modelID]
+    const selectable = modelSelectableInV1({
+      providerID,
+      credentialSourceDetected: sync.data.provider_next.connected.includes(providerID),
+      anonymousOffer: sync.data.provider_next.anonymousFreeModels?.includes(`${providerID}/${modelID}`),
+      status: model?.status,
+      cost: model?.cost,
+    })
+    if (!model || !selectable) return
     local.model.set({ providerID, modelID }, { recent: true })
     const list = local.model.variant.list()
     const cur = local.model.variant.selected()
@@ -362,6 +404,58 @@ export function modelSelectableInV1(input: {
     input.anonymousOffer === true &&
     input.status === "active" &&
     isZeroPricedModel({ cost: input.cost })
+}
+
+/**
+ * What the model picker *lists* (arch_V1/16 provider/model hub): incomplete or
+ * paid pricing, credential-backed and non-OpenCode models stay visible so their
+ * price and "Dispatch unavailable in HorizonCode V1" status remain readable —
+ * visibility never implies selectability, which stays with `modelSelectableInV1`.
+ *
+ * The single exception is a catalog `$0` entry the server has not declared as
+ * its anonymous offer: "Listed $0" beside "dispatch unavailable" advertises
+ * free access that does not exist, so such an entry is not listed at all.
+ */
+export function modelListedInV1(input: { cost?: ModelCostShape; anonymousOffer?: boolean }) {
+  if (explicitZeroPriceLabel(input.cost) === undefined) return true
+  return input.anonymousOffer === true
+}
+
+/** The availability answer the picker exists to give; always the first detail line of a model row. */
+export function modelDispatchVerdictV1(input: {
+  providerID?: string
+  connected: boolean
+  anonymousOffer?: boolean
+  status?: "active" | "alpha" | "beta" | "deprecated"
+  cost?: ModelCostShape
+}) {
+  return modelSelectableInV1({
+    providerID: input.providerID ?? "",
+    credentialSourceDetected: input.connected,
+    anonymousOffer: input.anonymousOffer,
+    status: input.status,
+    cost: input.cost,
+  })
+    ? "Selectable by HorizonCode V1 policy; dispatch unverified"
+    : "Dispatch unavailable in HorizonCode V1"
+}
+
+/**
+ * A model row is one line wide: `title` sits beside a short price badge in
+ * `footer`, and the long availability/provenance sentence lives on the
+ * budgeted detail lines below it. Putting it in `footer` instead makes that
+ * box wrap, and a wrapped footer is not counted by dialog-select's row budget —
+ * the scroll area then fills with the first row and every later model falls
+ * out of view.
+ */
+function modelRowDetails(
+  availability: Parameters<typeof modelAvailabilityLabel>[0],
+  catalogSnapshot: Parameters<typeof catalogProvenanceLabel>[0],
+): string[] {
+  return [
+    modelDispatchVerdictV1(availability),
+    `${modelAvailabilityLabel(availability)} · ${catalogProvenanceLabel(catalogSnapshot)}`,
+  ]
 }
 
 export function sortModelOptions<T extends { footer?: string; releaseDate: string | number; title: string }>(

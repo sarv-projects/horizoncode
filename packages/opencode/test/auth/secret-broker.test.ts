@@ -256,6 +256,56 @@ describe("SecretBroker in-process contract", () => {
     expect(writes).toEqual(["put", "lease"])
   })
 
+  test("rejects case-insensitive duplicate headers before consuming their exact lease", async () => {
+    const { broker, writes } = fixture()
+    const created = await broker.put(putRequest)
+    const destination = "https://api.example.invalid/v1/chat/completions"
+    const input = {
+      providerId: "example-provider",
+      method: "POST" as const,
+      destination,
+      body: "{}",
+      headers: { "x-tenant": "first", "X-Tenant": "second" },
+      credentialHeader: { name: "x-api-key" as const, prefix: "" },
+    }
+    const digest = providerRequestDigest(input)
+    const trusted = {
+      requesterRef: "principal_authenticated",
+      providerId: input.providerId,
+      operationDigest: digest,
+      destination,
+      purpose: "PROVIDER_REQUEST" as const,
+      maxExpiresAt: "2026-10-18T17:00:20.000Z",
+    }
+    const lease = await broker.authorizeUse({
+      schemaVersion: 1,
+      secretRef: created.secretRef,
+      providerId: input.providerId,
+      operationDigest: digest,
+      destination,
+      purpose: trusted.purpose,
+      expiresAt: "2026-10-18T17:00:15.000Z",
+      maxRequests: 1,
+    }, trusted)
+    let sends = 0
+
+    await expect(dispatchProviderRequest({
+      broker,
+      lease,
+      trusted,
+      input,
+      send: async () => {
+        sends++
+        return (async function* () {})()
+      },
+      deadlineAt: Date.now() + 10_000,
+      maxResponseBytes: 1024,
+    })).rejects.toMatchObject({ code: "INVALID_REQUEST" })
+
+    expect(sends).toBe(0)
+    expect(writes).toEqual(["put", "lease"])
+  })
+
   test("cancels an in-flight single request and bounds streamed response bytes", async () => {
     const { broker } = fixture()
     const created = await broker.put(putRequest)

@@ -24,7 +24,9 @@ import {
   inspectSearchProviders,
   normalizeSearchCascadeSettings,
   SEARCH_ROUTE_IDS,
+  type SearchRouteAttempt,
 } from "../../src/tool/websearch-broker"
+import { projectRouteAttempts } from "../../src/tool/websearch"
 import * as mcpWebSearch from "../../src/tool/mcp-websearch"
 import {
   consentBindingFixture,
@@ -113,6 +115,49 @@ test("per-route provenance distinguishes known, unknown and not-dispatched outco
     notDispatchedFailure: "transport_failure",
     receiptRef: "route_receipt_exa_keyless_0",
   })
+})
+
+// §32.28 "per-route auth/cost/retry provenance": the public wire projection
+// must carry every provenance field for each outcome class, keep UNKNOWN
+// receiptless, keep not-dispatched rows carrying their zero-send reason and
+// durable receipt, and drop rows that lack their HostKernel identity pins.
+test("the wire route-attempt projection is complete and schema-valid for every outcome", () => {
+  const observedAt = "2026-10-20T00:00:00.000Z"
+  const rows: SearchRouteAttempt[] = [
+    { provider: "exa_keyless", routeId: "web.search.exa_keyless", routeIndex: 0, attempt: 1, status: "succeeded", costClass: "FREE", authSource: "none", statusCode: 200, observedAt, receiptRef: "route_receipt_exa_keyless_0" },
+    { provider: "brave", routeId: "web.search.brave", routeIndex: 1, attempt: 1, status: "failed", costClass: "UNKNOWN", authSource: "secret_broker", statusCode: 401, observedAt, receiptRef: "route_receipt_brave_1" },
+    { provider: "brave", routeId: "web.search.brave", routeIndex: 1, attempt: 1, status: "rate_limited", costClass: "UNKNOWN", authSource: "secret_broker", statusCode: 429, retryAfterMs: 5_000, observedAt, receiptRef: "route_receipt_brave_2" },
+    { provider: "exa_keyless", routeId: "web.search.exa_keyless", routeIndex: 0, attempt: 1, status: "retryable_failure", costClass: "FREE", authSource: "none", statusCode: 503, observedAt, receiptRef: "route_receipt_exa_keyless_3" },
+    { provider: "youcom_free", routeId: "web.search.youcom_free", routeIndex: 2, attempt: 2, status: "empty", costClass: "FREE", authSource: "none", statusCode: 200, observedAt, receiptRef: "route_receipt_youcom_free_4" },
+    { provider: "exa_keyless", routeId: "web.search.exa_keyless", routeIndex: 0, attempt: 1, status: "not_dispatched", notDispatchedFailure: "timed_out", costClass: "FREE", authSource: "none", observedAt, receiptRef: "route_receipt_exa_keyless_5" },
+    { provider: "youcom_free", routeId: "web.search.youcom_free", routeIndex: 2, attempt: 1, status: "unknown", costClass: "FREE", authSource: "none", observedAt },
+  ]
+
+  const projected = projectRouteAttempts(rows)
+  expect(projected).toEqual([
+    { providerId: "exa_keyless", routeId: "web.search.exa_keyless", routeIndex: 0, attempt: 1, status: "succeeded", costClass: "free", authSource: "none", reason: "provider returned HTTP 200", statusCode: 200, observedAt, receiptRef: "route_receipt_exa_keyless_0" },
+    { providerId: "brave", routeId: "web.search.brave", routeIndex: 1, attempt: 1, status: "failed", costClass: "unknown", authSource: "secret_broker", reason: "provider authentication rejected", statusCode: 401, observedAt, receiptRef: "route_receipt_brave_1" },
+    { providerId: "brave", routeId: "web.search.brave", routeIndex: 1, attempt: 1, status: "rate_limited", costClass: "unknown", authSource: "secret_broker", reason: "provider rate limit", statusCode: 429, retryAfterMs: 5_000, observedAt, receiptRef: "route_receipt_brave_2" },
+    { providerId: "exa_keyless", routeId: "web.search.exa_keyless", routeIndex: 0, attempt: 1, status: "retryable_failure", costClass: "free", authSource: "none", reason: "provider returned a retryable transient failure", statusCode: 503, observedAt, receiptRef: "route_receipt_exa_keyless_3" },
+    { providerId: "youcom_free", routeId: "web.search.youcom_free", routeIndex: 2, attempt: 2, status: "empty", costClass: "free", authSource: "none", reason: "provider returned no results", statusCode: 200, observedAt, receiptRef: "route_receipt_youcom_free_4" },
+    { providerId: "exa_keyless", routeId: "web.search.exa_keyless", routeIndex: 0, attempt: 1, status: "not_dispatched", notDispatchedFailure: "timed_out", costClass: "free", authSource: "none", reason: "connection timed out before provider request was sent", observedAt, receiptRef: "route_receipt_exa_keyless_5" },
+    { providerId: "youcom_free", routeId: "web.search.youcom_free", routeIndex: 2, attempt: 1, status: "unknown", costClass: "free", authSource: "none", reason: "dispatch outcome unknown", observedAt },
+  ])
+
+  // Every projected row is a valid public provenance row in the result schema.
+  expect(decodeResult({ ...directSearchResultFixture(), routeAttempts: projected }).routeAttempts)
+    .toHaveLength(projected.length)
+
+  // Rows without their authenticated route identity pins are never projected,
+  // and the public view stays bounded to 20 rows.
+  const unpinned: SearchRouteAttempt = { provider: "brave", attempt: 1, status: "failed", observedAt, receiptRef: "route_receipt_brave_unpinned" }
+  const outOfRange: SearchRouteAttempt = { provider: "brave", routeId: "web.search.brave", routeIndex: 99, attempt: 1, status: "failed", observedAt, receiptRef: "route_receipt_brave_range" }
+  expect(projectRouteAttempts([unpinned, outOfRange, rows[1]!])).toHaveLength(1)
+  expect(projectRouteAttempts(Array.from({ length: 25 }, (_, index) => ({
+    ...rows[1]!,
+    routeIndex: index % 10,
+    receiptRef: `route_receipt_brave_${index}`,
+  })))).toHaveLength(20)
 })
 
 test("consent binding keeps unconsent routes out of the executable plan", () => {

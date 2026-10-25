@@ -26,13 +26,23 @@ import {
 import * as WebSearchBroker from "../../src/tool/websearch-broker"
 import { runSearchCascade } from "./websearch-cascade.fixture"
 import { createSearchInspectionRoutes, createSearchRoutePlan, parseSearchProviderResponse } from "../../src/tool/websearch-adapters"
-import { assertBoundedSearchBody, decodeSuccessfulCascadeResults, parseCascadeResponse, prepareSearchEffectArguments, SearchRuntimeError, validateCascadeResponseRoutes } from "../../src/tool/websearch-runtime"
+import { assertBoundedSearchBody, decodeSuccessfulCascadeResults, parseCascadeResponse, prepareSearchEffectArguments, SearchRuntimeError, validateCascadeContinuationIdentity, validateCascadeResponseRoutes } from "../../src/tool/websearch-runtime"
 import * as WebSearchRuntime from "../../src/tool/websearch-runtime"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { WebSearchV1 } from "@opencode-ai/schema"
 import { SecretBrokerV1 } from "@opencode-ai/schema/secret-broker-v1"
 
 const TEST_ROUTE_PLAN_DIGEST = `blake3:${"a".repeat(64)}`
+const TEST_CASCADE_REF = `search_cascade_${"c".repeat(64)}`
+const TEST_SEARCH_AUTHORIZATION_PROJECTION = {
+  attemptRef: "attempt_1",
+  attemptDigest: TEST_ROUTE_PLAN_DIGEST,
+  routeKey: "brave",
+  attempt: 1,
+  providerRequest: {},
+  request: {},
+  trusted: {},
+}
 
 describe("websearch provider", () => {
   test("production broker exposes no raw route-callback executor", async () => {
@@ -786,7 +796,7 @@ describe("websearch ordered cascade", () => {
       routePlanDigest: TEST_ROUTE_PLAN_DIGEST,
       attempts: [{
         ...hostAttempt("exa_keyless", 0, "UNKNOWN"),
-        httpStatus: 0,
+        httpStatus: null,
       }],
     }).attempts[0]?.status).toBe("UNKNOWN")
     expect(() => parseCascadeResponse({
@@ -876,22 +886,83 @@ describe("websearch ordered cascade", () => {
     })).toThrow("invalid route receipt")
   })
 
+  test("rejects HTTP statuses outside the protocol range in route receipts", () => {
+    const base = {
+      status: "EXHAUSTED",
+      receiptRef: "search-receipt",
+      routePlanDigest: TEST_ROUTE_PLAN_DIGEST,
+      attempts: [hostAttempt("exa_keyless", 0, "FAILED")],
+    }
+
+    for (const httpStatus of [0, 99, 600]) {
+      expect(() => parseCascadeResponse({
+        ...base,
+        attempts: [{ ...base.attempts[0], httpStatus }],
+      })).toThrow("invalid HTTP status")
+    }
+    expect(parseCascadeResponse({
+      ...base,
+      attempts: [{ ...base.attempts[0], httpStatus: 100 }],
+    }).attempts[0]?.httpStatus).toBe(100)
+  })
+
   test("rejects an empty or whitespace-only BYO continuation reference", () => {
     const base = {
       status: "WAITING_SECRET",
       cascadeDigest: `blake3:${"a".repeat(64)}`,
       routePlanDigest: TEST_ROUTE_PLAN_DIGEST,
       routeIndex: 1,
-      nextRoute: { routeKey: "brave", attempt: 1 },
+      nextRoute: TEST_SEARCH_AUTHORIZATION_PROJECTION,
       attempts: [],
     }
     for (const cascadeRef of ["", " \t\n"]) {
       expect(() => parseCascadeResponse({ ...base, cascadeRef })).toThrow("BYO web-search continuation")
     }
-    expect(parseCascadeResponse({ ...base, cascadeRef: "search_cascade_abc" })).toMatchObject({
+    expect(parseCascadeResponse({ ...base, cascadeRef: TEST_CASCADE_REF })).toMatchObject({
       status: "WAITING_SECRET",
-      cascadeRef: "search_cascade_abc",
+      cascadeRef: TEST_CASCADE_REF,
     })
+  })
+
+  test("rejects a malformed BYO cascade reference before returning a continuation", () => {
+    const continuation = {
+      status: "WAITING_SECRET",
+      cascadeDigest: TEST_ROUTE_PLAN_DIGEST,
+      routePlanDigest: `blake3:${"b".repeat(64)}`,
+      routeIndex: 0,
+      nextRoute: TEST_SEARCH_AUTHORIZATION_PROJECTION,
+      attempts: [],
+    }
+
+    for (const cascadeRef of ["search_cascade_short", `search_cascade_${"g".repeat(64)}`]) {
+      expect(() => parseCascadeResponse({ ...continuation, cascadeRef })).toThrow("BYO web-search continuation")
+    }
+    expect(parseCascadeResponse({
+      ...continuation,
+      cascadeRef: `search_cascade_${"c".repeat(64)}`,
+    }).cascadeRef).toBe(`search_cascade_${"c".repeat(64)}`)
+  })
+
+  test("rejects a BYO resume projection that changes its durable cascade cursor", () => {
+    const previous = {
+      cascadeRef: TEST_CASCADE_REF,
+      cascadeDigest: TEST_ROUTE_PLAN_DIGEST,
+    }
+    const resumed = {
+      status: "WAITING_SECRET" as const,
+      cascadeRef: TEST_CASCADE_REF,
+      cascadeDigest: TEST_ROUTE_PLAN_DIGEST,
+    }
+
+    expect(() => validateCascadeContinuationIdentity(previous, {
+      ...resumed,
+      cascadeRef: `search_cascade_${"d".repeat(64)}`,
+    })).toThrow("changed its durable cascade cursor")
+    expect(() => validateCascadeContinuationIdentity(previous, {
+      ...resumed,
+      cascadeDigest: `blake3:${"e".repeat(64)}`,
+    })).toThrow("changed its durable cascade cursor")
+    expect(() => validateCascadeContinuationIdentity(previous, resumed)).not.toThrow()
   })
 
   test("rejects non-string and over-limit aggregate and route receipt references", () => {
@@ -1110,6 +1181,165 @@ describe("websearch ordered cascade", () => {
     })).toThrow("retryable HTTP status without its required same-route retry")
   })
 
+  // DEC-V1-26: 408/425/5xx are transient. At attempt 1 they may only be
+  // classified as the bounded retryable failure — never as a terminal FAILED —
+  // so the host cannot skip the mandated one same-route retry, nor fail over to
+  // the next approved route early, nor report the transient as terminal.
+  test("a transient 5xx recorded as terminal FAILED never skips its bounded same-route retry", () => {
+    const execution = {
+      query: "docs",
+      limit: 4,
+      routes: [
+        { routeKey: "exa_keyless" as const, attemptCount: 2 as const },
+        { routeKey: "brave" as const, attemptCount: 2 as const },
+      ],
+    }
+    const base = {
+      status: "EXHAUSTED" as const,
+      routePlanDigest: TEST_ROUTE_PLAN_DIGEST,
+      receiptRef: "aggregate-receipt-transient-5xx",
+      attempts: [] as const,
+    }
+
+    // The wire decoder rejects a 5xx on attempt 1 unless it is classified
+    // RETRYABLE_FAILURE (the 408/425 rule already existed; 5xx must match it).
+    for (const httpStatus of [500, 502, 503, 504]) {
+      expect(() => parseCascadeResponse({
+        ...base,
+        attempts: [{ ...hostAttempt("exa_keyless", 0, "FAILED"), httpStatus }],
+      })).toThrow("retryable HTTP status without its required same-route retry")
+    }
+
+    // The route validator applies the same rule to host evidence it receives
+    // directly: a FAILED 5xx on attempt 1 may not fall through to route 2.
+    expect(() => validateCascadeResponseRoutes({
+      ...base,
+      attempts: [
+        { ...hostAttempt("exa_keyless", 0, "FAILED"), httpStatus: 503 },
+        { ...hostAttempt("brave", 1, "FAILED"), httpStatus: 407 },
+      ],
+    }, execution)).toThrow("retryable HTTP status without its required same-route retry")
+
+    // A 5xx on the bounded second attempt is an legitimately exhausted retry:
+    // it may advance to the next approved route and end as EXHAUSTED.
+    const retriedThenAdvance = {
+      ...base,
+      attempts: [
+        { ...hostAttempt("exa_keyless", 0, "RETRYABLE_FAILURE"), httpStatus: 503 },
+        { ...hostAttempt("exa_keyless", 0, "FAILED", 2), httpStatus: 503 },
+        { ...hostAttempt("brave", 1, "FAILED"), httpStatus: 407 },
+      ],
+    }
+    expect(parseCascadeResponse(retriedThenAdvance)).toMatchObject({
+      status: "EXHAUSTED",
+      attempts: [
+        { provider: "exa_keyless", status: "RETRYABLE_FAILURE", httpStatus: 503 },
+        { provider: "exa_keyless", status: "FAILED", attempt: 2, httpStatus: 503 },
+        { provider: "brave", status: "FAILED", httpStatus: 407 },
+      ],
+    })
+    expect(validateCascadeResponseRoutes(retriedThenAdvance, execution)).toBe(retriedThenAdvance)
+  })
+
+  test("authentication 4xx receipts fall through per route without buying a same-route retry", () => {
+    const execution = {
+      query: "docs",
+      limit: 4,
+      routes: [
+        { routeKey: "exa_keyless" as const, attemptCount: 2 as const },
+        { routeKey: "brave" as const, attemptCount: 2 as const },
+      ],
+    }
+    // 401/403/407 are recorded on their own route; the cascade advances only
+    // to the next explicitly approved route with its own durable receipt.
+    const authFallthrough = {
+      status: "EXHAUSTED" as const,
+      routePlanDigest: TEST_ROUTE_PLAN_DIGEST,
+      receiptRef: "aggregate-receipt-auth-fallthrough",
+      attempts: [
+        { ...hostAttempt("exa_keyless", 0, "FAILED"), httpStatus: 403 },
+        { ...hostAttempt("brave", 1, "FAILED"), httpStatus: 407 },
+      ],
+    }
+    expect(validateCascadeResponseRoutes(authFallthrough, execution)).toBe(authFallthrough)
+    expect(parseCascadeResponse(authFallthrough)).toMatchObject({
+      status: "EXHAUSTED",
+      attempts: [
+        { provider: "exa_keyless", routeId: "web.search.exa_keyless", status: "FAILED", httpStatus: 403 },
+        { provider: "brave", routeId: "web.search.brave", status: "FAILED", httpStatus: 407 },
+      ],
+    })
+
+    // An authentication failure never buys a second attempt on the same
+    // route/credential; only the explicitly enabled next route may run.
+    expect(() => validateCascadeResponseRoutes({
+      ...authFallthrough,
+      attempts: [
+        { ...hostAttempt("exa_keyless", 0, "FAILED"), httpStatus: 403 },
+        { ...hostAttempt("exa_keyless", 0, "FAILED", 2), httpStatus: 403 },
+        { ...hostAttempt("brave", 1, "FAILED"), httpStatus: 407 },
+      ],
+    }, execution)).toThrow("invalid same-route retry sequence")
+
+    // A non-authentication client error stays terminal: no fall-through.
+    expect(() => validateCascadeResponseRoutes({
+      ...authFallthrough,
+      attempts: [
+        { ...hostAttempt("exa_keyless", 0, "FAILED"), httpStatus: 400 },
+        { ...hostAttempt("brave", 1, "FAILED"), httpStatus: 407 },
+      ],
+    }, execution)).toThrow("continued after a terminal non-rate-limit HTTP 4xx")
+  })
+
+  test("a not-dispatched aggregate carries no dispatch evidence while its route rows stay durable", () => {
+    // Aggregate NOT_DISPATCHED is a proven zero send: no attempts, no route
+    // plan, no aggregate receipt, no route selection.
+    expect(() => parseCascadeResponse({
+      status: "NOT_DISPATCHED",
+      attempts: [hostAttempt("exa_keyless", 0, "NOT_DISPATCHED")],
+    })).toThrow("pre-plan not-dispatched request")
+    expect(() => parseCascadeResponse({
+      status: "NOT_DISPATCHED",
+      receiptRef: "aggregate-not-dispatched",
+      attempts: [],
+    })).toThrow("pre-plan not-dispatched request")
+    expect(() => parseCascadeResponse({
+      status: "NOT_DISPATCHED",
+      routePlanDigest: TEST_ROUTE_PLAN_DIGEST,
+      attempts: [],
+    })).toThrow("pre-plan not-dispatched request")
+    expect(() => validateCascadeResponseRoutes({
+      status: "NOT_DISPATCHED",
+      attempts: [
+        hostAttempt("exa_keyless", 0, "NOT_DISPATCHED"),
+        hostAttempt("exa_keyless", 0, "NOT_DISPATCHED", 2),
+      ],
+    }, {
+      query: "docs",
+      limit: 4,
+      routes: [{ routeKey: "exa_keyless", attemptCount: 2 }],
+    })).toThrow("dispatch evidence for a not-dispatched web-search request")
+
+    // A route-level NOT_DISPATCHED receipt is a known outcome and needs its
+    // durable reference — unlike UNKNOWN, which must stay receiptless.
+    expect(() => parseCascadeResponse({
+      status: "CANCELLED",
+      routePlanDigest: TEST_ROUTE_PLAN_DIGEST,
+      receiptRef: "cancelled-before-send-receipt",
+      attempts: [{ ...hostAttempt("exa_keyless", 0, "NOT_DISPATCHED"), receiptRef: undefined }],
+    })).toThrow("omitted the durable receipt")
+    expect(parseCascadeResponse({
+      status: "CANCELLED",
+      routePlanDigest: TEST_ROUTE_PLAN_DIGEST,
+      receiptRef: "cancelled-before-send-receipt",
+      attempts: [hostAttempt("exa_keyless", 0, "NOT_DISPATCHED")],
+    }).attempts[0]).toMatchObject({
+      status: "NOT_DISPATCHED",
+      notDispatchedFailure: "transport_failure",
+      receiptRef: "route-receipt-exa_keyless-1",
+    })
+  })
+
   test("an empty successful route result advances without retrying that route", () => {
     const execution = {
       query: "docs",
@@ -1165,6 +1395,16 @@ describe("websearch ordered cascade", () => {
       status: "UNKNOWN",
       attempts: [hostAttempt("exa_keyless", 0, "UNKNOWN")],
     }, execution)).toThrow("route-plan digest")
+
+    const unknownLastApprovedRoute = {
+      status: "EXHAUSTED" as const,
+      routePlanDigest: TEST_ROUTE_PLAN_DIGEST,
+      receiptRef: "aggregate-exhausted-with-unknown-route",
+      attempts: [hostAttempt("exa_keyless", 0, "FAILED"), hostAttempt("youcom_free", 1, "UNKNOWN")],
+    }
+    expect(() => parseCascadeResponse(unknownLastApprovedRoute)).toThrow("preserve an unknown route outcome")
+    expect(() => validateCascadeResponseRoutes(unknownLastApprovedRoute, execution))
+      .toThrow("preserve an unknown route outcome")
   })
 
   test("a durable pre-dispatch connection failure retries the same route once, then advances", () => {
@@ -1257,6 +1497,27 @@ describe("websearch ordered cascade", () => {
     })).toThrow("terminal route outcome")
   })
 
+  test("does not accept exhaustion after a route receipt proves cancellation", () => {
+    const cancelled = parseCascadeResponse({
+      status: "CANCELLED",
+      routePlanDigest: TEST_ROUTE_PLAN_DIGEST,
+      receiptRef: "search-cancelled-receipt",
+      attempts: [{
+        ...hostAttempt("exa_keyless", 0, "NOT_DISPATCHED", 1),
+        notDispatchedFailure: "cancelled",
+      }],
+    })
+
+    expect(() => validateCascadeResponseRoutes({
+      ...cancelled,
+      status: "EXHAUSTED",
+    }, {
+      query: "docs",
+      limit: 4,
+      routes: [{ routeKey: "exa_keyless", attemptCount: 2 }],
+    })).toThrow("exhaustion after a cancelled route receipt")
+  })
+
   test("a retryable route receipt cannot be exhausted before its one same-route retry", () => {
     expect(() => validateCascadeResponseRoutes({
       status: "EXHAUSTED",
@@ -1312,23 +1573,32 @@ describe("websearch ordered cascade", () => {
   test("accepts only an exact bounded BYO cascade continuation envelope", () => {
     const continuation = parseCascadeResponse({
       status: "WAITING_SECRET",
-      cascadeRef: "search_cascade_abc",
+      cascadeRef: TEST_CASCADE_REF,
       cascadeDigest: `blake3:${"a".repeat(64)}`,
       routePlanDigest: `blake3:${"b".repeat(64)}`,
       routeIndex: 2,
-      nextRoute: { attemptRef: "attempt_1" },
+      nextRoute: TEST_SEARCH_AUTHORIZATION_PROJECTION,
       attempts: [],
     })
     expect(continuation).toMatchObject({ status: "WAITING_SECRET", routeIndex: 2 })
     expect(() => parseCascadeResponse({
       status: "WAITING_SECRET",
-      cascadeRef: "search_cascade_abc",
+      cascadeRef: TEST_CASCADE_REF,
       cascadeDigest: `blake3:${"a".repeat(64)}`,
       routePlanDigest: `blake3:${"b".repeat(64)}`,
       routeIndex: 11,
       nextRoute: {},
       attempts: [],
-    })).toThrow("invalid BYO web-search continuation")
+    })).toThrow("invalid BYO search authorization projection")
+    expect(() => parseCascadeResponse({
+      status: "WAITING_SECRET",
+      cascadeRef: TEST_CASCADE_REF,
+      cascadeDigest: `blake3:${"a".repeat(64)}`,
+      routePlanDigest: `blake3:${"b".repeat(64)}`,
+      routeIndex: 0,
+      nextRoute: { ...TEST_SEARCH_AUTHORIZATION_PROJECTION, unexpected: true },
+      attempts: [],
+    })).toThrow("invalid BYO search authorization projection")
     expect(() => parseCascadeResponse({
       status: "EXHAUSTED",
       receiptRef: "aggregate-receipt",
@@ -1338,7 +1608,7 @@ describe("websearch ordered cascade", () => {
     })).toThrow("orphaned BYO")
     expect(() => validateCascadeResponseRoutes({
       ...continuation,
-      nextRoute: { routeKey: "brave", attempt: 1 },
+      nextRoute: { ...TEST_SEARCH_AUTHORIZATION_PROJECTION, unexpected: true },
     }, {
       query: "docs",
       limit: 4,

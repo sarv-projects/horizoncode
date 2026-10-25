@@ -98,7 +98,7 @@ const listenEffect: (opts: ListenOptions) => Effect.Effect<EffectListener, unkno
 )
 
 function listenerLayer(opts: ListenOptions, port: number) {
-  return HttpRouter.serve(HttpApiApp.createRoutes(opts), {
+  return HttpRouter.serve(HttpApiApp.createListenerRoutes(opts), {
     middleware: disposeMiddleware,
     disableLogger: true,
     disableListenLog: true,
@@ -123,6 +123,19 @@ function startWithPortFallback(opts: ListenOptions) {
 
 function startListener(opts: ListenOptions, port: number) {
   const scope = Scope.makeUnsafe()
+  // The route tree is built in a memo map private to this attempt, so every
+  // attempt keeps its own cors/auth/ConfigProvider wiring (a shared map here
+  // let a previously built webHandler route tree satisfy this listener and drop
+  // the listener's own middleware). The app-service graph — above all
+  // `SessionSupervisor`, which owns the process-wide host-owner lease — is NOT
+  // built in this map: `createListenerRoutes` delegates those builds to the
+  // process-wide memo map, so AppRuntime's `AppLayer` and every listener share
+  // exactly one construction, and therefore one host-owner lease.
+  //
+  // A failed attempt still closes its own scope before `startWithPortFallback`
+  // retries (see `Effect.onError` below), which drops that attempt's
+  // observations — so a lease this attempt owns is released, child exit awaited
+  // by the supervisor's finalizer, before the next attempt builds.
   return Layer.buildWithMemoMap(listenerLayer(opts, port), Layer.makeMemoMapUnsafe(), scope).pipe(
     Effect.provide(HttpApiApp.context),
     Effect.onError(() => Scope.close(scope, Exit.void).pipe(Effect.ignore)),

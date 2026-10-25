@@ -90,6 +90,8 @@ const MANAGED_CANDIDATE_ATTEMPT_ID = /^attempt_[0-9a-f]{64}$/
 const CANONICAL_DIGEST = /^(sha256|blake3):[0-9a-f]{64}$/
 const MAX_LIST_ITEMS = 256
 const MAX_TEXT_BYTES = 16 * 1024
+const MAX_SPEC_CRITERIA = 256
+const MAX_PLAN_ITEM_BYTES = 4 * 1024
 const MAX_VERIFIER_CRITERIA = 32
 const MAX_VERIFIER_ARTIFACTS = MAX_VERIFIER_CRITERIA * 64
 // Mirror ArtifactStore's verifier manifest limits so malformed RPC projections
@@ -1713,6 +1715,14 @@ export interface Interface {
    * Admits and starts one Attempt for a ready managed Task. The authenticated
    * executor principal is derived by the kernel from the connection; a stale
    * revision, a reused Attempt id or a non-ready Task fails closed.
+   *
+   * The emitted body is exactly Rust's closed `admit` key set: the 12
+   * pre-admission common keys plus `managedProviderRoute` and `attemptID`, with
+   * no optional keys. `profileSelection` selects and validates the profile but is
+   * deliberately **not** sent — HostKernel rejects any unlisted key. The two
+   * `resourcePolicyProjection*` values are the HostKernel-minted pin for this
+   * exact candidate (`resource-policy.ingress-v1` / `project_policy`); without
+   * them this function fails closed instead of sending a body Rust refuses.
    */
   readonly admitAttempt: (input: {
     readonly goalID: string
@@ -1728,6 +1738,10 @@ export interface Interface {
     /** Stable Stage-B receipt identity from the same P8 reservation; HostKernel resolves the current lease proof. */
     readonly preAdmissionProofDigest: string
     readonly contextSelection: ContextSelection
+    /** Canonical decimal projection revision from `project_policy`; required by Rust `admit`. */
+    readonly resourcePolicyProjectionRevision: string
+    /** BLAKE3 projection digest from `project_policy`; required by Rust `admit`. */
+    readonly resourcePolicyProjectionDigest: string
   }) => Effect.Effect<ManagedAttemptAdmission, ManagedControlError, SessionSupervisorService | AgentProfileService | ProviderService | Auth.Service>
   /** Persist the exact next model-visible selection before its provider request. */
   readonly advanceManagedContext: (input: {
@@ -2108,7 +2122,7 @@ function sortedUniqueIdentifiers(operation: string, value: readonly string[], ke
 }
 
 function canonicalDecimalU64(operation: string, value: string, key: string): bigint {
-  if (!/^(0|[1-9][0-9]{0,19})$/.test(value) || BigInt(value) > MAX_U64) {
+  if (typeof value !== "string" || !/^(0|[1-9][0-9]{0,19})$/.test(value) || BigInt(value) > MAX_U64) {
     throw new ManagedControlError({ operation, code: "managed_protocol", reason: `${key} is not a canonical u64` })
   }
   return BigInt(value)
@@ -4368,6 +4382,26 @@ export const createGoalProposal = Effect.fn("ManagedControl.createGoalProposal")
   input: GoalProposalInput & { readonly trustedPrincipal?: TrustedPrincipal },
 ) {
   const operation = "create_goal_proposal"
+  const criteria = yield* Effect.try({
+    try: () => {
+      if (!Array.isArray(input.criteria) || input.criteria.length === 0 || input.criteria.length > MAX_SPEC_CRITERIA) {
+        throw new ManagedControlError({ operation, code: "managed_protocol", reason: "criteria is not a non-empty bounded list" })
+      }
+      return input.criteria.map((raw, index) => {
+        const criterion = requiredRecord(operation, raw, `criteria[${index}]`)
+        const id = identifier(operation, requiredText(operation, criterion, "id", 256), "criterion id")
+        const description = requiredText(operation, criterion, "description", MAX_PLAN_ITEM_BYTES)
+        if (description.trim().length === 0) {
+          throw new ManagedControlError({ operation, code: "managed_protocol", reason: `criteria[${index}].description is invalid` })
+        }
+        return { id, description }
+      })
+    },
+    catch: (error) =>
+      error instanceof ManagedControlError
+        ? error
+        : new ManagedControlError({ operation, code: "managed_protocol", reason: "criteria is malformed" }),
+  })
   const body = {
     goalID: identifier(operation, input.goalID, "goalID"),
     specID: identifier(operation, input.specID, "specID"),
@@ -4377,10 +4411,7 @@ export const createGoalProposal = Effect.fn("ManagedControl.createGoalProposal")
     capabilityScope: stringList(operation, input.capabilityScope, "capabilityScope"),
     scope: stringList(operation, input.scope, "scope"),
     constraints: stringList(operation, input.constraints, "constraints"),
-    criteria: input.criteria.map((criterion) => ({
-      id: identifier(operation, criterion.id, "criterion id"),
-      description: criterion.description,
-    })),
+    criteria,
     budget: {
       maxTasks: input.budget.maxTasks,
       maxAttemptsPerTask: input.budget.maxAttemptsPerTask,
@@ -4393,7 +4424,11 @@ export const createGoalProposal = Effect.fn("ManagedControl.createGoalProposal")
     },
     sourceDigests: stringList(operation, input.sourceDigests, "sourceDigests"),
   }
-  if (input.objective.trim().length === 0 || Buffer.byteLength(input.objective, "utf8") > MAX_TEXT_BYTES) {
+  if (
+    typeof input.objective !== "string" ||
+    input.objective.trim().length === 0 ||
+    Buffer.byteLength(input.objective, "utf8") > MAX_TEXT_BYTES
+  ) {
     return yield* Effect.fail(
       new ManagedControlError({ operation, code: "managed_protocol", reason: "objective is invalid" }),
     )
@@ -4593,10 +4628,14 @@ export const createRunPlan = Effect.fn("ManagedControl.createRunPlan")(function*
   const specDigest = digestValue(operation, input.specDigest, "specDigest")
   const runID = identifier(operation, input.runID, "runID")
   const expectedGoalRevision = input.expectedGoalRevision
-  if (!/^(0|[1-9][0-9]{0,19})$/.test(expectedGoalRevision) || BigInt(expectedGoalRevision) > 18_446_744_073_709_551_615n) {
+  if (
+    typeof expectedGoalRevision !== "string" ||
+    !/^(0|[1-9][0-9]{0,19})$/.test(expectedGoalRevision) ||
+    BigInt(expectedGoalRevision) > 18_446_744_073_709_551_615n
+  ) {
     return yield* new ManagedControlError({ operation, code: "managed_protocol", reason: "expectedGoalRevision is not a canonical u64" })
   }
-  if (input.tasks.length === 0 || input.tasks.length > MAX_LIST_ITEMS) {
+  if (!Array.isArray(input.tasks) || input.tasks.length === 0 || input.tasks.length > MAX_LIST_ITEMS) {
     return yield* new ManagedControlError({ operation, code: "managed_protocol", reason: "Task plan is empty or exceeds the bounded V1 task limit" })
   }
   const projectRef = identifier(operation, input.projectRef, "projectRef")
@@ -4862,7 +4901,11 @@ export const startPlannedRun = Effect.fn("ManagedControl.startPlannedRun")(funct
   const specID = identifier(operation, input.specID, "specID")
   const specDigest = digestValue(operation, input.specDigest, "specDigest")
   const expectedGoalRevision = input.expectedGoalRevision
-  if (!/^(0|[1-9][0-9]{0,19})$/.test(expectedGoalRevision) || BigInt(expectedGoalRevision) > 18_446_744_073_709_551_615n) {
+  if (
+    typeof expectedGoalRevision !== "string" ||
+    !/^(0|[1-9][0-9]{0,19})$/.test(expectedGoalRevision) ||
+    BigInt(expectedGoalRevision) > 18_446_744_073_709_551_615n
+  ) {
     return yield* new ManagedControlError({ operation, code: "managed_protocol", reason: "expectedGoalRevision is not a canonical u64" })
   }
   const idempotencyKey = identifier(operation, input.idempotencyKey, "idempotencyKey")
@@ -4870,6 +4913,16 @@ export const startPlannedRun = Effect.fn("ManagedControl.startPlannedRun")(funct
   const projectRef = identifier(operation, input.projectRef, "projectRef")
   const workspaceRef = identifier(operation, input.workspaceRef, "workspaceRef")
   const link = input.sessionLink
+  if (
+    link === null || typeof link !== "object" || Array.isArray(link) ||
+    link.sourceCursor === null || typeof link.sourceCursor !== "object" || Array.isArray(link.sourceCursor)
+  ) {
+    return yield* new ManagedControlError({
+      operation,
+      code: "managed_protocol",
+      reason: "Core SessionLink projection or source cursor is malformed",
+    })
+  }
   const linkSessionID = identifier(operation, link.sessionID, "sessionLink.sessionID")
   const sourceStoreID = identifier(operation, link.sourceStoreID, "sessionLink.sourceStoreID")
   const sourceInstanceID = identifier(operation, link.sourceInstanceID, "sessionLink.sourceInstanceID")
@@ -4878,12 +4931,14 @@ export const startPlannedRun = Effect.fn("ManagedControl.startPlannedRun")(funct
   const cursorSeq = canonicalDecimalU64(operation, link.sourceCursor.seq, "sessionLink.sourceCursor.seq")
   if (linkSessionID !== sessionID || link.sourceCursor.ownerKind !== "session" ||
     link.sourceCursor.ownerId !== sessionID || cursorSeq < 1n || sourceEpoch < 1n ||
-    !/^blake3:[0-9a-f]{64}$/.test(link.sourceCursor.eventDigest) ||
-    !/^sha256:[0-9a-f]{64}$/.test(link.sourceDigest) ||
+    typeof link.sourceCursor.eventDigest !== "string" || !/^blake3:[0-9a-f]{64}$/.test(link.sourceCursor.eventDigest) ||
+    typeof link.sourceDigest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(link.sourceDigest) ||
     link.redactionProfile !== "horizon.session-link.ids-only.v1" || link.protocolVersion !== protocolVersion ||
     link.goalID !== goalID || link.projectID !== projectRef || link.workspaceID !== workspaceRef ||
-    (link.latestObservedMessageID !== null && !IDENTIFIER.test(link.latestObservedMessageID)) ||
-    (link.latestObservedPartID !== null && !IDENTIFIER.test(link.latestObservedPartID))) {
+    (link.latestObservedMessageID !== null &&
+      (typeof link.latestObservedMessageID !== "string" || !IDENTIFIER.test(link.latestObservedMessageID))) ||
+    (link.latestObservedPartID !== null &&
+      (typeof link.latestObservedPartID !== "string" || !IDENTIFIER.test(link.latestObservedPartID)))) {
     return yield* new ManagedControlError({
       operation,
       code: "managed_protocol",
@@ -5015,6 +5070,45 @@ function expectEcho<T extends Record<string, unknown>>(
   return response
 }
 
+/**
+ * The exact body key set HostKernel's `strict_fields(body, required, &[])`
+ * accepts for `admit`: the 12 pre-admission common keys (`goalID`, `runID`,
+ * `taskID`, `expectedRevision`, `parentSessionID`, `locationID`, `sessionID`,
+ * `profileDefinition`, `contextSelection`, `resourcePolicyProjectionRevision`,
+ * `resourcePolicyProjectionDigest`, `preAdmissionProofDigest`) plus
+ * `managedProviderRoute` and `attemptID`. `admit` has **no optional keys**, so
+ * an unlisted key such as the previously sent `profileSelection` is rejected
+ * with `invalid_effect_request` before any admission logic runs.
+ */
+export const ADMIT_BODY_KEYS: ReadonlyArray<string> = Object.freeze([
+  "attemptID",
+  "contextSelection",
+  "expectedRevision",
+  "goalID",
+  "locationID",
+  "managedProviderRoute",
+  "parentSessionID",
+  "preAdmissionProofDigest",
+  "profileDefinition",
+  "resourcePolicyProjectionDigest",
+  "resourcePolicyProjectionRevision",
+  "runID",
+  "sessionID",
+  "taskID",
+])
+
+/** Fail closed before dispatch if the admit body drifts from the Rust closed set. */
+export function requireClosedAdmitBody(operation: string, body: Readonly<Record<string, unknown>>): void {
+  const keys = Object.keys(body)
+  if (keys.length !== ADMIT_BODY_KEYS.length || keys.some((key) => !ADMIT_BODY_KEYS.includes(key))) {
+    throw new ManagedControlError({
+      operation,
+      code: "managed_protocol",
+      reason: `admit body must carry exactly the HostKernel closed key set; got [${keys.toSorted().join(", ")}]`,
+    })
+  }
+}
+
 export const admitAttempt = Effect.fn("ManagedControl.admitAttempt")(function* (input: {
   readonly goalID: string
   readonly runID: string
@@ -5027,6 +5121,8 @@ export const admitAttempt = Effect.fn("ManagedControl.admitAttempt")(function* (
   readonly profileSelection: { readonly profileId: string; readonly revision: string }
   readonly preAdmissionProofDigest: string
   readonly contextSelection: ContextSelection
+  readonly resourcePolicyProjectionRevision?: string
+  readonly resourcePolicyProjectionDigest?: string
 }) {
   const operation = "admit"
   const goalID = identifier(operation, input.goalID, "goalID")
@@ -5066,25 +5162,58 @@ export const admitAttempt = Effect.fn("ManagedControl.admitAttempt")(function* (
     return yield* new ManagedControlError({ operation, code: "managed_protocol", reason: "managed admission requires the exact child Session, Attempt and first request sequence" })
   }
   const preAdmissionProofDigest = decodeBlake3Digest(operation, input.preAdmissionProofDigest, "preAdmissionProofDigest")
-  const response = yield* call(
-    operation,
-    {
-      goalID,
-      runID,
-      taskID,
-      attemptID,
-      parentSessionID: identifier(operation, input.parentSessionID, "parentSessionID"),
-      locationID: identifier(operation, input.locationID, "locationID"),
-      sessionID: identifier(operation, input.sessionID, "sessionID"),
-      expectedRevision: expectedRevision(operation, input.expectedRevision),
-      profileSelection: { profileId: profileID, revision: profileRevision.toString() },
-      profileDefinition,
-      managedProviderRoute,
-      preAdmissionProofDigest,
-      contextSelection,
-    },
-    oneUseKey(attemptID, "admit"),
-  )
+  // HostKernel's `admit` requires the exact resource-policy projection pin for
+  // this candidate. Missing or malformed values fail closed here instead of
+  // sending a body Rust rejects before any admission logic runs.
+  const resourcePolicyProjectionRevision = yield* Effect.try({
+    try: () =>
+      canonicalDecimalU64(operation, input.resourcePolicyProjectionRevision ?? "", "resourcePolicyProjectionRevision"),
+    catch: () =>
+      new ManagedControlError({
+        operation,
+        code: "managed_protocol",
+        reason: "resourcePolicyProjectionRevision is not a canonical u64",
+      }),
+  })
+  const resourcePolicyProjectionDigest = yield* Effect.try({
+    try: () => decodeBlake3Digest(operation, input.resourcePolicyProjectionDigest ?? "", "resourcePolicyProjectionDigest"),
+    catch: () =>
+      new ManagedControlError({
+        operation,
+        code: "managed_protocol",
+        reason: "resourcePolicyProjectionDigest is not a canonical BLAKE3 digest",
+      }),
+  })
+  const body: Record<string, unknown> = {
+    goalID,
+    runID,
+    taskID,
+    attemptID,
+    parentSessionID: identifier(operation, input.parentSessionID, "parentSessionID"),
+    locationID: identifier(operation, input.locationID, "locationID"),
+    sessionID: identifier(operation, input.sessionID, "sessionID"),
+    // Rust reads this with `canonical_decimal_revision`, i.e. a canonical
+    // decimal *string* exactly like Stage-A `reserve`, not a MessagePack uint64.
+    expectedRevision: expectedRevision(operation, input.expectedRevision).toString(),
+    profileDefinition,
+    contextSelection,
+    resourcePolicyProjectionRevision: resourcePolicyProjectionRevision.toString(),
+    resourcePolicyProjectionDigest,
+    preAdmissionProofDigest,
+    managedProviderRoute,
+  }
+  yield* Effect.try({
+    try: () => requireClosedAdmitBody(operation, body),
+    catch: (error: unknown) =>
+      error instanceof ManagedControlError
+        ? error
+        : new ManagedControlError({
+            operation,
+            code: "managed_protocol",
+            reason: "admit body does not match the HostKernel closed key set",
+          }),
+  })
+  const response = yield* call(operation, body, oneUseKey(attemptID, "admit"))
   const decoded = yield* decode(operation, response, decodeManagedAttemptAdmission)
   yield* decode(operation, { ...decoded }, (name, value) => expectEcho(name, value, { goalID, runID, taskID, attemptID }))
   if (decoded.requestSequence !== contextSelection.requestSequence || decoded.requestID !== contextSelection.requestID ||
@@ -6180,10 +6309,7 @@ function managedAttemptScopeValueWithExhaustion(
     throw new ManagedControlError({ operation, code: "managed_protocol", reason: "managed Attempt scope has an invalid shape" })
   }
   const counter = (name: string, value: string) => {
-    if (!/^(0|[1-9][0-9]{0,19})$/.test(value) || BigInt(value) > 18_446_744_073_709_551_615n) {
-      throw new ManagedControlError({ operation, code: "managed_protocol", reason: `${name} is not a canonical u64 string` })
-    }
-    return value
+    return canonicalDecimalU64(operation, value, name).toString()
   }
   const effectiveMaxTokens = counter("effectiveMaxTokens", scope.effectiveMaxTokens)
   const remainingTokens = counter("remainingTokens", scope.remainingTokens)

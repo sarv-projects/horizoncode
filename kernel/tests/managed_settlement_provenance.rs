@@ -10,19 +10,31 @@
 //! adapter produces the immutable delegation binding; negative cases prove denial
 //! before durable effect admission and zero managed success.
 
-use horizoncode_kernel::host_kernel::{EFFECTS_SERVICE_ID, HostKernel, MANAGED_SERVICE_ID};
+use horizoncode_kernel::host_kernel::{EFFECTS_SERVICE_ID, MANAGED_SERVICE_ID};
 use horizoncode_kernel::messagepack::Value;
-use horizoncode_kernel::protocol::{FrameFence, RpcOutcomeV1, RpcRequestV1, RpcResponseV1};
+use horizoncode_kernel::protocol::{
+    AuthenticatedPrincipalV1, KernelHelloV1, KernelStartupStatusV1, RpcMessageV1, RpcOutcomeV1,
+    RpcRequestV1, RpcResponseV1, read_message, write_message,
+};
+use horizoncode_kernel::unix_peer::{
+    AuthenticatedUnixStream, UnixPeerPolicy, connect_authenticated,
+};
 use rusqlite::{Connection, OpenFlags};
 use std::collections::BTreeMap;
-use std::fs;
-use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::fs::{self, File};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const EXECUTOR: &str = "server_auth:executor";
 const VERIFIER: &str = "server_auth:verifier";
+/// The ServerAuth subject that owns the registered workspace Location; the
+/// accepted plan start must be performed by this same authenticated subject.
+const LOCATION_OWNER: &str = "server_auth:provenance-location-owner";
+const INCARNATION_1: &str = "inc_provenance_1";
 const GOAL: &str = "goal-provenance";
 const SPEC: &str = "spec-provenance";
 const RUN: &str = "run-provenance";
@@ -33,6 +45,8 @@ const TURN_CONTEXT: &str =
     "sha256:1111111111111111111111111111111111111111111111111111111111111111";
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+/// Successive authenticated peer incarnations across an in-fixture restart.
+static NEXT_INCARNATION: AtomicU64 = AtomicU64::new(2);
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -83,6 +97,7 @@ fn field_unsigned(value: &Value, key: &str) -> u64 {
 
 fn field_decimal_u64(value: &Value, key: &str) -> u64 {
     match field(value, key) {
+        Value::Unsigned(number) => *number,
         Value::String(text) => text
             .parse::<u64>()
             .unwrap_or_else(|_| panic!("field {key} is not a canonical u64: {text}")),
@@ -110,12 +125,218 @@ fn error_code(response: &RpcResponseV1) -> &str {
         .as_str()
 }
 
+/// The exact Core SessionLink source digest recomputed by `start_planned_run`.
+fn session_link_digest(parts: [&str; 15]) -> String {
+    let mut preimage = b"horizoncode.session-link.source.v1\0".to_vec();
+    for part in parts {
+        preimage.extend_from_slice(&(part.len() as u64).to_be_bytes());
+        preimage.extend_from_slice(part.as_bytes());
+    }
+    let digest = ring::digest::digest(&ring::digest::SHA256, &preimage);
+    let hex = digest
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("sha256:{hex}")
+}
+
+fn json_to_value(value: &serde_json::Value) -> Value {
+    match value {
+        serde_json::Value::Null => Value::Nil,
+        serde_json::Value::Bool(value) => Value::Bool(*value),
+        serde_json::Value::Number(value) if value.is_u64() => {
+            Value::Unsigned(value.as_u64().unwrap())
+        }
+        serde_json::Value::Number(value) if value.is_i64() => {
+            Value::Signed(value.as_i64().unwrap())
+        }
+        serde_json::Value::Number(value) => Value::Float(value.as_f64().unwrap().to_bits()),
+        serde_json::Value::String(value) => Value::String(value.clone()),
+        serde_json::Value::Array(values) => Value::Array(values.iter().map(json_to_value).collect()),
+        serde_json::Value::Object(values) => Value::Map(
+            values
+                .iter()
+                .map(|(key, value)| (key.clone(), json_to_value(value)))
+                .collect(),
+        ),
+    }
+}
+
+fn profile_selection() -> Value {
+    map([
+        ("profileId", string("specialist.reader")),
+        ("revision", string("1")),
+    ])
+}
+
+/// The managed plan pins an AgentProfile with a positive tokenBudget; the shared
+/// Core fixture definition is completed exactly the way `plan_run` requires it.
+fn planned_profile_definition() -> Value {
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/agent-profile-definition-v2.json")).unwrap();
+    let mut definition = json_to_value(&fixture["definition"]);
+    let Value::Map(fields) = &mut definition else {
+        panic!("profile definition must be a map");
+    };
+    let Some(Value::Map(limits)) = fields.get_mut("limits") else {
+        panic!("profile limits must be a map");
+    };
+    limits.insert("tokenBudget".to_owned(), string("4096"));
+    definition
+}
+
+fn socket_roundtrip(stream: &mut AuthenticatedUnixStream, request: RpcRequestV1) -> RpcResponseV1 {
+    socket_roundtrip_as(stream, request, None)
+}
+
+fn socket_roundtrip_as(
+    stream: &mut AuthenticatedUnixStream,
+    request: RpcRequestV1,
+    server_auth_subject: Option<&str>,
+) -> RpcResponseV1 {
+    let message = match server_auth_subject {
+        Some(subject) => RpcMessageV1::AuthenticatedRequest {
+            request: Box::new(request),
+            principal: AuthenticatedPrincipalV1::ServerAuth {
+                subject: subject.to_owned(),
+            },
+            context: None,
+        },
+        None => RpcMessageV1::Request(Box::new(request)),
+    };
+    write_message(stream, &message).unwrap();
+    let Some(RpcMessageV1::Response(response)) = read_message(stream).unwrap() else {
+        panic!("expected managed RPC response over the authenticated socket");
+    };
+    *response
+}
+
+/// One live `hz-kernel` peer: a private owner-only Unix socket, the host hello
+/// handshake and the READY gate. The private socket path lives in its own short
+/// directory so it always stays below Linux's SUN_LEN limit even when the
+/// repository-local TMPDIR itself is deeply nested.
+struct KernelPeer {
+    child: Child,
+    stream: AuthenticatedUnixStream,
+    owner_epoch: u64,
+    incarnation: String,
+    socket_dir: PathBuf,
+}
+
+impl KernelPeer {
+    fn start(state: &Path, incarnation: &str, nonce: &str) -> Self {
+        let socket_dir = std::env::temp_dir().join(format!(
+            "msp-{}-{}",
+            std::process::id(),
+            NEXT_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&socket_dir).unwrap();
+        fs::set_permissions(&socket_dir, fs::Permissions::from_mode(0o700)).unwrap();
+        let socket = socket_dir.join("prov.sock");
+        let stderr_path = socket_dir.join("prov.stderr");
+        let core_exe = fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
+        let kernel_exe = fs::canonicalize(env!("CARGO_BIN_EXE_hz-kernel")).unwrap();
+        let stderr =
+            File::create(&stderr_path).expect("create repo-local hz-kernel stderr capture");
+        let mut child = Command::new(env!("CARGO_BIN_EXE_hz-kernel"))
+            .arg(format!("--state-dir={}", state.display()))
+            .arg(format!("--socket={}", socket.display()))
+            .arg(format!("--host-exe={}", core_exe.display()))
+            .arg(format!("--nonce={nonce}"))
+            .arg(format!("--incarnation={incarnation}"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(stderr))
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Ok(metadata) = fs::metadata(&socket)
+                && metadata.file_type().is_socket()
+                && metadata.uid() == unsafe { libc::geteuid() }
+                && metadata.mode() & 0o777 == 0o600
+            {
+                break;
+            }
+            if let Some(status) = child.try_wait().unwrap() {
+                let stderr = fs::read_to_string(&stderr_path).unwrap_or_else(|error| {
+                    format!("<could not read {}: {error}>", stderr_path.display())
+                });
+                panic!("hz-kernel exited before private socket bind ({status}); stderr: {stderr}");
+            }
+            if Instant::now() >= deadline {
+                let stderr = fs::read_to_string(&stderr_path).unwrap_or_else(|error| {
+                    format!("<could not read {}: {error}>", stderr_path.display())
+                });
+                panic!(
+                    "hz-kernel did not create a private owner-only socket before timeout; stderr: {stderr}"
+                );
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        let mut stream = connect_authenticated(
+            &socket,
+            UnixPeerPolicy {
+                uid: unsafe { libc::geteuid() },
+                executable: kernel_exe,
+            },
+        )
+        .unwrap();
+        write_message(
+            &mut stream,
+            &RpcMessageV1::Hello(Box::new(KernelHelloV1 {
+                min_protocol: 1,
+                max_protocol: 1,
+                host_build_digest: format!("blake3:{}", "a".repeat(64)),
+                kernel_build_digest: None,
+                host_instance_id: format!("host_{nonce}"),
+                process_incarnation: incarnation.to_owned(),
+                supervisor_nonce: nonce.to_owned(),
+                required_features: Vec::new(),
+                optional_features: vec!["effects.v2".to_owned()],
+            })),
+        )
+        .unwrap();
+        let Some(RpcMessageV1::HelloResult(negotiated)) = read_message(&mut stream).unwrap() else {
+            panic!("expected fenced host hello result");
+        };
+        let mut ready = false;
+        for _ in 0..16 {
+            match read_message(&mut stream).unwrap().unwrap() {
+                RpcMessageV1::StartupStatus(status) if *status == KernelStartupStatusV1::Ready => {
+                    ready = true;
+                    break;
+                }
+                RpcMessageV1::StartupStatus(status) if *status == KernelStartupStatusV1::Starting => {
+                }
+                other => panic!("unexpected startup frame before READY: {other:?}"),
+            }
+        }
+        assert!(ready, "hz-kernel did not reach READY");
+        Self {
+            child,
+            stream,
+            owner_epoch: negotiated.owner_epoch,
+            incarnation: incarnation.to_owned(),
+            socket_dir,
+        }
+    }
+}
+
+impl Drop for KernelPeer {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = fs::remove_dir_all(&self.socket_dir);
+    }
+}
+
 struct Fixture {
     root: PathBuf,
     workspace: PathBuf,
     state: PathBuf,
-    host: HostKernel,
-    fence: FrameFence,
+    peer: Option<KernelPeer>,
     sequence: u64,
     location_id: Option<String>,
     managed_attempt_scope: Option<Value>,
@@ -139,18 +360,34 @@ impl Fixture {
         fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
         fs::set_permissions(&workspace, fs::Permissions::from_mode(0o700)).unwrap();
         let workspace = fs::canonicalize(workspace).unwrap();
-        let mut host = HostKernel::open(&state).unwrap();
-        host.set_effects_enabled(true);
+        let state = fs::canonicalize(&state).unwrap();
+        let peer = KernelPeer::start(&state, INCARNATION_1, "prov-nonce-1");
         Self {
             root,
             workspace,
             state,
-            host,
-            fence: FrameFence::new(41, "inc_provenance").unwrap(),
+            peer: Some(peer),
             sequence: 0,
             location_id: None,
             managed_attempt_scope: None,
         }
+    }
+
+    /// Recovers the same durable state through a fresh authenticated peer, the
+    /// real host epoch boundary every restart/fencing assertion must cross.
+    fn restart(&mut self) {
+        drop(self.peer.take());
+        let epoch = NEXT_INCARNATION.fetch_add(1, Ordering::Relaxed);
+        let incarnation = format!("inc_provenance_{epoch}");
+        let nonce = format!("prov-nonce-{epoch}");
+        self.peer = Some(KernelPeer::start(&self.state, &incarnation, &nonce));
+    }
+
+    fn owner_epoch(&self) -> u64 {
+        self.peer
+            .as_ref()
+            .expect("kernel peer is running")
+            .owner_epoch
     }
 
     fn send(
@@ -162,9 +399,10 @@ impl Fixture {
         delivery: Option<&str>,
     ) -> RpcResponseV1 {
         self.sequence += 1;
+        let peer = self.peer.as_mut().expect("kernel peer is running");
         let request = RpcRequestV1 {
-            owner_epoch: 41,
-            process_incarnation: "inc_provenance".to_owned(),
+            owner_epoch: peer.owner_epoch,
+            process_incarnation: peer.incarnation.clone(),
             request_id: format!("req-prov-{}", self.sequence),
             service_id: service.to_owned(),
             operation: operation.to_owned(),
@@ -174,8 +412,13 @@ impl Fixture {
             trace_id: "trace-prov".to_owned(),
             body,
         };
-        let fence = self.fence.clone();
-        self.host.handle_request(&request, principal, &fence)
+        // Only the typed ServerAuth subject is carried as delegated identity; the
+        // host OS identity comes from the authenticated peer credentials and is
+        // never accepted from request data.
+        match principal.strip_prefix("server_auth:") {
+            Some(subject) => socket_roundtrip_as(&mut peer.stream, request, Some(subject)),
+            None => socket_roundtrip(&mut peer.stream, request),
+        }
     }
 
     fn managed(
@@ -193,7 +436,7 @@ impl Fixture {
             return location_id.clone();
         }
         let response = self.send(
-            "server_auth:provenance-location-owner",
+            LOCATION_OWNER,
             EFFECTS_SERVICE_ID,
             "register_location",
             map([
@@ -403,13 +646,17 @@ impl Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
+        drop(self.peer.take());
         let _ = fs::remove_dir_all(&self.root);
     }
 }
 
-/// Seeds the accepted managed plan through a ready Task. The current runtime has
-/// no typed owner-proof producer for profile/context/capability/resource facts, so
-/// HostKernel admission must fail before creating an Attempt or advancing OwnerLog.
+/// Seeds the accepted managed plan through the authenticated socket peer: an
+/// atomic Goal/Spec proposal, an independent reviewer acceptance, the exact
+/// accepted `plan_run` Task set and its explicit `start_planned_run`. The
+/// current runtime has no typed owner-proof producer for
+/// profile/context/capability/resource facts, so HostKernel admission must fail
+/// before creating an Attempt or advancing OwnerLog.
 fn seed_ready_chain(fixture: &mut Fixture) -> u64 {
     fixture.register_location();
     let proposed = ok_body(fixture.managed(
@@ -474,39 +721,61 @@ fn seed_ready_chain(fixture: &mut Fixture) -> u64 {
         ]),
         Some("prov-accept"),
     ));
-    ok_body(fixture.managed(
-        EXECUTOR,
-        "start_run",
+    // The accepted plan replaces the disabled legacy `start_run` / `add_task` /
+    // `mark_task_ready` ingress: `plan_run` carries the complete immutable Task
+    // set (delivery text, exact criterion partition and the pinned AgentProfile
+    // with its positive tokenBudget), and `start_planned_run` then pins the
+    // SessionLink through the registered Location. Both run as the
+    // Location-owning ServerAuth subject over the authenticated socket peer.
+    let planned = ok_body(fixture.managed(
+        LOCATION_OWNER,
+        "plan_run",
         map([
             ("goalID", string(GOAL)),
             ("runID", string(RUN)),
             ("specID", string(SPEC)),
+            ("specDigest", string(&digest)),
+            ("expectedGoalRevision", string("3")),
+            ("idempotencyKey", string("prov-plan")),
+            ("sessionID", string(SESSION)),
+            (
+                "tasks",
+                Value::Array(vec![map([
+                    ("taskID", string(TASK)),
+                    ("title", string("Prove receipt provenance")),
+                    ("purpose", string("Exercise guarded write receipt provenance")),
+                    ("dependencies", Value::Array(vec![])),
+                    ("criterionIDs", Value::Array(vec![string("write-receipt")])),
+                    ("requiredCapabilities", Value::Array(vec![])),
+                    ("profileSelection", profile_selection()),
+                    ("profileDefinition", planned_profile_definition()),
+                ])]),
+            ),
         ]),
-        Some("prov-run"),
+        Some("prov-plan"),
     ));
-    ok_body(fixture.managed(
-        EXECUTOR,
-        "add_task",
+    assert_eq!(field_text(&planned, "runPhase"), "PLAN_ONLY");
+    let started = ok_body(fixture.managed(
+        LOCATION_OWNER,
+        "start_planned_run",
         map([
             ("goalID", string(GOAL)),
             ("runID", string(RUN)),
-            ("taskID", string(TASK)),
-            ("dependencies", Value::Array(vec![])),
-            ("criterionIDs", Value::Array(vec![string("write-receipt")])),
-            ("requiredCapabilities", Value::Array(vec![])),
+            ("specID", string(SPEC)),
+            ("specDigest", string(&digest)),
+            (
+                "expectedGoalRevision",
+                string(&field_decimal_u64(&planned, "revision").to_string()),
+            ),
+            ("sessionID", string(SESSION)),
+            ("idempotencyKey", string("prov-start")),
+            ("sessionLink", provenance_session_link()),
         ]),
-        Some("prov-task"),
+        Some("prov-start"),
     ));
-    ok_body(fixture.managed(
-        EXECUTOR,
-        "mark_task_ready",
-        map([
-            ("goalID", string(GOAL)),
-            ("runID", string(RUN)),
-            ("taskID", string(TASK)),
-        ]),
-        Some("prov-ready"),
-    ));
+    assert_eq!(field_text(&started, "status"), "RUNNING");
+    // create → assign → accept → plan → start advances the Goal to revision 5.
+    let started_revision = field_decimal_u64(&started, "revision");
     let location = fixture.register_location();
     let admission = fixture.managed(
         EXECUTOR,
@@ -516,24 +785,36 @@ fn seed_ready_chain(fixture: &mut Fixture) -> u64 {
             ("runID", string(RUN)),
             ("taskID", string(TASK)),
             ("attemptID", string(ATTEMPT)),
-            ("expectedRevision", Value::Unsigned(6)),
+            ("expectedRevision", Value::Unsigned(started_revision)),
             ("locationID", string(&location)),
             ("sessionID", string(SESSION)),
         ]),
         Some("prov-admit"),
     );
+    // BLOCKED (owning prerequisites: P1 Guard's immutable pre-admission proof
+    // production and P8's Stage-A/B lease proof authority). The admission route
+    // now strictly requires `parentSessionID`, `profileDefinition`,
+    // `contextSelection`, `resourcePolicyProjectionRevision`,
+    // `resourcePolicyProjectionDigest`, `preAdmissionProofDigest` and
+    // `managedProviderRoute` before it could reach the intended missing-adapter
+    // `capability_unavailable` denial; synthesizing those facts here would be
+    // fake evidence. The original expectation is preserved verbatim, so every
+    // assertion below stays unexecuted until P1/P8 produce them authentically.
     assert_eq!(error_code(&admission), "capability_unavailable");
     let snapshot =
         ok_body(fixture.managed(EXECUTOR, "snapshot", map([("goalID", string(GOAL))]), None));
     let revision = field_unsigned(&snapshot, "revision");
-    assert_eq!(revision, 6);
+    assert_eq!(revision, started_revision);
     assert!(matches!(field(&snapshot, "attempts"), Value::Array(attempts) if attempts.is_empty()));
     fixture.managed_attempt_scope = Some(map([
         ("goalID", string(GOAL)),
         ("runID", string(RUN)),
         ("taskID", string(TASK)),
         ("attemptID", string(ATTEMPT)),
-        ("ownerEpoch", string("41")),
+        (
+            "ownerEpoch",
+            string(&fixture.owner_epoch().to_string()),
+        ),
         ("expectedManagedRevision", string(&revision.to_string())),
         ("locationID", string(&location)),
         ("sessionID", string(SESSION)),
@@ -547,6 +828,57 @@ fn seed_ready_chain(fixture: &mut Fixture) -> u64 {
         ),
     ]));
     revision
+}
+
+/// The immutable Core SessionLink projection pinned by the explicit start; its
+/// source digest is recomputed by the kernel over these exact fields.
+fn provenance_session_link() -> Value {
+    let event_digest = format!("blake3:{}", "b".repeat(64));
+    map([
+        ("sessionID", string(SESSION)),
+        ("sourceStoreID", string("store_provenance")),
+        ("sourceInstanceID", string("instance_provenance")),
+        (
+            "sourceCursor",
+            map([
+                ("ownerKind", string("session")),
+                ("ownerId", string(SESSION)),
+                ("seq", string("1")),
+                ("eventDigest", string(&event_digest)),
+            ]),
+        ),
+        ("sourceEpoch", string("1")),
+        ("latestObservedMessageID", Value::Nil),
+        ("latestObservedPartID", Value::Nil),
+        (
+            "sourceDigest",
+            string(&session_link_digest([
+                SESSION,
+                "store_provenance",
+                "instance_provenance",
+                "session",
+                SESSION,
+                "1",
+                &event_digest,
+                "1",
+                "",
+                "",
+                "horizon.session-link.ids-only.v1",
+                "1",
+                GOAL,
+                "project-one",
+                "workspace-one",
+            ])),
+        ),
+        (
+            "redactionProfile",
+            string("horizon.session-link.ids-only.v1"),
+        ),
+        ("protocolVersion", Value::Unsigned(1)),
+        ("goalID", string(GOAL)),
+        ("projectID", string("project-one")),
+        ("workspaceID", string("workspace-one")),
+    ])
 }
 
 #[test]
@@ -925,9 +1257,7 @@ fn managed_missing_binding_is_denied_before_prepare_and_restart_keeps_unknown_fe
     );
 
     // A host epoch boundary cannot resume an admitted but unsettled Attempt.
-    let state = fixture.state.clone();
-    fixture.host = HostKernel::open(&state).unwrap();
-    fixture.host.set_effects_enabled(true);
+    fixture.restart();
     let recovered =
         ok_body(fixture.managed(EXECUTOR, "snapshot", map([("goalID", string(GOAL))]), None));
     let attempts = match field(&recovered, "attempts") {

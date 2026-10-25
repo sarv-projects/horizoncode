@@ -17,6 +17,7 @@ import {
   type LspNotificationMethodV1,
 } from "./protocol"
 import type { LspNotificationParams, LspProtocolAdapter, LspRequestParams } from "./client"
+import { makeProtocolDispatchQueue } from "./protocol-dispatch-queue"
 import {
   freezeDirectAttemptScope,
   freezeManagedAttemptScope,
@@ -140,15 +141,9 @@ export function makeHostLspProtocolAdapterV1(input: {
   let quarantined = false
   let dispatchesInFlight = 0
   // Sequence allocation and async lease acquisition can finish in a different
-  // order from callers. Serialize the actual HostKernel writes so it never
-  // observes requestSequence N+1 before N.
-  let outboundTail: Promise<void> = Promise.resolve()
-
-  const sendInSequence = <T>(send: () => Promise<T>): Promise<T> => {
-    const result = outboundTail.then(send)
-    outboundTail = result.then(() => undefined, () => undefined)
-    return result
-  }
+  // order from callers. Serialize HostKernel writes and fence the generation
+  // after the first uncertain outcome.
+  const outbound = makeProtocolDispatchQueue()
 
   const failGeneration = (error: unknown) => {
     quarantined = true
@@ -184,6 +179,9 @@ export function makeHostLspProtocolAdapterV1(input: {
         ...(context.managedAttempt === undefined ? {} : { managedAttempt: context.managedAttempt }),
         ...(context.directAttempt === undefined ? {} : { directAttempt: context.directAttempt }),
       })
+      if (closed || quarantined) {
+        throw new ProtocolError({ detail: "LSP HostKernel process generation is closed or quarantined" })
+      }
       const nextSequence = sequence.next(hostProcessRef)
       sequenceAllocated = true
       const request: LspProtocolOperationRequestV1 = {
@@ -201,7 +199,7 @@ export function makeHostLspProtocolAdapterV1(input: {
           params,
         },
       }
-      const receipt = await sendInSequence(() => dispatchLspProtocolOperationV1(request, input.transport.protocolOp))
+       const receipt = await outbound.run(() => dispatchLspProtocolOperationV1(request, input.transport.protocolOp))
       return journal.acceptOperation(request, receipt)
     } catch (error) {
       if (sequenceAllocated) failGeneration(error)
@@ -246,7 +244,7 @@ export function makeHostLspProtocolAdapterV1(input: {
           result,
         },
       }
-      const receipt = await sendInSequence(() => dispatchLspProtocolReplyV1(request, input.transport.protocolReply))
+       const receipt = await outbound.run(() => dispatchLspProtocolReplyV1(request, input.transport.protocolReply))
       journal.acceptProtocolReply(request, receipt)
     } finally {
       dispatchesInFlight -= 1
@@ -353,6 +351,9 @@ export function makeHostLspProtocolAdapterV1(input: {
           ...(context.directAttempt === undefined ? {} : { directAttempt: context.directAttempt }),
         })
         admitted = true
+        if (closed || quarantined) {
+          throw new ProtocolError({ detail: "LSP HostKernel process generation is closed or quarantined" })
+        }
         const nextSequence = sequence.next(hostProcessRef)
         sequenceKey = nextSequence
         const waiting: PendingResponse = { requestID: id, method, resolve, reject }
@@ -367,7 +368,7 @@ export function makeHostLspProtocolAdapterV1(input: {
           ...(context.directAttempt === undefined ? {} : { directAttempt: context.directAttempt }),
           operation: { requestSequence: nextSequence, requestID: id, method, params },
         }
-        const receipt = await sendInSequence(() => dispatchLspProtocolOperationV1(request, input.transport.protocolOp))
+         const receipt = await outbound.run(() => dispatchLspProtocolOperationV1(request, input.transport.protocolOp))
         journal.acceptOperation(request, receipt)
       } catch (error) {
         const failure = error instanceof Error ? error : new Error("LSP operation dispatch outcome is unknown")

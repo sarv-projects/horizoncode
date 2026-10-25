@@ -17,6 +17,7 @@ import { Installation } from "../../src/installation"
 import { Project } from "../../src/project/project"
 import { ServerAuth } from "../../src/server/auth"
 import { Provider } from "../../src/provider/provider"
+import { Agent } from "../../src/agent/agent"
 import { WebSearchRuntime } from "../../src/tool/websearch-runtime"
 import { RuntimeFlags } from "../../src/effect/runtime-flags"
 import { InstanceHttpApi, RootHttpApi } from "../../src/server/routes/instance/httpapi/api"
@@ -163,12 +164,6 @@ const goalReviewRoutes = HttpApiBuilder.layer(goalReviewRoutesApi).pipe(
     authorizationLayer,
     goalReviewWorkspaceMiddleware,
     schemaErrorLayer,
-    // These are app-level dependencies of the production handler graph, not
-    // inputs to the route tests below. Supply strict partial layers so any
-    // accidental provider/search use fails loudly instead of leaking as an
-    // unrelated test-effect service requirement.
-    Layer.mock(Provider.Service)({}),
-    Layer.mock(WebSearchRuntime.Service)({}),
   ]),
 )
 
@@ -195,6 +190,13 @@ const itGoalReviewLayer = Layer.mergeAll(
   NodeHttpServer.layerTest,
   NodeServices.layer,
   workspaceLayerWithRuntimeFlags({ experimentalWorkspaces: true }),
+  // These are app-level dependencies of the production handler graph, not
+  // inputs to the route tests below. Keep them in the test runtime because
+  // `serveGoalReview` builds the route layer inside each test effect; strict
+  // partial layers make any accidental provider/search use fail loudly.
+  Layer.mock(Provider.Service)({}),
+  Layer.mock(Agent.Service)({}),
+  Layer.mock(WebSearchRuntime.Service)({}),
   // `goalReviewHandlers` yields `RuntimeFlags.Service` inside its handler
   // context, so `HttpApiBuilder.group` puts it in the route layer's raw
   // `RIn`. `workspaceLayerWithRuntimeFlags` builds exactly this override as a

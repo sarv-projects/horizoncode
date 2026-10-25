@@ -86,6 +86,42 @@ const unavailableStructurePage: RepoIntelligenceSchema.RepoStructurePageV1 = {
   fallback: { reason: "parser_unsupported", sourceKind: "none" },
 }
 
+/** Page-local lexical node shaped like indexd's output (`horizoncode.lexical`, text occurrence). */
+const lexicalStructureNode = (index: number) => ({
+  workspaceBinding: unavailableStructurePage.workspaceBinding,
+  sourceGeneration: structureGeneration,
+  sourceRevision: structureRevision,
+  pathRef: `src/${index}.ts`,
+  fileDigest: structureRevision,
+  nodeId: `node-${index}`,
+  nodeKind: "text_occurrence",
+  symbol: "entry",
+  byteRange: { start: 0, end: 5 },
+  parserId: "horizoncode.lexical",
+  parserVersion: "1",
+})
+
+/** Schema-valid PARTIAL/current lexical page with page-local coverage, the exact
+ * shape indexd emits (`coverage.nodes === nodes.len()`). */
+const lexicalStructurePage = (
+  nodes: ReturnType<typeof lexicalStructureNode>[],
+  overrides: Record<string, unknown> = {},
+) => ({
+  ...unavailableStructurePage,
+  sourceKind: "lexical" as const,
+  status: "PARTIAL" as const,
+  freshness: "current" as const,
+  completeness: "partial" as const,
+  coverage: {
+    files: String(nodes.length),
+    nodes: String(nodes.length),
+    bytes: String(nodes.length * 5),
+  },
+  nodes,
+  fallback: { reason: "parse_partial" as const, sourceKind: "lexical" as const },
+  ...overrides,
+})
+
 type OperationOverride = {
   readonly status: "PARTIAL" | "UNAVAILABLE"
   readonly matches?: ReadonlyArray<RepoIntel.RepoIntelMatch>
@@ -767,6 +803,118 @@ describe("tool.repo-intel", () => {
       )
       expect(Exit.isFailure(rejected)).toBe(true)
       if (Exit.isFailure(rejected)) expect(Cause.squash(rejected.cause)).toMatchObject({ code: "rejected" })
+    }),
+  )
+
+  it.live("rejects a structure page that returns more nodes than the query admitted", () =>
+    Effect.gen(function* () {
+      // The schema alone only bounds a page at 100 nodes; the adapter must also
+      // enforce the caller's own maxNodes so a host cannot overshoot the request.
+      // maxBytes is raised so the serialized-size bound cannot mask the branch.
+      const request = { ...structureRequest, query: { ...structureQuery, maxBytes: 16_384 } }
+      const atLimit = lexicalStructurePage(
+        Array.from({ length: structureQuery.maxNodes }, (_, index) => lexicalStructureNode(index)),
+      )
+      const accepted = yield* RepoIntel.repoStructureClientFromTransport({
+        query: () => Effect.succeed(atLimit),
+      }).query(request)
+      expect(accepted.nodes).toHaveLength(structureQuery.maxNodes)
+
+      const overLimit = lexicalStructurePage(
+        Array.from({ length: structureQuery.maxNodes + 1 }, (_, index) => lexicalStructureNode(index)),
+      )
+      const exit = yield* Effect.exit(
+        RepoIntel.repoStructureClientFromTransport({ query: () => Effect.succeed(overLimit) }).query(request),
+      )
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) {
+        const failure = Cause.squash(exit.cause)
+        expect(failure).toMatchObject({ code: "rejected" })
+        // Pin the intended branch, not a schema-decode rejection of the fixture.
+        expect(String((failure as { detail?: string }).detail)).toContain("exceeds or misreports query bounds")
+      }
+    }),
+  )
+
+  it.live("rejects a structure page whose coverage misreports the returned node count", () =>
+    Effect.gen(function* () {
+      // Verified non-defect: indexd sets `coverage.nodes = nodes.len()` for the
+      // emitted page (indexd/src/repo_structure.rs) and HostKernel relays that
+      // value unchanged (repo_structure_page_value), so page-local coverage is the
+      // producer contract. The canonical page fixture's larger total-coverage value
+      // is schema-legal but is not what the only producer emits, so a host that
+      // reports it here is misreporting this page and must be rejected rather than
+      // projected. Under-reporting is rejected by the same invariant.
+      const node = lexicalStructureNode(0)
+      const misreports = ["0", "2", "40"]
+      for (const nodes of misreports) {
+        const page = lexicalStructurePage([node], { coverage: { files: "1", nodes, bytes: "5" } })
+        const exit = yield* Effect.exit(
+          RepoIntel.repoStructureClientFromTransport({ query: () => Effect.succeed(page) }).query(structureRequest),
+        )
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isFailure(exit)) {
+          const failure = Cause.squash(exit.cause)
+          expect(failure).toMatchObject({ code: "rejected" })
+          expect(String((failure as { detail?: string }).detail)).toContain("exceeds or misreports query bounds")
+        }
+      }
+
+      // The exact page-local shape stays acceptable.
+      const accepted = yield* RepoIntel.repoStructureClientFromTransport({
+        query: () => Effect.succeed(lexicalStructurePage([node])),
+      }).query(structureRequest)
+      expect(accepted.coverage.nodes).toBe("1")
+      expect(accepted.nodes).toHaveLength(1)
+    }),
+  )
+
+  it.live("rejects continuation cursors that do not prove forward progress", () =>
+    Effect.gen(function* () {
+      const cursor = Schema.decodeUnknownSync(RepoIntelligenceSchema.RepoStructureCursorLeaseRefV1)(
+        "repo_cur_0123456789abcdef",
+      )
+      // maxBytes is raised so the serialized-page bound cannot mask the cursor rules.
+      const request = { ...structureRequest, query: { ...structureQuery, cursor, maxBytes: 16_384 } }
+      const otherCursor = Schema.decodeUnknownSync(RepoIntelligenceSchema.RepoStructureCursorLeaseRefV1)(
+        "repo_cur_fedcba9876543210",
+      )
+      const fullNodes = () =>
+        Array.from({ length: structureQuery.maxNodes }, (_, index) => lexicalStructureNode(index))
+      const cases: ReadonlyArray<{ readonly page: unknown; readonly why: string }> = [
+        // The host echoed the caller's own token: no progress was made.
+        { page: lexicalStructurePage(fullNodes(), { nextCursor: cursor }), why: "echoed cursor" },
+        // A cursor with no emitted nodes cannot resume anywhere (and it must be a
+        // different token, so the echo rule cannot mask the empty-page rule).
+        { page: lexicalStructurePage([], { nextCursor: otherCursor }), why: "cursor without nodes" },
+        // Only a full PARTIAL/current/partial page may carry a continuation.
+        {
+          page: lexicalStructurePage(fullNodes(), {
+            nextCursor: otherCursor,
+            status: "CURRENT",
+            completeness: "complete",
+          }),
+          why: "cursor on a completed page",
+        },
+        {
+          page: lexicalStructurePage(fullNodes(), { nextCursor: otherCursor, freshness: "unknown" }),
+          why: "cursor on a page of unknown freshness",
+        },
+      ]
+      for (const testCase of cases) {
+        const exit = yield* Effect.exit(
+          RepoIntel.repoStructureClientFromTransport({ query: () => Effect.succeed(testCase.page) }).query(request),
+        )
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isFailure(exit)) {
+          const failure = Cause.squash(exit.cause)
+          expect(failure).toMatchObject({ code: "rejected" })
+          // The label makes a fixture/decode miss visible instead of passing silently.
+          expect(`${testCase.why}: ${String((failure as { detail?: string }).detail)}`).toContain(
+            `${testCase.why}: RepoIntel continuation cursor is invalid`,
+          )
+        }
+      }
     }),
   )
 
@@ -2182,6 +2330,12 @@ describe("tool.repo-intel", () => {
             detail: "not UTF-8 text",
           },
           {
+            // A runtime value that is neither text nor bytes must be a typed
+            // refusal, not a TextDecoder defect.
+            overlay: { editorVersion: "v", changes: [{ path: "a.txt", contents: 42 as unknown as string }] },
+            detail: "must be text or bytes",
+          },
+          {
             overlay: {
               editorVersion: "v",
               changes: [{ path: "a.txt", contents: new Uint8Array(RepoIntel.MAX_FILE_BYTES + 1).fill(0x61) }],
@@ -2216,6 +2370,58 @@ describe("tool.repo-intel", () => {
         }
         expect(state.overlays).toBe(0)
         expect(state.queries).toBe(0)
+      }),
+    ),
+  )
+
+  it.live("freezes validated overlay bytes so a caller mutation cannot change what the backend receives", () =>
+    withTmp((dir) =>
+      Effect.gen(function* () {
+        yield* write(dir, "a.txt", "base\n")
+        const base = yield* FSUtil.Service
+        // The validated overlay must be an immutable snapshot: the caller may keep
+        // (and reuse) the buffer it handed in, so the backend must never observe a
+        // byte that was not present at validation time.
+        const contents = new Uint8Array(Buffer.from("validated\n", "utf-8"))
+        let providedAtBuild: Uint8Array | undefined
+        let queryOverlayDigest: string | undefined
+        const backend: RepoIntel.RepoIntelBackend = {
+          build: () => Effect.succeed({ generationId: "gen-overlay-immutability", generationStatus: "PARTIAL" as const }),
+          buildOverlay: (_handle, overlay) =>
+            Effect.sync(() => {
+              providedAtBuild = overlay.changes[0]!.contents as Uint8Array
+              // The producer reuses its editor buffer right after handing it over.
+              contents.fill(0xff)
+              return { overlayDigest: `blake3:${"c".repeat(64)}` }
+            }),
+          query: (handle, request) =>
+            Effect.sync(() => {
+              queryOverlayDigest = request.overlay?.overlayDigest
+              return {
+                status: "PARTIAL" as const,
+                generationId: handle.generationId,
+                matches: [],
+                ...(request.overlay !== undefined ? { overlayDigest: request.overlay.overlayDigest } : {}),
+              }
+            }),
+          release: () => Effect.void,
+          releaseOverlay: () => Effect.void,
+        }
+        const service = RepoIntel.make({ fs: base, backend })
+
+        const result = yield* service.searchText({
+          scope: scope(dir),
+          query: "base",
+          maxResults: 10,
+          overlay: { editorVersion: "v1", changes: [{ path: "a.txt", contents }] },
+        })
+
+        expect(providedAtBuild).toBeDefined()
+        expect(queryOverlayDigest).toBe(`blake3:${"c".repeat(64)}`)
+        // The bytes the backend built from are still the validated ones, even though
+        // the caller's buffer was overwritten after validation.
+        expect(Buffer.from(providedAtBuild!).toString("utf-8")).toBe("validated\n")
+        expect(result.overlay?.digest).toBe(`blake3:${"c".repeat(64)}`)
       }),
     ),
   )

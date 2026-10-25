@@ -49,6 +49,10 @@ PLATFORM_SUPPORT_DIMENSIONS = (
 )
 
 KNOWN_INSTALL_MATRIX_STATUSES = frozenset({"PASS", "PARTIAL", "FAIL", "BLOCKED"})
+REQUIRED_INSTALL_SCENARIOS = frozenset(
+    {"clean_install", "tui_launch", "upgrade", "migration", "rollback", "artifact_integrity"}
+)
+KNOWN_SCENARIO_STATUSES = frozenset({"PASS", "PARTIAL", "FAIL", "NOT_RUN", "BLOCKED"})
 
 
 def _sha256(path: Path) -> str | None:
@@ -95,22 +99,37 @@ def _bound_install_evidence(install_matrix: dict) -> dict | None:
     checkout = install_matrix.get("source_checkout")
     artifacts = install_matrix.get("artifacts")
     candidate = artifacts.get("candidate") if isinstance(artifacts, dict) else None
-    if not isinstance(checkout, dict) or checkout.get("status") != "CLEAN" or not checkout.get("revision"):
+    revision = checkout.get("revision") if isinstance(checkout, dict) else None
+    if (
+        not isinstance(checkout, dict)
+        or checkout.get("status") != "CLEAN"
+        or not isinstance(revision, str)
+        or len(revision) not in {40, 64}
+        or any(character not in "0123456789abcdef" for character in revision)
+    ):
         return None
-    if not isinstance(candidate, dict) or not candidate.get("sha256"):
+    candidate_digest = candidate.get("sha256") if isinstance(candidate, dict) else None
+    if (
+        not isinstance(candidate_digest, str)
+        or len(candidate_digest) != 64
+        or any(character not in "0123456789abcdef" for character in candidate_digest)
+    ):
         return None
     scenarios = install_matrix.get("scenarios")
+    if not isinstance(scenarios, dict) or not REQUIRED_INSTALL_SCENARIOS.issubset(scenarios):
+        return None
+    scenario_statuses: dict[str, str] = {}
+    for name, item in scenarios.items():
+        if not isinstance(item, dict) or item.get("status") not in KNOWN_SCENARIO_STATUSES:
+            return None
+        scenario_statuses[name] = item["status"]
+    if install_matrix.get("status") == "PASS" and any(status != "PASS" for status in scenario_statuses.values()):
+        return None
     return {
-        "source_revision": checkout.get("revision"),
+        "source_revision": revision,
         "source_checkout_status": checkout.get("status"),
-        "candidate_sha256": candidate.get("sha256"),
-        "scenario_statuses": {
-            name: item.get("status", "UNKNOWN")
-            for name, item in scenarios.items()
-            if isinstance(item, dict)
-        }
-        if isinstance(scenarios, dict)
-        else {},
+        "candidate_sha256": candidate_digest,
+        "scenario_statuses": scenario_statuses,
     }
 
 

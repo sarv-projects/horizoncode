@@ -453,7 +453,9 @@ test("an unconnected provider does not prompt for or submit credentials", async 
     await waitForFrame(app, (frame) => frame.includes("Test Provider"))
 
     app.mockInput.pressEnter()
-    const frame = await waitForFrame(app, (value) => value.includes("not connected"))
+    const frame = await waitForFrame(app, (value) =>
+      containsPhrase(value, "has no usable credential reference"),
+    )
     expect(containsPhrase(frame, "Guarded SecretBroker credential entry and OAuth transport are unavailable")).toBe(true)
     expect(frame).not.toContain("API key")
     expect(frame).not.toContain("Authorization code")
@@ -558,17 +560,27 @@ test("an environment-disabled feature is reported as blocked and performs no con
   try {
     await waitFor(() => dialog?.stack.length === 1)
     await waitFor(() => configStatus === "complete")
-    const frame = await waitForFrame(app, (value) => value.includes("A runtime disable override is active"))
+    // P6's unknown-lock correction: when the winning source is unknown the
+    // reason is the policy-status one — Core pins it in
+    // packages/core/test/config/feature-exposure.test.ts.
+    const frame = await waitForFrame(app, (value) =>
+      value.includes("Effective state differs from the request; policy status is unknown"),
+    )
     expect(frame).toContain("Blocked")
     expect(frame).toContain("requested ON")
     expect(frame).toContain("effective OFF")
+    expect(frame).toContain("source unknown")
+    expect(frame).toContain("policy lock unknown")
 
     app.mockInput.pressEnter()
     await Bun.sleep(50)
     expect(patches).toEqual([])
-    const after = await waitForFrame(app, (value) => value.includes("A runtime disable override is active"))
+    const after = await waitForFrame(app, (value) =>
+      value.includes("Effective state differs from the request; policy status is unknown"),
+    )
     expect(after).toContain("requested ON")
     expect(after).toContain("effective OFF")
+    expect(after).toContain("policy lock unknown")
   } finally {
     app.renderer.destroy()
   }
@@ -583,6 +595,7 @@ test("console-managed providers are locked and environment credentials do not en
   let oauthCalls = 0
   let authWrites = 0
   const calls = createFetch((url) => {
+    if (url.pathname === "/agent") return json([{ name: "build", mode: "primary", hidden: false }])
     if (url.pathname === "/provider") {
       return json({
         all: [
@@ -635,6 +648,7 @@ test("console-managed providers are locked and environment credentials do not en
   let syncStatus: string | undefined
   let dialog: { stack: unknown[] } | undefined
   let selectedModel: { providerID: string; modelID: string } | undefined
+  let recentModels: { providerID: string; modelID: string }[] = []
 
   function Harness() {
     const renderer = useRenderer()
@@ -682,6 +696,7 @@ test("console-managed providers are locked and environment credentials do not en
     const current = useDialog()
     createEffect(() => (syncStatus = sync.status))
     createEffect(() => (selectedModel = local.model.current()))
+    createEffect(() => (recentModels = local.model.recent()))
     dialog = current
     onMount(() => current.replace(() => <DialogProviderList />))
     return null
@@ -693,6 +708,10 @@ test("console-managed providers are locked and environment credentials do not en
         <Harness />
       </TestTuiContexts>
     ),
+    // The dialog box is a fixed 60 columns (ui/dialog.tsx `medium`), so a row
+    // clips at the box edge and the terminal width cannot reveal more of the
+    // sentence; the complete contract string is pinned by `providerProvenance`
+    // in dialog-model.test.ts.
     { kittyKeyboard: true, width: 120, height: 40 },
   )
 
@@ -700,7 +719,11 @@ test("console-managed providers are locked and environment credentials do not en
     await waitFor(() => dialog?.stack.length === 1)
     await waitFor(() => syncStatus === "complete")
     const frame = await waitForFrame(app, (value) => value.includes("Env Provider"))
-    expect(frame).toContain("Legacy environment source detected (ENV_PROVIDER_KEY) · not used for dispatch")
+    // Current provenance format: the variable list is announced as
+    // "provider-declared variables: …". The superseded parenthesized wording
+    // must never come back.
+    expect(containsPhrase(frame, "Legacy environment source detected · ")).toBe(true)
+    expect(frame).not.toContain("(ENV_PROVIDER_KEY)")
     expect(frame).toContain("Managed Provider")
     expect(frame).toContain("Acme Org")
 
@@ -723,9 +746,16 @@ test("console-managed providers are locked and environment credentials do not en
     const modelFrame = await waitForFrame(app, (value) => value.includes("Environment Model"))
     expect(modelFrame).toContain("Environment Model")
     expect(modelFrame).toContain("Dispatch unavailable in HorizonCode V1")
+    // `local.model.current()` always falls back to the first valid model, so a
+    // refused choice is observed as "unchanged and never recorded as recent"
+    // rather than as an undefined selection: a successful set() would add the
+    // recent entry that `recentModels` pins to its pre-choice value.
+    const beforeModel = selectedModel
+    const beforeRecent = recentModels
     app.mockInput.pressEnter()
     await Bun.sleep(50)
-    expect(selectedModel).toBeUndefined()
+    expect(selectedModel).toEqual(beforeModel)
+    expect(recentModels).toEqual(beforeRecent)
     expect(oauthCalls).toBe(0)
     expect(authWrites).toBe(0)
   } finally {
@@ -809,6 +839,8 @@ test("the model hub shows known input/output prices and marks incomplete pricing
         // zero-priced anonymous OpenCode offer selectable; the credentialed
         // alternate remains visible but unavailable.
         connected: ["alternate"],
+        anonymousFreeProviders: ["opencode"],
+        anonymousFreeModels: ["opencode/zen-free"],
       })
     if (url.pathname === "/auth/alternate") {
       authWrites++
@@ -819,6 +851,7 @@ test("the model hub shows known input/output prices and marks incomplete pricing
   let syncStatus: string | undefined
   let dialog: { stack: unknown[] } | undefined
   let selectedModel: { providerID: string; modelID: string } | undefined
+  let recentModels: { providerID: string; modelID: string }[] = []
 
   function Harness() {
     const renderer = useRenderer()
@@ -866,6 +899,7 @@ test("the model hub shows known input/output prices and marks incomplete pricing
     const local = useLocal()
     createEffect(() => (syncStatus = sync.status))
     createEffect(() => (selectedModel = local.model.current()))
+    createEffect(() => (recentModels = local.model.recent()))
     dialog = current
     onMount(() => current.replace(() => <DialogModel />))
     return null
@@ -902,10 +936,15 @@ test("the model hub shows known input/output prices and marks incomplete pricing
     const rendered = app.captureCharFrame()
     const rows = rendered.split("\n")
     const row = rows.findIndex((line) => line.includes("Alternate Model"))
+    const beforeModel = selectedModel
+    const beforeRecent = recentModels
     await app.mockMouse.click(rows[row]!.indexOf("Alternate Model"), row)
     await app.renderOnce()
     await Bun.sleep(100)
-    expect(selectedModel).toBeUndefined()
+    // Choosing the visible-but-unavailable row must not replace the selected
+    // model and must not record it as recent (arch_V1/16 provider/model hub).
+    expect(selectedModel).toEqual(beforeModel)
+    expect(recentModels).toEqual(beforeRecent)
     expect(authWrites).toBe(0)
 
     // The explicitly zero-priced anonymous OpenCode offer can be selected.
@@ -915,6 +954,8 @@ test("the model hub shows known input/output prices and marks incomplete pricing
     await app.renderOnce()
     await Bun.sleep(50)
     expect(selectedModel).toEqual({ providerID: "opencode", modelID: "zen-free" })
+    // The offered model really is selectable: set() ran with recent tracking.
+    expect(recentModels).toEqual([{ providerID: "opencode", modelID: "zen-free" }])
     expect(authWrites).toBe(0)
   } finally {
     app.renderer.destroy()

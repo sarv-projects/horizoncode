@@ -154,10 +154,11 @@ const detectManifestFacts = (kind: string, text: string) => {
       if (/^\s*\[\[?test\]\]?\s*$/mu.test(text)) mention("test target: declared")
       break
     case "pyproject_toml":
+      const pyprojectWithoutComments = text.replace(/^\s*#.*$/gmu, "")
       mention("language: python")
       mention("package system: pyproject.toml")
-      if (/\[tool\.(?:pytest|tox|nox)|\[tool\.poetry\.scripts\]/u.test(text)) mention("test configuration: declared")
-      if (/\[tool\.(?:poetry|uv|hatch|setuptools)\]/u.test(text)) mention("build/package configuration: declared")
+      if (/\[tool\.(?:pytest|tox|nox)|\[tool\.poetry\.scripts\]/u.test(pyprojectWithoutComments)) mention("test configuration: declared")
+      if (/\[tool\.(?:poetry|uv|hatch|setuptools)\]/u.test(pyprojectWithoutComments)) mention("build/package configuration: declared")
       break
     case "requirements_txt":
       mention("language: python")
@@ -168,19 +169,27 @@ const detectManifestFacts = (kind: string, text: string) => {
       mention("package system: Go modules")
       break
     case "pom_xml":
+      const mavenWithoutComments = text.replace(/<!--[\s\S]*?-->/gu, "")
+      const mavenDependencies = mavenWithoutComments.matchAll(/<dependency\b[^>]*>([\s\S]*?)<\/dependency\s*>/giu)
       mention("language: java")
       mention("build system: Maven")
-      if (/<artifactId>[^<]*junit[^<]*<\/artifactId>/iu.test(text)) mention("test framework: JUnit declared")
+      if ([...mavenDependencies].some(([, dependency]) => /<artifactId\b[^>]*>[^<]*junit[^<]*<\/artifactId\s*>/iu.test(dependency))) {
+        mention("test framework: JUnit declared")
+      }
       break
     case "gradle":
+      // Groovy/Kotlin Gradle files commonly leave old dependencies or test
+      // configuration in comments; those are not active project declarations.
+      const gradleWithoutComments = text.replace(/\/\*[\s\S]*?\*\//gu, "").replace(/(^|\s)\/\/.*$/gmu, "$1")
       mention("build system: Gradle")
-      if (/org\.junit|useJUnitPlatform/u.test(text)) mention("test framework: JUnit declared")
+      if (/org\.junit|useJUnitPlatform/u.test(gradleWithoutComments)) mention("test framework: JUnit declared")
       break
     case "csproj":
     case "sln":
+      const dotnetWithoutXmlComments = kind === "csproj" ? text.replace(/<!--[\s\S]*?-->/gu, "") : text
       mention("language: csharp")
       mention("build system: .NET")
-      if (/Microsoft\.NET\.Test\.Sdk|\bIsTestProject\b/iu.test(text)) mention("test project: declared")
+      if (/Microsoft\.NET\.Test\.Sdk|\bIsTestProject\b/iu.test(dotnetWithoutXmlComments)) mention("test project: declared")
       break
     case "composer_json":
       try {
@@ -196,14 +205,20 @@ const detectManifestFacts = (kind: string, text: string) => {
       }
       break
     case "gemfile":
+      // Gemfiles often retain disabled test dependencies as full-line comments;
+      // those are not active declarations.
+      const gemfileWithoutComments = text.replace(/^\s*#.*$/gmu, "")
       mention("language: ruby")
       mention("package system: Bundler")
-      if (/\brspec\b|\bminitest\b/iu.test(text)) mention("test framework: declared")
+      if (/\brspec\b|\bminitest\b/iu.test(gemfileWithoutComments)) mention("test framework: declared")
       break
     case "package_swift":
+      const swiftWithoutComments = text
+        .replace(/\/\*[\s\S]*?\*\//gu, "")
+        .replace(/^\s*\/\/.*$/gmu, "")
       mention("language: swift")
       mention("package system: SwiftPM")
-      if (/\.testTarget\s*\(/u.test(text)) mention("test target: declared")
+      if (/\.testTarget\s*\(/u.test(swiftWithoutComments)) mention("test target: declared")
       break
     case "makefile":
       mention("build system: Make")
@@ -224,9 +239,15 @@ const renderDiscoveryPage = (page: RepoIntelligenceSchema.RepoDiscoveryPageV1) =
     `workspace: ${page.authority.workspaceBinding}`,
     `sourceRevision: ${page.authority.sourceRevision}`,
     `coverage: ${page.coverage.entries} entries, ${page.coverage.bytes} bytes, depth ${page.coverage.depth}`,
-    `authority: authenticated read-only inventory; symlinks are listed and never followed`,
+    page.status === "UNAVAILABLE"
+      ? "authority: authenticated HostKernel discovery; no inventory was returned"
+      : "authority: authenticated read-only inventory; symlinks are listed and never followed",
   ]
   if (page.partialReason) lines.push(`partialReason: ${page.partialReason}`)
+  // A typed HostKernel refusal (read_unavailable / deadline_exceeded /
+  // workspace_changed) is part of the evidence; never render an UNAVAILABLE page
+  // without the exact reason it produced.
+  if (page.unavailableReason) lines.push(`unavailableReason: ${page.unavailableReason}`)
   for (const entry of page.entries) {
     lines.push(`${"  ".repeat(Math.min(entry.depth, 16))}${safeDiscoveryLabel(entry.pathRef)}${entry.kind === "directory" ? "/" : entry.kind === "symlink" ? " [symlink]" : ""}`)
   }

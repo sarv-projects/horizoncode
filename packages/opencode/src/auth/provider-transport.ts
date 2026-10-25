@@ -167,6 +167,12 @@ export async function prepareDirectProviderTransportRequest(options: {
   if (!route.anonymousOpenCodeFree || route.providerID !== "opencode") {
     throw new SecretBrokerError("UNAVAILABLE", "Direct provider transport is not enabled for this selected route")
   }
+  // This lane is currently limited to the anonymous OpenCode route. Keep its
+  // public placeholder bound to the adapter's canonical header rather than
+  // trusting a type-only union from a runtime route projection.
+  if (route.credentialHeader?.name !== "authorization" || route.credentialHeader.prefix !== "Bearer ") {
+    throw new SecretBrokerError("INVALID_REQUEST", "Direct provider credential header is invalid")
+  }
   let request: Request
   let endpoint: URL
   let destination: URL
@@ -261,6 +267,12 @@ export function createPinnedDirectProviderFetch(options: {
     // Finish local Request validation before the durable DISPATCHING transition;
     // after that point any transport uncertainty must be terminal UNKNOWN.
     const request = new Request(input, init)
+    const signal = options.signal && options.signal !== request.signal
+      ? AbortSignal.any([options.signal, request.signal])
+      : request.signal
+    if (signal.aborted) {
+      throw signal.reason ?? new DOMException("Direct provider request was cancelled before dispatch", "AbortError")
+    }
     let dispatch: Awaited<ReturnType<typeof options.beginDispatch>>
     try {
       dispatch = await options.beginDispatch()
@@ -272,15 +284,17 @@ export function createPinnedDirectProviderFetch(options: {
       await options.markUnknown("direct provider dispatch authorization acknowledgement was lost or mismatched").catch(() => undefined)
       throw error
     }
+    if (signal.aborted) {
+      await options.markUnknown("direct provider request was cancelled after DISPATCHING but before transport send")
+      throw signal.reason ?? new DOMException("Direct provider request was cancelled before transport send", "AbortError")
+    }
     try {
       const response = await options.send({
         url: replay.transport.destination,
         method: replay.transport.method,
         body: replay.transport.body,
         headers: replay.transport.headers,
-        signal: options.signal && options.signal !== request.signal
-          ? AbortSignal.any([options.signal, request.signal])
-          : request.signal,
+        signal,
         maxResponseBytes: MAX_DIRECT_PROVIDER_RESPONSE_BYTES,
       })
       // A non-success response is not a canonical assistant/usage settlement.
@@ -1311,6 +1325,9 @@ export async function dispatchProviderRequest<Value>(options: {
   let headerBytes = 0
   for (const [rawName, value] of headerEntries) {
     const name = rawName.toLowerCase()
+    if (Object.hasOwn(headers, name)) {
+      throw new SecretBrokerError("INVALID_REQUEST", "Provider request contains duplicate case-insensitive headers")
+    }
     if (
       name.length > 128 ||
       !/^[!#$%&'*+.^_`|~0-9a-z-]+$/.test(name) ||

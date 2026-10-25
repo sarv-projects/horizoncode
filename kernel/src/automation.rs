@@ -2234,7 +2234,13 @@ mod tests {
             )
             .unwrap();
         let context = guard_context(&root);
-        let raw_arguments = registry_scope("args");
+        // The automation's action input is fixed by its definition
+        // (`action_input_json`, "Fixed, user-authored canonical JSON payload"),
+        // and the Guard effect-intent digest binds that canonical raw argument
+        // digest. A caller-provided digest is never authority
+        // (`arch_V1/31` fixed automation action input contract), so the caller
+        // asserts the definition's own fixed-input digest.
+        let raw_arguments = definition_action_input_digests(&definition()).unwrap().1;
         let before_invocation = registry.commits();
         assert!(matches!(
             registry.authorize_invocation("automation-1", "occ-1", 14, &context, &raw_arguments),
@@ -2244,6 +2250,14 @@ mod tests {
         let bound_digest = registry
             .guard_request_digest("automation-1", "occ-1", 14, &raw_arguments)
             .unwrap();
+        // A digest the caller made up instead of the definition's canonical fixed
+        // input is refused before any Guard request is built, and the refusal
+        // consumes no commit.
+        assert!(matches!(
+            registry.guard_request_digest("automation-1", "occ-1", 14, &registry_scope("args")),
+            Err(AutomationRegistryErrorV1::InvalidIdempotency)
+        ));
+        assert_eq!(registry.commits(), before_invocation);
         let request = registry
             .guard_request(
                 "automation-1",

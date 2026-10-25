@@ -806,7 +806,8 @@ HOST_RUN_INSPECT_OPERATION = "host_run.inspect"
 BLAKE3_DIGEST_PATTERN = re.compile(r"blake3:[0-9a-f]{64}")
 # P2 accepts the bare hex or the `blake3:`-prefixed form for OwnerLog event digests.
 OWNER_EVENT_DIGEST_PATTERN = re.compile(r"(?:blake3:)?[0-9a-f]{64}")
-DECIMAL_PATTERN = re.compile(r"[0-9]{1,19}")
+DECIMAL_PATTERN = re.compile(r"(?:0|[1-9][0-9]*)")
+MAX_HOST_RUN_U64 = (1 << 64) - 1
 
 # The complete typed UNKNOWN-reason catalogue produced by
 # `ManagedSnapshot::reconcile_host_run` and the HostKernel `host_run.inspect`
@@ -833,6 +834,11 @@ HOST_RUN_UNKNOWN_REASONS = (
 HOST_RUN_BINDING_ABSENT = "host_run_binding_absent"
 HOST_RUN_TERMINAL_STATUSES = ("SUCCEEDED", "FAILED", "CANCELLED")
 HOST_RUN_OUTCOME_STATUSES = ("PASS_VERIFIED", "FAIL_UNVERIFIED", "UNSUPPORTED_CAPABILITY")
+# Outcome evidence only ever exists on a row that reached one of the statuses
+# above. ``failureClass`` is deliberately excluded: it is the runner's failure
+# classification and is written on UNKNOWN/CANCELLED/NOT_RUN rows as well.
+HOST_RUN_OUTCOME_EVIDENCE_KEYS = frozenset(
+    {"verifierVerdict", "securityFailure", "falseCompletion", "resourceUse"})
 
 # Which terminal host status corroborates which persisted evaluator row.
 # PASS_VERIFIED may only be corroborated by SUCCEEDED — never by FAILED or
@@ -945,9 +951,13 @@ def _require_id(value, what: str) -> str:
 
 
 def _require_decimal(value, what: str, *, nonzero: bool = True) -> str:
-    if not isinstance(value, str) or DECIMAL_PATTERN.fullmatch(value) is None:
-        raise EvalError(f"{what} must be a canonical decimal string")
-    if nonzero and int(value) == 0:
+    if (not isinstance(value, str) or len(value) > 20
+            or DECIMAL_PATTERN.fullmatch(value) is None):
+        raise EvalError(f"{what} must be a canonical decimal u64 string")
+    parsed = int(value)
+    if parsed > MAX_HOST_RUN_U64:
+        raise EvalError(f"{what} must fit the canonical decimal u64 range")
+    if nonzero and parsed == 0:
         raise EvalError(f"{what} must be positive")
     return value
 
@@ -1654,10 +1664,12 @@ def summarize_pairs(records: list[dict] | tuple[dict, ...], manifest: Mapping) -
         mode = row.get("mode")
         if mode not in {"FAKE_SELF_CHECK", "HOST_RUN_PAIRED"}:
             raise EvalError("summary trial has an unknown execution mode")
-        if mode == "HOST_RUN_PAIRED" and row.get("status") in {
-            "PASS_VERIFIED", "FAIL_UNVERIFIED", "UNSUPPORTED_CAPABILITY"
-        }:
-            _validate_host_run_trial_evidence(row, require_complete=True)
+        if mode == "HOST_RUN_PAIRED":
+            if row.get("status") in HOST_RUN_OUTCOME_STATUSES:
+                _validate_host_run_trial_evidence(row, require_complete=True)
+            elif HOST_RUN_OUTCOME_EVIDENCE_KEYS & set(row):
+                raise EvalError(
+                    "HostRun terminal trial cannot carry verifier or resource evidence")
         execution_modes.add(mode)
         for field in ("elapsedMs", "inputTokens", "outputTokens", "toolCalls", "retries",
                       "interventions", "costMicros"):
@@ -1916,7 +1928,9 @@ class _ArtifactJournal:
             parent_info = os.fstat(self.parent_fd)
             info = os.fstat(self.artifact_fd)
             if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
-                    or info.st_dev != parent_info.st_dev):
+                    or info.st_dev != parent_info.st_dev
+                    or not hasattr(os, "geteuid") or info.st_uid != os.geteuid()
+                    or info.st_mode & 0o077 or info.st_mode & 0o111):
                 raise EvalError("artifact is not a private repository-local regular file")
             self.file_identity = (info.st_dev, info.st_ino)
             raw, info = _read_open_regular(self.artifact_fd, MAX_ARTIFACT_BYTES)
@@ -1942,14 +1956,22 @@ class _ArtifactJournal:
                 try:
                     rows = [json.loads(line, object_pairs_hook=_pairs_no_duplicates)
                             for line in raw.splitlines()]
-                except (UnicodeError, json.JSONDecodeError) as exc:
+                except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
                     raise EvalError("artifact contains malformed JSON") from exc
                 if not rows or rows[0] != header:
                     raise EvalError("artifact header does not match the frozen manifest")
                 self.records = rows[1:]
         except OSError as exc:
+            self.close()
             raise EvalError(f"artifact initialization failed: {exc.__class__.__name__}") from exc
-        self._validate_records()
+        except BaseException:
+            self.close()
+            raise
+        try:
+            self._validate_records()
+        except BaseException:
+            self.close()
+            raise
 
     def close(self):
         if getattr(self, "artifact_fd", -1) >= 0:
@@ -2016,10 +2038,16 @@ class _ArtifactJournal:
                 call_indexes.add(call_index)
             if status in {"CANCELLED", "INFRASTRUCTURE_FAILURE", "UNKNOWN"}:
                 stopped = True
-            if self.mode == "HOST_RUN_PAIRED" and status in {
-                "PASS_VERIFIED", "FAIL_UNVERIFIED", "UNSUPPORTED_CAPABILITY"
-            }:
-                _validate_host_run_trial_evidence(row, require_complete=False)
+            if self.mode == "HOST_RUN_PAIRED":
+                if status in HOST_RUN_OUTCOME_STATUSES:
+                    _validate_host_run_trial_evidence(row, require_complete=False)
+                elif HOST_RUN_OUTCOME_EVIDENCE_KEYS & set(row):
+                    # Only an outcome row may carry a verifier verdict, security
+                    # state, false-completion flag or resource figure; a locally
+                    # edited terminal row must not smuggle one onto a status the
+                    # runner never resolved.
+                    raise EvalError(
+                        "HostRun terminal trial cannot carry verifier or resource evidence")
             seen.add(key)
         if call_indexes != set(range(len(call_indexes))):
             raise EvalError("artifact provider call indexes are not a contiguous execution prefix")

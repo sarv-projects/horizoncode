@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { catalogProvenanceLabel, isZeroPricedModel, modelAvailabilityLabel, modelSelectableInV1, sortModelOptions } from "../../src/component/dialog-model"
+import { catalogProvenanceLabel, isZeroPricedModel, modelAvailabilityLabel, modelListedInV1, modelSelectableInV1, sortModelOptions } from "../../src/component/dialog-model"
 import { providerAuthFailureMessage, providerProvenance } from "../../src/component/dialog-provider"
 import { modelPriceLabel } from "../../src/util/model"
 import { FeatureExposure } from "@opencode-ai/core/v1/config/feature-exposure"
@@ -15,6 +15,50 @@ test("provider model catalog label preserves advisory provenance without implyin
     license: "MIT",
     attribution: "Catalog authors",
   })).toBe("Catalog cache/stale · https://models.opencode.ai · retrieved 1970-01-01T00:00:00.000Z · digest abcdef012345 · license MIT · Catalog authors")
+})
+
+test("absent catalog provenance is unknown and never crashes the model dialog", () => {
+  // The contract for an absent snapshot is "unknown, never current": the label
+  // must not throw, and it must not invent a source, a freshness, or a
+  // success-looking default such as cache/bundled/override.
+  const absent = catalogProvenanceLabel(undefined)
+  expect(absent).toContain("unknown")
+  expect(absent).not.toContain("undefined")
+  expect(absent).not.toContain("cache")
+  expect(absent).not.toContain("bundled")
+  expect(absent).not.toContain("override")
+  expect(absent).not.toContain("fresh")
+})
+
+test("partial catalog provenance reports the missing field as unknown", () => {
+  const empty = catalogProvenanceLabel({})
+  expect(empty).toContain("unknown")
+  expect(empty).not.toContain("undefined")
+
+  const sourceOnly = catalogProvenanceLabel({ source: "override" })
+  expect(sourceOnly).toContain("override")
+  expect(sourceOnly).toContain("unknown")
+  expect(sourceOnly).not.toContain("undefined")
+
+  const freshnessOnly = catalogProvenanceLabel({ freshness: "stale" })
+  expect(freshnessOnly).toContain("stale")
+  expect(freshnessOnly).toContain("unknown")
+  expect(freshnessOnly).not.toContain("undefined")
+})
+
+test("malformed optional provenance fields never crash the label", () => {
+  // The server schema allows any non-negative Int for retrievedAt, which is not
+  // necessarily a representable Date; a renderer must not die on that value.
+  const label = catalogProvenanceLabel({
+    source: "cache",
+    freshness: "fresh",
+    retrievedAt: Number.MAX_SAFE_INTEGER,
+    contentDigest: 42 as unknown as string,
+    license: null as unknown as string,
+  })
+  expect(label).toContain("Catalog cache/fresh")
+  expect(label).not.toContain("Invalid")
+  expect(label).not.toContain("undefined")
 })
 
 describe("isZeroPricedModel (AN-002/AN-003)", () => {
@@ -85,6 +129,38 @@ describe("modelPriceLabel (AN-002)", () => {
     expect(modelPriceLabel({ input: 0, output: 0 })).toBe("Price unknown")
     expect(modelPriceLabel({ input: 5 })).toBe("Price unknown")
     expect(modelPriceLabel(undefined)).toBe("Price unknown")
+  })
+})
+
+describe("modelListedInV1 (picker visibility)", () => {
+  test("lists priced and incomplete-price models so their status stays readable", () => {
+    // arch_V1/16 §provider/model hub: incomplete/paid pricing and non-OpenCode
+    // providers stay visible *only as unavailable* — hiding them would delete
+    // the very rows that carry the price and dispatch status.
+    expect(modelListedInV1({ cost: { input: 5, output: 15, cache: { read: 1, write: 2 } }, anonymousOffer: false })).toBe(true)
+    expect(modelListedInV1({ cost: { input: 0, output: 0 }, anonymousOffer: false })).toBe(true)
+    expect(modelListedInV1({ cost: undefined, anonymousOffer: false })).toBe(true)
+    expect(modelListedInV1({ cost: { input: 1, output: 2, cache: { read: 0, write: 0 } }, anonymousOffer: false })).toBe(true)
+  })
+
+  test("lists the explicit anonymous zero-priced offer", () => {
+    expect(
+      modelListedInV1({ cost: { input: 0, output: 0, cache: { read: 0, write: 0 } }, anonymousOffer: true }),
+    ).toBe(true)
+  })
+
+  test("does not advertise a catalog $0 model the server has not offered anonymously", () => {
+    // "Listed $0" beside "Dispatch unavailable" would advertise free access
+    // that does not exist; every other model keeps its truthful row instead.
+    expect(
+      modelListedInV1({ cost: { input: 0, output: 0, cache: { read: 0, write: 0 } }, anonymousOffer: false }),
+    ).toBe(false)
+    expect(
+      modelListedInV1({
+        cost: { input: 0, output: 0, cache: { read: 0, write: 0 }, tiers: [{ input: 0, output: 0, cache: { read: 0, write: 0 } }] },
+        anonymousOffer: undefined,
+      }),
+    ).toBe(false)
   })
 })
 

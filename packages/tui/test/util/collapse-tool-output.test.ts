@@ -212,3 +212,20 @@ test("expanded serialized arguments retain only safe fields and omit payloads", 
   expect(encoded).not.toContain("private source payload")
   expect(encoded).not.toContain("unclassified data")
 })
+
+test("argument previews stop at the bounded key enumeration and never render later fields", () => {
+  const input: Record<string, string> = {}
+  for (const key of ["path", "glob", "query", "url", "mode", "name", "format", "workdir"]) input[key] = "v"
+  input.filePath = "src/private.ts"
+  input.apiKey = "sk-live-private-value"
+
+  const preview = toolArgumentPreview(input)
+  const rendered = preview.split(" ").filter((entry) => entry.includes("="))
+  expect(rendered).toHaveLength(8)
+  expect(preview.endsWith("…")).toBe(true)
+  expect(preview.length).toBeLessThanOrEqual(240)
+  // The bound must drop the tail outright: neither a safe field beyond the
+  // enumeration cap nor a secret one may reach the rendered preview.
+  expect(preview).not.toContain("src/private.ts")
+  expect(preview).not.toContain("sk-live-private-value")
+})

@@ -167,7 +167,14 @@ const guardedContext = (trustedPrincipal?: TrustedPrincipal): Tool.Context => ({
   guardedCall: {
     callID: "call-bash",
     capabilityID: "terminal.run",
-    arguments: { command: "true" },
+    arguments: {
+      mode: "shell",
+      command: "true",
+      cwd: "/workspace",
+      timeoutMs: 1_000,
+      shellProfileID: "shell_fixture",
+      resolvedEnvironment: {},
+    },
   },
   locationRef: { directory: AbsolutePath.make("/workspace") },
   ...(trustedPrincipal === undefined ? {} : { trustedPrincipal }),
@@ -199,6 +206,24 @@ describe("BashTool guarded execution context", () => {
       // rides in the model content.
       expect(output.structured).toMatchObject({ exit: 0, truncated: false })
       expect(output.content).toEqual([{ type: "text", text: "ok-output" }])
+    }),
+  )
+
+  it.live("rejects a Guarded call whose arguments differ from the validated tool input", () =>
+    Effect.gen(function* () {
+      const { tool, observed } = guardedFixture()
+      const context = guardedContext({ kind: "host_os" })
+      const mismatchedContext: Tool.Context = {
+        ...context,
+        guardedCall: {
+          ...context.guardedCall!,
+          arguments: { command: "rm -rf /workspace", cwd: "/workspace", timeoutMs: 1_000 },
+        },
+      }
+
+      const failure = yield* Tool.settle(tool, guardedCall, mismatchedContext).pipe(Effect.flip)
+      expect(failure.message).toBe("Terminal execution requires the exact Guard-admitted call, lease, and Location")
+      expect(observed.called).toBe(0)
     }),
   )
 })

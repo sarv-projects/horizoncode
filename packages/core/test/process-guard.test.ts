@@ -2,13 +2,35 @@ import { expect, test } from "bun:test"
 import { createHash } from "node:crypto"
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { Effect, Stream } from "effect"
+import { Effect, Layer, Stream } from "effect"
 import { ChildProcess } from "effect/unstable/process"
+import { ChildProcessSpawner, make as makeChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
+import { CrossSpawnSpawner } from "../src/cross-spawn-spawner"
+import { makeGlobalNode } from "../src/effect/app-node"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { AppProcess, pinCodeModeHelperRoot, pinSupervisorExecutable } from "@opencode-ai/core/process"
 import { testEffect } from "./lib/effect"
 
 const { effect: it } = testEffect(LayerNode.compile(AppProcess.node))
+const { effect: itWithInterceptedSpawner } = testEffect(
+  LayerNode.compile(AppProcess.node, [[
+    CrossSpawnSpawner.node,
+    makeGlobalNode({
+      service: ChildProcessSpawner,
+      layer: Layer.succeed(ChildProcessSpawner)(
+        makeChildProcessSpawner((command) =>
+          Effect.sync(() => {
+            interceptedCommand = command
+            throw new Error("spawn intercepted by process-guard test")
+          }),
+        ),
+      ),
+      deps: [],
+    }),
+  ]]),
+)
+let interceptedCommand: ChildProcess.Command | undefined
+const getInterceptedCommand = (): ChildProcess.Command | undefined => interceptedCommand
 
 it("denies generic process run, stream, and spawn before dispatch", () =>
   Effect.gen(function* () {
@@ -63,6 +85,43 @@ it("denies basename spoofing and executable replacement before dispatch", () =>
         }))),
       )
       expect(replaced._tag).toBe("Failure")
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  }),
+)
+
+itWithInterceptedSpawner("allows a manifest-pinned HostKernel control launch to pipe stderr for startup diagnostics", () =>
+  Effect.gen(function* () {
+    interceptedCommand = undefined
+    const process = yield* AppProcess.Service
+    const directory = mkdtempSync(join(import.meta.dir, ".process-guard-host-launch-"))
+    try {
+      const bytes = Buffer.from("test-only pinned HostKernel identity for stderr-pipe admission")
+      const digest = createHash("sha256").update(bytes).digest("hex")
+      const binary = join(directory, `hz-kernel-${digest}`)
+      writeFileSync(binary, bytes, { mode: 0o700 })
+      pinSupervisorExecutable({ path: binary, binaryName: "hz-kernel", sha256: digest })
+      const args = [
+        `--state-dir=${directory}`,
+        `--socket=${join(directory, "host.sock")}`,
+        "--host-exe=/usr/bin/bun",
+        "--nonce=nonce_fixture",
+        "--incarnation=incarnation_fixture",
+      ]
+
+      const command = ChildProcess.make(binary, args, {
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "pipe",
+        extendEnv: false,
+      })
+      const result = yield* Effect.scoped(Effect.exit(process.spawn(command)))
+
+      expect(result._tag).toBe("Failure")
+      const captured: ChildProcess.Command | undefined = getInterceptedCommand()
+      expect(captured).toBe(command)
+      expect(captured?._tag === "StandardCommand" ? captured.options.stderr : undefined).toBe("pipe")
     } finally {
       rmSync(directory, { recursive: true, force: true })
     }

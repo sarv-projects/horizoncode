@@ -24,6 +24,7 @@ import zipfile
 LEGAL_BASENAME = re.compile(
     r"^(license|licence|copying|notice|patents|third[._-]?party[._-]?notices?)(?:[._-].*)?$", re.IGNORECASE
 )
+PRODUCT_BINARY = "horizoncode"
 SOURCE_OUTPUT_DIRS = frozenset({".git", ".turbo", ".cache", "__pycache__", "dist", "node_modules", "target"})
 SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -105,6 +106,84 @@ def _license_value(value: object) -> str | None:
     if isinstance(value, list):
         return " OR ".join(str(item) for item in value)
     return None
+
+
+def _declared_license(manifest: dict) -> str | None:
+    """Read license metadata a package declares for itself.
+
+    Only declared manifest metadata counts. The deprecated npm `licenses` form
+    (a string, an object, or an array of `{type, url}` rows) is metadata too; a
+    package that declares neither field still has no license metadata, whatever
+    files happen to sit next to it.
+    """
+    declared = _license_value(manifest.get("license"))
+    if declared:
+        return declared
+    legacy = manifest.get("licenses")
+    if isinstance(legacy, str):
+        return legacy.strip() or None
+    if isinstance(legacy, dict):
+        value = legacy.get("type")
+        return value.strip() if isinstance(value, str) and value.strip() else None
+    if isinstance(legacy, list):
+        types = [
+            item.get("type", "").strip()
+            for item in legacy
+            if isinstance(item, dict) and isinstance(item.get("type"), str) and item.get("type", "").strip()
+        ]
+        # A legacy array of license rows expresses the same alternatives npm
+        # records through SPDX `OR`; a single row is that license alone.
+        return " OR ".join(types) if types else None
+    return None
+
+
+def _is_workspace_source_package(path: Path, allowed_root: Path) -> bool:
+    """True when a dependency resolved to first-party workspace source in-repo."""
+    try:
+        relative = path.relative_to(allowed_root)
+    except ValueError:
+        return False
+    return bool(relative.parts) and "node_modules" not in relative.parts
+
+
+def _workspace_manifest_reconciliation(root: Path, grant: str | None) -> dict:
+    """Compare every first-party workspace manifest's license with the root grant.
+
+    Reported as facts for review: a deviation is never silently accepted, and
+    this inventory tool does not invent a new gate from it.
+    """
+    deviations: list[dict] = []
+    unreadable: list[str] = []
+    scanned = 0
+    matching = 0
+    manifest_paths = sorted(root.glob("packages/*/package.json")) + sorted(
+        root.glob("packages/*/*/package.json")
+    )
+    for manifest_path in manifest_paths:
+        relative = manifest_path.relative_to(root).as_posix()
+        manifest = _read_manifest(manifest_path, root, unreadable)
+        if not manifest:
+            deviations.append({"path": relative, "name": None, "license": None, "error": "unreadable"})
+            continue
+        scanned += 1
+        declared = manifest.get("license")
+        if isinstance(declared, str) and declared == grant:
+            matching += 1
+            continue
+        deviations.append(
+            {
+                "path": relative,
+                "name": manifest.get("name"),
+                "license": _license_value(declared),
+            }
+        )
+    return {
+        "grant": grant,
+        "scanned": scanned,
+        "matching_grant": matching,
+        "deviations": deviations,
+        "unreadable": unreadable,
+    }
 
 
 def _is_tracked(root: Path, relative: str) -> bool:
@@ -331,8 +410,21 @@ def _package_legal_files(
     return sorted(legal_files)
 
 
-def scan_runtime_dependencies(package_root: Path, allowed_root: Path | None = None, errors: list[str] | None = None) -> dict:
-    """Walk runtime/optional/required-peer dependencies from one package."""
+def scan_runtime_dependencies(
+    package_root: Path,
+    allowed_root: Path | None = None,
+    errors: list[str] | None = None,
+    *,
+    first_party_grant: str | None = None,
+) -> dict:
+    """Walk runtime/optional/required-peer dependencies from one package.
+
+    `first_party_grant` is supplied only when the audit has already established
+    a tracked, vendor-distinct root `LICENSE` and `NOTICE` for the declared
+    first-party grant. A workspace package that declares exactly that grant is
+    then covered by those repository-root legal files; every other package still
+    needs its own direct LICENSE/NOTICE file.
+    """
     allowed_root = (allowed_root or package_root).resolve()
     packages: dict[str, dict] = {}
     missing: list[dict] = []
@@ -403,7 +495,7 @@ def scan_runtime_dependencies(package_root: Path, allowed_root: Path | None = No
                 packages[key] = {
                     "name": package_name,
                     "version": version,
-                    "license": _license_value(dependency_manifest.get("license")),
+                    "license": _declared_license(dependency_manifest),
                     "path": str(resolved),
                     "license_files": _package_legal_files(resolved, inventory_errors, remaining_package_entries),
                     "requested_by": [],
@@ -414,6 +506,16 @@ def scan_runtime_dependencies(package_root: Path, allowed_root: Path | None = No
     inventory = sorted(packages.values(), key=lambda item: (item["name"], item["version"], item["path"]))
     missing_license_metadata = [item for item in inventory if item["license"] is None]
     missing_license_files = [item for item in inventory if not item["license_files"]]
+    granted_workspace_packages: list[dict] = []
+    if first_party_grant:
+        covered = {
+            id(item)
+            for item in missing_license_files
+            if item["license"] == first_party_grant
+            and _is_workspace_source_package(Path(item["path"]), allowed_root)
+        }
+        granted_workspace_packages = [item for item in inventory if id(item) in covered]
+        missing_license_files = [item for item in missing_license_files if id(item) not in covered]
     required_missing = [item for item in missing if not item["optional"]]
     return {
         "basis": "installed workspace package manifests; not the final shipping artifact closure",
@@ -422,17 +524,31 @@ def scan_runtime_dependencies(package_root: Path, allowed_root: Path | None = No
         "packages": inventory,
         "missing_license_metadata": missing_license_metadata,
         "missing_license_files": missing_license_files,
+        "first_party_workspace_grant_evidence": {
+            "declared_license": first_party_grant,
+            "basis": (
+                "first-party workspace packages declaring the decided root grant are covered by the tracked "
+                "repository-root LICENSE and NOTICE; this does not establish the exact shipping-artifact closure"
+                if first_party_grant
+                else None
+            ),
+            "packages": [
+                {"name": item["name"], "version": item["version"], "path": item["path"]}
+                for item in granted_workspace_packages
+            ],
+        },
         "unresolved_required_dependencies": required_missing,
         "unresolved_optional_dependencies": [item for item in missing if item["optional"]],
         "inventory_errors": inventory_errors,
     }
 
 
-def _artifact_members(path: Path) -> tuple[list[str], list[str]]:
+def _artifact_members(path: Path) -> tuple[list[str], list[str], list[str]]:
     """Return archive/directory member names and unsafe paths without extracting."""
     if path.is_dir():
         members: list[str] = []
         symlinks: list[str] = []
+        special_entries: list[str] = []
 
         def fail_on_walk_error(error: OSError) -> None:
             raise error
@@ -450,40 +566,72 @@ def _artifact_members(path: Path) -> tuple[list[str], list[str]]:
                 if entry.is_symlink():
                     symlinks.append(relative)
                 else:
-                    members.append(relative)
-        return sorted(members), sorted(symlinks)
+                    try:
+                        metadata = entry.stat(follow_symlinks=False)
+                    except OSError:
+                        special_entries.append(relative)
+                        continue
+                    if stat.S_ISREG(metadata.st_mode) and metadata.st_nlink == 1:
+                        members.append(relative)
+                    else:
+                        special_entries.append(relative)
+        return sorted(members), sorted(symlinks), sorted(special_entries)
 
     if zipfile.is_zipfile(path):
         with zipfile.ZipFile(path) as archive:
             members = []
             symlinks = []
+            special_entries = []
             for item in archive.infolist():
                 if item.is_dir():
+                    if _unsafe_member_path(item.filename):
+                        special_entries.append(item.filename)
                     continue
                 mode = item.external_attr >> 16
                 if stat.S_ISLNK(mode):
                     symlinks.append(item.filename)
+                elif stat.S_IFMT(mode) not in {0, stat.S_IFREG}:
+                    special_entries.append(item.filename)
                 else:
                     members.append(item.filename)
-        return members, symlinks
+        return members, symlinks, special_entries
 
     if tarfile.is_tarfile(path):
         with tarfile.open(path, "r:*") as archive:
-            members = [item.name for item in archive.getmembers() if item.isfile()]
-            symlinks = [item.name for item in archive.getmembers() if item.issym() or item.islnk()]
-        return members, symlinks
+            entries = archive.getmembers()
+            members = [item.name for item in entries if item.isfile()]
+            symlinks = [item.name for item in entries if item.issym() or item.islnk()]
+            special_entries = [
+                item.name
+                for item in entries
+                if (item.isdir() and _unsafe_member_path(item.name))
+                or not (item.isfile() or item.isdir() or item.issym() or item.islnk())
+            ]
+        return members, symlinks, special_entries
 
-    return [path.name], []
+    return [path.name], [], []
 
 
 def _unsafe_member_path(name: str) -> bool:
     normalized = name.replace("\\", "/")
     path = PurePosixPath(normalized)
     return (
-        path.is_absolute()
+        normalized != name
+        or path.as_posix() != normalized
+        or path.is_absolute()
         or ".." in path.parts
         or bool(path.parts and re.match(r"^[A-Za-z]:", path.parts[0]))
     )
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Reject duplicate JSON keys so provenance has one unambiguous meaning."""
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object key: {key}")
+        result[key] = value
+    return result
 
 
 def _read_artifact_member(path: Path, name: str, limit: int = 16 * 1024 * 1024) -> bytes | None:
@@ -619,6 +767,44 @@ def _artifact_member_size(path: Path, name: str) -> int | None:
     return None
 
 
+def _artifact_member_is_executable(path: Path, name: str) -> bool:
+    """Confirm the declared product binary is a regular member with execute bits."""
+    if _unsafe_member_path(name):
+        return False
+    try:
+        if path.is_dir():
+            member = path.joinpath(*PurePosixPath(name).parts)
+            cursor = path
+            for part in PurePosixPath(name).parts:
+                cursor = cursor / part
+                if cursor.is_symlink():
+                    return False
+            metadata = member.stat(follow_symlinks=False)
+            return stat.S_ISREG(metadata.st_mode) and bool(metadata.st_mode & 0o111)
+        if zipfile.is_zipfile(path):
+            with zipfile.ZipFile(path) as archive:
+                matches = [item for item in archive.infolist() if item.filename == name and not item.is_dir()]
+                if len(matches) != 1:
+                    return False
+                item = matches[0]
+                mode = item.external_attr >> 16
+                return (
+                    item.create_system == 3
+                    and stat.S_ISREG(mode)
+                    and bool(mode & 0o111)
+                )
+        if tarfile.is_tarfile(path):
+            with tarfile.open(path, "r:*") as archive:
+                matches = [item for item in archive.getmembers() if item.name == name and item.isfile()]
+                return len(matches) == 1 and bool(matches[0].mode & 0o111)
+        if path.is_file() and name == path.name:
+            metadata = path.stat(follow_symlinks=False)
+            return stat.S_ISREG(metadata.st_mode) and bool(metadata.st_mode & 0o111)
+    except (OSError, tarfile.TarError, zipfile.BadZipFile, EOFError):
+        return False
+    return False
+
+
 def _validate_artifact_inventory(
     path: Path,
     manifest: dict,
@@ -673,13 +859,15 @@ def _validate_artifact_inventory(
     binary_size = manifest.get("binarySizeBytes")
     if (
         not isinstance(binary_path, str)
+        or PurePosixPath(binary_path).name != PRODUCT_BINARY
         or _unsafe_member_path(binary_path)
         or not isinstance(binary_size, int)
         or isinstance(binary_size, bool)
-        or binary_size < 0
+        or binary_size <= 0
         or _artifact_member_size(path, binary_path) != binary_size
+        or not _artifact_member_is_executable(path, binary_path)
     ):
-        errors.append("candidate provenance binary size does not match its regular artifact member")
+        errors.append("candidate provenance binary must be an executable regular horizoncode artifact member with matching size")
     if seen != expected:
         errors.append("candidate file inventory does not enumerate every artifact member exactly once")
     return not errors, errors
@@ -749,6 +937,7 @@ def inspect_artifact(path: Path) -> dict:
             "contains_license_file": False,
             "contains_notice_file": False,
             "symlinks": [str(symlink_component)],
+            "special_entries": [],
             "unsafe_paths": [],
             "members": [],
         }
@@ -758,6 +947,9 @@ def inspect_artifact(path: Path) -> dict:
             "path": str(requested_path),
             "status": "MISSING",
             "members": [],
+            "symlinks": [],
+            "special_entries": [],
+            "unsafe_paths": [],
             "source_state_sha256": None,
             "source_state_digest_valid": False,
             "source_state_digest_matches": False,
@@ -769,7 +961,7 @@ def inspect_artifact(path: Path) -> dict:
             "artifact_inventory_errors": ["artifact is missing"],
         }
     try:
-        members, symlinks = _artifact_members(path)
+        members, symlinks, special_entries = _artifact_members(path)
     except (OSError, tarfile.TarError, zipfile.BadZipFile, EOFError) as error:
         return {
             "path": str(requested_path),
@@ -793,6 +985,7 @@ def inspect_artifact(path: Path) -> dict:
             "contains_license_file": False,
             "contains_notice_file": False,
             "symlinks": [],
+            "special_entries": [],
             "unsafe_paths": [],
             "members": [],
             "error": f"artifact inventory failed: {type(error).__name__}: {error}",
@@ -809,7 +1002,7 @@ def inspect_artifact(path: Path) -> dict:
         re.match(r"^(notice|patents|third[._-]?party[._-]?notices?)(?:[._-].*)?$", name, re.I) for name in licenses
     )
     status = "REVIEW_REQUIRED" if has_license or has_notice else "BLOCKED"
-    if unsafe_paths or symlinks:
+    if unsafe_paths or symlinks or special_entries:
         status = "BLOCKED"
     safe_members = [name for name in members if not _unsafe_member_path(name)]
     file_facts = _artifact_file_facts(path, safe_members)
@@ -830,13 +1023,16 @@ def inspect_artifact(path: Path) -> dict:
     binary_digest_matches = False
     artifact_inventory_valid = False
     artifact_inventory_errors: list[str] = ["release manifest has no validated artifactFiles inventory"]
+    if len(provenance_files) > 1:
+        artifact_inventory_errors = ["artifact contains multiple provenance manifests"]
+        provenance_files = []
     for name in provenance_files:
         contents = _read_artifact_member(path, name)
         if contents is None:
             continue
         try:
-            manifest = json.loads(contents.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
+            manifest = json.loads(contents.decode("utf-8"), object_pairs_hook=_unique_json_object)
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
             continue
         if not isinstance(manifest, dict):
             continue
@@ -853,7 +1049,16 @@ def inspect_artifact(path: Path) -> dict:
             binary_path = raw_binary_path
         if isinstance(raw_binary_digest, str) and SHA256_HEX.fullmatch(raw_binary_digest):
             binary_sha256 = raw_binary_digest
-            actual_binary_digest = _artifact_member_sha256(path, binary_path) if binary_path else None
+            actual_binary_size = _artifact_member_size(path, binary_path) if binary_path else None
+            actual_binary_digest = (
+                _artifact_member_sha256(path, binary_path)
+                if binary_path is not None
+                and PurePosixPath(binary_path).name == PRODUCT_BINARY
+                and actual_binary_size is not None
+                and actual_binary_size > 0
+                and _artifact_member_is_executable(path, binary_path)
+                else None
+            )
             binary_digest_valid = actual_binary_digest is not None
             binary_digest_matches = actual_binary_digest == binary_sha256
         artifact_inventory_valid, artifact_inventory_errors = _validate_artifact_inventory(
@@ -883,21 +1088,43 @@ def inspect_artifact(path: Path) -> dict:
         "contains_license_file": has_license,
         "contains_notice_file": has_notice,
         "symlinks": symlinks,
+        "special_entries": special_entries,
         "unsafe_paths": unsafe_paths,
         "members": members,
     }
 
 
-def _discover_artifact(root: Path) -> Path | None:
+def _discover_artifact(root: Path) -> dict:
+    """Locate a candidate artifact without ever adopting stale legacy output.
+
+    The qualification build writes ``dist/<target>/bin/horizoncode`` and puts
+    ``release-manifest.json`` beside that binary, so the candidate artifact root
+    is the binary's directory. Output built before the product-binary rename has
+    no ``bin/horizoncode``: it is reported as stale, inspected fail-closed when
+    nothing else exists, and never merged into a real candidate's file inventory.
+    """
     package_root = root / "packages" / "opencode"
     dist = package_root / "dist"
+    candidates: list[Path] = []
+    stale_outputs: list[str] = []
     if dist.is_dir():
-        return dist
-    for pattern in ("*.tgz", "*.tar.gz", "*.zip"):
-        candidates = sorted(package_root.glob(pattern))
-        if candidates:
-            return candidates[0]
-    return None
+        for child in sorted(dist.iterdir()):
+            binary = child / "bin" / PRODUCT_BINARY
+            if child.is_dir() and not child.is_symlink() and binary.is_file() and not binary.is_symlink():
+                candidates.append(binary.parent)
+            else:
+                stale_outputs.append(child.relative_to(root).as_posix())
+    archives = [
+        candidate
+        for pattern in ("*.tgz", "*.tar.gz", "*.zip")
+        for candidate in sorted(package_root.glob(pattern))
+    ]
+    return {
+        "dist": dist if dist.is_dir() else None,
+        "candidates": candidates,
+        "archives": archives,
+        "stale_outputs": stale_outputs,
+    }
 
 
 def _product_target(root_package: dict, app_package: dict) -> dict:
@@ -995,6 +1222,31 @@ def _publication_workflow_is_fail_closed(source: str) -> bool:
     return True
 
 
+def _relative_name(path: Path | None, root: Path) -> str | None:
+    if path is None:
+        return None
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def _select_discovered_artifact(root: Path, discovery: dict, supplied: Path | None) -> tuple[Path | None, str]:
+    """Choose exactly one artifact to inspect, or report why none can be chosen."""
+    if supplied is not None:
+        return supplied, "SUPPLIED"
+    selectable = [*discovery["candidates"], *discovery["archives"]]
+    if len(selectable) == 1:
+        return selectable[0], "CANDIDATE" if discovery["candidates"] else "ARCHIVE"
+    if len(selectable) > 1:
+        return None, "AMBIGUOUS"
+    if discovery["stale_outputs"] and discovery["dist"] is not None:
+        # Nothing current was built: keep inspecting the stale tree fail-closed
+        # so its missing legal files, inventory and provenance stay visible.
+        return Path(os.path.abspath(discovery["dist"])), "STALE_LEGACY"
+    return None, "NOT_FOUND"
+
+
 def audit_repository(root: Path, artifact: Path | None = None) -> dict:
     requested_root = Path(os.path.abspath(root))
     if not _inside(requested_root, REPOSITORY_ROOT):
@@ -1052,19 +1304,41 @@ def audit_repository(root: Path, artifact: Path | None = None) -> dict:
         and not root_license_matches_vendor
         and tracked_root_notice
     )
+    workspace_manifest_reconciliation = _workspace_manifest_reconciliation(
+        root,
+        root_package.get("license") if isinstance(root_package.get("license"), str) else None,
+    )
+    first_party_grant = (
+        root_package.get("license") if first_party_license_decision_made else None
+    )
 
-    runtime_dependencies = scan_runtime_dependencies(root / "packages" / "opencode", root, manifest_errors) if app_package else {
+    runtime_dependencies = scan_runtime_dependencies(
+        root / "packages" / "opencode",
+        root,
+        manifest_errors,
+        first_party_grant=first_party_grant,
+    ) if app_package else {
         "basis": "no packages/opencode/package.json",
         "root_package": str(root / "packages" / "opencode"),
         "package_count": 0,
         "packages": [],
         "missing_license_metadata": [],
         "missing_license_files": [],
+        "first_party_workspace_grant_evidence": {
+            "declared_license": None,
+            "basis": None,
+            "packages": [],
+        },
         "unresolved_required_dependencies": [],
         "unresolved_optional_dependencies": [],
         "inventory_errors": manifest_errors,
     }
-    artifact_path = Path(os.path.abspath(artifact)) if artifact else _discover_artifact(root)
+    discovery = _discover_artifact(root)
+    artifact_path, discovery_kind = _select_discovered_artifact(
+        root,
+        discovery,
+        Path(os.path.abspath(artifact)) if artifact else None,
+    )
     artifact_report = inspect_artifact(artifact_path) if artifact_path else {
         "path": None,
         "status": "NOT_PROVIDED",
@@ -1078,6 +1352,13 @@ def audit_repository(root: Path, artifact: Path | None = None) -> dict:
         "binary_sha256": None,
         "binary_digest_valid": False,
         "binary_digest_matches": False,
+    }
+    artifact_report["discovery"] = {
+        "kind": discovery_kind,
+        "selected": _relative_name(artifact_path, root),
+        "stale_outputs": discovery["stale_outputs"],
+        "candidates": [_relative_name(item, root) for item in discovery["candidates"]],
+        "archives": [_relative_name(item, root) for item in discovery["archives"]],
     }
     source = _git_source_facts(root)
 
@@ -1203,10 +1484,20 @@ def audit_repository(root: Path, artifact: Path | None = None) -> dict:
         blockers.append("packages/opencode must expose horizoncode and hzcode from the same launcher")
     if installer_command != "horizoncode" or installer_alias != "hzcode":
         blockers.append("standalone installer must install horizoncode with the hzcode short command")
+    if discovery_kind == "AMBIGUOUS":
+        blockers.append(
+            "multiple candidate artifacts were found; supply --artifact to select the exact candidate"
+        )
+    elif discovery_kind == "STALE_LEGACY":
+        blockers.append(
+            "stale legacy build output is not a HorizonCode candidate artifact: "
+            + ", ".join(discovery["stale_outputs"])
+        )
     if artifact_path is None:
-        blockers.append("no built package artifact was supplied or found")
+        if discovery_kind != "AMBIGUOUS":
+            blockers.append("no built package artifact was supplied or found")
     elif artifact_report.get("status") == "BLOCKED":
-        blockers.append("supplied artifact is missing legal files or contains unsafe links/paths")
+        blockers.append("inspected artifact is missing legal files or contains unsafe links/paths")
     if artifact_path is not None and not artifact_report.get("artifact_inventory_valid"):
         blockers.append("candidate file inventory is missing, incomplete, or does not match the inspected artifact")
     if artifact_path is not None and not artifact_report.get("source_revision_bound"):
@@ -1313,6 +1604,7 @@ def audit_repository(root: Path, artifact: Path | None = None) -> dict:
             "separate_notice_tracked": tracked_root_notice,
             "reasons": license_reasons,
             "legal_decision_made": first_party_license_decision_made,
+            "workspace_manifest_reconciliation": workspace_manifest_reconciliation,
         },
         "package_target": {
             "name": app_package.get("name"),
@@ -1354,6 +1646,7 @@ def audit_repository(root: Path, artifact: Path | None = None) -> dict:
             "Package license metadata and adjacent legal files are inventory, not legal interpretation.",
             "Installed workspace dependencies are not a substitute for auditing the exact final shipping artifact and its native assets.",
             "A legal decision/redistribution grant must come from the user or legal counsel; this tool never chooses one.",
+            "First-party workspace packages are covered by the tracked repository-root LICENSE/NOTICE only when their own manifest declares that same decided grant; workspace manifest deviations are reported as facts, never cleared here.",
         ],
     }
 

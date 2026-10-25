@@ -34,6 +34,26 @@ const ProfileInput = Schema.Struct({
 
 export const Input = Schema.Union([ShellInput, ProfileInput])
 
+const hasExactKeys = (value: Readonly<Record<string, unknown>>, keys: ReadonlyArray<string>) =>
+  Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key))
+
+const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
+
+const guardedArgumentsMatch = (input: typeof Input.Type, args: unknown): boolean => {
+  if (!isRecord(args)) return false
+  if ("mode" in input) {
+    return hasExactKeys(args, ["mode", "action", "profileID", "revision", "profileDigest", "arguments"]) &&
+      args.mode === input.mode && args.action === input.action && args.profileID === input.profileID &&
+      args.revision === input.revision && args.profileDigest === input.profileDigest &&
+      Array.isArray(args.arguments) && args.arguments.length === input.arguments.length &&
+      args.arguments.every((value, index) => value === input.arguments[index])
+  }
+  return hasExactKeys(args, ["mode", "command", "cwd", "timeoutMs", "shellProfileID", "resolvedEnvironment"]) &&
+    args.mode === "shell" && args.command === input.command && args.cwd === input.cwd &&
+    args.timeoutMs === input.timeoutMs
+}
+
 const StructuredOutput = Schema.Struct({
   exit: Schema.Number.pipe(Schema.optional),
   truncated: Schema.Boolean,
@@ -74,7 +94,8 @@ export const makeTool = (pty: TerminalRunner) => Tool.make({
         const lease = context.effect
         const locationRef = context.locationRef
         if (!call || call.callID !== context.toolCallID || call.capabilityID !== "terminal.run" ||
-            !lease || !lease.effectID || !/^blake3:[0-9a-f]{64}$/.test(lease.capabilityLeaseDigest) || !locationRef) {
+            !guardedArgumentsMatch(input, call.arguments) || !lease || !lease.effectID ||
+            !/^blake3:[0-9a-f]{64}$/.test(lease.capabilityLeaseDigest) || !locationRef) {
           return yield* Effect.fail(new ToolFailure({ message: "Terminal execution requires the exact Guard-admitted call, lease, and Location" }))
         }
         // Fail closed without the runner-captured authenticated principal: the

@@ -399,6 +399,12 @@ export async function readEditorProcessStatusV1(input: {
   if (status.executionID !== input.executionID) throw new TypeError("HostKernel status returned a different execution")
   if (status.hostProcessRef) {
     const processRef = validateHostProcessRef(status.hostProcessRef)
+    // The embedded ref must belong to the queried execution even when the
+    // caller supplies no expectedProcessRef: an optional pin can tighten the
+    // check, never remove this one.
+    if (processRef.executionID !== input.executionID) {
+      throw new TypeError("HostKernel status returned a process reference for a different execution")
+    }
     if (((scope.managedAttempt !== undefined || scope.directAttempt !== undefined) &&
         processRef.ownerEpoch !== (scope.managedAttempt?.ownerEpoch ?? scope.directAttempt!.ownerEpoch)) ||
         (input.expectedProcessRef && !sameProcess(processRef, validateHostProcessRef(input.expectedProcessRef)))) {

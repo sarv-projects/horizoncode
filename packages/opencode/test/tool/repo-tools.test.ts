@@ -257,6 +257,25 @@ const discoveryPage = Schema.decodeUnknownSync(RepoIntelligenceSchema.RepoDiscov
 const observedDiscoveryCalls: Array<{ mode: string; request: typeof RepoIntelligenceSchema.RepoDiscoveryRequestV1.Type }> = []
 const observedManifestReads: string[] = []
 const observedManifestRevisionKinds: string[] = []
+const discoveryRevisionDrift = Schema.decodeUnknownSync(Digest)(`blake3:${"8".repeat(64)}`)
+const defaultManifestText =
+  '{"packageManager":"bun@1.3.14","dependencies":{"react":"^19"},"scripts":{"test":"bun test","build":"bun run build"}}'
+/** ~64 KiB of manifest bytes, inside the per-document bound but enough to exhaust
+ * the aggregate discovery read budget after four exact-revision reads. */
+const budgetManifestText = `{"dependencies":{"pad":"${"a".repeat(64_000)}"}}`
+const commentedGradleManifestText = `// testImplementation("org.junit.jupiter:junit-jupiter:5.10.0")\n/* useJUnitPlatform() */\nplugins { id("java") }\n`
+const commentedMavenManifestText = `<!-- <dependency><artifactId>junit-jupiter</artifactId></dependency> -->\n<project><artifactId>sample</artifactId></project>\n`
+const mavenArtifactNamesWithoutJUnitDependencyText = `<project><parent><groupId>org.example</groupId><artifactId>junit-parent</artifactId></parent><artifactId>junit-helper</artifactId><dependencies><dependency><groupId>org.example</groupId><artifactId>spring-core</artifactId></dependency></dependencies></project>\n`
+const activeMavenManifestText = `<project><dependencies><dependency><groupId>org.junit.jupiter</groupId><artifactId>junit-jupiter</artifactId></dependency></dependencies></project>\n`
+const activeGradleManifestText = `dependencies { testImplementation("org.junit.jupiter:junit-jupiter:5.10.0") }\n`
+const commentedGemfileManifestText = `# gem "rspec", "~> 3.13"\nsource "https://rubygems.org"\n`
+const activeGemfileManifestText = `source "https://rubygems.org"\ngem "rspec", "~> 3.13"\n`
+const commentedPyprojectTestManifestText = `# [tool.pytest.ini_options]\n[project]\nname = "sample"\n`
+const activePyprojectTestManifestText = `[project]\nname = "sample"\n\n[tool.pytest.ini_options]\ntestpaths = ["tests"]\n`
+const commentedCsprojTestManifestText = `<Project><!-- <IsTestProject>true</IsTestProject> --><!-- <PackageReference Include="Microsoft.NET.Test.Sdk" /> --></Project>\n`
+const activeCsprojTestManifestText = `<Project><PropertyGroup><IsTestProject>true</IsTestProject></PropertyGroup></Project>\n`
+const commentedSwiftTestManifestText = `// .testTarget(name: "ExampleTests", dependencies: ["Example"])\n/* .testTarget(name: "ExampleBlockTests", dependencies: ["Example"]) */\nlet package = Package(name: "Example", targets: [])\n`
+const activeSwiftTestManifestText = `let package = Package(name: "Example", targets: [.testTarget(name: "ExampleTests", dependencies: ["Example"])])\n`
 /** >32 KiB of rendered tree lines, used to prove the `repo_tree` display cap. */
 const largeTreeEntries = Array.from({ length: 512 }, (_, index) => ({
   pathRef:
@@ -268,45 +287,149 @@ const largeTreeEntries = Array.from({ length: 512 }, (_, index) => ({
   sizeBytes: "128",
 }))
 const treeEntriesFor = (rootRef: string) => (rootRef === "large" ? largeTreeEntries : discoveryPage.entries)
+const manifestEntry = (pathRef: string, sizeBytes: string, extra: Partial<{ manifestKind: string; languageHint: string }> = {}) => ({
+  pathRef,
+  kind: "file" as const,
+  depth: 1,
+  sizeBytes,
+  manifestKind: (extra.manifestKind ?? "package_json") as "package_json",
+  ...(extra.languageHint ? { languageHint: extra.languageHint as "javascript" } : {}),
+})
+/** Root-keyed manifest fixtures for the rejection negatives; each scenario names a
+ * different malformed/oversized/revision-drifted discovery result. */
+const manifestEntriesFor = (root: string): ReadonlyArray<Record<string, unknown>> => {
+  switch (root) {
+    case "oversized":
+      return [manifestEntry("package.json", "70000")]
+    case "mismatch":
+      return [manifestEntry("package.json", "512", { manifestKind: "cargo_toml" })]
+    case "overlong":
+      return [manifestEntry("package.json", "4")]
+    case "drift":
+      return [manifestEntry("drift/package.json", "512")]
+    case "budget":
+      return Array.from({ length: 5 }, (_, index) => manifestEntry(`budget/pkg-${index}/package.json`, "65536"))
+    case "redact":
+      return [manifestEntry("redact/api_key=fixture-secret/package.json", "512", { languageHint: "javascript" })]
+    case "commented-test-config":
+      return [
+        manifestEntry("build.gradle", "512", { manifestKind: "gradle" }),
+        manifestEntry("pom.xml", "512", { manifestKind: "pom_xml" }),
+      ]
+    case "active-test-config":
+      return [
+        manifestEntry("active-test-config/build.gradle", "512", { manifestKind: "gradle" }),
+        manifestEntry("active-test-config/pom.xml", "512", { manifestKind: "pom_xml" }),
+      ]
+    case "maven-nondependency-junit":
+      return [manifestEntry("maven-nondependency-junit/pom.xml", "512", { manifestKind: "pom_xml" })]
+    case "commented-gemfile":
+    case "active-gemfile":
+      return [manifestEntry(`${root}/Gemfile`, "512", { manifestKind: "gemfile" })]
+    case "commented-pyproject-test":
+    case "active-pyproject-test":
+      return [manifestEntry(`${root}/pyproject.toml`, "512", { manifestKind: "pyproject_toml" })]
+    case "commented-csproj-test":
+    case "active-csproj-test":
+      return [manifestEntry(`${root}/sample.csproj`, "512", { manifestKind: "csproj" })]
+    case "commented-swift-test":
+    case "active-swift-test":
+      return [manifestEntry(`${root}/Package.swift`, "512", { manifestKind: "package_swift" })]
+    case "partial":
+      return [manifestEntry("package.json", "512", { languageHint: "javascript" })]
+    default:
+      return [manifestEntry("package.json", "512", { languageHint: "javascript" })]
+  }
+}
 const discoverySupervisorNode = LayerNode.make({
   service: SessionSupervisor.Service,
   layer: Layer.mock(SessionSupervisor.Service, {
     discoverRepo: (input) => Effect.sync(() => {
       observedDiscoveryCalls.push({ mode: input.request.mode, request: input.request })
-      const partial = input.request.mode === "manifests" && input.request.rootRef === "partial"
-      return Schema.decodeUnknownSync(RepoIntelligenceSchema.RepoDiscoveryPageV1)({
-        ...discoveryPage,
+      const root = input.request.rootRef
+      const envelope = {
+        schemaVersion: 1 as const,
+        messageType: "discovery" as const,
         requestId: input.request.requestId,
+        authority: {
+          ...discoveryPage.authority,
+          rootRef: root,
+          mode: input.request.mode,
+          maxEntries: input.request.maxEntries,
+          maxBytes: input.request.maxBytes,
+          maxDepth: input.request.maxDepth,
+        },
+      }
+      // A typed HostKernel unavailability is a real discovery result the tool must
+      // relay verbatim, including its reason.
+      if (root === "unavailable") {
+        return Schema.decodeUnknownSync(RepoIntelligenceSchema.RepoDiscoveryPageV1)({
+          ...envelope,
+          status: "UNAVAILABLE",
+          freshness: "unknown",
+          completeness: "unavailable",
+          unavailableReason: "read_unavailable",
+          coverage: { entries: 0, bytes: 0, depth: 0 },
+          entries: [],
+        })
+      }
+      const noncurrent = root === "noncurrent"
+      const partial = input.request.mode === "manifests" && root === "partial"
+      const entries = input.request.mode === "tree"
+        ? treeEntriesFor(root)
+        : manifestEntriesFor(root)
+      return Schema.decodeUnknownSync(RepoIntelligenceSchema.RepoDiscoveryPageV1)({
+        ...envelope,
         status: partial ? "PARTIAL" : "CURRENT",
+        freshness: noncurrent ? "unknown" : "current",
         completeness: partial ? "partial" : "complete",
         ...(partial ? { partialReason: "entry_limit" as const } : {}),
-        authority: { ...discoveryPage.authority, rootRef: input.request.rootRef, mode: input.request.mode,
-          maxEntries: input.request.maxEntries, maxBytes: input.request.maxBytes, maxDepth: input.request.maxDepth },
-        entries: input.request.mode === "tree" ? treeEntriesFor(input.request.rootRef) : [
-          {
-            pathRef: input.request.rootRef === "redact" ? "redact/api_key=fixture-secret/package.json" : "package.json",
-            kind: "file",
-            depth: input.request.rootRef === "redact" ? 2 : 1,
-            sizeBytes: "512",
-            manifestKind: "package_json",
-            languageHint: "javascript",
-          },
-        ],
+        entries,
         coverage: {
-          entries: input.request.mode === "tree" ? treeEntriesFor(input.request.rootRef).length : 1,
+          entries: entries.length,
           bytes: 128,
-          depth: input.request.rootRef === "redact" ? 2 : 1,
+          depth: root === "redact" ? 2 : 1,
         },
       })
     }),
     readRepoDocument: (input) => Effect.sync(() => {
       observedManifestReads.push(input.request.pathRef)
       observedManifestRevisionKinds.push(input.request.revisionKind)
+      const text = input.request.pathRef.startsWith("budget/")
+        ? budgetManifestText
+        : input.request.pathRef.startsWith("commented-gemfile/")
+          ? commentedGemfileManifestText
+        : input.request.pathRef.startsWith("active-gemfile/")
+          ? activeGemfileManifestText
+        : input.request.pathRef.startsWith("commented-pyproject-test/")
+          ? commentedPyprojectTestManifestText
+        : input.request.pathRef.startsWith("active-pyproject-test/")
+          ? activePyprojectTestManifestText
+        : input.request.pathRef.startsWith("commented-csproj-test/")
+          ? commentedCsprojTestManifestText
+        : input.request.pathRef.startsWith("active-csproj-test/")
+          ? activeCsprojTestManifestText
+        : input.request.pathRef.startsWith("commented-swift-test/")
+          ? commentedSwiftTestManifestText
+        : input.request.pathRef.startsWith("active-swift-test/")
+          ? activeSwiftTestManifestText
+        : input.request.pathRef.startsWith("active-test-config/")
+          ? input.request.pathRef.endsWith("pom.xml") ? activeMavenManifestText : activeGradleManifestText
+        : input.request.pathRef.startsWith("maven-nondependency-junit/")
+          ? mavenArtifactNamesWithoutJUnitDependencyText
+        : input.request.pathRef.endsWith("build.gradle")
+          ? commentedGradleManifestText
+          : input.request.pathRef.endsWith("pom.xml")
+            ? commentedMavenManifestText
+            : defaultManifestText
+      const observedWorkspaceRevision = input.request.pathRef.startsWith("drift/")
+        ? discoveryRevisionDrift
+        : input.request.expectedWorkspaceRevision
       return { schemaVersion: 1 as const, status: "OK" as const, pathRef: input.request.pathRef,
         revisionKind: input.request.revisionKind,
-        text: '{"packageManager":"bun@1.3.14","dependencies":{"react":"^19"},"scripts":{"test":"bun test","build":"bun run build"}}',
-        contentDigest: Schema.decodeUnknownSync(Digest)(RepoIntelligenceSchema.repoDocumentContentDigest('{"packageManager":"bun@1.3.14","dependencies":{"react":"^19"},"scripts":{"test":"bun test","build":"bun run build"}}')),
-        observedWorkspaceRevision: input.request.expectedWorkspaceRevision }
+        text,
+        contentDigest: Schema.decodeUnknownSync(Digest)(RepoIntelligenceSchema.repoDocumentContentDigest(text)),
+        observedWorkspaceRevision }
     }),
   }),
   deps: [],
@@ -466,6 +589,107 @@ describe("tool.repo-tools", () => {
     }),
   )
 
+  itDiscovery.instance("does not report commented-out Maven or Gradle test declarations", () =>
+    Effect.gen(function* () {
+      observedManifestReads.length = 0
+      const detectInfo = yield* RepoDetectTool
+      const detect = yield* detectInfo.init()
+      const result = yield* detect.execute({ path: "commented-test-config" }, ctx)
+      expect(result.metadata.status).toBe("CURRENT")
+      expect(result.output).not.toContain("test framework: JUnit declared")
+      const active = yield* detect.execute({ path: "active-test-config" }, ctx)
+      expect(active.output).toContain("test framework: JUnit declared")
+      expect(active.output).toContain("test framework: JUnit declared (from active-test-config/pom.xml)")
+      expect(observedManifestReads).toEqual([
+        "build.gradle",
+        "pom.xml",
+        "active-test-config/build.gradle",
+        "active-test-config/pom.xml",
+      ])
+    }),
+  )
+
+  itDiscovery.instance("does not infer JUnit from Maven project or parent artifact names", () =>
+    Effect.gen(function* () {
+      observedManifestReads.length = 0
+      const detectInfo = yield* RepoDetectTool
+      const detect = yield* detectInfo.init()
+      const result = yield* detect.execute({ path: "maven-nondependency-junit" }, ctx)
+      expect(result.metadata.status).toBe("CURRENT")
+      expect(result.output).not.toContain("test framework: JUnit declared")
+      expect(observedManifestReads).toEqual(["maven-nondependency-junit/pom.xml"])
+    }),
+  )
+
+  itDiscovery.instance("does not report a commented-out Gemfile test dependency", () =>
+    Effect.gen(function* () {
+      observedManifestReads.length = 0
+      const detectInfo = yield* RepoDetectTool
+      const detect = yield* detectInfo.init()
+      const commented = yield* detect.execute({ path: "commented-gemfile" }, ctx)
+      expect(commented.metadata.status).toBe("CURRENT")
+      expect(commented.output).not.toContain("test framework: declared")
+
+      const active = yield* detect.execute({ path: "active-gemfile" }, ctx)
+      expect(active.output).toContain("test framework: declared")
+      expect(observedManifestReads).toEqual(["commented-gemfile/Gemfile", "active-gemfile/Gemfile"])
+    }),
+  )
+
+  itDiscovery.instance("does not report a commented-out pyproject test table", () =>
+    Effect.gen(function* () {
+      observedManifestReads.length = 0
+      const detectInfo = yield* RepoDetectTool
+      const detect = yield* detectInfo.init()
+      const commented = yield* detect.execute({ path: "commented-pyproject-test" }, ctx)
+      expect(commented.metadata.status).toBe("CURRENT")
+      expect(commented.output).not.toContain("test configuration: declared")
+
+      const active = yield* detect.execute({ path: "active-pyproject-test" }, ctx)
+      expect(active.output).toContain("test configuration: declared")
+      expect(observedManifestReads).toEqual([
+        "commented-pyproject-test/pyproject.toml",
+        "active-pyproject-test/pyproject.toml",
+      ])
+    }),
+  )
+
+  itDiscovery.instance("does not report commented-out .NET test project declarations", () =>
+    Effect.gen(function* () {
+      observedManifestReads.length = 0
+      const detectInfo = yield* RepoDetectTool
+      const detect = yield* detectInfo.init()
+      const commented = yield* detect.execute({ path: "commented-csproj-test" }, ctx)
+      expect(commented.metadata.status).toBe("CURRENT")
+      expect(commented.output).not.toContain("test project: declared")
+
+      const active = yield* detect.execute({ path: "active-csproj-test" }, ctx)
+      expect(active.output).toContain("test project: declared")
+      expect(observedManifestReads).toEqual([
+        "commented-csproj-test/sample.csproj",
+        "active-csproj-test/sample.csproj",
+      ])
+    }),
+  )
+
+  itDiscovery.instance("does not report a commented-out SwiftPM test target", () =>
+    Effect.gen(function* () {
+      observedManifestReads.length = 0
+      const detectInfo = yield* RepoDetectTool
+      const detect = yield* detectInfo.init()
+      const commented = yield* detect.execute({ path: "commented-swift-test" }, ctx)
+      expect(commented.metadata.status).toBe("CURRENT")
+      expect(commented.output).not.toContain("test target: declared")
+
+      const active = yield* detect.execute({ path: "active-swift-test" }, ctx)
+      expect(active.output).toContain("test target: declared")
+      expect(observedManifestReads).toEqual([
+        "commented-swift-test/Package.swift",
+        "active-swift-test/Package.swift",
+      ])
+    }),
+  )
+
   itDiscovery.instance("uses current candidates from a partial manifest page without claiming complete detection", () =>
     Effect.gen(function* () {
       observedManifestReads.length = 0
@@ -477,6 +701,99 @@ describe("tool.repo-tools", () => {
       expect(result.output).toContain("coveragePartialReason: entry_limit")
       expect(result.output).toContain("framework: react")
       expect(observedManifestRevisionKinds).toEqual(["discovery_observation"])
+    }),
+  )
+
+  itDiscovery.instance("surfaces the typed unavailable reason of an authenticated discovery page", () =>
+    Effect.gen(function* () {
+      // HostKernel reports exactly why discovery failed (read_unavailable /
+      // deadline_exceeded / workspace_changed). Dropping the typed reason would
+      // leave the model unable to distinguish a permission problem from a deadline.
+      observedManifestReads.length = 0
+      const treeInfo = yield* RepoTreeTool
+      const tree = yield* treeInfo.init()
+      const treeResult = yield* tree.execute({ path: "unavailable", depth: 8 }, ctx)
+      expect(treeResult.metadata.status).toBe("UNAVAILABLE")
+      expect(treeResult.output).toContain("status: UNAVAILABLE")
+      expect(treeResult.output).toContain("unavailableReason: read_unavailable")
+      // An empty refusal must not claim an inventory that was never returned.
+      expect(treeResult.output).toContain("no inventory was returned")
+      expect(treeResult.output).not.toContain("authenticated read-only inventory")
+
+      const detectInfo = yield* RepoDetectTool
+      const detect = yield* detectInfo.init()
+      const detectResult = yield* detect.execute({ path: "unavailable" }, ctx)
+      expect(detectResult.metadata.status).toBe("UNAVAILABLE")
+      expect(detectResult.output).toContain("unavailableReason: read_unavailable")
+      expect(observedManifestReads).toHaveLength(0)
+    }),
+  )
+
+  itDiscovery.instance("rejects oversized or mislabelled manifest candidates before any document read", () =>
+    Effect.gen(function* () {
+      observedManifestReads.length = 0
+      observedManifestRevisionKinds.length = 0
+      const detectInfo = yield* RepoDetectTool
+      const detect = yield* detectInfo.init()
+
+      const oversized = yield* detect.execute({ path: "oversized" }, ctx)
+      expect(oversized.metadata.status).toBe("UNAVAILABLE")
+      expect(oversized.output).toContain("reason: manifest read budget exceeded")
+
+      const mislabelled = yield* detect.execute({ path: "mismatch" }, ctx)
+      expect(mislabelled.metadata.status).toBe("UNAVAILABLE")
+      expect(mislabelled.output).toContain("reason: discovery returned an invalid manifest candidate")
+
+      // Neither candidate may reach the authenticated document-read path.
+      expect(observedManifestReads).toHaveLength(0)
+      expect(observedManifestRevisionKinds).toHaveLength(0)
+    }),
+  )
+
+  itDiscovery.instance("rejects a manifest read that drifted from the discovery revision or its declared size", () =>
+    Effect.gen(function* () {
+      observedManifestReads.length = 0
+      const detectInfo = yield* RepoDetectTool
+      const detect = yield* detectInfo.init()
+
+      const drift = yield* detect.execute({ path: "drift" }, ctx)
+      expect(drift.metadata.status).toBe("UNAVAILABLE")
+      expect(drift.output).toContain("reason: manifest could not be read at the discovery revision")
+
+      const overlong = yield* detect.execute({ path: "overlong" }, ctx)
+      expect(overlong.metadata.status).toBe("UNAVAILABLE")
+      expect(overlong.output).toContain("reason: manifest read bytes exceeded the authenticated discovery budget")
+
+      // Both rejections are reported after at most one read and never as detection.
+      expect(observedManifestReads).toHaveLength(2)
+      expect(drift.output).not.toContain("detected: package system")
+    }),
+  )
+
+  itDiscovery.instance("stops at the bounded manifest read budget without reading the remaining candidates", () =>
+    Effect.gen(function* () {
+      observedManifestReads.length = 0
+      const detectInfo = yield* RepoDetectTool
+      const detect = yield* detectInfo.init()
+      const result = yield* detect.execute({ path: "budget" }, ctx)
+      expect(result.metadata.status).toBe("UNAVAILABLE")
+      expect(result.output).toContain("reason: manifest read budget exceeded")
+      // 5 candidates × 65536 declared bytes exceed the 256 KiB read budget after
+      // four exact-revision reads; the fifth candidate must never be read.
+      expect(observedManifestReads).toHaveLength(4)
+      expect(result.output).not.toContain("detected: package system")
+    }),
+  )
+
+  itDiscovery.instance("refuses manifest detection when the discovery page has no current source revision", () =>
+    Effect.gen(function* () {
+      observedManifestReads.length = 0
+      const detectInfo = yield* RepoDetectTool
+      const detect = yield* detectInfo.init()
+      const result = yield* detect.execute({ path: "noncurrent" }, ctx)
+      expect(result.metadata.status).toBe("UNAVAILABLE")
+      expect(result.output).toContain("reason: manifest discovery has no current source revision")
+      expect(observedManifestReads).toHaveLength(0)
     }),
   )
 

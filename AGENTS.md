@@ -1,5 +1,5 @@
 # AGENTS.md — HorizonCode implementation rules
-
+note:always must use subagents,max_subagent=12,min_subagent=6
 ## Primary execution directive — PHASE-PER-SUBAGENT, PARENT-ORCHESTRATED
 
 This is the controlling implementation policy. When the user asks to implement a whole phase, several phases, or V1, that complete requested scope is the delivery target. A "slice", commit, PR, passing unit test, or child handoff is not permission to stop. Any older "exact next slice", "first coding commit", "single vertical slice", or sequential Gate instruction in a status/plan document describes a starting dependency or minimum proof, not a ceiling on the work to execute. Do not reinterpret a phase request as a narrow incremental task. Architecture authority, security rules, real dependencies, and explicit user-defined V1 scope remain binding.

@@ -112,7 +112,12 @@ function text(value: unknown, max: number) {
 }
 
 function url(value: unknown) {
-  const raw = text(value, 2_048)
+  if (typeof value !== "string") return
+  const raw = value.trim()
+  // Never turn an overlong provider URL into a different, clickable URL by
+  // slicing it before parsing. Oversized source fields are reported through
+  // searchProviderResponseTruncated instead.
+  if (raw.length > 2_048) return
   try {
     const parsed = new URL(raw)
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return

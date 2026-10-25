@@ -767,3 +767,136 @@ test("cursor pressure forgets an ended cursor when its bounded seal is evicted",
   // could be accepted after the bounded ended-stream record was forgotten.
   expect(guard.accept({ ...first, sequence: 1, advance: 1 })).toBe("resnapshot_required")
 })
+
+test("refuses an envelope whose session identity differs from its owning event", () => {
+  const { queue, batches, resnapshots } = envelopedMux()
+  // Stream a/text-1 is live, so without the identity fence the substituted
+  // cursor below would be accepted as a normal delta of that stream.
+  queue.seedStream({ sessionID: "a", partID: "text-1", sourceGeneration: "generation-1", sequence: 0 })
+  queue.push({ sessionID: "a", partID: "legacy", text: "queued-a" })
+  queue.push({ sessionID: "b", partID: "legacy", text: "queued-b" })
+
+  // The event owner is session b while the cursor claims session a: a
+  // cross-session substitution must never be admitted to either stream.
+  const decision = queue.push({
+    sessionID: "b",
+    partID: "text-1",
+    text: "substituted",
+    cursor: { sessionID: "a", partID: "text-1", sourceGeneration: "generation-1", sequence: 0, advance: 1 },
+  })
+
+  expect(decision).toBe("resnapshot_required")
+  const delivered = batches.flat().map((event) => event.text)
+  expect([...delivered].sort()).toEqual(["queued-a", "queued-b"])
+  expect(delivered).not.toContain("substituted")
+  expect(resnapshots).toEqual([
+    { sessionID: "a", partID: "text-1", sourceGeneration: "generation-1", sequence: 0, advance: 1 },
+  ])
+  expect(queue.streamStats()).toMatchObject({ resnapshotsRequired: 1, duplicatesSuppressed: 0 })
+  queue.close()
+})
+
+test("commits only at the committed frontier and never past accepted progress", () => {
+  const guard = createStreamEnvelopeGuard()
+  const cursor = { sessionID: "a", partID: "text-1", sourceGeneration: "generation-1", sequence: 0 }
+  expect(guard.seed(cursor)).toBe(true)
+  expect(guard.accept({ ...cursor, advance: 3 })).toBe("apply")
+
+  // An out-of-order commit must not move the frontier, and a commit beyond the
+  // accepted progress must not invent ordinals that were never reserved.
+  expect(guard.commit({ ...cursor, sequence: 1, advance: 1 })).toBe(false)
+  expect(guard.commit({ ...cursor, advance: 5 })).toBe(false)
+
+  // The reservation is still exactly the range that was accepted.
+  expect(guard.accept({ ...cursor, advance: 3 })).toBe("duplicate")
+  expect(guard.accept({ ...cursor, sequence: 3, advance: 1 })).toBe("apply")
+
+  expect(guard.commit({ ...cursor, advance: 3 })).toBe(true)
+  expect(guard.commit({ ...cursor, sequence: 3, advance: 1 })).toBe(true)
+  expect(guard.accept({ ...cursor, sequence: 4, advance: 1 })).toBe("apply")
+  // A replayed ordinal below the committed frontier stays a suppressed duplicate.
+  expect(guard.accept({ ...cursor, advance: 1 })).toBe("duplicate")
+  expect(guard.commit({ ...cursor, sequence: 4, advance: 1 })).toBe(true)
+  expect(guard.accept({ ...cursor, sequence: 5, advance: 1 })).toBe("apply")
+  expect(guard.stats()).toEqual({ trackedCursors: 1 })
+})
+
+test("refuses to seal an unknown stream or one from another source generation", () => {
+  const guard = createStreamEnvelopeGuard()
+  const cursor = { sessionID: "a", partID: "text-1", sourceGeneration: "generation-1", sequence: 0 }
+  expect(guard.seed(cursor)).toBe(true)
+
+  expect(guard.seal({ sessionID: "z", partID: "text-9", sourceGeneration: "generation-1", sequence: 0 })).toBe(false)
+  expect(guard.seal({ ...cursor, sourceGeneration: "generation-2" })).toBe(false)
+
+  // Neither refusal may leave a seal behind: the live stream still applies.
+  expect(guard.accept({ ...cursor, advance: 1 })).toBe("apply")
+  expect(guard.commit({ ...cursor, advance: 1 })).toBe(true)
+
+  // Only the matching generation can seal it, and the seal then suppresses
+  // every later delta as a replay.
+  expect(guard.seal({ ...cursor, sequence: 1 })).toBe(true)
+  expect(guard.accept({ ...cursor, sequence: 1, advance: 1 })).toBe("duplicate")
+})
+
+test("bounds uncommitted envelope reservations and admits again after a commit", () => {
+  const guard = createStreamEnvelopeGuard()
+  const cursor = { sessionID: "a", partID: "text-1", sourceGeneration: "generation-1", sequence: 0 }
+  expect(guard.seed(cursor)).toBe(true)
+
+  let applied = 0
+  for (let sequence = 0; sequence < 4096; sequence++) {
+    if (guard.accept({ ...cursor, sequence, advance: 1 }) === "apply") applied++
+  }
+  expect(applied).toBe(4096)
+
+  // Without a commit the reservation set is at its bound: the next delta falls
+  // back to a canonical resnapshot instead of growing the set without limit.
+  expect(guard.accept({ ...cursor, sequence: 4096, advance: 1 })).toBe("resnapshot_required")
+
+  // Committing the frontier prunes the accepted ranges and admits again.
+  expect(guard.commit({ ...cursor, advance: 1 })).toBe(true)
+  expect(guard.accept({ ...cursor, sequence: 4096, advance: 1 })).toBe("apply")
+  expect(guard.stats()).toEqual({ trackedCursors: 1 })
+})
+
+test("fails closed when a guard may retain no stream cursors at all", () => {
+  const envelopes = createStreamEnvelopeGuard({ maxCursors: 0 })
+  const replay = createStreamReplayGuard({ maxCursors: 0 })
+  const cursor = { sessionID: "a", partID: "text-1", sourceGeneration: "generation-1", sequence: 0 }
+
+  expect(envelopes.seed(cursor)).toBe(false)
+  expect(envelopes.accept({ ...cursor, advance: 1 })).toBe("resnapshot_required")
+  expect(envelopes.commit({ ...cursor, advance: 1 })).toBe(false)
+  expect(envelopes.seal(cursor)).toBe(false)
+  expect(envelopes.forgetAll()).toBe(0)
+  expect(envelopes.stats()).toEqual({ trackedCursors: 0 })
+
+  expect(replay.seed(cursor)).toBe(false)
+  expect(replay.accept(cursor)).toBe("resnapshot_required")
+  expect(replay.stats()).toEqual({ trackedCursors: 0 })
+})
+
+test("a delta burst reports measured coalesced, duplicate and resnapshot counts (AN-009)", () => {
+  const { queue, batches, resnapshots } = envelopedMux({ maxQueuedEvents: 1024, maxQueuedBytes: 4096 })
+  queue.seedStream({ sessionID: "a", partID: "text-1", sourceGeneration: "generation-1", sequence: 0 })
+  for (let sequence = 0; sequence < 100; sequence++) {
+    expect(queue.push(envelope("a", "text-1", sequence, "x"))).toBe("apply")
+  }
+  expect(queue.push(envelope("a", "text-1", 40, "replayed"))).toBe("duplicate")
+  expect(queue.push(envelope("a", "text-1", 500, "gap"))).toBe("resnapshot_required")
+
+  const byMetric = new Map(queue.observations().map((observation) => [observation.metric, observation]))
+  expect(byMetric.get("ui.queue.coalesced_events")).toMatchObject({ value: 99, provenance: "measured" })
+  expect(byMetric.get("ui.queue.pending_events")).toMatchObject({ value: 0, provenance: "measured" })
+  expect(byMetric.get("ui.queue.pending_bytes")).toMatchObject({ value: 0, provenance: "measured" })
+  expect(byMetric.get("ui.stream.duplicates_suppressed")).toMatchObject({ value: 1, provenance: "measured" })
+  expect(byMetric.get("ui.stream.resnapshots_required")).toMatchObject({ value: 1, provenance: "measured" })
+
+  // The gap flushed the accepted burst before requesting the canonical rebuild,
+  // and the replayed delta never reached the consumer a second time.
+  expect(batches).toHaveLength(1)
+  expect(batches[0]?.[0]?.text).toBe("x".repeat(100))
+  expect(resnapshots).toHaveLength(1)
+  queue.close()
+})

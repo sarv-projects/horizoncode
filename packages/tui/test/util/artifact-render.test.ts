@@ -197,6 +197,35 @@ test("reports FULL only for a complete source whose previews all rendered", () =
   )
 })
 
+test("keeps an unclosed SVG fence as inert source with failed fidelity", () => {
+  const source = "```svg\n<svg viewBox=\"0 0 10 10\"></svg>"
+  const rendered = renderTuiArtifacts(source, { complete: true })
+  expect(rendered.content).toContain(source)
+  expect(rendered.diagnostics).toHaveLength(1)
+  expect(rendered.diagnostics[0]).toContain("SVG preview requires a complete fenced block")
+  expect(rendered.content).not.toContain("pending")
+  expect(rendered.fidelity).toBe("FAILED")
+})
+
+test("keeps an oversized numeric table as bounded source instead of charting it", () => {
+  // 104 data rows plus header/divider exceed the 100-row chart bound, so no
+  // chart may be allocated and the original table stays the only content.
+  const rows = Array.from({ length: 104 }, (_, index) => `| row${index} | ${index + 1} ms |`)
+  const table = ["| Build | Duration |", "| --- | ---: |", ...rows].join("\n")
+  const rendered = renderTuiArtifacts(table, { complete: true })
+  expect(rendered.content).toBe(table)
+  expect(rendered.diagnostics).toEqual([])
+  expect(rendered.content).not.toContain("█")
+  // Source complete, no derived preview attempted → FULL, not a failed render.
+  expect(rendered.fidelity).toBe("FULL")
+})
+
+test("charts a table at the row bound and stops one row later", () => {
+  const atBound = Array.from({ length: 100 }, (_, index) => `| row${index} | ${index + 1} ms |`)
+  const table = ["| Build | Duration |", "| --- | ---: |", ...atBound].join("\n")
+  expect(renderTuiArtifacts(table, { complete: true }).content).toContain("█")
+})
+
 test("reports artifact render fidelity with measured analytics provenance", () => {
   const renderer = createTuiArtifactRenderer({ workerFactory: () => undefined })
   try {

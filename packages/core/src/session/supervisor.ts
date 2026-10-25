@@ -241,6 +241,7 @@ export const OPTIONAL_HOST_FEATURES = [
   REPO_INTEL_CURSOR_LEASE_FEATURE,
   ARTIFACT_READ_CONTEXT_FEATURE,
   WEB_SEARCH_CASCADE_FEATURE,
+  "resource-policy.ingress-v1",
 ] as const
 const BASE_DIGEST = `blake3:${"0".repeat(64)}`
 /** Source contract only; keep editor protocol approvals unavailable until the

@@ -5,12 +5,15 @@ import { AbsolutePath } from "@opencode-ai/core/schema"
 import { WorkspaceV2 } from "@opencode-ai/core/workspace"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import {
+  decodeExecutionLaunchProfileApprovalV1,
   projectGlobalDapConfigProfileV1,
   projectGlobalLspConfigProfileV1,
   projectTrustedGlobalDapProfileV1,
   projectTrustedReplProfileV1,
   resolveExecutionLaunchProfileV1,
   resolveTrustedGlobalLaunchProfileV1,
+  validateExecutionLaunchProfileDefinitionV1,
+  type ExecutionLaunchProfileDefinitionV1,
 } from "../../src/lsp/launch-profile"
 import { createHostKernelLspProtocolAdapterV1 } from "../../src/lsp/protocol"
 import { createSupervisedLspClientV1 } from "../../src/lsp/supervised"
@@ -445,5 +448,311 @@ describe("trusted global execution launch profiles", () => {
     })).rejects.toThrow(/HostKernel did not return a Guard approval challenge/)
     expect(dispatched).toBe(true)
     expect(body?.profileDefinition).toMatchObject({ kind: "repl", executableSelector: "horizoncode:repl:python3" })
+  })
+})
+
+const digest = (digit: string) => `blake3:${digit.repeat(64)}`
+
+const DEFINITION: ExecutionLaunchProfileDefinitionV1 = {
+  schemaVersion: 1,
+  profileId: "lsp_typescript_test",
+  revision: "1",
+  kind: "lsp",
+  executableSelector: "horizoncode:lsp:typescript-language-server",
+  argv: ["--stdio"],
+  workingDirectoryPolicy: "registered_location_root",
+  environmentPolicy: "sanitized_host",
+}
+
+const SCOPE = { locationID: "loc_1", sessionID: "ses_1", userActionID: "action_1", callID: "call_1" }
+
+const challenge = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+  status: "needs_approval",
+  challengeID: "challenge_1",
+  effectID: "effect_1",
+  capabilityID: "language.start",
+  locationID: "loc_1",
+  sessionID: "ses_1",
+  profileRef: {
+    profileId: DEFINITION.profileId,
+    revision: DEFINITION.revision,
+    profileDigest: digest("a"),
+  },
+  inputDigest: digest("b"),
+  expiresAtUnixMs: Date.now() + 60_000,
+  normalizedTargets: [{ kind: "registered_location_root" }],
+  targets: [{ kind: "registered_location_root" }],
+  policySummary: "Start the configured TypeScript language server",
+  allowEnabled: true,
+  argumentSummary: { status: "available", text: "Start TypeScript language server" },
+  guaranteeAssessment: { status: "assessed", residual: [] },
+  noResponse: "deny_and_expire",
+  normalizedAction: "language.start",
+  origin: "user_action",
+  policyDigest: digest("c"),
+  policyID: "editor.launch",
+  requestedGuarantees: ["process_supervision"],
+  source: "authenticated.user_action",
+  ...over,
+})
+
+describe("launch profile definition validation", () => {
+  test("admits and freezes one exact trusted definition", () => {
+    const result = validateExecutionLaunchProfileDefinitionV1(DEFINITION)
+    expect(result).toEqual(DEFINITION)
+    expect(Object.isFrozen(result)).toBe(true)
+    expect(Object.isFrozen(result.argv)).toBe(true)
+  })
+
+  test("rejects unknown, missing and wrong-version definition fields", () => {
+    expect(() => validateExecutionLaunchProfileDefinitionV1({ ...DEFINITION, extra: 1 })).toThrow(
+      "unknown or missing fields",
+    )
+    const { argv: _argv, ...withoutArgv } = DEFINITION
+    expect(() => validateExecutionLaunchProfileDefinitionV1(withoutArgv)).toThrow("unknown or missing fields")
+    expect(() => validateExecutionLaunchProfileDefinitionV1({ ...DEFINITION, schemaVersion: 2 })).toThrow(
+      "unsupported launch profile schema version",
+    )
+    expect(() => validateExecutionLaunchProfileDefinitionV1(null)).toThrow("unknown or missing fields")
+    expect(() => validateExecutionLaunchProfileDefinitionV1([DEFINITION])).toThrow("unknown or missing fields")
+  })
+
+  test("rejects profile IDs and revisions outside their canonical bounds", () => {
+    for (const profileId of ["", "with space", "a".repeat(129), "sla/sh"]) {
+      expect(() => validateExecutionLaunchProfileDefinitionV1({ ...DEFINITION, profileId }), profileId).toThrow(
+        "launch profile ID is invalid",
+      )
+    }
+    for (const revision of ["0", "01", "1.0", "99999999999999999999"]) {
+      expect(() => validateExecutionLaunchProfileDefinitionV1({ ...DEFINITION, revision }), revision).toThrow(
+        "launch profile revision must be a positive canonical u64 decimal string",
+      )
+    }
+  })
+
+  test("rejects a kind outside the fixed process kinds", () => {
+    expect(() => validateExecutionLaunchProfileDefinitionV1({ ...DEFINITION, kind: "editor" })).toThrow(
+      "launch profile kind is invalid",
+    )
+  })
+
+  test("rejects an executable selector that is not approved for the profile kind", () => {
+    for (const [kind, executableSelector] of [
+      ["lsp", "horizoncode:repl:python3"],
+      ["lsp", "/usr/bin/rust-analyzer"],
+      ["dap", "horizoncode:lsp:typescript-language-server"],
+      ["repl", "horizoncode:dap:debugpy-adapter"],
+    ] as const) {
+      expect(
+        () => validateExecutionLaunchProfileDefinitionV1({ ...DEFINITION, kind, executableSelector }),
+        `${kind}/${executableSelector}`,
+      ).toThrow("launch profile executable selector is not approved for its process kind")
+    }
+    expect(() => validateExecutionLaunchProfileDefinitionV1({
+      ...DEFINITION,
+      executableSelector: "horizoncode:lsp:typescript-language-server\u0000",
+    })).toThrow("launch profile executable selector is invalid")
+    expect(() => validateExecutionLaunchProfileDefinitionV1({
+      ...DEFINITION,
+      executableSelector: "a".repeat(4097),
+    })).toThrow("launch profile executable selector is invalid")
+  })
+
+  test("rejects interpolation, control characters and oversized argv vectors", () => {
+    for (const arg of ["${HOME}", "{{cmd}}", "%PATH%", "line\nbreak", "nul\u0000byte"]) {
+      expect(() => validateExecutionLaunchProfileDefinitionV1({ ...DEFINITION, argv: [arg] }), arg).toThrow(
+        "launch profile argv[0] is invalid",
+      )
+    }
+    expect(() => validateExecutionLaunchProfileDefinitionV1({
+      ...DEFINITION,
+      argv: ["--stdio", 42 as never],
+    })).toThrow("launch profile argv[1] is invalid")
+    expect(() => validateExecutionLaunchProfileDefinitionV1({
+      ...DEFINITION,
+      argv: ["a".repeat(4097)],
+    })).toThrow("launch profile argv[0] is invalid")
+    expect(() => validateExecutionLaunchProfileDefinitionV1({
+      ...DEFINITION,
+      argv: "--stdio" as never,
+    })).toThrow("launch profile argv exceeds its bound")
+    expect(() => validateExecutionLaunchProfileDefinitionV1({
+      ...DEFINITION,
+      argv: Array.from({ length: 129 }, () => "--flag"),
+    })).toThrow("launch profile argv exceeds its bound")
+    expect(() => validateExecutionLaunchProfileDefinitionV1({
+      ...DEFINITION,
+      argv: Array.from({ length: 20 }, () => "x".repeat(4096)),
+    })).toThrow("launch profile argv exceeds its total byte bound")
+  })
+
+  test("rejects process policies outside the fixed HostKernel contract", () => {
+    expect(() => validateExecutionLaunchProfileDefinitionV1({
+      ...DEFINITION,
+      workingDirectoryPolicy: "argv_cwd",
+    })).toThrow("launch profile process policies are not supported")
+    expect(() => validateExecutionLaunchProfileDefinitionV1({
+      ...DEFINITION,
+      environmentPolicy: "inherit_host",
+    })).toThrow("launch profile process policies are not supported")
+  })
+
+  test("accepts a DAP policy only on a DAP profile with an exact boolean", () => {
+    expect(validateExecutionLaunchProfileDefinitionV1({
+      ...DEFINITION,
+      kind: "dap",
+      executableSelector: "horizoncode:dap:debugpy-adapter",
+      dapPolicy: { allowEvaluate: true },
+    }).dapPolicy).toEqual({ allowEvaluate: true })
+
+    expect(() => validateExecutionLaunchProfileDefinitionV1({
+      ...DEFINITION,
+      dapPolicy: { allowEvaluate: true },
+    })).toThrow("launch profile DAP policy is invalid or attached to a non-DAP profile")
+    expect(() => validateExecutionLaunchProfileDefinitionV1({
+      ...DEFINITION,
+      kind: "dap",
+      executableSelector: "horizoncode:dap:debugpy-adapter",
+      dapPolicy: { allowEvaluate: "yes" },
+    })).toThrow("launch profile DAP policy is invalid or attached to a non-DAP profile")
+    expect(() => validateExecutionLaunchProfileDefinitionV1({
+      ...DEFINITION,
+      kind: "dap",
+      executableSelector: "horizoncode:dap:debugpy-adapter",
+      dapPolicy: { allowEvaluate: true, always: false },
+    })).toThrow("launch profile DAP policy is invalid or attached to a non-DAP profile")
+  })
+})
+
+describe("launch profile approval consent projection", () => {
+  const decode = (response: unknown) => decodeExecutionLaunchProfileApprovalV1({
+    response,
+    definition: DEFINITION,
+    scope: SCOPE,
+  })
+
+  test("admits an exact HostKernel consent projection", async () => {
+    const approval = await decode(challenge())
+    expect(approval).toMatchObject({
+      status: "needs_approval",
+      capabilityID: "language.start",
+      locationID: "loc_1",
+      sessionID: "ses_1",
+    })
+    expect(approval.profileRef.profileId).toBe(DEFINITION.profileId)
+    expect(Object.isFrozen(approval)).toBe(true)
+    expect(Object.isFrozen(approval.approval)).toBe(true)
+    expect(approval.approval).toMatchObject({
+      origin: "user_action",
+      source: "authenticated.user_action",
+      noResponse: "deny_and_expire",
+      normalizedAction: "language.start",
+      allowEnabled: true,
+    })
+  })
+
+  test("rejects a response that is not a needs_approval challenge", async () => {
+    await expect(decode(challenge({ status: "auto_approved" }))).rejects.toThrow(
+      "HostKernel did not return a Guard approval challenge",
+    )
+    await expect(decode({ ...challenge(), smuggledField: 1 })).rejects.toThrow(
+      "HostKernel did not return a Guard approval challenge",
+    )
+    await expect(decode(undefined)).rejects.toThrow("HostKernel did not return a Guard approval challenge")
+  })
+
+  test("rejects a capability that does not match the profile kind", async () => {
+    await expect(decode(challenge({ capabilityID: "debug.start" }))).rejects.toThrow(
+      "HostKernel launch approval capability does not match the profile kind",
+    )
+    await expect(decode(challenge({ normalizedAction: "debug.start" }))).rejects.toThrow(
+      "HostKernel launch approval consent projection is invalid",
+    )
+  })
+
+  test("rejects a challenge bound to another Location or Session", async () => {
+    await expect(decode(challenge({ locationID: "loc_2" }))).rejects.toThrow(
+      "HostKernel launch approval is bound to a different Location or Session",
+    )
+    await expect(decode(challenge({ sessionID: "ses_2" }))).rejects.toThrow(
+      "HostKernel launch approval is bound to a different Location or Session",
+    )
+  })
+
+  test("rejects a profile reference that differs from the projected Core Config profile", async () => {
+    await expect(decode(challenge({
+      profileRef: { profileId: "lsp_other", revision: "1", profileDigest: digest("a") },
+    }))).rejects.toThrow("HostKernel launch profile reference differs from the projected Core Config revision")
+    await expect(decode(challenge({
+      profileRef: { profileId: DEFINITION.profileId, revision: "2", profileDigest: digest("a") },
+    }))).rejects.toThrow("HostKernel launch profile reference differs from the projected Core Config revision")
+    await expect(decode(challenge({
+      profileRef: { profileId: DEFINITION.profileId, revision: "1", profileDigest: "sha256:x" },
+    }))).rejects.toThrow("launch profile digest must be a BLAKE3 digest")
+  })
+
+  test("rejects expired, distant or non-canonical expiry and digest fields", async () => {
+    for (const [label, over] of [
+      ["already expired", { expiresAtUnixMs: Date.now() - 1 }],
+      ["too distant", { expiresAtUnixMs: Date.now() + 6 * 60 * 1000 }],
+      ["unsafe integer", { expiresAtUnixMs: 2 ** 53 }],
+      ["non-canonical input digest", { inputDigest: "sha256:" + "b".repeat(64) }],
+      ["non-canonical policy digest", { policyDigest: "blake3:" + "B".repeat(64) }],
+      ["foreign policy ID", { policyID: "Editor.Launch" }],
+    ] as const) {
+      await expect(decode(challenge(over)), label).rejects.toThrow(
+        "HostKernel launch approval consent projection is invalid",
+      )
+    }
+  })
+
+  test("rejects target, origin and summary fields that do not match the request", async () => {
+    for (const [label, over] of [
+      ["no targets", { normalizedTargets: [], targets: [] }],
+      ["target disagreement", { targets: [{ kind: "home_directory" }] }],
+      ["oversized targets", {
+        normalizedTargets: [{ kind: "registered_location_root", pad: "x".repeat(64 * 1024) }],
+        targets: [{ kind: "registered_location_root", pad: "x".repeat(64 * 1024) }],
+      }],
+      ["foreign origin", { origin: "automatic" }],
+      ["foreign source", { source: "anonymous.user_action" }],
+      ["permissive no-response", { noResponse: "auto_allow" }],
+      ["empty policy summary", { policySummary: "   " }],
+      ["no requested guarantees", { requestedGuarantees: [] }],
+      ["duplicate guarantees", { requestedGuarantees: ["process_supervision", "process_supervision"] }],
+      ["malformed guarantee id", { requestedGuarantees: ["Process Supervision"] }],
+      ["non-boolean allow", { allowEnabled: "true" }],
+      ["unstructured summary", { argumentSummary: "start it" }],
+    ] as const) {
+      await expect(decode(challenge(over)), label).rejects.toThrow(
+        "HostKernel launch approval consent projection is invalid",
+      )
+    }
+  })
+
+  test("rejects an allow flag inconsistent with its own assessment", async () => {
+    await expect(decode(challenge({
+      allowEnabled: true,
+      argumentSummary: { status: "unavailable", reason: "profile disabled" },
+      guaranteeAssessment: { status: "assessed", residual: [] },
+    }))).rejects.toThrow("HostKernel launch approval assessment is incomplete or inconsistent")
+
+    await expect(decode(challenge({
+      allowEnabled: true,
+      argumentSummary: { status: "available", text: "Start TypeScript language server" },
+      guaranteeAssessment: { status: "not_assessed", residual: null },
+    }))).rejects.toThrow("HostKernel launch approval assessment is incomplete or inconsistent")
+
+    await expect(decode(challenge({
+      guaranteeAssessment: { status: "assessed", residual: ["unknown_guarantee"] },
+    }))).rejects.toThrow("HostKernel launch approval assessment is incomplete or inconsistent")
+
+    // The same unavailable summary is admitted when it consistently denies.
+    const denied = await decode(challenge({
+      allowEnabled: false,
+      argumentSummary: { status: "unavailable", reason: "profile disabled" },
+      guaranteeAssessment: { status: "assessed", residual: [] },
+    }))
+    expect(denied.approval.allowEnabled).toBe(false)
   })
 })

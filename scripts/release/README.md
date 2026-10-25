@@ -72,6 +72,31 @@ work is not invented; the existing upstream statement is preserved. User
 decision 2026-10-25 resolves the first-party grant (DEC-V1-11), but does not
 clear incomplete third-party closure or authorize publication by itself.
 
+## Candidate discovery and first-party notice evidence
+
+Without an explicit `--artifact`, the distribution audit selects exactly one
+candidate: a `packages/opencode/dist/<target>/bin/horizoncode` product binary
+(whose `bin` directory is the artifact root, holding `release-manifest.json`,
+`LICENSE` and `NOTICE`), or a single package-root archive. More than one match
+is reported as ambiguous and requires `--artifact`; the audit never picks one
+silently. Output produced before the product-binary rename has no
+`bin/horizoncode`: it is classified `STALE_LEGACY`, reported as a blocker, and
+still inspected fail-closed so its missing legal files, inventory and
+provenance remain visible. Stale output is never merged into a candidate's file
+inventory, so leftovers cannot fail a future valid candidate — and cannot
+substitute for one.
+
+Declared license metadata comes only from the package's own manifest,
+including the deprecated npm `licenses` form; files on disk never fabricate a
+license field, and a package that declares nothing stays blocked whatever sits
+next to it. A first-party workspace package whose manifest declares exactly the
+decided root grant (currently `MIT`) is recorded under
+`first_party_workspace_grant_evidence` — covered by the tracked, vendor-distinct
+repository-root `LICENSE` and `NOTICE` — instead of counting as a missing direct
+file; every other package still needs its own direct LICENSE/NOTICE file.
+Workspace manifest licenses that deviate from the root grant are reported as
+facts for review, never cleared by this tool.
+
 The manually dispatched qualification workflow first runs `bash -n install`,
 the synthetic release-tooling failure-path suite, and both dry runs on a read-only
 checkout. It then builds an isolated candidate, runs the real local installer and

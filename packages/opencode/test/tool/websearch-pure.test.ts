@@ -83,6 +83,17 @@ test("provider parsing accepts only bounded http(s) result rows", () => {
   expect(parsed).toEqual([{ title: "Allowed", url: "https://example.com/docs", snippet: "snippet" }])
 })
 
+test("provider parsing rejects an overlong URL instead of linking its truncated prefix", () => {
+  const parsed = parseSearchProviderResponse("exa_keyless", {
+    results: [{ title: "Overlong", url: `https://example.com/${"a".repeat(2_048)}` }],
+  }, 1)
+
+  expect(parsed).toEqual([])
+  expect(searchProviderResponseTruncated("exa_keyless", {
+    results: [{ title: "Overlong", url: `https://example.com/${"a".repeat(2_048)}` }],
+  }, 1)).toBe(true)
+})
+
 test("provider parsing bounds MCP text wrappers and reports truncation", () => {
   const payload = {
     content: [{

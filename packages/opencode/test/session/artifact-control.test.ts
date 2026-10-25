@@ -249,4 +249,45 @@ describe("ArtifactControl", () => {
     )
     expect(result).toEqual({ artifactRef: ref, offset: "0", nextOffset: "2", complete: false, bytes })
   })
+
+  test("rejects a range selector outside the 768 KiB bound before dispatch", async () => {
+    let dispatched = false
+    for (const maxBytes of [768 * 1024 + 1, Number.MAX_SAFE_INTEGER, 0, -1, 1.5, Number.NaN]) {
+      const result = await Effect.runPromise(Effect.result(
+        readRange(scope, ref, "0", maxBytes).pipe(
+          Effect.provideService(TrustedPrincipalContext, { principal: testPrincipal }),
+          Effect.provide(supervisor({ range: {}, onRange: () => { dispatched = true } })),
+        ),
+      ))
+      expect(result._tag).toBe("Failure")
+      const failure = result._tag === "Failure" ? result.failure : undefined
+      expect(failure).toBeInstanceOf(ArtifactControlError)
+      if (failure instanceof ArtifactControlError) expect(failure.code).toBe("artifact_bounds")
+    }
+    // Every rejected selector must be denied before any HostKernel range read.
+    expect(dispatched).toBe(false)
+  })
+
+  test("rejects a non-canonical range offset before dispatch", async () => {
+    let dispatched = false
+    for (const offset of ["-1", "007", "0x2", "", "1.5"]) {
+      const result = await Effect.runPromise(Effect.result(
+        readRange(scope, ref, offset, 128).pipe(
+          Effect.provideService(TrustedPrincipalContext, { principal: testPrincipal }),
+          Effect.provide(supervisor({ range: {}, onRange: () => { dispatched = true } })),
+        ),
+      ))
+      expect(result._tag).toBe("Failure")
+      const failure = result._tag === "Failure" ? result.failure : undefined
+      expect(failure).toBeInstanceOf(ArtifactControlError)
+      if (failure instanceof ArtifactControlError) {
+        // A caller-supplied offset is a request-argument bound, not a HostKernel
+        // protocol violation: it must arrive on the typed error channel with a
+        // reason that names the request, and never as a thrown defect.
+        expect(failure.code).toBe("artifact_bounds")
+        expect(failure.reason).toBe("offset must be a canonical unsigned decimal")
+      }
+    }
+    expect(dispatched).toBe(false)
+  })
 })

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { formatAssistantHeader, formatMessage, formatPart, formatTranscript } from "../../src/util/transcript"
+import { redactToolText } from "../../src/util/collapse-tool-output"
 import type { AssistantMessage, Part, Provider, UserMessage } from "@opencode-ai/sdk/v2"
 
 const providers: Provider[] = [
@@ -62,6 +63,16 @@ const providers: Provider[] = [
 ]
 
 describe("transcript", () => {
+  test("redacts large ordinary text without quadratic URL scanning", () => {
+    const input = "x".repeat(16 * 1024)
+    const start = performance.now()
+    const result = redactToolText(input)
+
+    expect(result).toBe(input)
+    expect(performance.now() - start).toBeLessThan(300)
+    expect(redactToolText("https://user:password@example.test/path")).toBe("https://[REDACTED]@example.test/path")
+  })
+
   describe("formatAssistantHeader", () => {
     const baseMsg: AssistantMessage = {
       id: "msg_123",
@@ -188,7 +199,7 @@ describe("transcript", () => {
       const result = formatPart(part, options)
       expect(result).toContain("**Tool: bash**")
       expect(result).toContain("**Input:**")
-      expect(result).toContain('"command": "ls"')
+      expect(result).toContain('"command": "ls …"')
       expect(result).toContain("**Output:**")
       expect(result).toContain("file1.txt")
     })

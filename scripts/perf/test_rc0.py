@@ -5,10 +5,13 @@ import io
 import json
 import os
 import platform
+import re
+import stat
 import subprocess
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -195,6 +198,13 @@ class Rc0BaselineTests(unittest.TestCase):
 
 class Rc0AttestationCoverageTests(unittest.TestCase):
     @staticmethod
+    def outcomes():
+        return {
+            's1': {'expected': 'ok', 'actual': 'ok', 'status': 'passed'},
+            's2': {'expected': 'ok', 'actual': 'ok', 'status': 'passed'},
+        }
+
+    @staticmethod
     def forged_attestation(**overrides):
         """Build an adversarial in-process object; this is never owner evidence.
 
@@ -212,6 +222,9 @@ class Rc0AttestationCoverageTests(unittest.TestCase):
             'host_run_receipt_refs': ('receipt-1', 'receipt-2'),
             'independent_verifier_evidence_refs': ('evidence-1', 'evidence-2'),
             'owner_log_event_digests': ('blake3:' + 'a' * 64, 'blake3:' + 'b' * 64),
+            'session_outcome_digests': tuple(
+                (session, rc0.outcome_digest(outcome))
+                for session, outcome in Rc0AttestationCoverageTests.outcomes().items()),
             'source_signature_digest': '',
             'source_signature': '',
         }
@@ -262,7 +275,8 @@ class Rc0AttestationCoverageTests(unittest.TestCase):
              patch.dict(rc0.TRUSTED_ATTESTATION_VERIFIERS,
                         {'test-only': rc0.hmac_sha256_verifier(key)}):
             exact = self.signed(self.forged_attestation(source='test-only'), key)
-            self.assertTrue(rc0.attestation_covers(exact, selected, 'abc123'))
+            self.assertTrue(rc0.attestation_covers(
+                exact, selected, 'abc123', outcomes=self.outcomes()))
             cases = (
                 self.signed(self.forged_attestation(source='test-only', commit='stale-commit'), key),
                 self.signed(self.forged_attestation(
@@ -283,7 +297,24 @@ class Rc0AttestationCoverageTests(unittest.TestCase):
             )
             for candidate in cases:
                 with self.subTest(candidate=candidate.commit):
-                    self.assertFalse(rc0.attestation_covers(candidate, selected, 'abc123'))
+                    self.assertFalse(rc0.attestation_covers(
+                        candidate, selected, 'abc123', outcomes=self.outcomes()))
+
+    def test_attestation_must_bind_the_exact_caller_outcome_rows(self):
+        selected = [('s1', (101, 1)), ('s2', (102, 2))]
+        outcomes = self.outcomes()
+        key = b'\x5a' * 32
+        with (patch.object(rc0, 'TRUSTED_ATTESTATION_SOURCES', ('test-only',)),
+              patch.dict(rc0.TRUSTED_ATTESTATION_VERIFIERS,
+                         {'test-only': rc0.hmac_sha256_verifier(key)})):
+            attestation = self.signed(
+                self.forged_attestation(source='test-only'), key)
+            self.assertTrue(rc0.attestation_covers(
+                attestation, selected, 'abc123', outcomes=outcomes))
+            changed = dict(outcomes)
+            changed['s2'] = {'expected': 'wrong', 'actual': 'wrong', 'status': 'passed'}
+            self.assertFalse(rc0.attestation_covers(
+                attestation, selected, 'abc123', outcomes=changed))
 
     @staticmethod
     def signed(attestation, key):
@@ -333,6 +364,8 @@ class Rc0AttestationSignatureTests(unittest.TestCase):
             {'session_owner_identities': (('s1', 101, '1'), ('s2', 102, '3'))},
             {'run_ids': ('r1', 'r3'), 'session_run_ids': (('s1', 'r1'), ('s2', 'r3'))},
             {'owner_log_event_digests': ('blake3:' + 'c' * 64, 'blake3:' + 'b' * 64)},
+            {'session_outcome_digests': (('s1', 'sha256:' + 'f' * 64),
+                                         ('s2', 'sha256:' + 'b' * 64))},
             {'independent_verifier_evidence_refs': ('evidence-1', 'evidence-forged')},
         ):
             with self.subTest(overrides=sorted(overrides)):
@@ -397,6 +430,8 @@ class Rc0AttestationSignatureTests(unittest.TestCase):
                     host_run_receipt_refs=('receipt-1',),
                     independent_verifier_evidence_refs=('evidence-1',),
                     owner_log_event_digests=('blake3:' + 'a' * 64,),
+                    session_outcome_digests=(('s1', rc0.outcome_digest(
+                        {'expected': 'ok', 'actual': 'ok', 'status': 'passed'})),),
                     source_signature_digest='sha256:' + 'c' * 64,
                 )
             with self.assertRaisesRegex(ValueError, 'signature digest does not cover'):
@@ -408,6 +443,8 @@ class Rc0AttestationSignatureTests(unittest.TestCase):
                     host_run_receipt_refs=('receipt-1',),
                     independent_verifier_evidence_refs=('evidence-1',),
                     owner_log_event_digests=('blake3:' + 'a' * 64,),
+                    session_outcome_digests=(('s1', rc0.outcome_digest(
+                        {'expected': 'ok', 'actual': 'ok', 'status': 'passed'})),),
                     source_signature_digest='sha256:' + 'c' * 64,
                     source_signature='hmac-sha256:' + 'd' * 64,
                 )
@@ -435,11 +472,33 @@ class Rc0AttestationKeyLoaderTests(unittest.TestCase):
                                      hmac.new(self.KEY, b'payload',
                                               rc0.hashlib.sha256).hexdigest()))
 
+    def test_key_owned_by_another_effective_user_is_rejected(self):
+        with temporary_directory() as directory:
+            path = self.key_file(directory)
+            real_fstat = os.fstat
+
+            def foreign_owner(fd):
+                info = real_fstat(fd)
+                if stat.S_ISREG(info.st_mode):
+                    return SimpleNamespace(
+                        st_mode=info.st_mode, st_nlink=info.st_nlink,
+                        st_dev=info.st_dev, st_size=info.st_size,
+                        st_uid=os.geteuid() + 1,
+                    )
+                return info
+
+            with patch.object(rc0.os, 'fstat', side_effect=foreign_owner):
+                with self.assertRaisesRegex(ValueError, 'owned by the effective user'):
+                    rc0.load_attestation_key(path)
+
     def test_insecure_or_malformed_key_material_is_rejected(self):
         with temporary_directory() as directory:
             permissive = self.key_file(Path(directory) / 'permissive', mode=0o644)
             with self.assertRaisesRegex(ValueError, 'private single-link'):
                 rc0.load_attestation_key(permissive)
+            executable = self.key_file(Path(directory) / 'executable', mode=0o700)
+            with self.assertRaisesRegex(ValueError, 'private non-executable'):
+                rc0.load_attestation_key(executable)
             short = self.key_file(Path(directory) / 'short', material=b'\x01' * 16)
             with self.assertRaisesRegex(ValueError, 'size'):
                 rc0.load_attestation_key(short)
@@ -455,16 +514,80 @@ class Rc0AttestationKeyLoaderTests(unittest.TestCase):
 
     def test_symlinked_or_external_key_paths_are_rejected(self):
         with temporary_directory() as directory:
-            target = self.key_file(Path(directory) / 'target')
+            directory = Path(directory)
+            target = self.key_file(directory / 'target')
             link = Path(directory) / 'link.key'
             link.symlink_to(target)
             with self.assertRaises(ValueError):
                 rc0.load_attestation_key(link)
+
+            # A repository-relative path is not sufficient containment when an
+            # intermediate directory can redirect resolution. Keep both sides
+            # inside this checkout so the test never touches host paths.
+            redirected = directory / 'redirected'
+            redirected.symlink_to(target.parent, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, 'without following directory links'):
+                rc0.load_attestation_key(redirected / target.name)
             with self.assertRaisesRegex(ValueError, 'inside the repository'):
                 rc0.load_attestation_key(
                     Path(__file__).resolve().parents[3] / 'outside.key')
             with self.assertRaisesRegex(ValueError, 'parent traversal'):
                 rc0.load_attestation_key('scripts/../../scripts/perf/attestation.key')
+
+    def test_key_loader_closes_descriptors_at_every_open_stat_and_read_failure(self):
+        with temporary_directory() as directory:
+            path = self.key_file(Path(directory) / 'nested')
+            root = Path(rc0.__file__).resolve().parents[2]
+            relative = path.absolute().relative_to(root)
+            final_component_call = len(relative.parts) + 1
+            real_open, real_close, real_fstat, real_read = (
+                os.open, os.close, os.fstat, os.read)
+
+            failures = [('open', call) for call in (1, 2, final_component_call)]
+            failures += [('fstat', call) for call in (1, 2, final_component_call)]
+            failures.append(('read', 1))
+            for failure, failing_call in failures:
+                with self.subTest(failure=failure, call=failing_call):
+                    opened, closed = [], []
+                    open_calls = stat_calls = read_calls = 0
+
+                    def tracked_open(*args, **kwargs):
+                        nonlocal open_calls
+                        open_calls += 1
+                        if failure == 'open' and open_calls == failing_call:
+                            raise OSError('injected open failure')
+                        fd = real_open(*args, **kwargs)
+                        opened.append(fd)
+                        return fd
+
+                    def tracked_close(fd):
+                        closed.append(fd)
+                        return real_close(fd)
+
+                    def tracked_fstat(fd):
+                        nonlocal stat_calls
+                        stat_calls += 1
+                        if failure == 'fstat' and stat_calls == failing_call:
+                            raise OSError('injected fstat failure')
+                        return real_fstat(fd)
+
+                    def tracked_read(fd, count):
+                        nonlocal read_calls
+                        read_calls += 1
+                        if failure == 'read' and read_calls == failing_call:
+                            raise OSError('injected read failure')
+                        return real_read(fd, count)
+
+                    with patch.object(rc0.os, 'open', new=tracked_open), \
+                            patch.object(rc0.os, 'close', new=tracked_close), \
+                            patch.object(rc0.os, 'fstat', new=tracked_fstat), \
+                            patch.object(rc0.os, 'read', new=tracked_read), \
+                            patch.object(rc0.os, 'supports_dir_fd',
+                                         os.supports_dir_fd | {tracked_open}):
+                        with self.assertRaises((OSError, ValueError)):
+                            rc0.load_attestation_key(path)
+                    self.assertCountEqual(opened, closed,
+                                          f'descriptors leaked during {failure} failure')
 
     def test_hmac_verifier_refuses_wrong_algorithm_and_key_length(self):
         with self.assertRaisesRegex(ValueError, 'exactly 32 bytes'):
@@ -604,6 +727,19 @@ class Rc0InputBoundTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'duplicate JSON property'):
                 rc0.load_outcomes(path)
 
+    def test_outcomes_reject_nonstandard_json_constants(self):
+        with temporary_directory() as directory:
+            path = Path(directory) / 'outcomes.json'
+            for constant in ('NaN', 'Infinity', '-Infinity'):
+                with self.subTest(constant=constant):
+                    path.write_text(
+                        '{"s":{"expected":"ok","actual":"ok","status":"passed",'
+                        f'"extra":{constant}' + '}}',
+                        encoding='utf-8',
+                    )
+                    with self.assertRaisesRegex(ValueError, 'invalid JSON constant'):
+                        rc0.load_outcomes(path)
+
     def test_outcomes_enforce_byte_and_session_count_bounds(self):
         with temporary_directory() as directory:
             path = Path(directory) / 'outcomes.json'
@@ -637,6 +773,43 @@ class Rc0InputBoundTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, 'inside the repository'):
             rc0.load_outcomes(Path('/outside-agentx/outcomes.json'))
+
+    def test_repository_input_closes_descriptors_when_directory_stat_fails(self):
+        with temporary_directory() as directory:
+            nested = Path(directory) / 'nested'
+            nested.mkdir()
+            path = nested / 'input.json'
+            path.write_text('{}', encoding='utf-8')
+            real_open, real_close, real_fstat = os.open, os.close, os.fstat
+
+            for failing_stat_call in (1, 2):
+                opened, closed = [], []
+                stat_calls = 0
+
+                def tracked_open(*args, **kwargs):
+                    fd = real_open(*args, **kwargs)
+                    opened.append(fd)
+                    return fd
+
+                def tracked_close(fd):
+                    closed.append(fd)
+                    return real_close(fd)
+
+                def failing_fstat(fd):
+                    nonlocal stat_calls
+                    stat_calls += 1
+                    if stat_calls == failing_stat_call:
+                        raise OSError('injected fstat failure')
+                    return real_fstat(fd)
+
+                with patch.object(rc0.os, 'open', new=tracked_open), \
+                        patch.object(rc0.os, 'close', side_effect=tracked_close), \
+                        patch.object(rc0.os, 'fstat', side_effect=failing_fstat), \
+                        patch.object(rc0.os, 'supports_dir_fd', os.supports_dir_fd | {tracked_open}):
+                    with self.assertRaises(OSError):
+                        rc0.read_repository_input(path, 1024, 'fixture')
+                self.assertCountEqual(opened, closed,
+                                      f'file descriptors leaked on fstat call {failing_stat_call}')
 
 
 class Rc0DeterministicCohortTests(unittest.TestCase):
@@ -1227,6 +1400,18 @@ class Rc0OwnerSampleAggregationTests(unittest.TestCase):
             rc0._validate_owner_metric(
                 {'quality': 'MEASURED', 'value': '٠'}, 'metric')
 
+    def test_owner_metrics_reject_counters_beyond_the_u64_wire_range(self):
+        # Rust projects every MEASURED counter as u64; a larger decimal is not
+        # representable on the wire and must be rejected at ingestion, not
+        # silently carried into an aggregate.
+        rc0._validate_owner_metric(
+            {'quality': 'MEASURED', 'value': str(2 ** 64 - 1)}, 'metric')
+        for value in (str(2 ** 64), str(2 ** 64 + 1), '9' * 40, '1' + '0' * 40):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, 'u64'):
+                    rc0._validate_owner_metric(
+                        {'quality': 'MEASURED', 'value': value}, 'metric')
+
     def test_owner_snapshot_ingest_rejects_duplicate_json_properties(self):
         with temporary_directory() as directory:
             path = Path(directory) / 'owner.json'
@@ -1351,6 +1536,148 @@ class Rc0OwnerSampleAggregationTests(unittest.TestCase):
         self.assertEqual(ingested['workers'][0]['metrics']['cpuNs'], unknown)
         self.assertEqual(len(ingested['resource_limits']), 4)
         self.assertEqual(ingested['resource_limits_provenance'], 'UNVERIFIED_CALLER_SUPPLIED')
+
+    def _owner_snapshot_with_worker(self, **worker_overrides):
+        """One complete schema-3 owner snapshot with a single worker row."""
+        measured = {'quality': 'MEASURED', 'value': '1'}
+        metrics = {name: dict(measured) for name in (
+            'pssBytes', 'rssBytes', 'cpuNs', 'threadCount', 'fdCount', 'privateBytes')}
+        worker = {
+            'workerExecutionId': 'worker-a', 'taskId': 'task-a', 'attemptId': 'attempt-a',
+            'sourceRevision': 'blake3:' + 'b' * 64,
+            'reservationState': 'QUARANTINED', 'quality': 'MEASURED',
+            'metrics': metrics, 'processes': [],
+        }
+        worker.update(worker_overrides)
+        return {
+            'schemaVersion': 3,
+            'producer': 'horizoncode.worker-owner.resource-sampler',
+            'owner': {
+                'principalRef': 'server_auth:test', 'workspaceBinding': 'workspace-a',
+                'sessionId': 'session-a', 'runId': 'run-a', 'taskId': 'task-a',
+                'attemptId': 'attempt-a', 'ownerEpoch': '1',
+            },
+            'ownerLog': {
+                'ownerId': 'worker-pool-a', 'sequence': '4',
+                'eventDigest': 'blake3:' + 'a' * 64, 'workerPoolRevision': '3',
+            },
+            'sampledAtMs': '10', 'sampleSequence': '2',
+            'sessionProcessOwner': {
+                'status': 'NOT_PROVIDED', 'processIdentity': None, 'metrics': None},
+            'workers': [worker],
+            'aggregate': metrics,
+            'productAttestation': {
+                'status': 'NOT_ATTESTED', 'hostRunReceiptRef': None,
+                'independentVerifierEvidenceRef': None, 'sourceCommit': None,
+                'required': ['hostRunReceiptRef', 'independentVerifierEvidenceRef',
+                             'sourceCommit'],
+            },
+        }
+
+    def _load_owner_snapshot(self, snapshot):
+        with temporary_directory() as directory:
+            path = Path(directory) / 'owner.json'
+            path.write_text(json.dumps(snapshot), encoding='utf-8')
+            return rc0.load_owner_snapshot(path)
+
+    def test_owner_snapshot_rejects_non_wire_reservation_states(self):
+        # §11.20: ACTIVE/UNKNOWN and any alias/case variant are not reservation
+        # statuses, so none of them may be ingested as a worker's reservation.
+        for state in ('ACTIVE', 'UNKNOWN', 'PENDING', 'CANCELLED',
+                      'proposed', 'reserved', 'Reserved', 'QUARANTINED '):
+            with self.subTest(reservationState=state):
+                snapshot = self._owner_snapshot_with_worker(reservationState=state)
+                with self.assertRaisesRegex(ValueError, 'capacity-holding'):
+                    self._load_owner_snapshot(snapshot)
+
+    def test_owner_snapshot_rejects_unlaunched_and_terminal_reservation_states(self):
+        # Only capacity-holding, still-uncertain rows (CLAIMED/RELEASE_PENDING/
+        # QUARANTINED) may appear as measured worker rows. PROPOSED reserves
+        # nothing; RESERVED is pre-launch; RELEASED/EXPIRED are terminal — none
+        # of them may be presented as measured worker capacity.
+        for state in ('PROPOSED', 'RESERVED', 'RELEASED', 'EXPIRED'):
+            with self.subTest(reservationState=state):
+                snapshot = self._owner_snapshot_with_worker(reservationState=state)
+                with self.assertRaisesRegex(ValueError, 'capacity-holding'):
+                    self._load_owner_snapshot(snapshot)
+
+    def test_owner_snapshot_rejects_counters_outside_the_u64_wire_range(self):
+        snapshot = self._owner_snapshot_with_worker()
+        snapshot['workers'][0]['metrics']['pssBytes'] = {
+            'quality': 'MEASURED', 'value': str(2 ** 64)}
+        with self.assertRaisesRegex(ValueError, 'u64'):
+            self._load_owner_snapshot(snapshot)
+
+    def test_owner_snapshot_rejects_identity_and_watermark_values_outside_u64(self):
+        max_u64 = str(rc0.MAX_U64)
+        too_large = str(rc0.MAX_U64 + 1)
+        valid = self._owner_snapshot_with_worker()
+        valid['owner']['ownerEpoch'] = max_u64
+        valid['ownerLog']['sequence'] = max_u64
+        valid['ownerLog']['workerPoolRevision'] = max_u64
+        valid['sampleSequence'] = max_u64
+        valid['sampledAtMs'] = max_u64
+        valid['workers'][0]['processes'] = [{'pid': 4242, 'startIdentity': max_u64}]
+        self.assertEqual(self._load_owner_snapshot(valid)['sample_sequence'], max_u64)
+
+        cases = (
+            ('owner epoch', lambda row: row['owner'].__setitem__('ownerEpoch', too_large)),
+            ('OwnerLog sequence', lambda row: row['ownerLog'].__setitem__('sequence', too_large)),
+            ('worker pool revision', lambda row: row['ownerLog'].__setitem__('workerPoolRevision', too_large)),
+            ('sample sequence', lambda row: row.__setitem__('sampleSequence', too_large)),
+            ('sample timestamp', lambda row: row.__setitem__('sampledAtMs', too_large)),
+            ('worker process generation', lambda row: row['workers'][0]['processes'][0].__setitem__(
+                'startIdentity', too_large)),
+        )
+        for label, corrupt in cases:
+            with self.subTest(field=label):
+                snapshot = self._owner_snapshot_with_worker()
+                snapshot['workers'][0]['processes'] = [{'pid': 4242, 'startIdentity': '8'}]
+                corrupt(snapshot)
+                with self.assertRaisesRegex(ValueError, 'u64'):
+                    self._load_owner_snapshot(snapshot)
+
+        core = self._owner_snapshot_with_worker()
+        core['sessionProcessOwner'] = {
+            'status': 'MEASURED',
+            'processIdentity': {
+                'pid': 4242, 'startIdentity': '8', 'ownerEpoch': '1',
+                'processIncarnation': 'inc-1',
+                'executableIdentityDigest': 'blake3:' + 'c' * 64,
+            },
+            'metrics': {name: {'quality': 'MEASURED', 'value': '1'} for name in (
+                'pssBytes', 'rssBytes', 'cpuNs', 'threadCount', 'fdCount', 'privateBytes')},
+        }
+        for field in ('startIdentity', 'ownerEpoch'):
+            with self.subTest(core_process_field=field):
+                corrupted = json.loads(json.dumps(core))
+                corrupted['sessionProcessOwner']['processIdentity'][field] = too_large
+                with self.assertRaisesRegex(ValueError, 'Core process owner identity is invalid'):
+                    self._load_owner_snapshot(corrupted)
+
+        snapshot = self._owner_snapshot_with_worker()
+        snapshot['aggregate']['rssBytes'] = {
+            'quality': 'MEASURED', 'value': str(2 ** 64 + 7)}
+        with self.assertRaisesRegex(ValueError, 'u64'):
+            self._load_owner_snapshot(snapshot)
+
+        snapshot = self._owner_snapshot_with_worker()
+        snapshot['sessionProcessOwner'] = {
+            'status': 'MEASURED',
+            'processIdentity': {
+                'pid': 4242, 'startIdentity': '8', 'ownerEpoch': '1',
+                'processIncarnation': 'inc-1',
+                'executableIdentityDigest': 'blake3:' + 'c' * 64,
+            },
+            'metrics': {
+                name: ({'quality': 'MEASURED', 'value': str(2 ** 64)}
+                       if name == 'pssBytes'
+                       else {'quality': 'MEASURED', 'value': '1'})
+                for name in ('pssBytes', 'rssBytes', 'cpuNs', 'threadCount',
+                             'fdCount', 'privateBytes')},
+        }
+        with self.assertRaisesRegex(ValueError, 'u64'):
+            self._load_owner_snapshot(snapshot)
 
     def test_owner_snapshot_never_accepts_monitoring_as_os_enforcement(self):
         # Start from the complete schema-2 shape used above and alter only the
@@ -1718,6 +2045,576 @@ class Rc0CacheEvidenceTests(unittest.TestCase):
             path.write_text(raw, encoding='utf-8')
             with self.assertRaisesRegex(ValueError, 'duplicate'):
                 rc0.load_cache_evidence(path)
+
+
+# --- JC-RES-012.I / §32.37 offline source-conformance negatives ----------
+#
+# These live inline because .gitignore whitelists only test_rc0.py under
+# scripts/perf/. Rust (kernel/src/resource_budget.rs) remains the canonical
+# authority for reservation transitions and capacity math, and
+# kernel/tests/fixtures/reservation-wire-v1.json is the frozen cross-language
+# vocabulary fixture. This is a *source-conformance* harness: it pins the
+# fixture, the Rust source tables and the TypeScript consumer to the single
+# §11.20/§18.18 vocabulary and transition relation, so that reintroducing
+# ACTIVE/UNKNOWN reservation statuses, SOFT/HARD pressure aliases, a
+# forbidden transition or an ungated release is caught without compiling the
+# kernel. It never executes Rust and never grants admission: a green run is
+# NOT JC-RES-012.H/J runtime, authenticated-ingress (K) or Doctor (L)
+# verification, which remain the Rust-suite and P1/P2/P6 acceptance rows.
+
+REPOSITORY = Path(__file__).resolve().parents[2]
+FIXTURE_PATH = (REPOSITORY / "kernel" / "tests" / "fixtures"
+                / "reservation-wire-v1.json")
+RUST_PATH = REPOSITORY / "kernel" / "src" / "resource_budget.rs"
+TYPESCRIPT_PATH = (REPOSITORY / "packages" / "core" / "src" / "v1"
+                   / "resource-reservation-wire.ts")
+
+# §11.20 / §18.18 exact vocabularies (architecture authority).
+RESERVATION_STATES = (
+    "PROPOSED", "RESERVED", "CLAIMED", "RELEASE_PENDING",
+    "QUARANTINED", "RELEASED", "EXPIRED",
+)
+PRESSURE_STATES = ("NORMAL", "SOFT_PRESSURE", "HARD_PRESSURE", "RECOVERING")
+BUDGET_DIMENSIONS = (
+    "MEMORY_BYTES", "CPU_MILLICORES", "PROCESSES", "FILE_DESCRIPTORS",
+    "DISK_BYTES", "TOOL_OUTPUT_BYTES", "ACTIVE_WORKERS", "TOKENS",
+    "PROVIDER_COST_MICROS",
+)
+
+# Reservation statuses that are deliberately *not* wire values.
+NOT_RESERVATION_STATES = ("ACTIVE", "UNKNOWN", "PENDING", "CANCELLED")
+# Pressure aliases that are deliberately *not* wire values.
+NOT_PRESSURE_STATES = ("SOFT", "HARD")
+
+# §11.20 accepted transitions plus the proof flags the owner must hold.
+# (from-state, to-state) -> required ReservationProof flags.
+EXPECTED_TRANSITIONS = {
+    ("PROPOSED", "RESERVED"): frozenset(),
+    ("RESERVED", "CLAIMED"): frozenset(),
+    ("RESERVED", "EXPIRED"): frozenset({"no_launch_or_dispatch"}),
+    ("CLAIMED", "RELEASE_PENDING"): frozenset(),
+    ("CLAIMED", "QUARANTINED"): frozenset(),
+    ("RELEASE_PENDING", "QUARANTINED"): frozenset(),
+    ("QUARANTINED", "RELEASE_PENDING"): frozenset({"reconciliation_complete"}),
+    ("RELEASE_PENDING", "RELEASED"): frozenset(
+        {"owned_process_exited", "effects_settled"}),
+}
+
+# The §11.20 forbidden set named by the architecture, asserted explicitly so a
+# drift failure reads as a security regression rather than a set mismatch.
+CRITICAL_FORBIDDEN_TRANSITIONS = (
+    ("RELEASED", "CLAIMED"),          # terminal states are one-way
+    ("RELEASED", "RELEASE_PENDING"),
+    ("RELEASED", "RESERVED"),
+    ("EXPIRED", "CLAIMED"),           # claiming EXPIRED after a launch
+    ("EXPIRED", "RESERVED"),
+    ("RESERVED", "QUARANTINED"),      # unlaunched may only expire (with proof)
+    ("RESERVED", "RELEASE_PENDING"),
+    ("RESERVED", "RELEASED"),
+    ("CLAIMED", "RELEASED"),          # release only via RELEASE_PENDING
+    ("CLAIMED", "RESERVED"),
+    ("QUARANTINED", "RELEASED"),      # release never bypasses quarantine
+    ("QUARANTINED", "EXPIRED"),
+    ("PROPOSED", "CLAIMED"),          # PROPOSED reserves nothing
+    ("PROPOSED", "RELEASED"),
+    ("RELEASE_PENDING", "EXPIRED"),
+    ("RELEASE_PENDING", "RESERVED"),
+)
+
+PROOF_FLAGS = (
+    "no_launch_or_dispatch",
+    "owned_process_exited",
+    "effects_settled",
+    "reconciliation_complete",
+)
+
+
+def _load_fixture():
+    return json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+
+
+def _canonical(fixture, section):
+    names = fixture[section]["canonical"]
+    if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
+        raise AssertionError(f"fixture section {section} is malformed")
+    return tuple(names)
+
+
+def _impl_blocks(source, name):
+    """Return every ``impl <name> { ... }`` body using brace counting."""
+    blocks = []
+    for match in re.finditer(rf"^impl\s+{name}\s+{{", source, re.MULTILINE):
+        start = match.end() - 1
+        depth = 0
+        for index in range(start, len(source)):
+            char = source[index]
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    blocks.append(source[match.start():index + 1])
+                    break
+        else:
+            raise AssertionError(f"unterminated impl block for {name}")
+    return blocks
+
+
+def _fn_block(source, signature):
+    """Return the full text of ``<signature> { ... }`` using brace counting."""
+    start = source.find(signature)
+    if start < 0:
+        raise AssertionError(f"signature not found: {signature}")
+    open_brace = source.find("{", start)
+    if open_brace < 0:
+        raise AssertionError(f"body not found: {signature}")
+    depth = 0
+    for index in range(open_brace, len(source)):
+        char = source[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start:index + 1]
+    raise AssertionError(f"unterminated body: {signature}")
+
+
+def _wire_names(block):
+    match = re.search(
+        r"pub const WIRE_NAMES: \[\&'static str; (\d+)\]\s*=\s*(\[.*?\]);",
+        block, re.DOTALL)
+    if match is None:
+        raise AssertionError("WIRE_NAMES constant not found")
+    declared = int(match.group(1))
+    names = tuple(re.findall(r'"([^"]*)"', match.group(2)))
+    if declared != len(names):
+        raise AssertionError("WIRE_NAMES declared length does not match its entries")
+    return names
+
+
+def _parse_wire_arms(block):
+    """String literals the strict decoder accepts (``_ => Err`` excluded)."""
+    body = _fn_block(block, "pub fn parse_wire(value: &str)")
+    if re.search(r"_\s*=>\s*Err\(", body) is None:
+        raise AssertionError("parse_wire has no fail-closed catch-all arm")
+    arms = tuple(re.findall(r'"([^"]*)"\s*=>\s*Ok\(', body))
+    if len(arms) != len(set(arms)):
+        raise AssertionError("parse_wire contains a duplicate literal arm")
+    return arms
+
+
+def _wire_name_arms(block):
+    body = _fn_block(block, "pub fn wire_name(self)")
+    arms = re.findall(r"Self::(\w+)\s*=>\s*\"([^\"]*)\"", body)
+    if not arms:
+        raise AssertionError("wire_name has no mapping arms")
+    return arms
+
+
+def _normalized(text):
+    return re.sub(r"\s+", "", text)
+
+
+class FrozenFixtureVocabularyTests(unittest.TestCase):
+    """JC-RES-012.I: the frozen fixture is the exact §11.20/§18.18 vocabulary."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.fixture = _load_fixture()
+
+    def test_reservation_status_vocabulary_is_exactly_the_seven_states(self):
+        self.assertEqual(_canonical(self.fixture, "reservationStatus"),
+                         RESERVATION_STATES)
+        forbidden = self.fixture["reservationStatus"]["forbidden"]
+        # UNKNOWN is an EffectIntent/measurement outcome, never a status.
+        self.assertNotIn("UNKNOWN", _canonical(self.fixture, "reservationStatus"))
+        self.assertIn("UNKNOWN", forbidden)
+        # ACTIVE is an obsolete alias, not an alternate encoding.
+        self.assertNotIn("ACTIVE", _canonical(self.fixture, "reservationStatus"))
+        self.assertIn("ACTIVE", forbidden)
+        for name in NOT_RESERVATION_STATES:
+            with self.subTest(forbidden=name):
+                self.assertNotIn(name, RESERVATION_STATES)
+                self.assertIn(name, forbidden)
+
+    def test_pressure_vocabulary_is_exactly_the_four_derived_states(self):
+        self.assertEqual(_canonical(self.fixture, "pressureState"), PRESSURE_STATES)
+        forbidden = self.fixture["pressureState"]["forbidden"]
+        for alias in NOT_PRESSURE_STATES:
+            with self.subTest(forbidden=alias):
+                self.assertNotIn(alias, PRESSURE_STATES)
+                self.assertIn(alias, forbidden)
+
+    def test_budget_dimensions_are_exactly_the_nine_wire_names(self):
+        self.assertEqual(_canonical(self.fixture, "dimension"), BUDGET_DIMENSIONS)
+
+    def test_fixture_records_both_consumers_and_they_exist(self):
+        consumers = self.fixture["consumers"]
+        self.assertEqual(consumers["rust"], "kernel/src/resource_budget.rs")
+        self.assertEqual(consumers["typescript"],
+                         "packages/core/src/v1/resource-reservation-wire.ts")
+        for key in ("rust", "typescript"):
+            with self.subTest(consumer=key):
+                path = REPOSITORY / consumers[key]
+                self.assertTrue(path.is_file(), f"{consumers[key]} is missing")
+
+
+class RustSourceConformanceTests(unittest.TestCase):
+    """Source-level pin of the canonical Rust tables (not a runtime claim)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.fixture = _load_fixture()
+        cls.source = RUST_PATH.read_text(encoding="utf-8")
+
+    def test_rust_wire_tables_match_the_frozen_fixture_exactly(self):
+        tables = []
+        for name in ("ReservationState", "PressureState", "BudgetDimension"):
+            blocks = [block for block in _impl_blocks(self.source, name)
+                      if "WIRE_NAMES" in block]
+            self.assertEqual(len(blocks), 1, f"expected one WIRE_NAMES impl for {name}")
+            tables.append((name, _wire_names(blocks[0])))
+        self.assertEqual(dict(tables), {
+            "ReservationState": _canonical(self.fixture, "reservationStatus"),
+            "PressureState": _canonical(self.fixture, "pressureState"),
+            "BudgetDimension": _canonical(self.fixture, "dimension"),
+        })
+
+    def test_rust_decoders_accept_only_the_canonical_names(self):
+        expected = {
+            "ReservationState": _canonical(self.fixture, "reservationStatus"),
+            "PressureState": _canonical(self.fixture, "pressureState"),
+            "BudgetDimension": _canonical(self.fixture, "dimension"),
+        }
+        for name, canonical in expected.items():
+            with self.subTest(impl=name):
+                blocks = [block for block in _impl_blocks(self.source, name)
+                          if "parse_wire" in block]
+                self.assertEqual(len(blocks), 1)
+                arms = _parse_wire_arms(blocks[0])
+                self.assertEqual(set(arms), set(canonical))
+                self.assertEqual(len(arms), len(canonical))
+                for alias in NOT_RESERVATION_STATES + NOT_PRESSURE_STATES:
+                    self.assertNotIn(alias, arms)
+
+    def test_rust_wire_name_mappings_cover_every_state_without_aliases(self):
+        reservation = [block for block in _impl_blocks(self.source, "ReservationState")
+                       if "wire_name" in block][0]
+        arms = _wire_name_arms(reservation)
+        self.assertEqual(len(arms), len(RESERVATION_STATES))
+        mapped = {wire for _variant, wire in arms}
+        self.assertEqual(mapped, set(RESERVATION_STATES))
+        for alias in NOT_RESERVATION_STATES:
+            self.assertNotIn(alias, mapped)
+        pressure = [block for block in _impl_blocks(self.source, "PressureState")
+                    if "wire_name" in block][0]
+        pressure_mapped = {wire for _variant, wire in _wire_name_arms(pressure)}
+        self.assertEqual(pressure_mapped, set(PRESSURE_STATES))
+        for alias in NOT_PRESSURE_STATES:
+            self.assertNotIn(alias, pressure_mapped)
+
+    def _parsed_transitions(self):
+        """(from, to) -> frozenset of required proof flags, from the Rust source."""
+        variant_to_wire = dict(
+            (variant, wire) for variant, wire in _wire_name_arms(
+                [block for block in _impl_blocks(self.source, "ReservationState")
+                 if "wire_name" in block][0]))
+        fn = _fn_block(self.source, "pub fn validate_transition(")
+        match = re.search(r"let permitted = match \(self, next\) \{(.*?)\};",
+                          fn, re.DOTALL)
+        self.assertIsNotNone(match, "transition match arm not found")
+        if re.search(r"_\s*=>\s*return Err\(ForbiddenTransition\)", fn) is None:
+            self.fail("transition relation is not closed with ForbiddenTransition")
+        parsed = {}
+        conditions = {}
+        for raw in match.group(1).splitlines():
+            line = raw.split("//", 1)[0].strip()
+            if not line or line.startswith("_"):
+                continue
+            left, _, right = line.partition("=>")
+            if not right:
+                self.fail(f"unparsable transition arm: {raw!r}")
+            pairs = re.findall(r"\(\s*(\w+)\s*,\s*(\w+)\s*\)", left)
+            self.assertTrue(pairs, f"no pair in transition arm: {raw!r}")
+            condition = right.strip().rstrip(",")
+            flags = frozenset(re.findall(r"proof\.(\w+)", condition))
+            if condition != "true" and not flags:
+                self.fail(f"unrecognized transition condition: {raw!r}")
+            for from_variant, to_variant in pairs:
+                key = (variant_to_wire[from_variant], variant_to_wire[to_variant])
+                self.assertNotIn(key, parsed, f"duplicate arm for {key}")
+                parsed[key] = flags
+                conditions[key] = condition
+        return parsed, conditions
+
+    def test_transition_relation_is_exactly_the_section_11_20_table(self):
+        parsed, _conditions = self._parsed_transitions()
+        self.assertEqual(parsed, EXPECTED_TRANSITIONS)
+        self.assertEqual(
+            {flag for flags in parsed.values() for flag in flags},
+            set(PROOF_FLAGS))
+
+    def test_forbidden_transitions_are_absent(self):
+        parsed, _conditions = self._parsed_transitions()
+        for pair in CRITICAL_FORBIDDEN_TRANSITIONS:
+            with self.subTest(forbidden=pair):
+                self.assertNotIn(pair, parsed)
+        # Every same-state pair is owner-log idempotent replay, never a transition.
+        for state in RESERVATION_STATES:
+            with self.subTest(self_transition=state):
+                self.assertNotIn((state, state), parsed)
+        self.assertEqual(set(parsed), set(EXPECTED_TRANSITIONS))
+
+    def test_gated_transitions_require_their_proof_flags(self):
+        parsed, conditions = self._parsed_transitions()
+        for pair, flags in EXPECTED_TRANSITIONS.items():
+            with self.subTest(transition=pair):
+                if flags:
+                    self.assertNotEqual(conditions[pair], "true")
+                    self.assertEqual(parsed[pair], flags)
+                else:
+                    self.assertEqual(conditions[pair], "true")
+        # A gated arm must never be reachable with an empty proof.
+        self.assertIn(("RESERVED", "EXPIRED"), conditions)
+        self.assertIn("no_launch_or_dispatch", conditions[("RESERVED", "EXPIRED")])
+        self.assertIn(
+            "reconciliation_complete",
+            conditions[("QUARANTINED", "RELEASE_PENDING")])
+        self.assertIn(
+            "owned_process_exited",
+            conditions[("RELEASE_PENDING", "RELEASED")])
+        self.assertIn(
+            "effects_settled",
+            conditions[("RELEASE_PENDING", "RELEASED")])
+
+    def test_proof_flags_are_exactly_the_four_spec_flags(self):
+        struct = _fn_block(self.source, "pub struct ReservationProof {")
+        found = tuple(re.findall(r"pub (\w+): bool", struct))
+        self.assertEqual(set(found), set(PROOF_FLAGS))
+
+    def test_capacity_math_is_saturating_and_conservative(self):
+        outstanding = _fn_block(self.source, "pub fn outstanding_units(self)")
+        body = _normalized(outstanding)
+        # Terminal/unadmitted states reserve nothing; RESERVED keeps its full
+        # reserve; uncertain claimed work keeps only the unmeasured headroom.
+        self.assertIn(
+            "ReservationState::Proposed|ReservationState::Released|"
+            "ReservationState::Expired=>{0}", body)
+        self.assertIn("ReservationState::Reserved=>self.reserved_units", body)
+        for state in ("Claimed", "ReleasePending", "Quarantined"):
+            with self.subTest(state=state):
+                self.assertIn(f"ReservationState::{state}", body)
+        self.assertIn(".saturating_sub(self.already_counted_units.unwrap_or(0))", body)
+        # No wrapping arithmetic and no unchecked subtraction anywhere here.
+        self.assertNotIn("wrapping_sub", body)
+        self.assertNotIn("overflowing_sub", body)
+
+        remaining = _fn_block(self.source, "pub fn remaining_capacity(")
+        normalized = _normalized(remaining)
+        # An unknown effective limit is an explicit UnknownCapacity decision,
+        # never an infinite quota.
+        self.assertIn("else{returnCapacity::UnknownCapacity", normalized)
+        self.assertIn("Capacity::UnknownCapacity", normalized)
+        # Wide saturating accumulation: no wrapping, no unchecked subtraction.
+        self.assertIn("u128::from(reservation.outstanding_units())", normalized)
+        self.assertIn(".saturating_add(", normalized)
+        self.assertIn(".saturating_sub(", normalized)
+        self.assertNotIn("wrapping_sub", normalized)
+        self.assertNotIn("overflowing_sub", normalized)
+
+
+class TypeScriptConsumerParityTests(unittest.TestCase):
+    """The TS consumer is schema-only parity; this is not a bun/tsc run."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.fixture = _load_fixture()
+        cls.source = TYPESCRIPT_PATH.read_text(encoding="utf-8")
+
+    def _array(self, export_name):
+        match = re.search(
+            rf"export const {export_name} = \[(.*?)\] as const",
+            self.source, re.DOTALL)
+        self.assertIsNotNone(match, f"{export_name} missing from the TS consumer")
+        return tuple(re.findall(r'"([^"]*)"', match.group(1)))
+
+    def test_typescript_arrays_match_the_frozen_fixture(self):
+        self.assertEqual(self._array("RESERVATION_STATUS_WIRE"),
+                         _canonical(self.fixture, "reservationStatus"))
+        self.assertEqual(self._array("RESOURCE_PRESSURE_WIRE"),
+                         _canonical(self.fixture, "pressureState"))
+        self.assertEqual(self._array("BUDGET_DIMENSION_WIRE"),
+                         _canonical(self.fixture, "dimension"))
+
+    def test_typescript_decoders_are_strict_membership_checks(self):
+        for name in ("parseReservationStatus", "parseResourcePressureState",
+                     "parseBudgetDimension"):
+            with self.subTest(parser=name):
+                self.assertRegex(self.source,
+                                 rf"export function {name}\(value: unknown\)")
+        # No case-folding, trimming or other normalization path exists.
+        for forbidden in (".toUpperCase()", ".toLowerCase()", ".trim()", "localeCompare"):
+            with self.subTest(normalization=forbidden):
+                self.assertNotIn(forbidden, self.source)
+
+    def test_typescript_declares_no_alternate_reservation_or_pressure_alias(self):
+        for alias in NOT_RESERVATION_STATES + NOT_PRESSURE_STATES:
+            with self.subTest(alias=alias):
+                self.assertNotIn(f'"{alias}"', self.source)
+
+
+# --- Managed Stage-A/B pre-admission contract pin --------------------------
+# This class machine-checks the claims documented in
+# `kernel/tests/support/P8-STAGE-AB-PROOF-CONTRACT.md` against the current
+# Rust/TS sources (read-only). It is a drift alarm for the P1/P2 handoff, not a
+# runtime test: it never compiles Rust and never grants admission. A failure
+# means either the contract document or the source moved and P8 must reconcile
+# them before anyone builds a fixture from the document.
+
+HOST_KERNEL_PATH = REPOSITORY / "kernel" / "src" / "host_kernel.rs"
+WORKER_DURABLE_PATH = REPOSITORY / "kernel" / "src" / "worker_durable.rs"
+HZ_KERNEL_BIN_PATH = REPOSITORY / "kernel" / "src" / "bin" / "hz-kernel.rs"
+MANAGED_CONTROL_TS_PATH = (REPOSITORY / "packages" / "opencode" / "src"
+                           / "session" / "managed-control.ts")
+
+RESERVE_REQUIRED = (
+    "goalID", "runID", "taskID", "expectedRevision", "parentSessionID",
+    "locationID", "sessionID", "profileDefinition",
+)
+RESERVE_OPTIONAL = ("resourcePolicyProjectionRevision", "resourcePolicyProjectionDigest")
+ADMIT_COMMON_REQUIRED = RESERVE_REQUIRED + (
+    "contextSelection", "resourcePolicyProjectionRevision",
+    "resourcePolicyProjectionDigest", "preAdmissionProofDigest",
+)
+
+
+class ManagedPreAdmissionContractTests(unittest.TestCase):
+    """Stage-A/B body, digest-chain and producer pin (see the contract doc)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.host = HOST_KERNEL_PATH.read_text(encoding="utf-8")
+        cls.durable = WORKER_DURABLE_PATH.read_text(encoding="utf-8")
+
+    @staticmethod
+    def _string_literals(text):
+        return tuple(re.findall(r'"([^"]+)"', text))
+
+    def test_reserve_body_is_exactly_the_documented_eight_plus_two(self):
+        body = _fn_block(self.host, "fn managed_pre_admission_target_reserve(")
+        match = re.search(
+            r"strict_fields\(&request\.body,\s*&\[([^\]]*)\],\s*&\[([^\]]*)\]\)",
+            body, re.DOTALL)
+        self.assertIsNotNone(match, "reserve must use strict_fields with explicit lists")
+        self.assertEqual(self._string_literals(match.group(1)), RESERVE_REQUIRED)
+        self.assertEqual(self._string_literals(match.group(2)), RESERVE_OPTIONAL)
+
+    def test_admit_and_bind_context_bodies_match_the_documented_split(self):
+        body = _fn_block(self.host, "fn managed_admit(")
+        required = re.search(r"let mut required = vec!\[(.*?)\];", body, re.DOTALL)
+        self.assertIsNotNone(required, "managed_admit must build one required list")
+        common = self._string_literals(required.group(1))
+        self.assertEqual(common, ADMIT_COMMON_REQUIRED)
+        normalized = _normalized(body)
+        # The mode split is exactly the two documented pushes — nothing else
+        # may add or drop a body key per operation.
+        self.assertIn(
+            'if!bind_context{required.push("managedProviderRoute");}',
+            normalized)
+        self.assertIn(
+            'required.push(ifbind_context{"candidateAttemptID"}else{"attemptID"});',
+            normalized)
+        self.assertEqual(
+            len(re.findall(r"required\.push\(", normalized)), 2,
+            "no third conditional body key may be introduced without a doc update")
+        self.assertIn('strict_fields(&request.body,&required,&[])', normalized)
+        # bind_context = 13 keys (no route), admit = 14 keys (no candidate key).
+        self.assertEqual(len(ADMIT_COMMON_REQUIRED) + 1, 13)
+        self.assertEqual(len(ADMIT_COMMON_REQUIRED) + 2, 14)
+
+    def test_the_three_operations_are_the_only_admission_entry_points(self):
+        self.assertIn('(MANAGED_SERVICE_ID, "admit")', self.host)
+        self.assertIn('(MANAGED_SERVICE_ID, "managed.pre_admission_target.reserve")',
+                      self.host)
+        self.assertIn('(MANAGED_SERVICE_ID, "managed.pre_admission_target.bind_context")',
+                      self.host)
+        # Both Stage-B and admit share one implementation; a fourth entry point
+        # would change the documented digest chain.
+        self.assertEqual(
+            self.host.count("self.managed_admit(request, authenticated_principal"), 2)
+
+    def test_digest_chain_guards_exist_for_both_stages(self):
+        for phrase in (
+            "Stage-A proof digest differs from the exact reserved Task candidate",
+            "Stage-B proof digest differs from the context-bound reservation",
+            "persisted Stage-A authority differs from the current authenticated request",
+            "P8 reservation or current root/workspace authority differs from committed admission",
+        ):
+            with self.subTest(guard=phrase):
+                self.assertIn(phrase, self.host)
+
+    def test_resource_policy_projection_is_off_by_default_and_single_write(self):
+        # §6 of the contract: without a negotiated project_policy call there is
+        # no pin, so `admit` stops at resource_policy_unavailable.
+        self.assertIn("resource_policy_enabled: false", self.host)
+        self.assertEqual(self.host.count("resource_policy_pins.insert("), 1)
+        self.assertIn('if !self.resource_policy_enabled', self.host)
+        self.assertIn("resource-policy.ingress-v1 was not negotiated", self.host)
+        self.assertEqual(self.host.count('"resource-policy.ingress-v1 was not negotiated"'), 1)
+        self.assertIn("pub fn set_resource_policy_enabled", self.host)
+        binary = HZ_KERNEL_BIN_PATH.read_text(encoding="utf-8")
+        self.assertIn("set_resource_policy_enabled(resource_policy_negotiated)", binary)
+        self.assertIn("FEATURE_RESOURCE_POLICY_INGRESS_V1", binary)
+
+    def test_resource_policy_project_policy_is_only_exercised_by_p2_fixture(self):
+        # P2's integration fixture now exercises the authenticated route, but
+        # production Core still has no project_policy dispatch call. Comments,
+        # DTO fields and protocol type names are not callers.
+        fixture = (REPOSITORY / "kernel/tests/managed_control_plan_ingress.rs").read_text(
+            encoding="utf-8")
+        self.assertIn('operation: "project_policy".to_owned()', fixture)
+        self.assertIn('"resource-policy.ingress-v1".to_owned()', fixture)
+
+        managed_client = (REPOSITORY / "packages/opencode/src/session/managed-control.ts").read_text(
+            encoding="utf-8")
+        self.assertNotIn('operation: "project_policy"', managed_client)
+        self.assertNotIn('operation: "resource_policy_projection"', managed_client)
+
+    def test_p8_stage_ab_apis_exist_with_the_documented_shapes(self):
+        expected = {
+            "reserve_managed_pre_admission_target":
+                ("&ManagedPreAdmissionTargetPinsV1", "ReservedPreAdmissionTargetProofV1"),
+            "resolve_reserved_managed_pre_admission_target":
+                ("&RootCoordinatorExecutionProofV1", "ManagedAttemptWorktreeTargetV1"),
+            "resolve_managed_pre_admission_target_for_candidate": ("attempt_id",),
+            "bind_managed_pre_admission_context_digest":
+                ("&ReservedPreAdmissionTargetProofV1", "context_selection_digest",
+                 "ReservedWorkerLeaseProofV1"),
+            "resolve_pre_admission_admission_lease_proof":
+                ("DurableManagedLeaseProofV1",),
+            "attach_managed_ready_task_binding": ("DelegationBinding",),
+            "resolve_attached_pre_admission_lease_proof":
+                ("DurableManagedLeaseProofV1", "&VerifiedAttemptBinding",
+                 "crate::protocol::DelegationBindingV1"),
+            "resolve_reserved_managed_worktree_target": ("ManagedAttemptWorktreeTargetV1",),
+        }
+        for name, tokens in expected.items():
+            with self.subTest(api=name):
+                self.assertIn(f"pub(crate) fn {name}(", self.durable)
+                signature = _fn_block(self.durable, f"pub(crate) fn {name}(")
+                for token in tokens:
+                    self.assertIn(token, signature, f"{name} signature lost {token}")
+        # The fixture evidence P8 owns stays lib-test-only and is documented.
+        for helper in ("test_reserve_and_bind_managed_pre_admission",
+                       "test_reserve_authenticated_managed_pre_admission"):
+            with self.subTest(helper=helper):
+                self.assertIn(f"pub(crate) fn {helper}(", self.durable)
+        helpers_start = self.durable.find("fn test_reserve_and_bind_managed_pre_admission")
+        self.assertIn("#[cfg(test)]", self.durable[:helpers_start][-200:])
+        # Guard facts P1 must produce are consumed, never minted, by P8 pins.
+        guard = (REPOSITORY / "kernel" / "src" / "guard.rs").read_text(encoding="utf-8")
+        self.assertIn("pub(crate) fn derive_effective_capability_ceiling(", guard)
 
 
 if __name__ == '__main__':

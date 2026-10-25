@@ -137,6 +137,87 @@ describe("external editor open planning", () => {
     expect(() => ExternalEditor.planWorkspaceOpenV1({ ...base, pathRef: "/etc/passwd" })).toThrow()
     expect(() => ExternalEditor.planWorkspaceOpenV1({ ...base, contentDigest: "sha256:abc" })).toThrow(TypeError)
   })
+
+  test("rejects workspace paths that are not normalized relative paths", () => {
+    const base = {
+      profile,
+      selected,
+      sessionId: "ses_1",
+      locationId: "loc_1",
+      pathRef: "src/main.ts",
+      sourceRevision: REVISION,
+      contentDigest: FILE_DIGEST,
+    }
+    for (const pathRef of [
+      "src\\main.ts",
+      "src//main.ts",
+      "src/./main.ts",
+      "src/main.ts/",
+      "src/main\u0007.ts",
+      "src/main\n.ts",
+      "",
+      "a".repeat(4097),
+    ]) {
+      expect(() => ExternalEditor.planWorkspaceOpenV1({ ...base, pathRef }), JSON.stringify(pathRef)).toThrow()
+    }
+  })
+
+  test("rejects Session and Location identifiers outside the wire identifier contract", () => {
+    const base = {
+      profile,
+      selected,
+      sessionId: "ses_1",
+      locationId: "loc_1",
+      pathRef: "src/main.ts",
+      sourceRevision: REVISION,
+      contentDigest: FILE_DIGEST,
+    }
+    for (const [field, value] of [
+      ["sessionId", "ses one"],
+      ["sessionId", ""],
+      ["sessionId", "ses\u0000one"],
+      ["locationId", "loc one"],
+      ["locationId", "loc/one"],
+    ] as const) {
+      expect(() => ExternalEditor.planWorkspaceOpenV1({ ...base, [field]: value }), `${field}=${value}`).toThrow()
+      expect(() => ExternalEditor.planPromptScratchV1({
+        profile: { ...profile, targetKinds: ["prompt_scratch", "workspace_file"] as const },
+        selected: externalEditorProfileRefV1({ ...profile, targetKinds: ["prompt_scratch", "workspace_file"] as const }),
+        sessionId: "ses_1",
+        locationId: "loc_1",
+        workspaceRevision: REVISION,
+        [field]: value,
+      } as never), `scratch ${field}=${value}`).toThrow()
+    }
+  })
+
+  test("never forwards authority-looking fields carried by the caller's profile selection", () => {
+    const request = ExternalEditor.planWorkspaceOpenV1({
+      profile,
+      selected: { ...selected, principalId: "principal-1", allowEvaluate: true } as never,
+      sessionId: "ses_1",
+      locationId: "loc_1",
+      pathRef: "src/main.ts",
+      sourceRevision: REVISION,
+      contentDigest: FILE_DIGEST,
+    })
+    expect(Object.keys(request).sort()).toEqual([
+      "expectedFileDigest",
+      "expectedWorkspaceRevision",
+      "locationId",
+      "profileRef",
+      "schemaVersion",
+      "sessionId",
+      "targetKind",
+      "targetRelativePath",
+    ])
+    expect(JSON.stringify(request)).not.toContain("principal-1")
+    expect(request.profileRef).toEqual({
+      profileId: selected.profileId,
+      revision: selected.revision,
+      profileDigest: selected.profileDigest,
+    })
+  })
 })
 
 describe("external editor terminal outcome projection", () => {
@@ -206,5 +287,67 @@ describe("external editor terminal outcome projection", () => {
       completed(),
       { ...expected, profile: { ...selected, revision: "4" } },
     )).toThrow(TypeError)
+  })
+
+  test("rejects an outcome carrying fields outside the exact wire contract", () => {
+    expect(() => ExternalEditor.projectEditorOutcomeV1(
+      { ...completed(), principalId: "principal-1" },
+      expected,
+    )).toThrow()
+    expect(() => ExternalEditor.projectEditorOutcomeV1(
+      { ...completed(), status: "paused" },
+      expected,
+    )).toThrow()
+    expect(() => ExternalEditor.projectEditorOutcomeV1(
+      { ...completed(), processRef: { ...processRef(), executionID: "editor_exec_other" } },
+      expected,
+    )).toThrow(TypeError)
+  })
+
+  test("rejects terminal outcomes that do not carry exactly one durable receipt", () => {
+    for (const status of ["cancelled", "conflict"] as const) {
+      expect(() => ExternalEditor.projectEditorOutcomeV1(
+        completed({ status, receiptDigest: null }),
+        expected,
+      ), status).toThrow()
+    }
+    expect(() => ExternalEditor.projectEditorOutcomeV1(
+      completed({
+        status: "running",
+        receiptDigest: REVISION,
+        exitCode: null,
+        resultFileDigest: null,
+        observedWorkspaceRevision: null,
+      }),
+      expected,
+    )).toThrow()
+  })
+
+  test("rejects a completed outcome with a non-zero exit or missing result pins", () => {
+    for (const over of [
+      { exitCode: 1 },
+      { resultFileDigest: null },
+      { observedWorkspaceRevision: null },
+      { exitCode: 300 },
+    ] as const) {
+      expect(() => ExternalEditor.projectEditorOutcomeV1(completed(over), expected), JSON.stringify(over)).toThrow()
+    }
+  })
+
+  test("reports an unchanged completed edit without claiming a workspace advance", () => {
+    const result = ExternalEditor.projectEditorOutcomeV1(
+      completed({ resultFileDigest: FILE_DIGEST, observedWorkspaceRevision: REVISION }),
+      expected,
+    )
+    expect(result).toEqual({
+      status: "completed",
+      effectID: "effect_1",
+      executionID: "editor_exec_1",
+      receiptDigest: completed().receiptDigest,
+      changed: false,
+      workspaceAdvanced: false,
+      observedWorkspaceRevision: REVISION,
+      resultFileDigest: FILE_DIGEST,
+    })
   })
 })

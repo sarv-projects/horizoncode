@@ -152,6 +152,37 @@ const MAX_TOOL_DETAIL_DEPTH = 6
 const MAX_TOOL_DETAIL_ENUMERATED_KEYS = MAX_TOOL_DETAIL_KEYS * 2
 const MAX_ARGUMENT_PREVIEW_ENUMERATED_KEYS = 9
 
+function redactUrlCredentials(value: string) {
+  const chunks: string[] = []
+  let cursor = 0
+  let searchFrom = 0
+  while (true) {
+    const separator = value.indexOf("://", searchFrom)
+    if (separator < 0) break
+    searchFrom = separator + 3
+
+    let schemeStart = separator - 1
+    while (schemeStart >= 0 && /[a-z0-9+.-]/i.test(value[schemeStart]!)) schemeStart--
+    schemeStart++
+    while (schemeStart < separator && !/[a-z]/i.test(value[schemeStart]!)) schemeStart++
+    if (schemeStart === separator) continue
+
+    const authorityStart = separator + 3
+    let authorityEnd = authorityStart
+    while (authorityEnd < value.length && !/[\/@\s]/.test(value[authorityEnd]!)) authorityEnd++
+    if (value[authorityEnd] !== "@") continue
+    const colon = value.indexOf(":", authorityStart)
+    if (colon <= authorityStart || colon >= authorityEnd - 1) continue
+
+    chunks.push(value.slice(cursor, schemeStart), value.slice(schemeStart, separator + 3), "[REDACTED]@")
+    cursor = authorityEnd + 1
+    searchFrom = cursor
+  }
+  if (cursor === 0) return value
+  chunks.push(value.slice(cursor))
+  return chunks.join("")
+}
+
 function safeArgumentKey(key: string) {
   if (key.length > 64) return false
   return SAFE_TOOL_ARGUMENT_KEYS.has(key) || SAFE_TOOL_ARGUMENT_KEYS.has(key.replace(/[-_]/g, ""))
@@ -216,7 +247,7 @@ function sliceUtf8(value: string, maxBytes: number) {
 
 /** Redact common credential forms and remove terminal/control characters before display. */
 export function redactToolText(value: string) {
-  return stripAnsi(value)
+  const clean = stripAnsi(value)
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u061C\u200E\u200F\u202A-\u202E\u2066-\u206F]/g, "")
     .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/gi, "[REDACTED PRIVATE KEY]")
     .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, "Bearer [REDACTED]")
@@ -231,7 +262,7 @@ export function redactToolText(value: string) {
       /(--(?:api[-_]?key|access[-_]?token|refresh[-_]?token|token|secret|password|authorization|cookie)\s+)(?:"[^"]*"|'[^']*'|[^\s]+)/gi,
       "$1[REDACTED]",
     )
-    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^/@\s:]+:[^/@\s]+@/gi, "$1[REDACTED]@")
+  return redactUrlCredentials(clean)
 }
 
 /** Keep only canonical, printable capability-style tool identifiers in labels. */

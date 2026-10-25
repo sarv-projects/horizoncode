@@ -983,6 +983,153 @@ class DistributionAuditTests(unittest.TestCase):
         self.assertFalse(report["artifact"]["source_revision_bound"])
         self.assertEqual(report["distribution_license"]["status"], "BLOCKED")
 
+    def test_artifact_inventory_rejects_multiple_provenance_manifests(self) -> None:
+        artifact = self.root / "multiple-provenance-manifests"
+        artifact.mkdir()
+        binary = artifact / "horizoncode"
+        binary.write_bytes(b"candidate binary")
+        license_file = artifact / "LICENSE"
+        license_file.write_bytes(b"license\n")
+        notice_file = artifact / "NOTICE.txt"
+        notice_file.write_bytes(b"notice\n")
+        competing_manifest = artifact / "release-manifest.json"
+        competing_manifest.write_text(
+            json.dumps({"sourceRevision": "different-revision", "sourceStateSha256": "f" * 64}),
+            encoding="utf-8",
+        )
+        inventory = []
+        for path in (binary, license_file, notice_file, competing_manifest):
+            contents = path.read_bytes()
+            inventory.append({
+                "path": path.name,
+                "sizeBytes": len(contents),
+                "sha256": hashlib.sha256(contents).hexdigest(),
+            })
+        source_digest = "0" * 64
+        primary_manifest = {
+            "schemaVersion": 2,
+            "sourceRevision": "0123456789abcdef",
+            "sourceStateSha256": source_digest,
+            "postBuildSourceStateSha256": source_digest,
+            "binaryPath": binary.name,
+            "binarySha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+            "binarySizeBytes": binary.stat().st_size,
+            "artifactFiles": inventory,
+        }
+        (artifact / "artifact-manifest.json").write_text(json.dumps(primary_manifest), encoding="utf-8")
+
+        report = inspect_artifact(artifact)
+
+        self.assertFalse(report["artifact_inventory_valid"])
+        self.assertIn("artifact contains multiple provenance manifests", report["artifact_inventory_errors"])
+
+    def test_artifact_inventory_rejects_legal_file_as_candidate_binary(self) -> None:
+        artifact = self.root / "legal-file-as-binary"
+        artifact.mkdir()
+        binary = artifact / "horizoncode"
+        binary.write_bytes(b"candidate binary")
+        license_file = artifact / "LICENSE"
+        license_file.write_bytes(b"license\n")
+        notice_file = artifact / "NOTICE.txt"
+        notice_file.write_bytes(b"notice\n")
+        inventory = []
+        for path in (binary, license_file, notice_file):
+            contents = path.read_bytes()
+            inventory.append({
+                "path": path.name,
+                "sizeBytes": len(contents),
+                "sha256": hashlib.sha256(contents).hexdigest(),
+            })
+        source_digest = "0" * 64
+        manifest = {
+            "schemaVersion": 2,
+            "sourceRevision": "0123456789abcdef",
+            "sourceStateSha256": source_digest,
+            "postBuildSourceStateSha256": source_digest,
+            "binaryPath": license_file.name,
+            "binarySha256": hashlib.sha256(license_file.read_bytes()).hexdigest(),
+            "binarySizeBytes": license_file.stat().st_size,
+            "artifactFiles": inventory,
+        }
+        (artifact / "release-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+        report = inspect_artifact(artifact)
+
+        self.assertFalse(report["artifact_inventory_valid"])
+        self.assertFalse(report["binary_digest_valid"])
+
+    def test_artifact_inventory_rejects_non_executable_horizoncode(self) -> None:
+        artifact = self.root / "non-executable-candidate"
+        artifact.mkdir()
+        binary = artifact / "horizoncode"
+        binary.write_bytes(b"candidate bytes")
+        binary.chmod(0o644)
+        license_file = artifact / "LICENSE"
+        license_file.write_bytes(b"license\n")
+        notice_file = artifact / "NOTICE.txt"
+        notice_file.write_bytes(b"notice\n")
+        inventory = []
+        for path in (binary, license_file, notice_file):
+            contents = path.read_bytes()
+            inventory.append({
+                "path": path.name,
+                "sizeBytes": len(contents),
+                "sha256": hashlib.sha256(contents).hexdigest(),
+            })
+        source_digest = "0" * 64
+        manifest = {
+            "schemaVersion": 2,
+            "sourceRevision": "0123456789abcdef",
+            "sourceStateSha256": source_digest,
+            "postBuildSourceStateSha256": source_digest,
+            "binaryPath": binary.name,
+            "binarySha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+            "binarySizeBytes": binary.stat().st_size,
+            "artifactFiles": inventory,
+        }
+        (artifact / "release-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+        report = inspect_artifact(artifact)
+
+        self.assertFalse(report["artifact_inventory_valid"])
+        self.assertFalse(report["binary_digest_valid"])
+
+    def test_artifact_inventory_rejects_empty_executable_horizoncode(self) -> None:
+        artifact = self.root / "empty-executable-candidate"
+        artifact.mkdir()
+        binary = artifact / "horizoncode"
+        binary.write_bytes(b"")
+        binary.chmod(0o755)
+        license_file = artifact / "LICENSE"
+        license_file.write_bytes(b"license\n")
+        notice_file = artifact / "NOTICE.txt"
+        notice_file.write_bytes(b"notice\n")
+        inventory = []
+        for path in (binary, license_file, notice_file):
+            contents = path.read_bytes()
+            inventory.append({
+                "path": path.name,
+                "sizeBytes": len(contents),
+                "sha256": hashlib.sha256(contents).hexdigest(),
+            })
+        source_digest = "0" * 64
+        manifest = {
+            "schemaVersion": 2,
+            "sourceRevision": "0123456789abcdef",
+            "sourceStateSha256": source_digest,
+            "postBuildSourceStateSha256": source_digest,
+            "binaryPath": binary.name,
+            "binarySha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+            "binarySizeBytes": binary.stat().st_size,
+            "artifactFiles": inventory,
+        }
+        (artifact / "release-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+        report = inspect_artifact(artifact)
+
+        self.assertFalse(report["artifact_inventory_valid"])
+        self.assertFalse(report["binary_digest_valid"])
+
     def test_archive_inventory_reads_commit_and_notice_hashes_without_extracting(self) -> None:
         artifact = self.root / "release.tar.gz"
         license_bytes = b"MIT License\nupstream text\n"
@@ -1038,6 +1185,21 @@ class DistributionAuditTests(unittest.TestCase):
         self.assertEqual(repository_report["artifact"]["status"], "BLOCKED")
         self.assertEqual(repository_report["artifact"]["members"], [])
 
+    def test_directory_artifact_hardlink_is_reported_as_unsafe(self) -> None:
+        artifact = self.root / "hardlink-artifact"
+        artifact.mkdir()
+        original = artifact / "LICENSE"
+        original.write_text("license\\n", encoding="utf-8")
+        (artifact / "NOTICE.txt").write_text("notice\\n", encoding="utf-8")
+        alias = artifact / "bin" / "horizoncode"
+        alias.parent.mkdir()
+        alias.hardlink_to(original)
+
+        report = inspect_artifact(artifact)
+
+        self.assertEqual(report["status"], "BLOCKED")
+        self.assertEqual(report["special_entries"], ["LICENSE", "bin/horizoncode"])
+
     def test_zip_artifact_symlink_is_reported_and_blocks_inventory(self) -> None:
         artifact = self.root / "release.zip"
         with zipfile.ZipFile(artifact, "w") as archive:
@@ -1052,6 +1214,22 @@ class DistributionAuditTests(unittest.TestCase):
 
         self.assertEqual(report["status"], "BLOCKED")
         self.assertEqual(report["symlinks"], ["linked-notice.txt"])
+
+    def test_tar_artifact_special_file_is_reported_and_blocks_inventory(self) -> None:
+        artifact = self.root / "special-entry.tar.gz"
+        with tarfile.open(artifact, "w:gz") as archive:
+            for name, contents in (("LICENSE", b"license\n"), ("NOTICE.txt", b"notice\n")):
+                member = tarfile.TarInfo(name)
+                member.size = len(contents)
+                archive.addfile(member, io.BytesIO(contents))
+            fifo = tarfile.TarInfo("runtime/device-pipe")
+            fifo.type = tarfile.FIFOTYPE
+            archive.addfile(fifo)
+
+        report = inspect_artifact(artifact)
+
+        self.assertEqual(report["status"], "BLOCKED")
+        self.assertEqual(report["special_entries"], ["runtime/device-pipe"])
 
     def test_artifact_inventory_fails_closed_when_directory_walk_skips_unreadable_subtrees(self) -> None:
         artifact = self.root / "partially-readable-artifact"
@@ -1086,6 +1264,47 @@ class DistributionAuditTests(unittest.TestCase):
 
         self.assertEqual(report["artifact"]["status"], "BLOCKED")
         self.assertIn("archive legal file could not be inspected: LICENSE", report["blockers"])
+
+    def test_zip_artifact_rejects_noncanonical_path_aliases(self) -> None:
+        artifact = self.root / "path-alias.zip"
+        with zipfile.ZipFile(artifact, "w") as archive:
+            archive.writestr("LICENSE", "license\\n")
+            archive.writestr("NOTICE.txt", "notice\\n")
+            archive.writestr("bin/./horizoncode", "first binary\\n")
+            archive.writestr("bin/horizoncode", "second binary\\n")
+
+        report = inspect_artifact(artifact)
+
+        self.assertEqual(report["status"], "BLOCKED")
+        self.assertIn("bin/./horizoncode", report["unsafe_paths"])
+
+    def test_zip_artifact_rejects_traversal_directory_entries(self) -> None:
+        artifact = self.root / "traversal-directory.zip"
+        with zipfile.ZipFile(artifact, "w") as archive:
+            archive.writestr("LICENSE", "license\n")
+            archive.writestr("NOTICE.txt", "notice\n")
+            archive.writestr("../outside/", "")
+
+        report = inspect_artifact(artifact)
+
+        self.assertEqual(report["status"], "BLOCKED")
+        self.assertIn("../outside/", report["special_entries"])
+
+    def test_tar_artifact_rejects_traversal_directory_entries(self) -> None:
+        artifact = self.root / "traversal-directory.tar"
+        with tarfile.open(artifact, "w") as archive:
+            for name, contents in (("LICENSE", b"license\n"), ("NOTICE.txt", b"notice\n")):
+                member = tarfile.TarInfo(name)
+                member.size = len(contents)
+                archive.addfile(member, io.BytesIO(contents))
+            directory = tarfile.TarInfo("../outside/")
+            directory.type = tarfile.DIRTYPE
+            archive.addfile(directory)
+
+        report = inspect_artifact(artifact)
+
+        self.assertEqual(report["status"], "BLOCKED")
+        self.assertIn("../outside", report["special_entries"])
 
     def test_tracked_root_license_symlink_is_not_first_party_license_evidence(self) -> None:
         self._commit_audit_fixture()
@@ -1161,7 +1380,9 @@ class DistributionAuditTests(unittest.TestCase):
         revision = self._commit_audit_fixture()
         artifact = self.root / "release-artifacts" / "candidate"
         (artifact / "bin").mkdir(parents=True)
-        (artifact / "bin" / "horizoncode").write_bytes(b"candidate executable")
+        executable = artifact / "bin" / "horizoncode"
+        executable.write_bytes(b"candidate executable")
+        executable.chmod(0o755)
         (artifact / "LICENSE").write_text("license\n", encoding="utf-8")
         (artifact / "NOTICE.txt").write_text("notice\n", encoding="utf-8")
         (artifact / "release-manifest.json").write_text(
@@ -1245,6 +1466,183 @@ class DistributionAuditTests(unittest.TestCase):
         self.assertIn("previous_binary_sha256", report["inputs"])
         self.assertIsNone(report["inputs"]["previous_binary_sha256"])
 
+    # --- first-party license/notice reconciliation (DEC-V1-11) ---
+
+    def _track_distinct_first_party_grant(self) -> None:
+        (self.root / "package.json").write_text(
+            json.dumps({"name": "horizoncode-workspace", "private": True, "license": "MIT"}),
+            encoding="utf-8",
+        )
+        (self.root / "LICENSE").write_text("MIT License\nfirst-party grant\n", encoding="utf-8")
+        (self.root / "NOTICE").write_text("OpenCode attribution; closure pending\n", encoding="utf-8")
+        self._commit_audit_fixture()
+        subprocess.run(["git", "add", "-f", "LICENSE", "NOTICE"], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "--quiet", "-m", "track grant"], cwd=self.root, check=True)
+
+    def _install_first_party_workspace_packages(self) -> None:
+        for name, license_value in (("first-party-ws", "MIT"), ("apache-ws", "Apache-2.0")):
+            workspace_package = self.root / "packages" / name
+            workspace_package.mkdir(parents=True)
+            manifest: dict = {"name": name, "version": "3.0.0"}
+            if license_value is not None:
+                manifest["license"] = license_value
+            (workspace_package / "package.json").write_text(json.dumps(manifest), encoding="utf-8")
+            (self.root / "node_modules" / name).symlink_to(workspace_package, target_is_directory=True)
+            product = self.root / "packages" / "opencode" / "package.json"
+            product_manifest = json.loads(product.read_text(encoding="utf-8"))
+            product_manifest.setdefault("dependencies", {})[name] = "workspace:*"
+            product.write_text(json.dumps(product_manifest), encoding="utf-8")
+
+    def test_first_party_workspace_package_is_covered_by_the_tracked_root_grant_and_notice(self) -> None:
+        self._install_first_party_workspace_packages()
+        self._track_distinct_first_party_grant()
+
+        report = audit_repository(self.root)
+
+        self.assertTrue(report["distribution_license"]["legal_decision_made"])
+        missing_files = {item["name"] for item in report["runtime_dependencies"]["missing_license_files"]}
+        self.assertNotIn("first-party-ws", missing_files)
+        # A workspace package whose declared license differs from the decided
+        # first-party grant is never covered by that grant.
+        self.assertIn("apache-ws", missing_files)
+        evidence = report["runtime_dependencies"]["first_party_workspace_grant_evidence"]
+        self.assertEqual(evidence["declared_license"], "MIT")
+        self.assertEqual({item["name"] for item in evidence["packages"]}, {"first-party-ws"})
+
+    def test_workspace_package_without_a_tracked_root_grant_stays_a_notice_blocker(self) -> None:
+        self._install_first_party_workspace_packages()
+
+        report = audit_repository(self.root)
+
+        self.assertFalse(report["distribution_license"]["legal_decision_made"])
+        missing_files = {item["name"] for item in report["runtime_dependencies"]["missing_license_files"]}
+        self.assertIn("first-party-ws", missing_files)
+        self.assertEqual(report["runtime_dependencies"]["first_party_workspace_grant_evidence"]["packages"], [])
+
+    def test_first_party_workspace_manifest_license_deviations_are_reported_as_facts(self) -> None:
+        devtool = self.root / "packages" / "devtool"
+        devtool.mkdir(parents=True)
+        (devtool / "package.json").write_text(
+            json.dumps({"name": "@horizoncode/devtool", "private": True}), encoding="utf-8"
+        )
+
+        report = audit_repository(self.root)
+        reconciliation = report["distribution_license"]["workspace_manifest_reconciliation"]
+
+        self.assertGreaterEqual(reconciliation["scanned"], 2)
+        self.assertIn(
+            "packages/devtool/package.json",
+            {item["path"] for item in reconciliation["deviations"]},
+        )
+        self.assertFalse(any("devtool" in blocker for blocker in report["blockers"]))
+
+    def test_runtime_dependency_legacy_licenses_metadata_is_not_reported_as_missing(self) -> None:
+        transitive = self.root / "node_modules" / "transitive-runtime" / "package.json"
+        manifest = json.loads(transitive.read_text(encoding="utf-8"))
+        manifest["licenses"] = [{"type": "MIT", "url": "https://example.invalid/mit"}]
+        transitive.write_text(json.dumps(manifest), encoding="utf-8")
+
+        unlicensed = self.root / "node_modules" / "unlicensed-runtime"
+        unlicensed.mkdir()
+        (unlicensed / "package.json").write_text(
+            json.dumps({"name": "unlicensed-runtime", "version": "3.0.0"}), encoding="utf-8"
+        )
+        first_party = self.root / "node_modules" / "first-party-runtime" / "package.json"
+        first_party_manifest = json.loads(first_party.read_text(encoding="utf-8"))
+        first_party_manifest["dependencies"]["unlicensed-runtime"] = "3.0.0"
+        first_party.write_text(json.dumps(first_party_manifest), encoding="utf-8")
+
+        report = audit_repository(self.root)
+        runtime = report["runtime_dependencies"]
+        transitive_row = next(item for item in runtime["packages"] if item["name"] == "transitive-runtime")
+        missing_metadata = {item["name"] for item in runtime["missing_license_metadata"]}
+
+        # Declared license metadata in the package's own manifest — including the
+        # legacy npm `licenses` form — counts as metadata evidence.
+        self.assertEqual(transitive_row["license"], "MIT")
+        self.assertNotIn("transitive-runtime", missing_metadata)
+        # A manifest that declares no license metadata at all stays blocked.
+        self.assertIn("unlicensed-runtime", missing_metadata)
+
+    # --- stale artifact / candidate path detection ---
+
+    def _write_legacy_output(self) -> Path:
+        legacy = self.root / "packages" / "opencode" / "dist" / "opencode-linux-x64"
+        (legacy / "bin").mkdir(parents=True)
+        (legacy / "bin" / "opencode").write_bytes(b"legacy binary")
+        (legacy / "package.json").write_text(json.dumps({"name": "opencode-linux-x64"}), encoding="utf-8")
+        return legacy
+
+    def _write_product_candidate(self, target: str = "horizoncode-linux-x64") -> Path:
+        candidate = self.root / "packages" / "opencode" / "dist" / target / "bin"
+        candidate.mkdir(parents=True)
+        (candidate / "horizoncode").write_bytes(b"candidate binary")
+        (candidate / "LICENSE").write_text("MIT License\n", encoding="utf-8")
+        (candidate / "NOTICE").write_text("notice\n", encoding="utf-8")
+        return candidate
+
+    def test_distribution_audit_prefers_the_product_candidate_over_stale_legacy_output(self) -> None:
+        legacy = self._write_legacy_output()
+        candidate = self._write_product_candidate()
+
+        report = audit_repository(self.root)
+        artifact = report["artifact"]
+
+        self.assertEqual(artifact["discovery"]["kind"], "CANDIDATE")
+        self.assertEqual(Path(artifact["path"]), candidate)
+        self.assertNotIn("opencode-linux-x64/bin/opencode", artifact["members"])
+        self.assertIn(
+            legacy.relative_to(self.root).as_posix(),
+            artifact["discovery"]["stale_outputs"],
+        )
+        self.assertFalse(any("stale legacy build output" in blocker for blocker in report["blockers"]))
+        # The candidate itself is still unqualified: no provenance manifest.
+        self.assertIn(
+            "candidate file inventory is missing, incomplete, or does not match the inspected artifact",
+            report["blockers"],
+        )
+        self.assertEqual(report["release_status"], "BLOCKED")
+
+    def test_distribution_audit_blocks_stale_legacy_build_output_that_is_not_a_candidate(self) -> None:
+        legacy = self._write_legacy_output()
+
+        report = audit_repository(self.root)
+        artifact = report["artifact"]
+
+        self.assertEqual(artifact["discovery"]["kind"], "STALE_LEGACY")
+        self.assertEqual(Path(artifact["path"]), self.root / "packages" / "opencode" / "dist")
+        self.assertIn(
+            f"stale legacy build output is not a HorizonCode candidate artifact: "
+            f"{legacy.relative_to(self.root).as_posix()}",
+            report["blockers"],
+        )
+        self.assertIn("inspected artifact is missing legal files or contains unsafe links/paths", report["blockers"])
+        self.assertEqual(report["release_status"], "BLOCKED")
+
+    def test_distribution_audit_rejects_ambiguous_candidate_discovery_without_an_explicit_artifact(self) -> None:
+        self._write_product_candidate("horizoncode-linux-x64")
+        self._write_product_candidate("horizoncode-linux-arm64")
+
+        report = audit_repository(self.root)
+
+        self.assertEqual(report["artifact"]["discovery"]["kind"], "AMBIGUOUS")
+        self.assertIn(
+            "multiple candidate artifacts were found; supply --artifact to select the exact candidate",
+            report["blockers"],
+        )
+        self.assertIsNone(report["artifact"]["discovery"]["selected"])
+        self.assertEqual(report["release_status"], "BLOCKED")
+
+        explicit = self.root / "packages" / "opencode" / "dist" / "horizoncode-linux-x64" / "bin"
+        resolved = audit_repository(self.root, artifact=explicit)
+
+        self.assertEqual(resolved["artifact"]["discovery"]["kind"], "SUPPLIED")
+        self.assertNotIn(
+            "multiple candidate artifacts were found; supply --artifact to select the exact candidate",
+            resolved["blockers"],
+        )
+        self.assertNotIn("no built package artifact was supplied or found", resolved["blockers"])
+
 
 class PlatformSupportMatrixTests(unittest.TestCase):
     def test_missing_product_run_keeps_linux_unverified_windows_unavailable_and_macos_out_of_scope(self) -> None:
@@ -1292,8 +1690,12 @@ class PlatformSupportMatrixTests(unittest.TestCase):
                 "architecture": "x86_64",
                 "wsl": True,
             },
-            "source_checkout": {"status": "CLEAN", "revision": "source-revision"},
-            "artifacts": {"candidate": {"sha256": "candidate-sha256"}},
+            "source_checkout": {"status": "CLEAN", "revision": "a" * 40},
+            "artifacts": {"candidate": {"sha256": "a" * 64}},
+            "scenarios": {
+                name: {"status": "PASS"}
+                for name in ("clean_install", "tui_launch", "upgrade", "migration", "rollback", "artifact_integrity")
+            },
         }
 
         matrix = build_platform_support_matrix(evidence)
@@ -1302,8 +1704,8 @@ class PlatformSupportMatrixTests(unittest.TestCase):
         wsl2 = matrix["lanes"]["wsl2"]
         self.assertEqual(wsl2["install_matrix_status"], "PASS")
         self.assertEqual(wsl2["support_status"], "NOT_VERIFIED")
-        self.assertEqual(wsl2["install_evidence"]["source_revision"], "source-revision")
-        self.assertEqual(wsl2["install_evidence"]["candidate_sha256"], "candidate-sha256")
+        self.assertEqual(wsl2["install_evidence"]["source_revision"], "a" * 40)
+        self.assertEqual(wsl2["install_evidence"]["candidate_sha256"], "a" * 64)
         self.assertEqual(matrix["lanes"]["native_windows"]["support_status"], "UNAVAILABLE")
 
     def test_passed_native_linux_install_smoke_is_recorded_without_promoting_linux_support(self) -> None:
@@ -1316,11 +1718,11 @@ class PlatformSupportMatrixTests(unittest.TestCase):
                 "architecture": "x86_64",
                 "wsl": False,
             },
-            "source_checkout": {"status": "CLEAN", "revision": "source-revision"},
-            "artifacts": {"candidate": {"sha256": "candidate-sha256"}},
+            "source_checkout": {"status": "CLEAN", "revision": "b" * 40},
+            "artifacts": {"candidate": {"sha256": "b" * 64}},
             "scenarios": {
-                "clean_install": {"status": "PASS"},
-                "tui_launch": {"status": "PASS"},
+                name: {"status": "PASS"}
+                for name in ("clean_install", "tui_launch", "upgrade", "migration", "rollback", "artifact_integrity")
             },
         }
 
@@ -1329,15 +1731,56 @@ class PlatformSupportMatrixTests(unittest.TestCase):
         lane = matrix["lanes"]["native_linux"]
         self.assertEqual(lane["install_matrix_status"], "PASS")
         self.assertEqual(lane["support_status"], "NOT_VERIFIED")
-        self.assertEqual(lane["install_evidence"]["source_revision"], "source-revision")
+        self.assertEqual(lane["install_evidence"]["source_revision"], "b" * 40)
         self.assertEqual(
             lane["install_evidence"]["scenario_statuses"],
-            {"clean_install": "PASS", "tui_launch": "PASS"},
+            {
+                name: "PASS"
+                for name in ("clean_install", "tui_launch", "upgrade", "migration", "rollback", "artifact_integrity")
+            },
         )
         self.assertEqual(matrix["lanes"]["wsl2"]["install_matrix_status"], "NOT_RUN")
         self.assertEqual(matrix["lanes"]["native_windows"]["support_status"], "UNAVAILABLE")
         self.assertEqual(matrix["lanes"]["macos"]["support_status"], "OUT_OF_SCOPE")
         self.assertEqual(matrix["assessment_status"], "NOT_VERIFIED")
+
+    def test_malformed_or_incomplete_install_matrix_is_not_bound_as_evidence(self) -> None:
+        base = {
+            "status": "PASS",
+            "platform": {"system": "Linux", "host_kind": "Linux"},
+            "source_checkout": {"status": "CLEAN", "revision": "c" * 40},
+            "artifacts": {"candidate": {"sha256": "c" * 64}},
+            "scenarios": {
+                name: {"status": "PASS"}
+                for name in ("clean_install", "tui_launch", "upgrade", "migration", "rollback", "artifact_integrity")
+            },
+        }
+        cases = {
+            "malformed candidate digest": {
+                **base,
+                "artifacts": {"candidate": {"sha256": "candidate-sha256"}},
+            },
+            "incomplete scenario map": {
+                **base,
+                "scenarios": {"clean_install": {"status": "PASS"}},
+            },
+            "contradictory PASS status": {
+                **base,
+                "scenarios": {
+                    **base["scenarios"],
+                    "rollback": {"status": "NOT_RUN"},
+                },
+            },
+        }
+
+        for label, evidence in cases.items():
+            with self.subTest(label=label):
+                matrix = build_platform_support_matrix(evidence)
+                lane = matrix["lanes"]["native_linux"]
+                self.assertEqual(lane["install_matrix_status"], "PASS")
+                self.assertIsNone(lane["install_evidence"])
+                self.assertIn("not bound", lane["install_evidence_limitation"])
+                self.assertEqual(lane["support_status"], "NOT_VERIFIED")
 
     def test_foreign_or_unbound_install_status_is_not_recorded_as_bound_evidence(self) -> None:
         foreign = build_platform_support_matrix(
@@ -2196,6 +2639,40 @@ class IsolatedBuildPreparationTests(unittest.TestCase):
 
         self.assertFalse(report["artifact_inventory_valid"])
         self.assertIn("candidate provenance manifest must use schemaVersion 2", report["artifact_inventory_errors"])
+
+    def test_artifact_inventory_rejects_duplicate_manifest_keys(self) -> None:
+        artifact = self.source / "duplicate-key-artifact"
+        artifact.mkdir()
+        binary = artifact / "horizoncode"
+        binary.write_bytes(b"candidate")
+        license_file = artifact / "LICENSE"
+        license_file.write_bytes(b"license\n")
+        notice_file = artifact / "NOTICE.txt"
+        notice_file.write_bytes(b"notice\n")
+        files = []
+        for path in (binary, license_file, notice_file):
+            contents = path.read_bytes()
+            files.append({
+                "path": path.name,
+                "sizeBytes": len(contents),
+                "sha256": hashlib.sha256(contents).hexdigest(),
+            })
+        valid_digest = "0" * 64
+        manifest = (
+            '{"schemaVersion":2,"sourceRevision":"0123456789abcdef",'
+            '"sourceStateSha256":"not-a-digest",'
+            f'"sourceStateSha256":"{valid_digest}",'
+            f'"postBuildSourceStateSha256":"{valid_digest}",'
+            '"binaryPath":"horizoncode",'
+            f'"binarySizeBytes":{binary.stat().st_size},'
+            f'"binarySha256":"{hashlib.sha256(binary.read_bytes()).hexdigest()}",'
+            f'"artifactFiles":{json.dumps(files)}}}'
+        )
+        (artifact / "release-manifest.json").write_text(manifest, encoding="utf-8")
+
+        report = inspect_artifact(artifact)
+
+        self.assertFalse(report["artifact_inventory_valid"])
 
     def test_failed_build_command_surfaces_captured_diagnostics(self) -> None:
         try:

@@ -371,4 +371,56 @@ describe("ProviderDoctor.inspectOffline", () => {
       globalThis.fetch = originalFetch
     }
   })
+
+  test("each tier entry point refuses the other tiers' requests", () => {
+    const offlineRequest = { ...request } as const
+    const catalogRequest = {
+      ...request,
+      tier: "catalog",
+      maxNetworkRequests: 1,
+      networkGrantRef: "grant:caller-asserted",
+    } as const
+    const fullRequest = {
+      ...request,
+      tier: "full",
+      maxNetworkRequests: 1,
+      networkGrantRef: "grant:caller-asserted",
+      spendConsentRef: "consent:caller-asserted",
+    } as const
+
+    // A well-formed request for one tier is not authority to run it through
+    // another tier's projection: the offline entry point must not be able to
+    // absorb consent-labelled requests, and neither guarded tier may accept an
+    // offline-shaped request that carries no grant at all.
+    expect(() => ProviderDoctor.inspectOffline(catalogRequest, auth)).toThrow(/only accepts offline/)
+    expect(() => ProviderDoctor.inspectOffline(fullRequest, auth)).toThrow(/only accepts offline/)
+    expect(() => ProviderDoctor.inspectCatalog(offlineRequest, auth)).toThrow(/only accepts catalog/)
+    expect(() => ProviderDoctor.inspectFull(offlineRequest, auth)).toThrow(/only accepts full/)
+    expect(() => ProviderDoctor.inspectCatalog(fullRequest, auth)).toThrow(/only accepts catalog/)
+  })
+
+  test("rejects an untrusted or absent principal on every tier before any projection", () => {
+    const catalogRequest = {
+      ...request,
+      tier: "catalog",
+      maxNetworkRequests: 1,
+      networkGrantRef: "grant:caller-asserted",
+    } as const
+    const fullRequest = {
+      ...request,
+      tier: "full",
+      maxNetworkRequests: 1,
+      networkGrantRef: "grant:caller-asserted",
+      spendConsentRef: "consent:caller-asserted",
+    } as const
+    const untrusted = { principal: { kind: "untrusted" } } as never
+    const noPrincipal = {} as never
+
+    expect(() => ProviderDoctor.inspectOffline(request, untrusted)).toThrow(/trusted authenticated principal/)
+    expect(() => ProviderDoctor.inspectCatalog(catalogRequest, untrusted)).toThrow(/trusted authenticated principal/)
+    expect(() => ProviderDoctor.inspectFull(fullRequest, untrusted)).toThrow(/trusted authenticated principal/)
+    expect(() => ProviderDoctor.inspectOffline(request, noPrincipal)).toThrow(/trusted authenticated principal/)
+    expect(() => ProviderDoctor.inspectCatalog(catalogRequest, noPrincipal)).toThrow(/trusted authenticated principal/)
+    expect(() => ProviderDoctor.inspectFull(fullRequest, noPrincipal)).toThrow(/trusted authenticated principal/)
+  })
 })

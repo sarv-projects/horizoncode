@@ -286,6 +286,14 @@ export class SearchRuntimeError extends Error {
   }
 }
 
+/** §37.5/DEC-V1-26 transient set: 408/425 and every 5xx carry the bounded
+ * same-route retry. At attempt 1 they may only be classified as the retryable
+ * failure — a terminal `FAILED` there would silently skip the mandated retry
+ * and could fail over or report exhaustion early. */
+function transientHttpStatus(status: number | undefined): boolean {
+  return status === 408 || status === 425 || (status !== undefined && status >= 500 && status <= 599)
+}
+
 /** Ensure HostKernel's bounded route evidence is a projection of the exact
  * ordered plan Core admitted. A valid provider ID alone is not enough: a
  * disabled route must never silently exceed the user's consent. */
@@ -306,6 +314,9 @@ export function validateCascadeResponseRoutes(
         throw new Error("HostKernel reused a web-search route receipt reference")
       }
       seenReceiptRefs.add(item.receiptRef)
+    }
+    if (item.status === "FAILED" && item.attempt === 1 && transientHttpStatus(item.httpStatus)) {
+      throw new Error("HostKernel returned a retryable HTTP status without its required same-route retry")
     }
     if (previousStatus === "SUCCEEDED" || previousStatus === "UNKNOWN" ||
       (previousStatus === "NOT_DISPATCHED" && previousNotDispatchedFailure === "cancelled")) {
@@ -340,6 +351,9 @@ export function validateCascadeResponseRoutes(
     previousStatus = item.status
     previousNotDispatchedFailure = item.notDispatchedFailure
     previousHttpStatus = item.httpStatus
+  }
+  if (response.status !== "UNKNOWN" && response.attempts.some((item) => item.status === "UNKNOWN")) {
+    throw new Error("HostKernel must preserve an unknown route outcome as an UNKNOWN aggregate outcome")
   }
   if ((previousStatus === "RETRYABLE_FAILURE" ||
     (previousStatus === "NOT_DISPATCHED" && (previousNotDispatchedFailure === "timed_out" || previousNotDispatchedFailure === "transport_failure"))) &&
@@ -388,6 +402,10 @@ export function validateCascadeResponseRoutes(
     throw new Error("HostKernel exhausted the web-search cascade after reporting a successful route")
   }
   if (response.status === "EXHAUSTED") {
+    if (response.attempts.some((item) =>
+      item.status === "NOT_DISPATCHED" && item.notDispatchedFailure === "cancelled")) {
+      throw new Error("HostKernel reported exhaustion after a cancelled route receipt")
+    }
     const last = response.attempts.at(-1)
     if (!last || last.routeIndex !== execution.routes.length - 1) {
       throw new Error("HostKernel reported exhaustion before every approved route was consumed")
@@ -420,6 +438,22 @@ export function validateCascadeResponseRoutes(
     throw new Error("HostKernel reconciled an unavailable result without a successful route receipt")
   }
   return response
+}
+
+/** A continuing WAITING_SECRET projection retains its durable HostKernel
+ * cursor identity across resume. Terminal recovery is receipt-only by §37.5
+ * and intentionally carries no cascadeRef/cascadeDigest to compare. */
+export function validateCascadeContinuationIdentity<
+  T extends Pick<SearchCascadeResponseV1, "status" | "cascadeRef" | "cascadeDigest">,
+>(
+  previous: Pick<SearchCascadeResponseV1, "cascadeRef" | "cascadeDigest">,
+  resumed: T,
+): T {
+  if (resumed.status === "WAITING_SECRET" &&
+    (resumed.cascadeRef !== previous.cascadeRef || resumed.cascadeDigest !== previous.cascadeDigest)) {
+    throw new Error("HostKernel changed its durable cascade cursor during BYO resume")
+  }
+  return resumed
 }
 
 function parseAndValidateCascadeResponse(
@@ -519,6 +553,9 @@ export function parseCascadeResponse(value: Readonly<Record<string, unknown>>): 
     const optionalInt = (key: string, max: number) => {
       const field = item[key]
       if (field === undefined || field === null) return undefined
+      if (key === "httpStatus" && Number.isSafeInteger(field) && ((field as number) < 100 || (field as number) > 599)) {
+        throw new Error("HostKernel returned an invalid HTTP status")
+      }
       if (!Number.isSafeInteger(field) || (field as number) < 0 || (field as number) > max) throw new Error("HostKernel returned an invalid route receipt bound")
       return field as number
     }
@@ -552,7 +589,7 @@ export function parseCascadeResponse(value: Readonly<Record<string, unknown>>): 
       !([408, 425].includes(httpStatus) || (httpStatus >= 500 && httpStatus <= 599)))) {
       throw new Error("HostKernel returned a retryable outcome outside the bounded transient policy")
     }
-    if (status === "FAILED" && attempt === 1 && (httpStatus === 408 || httpStatus === 425)) {
+    if (status === "FAILED" && attempt === 1 && transientHttpStatus(httpStatus)) {
       throw new Error("HostKernel returned a retryable HTTP status without its required same-route retry")
     }
     // The host wire projection carries all three response fields explicitly as
@@ -581,6 +618,9 @@ export function parseCascadeResponse(value: Readonly<Record<string, unknown>>): 
       ...(resultCount !== undefined ? { resultCount } : {}),
     }
   })
+  if (value.status !== "UNKNOWN" && attempts.some((item) => item.status === "UNKNOWN")) {
+    throw new Error("HostKernel must preserve an unknown route outcome as an UNKNOWN aggregate outcome")
+  }
   const selectedProvider = value.selectedProvider
   if (selectedProvider !== undefined && selectedProvider !== null &&
     (typeof selectedProvider !== "string" || !(SEARCH_ROUTE_IDS as readonly string[]).includes(selectedProvider))) {
@@ -618,11 +658,23 @@ export function parseCascadeResponse(value: Readonly<Record<string, unknown>>): 
   }
   let cascade: Pick<SearchCascadeResponseV1, "cascadeRef" | "cascadeDigest" | "routePlanDigest" | "routeIndex" | "nextRoute"> = {}
   if (value.status === "WAITING_SECRET") {
-    if (typeof value.cascadeRef !== "string" || value.cascadeRef.trim().length === 0 || value.cascadeRef.length > 128 ||
+    const nextRoute = value.nextRoute
+    const authorizationKeys = ["attemptRef", "attemptDigest", "routeKey", "attempt", "providerRequest", "request", "trusted"]
+    const authorizationRecord = typeof nextRoute === "object" && nextRoute !== null && !Array.isArray(nextRoute)
+      ? nextRoute as Record<string, unknown>
+      : undefined
+    if (!authorizationRecord || Object.keys(authorizationRecord).length !== authorizationKeys.length ||
+      authorizationKeys.some((key) => !Object.hasOwn(authorizationRecord, key)) ||
+      ["providerRequest", "request", "trusted"].some((key) => {
+        const field = authorizationRecord[key]
+        return typeof field !== "object" || field === null || Array.isArray(field)
+      })) {
+      throw new Error("HostKernel returned an invalid BYO search authorization projection")
+    }
+    if (typeof value.cascadeRef !== "string" || !/^search_cascade_[a-f0-9]{64}$/.test(value.cascadeRef) ||
       typeof value.cascadeDigest !== "string" || !/^blake3:[a-f0-9]{64}$/.test(value.cascadeDigest) ||
       typeof value.routePlanDigest !== "string" || !/^blake3:[a-f0-9]{64}$/.test(value.routePlanDigest) ||
       !Number.isSafeInteger(value.routeIndex) || (value.routeIndex as number) < 0 || (value.routeIndex as number) > 9 ||
-      typeof value.nextRoute !== "object" || value.nextRoute === null || Array.isArray(value.nextRoute) ||
       value.selectedProvider !== undefined || value.body !== undefined || value.receiptRef !== undefined ||
       value.managedAttempt !== undefined || value.attemptScopeTransition !== undefined ||
       attempts.some((item) => item.status === "SUCCEEDED" || item.status === "UNKNOWN")) {
@@ -633,7 +685,7 @@ export function parseCascadeResponse(value: Readonly<Record<string, unknown>>): 
       cascadeDigest: value.cascadeDigest,
       routePlanDigest: value.routePlanDigest,
       routeIndex: value.routeIndex as number,
-      nextRoute: value.nextRoute as Readonly<Record<string, unknown>>,
+      nextRoute: authorizationRecord,
     }
   } else if (["cascadeRef", "cascadeDigest", "routeIndex", "nextRoute"].some((key) => value[key] !== undefined)) {
     throw new Error("HostKernel returned orphaned BYO web-search continuation fields")
@@ -1054,7 +1106,8 @@ const guardedLayer = Layer.effect(
               )
             }
           }
-          cascade = parseAndValidateCascadeResponse(resumed, input, cascade.routePlanDigest)
+          const resumedCascade = parseAndValidateCascadeResponse(resumed, input, cascade.routePlanDigest)
+          cascade = validateCascadeContinuationIdentity(cascade, resumedCascade)
         }
         return cascade
       },

@@ -276,7 +276,6 @@ export async function createLinuxSecretServiceStore(options: {
 
   const recoverPending = async () => transact(async (index) => {
     const entries = Object.entries(index.pending)
-    if (entries.length === 0) return { value: undefined }
     for (const [id, pending] of entries) {
       const current = index.secrets[pending.metadata.secretRef]
       const replacementIsActive = !!pending.itemPath &&
@@ -298,7 +297,15 @@ export async function createLinuxSecretServiceStore(options: {
       }
       delete index.pending[id]
     }
-    return { value: undefined, changed: true }
+    // Revocation commits before deleting the OS credential item. If backend
+    // deletion failed after that commit, retry it on reopen; revoked records
+    // remain non-readable and deleteSecret is required to be idempotent.
+    for (const secret of Object.values(index.secrets)) {
+      if (secret.metadata.status === "REVOKED") {
+        await options.backend.deleteSecret(secret.itemPath, secret.metadata.secretRef, secret.metadata.version - 1)
+      }
+    }
+    return { value: undefined, ...(entries.length === 0 ? {} : { changed: true }) }
   })
 
   await recoverPending()

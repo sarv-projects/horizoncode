@@ -58,7 +58,10 @@ export function webSearchProviderLabel(provider: SearchRouteID | undefined) {
   }
 }
 
-function projectRouteAttempts(attempts: readonly SearchRouteAttempt[]) {
+/** Project bounded internal route provenance into the public V1 wire rows.
+ * Exported for P5 contract tests: the runtime gates keep the tool's execute
+ * path unreachable offline, so projection completeness is asserted directly. */
+export function projectRouteAttempts(attempts: readonly SearchRouteAttempt[]) {
   // Route identity and index are required by the public V1 schema. Never infer
   // them from the provider name/order at projection time; rows lacking the
   // authenticated HostKernel pins are omitted from the bounded public view.

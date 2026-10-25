@@ -129,14 +129,18 @@ export function postPatch(input: {
   return Object.freeze({ files: Object.freeze(files), omittedFiles, omittedErrors })
 }
 
-/** Render the bounded blocks as tool-result text. Empty when no errors exist. */
+/** Render the bounded blocks as tool-result text. Empty only when the input
+ * carried no error diagnostics at all: omitted errors always leave a summary,
+ * even when the file budget dropped every block. */
 export function postPatchText(result: PostPatchDiagnosticsV1): string {
-  if (result.files.length === 0) return ""
-  const blocks = result.files.map((file) => file.block).join("\n\n")
-  const omitted = result.omittedFiles > 0 || result.omittedErrors > 0
-    ? `\n\n... ${result.omittedErrors} more error${result.omittedErrors === 1 ? "" : "s"} across ${result.omittedFiles} file${result.omittedFiles === 1 ? "" : "s"} omitted`
+  const filesWithOmissions =
+    result.files.filter((file) => file.errors > file.shown).length + result.omittedFiles
+  const summary = result.omittedErrors > 0 || result.omittedFiles > 0
+    ? `... ${result.omittedErrors} more error${result.omittedErrors === 1 ? "" : "s"} across ${filesWithOmissions} file${filesWithOmissions === 1 ? "" : "s"} omitted`
     : ""
-  return `${blocks}${omitted}`
+  if (result.files.length === 0) return summary
+  const blocks = result.files.map((file) => file.block).join("\n\n")
+  return summary ? `${blocks}\n\n${summary}` : blocks
 }
 
 export * as Diagnostic from "./diagnostic"

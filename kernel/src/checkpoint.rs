@@ -1319,13 +1319,23 @@ fn validate_observation(observed: &WorkspaceObservationV1) -> Result<(), Checkpo
     }
     let mut paths = std::collections::BTreeSet::new();
     for file in &observed.files {
+        // Observation shape is structural only: safe relative paths, canonical
+        // digests, bounded unique entries. File kind and link count are workspace
+        // *facts* the planner reports per path — a multi-link regular file must
+        // surface as an `UnsafePath` conflict for exactly that selected path
+        // (`preview_restore_mode`), not reject the whole preview, otherwise one
+        // hard-linked file would silently block restoring unrelated safe paths.
+        // The invariant stays enforced elsewhere: the HostKernel observer refuses
+        // such workspaces outright (`effect_denied`), capture-side
+        // `validate_file` rejects multi-link targets, and
+        // `record_restore_receipts` still requires `link_count == 1` before a
+        // restore can settle.
         if !valid_relative_path(&file.path)
             || file
                 .digest
                 .as_ref()
                 .is_some_and(|digest| !valid_digest(digest))
             || file.digest.is_none() && file.byte_length != 0
-            || (file.kind == WorkspaceFileKindV1::RegularFile && file.link_count != 1)
             || !paths.insert(file.path.as_str())
         {
             return Err(CheckpointErrorV1::InvalidInput);

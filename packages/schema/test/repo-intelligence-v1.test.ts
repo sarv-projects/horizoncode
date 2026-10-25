@@ -140,6 +140,41 @@ describe("Horizon repository-intelligence v1 contracts", () => {
       ...page,
       entries: [{ ...page.entries[0], pathRef: "../outside/package.json" }],
     })).toThrow()
+
+    // Status/freshness/completeness/reason coherence: a discovery page may not
+    // claim one state while carrying the evidence of another.
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoDiscoveryPageV1)({
+      ...page,
+      status: "CURRENT",
+    })).toThrow("current discovery must be complete")
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoDiscoveryPageV1)({
+      ...page,
+      status: "CURRENT",
+      unavailableReason: "read_unavailable",
+    })).toThrow("current discovery must be complete")
+    const { partialReason: _partialReason, ...pageWithoutReason } = page
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoDiscoveryPageV1)(pageWithoutReason)).toThrow(
+      "partial discovery requires a partial reason",
+    )
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoDiscoveryPageV1)({
+      ...page,
+      status: "UNAVAILABLE",
+      freshness: "unknown",
+      completeness: "unavailable",
+      unavailableReason: "read_unavailable",
+    })).toThrow("unavailable discovery must have no entries and a typed reason")
+    // The coherent unavailable shape is accepted, with no entries and no reason lost.
+    expect(
+      Schema.decodeUnknownSync(RepoIntel.RepoDiscoveryPageV1)({
+        ...pageWithoutReason,
+        status: "UNAVAILABLE",
+        freshness: "unknown",
+        completeness: "unavailable",
+        unavailableReason: "read_unavailable",
+        entries: [],
+        coverage: { entries: 0, bytes: 0, depth: 0 },
+      }),
+    ).toMatchObject({ status: "UNAVAILABLE", unavailableReason: "read_unavailable", entries: [] })
   })
 
   test("keeps RepoIntel patch fences bounded and read-only", () => {
@@ -498,6 +533,44 @@ describe("Horizon repository-intelligence v1 contracts", () => {
       ...repoStructureFixture.unavailablePage,
       sourceKind: "lexical",
     })).toThrow()
+
+    // Cross-field status/freshness/completeness coherence and full node
+    // provenance: a page may not mix the evidence of one state with another.
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoStructurePageV1)({
+      ...page,
+      freshness: "stale",
+    })).toThrow("stale freshness must use STALE status")
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoStructurePageV1)({
+      ...page,
+      completeness: "unavailable",
+    })).toThrow("unavailable completeness must use UNAVAILABLE status")
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoStructurePageV1)({
+      ...page,
+      status: "UNAVAILABLE",
+    })).toThrow("unavailable pages must have no source and unknown freshness")
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoStructurePageV1)({
+      ...page,
+      status: "UNAVAILABLE",
+      sourceKind: "none",
+      freshness: "unknown",
+      completeness: "unavailable",
+    })).toThrow("unavailable pages must not contain node references")
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoStructurePageV1)({
+      ...page,
+      sourceKind: "none",
+    })).toThrow("pages without a source must be unavailable")
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoStructurePageV1)({
+      ...page,
+      fallback: { reason: "parser_unsupported", sourceKind: "lexical" },
+    })).toThrow("fallback source kind must match the page source kind")
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoStructurePageV1)({
+      ...page,
+      nodes: [{ ...nodeRef, workspaceBinding: "another-workspace" }],
+    })).toThrow("every node reference must match the page workspace binding")
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoStructurePageV1)({
+      ...page,
+      nodes: [{ ...nodeRef, sourceGeneration: Schema.decodeUnknownSync(Composition.Digest)("blake3:" + "0".repeat(64)) }],
+    })).toThrow("every node reference must match the page generation")
   })
 
   test("binds opaque overlay references to page and node provenance without carrying content", () => {

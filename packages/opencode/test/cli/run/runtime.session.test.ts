@@ -9,9 +9,7 @@ describe("run session resolution", () => {
   })
 
   test("distinguishes a successful lookup with no session from a failed lookup", async () => {
-    await expect(requireSessionData(Promise.resolve({ data: undefined }))).rejects.toBeInstanceOf(
-      SessionNotFoundError,
-    )
+    await expect(requireSessionData(Promise.resolve({ data: undefined }))).rejects.toBeInstanceOf(SessionNotFoundError)
   })
 
   test("uses the typed missing-session error when local bring-up returns no id", () => {
@@ -23,5 +21,12 @@ describe("run session resolution", () => {
     const cause = { name: "NotFoundError", data: { message: "session does not exist" } }
 
     await expect(requireSessionData(Promise.resolve({ error: cause }))).rejects.toBe(cause)
+  })
+
+  test("does not confuse an upstream error message with the missing-session sentinel", async () => {
+    const cause = new Error("Session not found: upstream session service unavailable")
+
+    await expect(requireSessionData(Promise.reject(cause))).rejects.toBe(cause)
+    await expect(requireSessionData(Promise.reject(cause))).rejects.not.toBeInstanceOf(SessionNotFoundError)
   })
 })

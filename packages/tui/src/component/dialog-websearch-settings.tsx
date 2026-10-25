@@ -232,6 +232,7 @@ export function DialogWebSearchSettings() {
           "Allow anonymous web search",
           "Search queries will be sent to Exa, You.com, Firecrawl, and Parallel as needed. These anonymous routes may have provider-side rate limits. This records consent and enables the four-route free cascade; dispatch remains unavailable until Guarded acceptance passes, and no paid route is enabled.",
           "Decline",
+          { preservePrevious: true },
         ) ?? false
         if (!consent) return
       }
@@ -242,6 +243,7 @@ export function DialogWebSearchSettings() {
         `Enable ${ROUTE_INFO[id].title}`,
         `Search queries will be sent to ${ROUTE_INFO[id].title} using its SecretBroker credential. Current cost is UNKNOWN and usage may incur charges. This consent applies only to this route; it does not authorize other providers.`,
         "Decline",
+        { preservePrevious: true },
       ) ?? false
       if (!consent) return
     }
@@ -264,6 +266,7 @@ export function DialogWebSearchSettings() {
       `Forget ${ROUTE_INFO[id].title} consent`,
       "This removes the stored route-specific auth/cost consent and disables this route. It will require a new explicit confirmation before it can be enabled again.",
       "Keep consent",
+      { preservePrevious: true },
     ) ?? false
     if (!approved) return
     await save(revokeRouteConsent(settings(), id))

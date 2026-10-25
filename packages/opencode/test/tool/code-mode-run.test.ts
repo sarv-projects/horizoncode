@@ -9,9 +9,11 @@ import {
   type CodeModeWaveRequestV1,
 } from "@/tool/code-mode-protocol"
 import {
+  CODE_MODE_DEADLINE_MS_V1,
   runCodeModeConversationV1,
   type CodeModeHostAdapterV1,
 } from "@/tool/code-mode-run"
+import { CODE_MODE_HELPER_LIMITS_V1 } from "@/tool/code-mode-helper"
 import type {
   CodeModeHostStateV1,
   CodeModeHostTurnV1,
@@ -611,4 +613,175 @@ test("treats a cancelled wave as terminal and refuses a later helper wave", asyn
   expect(dispatches).toBe(1)
   expect(host.calls.resume).toHaveLength(1)
   expect(outcome.status).toBe("unknown")
+})
+
+// CM-003/CM-008: the script-wide wave budget is 64. A host that keeps offering
+// waves must never get a 65th wave admitted or dispatched, and the run must not
+// claim success once the bound is reached.
+test("stops at the 64-wave script budget without admitting a 65th wave", async () => {
+  const turns: CodeModeHostTurnV1[] = []
+  for (let index = 0; index <= CODE_MODE_HELPER_LIMITS_V1.maxWaves; index++) {
+    turns.push({ executionID, frame: wave(String(index * 2 + 1), index, [`call-${index}`]) })
+  }
+  turns.push({ executionID, frame: completed(String((CODE_MODE_HELPER_LIMITS_V1.maxWaves + 1) * 2 + 1)) })
+  const host = fakeHost({ turns, inspect: terminalStatus("UNKNOWN") })
+  const dispatched: number[] = []
+  const outcome = await runCodeModeConversationV1({
+    requestID,
+    code: "for (;;) { await tools.read({ path: 'file-0.txt' }) }",
+    tools,
+    binding,
+    enablementRef: "grant-1",
+    host: host.adapter,
+    dispatchWave: async (input) => {
+      dispatched.push(input.frame.waveIndex)
+      // Every wave needs its own durable batch and receipt bindings, so the
+      // bound under test is the wave budget rather than a reused-id rejection.
+      const results: CodeModeCallResultV1[] = input.frame.calls.map((call, index) => {
+        const output = `result-${index}`
+        return {
+          callId: call.callId,
+          status: "settled",
+          receiptKind: "tool_result",
+          output,
+          resultDigest: codeModeToolResultDigestV1(output),
+          outputBytes: new TextEncoder().encode(output).byteLength,
+          receiptRef: `receipt-${input.frame.waveIndex}-${index}`,
+          receiptDigest: settle((input.frame.waveIndex % 16).toString(16)),
+        }
+      })
+      return {
+        requestId: input.frame.requestId,
+        waveIndex: input.frame.waveIndex,
+        batchId: `batch-${input.frame.waveIndex}`,
+        status: "settled",
+        results,
+        receiptDigest: codeModeWaveReceiptDigestV2(input.frame.waveIndex, results),
+      }
+    },
+  })
+
+  // Exactly 64 waves are admitted and settled; the 65th wave frame from the
+  // host is refused as invalid helper evidence, so it is never dispatched.
+  expect(dispatched).toHaveLength(CODE_MODE_HELPER_LIMITS_V1.maxWaves)
+  expect(dispatched.at(-1)).toBe(CODE_MODE_HELPER_LIMITS_V1.maxWaves - 1)
+  expect(host.calls.resume).toHaveLength(CODE_MODE_HELPER_LIMITS_V1.maxWaves)
+  expect(host.calls.resume.every((request) => request.waveResult.waveIndex < CODE_MODE_HELPER_LIMITS_V1.maxWaves)).toBe(true)
+  expect(outcome.status).not.toBe("completed")
+  expect(outcome.waves).toBe(CODE_MODE_HELPER_LIMITS_V1.maxWaves)
+  expect(outcome.totalCalls).toBe(CODE_MODE_HELPER_LIMITS_V1.maxWaves)
+  expect(host.calls.cancel).toHaveLength(1)
+  expect(host.calls.cancel[0]!.reason).toBe("parent_failure")
+})
+
+// CM-008: one trusted finite deadline (30s) is shared by the whole script and
+// a caller can neither extend nor zero it.
+test("keeps the trusted deadline inside the fixed 30-second script budget", async () => {
+  expect(CODE_MODE_DEADLINE_MS_V1).toBe(30_000)
+  expect(CODE_MODE_DEADLINE_MS_V1).toBe(CODE_MODE_HELPER_LIMITS_V1.maxExecutionMs)
+  const host = fakeHost({ turns: [] })
+  for (const deadlineMs of [30_001, 60_000, Number.MAX_SAFE_INTEGER, 0, -1, 1.5]) {
+    await expect(runCodeModeConversationV1({
+      requestID,
+      code: "return 1",
+      tools,
+      binding,
+      enablementRef: "grant-1",
+      host: host.adapter,
+      dispatchWave: async () => {
+        throw new Error("must not dispatch")
+      },
+      deadlineMs,
+    })).rejects.toThrow("fixed 30s budget")
+  }
+  // The deadline is validated before any host interaction.
+  expect(host.calls.start).toBe(0)
+})
+
+// CM-012: the fixed helper manifest pin is an exact lowercase `sha256:` digest;
+// no other algorithm, case, length or prefix may start the helper.
+test("refuses enablement whose helper digest is not the exact sha256 manifest pin", async () => {
+  const candidates = [
+    `sha256:${"A".repeat(64)}`,
+    `sha256:${"a".repeat(63)}`,
+    `sha256:${"a".repeat(65)}`,
+    `SHA256:${"a".repeat(64)}`,
+    `blake3:${"a".repeat(64)}`,
+    `"${"a".repeat(64)}"`,
+    `sha256:`,
+  ]
+  for (const helperDigest of candidates) {
+    const host = fakeHost({ turns: [], enablement: { ...enablement, helperDigest } })
+    const outcome = await runCodeModeConversationV1({
+      requestID,
+      code: "return 1",
+      tools,
+      binding,
+      enablementRef: "grant-1",
+      host: host.adapter,
+      dispatchWave: async () => {
+        throw new Error("must not dispatch")
+      },
+    })
+    expect(outcome.status).toBe("unknown")
+    expect(host.calls.start).toBe(0)
+  }
+})
+
+// CM-012: managed-lane enablement is bound to the exact Run/Task/Attempt, and a
+// matching binding must still be able to run — so the negatives are not vacuous.
+test("binds managed-lane enablement to the exact Run, Task and Attempt", async () => {
+  const managedBinding: CodeModeLaneBindingV1 = {
+    lane: "managed_attempt",
+    runID: "run_1",
+    taskID: "task_1",
+    attemptID: "attempt_1",
+  }
+  const managedEnablement = {
+    ...enablement,
+    lane: "managed_attempt",
+    runID: "run_1",
+    taskID: "task_1",
+    attemptID: "attempt_1",
+  }
+
+  const matching = fakeHost({
+    turns: [{ executionID, frame: completed("1", "completed", "managed") }],
+    enablement: managedEnablement,
+  })
+  const outcome = await runCodeModeConversationV1({
+    requestID,
+    code: "return 'managed'",
+    tools,
+    binding: managedBinding,
+    enablementRef: "grant-1",
+    host: matching.adapter,
+    dispatchWave: async () => {
+      throw new Error("must not dispatch")
+    },
+  })
+  expect(outcome).toMatchObject({ status: "completed", output: "managed" })
+  expect(matching.calls.start).toBe(1)
+
+  for (const drift of [
+    { runID: "run_2" },
+    { taskID: "task_2" },
+    { attemptID: "attempt_2" },
+    { lane: "direct_session" },
+  ]) {
+    const host = fakeHost({ turns: [], enablement: { ...managedEnablement, ...drift } })
+    const refused = await runCodeModeConversationV1({
+      requestID,
+      code: "return 1",
+      tools,
+      binding: managedBinding,
+      enablementRef: "grant-1",
+      host: host.adapter,
+      dispatchWave: async () => {
+        throw new Error("must not dispatch")
+      },
+    })
+    expect(refused.status).toBe("unknown")
+    expect(host.calls.start).toBe(0)
+  }
 })

@@ -413,14 +413,20 @@ const retryDelay = (error: LLMError, attempt: number) => {
 const validDirectContext = (context: DirectProviderRequestContextV1, requestID: string) => {
   const id = (value: string) => /^[A-Za-z0-9._:-]{1,256}$/.test(value)
   const digest = (value: string) => /^(?:sha256|blake3):[a-f0-9]{64}$/.test(value)
+  // The endpoint base is the absolute public route endpoint Core freezes from
+  // the selected route projection, so it is validated as a bounded absolute
+  // URL (the same non-empty/2048/canParse contract as
+  // `compileDirectProviderRequestContextV1`), not as an opaque identifier:
+  // every real endpoint contains `://` and a path.
+  const endpointBase = (value: string) => value.length <= 2_048 && URL.canParse(value)
   const selection = context.contextSelection
   return context.schemaVersion === 1 && context.lane === "direct" && id(context.sessionID) &&
     context.requestID === requestID && id(context.requestID) && /^(0|[1-9][0-9]{0,19})$/.test(context.sourceRevision) &&
     id(context.profile.profileID) && /^[1-9][0-9]{0,19}$/.test(context.profile.revision) && digest(context.profile.profileDigest) &&
     digest(context.permissionScopeDigest) && digest(context.policyDigest) && id(context.providerID) && id(context.modelID) &&
     id(context.harnessID) && /^[1-9][0-9]{0,19}$/.test(context.harnessRevision) && id(context.route.routeID) &&
-    id(context.route.routeRevision) && id(context.route.endpointBase) && digest(context.route.endpointRevision) &&
-    URL.canParse(context.route.endpointBase) && selection.lane === "direct" && selection.sessionID === context.sessionID &&
+    id(context.route.routeRevision) && endpointBase(context.route.endpointBase) && digest(context.route.endpointRevision) &&
+    selection.lane === "direct" && selection.sessionID === context.sessionID &&
     selection.requestID === context.requestID && selection.sourceRevision === context.sourceRevision
 }
 

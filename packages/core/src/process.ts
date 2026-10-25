@@ -290,7 +290,12 @@ const isSupervisorControlLaunch = (command: ChildProcess.Command) => {
   const standard = standardCommand(command)
   if (!standard || !standard.command.startsWith("/")) return false
   const { args, options } = standard
-  if (options.extendEnv !== false || options.stdin !== "ignore" || options.stdout !== "ignore" || options.stderr !== "ignore")
+  if (
+    options.extendEnv !== false ||
+    options.stdin !== "ignore" ||
+    options.stdout !== "ignore" ||
+    (options.stderr !== "ignore" && options.stderr !== "pipe")
+  )
     return false
   const binaryName = pinnedSupervisorBinaryName(standard.command)
   if (binaryName === "hz-kernel") {

@@ -1442,13 +1442,20 @@ mod log_tests {
         let generation = log.generation();
 
         let hits = log.search(generation, "hit", 100, 4).unwrap();
-        assert_eq!(hits.len(), 2, "one ref per matching line, no context flooding");
+        // Three of the four lines match. Exactly one ref per matching line: the
+        // three occurrences inside line 2 collapse into its single ref (per-
+        // occurrence or context rows would return 5 refs), and non-matching line
+        // 4 is never returned.
+        assert_eq!(hits.len(), 3, "one ref per matching line, no context flooding");
         assert_eq!(hits[0].line_number, 1);
         assert_eq!(hits[1].line_number, 2);
+        assert_eq!(hits[2].line_number, 3);
         assert_eq!(hits[0].excerpt, b"alph");
         assert!(hits[0].excerpt_truncated);
         assert_eq!(hits[1].excerpt, b"hit ");
         assert!(hits[1].excerpt_truncated);
+        assert_eq!(hits[2].excerpt, b"beta");
+        assert!(hits[2].excerpt_truncated);
 
         assert_eq!(log.search(generation, "hit", 1, 4096).unwrap().len(), 1);
         assert_eq!(

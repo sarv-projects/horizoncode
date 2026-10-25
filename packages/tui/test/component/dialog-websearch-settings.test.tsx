@@ -161,7 +161,7 @@ test("web-search settings record route consent and ordering without invoking an 
     await waitFor(() => dialog?.stack.length === 1)
     const initial = await waitForFrame(app, (frame) => frame.includes("Brave Search"))
     expect(initial).toContain("Built-in default")
-    expect(initial).toContain("Dispatch stays unavailable")
+    expect(initial).toContain("Dispatch remains disabled until Guarded transport")
     expect(initial).toContain("separate consent prompt")
     expect(initial).toContain("Cost and freshness")
     expect(initial).toContain("Disabled")
@@ -172,6 +172,7 @@ test("web-search settings record route consent and ordering without invoking an 
     await waitForFrame(app, (frame) => frame.includes("Allow anonymous web search"))
     app.mockInput.pressEnter()
     await waitFor(() => configWrites.length === 1)
+    expect(dialog?.stack).toHaveLength(1)
     expect(configWrites[0]?.websearch).toEqual({
       querySharingConsent: "anonymous_free_v1",
       enabled: ["exa_keyless", "youcom_free", "firecrawl_keyless", "parallel_keyless"],

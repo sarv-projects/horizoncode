@@ -306,6 +306,8 @@
 !/packages/opencode/test/session/prompt.test.ts
 !/packages/opencode/test/session/tool-batch.test.ts
 !/packages/opencode/test/session/tools.test.ts
+!/packages/opencode/test/auth/
+!/packages/opencode/test/auth/provider-transport.test.ts
 !/packages/opencode/test/tool/
 !/packages/opencode/test/tool/write.test.ts
 !/packages/opencode/test/tool/apply_patch.test.ts
@@ -827,6 +829,7 @@ tsconfig.tsbuildinfo
 !/packages/opencode/test/server/httpapi-ui.test.ts
 !/packages/opencode/test/server/httpapi-config-features-isolation.test.ts
 !/packages/opencode/test/server/project-init-git.test.ts
+!/packages/opencode/test/server/listener-memo-map.test.ts
 !/packages/opencode/test/cli/upgrade.test.ts
 !/packages/opencode/test/installation/
 !/packages/opencode/test/installation/upgrade.test.ts
@@ -1280,3 +1283,25 @@ tsconfig.tsbuildinfo
 !/packages/tui/src/util/utf8.ts
 !/packages/tui/test/util/utf8.test.ts
 !/scripts/eval/blake3.py
+
+# New focused regression tests written by the 2026-10-25 wave (P6 feature-exposure /
+# LLM executor, P4 DAP host-protocol + LSP guard-authorizer/process-lifecycle). Without
+# these exact entries the blanket `*` rule silently drops them from any commit.
+!/packages/core/test/config/feature-exposure-contract.test.ts
+!/packages/llm/test/executor-direct.test.ts
+!/packages/opencode/test/dap/host-protocol-client.test.ts
+!/packages/opencode/test/lsp/guard-authorizer.test.ts
+!/packages/opencode/test/lsp/process-lifecycle.test.ts
+# P6 retry-identity regression: a *modified overlay copy* of a pinned upstream test is
+# the exact `hidden_changed` case this audit exists to catch — without this entry the
+# HorizonCode divergence would be silently omitted from a commit.
+!/packages/llm/test/executor.test.ts
+
+# Explicit unignores for overlay visibility audit
+!/packages/tui/src/ui/dialog-confirm.tsx
+!/packages/tui/test/cli/cmd/tui/sync-live-hydration.test.tsx
+!/packages/tui/test/cli/cmd/tui/sync-undefined-messages.test.tsx
+!/packages/tui/test/fixture/
+!/packages/tui/test/fixture/tui-sdk.ts
+!/packages/opencode/src/lsp/protocol-dispatch-queue.ts
+!/packages/opencode/test/lsp/protocol-dispatch-queue.test.ts

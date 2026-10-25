@@ -20,6 +20,7 @@ import {
   validateHostProcessScope,
   type HostProcessRefV1,
 } from "@/lsp/process-scope"
+import { makeProtocolDispatchQueue } from "@/lsp/protocol-dispatch-queue"
 
 type GuardLease = {
   readonly effectID: string
@@ -115,16 +116,10 @@ export function makeHostDapProtocolAdapterV1(input: {
   const eventHandlers = new Map<HostEventName, Set<(body: unknown) => void>>()
   let nextRequestID = 0
   let dispatchesInFlight = 0
-  let outboundTail: Promise<void> = Promise.resolve()
+  const outbound = makeProtocolDispatchQueue()
   let listening = false
   let closed = false
   let quarantined = false
-
-  const sendInSequence = <T>(send: () => Promise<T>): Promise<T> => {
-    const result = outboundTail.then(send)
-    outboundTail = result.then(() => undefined, () => undefined)
-    return result
-  }
 
   const failGeneration = (error: unknown) => {
     quarantined = true
@@ -235,7 +230,7 @@ export function makeHostDapProtocolAdapterV1(input: {
           ...(context.directAttempt === undefined ? {} : { directAttempt: context.directAttempt }),
           operation: { requestSequence, requestID: id, command, arguments: args },
         }
-        const receipt: HostProtocolDispatchReceiptV1 = await sendInSequence(() =>
+        const receipt: HostProtocolDispatchReceiptV1 = await outbound.run(() =>
           dispatchHostDapOperationV1(request, input.transport.protocolOp),
         )
         journal.acceptOperation(request, receipt)

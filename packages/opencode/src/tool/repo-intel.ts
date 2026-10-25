@@ -967,8 +967,18 @@ const validateOverlayInput = (
       changes.push({ path: change.path, contents: null })
       continue
     }
+    // Freeze the validated bytes: the caller keeps ownership of the buffer it
+    // handed in (an editor producer may reuse it), so the backend must operate on
+    // a copy of exactly what was validated, never on live caller memory.
     const bytes =
-      typeof change.contents === "string" ? new Uint8Array(Buffer.from(change.contents, "utf-8")) : change.contents
+      typeof change.contents === "string"
+        ? new Uint8Array(Buffer.from(change.contents, "utf-8"))
+        : change.contents instanceof Uint8Array
+          ? new Uint8Array(change.contents)
+          : undefined
+    if (bytes === undefined) {
+      return rejected(`overlay contents must be text or bytes: ${change.path}`)
+    }
     if (bytes.length > MAX_FILE_BYTES) return rejected(`overlay file exceeds ${MAX_FILE_BYTES} bytes: ${change.path}`)
     if (decodeUtf8Strict(bytes) === undefined) {
       return rejected(`overlay contents are not UTF-8 text: ${change.path}`)

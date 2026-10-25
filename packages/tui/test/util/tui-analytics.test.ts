@@ -450,4 +450,146 @@ describe("TUI analytics projection", () => {
       renderer.dispose()
     }
   })
+
+  test("bounds the usage detail rows to the requested row limit (AN-008 retention)", () => {
+    const messages = Array.from({ length: 10 }, (_, index) => ({
+      role: "assistant",
+      usageProvenance: {
+        providerID: "test",
+        modelID: "model",
+        requestID: `request-${index}`,
+        tokens: {
+          input: { status: "provider-reported", value: 1 },
+          output: { status: "provider-reported", value: 1 },
+          reasoning: { status: "unknown" },
+          cache: { read: { status: "unknown" }, write: { status: "unknown" } },
+        },
+      },
+    }))
+
+    const rows = projectSessionUsage(messages, 2)
+    // Header + two detail rows + the two aggregate rows; the remaining eight
+    // observations are counted but never materialized as rows.
+    expect(rows).toHaveLength(5)
+    expect(rows[0]).toContain("10 provider steps/records")
+    expect(rows[0]).toContain("10 provenance records")
+    expect(rows.slice(1, 3).every((row) => row.startsWith("test/model"))).toBe(true)
+    expect(rows[3]?.startsWith("Token totals")).toBe(true)
+
+    const none = projectSessionUsage(messages, 0)
+    expect(none).toHaveLength(3)
+    expect(none[0]).toContain("10 provenance records")
+    expect(none[1]?.startsWith("Token totals")).toBe(true)
+    expect(none.join("\n")).not.toContain("request-0")
+  })
+
+  test("keeps a provider-reported cost unknown when the response carries no request identity (AN-007)", () => {
+    const rows = projectSessionUsage([
+      {
+        role: "assistant",
+        usageProvenance: {
+          providerID: "test",
+          modelID: "model",
+          cost: { status: "provider-reported", value: 7 },
+          tokens: {
+            input: { status: "provider-reported", value: 3 },
+            output: { status: "provider-reported", value: 2 },
+            reasoning: { status: "unknown" },
+            cache: { read: { status: "unknown" }, write: { status: "unknown" } },
+          },
+        },
+      },
+    ])
+
+    expect(rows[1]).toContain("cost unknown")
+    expect(rows[1]).toContain("request unknown")
+    // The unattributed value must not appear anywhere in the exported panel,
+    // neither in the detail row nor in either aggregate row.
+    expect(rows.join("\n")).not.toContain("7")
+    expect(rows.find((row) => row.startsWith("Cost observations"))).toContain("provider-reported 0")
+    expect(rows.find((row) => row.startsWith("Cost observations"))).toContain("unknown 1")
+  })
+
+  test("bounds the bounded usage scan and reports truncation instead of fabricating attribution", () => {
+    const messages: unknown[] = []
+    const partsByMessage: Record<string, unknown[]> = {}
+    for (let index = 0; index < 256; index++) {
+      const messageID = `m${index}`
+      messages.push({ id: messageID, role: "assistant" })
+      partsByMessage[messageID] = Array.from({ length: 40 }, (_, step) => ({
+        type: "step-finish",
+        stepFinishIndex: step,
+        usageProvenance: {
+          providerID: "test",
+          modelID: "model",
+          requestID: `request-${index}-${step}`,
+          tokens: {
+            input: { status: "provider-reported", value: 1 },
+            output: { status: "provider-reported", value: 1 },
+            reasoning: { status: "unknown" },
+            cache: { read: { status: "unknown" }, write: { status: "unknown" } },
+          },
+        },
+      }))
+    }
+
+    const rows = projectSessionUsage(messages, 8, partsByMessage)
+    // 256 messages × 40 step receipts far exceed the 8,192-part scan budget:
+    // exactly the budget is attributed and nothing beyond it is invented.
+    expect(rows[0]).toContain("8192 provenance records")
+    expect(rows[0]).toContain("103 unknown")
+    expect(rows[0]).toContain("8295 provider steps/records")
+
+    // Every visible detail row belongs to an unscanned tail message and must
+    // say so rather than presenting fabricated usage for it.
+    const detailRows = rows.slice(1, 9)
+    expect(detailRows).toHaveLength(8)
+    for (const row of detailRows) {
+      expect(
+        row.includes("usage history exceeded the bounded analytics scan") ||
+          row.includes("usage provenance unavailable"),
+      ).toBe(true)
+      expect(row).not.toContain("request-")
+    }
+    expect(detailRows.some((row) => row.includes("bounded analytics scan"))).toBe(true)
+  })
+
+  test("filters malformed counter observations even when they lead the bounded report", () => {
+    let now = 1_000
+    const projection = createTuiAnalyticsProjection(() => now)
+    const reporter = projection.attachArtifactRenderer()
+    const valid = {
+      metric: "ui.artifact.render_full",
+      value: 2,
+      unit: "renders",
+      provenance: "measured",
+      source: "tui-artifact-renderer",
+      observedAtMs: now,
+    }
+    // Only the first MAX_OBSERVATIONS_PER_REPORT (8) entries of a report are
+    // examined, so the malformed rows are placed first: they must be rejected
+    // by the allowlist itself, not skipped by the cap.
+    reporter.observe([
+      { ...valid, source: "untrusted:secret-token", value: 900, content: "secret" },
+      { ...valid, provenance: "estimated", value: 900 },
+      { ...valid, unit: "events", value: 900 },
+      { ...valid, observedAtMs: now + 10_000, value: 900 },
+      { ...valid, metric: "ui.artifact.unknown_metric", value: 900 },
+      valid,
+    ] as unknown as SvgRasterObservationV1[])
+
+    now = 2_000
+    const snapshot = projection.snapshot()
+    expect(snapshot.find((item) => item.metric === "ui.artifact.render_full")).toMatchObject({
+      value: 2,
+      provenance: "measured",
+      source: "tui-artifact-renderer",
+      observedAtMs: 1_000,
+    })
+    expect(snapshot).toHaveLength(8)
+    expect(snapshot.filter((item) => item.provenance === "measured")).toHaveLength(1)
+    expect(JSON.stringify(snapshot)).not.toContain("secret")
+    expect(JSON.stringify(snapshot)).not.toContain("untrusted")
+    reporter.dispose()
+  })
 })

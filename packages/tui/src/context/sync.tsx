@@ -1159,7 +1159,7 @@ export const {
               }),
             )
             fullSyncedSessions.add(sessionID)
-          })().finally(() => {
+          })().catch(() => undefined).finally(() => {
             syncingSessions.delete(sessionID)
             hydratingSessions.delete(sessionID)
           })

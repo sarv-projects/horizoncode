@@ -1,9 +1,11 @@
 """Unrun HUP-005 fixtures for the offline fake-only paired evaluator."""
 import json
+import os
 import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 import eval_harness as evaluation
 
@@ -379,6 +381,39 @@ class FakeEvaluationTests(unittest.TestCase):
     def test_artifact_rejects_lexically_external_path_without_access(self):
         with self.assertRaises(evaluation.EvalError):
             evaluation.run_fake_selfcheck(self.manifest, provider_for(self.manifest), Path("../outside.jsonl"))
+
+    def test_artifact_resume_rejects_group_or_world_accessible_file(self):
+        evaluation.run_fake_selfcheck(self.manifest, provider_for(self.manifest), self.artifact)
+        self.artifact.chmod(0o640)
+        with self.assertRaisesRegex(evaluation.EvalError, "private repository-local regular file"):
+            evaluation._ArtifactJournal(
+                self.artifact, self.manifest, evaluation.digest(self.manifest))
+
+    def test_artifact_rejects_deep_json_and_closes_all_descriptors(self):
+        evaluation.run_fake_selfcheck(self.manifest, provider_for(self.manifest), self.artifact)
+        with self.artifact.open('ab') as stream:
+            stream.write((b'[' * 10_000) + b'0' + (b']' * 10_000) + b'\n')
+
+        real_open, real_close = os.open, os.close
+        opened, closed = [], []
+
+        def tracked_open(*args, **kwargs):
+            fd = real_open(*args, **kwargs)
+            opened.append(fd)
+            return fd
+
+        def tracked_close(fd):
+            closed.append(fd)
+            return real_close(fd)
+
+        with patch.object(evaluation.os, 'open', new=tracked_open), \
+                patch.object(evaluation.os, 'close', new=tracked_close), \
+                patch.object(evaluation.os, 'supports_dir_fd',
+                             os.supports_dir_fd | {tracked_open}):
+            with self.assertRaisesRegex(evaluation.EvalError, 'malformed JSON'):
+                evaluation._ArtifactJournal(
+                    self.artifact, self.manifest, evaluation.digest(self.manifest))
+        self.assertCountEqual(opened, closed)
 
 
 class HostRunBoundaryTests(unittest.TestCase):
@@ -852,6 +887,98 @@ class HostRunBoundaryTests(unittest.TestCase):
         self.assertTrue(all(row["status"] == "NOT_RUN" for row in result.records[
             result.records.index(cancellation) + 1:]))
 
+    # --- non-outcome terminal rows cannot carry outcome evidence ----------
+
+    def _terminal_evidence_row(self, status, **extra):
+        """A frozen-plan HostRun journal row whose status never reaches an outcome.
+
+        Only ``PASS_VERIFIED``/``FAIL_UNVERIFIED``/``UNSUPPORTED_CAPABILITY``
+        rows receive verifier verdict, security, false-completion or resource
+        evidence; the runner's own ``UNKNOWN``/``CANCELLED``/``INFRASTRUCTURE_
+        FAILURE``/``NOT_RUN`` rows carry a ``failureClass`` classification and
+        nothing else. A locally edited row must not smuggle outcome evidence
+        (in particular a measured resource figure or a PASS verdict) onto a
+        status that was never resolved.
+        """
+        task_id, arm_id = evaluation.paired_call_plan(self.manifest)[0]
+        task = next(item for item in self.manifest["tasks"] if item["taskId"] == task_id)
+        row = {"taskId": task_id, "taskGroup": task["taskGroup"], "armId": arm_id,
+               "manifestDigest": evaluation.digest(self.manifest),
+               "dispatchStarted": status != "NOT_RUN",
+               "status": status, "failureClass": "unknown",
+               "mode": "HOST_RUN_PAIRED"}
+        if status != "NOT_RUN":
+            row["hostRunDispatchIndex"] = 0
+        if status == "CANCELLED":
+            row["dispatchStarted"] = False
+            del row["hostRunDispatchIndex"]
+        row.update(extra)
+        return row
+
+    def test_journal_rejects_terminal_host_run_row_carrying_outcome_evidence(self):
+        self._write_host_journal_rows([self._terminal_evidence_row(
+            "UNKNOWN",
+            verifierVerdict="PASS", securityFailure=False, falseCompletion=False,
+            resourceUse={"status": "MEASURED", "pssBytes": 1})])
+
+        class Bridge:
+            def __init__(self):
+                self.calls = 0
+
+            def dispatch_guarded_trial(self, invocation):
+                self.calls += 1
+                return outer.outcome_for(invocation)
+
+        outer = self
+
+        class Resolver:
+            def resolve_task(self, task_id):
+                return outer.tasks[task_id]
+
+        bridge = Bridge()
+        with self.assertRaisesRegex(
+                evaluation.EvalError, "cannot carry verifier or resource evidence"):
+            evaluation.run_host_paired_evaluation(
+                self.manifest, bridge, Resolver(), self.artifact)
+        self.assertEqual(bridge.calls, 0)
+
+    def test_summary_rejects_terminal_host_run_row_carrying_outcome_evidence(self):
+        cases = (
+            (self._terminal_evidence_row(
+                "UNKNOWN", verifierVerdict="PASS", securityFailure=False,
+                falseCompletion=False, resourceUse={"status": "MEASURED", "rssBytes": 1}),
+             "cannot carry verifier or resource evidence"),
+            (self._terminal_evidence_row(
+                "CANCELLED", verifierVerdict="PASS", securityFailure=True,
+                falseCompletion=False, failureClass="security_failure",
+                resourceUse={"status": "UNKNOWN"}),
+             "cannot carry verifier or resource evidence"),
+            (self._terminal_evidence_row(
+                "NOT_RUN", resourceUse={"status": "UNKNOWN", "reason": "caller supplied"}),
+             "cannot carry verifier or resource evidence"),
+            (self._terminal_evidence_row(
+                "INFRASTRUCTURE_FAILURE", verifierVerdict="FAIL"),
+             "cannot carry verifier or resource evidence"),
+        )
+        for row, message in cases:
+            with self.subTest(status=row["status"], keys=sorted(
+                    {"verifierVerdict", "securityFailure", "falseCompletion", "resourceUse"}
+                    & set(row))):
+                with self.assertRaisesRegex(evaluation.EvalError, message):
+                    evaluation.summarize_pairs((row,), self.manifest)
+
+    def test_summary_accepts_runner_shaped_terminal_rows_without_outcome_evidence(self):
+        for row in (
+            self._terminal_evidence_row("UNKNOWN", failureClass="unknown",
+                                        hostRunUnknownReason="host_run_binding_absent"),
+            self._terminal_evidence_row("CANCELLED", failureClass="infrastructure"),
+            self._terminal_evidence_row("NOT_RUN", failureClass="infrastructure",
+                                        stopReason="UNKNOWN"),
+        ):
+            with self.subTest(status=row["status"]):
+                summary = evaluation.summarize_pairs((row,), self.manifest)
+                self.assertEqual(summary["resourceUse"]["status"], "UNKNOWN")
+
 
 def _b3(text: str) -> str:
     """Canonical blake3 digest of a text value (local helper for fixtures)."""
@@ -1170,6 +1297,21 @@ class HostRunControlPlaneTests(unittest.TestCase):
                 goal_id="goal-1", dispatch_key_digest=_b3("key"),
                 binding_digest=_b3("binding"), owner_log_id="owner-log-1",
                 owner_log_sequence="12", owner_log_event_digest="blake3:" + "A" * 64)
+
+    def test_host_run_decimal_parser_accepts_valid_twenty_digit_u64(self):
+        sequence = "10000000000000000000"
+        body = evaluation.host_run_bind_receipt_body(
+            goal_id="goal-1", dispatch_key_digest=_b3("key"),
+            binding_digest=_b3("binding"), owner_log_id="owner-log-1",
+            owner_log_sequence=sequence, owner_log_event_digest=_b3("event"))
+        self.assertEqual(body["ownerLogSequence"], sequence)
+
+    def test_host_run_decimal_parser_rejects_leading_zero_alias(self):
+        with self.assertRaisesRegex(evaluation.EvalError, "canonical decimal"):
+            evaluation.host_run_bind_receipt_body(
+                goal_id="goal-1", dispatch_key_digest=_b3("key"),
+                binding_digest=_b3("binding"), owner_log_id="owner-log-1",
+                owner_log_sequence="01", owner_log_event_digest=_b3("event"))
 
     def test_bind_response_parser_rejects_tampered_and_foreign_records(self):
         transport = FakeHostRunTransport()

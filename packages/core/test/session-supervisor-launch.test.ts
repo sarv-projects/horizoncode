@@ -28,6 +28,10 @@ const base = {
 } as const
 
 describe("session_supervisor launch arguments", () => {
+  test("offers resource-policy ingress only as an optional negotiated host feature", () => {
+    expect(OPTIONAL_HOST_FEATURES).toContain("resource-policy.ingress-v1")
+  })
+
   test("offers read-context only as an optional negotiated host feature", () => {
     expect(OPTIONAL_HOST_FEATURES).toContain("repo-intel.read-context-v1")
     expect(OPTIONAL_HOST_FEATURES).not.toContain("repo-intel.read-context-v1-required")

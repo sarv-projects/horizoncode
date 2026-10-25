@@ -299,11 +299,25 @@ const app = LayerNode.group([
 // `hz-kernel` binary is unavailable or rejects its handshake. Declared here
 // rather than swallowed: a server that cannot provision the host kernel must
 // not start serving mediated effects.
-export function createRoutes(
-  corsOptions?: CorsOptions,
-  replacements: LayerNode.Replacements = [],
+function routeTree(
+  corsOptions: CorsOptions | undefined,
+  replacements: LayerNode.Replacements,
+  shareServices: boolean,
 ): Layer.Layer<never, EffectConfig.ConfigError | SessionSupervisorError, RouteRequirements> {
   const locationServiceMapV2 = buildLocationServiceMap(replacements)
+
+  // The three app-service builds below (`MoveSession`, `SessionV2`, the `app`
+  // group) all reach `SessionSupervisor.node`, whose layer spawns `hz-kernel`
+  // and takes the process-exclusive host-owner lease. Effect memoizes layer
+  // construction per MemoMap, so a service graph built in a *private* map
+  // constructs a second supervisor — and a second `hz-kernel` that correctly
+  // refuses the lease the first one holds
+  // (`acquire host owner lease: supervisor lease Busy`). `shareServices`
+  // reroutes exactly those service builds through the process-wide memo map,
+  // while the route tree above them stays local to the current build, so each
+  // listener keeps its own cors/auth/ConfigProvider wiring.
+  const share = <A, E, R>(build: Layer.Layer<A, E, R>): Layer.Layer<A, E, R> =>
+    shareServices ? Layer.fromBuild((_, scope) => Layer.buildWithMemoMap(build, memoMap, scope)) : build
 
   return Layer.mergeAll(
     rootApiRoutes,
@@ -320,7 +334,7 @@ export function createRoutes(
       corsVaryFix,
       fenceLayer,
       cors(corsOptions),
-      AppNodeBuilderV1.build(MoveSession.node, [[LocationServiceMap.node, locationServiceMapV2]]),
+      share(AppNodeBuilderV1.build(MoveSession.node, [[LocationServiceMap.node, locationServiceMapV2]])),
       HttpServer.layerServices,
     ]),
     Layer.provide(Layer.succeed(CorsConfig)(corsOptions)),
@@ -328,21 +342,51 @@ export function createRoutes(
     Layer.provide(locationLayer),
     Layer.provide(PtyEnvironment.layer),
     Layer.provide(
-      AppNodeBuilderV1.build(SessionV2.node, [
-        [LocationServiceMap.node, locationServiceMapV2],
-        [SessionExecution.node, SessionExecutionLocal.node],
-        ...replacements,
-      ]),
+      share(
+        AppNodeBuilderV1.build(SessionV2.node, [
+          [LocationServiceMap.node, locationServiceMapV2],
+          [SessionExecution.node, SessionExecutionLocal.node],
+          ...replacements,
+        ]),
+      ),
     ),
     Layer.provide(locationServiceMapV2),
 
-    Layer.provide(AppNodeBuilderV1.build(app, replacements)),
+    Layer.provide(share(AppNodeBuilderV1.build(app, replacements))),
     // Must stay last: layers provided later in this pipe build beneath earlier ones,
     // so Observability must come after every service graph. Otherwise eagerly forked
     // fibers (e.g. the ModelsDev background refresh) capture Effect's default stdout
     // logger and corrupt the TUI (#34730).
     Layer.provideMerge(Observability.layer),
   )
+}
+
+/**
+ * One route tree + app-service graph, both built in the caller's memo map.
+ * Used by the lazy `webHandler` (whose memo map is already the process-wide
+ * one) and by tests that build the route tree in isolation.
+ */
+export function createRoutes(
+  corsOptions?: CorsOptions,
+  replacements: LayerNode.Replacements = [],
+): Layer.Layer<never, EffectConfig.ConfigError | SessionSupervisorError, RouteRequirements> {
+  return routeTree(corsOptions, replacements, false)
+}
+
+/**
+ * The `Server.listen` variant: the route tree is built in the listener's own
+ * memo map (per-attempt cors/auth/ConfigProvider), while the app-service graph
+ * — above all `SessionSupervisor`, which owns the one host-owner lease a
+ * process may hold — is built through the process-wide memo map shared with
+ * `ManagedRuntime.make(AppLayer, { memoMap })`. That is what keeps
+ * `hzcode serve` from constructing a second `SessionSupervisor` whose
+ * `hz-kernel` child then fails with `supervisor lease Busy`.
+ */
+export function createListenerRoutes(
+  corsOptions?: CorsOptions,
+  replacements: LayerNode.Replacements = [],
+): Layer.Layer<never, EffectConfig.ConfigError | SessionSupervisorError, RouteRequirements> {
+  return routeTree(corsOptions, replacements, true)
 }
 
 export const routes = createRoutes()

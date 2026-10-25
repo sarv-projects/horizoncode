@@ -86,4 +86,56 @@ describe("RepoIntel cache-owner metadata projection", () => {
       }),
     ).toBeUndefined()
   })
+
+  test("never projects a generation whose coverage or lease is outside its declared bounds", () => {
+    const identity = {
+      sessionID: "ses_123",
+      locationID: `loc_${"b".repeat(64)}`,
+      observedAtUnixMs: now,
+      principal: { kind: "server_auth", subject: "authenticated-core" } as const,
+    }
+    const withPin = (overrides: Record<string, unknown>) =>
+      Schema.decodeUnknownSync(RepoIntelligenceSchema.RepoGenerationPinV1)({ ...generation, ...overrides })
+
+    // Host-measured coverage outside the declared collection bounds is not a
+    // plausible pin and must not project as one.
+    expect(
+      projectRepoIntelGenerationCacheObservation({
+        ...identity,
+        generation: withPin({ coverage: { files: "4097", bytes: "128" } }),
+      }),
+    ).toBeUndefined()
+    expect(
+      projectRepoIntelGenerationCacheObservation({
+        ...identity,
+        generation: withPin({ coverage: { files: "3", bytes: "67108865" } }),
+      }),
+    ).toBeUndefined()
+
+    // The exact boundaries still project, with the pin's own values.
+    const boundary = projectRepoIntelGenerationCacheObservation({
+      ...identity,
+      generation: withPin({ coverage: { files: "4096", bytes: "67108864" } }),
+    })
+    expect(boundary?.sourceSnapshot).toEqual({
+      fileCount: 4096,
+      observedBytes: 67_108_864,
+      maxFiles: 4096,
+      maxObservedBytes: 67_108_864,
+    })
+
+    // A lease that expires exactly at the observation instant is already over.
+    expect(
+      projectRepoIntelGenerationCacheObservation({
+        ...identity,
+        generation: withPin({ expiresAt: "2026-10-20T10:00:00.000Z" }),
+      }),
+    ).toBeUndefined()
+    // The longest lease this projection will claim is exactly 30 seconds.
+    const fullTtl = projectRepoIntelGenerationCacheObservation({
+      ...identity,
+      generation: withPin({ expiresAt: "2026-10-20T10:00:30.000Z" }),
+    })
+    expect(fullTtl?.generation.ttlMs).toBe(30_000)
+  })
 })

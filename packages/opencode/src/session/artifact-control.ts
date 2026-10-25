@@ -234,7 +234,14 @@ export const readRange = Effect.fn("ArtifactControl.readRange")(function* (
   maxBytes: number,
 ) {
   const operation = "artifacts.read_range"
-  const start = BigInt(decimal(operation, offset, "offset"))
+  // `offset` and `maxBytes` are caller-supplied request arguments. They fail as
+  // typed, mappable failures before any protocol work; only HostKernel-returned
+  // values (`decimal`) may fail as protocol defects, and their reason must
+  // name the HostKernel rather than the caller.
+  if (typeof offset !== "string" || !DECIMAL_U64.test(offset) || BigInt(offset) > MAX_U64) {
+    return yield* fail(operation, "artifact_bounds", "offset must be a canonical unsigned decimal")
+  }
+  const start = BigInt(offset)
   const length = BigInt(decimal(operation, ref.byteLength, "artifact byteLength"))
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_RANGE_BYTES) {
     return yield* fail(operation, "artifact_bounds", "maxBytes exceeds the 768 KiB range bound")

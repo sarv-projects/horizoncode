@@ -242,6 +242,44 @@ describe("durable Linux Secret Service broker store", () => {
     await expect(store.withConsumedLease(lease, timestamp, async () => "must-not-run")).resolves.toBeUndefined()
   })
 
+  test("retries revoked credential deletion during store recovery after a backend failure", async () => {
+    const f = fixture()
+    const directory = await f.directory()
+    active.push(directory)
+    let failDelete = true
+    const backend: SecretServiceCredentialBackend = {
+      ...f.backend,
+      async deleteSecret(itemPath, ref, version) {
+        if (failDelete) {
+          failDelete = false
+          throw new Error("simulated keyring deletion failure")
+        }
+        return f.backend.deleteSecret(itemPath, ref, version)
+      },
+    }
+    const store = await createLinuxSecretServiceStore({ directory, backend, now: () => new Date(timestamp) })
+    await store.put(metadata, new TextEncoder().encode("test-only-secret"), "put_test_1")
+    await store.putLease(lease, 1)
+    const receipt = {
+      schemaVersion: 1,
+      secretRef,
+      revokedVersion: 2,
+      revokedAt: timestamp,
+      receiptId: "receipt_test_retry",
+    } satisfies SecretBrokerV1.RevocationReceiptV1
+
+    await expect(store.revoke(secretRef, 1, 2, receipt)).rejects.toThrow()
+    expect(await store.describe(secretRef)).toMatchObject({ status: "REVOKED", version: 2 })
+    expect(f.credentials.size).toBe(1)
+
+    const recovered = await createLinuxSecretServiceStore({ directory, backend, now: () => new Date(timestamp) })
+
+    expect(await recovered.describe(secretRef)).toMatchObject({ status: "REVOKED", version: 2 })
+    expect(f.credentials.size).toBe(0)
+    expect(f.removed).toHaveLength(1)
+    await expect(recovered.withConsumedLease(lease, timestamp, async () => "must-not-run")).resolves.toBeUndefined()
+  })
+
   test("rejects symlink storage paths without changing the target directory permissions", async () => {
     const f = fixture()
     const parent = await f.directory()

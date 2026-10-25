@@ -179,6 +179,8 @@ def attestation_payload(attestation):
             str(ref) for ref in attestation.independent_verifier_evidence_refs
         ],
         "owner_log_event_digests": [str(digest) for digest in attestation.owner_log_event_digests],
+        "session_outcome_digests": [[str(session), str(digest)]
+                                     for session, digest in attestation.session_outcome_digests],
     }
     return json.dumps(fields, sort_keys=True, separators=(",", ":"),
                       ensure_ascii=True).encode("ascii")
@@ -187,6 +189,13 @@ def attestation_payload(attestation):
 def attestation_signature_digest(payload):
     """SHA-256 of the canonical payload; binds the struct fields to the signature."""
     return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
+def outcome_digest(outcome):
+    """Digest one canonical outcome row for an owner-attestation binding."""
+    encoded = json.dumps(outcome, sort_keys=True, separators=(",", ":"),
+                         ensure_ascii=True, allow_nan=False).encode("ascii")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
 def sign_attestation(attestation, key):
@@ -226,27 +235,75 @@ def load_attestation_key(path):
         raise ValueError("attestation key path cannot contain parent traversal")
     candidate = Path(os.path.abspath(requested if requested.is_absolute() else root / requested))
     try:
-        candidate.relative_to(root)
+        relative = candidate.relative_to(root)
     except ValueError as exc:
         raise ValueError("attestation key must remain inside the repository") from exc
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
-    if not hasattr(os, "O_NOFOLLOW"):
-        raise ValueError("no-follow attestation key loading is unavailable on this platform")
+    if not relative.parts:
+        raise ValueError("attestation key path must name a file inside the repository")
+    if (not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY")
+            or os.open not in os.supports_dir_fd):
+        raise ValueError("safe descriptor-relative attestation key loading is unavailable on this platform")
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    file_flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    root_fd = -1
+    parent_fd = -1
+    child_fd = -1
+    fd = -1
     try:
-        fd = os.open(candidate, flags)
-    except OSError as exc:
+        root_fd = os.open(root, directory_flags)
+        root_device = os.fstat(root_fd).st_dev
+        parent_fd = root_fd
+        root_fd = -1
+        for component in relative.parts[:-1]:
+            child_fd = os.open(component, directory_flags, dir_fd=parent_fd)
+            child_info = os.fstat(child_fd)
+            if not stat.S_ISDIR(child_info.st_mode) or child_info.st_dev != root_device:
+                os.close(child_fd)
+                child_fd = -1
+                raise ValueError("attestation key path traverses outside the repository filesystem")
+            os.close(parent_fd)
+            parent_fd = child_fd
+            child_fd = -1
+        fd = os.open(relative.parts[-1], file_flags, dir_fd=parent_fd)
+    except (OSError, ValueError) as exc:
+        if fd >= 0:
+            os.close(fd)
+            fd = -1
+        if parent_fd >= 0:
+            os.close(parent_fd)
+            parent_fd = -1
+        if child_fd >= 0:
+            os.close(child_fd)
+            child_fd = -1
+        if root_fd >= 0:
+            os.close(root_fd)
+            root_fd = -1
+        if isinstance(exc, ValueError):
+            raise
         raise ValueError(
-            f"attestation key cannot be opened safely: {exc.__class__.__name__}") from exc
+            f"attestation key cannot be opened safely without following directory links: {exc.__class__.__name__}") from exc
     try:
         info = os.fstat(fd)
-        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
-                or info.st_mode & 0o077):
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
             raise ValueError("attestation key must be a private single-link regular file")
+        if not hasattr(os, "geteuid") or info.st_uid != os.geteuid():
+            raise ValueError("attestation key must be owned by the effective user")
+        if info.st_mode & 0o077 or not info.st_mode & 0o400:
+            raise ValueError("attestation key must be a private single-link regular file")
+        if info.st_mode & 0o111:
+            raise ValueError("attestation key must be private non-executable material")
         if not MIN_ATTESTATION_KEY_BYTES <= info.st_size <= MAX_ATTESTATION_KEY_BYTES:
             raise ValueError("attestation key size is outside the supported range")
         material = os.read(fd, MAX_ATTESTATION_KEY_BYTES + 1)
     finally:
-        os.close(fd)
+        if fd >= 0:
+            os.close(fd)
+        if parent_fd >= 0:
+            os.close(parent_fd)
+        if child_fd >= 0:
+            os.close(child_fd)
+        if root_fd >= 0:
+            os.close(root_fd)
     if len(material) != info.st_size:
         raise ValueError("attestation key changed while it was read")
     if not material or not any(material):
@@ -275,6 +332,8 @@ class AttestationV1:
     host_run_receipt_refs: tuple = ()
     independent_verifier_evidence_refs: tuple = ()
     owner_log_event_digests: tuple = ()
+    # Signed per-Session digests bind the outcome rows consumed by RC0.
+    session_outcome_digests: tuple = ()
     source_signature_digest: str = ""
     # Keyed MAC over :func:`attestation_payload`; only ``hmac-sha256`` is implemented.
     source_signature: str = ""
@@ -292,6 +351,7 @@ class AttestationV1:
                 or len(self.host_run_receipt_refs) != len(self.session_ids)
                 or len(self.independent_verifier_evidence_refs) != len(self.session_ids)
                 or len(self.owner_log_event_digests) != len(self.session_ids)
+                or len(self.session_outcome_digests) != len(self.session_ids)
                 or not re.fullmatch(r"sha256:[0-9a-f]{64}", self.source_signature_digest)
                 or not re.fullmatch(r"hmac-sha256:[0-9a-f]{64}", self.source_signature)):
             raise ValueError("incomplete owner attestation")
@@ -301,6 +361,10 @@ class AttestationV1:
                 or any(identity_key({'pid': pid, 'start_identity': start}) is None
                        for _session, pid, start in self.session_owner_identities)
                 or set(run for _session, run in self.session_run_ids) != set(self.run_ids)
+                or set(session for session, _digest in self.session_outcome_digests)
+                != set(self.session_ids)
+                or any(not re.fullmatch(r"sha256:[0-9a-f]{64}", digest)
+                       for _session, digest in self.session_outcome_digests)
                 or any(not isinstance(ref, str) or not ref or len(ref) > 256 for ref in (
                     *self.host_run_receipt_refs,
                     *self.independent_verifier_evidence_refs,
@@ -348,7 +412,7 @@ def verify_attestation(attestation):
         return False
 
 
-def attestation_covers(attestation, selected, commit):
+def attestation_covers(attestation, selected, commit, *, outcomes=None):
     """True only for a typed, cryptographically verified attestation covering these sessions."""
     if not verify_attestation(attestation):
         return False
@@ -361,6 +425,13 @@ def attestation_covers(attestation, selected, commit):
         }
         if (not expected or len(expected) != len(selected)
                 or any(identity is None for identity in expected.values())):
+            return False
+        if not isinstance(outcomes, dict) or set(outcomes) != set(expected):
+            return False
+        attested_outcomes = dict(attestation.session_outcome_digests)
+        if (set(attested_outcomes) != set(expected)
+                or any(attested_outcomes[session] != outcome_digest(outcomes[session])
+                       for session in expected)):
             return False
         attested_sessions = tuple(attestation.session_ids)
         session_runs = tuple(attestation.session_run_ids)
@@ -739,7 +810,7 @@ def baseline_eligible(selected, session_results, outcomes, commit, clean_tree, p
     commit the result is always False, so fabricated but well-shaped caller inputs can
     never be reported as a release-eligible baseline.
     """
-    if not attestation_covers(attestation, selected, commit):
+    if not attestation_covers(attestation, selected, commit, outcomes=outcomes):
         return False
     if len(selected) != len(session_results) or not selected:
         return False
@@ -903,7 +974,10 @@ def load_outcomes(path):
         raise ValueError("outcomes file exceeds the 1 MiB input bound")
     try:
         value = json.loads(data.decode("utf-8", errors="strict"),
-                           object_pairs_hook=_reject_duplicate_json_properties)
+                           object_pairs_hook=_reject_duplicate_json_properties,
+                           parse_constant=lambda constant: (_ for _ in ()).throw(
+                               ValueError(f"invalid JSON constant: {constant}")
+                           ))
     except RecursionError as error:
         raise ValueError("outcomes JSON nesting exceeds parser bounds") from error
     if not isinstance(value, dict):
@@ -933,6 +1007,10 @@ def _validate_owner_metric(item, label):
         return
     if set(item) != {"quality", "value"} or not is_canonical_decimal(value):
         raise ValueError(f"{label} MEASURED metric must carry a canonical nonnegative decimal")
+    if int(value) > MAX_U64:
+        # Rust projects every MEASURED counter as u64; anything larger is not
+        # representable on the wire and is rejected instead of being summed.
+        raise ValueError(f"{label} MEASURED metric must fit the u64 wire range")
 
 
 def is_canonical_decimal(value, *, positive=False):
@@ -940,6 +1018,12 @@ def is_canonical_decimal(value, *, positive=False):
     if not isinstance(value, str) or re.fullmatch(r"(?:0|[1-9][0-9]*)", value) is None:
         return False
     return not positive or int(value) > 0
+
+
+def is_canonical_u64_decimal(value, *, positive=False):
+    """Validate canonical decimal spelling and the Rust u64 wire range."""
+    return (is_canonical_decimal(value, positive=positive)
+            and int(value) <= MAX_U64)
 
 
 def _sum_u64(values):
@@ -1001,19 +1085,19 @@ def load_owner_snapshot(path):
             if key in owner and (not isinstance(owner[key], str) or not owner[key] or len(owner[key]) > 256):
                 raise ValueError(f"owner snapshot owner.{key} is invalid")
     for key in ("ownerEpoch",):
-        if not is_canonical_decimal(owner.get(key), positive=True):
-            raise ValueError(f"owner snapshot owner.{key} must be a positive decimal string")
+        if not is_canonical_u64_decimal(owner.get(key), positive=True):
+            raise ValueError(f"owner snapshot owner.{key} must be a positive u64 decimal string")
     if (not isinstance(log.get("ownerId"), str) or not log["ownerId"]
-            or not is_canonical_decimal(log.get("sequence"))
+            or not is_canonical_u64_decimal(log.get("sequence"))
             or not isinstance(log.get("eventDigest"), str)
             or not re.fullmatch(r"blake3:[0-9a-f]{64}", log["eventDigest"])
-            or not is_canonical_decimal(log.get("workerPoolRevision"), positive=True)):
-        raise ValueError("owner snapshot OwnerLog watermark is invalid")
+            or not is_canonical_u64_decimal(log.get("workerPoolRevision"), positive=True)):
+        raise ValueError("owner snapshot OwnerLog watermark is invalid or outside the u64 range")
     sample_sequence = value.get("sampleSequence")
-    if not is_canonical_decimal(sample_sequence, positive=True):
-        raise ValueError("owner snapshot sample sequence is invalid")
-    if not is_canonical_decimal(value.get("sampledAtMs")):
-        raise ValueError("owner snapshot sampledAtMs is invalid")
+    if not is_canonical_u64_decimal(sample_sequence, positive=True):
+        raise ValueError("owner snapshot sample sequence is invalid or outside the u64 range")
+    if not is_canonical_u64_decimal(value.get("sampledAtMs")):
+        raise ValueError("owner snapshot sampledAtMs is invalid or outside the u64 range")
     if len(workers) > MAX_PROCESSES:
         raise ValueError("owner snapshot worker count exceeds the process bound")
     process_identity_records = []
@@ -1072,8 +1156,8 @@ def load_owner_snapshot(path):
                 raise ValueError("owner snapshot process entry is invalid")
             pid, start = process.get("pid"), process.get("startIdentity")
             if (type(pid) is not int or pid <= 0
-                    or not is_canonical_decimal(start, positive=True)):
-                raise ValueError("owner snapshot process identity is invalid")
+                    or not is_canonical_u64_decimal(start, positive=True)):
+                raise ValueError("owner snapshot process identity is invalid or outside the u64 range")
             process_identity = (pid, start)
             if process_identity in seen_worker_processes:
                 raise ValueError("owner snapshot contains overlapping worker process identities")
@@ -1097,9 +1181,9 @@ def load_owner_snapshot(path):
             raise ValueError("measured Core process owner must include identity and metrics")
         pid, start = process.get("pid"), process.get("startIdentity")
         if (type(pid) is not int or pid <= 0
-                or not is_canonical_decimal(start, positive=True)
+                or not is_canonical_u64_decimal(start, positive=True)
                 or not isinstance(process.get("ownerEpoch"), str)
-                or not is_canonical_decimal(process["ownerEpoch"], positive=True)
+                or not is_canonical_u64_decimal(process["ownerEpoch"], positive=True)
                 or int(process["ownerEpoch"]) != int(owner["ownerEpoch"])
                 or not isinstance(process.get("processIncarnation"), str)
                 or not process["processIncarnation"] or len(process["processIncarnation"]) > 128
@@ -1229,13 +1313,15 @@ def read_repository_input(path, limit, label):
         raise ValueError(f"safe repository-local {label} reads are unavailable on this platform")
 
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
-    try:
-        parent_fd = os.open(root, flags)
-    except OSError as error:
-        raise ValueError(f"repository root cannot be opened safely for {label}") from error
-    root_device = os.fstat(parent_fd).st_dev
+    parent_fd = -1
+    child_fd = -1
     file_fd = -1
     try:
+        try:
+            parent_fd = os.open(root, flags)
+        except OSError as error:
+            raise ValueError(f"repository root cannot be opened safely for {label}") from error
+        root_device = os.fstat(parent_fd).st_dev
         for component in parts[:-1]:
             try:
                 child_fd = os.open(component, flags, dir_fd=parent_fd)
@@ -1244,9 +1330,12 @@ def read_repository_input(path, limit, label):
             child_stat = os.fstat(child_fd)
             if not stat.S_ISDIR(child_stat.st_mode) or child_stat.st_dev != root_device:
                 os.close(child_fd)
+                child_fd = -1
                 raise ValueError(f"{label} directory is not repository-local")
             os.close(parent_fd)
+            parent_fd = -1
             parent_fd = child_fd
+            child_fd = -1
 
         # O_NONBLOCK prevents a malicious repository-local FIFO from hanging
         # the preflight process before fstat can reject its file type.
@@ -1279,7 +1368,10 @@ def read_repository_input(path, limit, label):
     finally:
         if file_fd >= 0:
             os.close(file_fd)
-        os.close(parent_fd)
+        if child_fd >= 0:
+            os.close(child_fd)
+        if parent_fd >= 0:
+            os.close(parent_fd)
 
 
 MAX_LEAK_SLOPE_SAMPLES = 32

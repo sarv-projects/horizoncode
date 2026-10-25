@@ -164,7 +164,21 @@ class FakeHostKernel {
       const override = self.managedResponses[operation]
       if (override) return override
       if (operation === "admit") {
-        const selection = body.profileSelection as { profileId: string; revision: string }
+        // Mirror HostKernel's `strict_fields(body, required, &[])`: any key
+        // outside the closed admit set is rejected before admission logic.
+        const bodyKeys = Object.keys(body)
+        if (
+          bodyKeys.length !== ManagedControl.ADMIT_BODY_KEYS.length ||
+          bodyKeys.some((key) => !ManagedControl.ADMIT_BODY_KEYS.includes(key))
+        ) {
+          return yield* Effect.fail(
+            new SessionSupervisorError({ stage: "effect", reason: "invalid_effect_request" }),
+          )
+        }
+        // HostKernel derives the admitted profile from the validated
+        // `profileDefinition` body key; `profileSelection` is not part of the
+        // closed admit key set and is never sent.
+        const selection = body.profileDefinition as { profileId: string; revision: string }
         const contextSelection = body.contextSelection as { requestID?: unknown }
         const requestID = String(contextSelection.requestID ?? `req_managed_${String(body.attemptID)}_1`)
         const managedAttempt = {
@@ -969,6 +983,169 @@ describe("managed control client", () => {
     }),
   )
 
+  it.instance("goal.start rejects a numeric observed message ID before HostKernel dispatch", () =>
+    Effect.gen(function* () {
+      const kernel = freshKernel()
+      const error = yield* Effect.flip(ManagedControl.startPlannedRun({
+        trustedPrincipal: REVIEWER,
+        goalID: "goal-start",
+        runID: "run-start",
+        specID: "spec-start",
+        specDigest: RECEIPT,
+        expectedGoalRevision: "4",
+        idempotencyKey: "start-delivery-1",
+        sessionID: "ses_root000000000000000000000001",
+        projectRef: "project-one",
+        workspaceRef: "workspace-one",
+        sessionLink: {
+          sessionID: "ses_root000000000000000000000001",
+          sourceStoreID: "store-one",
+          sourceInstanceID: "instance-one",
+          sourceCursor: {
+            ownerKind: "session",
+            ownerId: "ses_root000000000000000000000001",
+            seq: "1",
+            eventDigest: RECEIPT,
+          },
+          sourceEpoch: "1",
+          latestObservedMessageID: 123 as never,
+          latestObservedPartID: null,
+          sourceDigest: SCOPE,
+          redactionProfile: "horizon.session-link.ids-only.v1",
+          protocolVersion: 1,
+          goalID: "goal-start",
+          projectID: "project-one",
+          workspaceID: "workspace-one",
+        },
+      }))
+
+      expect(error).toBeInstanceOf(ManagedControlError)
+      expect(error.code).toBe("managed_protocol")
+      expect(kernel.calls).toHaveLength(0)
+    }),
+  )
+
+  it.instance("goal.start rejects a null SessionLink cursor before HostKernel dispatch", () =>
+    Effect.gen(function* () {
+      const kernel = freshKernel()
+      const error = yield* Effect.flip(ManagedControl.startPlannedRun({
+        trustedPrincipal: REVIEWER,
+        goalID: "goal-start",
+        runID: "run-start",
+        specID: "spec-start",
+        specDigest: RECEIPT,
+        expectedGoalRevision: "4",
+        idempotencyKey: "start-delivery-1",
+        sessionID: "ses_root000000000000000000000001",
+        projectRef: "project-one",
+        workspaceRef: "workspace-one",
+        sessionLink: {
+          sessionID: "ses_root000000000000000000000001",
+          sourceStoreID: "store-one",
+          sourceInstanceID: "instance-one",
+          sourceCursor: null as never,
+          sourceEpoch: "1",
+          latestObservedMessageID: null,
+          latestObservedPartID: null,
+          sourceDigest: SCOPE,
+          redactionProfile: "horizon.session-link.ids-only.v1",
+          protocolVersion: 1,
+          goalID: "goal-start",
+          projectID: "project-one",
+          workspaceID: "workspace-one",
+        },
+      }))
+
+      expect(error).toBeInstanceOf(ManagedControlError)
+      expect(error.code).toBe("managed_protocol")
+      expect(kernel.calls).toHaveLength(0)
+    }),
+  )
+
+  it.instance("goal.start rejects a non-string cursor digest before HostKernel dispatch", () =>
+    Effect.gen(function* () {
+      const kernel = freshKernel()
+      const error = yield* Effect.flip(ManagedControl.startPlannedRun({
+        trustedPrincipal: REVIEWER,
+        goalID: "goal-start",
+        runID: "run-start",
+        specID: "spec-start",
+        specDigest: RECEIPT,
+        expectedGoalRevision: "4",
+        idempotencyKey: "start-delivery-1",
+        sessionID: "ses_root000000000000000000000001",
+        projectRef: "project-one",
+        workspaceRef: "workspace-one",
+        sessionLink: {
+          sessionID: "ses_root000000000000000000000001",
+          sourceStoreID: "store-one",
+          sourceInstanceID: "instance-one",
+          sourceCursor: {
+            ownerKind: "session",
+            ownerId: "ses_root000000000000000000000001",
+            seq: "1",
+            eventDigest: [RECEIPT] as never,
+          },
+          sourceEpoch: "1",
+          latestObservedMessageID: null,
+          latestObservedPartID: null,
+          sourceDigest: SCOPE,
+          redactionProfile: "horizon.session-link.ids-only.v1",
+          protocolVersion: 1,
+          goalID: "goal-start",
+          projectID: "project-one",
+          workspaceID: "workspace-one",
+        },
+      }))
+
+      expect(kernel.calls).toHaveLength(0)
+      expect(error).toBeInstanceOf(ManagedControlError)
+      expect(error.code).toBe("managed_protocol")
+    }),
+  )
+
+  it.instance("goal.start rejects a non-string source digest before HostKernel dispatch", () =>
+    Effect.gen(function* () {
+      const kernel = freshKernel()
+      const error = yield* Effect.flip(ManagedControl.startPlannedRun({
+        trustedPrincipal: REVIEWER,
+        goalID: "goal-start",
+        runID: "run-start",
+        specID: "spec-start",
+        specDigest: RECEIPT,
+        expectedGoalRevision: "4",
+        idempotencyKey: "start-delivery-1",
+        sessionID: "ses_root000000000000000000000001",
+        projectRef: "project-one",
+        workspaceRef: "workspace-one",
+        sessionLink: {
+          sessionID: "ses_root000000000000000000000001",
+          sourceStoreID: "store-one",
+          sourceInstanceID: "instance-one",
+          sourceCursor: {
+            ownerKind: "session",
+            ownerId: "ses_root000000000000000000000001",
+            seq: "1",
+            eventDigest: RECEIPT,
+          },
+          sourceEpoch: "1",
+          latestObservedMessageID: null,
+          latestObservedPartID: null,
+          sourceDigest: [SCOPE] as never,
+          redactionProfile: "horizon.session-link.ids-only.v1",
+          protocolVersion: 1,
+          goalID: "goal-start",
+          projectID: "project-one",
+          workspaceID: "workspace-one",
+        },
+      }))
+
+      expect(kernel.calls).toHaveLength(0)
+      expect(error).toBeInstanceOf(ManagedControlError)
+      expect(error.code).toBe("managed_protocol")
+    }),
+  )
+
   it.instance("direct follow-up rejects ordinary DirectAttempt scopes before HostKernel dispatch", () =>
     Effect.gen(function* () {
       const kernel = freshKernel()
@@ -1258,6 +1435,72 @@ describe("managed control client", () => {
       const body = kernel.calls.at(-1)!.body
       expect("receiptDigest" in body).toBe(false)
       expect(body.outcome).toBe("unknown")
+    }),
+  )
+
+  it.instance("rejects malformed Goal criterion text before HostKernel dispatch", () =>
+    Effect.gen(function* () {
+      const kernel = freshKernel()
+      const error = yield* Effect.flip(
+        ManagedControl.createGoalProposal({
+          goalID: "goal-malformed-criterion",
+          specID: "spec-malformed-criterion",
+          objective: "Create a bounded proposal",
+          projectRef: "project-one",
+          workspaceRef: "workspace-one",
+          capabilityScope: [],
+          scope: ["packages/opencode/**"],
+          constraints: [],
+          criteria: [{ id: "tests-pass", description: 17 } as never],
+          budget: {
+            maxTasks: 1,
+            maxAttemptsPerTask: 1,
+            maxRunDurationMs: 60_000,
+            maxMemoryBytes: null,
+            maxDiskBytes: null,
+            maxWorkers: 1,
+            maxTokens: 1000,
+            maxCostMicros: 0,
+          },
+          sourceDigests: [],
+        }),
+      )
+
+      expect(error).toBeInstanceOf(ManagedControlError)
+      expect(error.code).toBe("managed_protocol")
+      expect(kernel.calls).toHaveLength(0)
+    }),
+  )
+
+  it.instance("rejects a non-string Goal objective before HostKernel dispatch", () =>
+    Effect.gen(function* () {
+      const kernel = freshKernel()
+      const error = yield* Effect.flip(ManagedControl.createGoalProposal({
+        goalID: "goal-malformed-objective",
+        specID: "spec-malformed-objective",
+        objective: 42 as never,
+        projectRef: "project-one",
+        workspaceRef: "workspace-one",
+        capabilityScope: [],
+        scope: ["packages/opencode/**"],
+        constraints: [],
+        criteria: [{ id: "tests-pass", description: "Focused tests pass" }],
+        budget: {
+          maxTasks: 1,
+          maxAttemptsPerTask: 1,
+          maxRunDurationMs: 60_000,
+          maxMemoryBytes: null,
+          maxDiskBytes: null,
+          maxWorkers: 1,
+          maxTokens: 1000,
+          maxCostMicros: 0,
+        },
+        sourceDigests: [],
+      }))
+
+      expect(error).toBeInstanceOf(ManagedControlError)
+      expect(error.code).toBe("managed_protocol")
+      expect(kernel.calls).toHaveLength(0)
     }),
   )
 
@@ -1760,6 +2003,8 @@ describe("managed control client", () => {
         locationID: "location-1",
         sessionID: "ses_child",
         preAdmissionProofDigest: `blake3:${"1".repeat(64)}`,
+        resourcePolicyProjectionRevision: "1",
+        resourcePolicyProjectionDigest: `blake3:${"2".repeat(64)}`,
         expectedRevision: 4 as const,
         profileSelection: DIRECT_PROFILE_SELECTION,
         contextSelection: Schema.decodeUnknownSync(ContextSelectionV1)({
@@ -1903,11 +2148,19 @@ describe("managed control client", () => {
         },
         sessionID: "ses_child",
         preAdmissionProofDigest: `blake3:${"1".repeat(64)}`,
-        expectedRevision: 4n,
-        profileSelection: DIRECT_PROFILE_SELECTION,
+        resourcePolicyProjectionRevision: "1",
+        resourcePolicyProjectionDigest: `blake3:${"2".repeat(64)}`,
+        // Rust reads `expectedRevision` with `canonical_decimal_revision`, so the
+        // wire form is the canonical decimal string (as Stage-A `reserve` sends).
+        expectedRevision: "4",
         profileDefinition: DIRECT_PROFILE,
         contextSelection: input.contextSelection,
       })
+      // Exactly Rust's closed `admit` key set: no unlisted key (the previously
+      // sent `profileSelection`) and no missing required key. HostKernel's
+      // `strict_fields` rejects any other shape with `invalid_effect_request`.
+      expect(Object.keys(kernel.calls[0]!.body).toSorted()).toEqual([...ManagedControl.ADMIT_BODY_KEYS].toSorted())
+      expect(Object.keys(kernel.calls[0]!.body)).not.toContain("profileSelection")
 
       // A retry of the identical logical command reuses the same delivery key, and a
       // full u64 revision survives the kernel's BigInt encoding without precision loss.
@@ -2037,6 +2290,58 @@ describe("managed control client", () => {
       const error = yield* Effect.flip(ManagedControl.admitAttempt(input))
       expect(error).toBeInstanceOf(ManagedControlError)
       expect("code" in error ? error.code : undefined).toBe("managed_protocol")
+
+      // Fail closed before dispatch: without this candidate's HostKernel
+      // resource-policy projection pin Rust's `admit` answers
+      // `resource_policy_unavailable`, so the client refuses to send at all.
+      const dispatched = kernel.calls.length
+      const {
+        resourcePolicyProjectionRevision: _ignoredRevision,
+        resourcePolicyProjectionDigest: _ignoredDigest,
+        ...withoutProjection
+      } = input
+      const missing = yield* Effect.flip(ManagedControl.admitAttempt(withoutProjection))
+      expect(missing).toBeInstanceOf(ManagedControlError)
+      expect("code" in missing ? missing.code : undefined).toBe("managed_protocol")
+      expect(kernel.calls.length).toBe(dispatched)
+
+      // The same boundary rejects a non-canonical projection revision and a
+      // non-BLAKE3 projection digest before anything is dispatched.
+      const nonCanonical = yield* Effect.flip(
+        ManagedControl.admitAttempt({ ...input, resourcePolicyProjectionRevision: "01" }),
+      )
+      expect("code" in nonCanonical ? nonCanonical.code : undefined).toBe("managed_protocol")
+      const wrongDigest = yield* Effect.flip(
+        ManagedControl.admitAttempt({ ...input, resourcePolicyProjectionDigest: `sha256:${"3".repeat(64)}` }),
+      )
+      expect("code" in wrongDigest ? wrongDigest.code : undefined).toBe("managed_protocol")
+      expect(kernel.calls.length).toBe(dispatched)
+    }),
+  )
+
+  it.instance("the admit body guard refuses any key outside the HostKernel closed set", () =>
+    Effect.gen(function* () {
+      // Rust's `strict_fields(body, required, &[])` accepts exactly these 14
+      // keys for `admit`; there are no optional keys.
+      expect(ManagedControl.ADMIT_BODY_KEYS).toHaveLength(14)
+      const closedBody: Record<string, unknown> = Object.fromEntries(
+        ManagedControl.ADMIT_BODY_KEYS.map((key) => [key, "value"]),
+      )
+      expect(() => ManagedControl.requireClosedAdmitBody("admit", closedBody)).not.toThrow()
+      // The key this client used to send — and any other unlisted key — is
+      // refused before dispatch, exactly as HostKernel rejects it.
+      expect(() =>
+        ManagedControl.requireClosedAdmitBody("admit", {
+          ...closedBody,
+          profileSelection: DIRECT_PROFILE_SELECTION,
+        }),
+      ).toThrow()
+      // A missing required key is refused too, mirroring `strict_fields`.
+      const missingRequired: Record<string, unknown> = { ...closedBody }
+      delete missingRequired.goalID
+      expect(() => ManagedControl.requireClosedAdmitBody("admit", missingRequired)).toThrow()
+      expect(() => ManagedControl.requireClosedAdmitBody("admit", { goalID: "goal-client" })).toThrow()
+      yield* Effect.void
     }),
   )
 
@@ -2053,6 +2358,8 @@ describe("managed control client", () => {
         locationID: "location-1",
         sessionID: "ses_child",
         preAdmissionProofDigest: `blake3:${"1".repeat(64)}`,
+        resourcePolicyProjectionRevision: "1",
+        resourcePolicyProjectionDigest: `blake3:${"2".repeat(64)}`,
         expectedRevision: 1,
         profileSelection: DIRECT_PROFILE_SELECTION,
         contextSelection: Schema.decodeUnknownSync(ContextSelectionV1)({
@@ -2245,6 +2552,128 @@ describe("managed control client", () => {
       )
       expect(error).toBeInstanceOf(ManagedControlError)
       expect("code" in error ? error.code : undefined).toBe("managed_protocol")
+      expect(kernel.calls).toHaveLength(0)
+    }),
+  )
+
+  it.instance("managed scope rejects JSON numbers and preserves the full decimal u64 boundary", () =>
+    Effect.gen(function* () {
+      const scope = {
+        goalID: "goal-client",
+        runID: "run-client",
+        taskID: "task-client",
+        attemptID: "att-managed",
+        ownerEpoch: "18446744073709551615",
+        expectedManagedRevision: "9007199254740993",
+        requestSequence: "1",
+        requestID: "req_managed_att-managed_1",
+        contextSelectionDigest: `blake3:${"c".repeat(64)}`,
+        locationID: "location-1",
+        sessionID: "ses_child",
+        workspaceRevision: `blake3:${"f".repeat(64)}`,
+        effectiveMaxTokens: "5000",
+        remainingTokens: "5000",
+        delegationBindingDigest: `blake3:${"a".repeat(64)}`,
+        permissionScopeDigest: `blake3:${"d".repeat(64)}`,
+        worktreeTarget: {
+          worktreeID: "worktree-1",
+          worktreeBaseRevision: "base-1",
+          worktreePoolRevision: "18446744073709551615",
+          locationID: "location-1",
+          workspaceID: "workspace-1",
+          workspaceRef: "refs/heads/managed",
+          canonicalRoot: "/workspace/managed",
+          workspaceRevision: `blake3:${"f".repeat(64)}`,
+        },
+      } as const
+
+      const wire = ManagedControl.managedAttemptScopeToWire(scope)
+      expect(wire.ownerEpoch).toBe("18446744073709551615")
+      expect(wire.expectedManagedRevision).toBe("9007199254740993")
+      expect(wire.worktreeTarget.worktreePoolRevision).toBe("18446744073709551615")
+
+      // JSON numbers at a decimal-string boundary must not be coerced through
+      // RegExp.test/BigInt; a value above 2^53 may already have lost precision.
+      const numeric = { ...scope, ownerEpoch: 9007199254740993 as unknown as string }
+      expect(() => ManagedControl.managedAttemptScopeToWire(numeric)).toThrow(ManagedControlError)
+    }),
+  )
+
+  it.instance("plan and start reject numeric Goal revisions before HostKernel dispatch", () =>
+    Effect.gen(function* () {
+      const kernel = freshKernel()
+      const numericRevision = 9007199254740993 as unknown as string
+
+      const planError = yield* Effect.flip(ManagedControl.createRunPlan({
+        trustedPrincipal: REVIEWER,
+        goalID: "goal-client",
+        specID: "spec-client",
+        specDigest: RECEIPT,
+        expectedGoalRevision: numericRevision,
+        runID: "run-client",
+        projectRef: "project-client",
+        workspaceRef: "workspace-client",
+        tasks: [],
+      }))
+      expect(planError).toBeInstanceOf(ManagedControlError)
+      expect("reason" in planError ? planError.reason : undefined).toBe("expectedGoalRevision is not a canonical u64")
+      expect(kernel.calls).toHaveLength(0)
+
+      const startError = yield* Effect.flip(ManagedControl.startPlannedRun({
+        trustedPrincipal: REVIEWER,
+        goalID: "goal-client",
+        runID: "run-client",
+        specID: "spec-client",
+        specDigest: RECEIPT,
+        expectedGoalRevision: numericRevision,
+        idempotencyKey: "start-key-1",
+        sessionID: "ses_root",
+        projectRef: "project-client",
+        workspaceRef: "workspace-client",
+        sessionLink: {
+          sessionID: "ses_root",
+          sourceStoreID: "store-root",
+          sourceInstanceID: "instance-root",
+          sourceCursor: {
+            ownerKind: "session",
+            ownerId: "ses_root",
+            seq: "1",
+            eventDigest: RECEIPT,
+          },
+          sourceEpoch: "1",
+          latestObservedMessageID: null,
+          latestObservedPartID: null,
+          sourceDigest: SCOPE,
+          redactionProfile: "horizon.session-link.ids-only.v1",
+          protocolVersion: 1,
+          goalID: "goal-client",
+          projectID: "project-client",
+          workspaceID: "workspace-client",
+        },
+      }))
+      expect(startError).toBeInstanceOf(ManagedControlError)
+      expect("reason" in startError ? startError.reason : undefined).toBe("expectedGoalRevision is not a canonical u64")
+      expect(kernel.calls).toHaveLength(0)
+    }),
+  )
+
+  it.instance("Run planning rejects a malformed Task collection before HostKernel dispatch", () =>
+    Effect.gen(function* () {
+      const kernel = freshKernel()
+      const error = yield* Effect.flip(ManagedControl.createRunPlan({
+        trustedPrincipal: REVIEWER,
+        goalID: "goal-client",
+        specID: "spec-client",
+        specDigest: RECEIPT,
+        expectedGoalRevision: "1",
+        runID: "run-client",
+        projectRef: "project-client",
+        workspaceRef: "workspace-client",
+        tasks: null as never,
+      }))
+
+      expect(error).toBeInstanceOf(ManagedControlError)
+      expect(error.code).toBe("managed_protocol")
       expect(kernel.calls).toHaveLength(0)
     }),
   )

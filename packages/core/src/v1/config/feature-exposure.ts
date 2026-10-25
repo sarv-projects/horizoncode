@@ -23,6 +23,9 @@ export type CatalogIssue =
   | { code: "duplicate_supported_target"; featureId: FeatureId; target: string }
   | { code: "unknown_capability"; featureId: FeatureId; capabilityId: string }
   | { code: "unwired_feature_enabled"; featureId: FeatureId }
+  | { code: "inconsistent_effect_state"; featureId: FeatureId }
+  | { code: "missing_blocked_reason"; featureId: FeatureId }
+  | { code: "missing_pending_apply_at"; featureId: FeatureId }
   | { code: "default_enabled_experiment"; featureId: FeatureId }
   | { code: "default_enabled_developer_feature"; featureId: FeatureId }
 
@@ -60,26 +63,32 @@ export interface Feature {
     pendingApplyAt?: "next_turn" | "next_session" | "restart"
   }
 }
+
+/** Field bounds mirrored from `arch_V1/contracts-v2/feature-exposure-v1.schema.json`. */
+const DescriptorText = Schema.String.check(Schema.isNonEmpty())
+const OwnerRef = Schema.String.check(Schema.isNonEmpty()).check(Schema.isMaxLength(128))
+const CapabilityRef = Schema.String.check(Schema.isNonEmpty())
+
 export const FeatureSchema = Schema.Struct({
   schemaVersion: Schema.Literal(1),
   featureId: Schema.Literals(["compaction.auto", "compaction.prune", "native_search", "hashline_edit", "cow_worktrees"]),
   settingKey: FeatureRef,
-  owner: Schema.Struct({ config: FeatureRef, runtime: FeatureRef }),
-  title: Schema.String,
-  description: Schema.String,
+  owner: Schema.Struct({ config: OwnerRef, runtime: OwnerRef }),
+  title: DescriptorText,
+  description: DescriptorText,
   releaseClass: Schema.Literals(["stable", "beta", "experimental"]),
   optional: Schema.Literal(true),
   audience: Schema.Literals(["public", "developer"]),
   defaultEnabled: Schema.Boolean,
-  supportedScopes: Schema.Array(Schema.Literals(["user", "project", "session"])),
+  supportedScopes: Schema.Array(Schema.Literals(["user", "project", "session"])).check(Schema.isMinLength(1)),
   prerequisites: Schema.Array(PrerequisiteRef),
   supportedPlatforms: Schema.Array(Schema.Literals(["linux", "windows", "darwin"])).check(Schema.isMinLength(1)),
   supportedModelRefs: Schema.Array(FeatureRef),
   supportedHarnessRefs: Schema.Array(FeatureRef),
   applyBoundary: Schema.Literals(["live", "next_turn", "next_session", "restart"]),
-  capabilityIds: Schema.Array(Schema.String),
-  riskNotes: Schema.optional(Schema.String),
-  costNotes: Schema.optional(Schema.String),
+  capabilityIds: Schema.Array(CapabilityRef),
+  riskNotes: Schema.optional(DescriptorText),
+  costNotes: Schema.optional(DescriptorText),
   state: Schema.Struct({
     implementationStatus: Schema.Literals(["designed", "code_present", "wired", "tested", "verified", "released"]),
     requestedEnabled: Schema.Union([Schema.Boolean, Schema.Null]),
@@ -87,7 +96,7 @@ export const FeatureSchema = Schema.Struct({
     effectiveState: Schema.Literals(["on", "off", "blocked", "pending_apply", "unavailable"]),
     valueSource: Schema.Literals(["default", "user", "project", "session", "system_policy", "unknown"]),
     policyLock: Schema.Literals(["locked", "unlocked", "unknown"]),
-    blockedReason: Schema.optional(Schema.String),
+    blockedReason: Schema.optional(DescriptorText),
     pendingApplyAt: Schema.optional(Schema.Literals(["next_turn", "next_session", "restart"])),
   }),
 }).annotate({ identifier: "FeatureExposure" })
@@ -125,7 +134,7 @@ export function validateCatalog(features: readonly Feature[], canonicalCapabilit
     const duplicate = (values: readonly string[]) => values.find((value, index) => values.indexOf(value) !== index)
     const duplicatePrerequisite = duplicate(feature.prerequisites)
     if (duplicatePrerequisite) issues.push({ code: "duplicate_prerequisite", featureId: feature.featureId, prerequisite: duplicatePrerequisite })
-    for (const values of [feature.supportedPlatforms, feature.supportedModelRefs, feature.supportedHarnessRefs]) {
+    for (const values of [feature.supportedScopes, feature.supportedPlatforms, feature.supportedModelRefs, feature.supportedHarnessRefs]) {
       const repeated = duplicate(values)
       if (repeated) issues.push({ code: "duplicate_supported_target", featureId: feature.featureId, target: repeated })
     }
@@ -135,6 +144,23 @@ export function validateCatalog(features: readonly Feature[], canonicalCapabilit
       (feature.state.implementationStatus === "designed" || feature.state.implementationStatus === "code_present")
     ) {
       issues.push({ code: "unwired_feature_enabled", featureId: feature.featureId })
+    }
+    // Conditional rules from the canonical contract's `state.allOf`: the
+    // effective flag and the projected state must never contradict each
+    // other, a blocked/unavailable state always carries its concrete reason,
+    // and a pending apply always names the boundary it waits for.
+    const { effectiveEnabled, effectiveState, blockedReason, pendingApplyAt } = feature.state
+    const contradictory =
+      effectiveState === "on" ? !effectiveEnabled : effectiveState === "pending_apply" ? false : effectiveEnabled
+    if (contradictory) issues.push({ code: "inconsistent_effect_state", featureId: feature.featureId })
+    if (
+      (effectiveState === "blocked" || effectiveState === "unavailable") &&
+      (blockedReason === undefined || blockedReason.length === 0)
+    ) {
+      issues.push({ code: "missing_blocked_reason", featureId: feature.featureId })
+    }
+    if (effectiveState === "pending_apply" && pendingApplyAt === undefined) {
+      issues.push({ code: "missing_pending_apply_at", featureId: feature.featureId })
     }
     if (feature.releaseClass === "experimental" && feature.defaultEnabled) {
       issues.push({ code: "default_enabled_experiment", featureId: feature.featureId })
