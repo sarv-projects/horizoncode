@@ -1,0 +1,7 @@
+2a323ef421b3c6ec87f513ce5ff3400484cad589e2f9351818468eafd40dde76  packages/core/src/session/message-updater.ts
+107f76a9163c603185b94839d40a405cbe4dba3e9b21426ed28a55391a82323c  packages/core/src/session/projector.ts
+63f879090155b1430c0cfa2d56c7fd7a03ba84550384f15be858e7666e2e56a7  packages/core/src/session/transfer.ts
+f069da444e54250f117f9e14369247da2efcab3e835b8d6a7dc52e611a87ac88  packages/core/src/tool/bash.ts
+0cce52c5039804ef5aaa2f364c2c914065360b159daafb499b317bb3da270a31  packages/core/test/terminal-run-live.test.ts
+f331f5b6287d8052cd4abcfbcf6efe3bf36d4e20852ce38332f315665a7e7c34  packages/opencode/src/agent/agent.ts
+b6645dc9db7251d5bcb2893621d4b118a67385a686df6bf7adf9d879f6b4a10f  packages/opencode/src/effect/instance-state.ts

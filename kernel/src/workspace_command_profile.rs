@@ -230,7 +230,7 @@ fn decimal(fields: &BTreeMap<String, Value>, key: &str, positive: bool) -> Optio
     let parsed = value.parse::<u64>().ok()?;
     (parsed.to_string() == value && (!positive || parsed > 0)).then_some(parsed)
 }
-fn digest(fields: &BTreeMap<String, Value>, key: &str) -> Option<&str> {
+fn digest<'a>(fields: &'a BTreeMap<String, Value>, key: &str) -> Option<&'a str> {
     let value = text(fields, key)?;
     (value.len() == 71 && value.starts_with("blake3:")
         && value[7..].bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))).then_some(value)
@@ -274,4 +274,71 @@ fn valid_env_name(value: &str) -> bool {
             .iter().any(|reserved| upper == *reserved)
         && !["SECRET", "TOKEN", "PASSWORD", "API_KEY", "ACCESS_KEY", "PRIVATE_KEY"]
             .iter().any(|suffix| upper == *suffix || upper.ends_with(&format!("_{suffix}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn profile_value() -> Value {
+        let mut fields = BTreeMap::from([
+            ("schemaVersion".into(), Value::Unsigned(1)),
+            ("profileId".into(), Value::String("trusted.build".into())),
+            ("revision".into(), Value::String("7".into())),
+            ("enabled".into(), Value::Bool(true)),
+            ("actions".into(), Value::Array(vec![Value::String("build".into())])),
+            ("executable".into(), Value::Map(BTreeMap::from([
+                ("selector".into(), Value::String("toolchain.cc".into())),
+                ("resolvedDigest".into(), Value::String(format!("blake3:{}", "a".repeat(64)))),
+            ]))),
+            ("arguments".into(), Value::Map(BTreeMap::from([
+                ("fixedPrefix".into(), Value::Array(vec![Value::String("--build".into())])),
+                ("allowedValuesByPosition".into(), Value::Array(vec![Value::Array(vec![
+                    Value::String("--offline".into()), Value::String("--locked".into()),
+                ])])),
+                ("maxCount".into(), Value::Unsigned(3)),
+                ("maxBytes".into(), Value::Unsigned(128)),
+            ]))),
+            ("workingDirectory".into(), Value::String("registered_workspace_root".into())),
+            ("environment".into(), Value::Map(BTreeMap::from([
+                ("policy".into(), Value::String("sanitized_allowlist".into())),
+                ("allowedNames".into(), Value::Array(vec![])),
+            ]))),
+            ("filesystem".into(), Value::String("registered_workspace_and_isolated_temp_cache_roots".into())),
+            ("network".into(), Value::String("deny".into())),
+            ("limits".into(), Value::Map(BTreeMap::from([
+                ("maxWallTimeMs".into(), Value::Unsigned(60_000)),
+                ("maxStdoutBytes".into(), Value::Unsigned(4096)),
+                ("maxStderrBytes".into(), Value::Unsigned(4096)),
+                ("maxProcesses".into(), Value::Unsigned(4)),
+                ("requiredOsGuarantees".into(), Value::Array(vec![])),
+            ]))),
+        ]);
+        let encoded = messagepack::encode(&Value::Map(fields.clone()), FRAME_LIMITS).unwrap();
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(DIGEST_DOMAIN);
+        hasher.update(&encoded);
+        fields.insert("profileDigest".into(), Value::String(format!("blake3:{}", hasher.finalize().to_hex())));
+        Value::Map(fields)
+    }
+
+    #[test]
+    fn fixed_argv_requires_the_exact_configured_literal_tuple() {
+        let profile = WorkspaceCommandProfileV1::from_value(&profile_value()).unwrap();
+
+        assert_eq!(profile.argv(WorkspaceCommandActionV1::Build, &["--offline".into()]),
+            Some(vec!["--build".into(), "--offline".into()]));
+        assert_eq!(profile.argv(WorkspaceCommandActionV1::Test, &["--offline".into()]), None);
+        assert_eq!(profile.argv(WorkspaceCommandActionV1::Build, &["--offline; touch marker".into()]), None);
+        assert_eq!(profile.argv(WorkspaceCommandActionV1::Build, &["--offline".into(), "--locked".into()]), None);
+    }
+
+    #[test]
+    fn immutable_profile_digest_rejects_definition_drift() {
+        let mut value = profile_value();
+        let Value::Map(fields) = &mut value else { unreachable!() };
+        fields.insert("enabled".into(), Value::Bool(false));
+
+        assert!(WorkspaceCommandProfileV1::from_value(&value).is_none());
+    }
 }

@@ -67,6 +67,7 @@ pub enum ErrorKind {
     ScalarLimit { length: usize, max: usize },
     EncodedSizeOverflow,
     AllocationFailed,
+    UnsupportedJsonValue,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -117,11 +118,135 @@ impl fmt::Display for MessagePackError {
                 formatter.write_str("MessagePack encoded size overflow")
             }
             ErrorKind::AllocationFailed => formatter.write_str("MessagePack allocation failed"),
+            ErrorKind::UnsupportedJsonValue => {
+                formatter.write_str("MessagePack value has no JSON representation")
+            }
         }
     }
 }
 
 impl Error for MessagePackError {}
+
+impl Value {
+    /// Compatibility spelling for MessagePack nil. `Null` mirrors the JSON
+    /// spelling used by the durable/domain projection boundary.
+    #[allow(non_upper_case_globals)]
+    pub const Null: Value = Value::Nil;
+
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Value::String(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    pub fn as_u64(&self) -> Option<u64> {
+        match self {
+            Value::Unsigned(value) => Some(*value),
+            _ => None,
+        }
+    }
+
+    pub fn as_i64(&self) -> Option<i64> {
+        match self {
+            Value::Unsigned(value) => i64::try_from(*value).ok(),
+            Value::Signed(value) => Some(*value),
+            _ => None,
+        }
+    }
+
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            Value::Bool(value) => Some(*value),
+            _ => None,
+        }
+    }
+
+    pub fn as_array(&self) -> Option<&Vec<Value>> {
+        match self {
+            Value::Array(values) => Some(values),
+            _ => None,
+        }
+    }
+
+    pub fn as_map(&self) -> Option<&BTreeMap<String, Value>> {
+        match self {
+            Value::Map(values) => Some(values),
+            _ => None,
+        }
+    }
+
+    pub fn get(&self, key: &str) -> Option<&Value> {
+        self.as_map().and_then(|values| values.get(key))
+    }
+
+    /// Canonical strict conversion at the MessagePack/JSON boundary.
+    ///
+    /// Durable OwnerLog payloads stay `serde_json::Value`; the RPC wire stays
+    /// `messagepack::Value`. Binary and non-finite floats have no JSON
+    /// projection and are rejected rather than silently lossy-encoded.
+    pub fn from_json_value(value: &serde_json::Value) -> Option<Value> {
+        Some(match value {
+            serde_json::Value::Null => Value::Nil,
+            serde_json::Value::Bool(value) => Value::Bool(*value),
+            serde_json::Value::Number(value) => {
+                if let Some(value) = value.as_u64() {
+                    Value::Unsigned(value)
+                } else if let Some(value) = value.as_i64() {
+                    Value::Signed(value)
+                } else {
+                    Value::Float(value.as_f64()?.to_bits())
+                }
+            }
+            serde_json::Value::String(value) => Value::String(value.clone()),
+            serde_json::Value::Array(values) => {
+                Value::Array(values.iter().map(Value::from_json_value).collect::<Option<_>>()?)
+            }
+            serde_json::Value::Object(values) => Value::Map(
+                values
+                    .iter()
+                    .map(|(key, value)| Some((key.clone(), Value::from_json_value(value)?)))
+                    .collect::<Option<_>>()?,
+            ),
+        })
+    }
+
+    pub fn to_json_value(&self) -> Result<serde_json::Value, MessagePackError> {
+        Ok(match self {
+            Value::Nil => serde_json::Value::Null,
+            Value::Bool(value) => serde_json::Value::Bool(*value),
+            Value::Unsigned(value) => serde_json::Value::Number((*value).into()),
+            Value::Signed(value) => serde_json::Value::Number((*value).into()),
+            Value::Float(bits) => {
+                let value = f64::from_bits(*bits);
+                let number = serde_json::Number::from_f64(value)
+                    .ok_or_else(|| error(ErrorKind::NonFiniteFloat))?;
+                serde_json::Value::Number(number)
+            }
+            Value::String(value) => serde_json::Value::String(value.clone()),
+            Value::Array(values) => serde_json::Value::Array(
+                values
+                    .iter()
+                    .map(Value::to_json_value)
+                    .collect::<Result<_, _>>()?,
+            ),
+            Value::Map(values) => serde_json::Value::Object(
+                values
+                    .iter()
+                    .map(|(key, value)| Ok((key.clone(), value.to_json_value()?)))
+                    .collect::<Result<_, MessagePackError>>()?,
+            ),
+            Value::Binary(_) => return Err(error(ErrorKind::UnsupportedJsonValue)),
+        })
+    }
+}
+
+impl From<serde_json::Value> for Value {
+    fn from(value: serde_json::Value) -> Self {
+        Value::from_json_value(&value)
+            .expect("serde_json numbers and containers always have a MessagePack projection")
+    }
+}
 
 fn error(kind: ErrorKind) -> MessagePackError {
     MessagePackError(kind)

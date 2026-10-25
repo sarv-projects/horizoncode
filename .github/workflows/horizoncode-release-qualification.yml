@@ -7,8 +7,63 @@ permissions:
   contents: read
 
 jobs:
+  release-tooling:
+    name: Release tooling, installer syntax, and dry runs
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout source without persisted credentials
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Install bubblewrap for fail-closed install isolation
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Validate installer shell syntax
+        run: bash -n install
+
+      - name: Exercise release-tooling failure and evidence paths
+        run: python3 -m unittest scripts.release.test_release_readiness -v
+
+      - name: Dry-run isolated build validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_root="$GITHUB_WORKSPACE/kernel/target/horizoncode-release/tooling-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          install -d -m 700 "$run_root"
+          python3 scripts/release/prepare_build.py \
+            --source "$GITHUB_WORKSPACE" \
+            --destination "$run_root/dry-run-source" \
+            --dry-run \
+            --output "$run_root/dry-run-build.json"
+          test ! -e "$run_root/dry-run-source"
+
+      - name: Dry-run clean-install validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_root="$GITHUB_WORKSPACE/kernel/target/horizoncode-release/tooling-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cp /bin/true "$run_root/candidate"
+          chmod 755 "$run_root/candidate"
+          python3 scripts/release/clean_install.py \
+            --checkout "$GITHUB_WORKSPACE" \
+            --candidate-binary "$run_root/candidate" \
+            --state-root "$run_root/install-dry-run" \
+            --dry-run
+          test ! -e "$run_root/install-dry-run"
+
   linux-candidate:
-    name: Build and audit isolated Linux candidate
+    name: Build, audit, and install an isolated Linux candidate
+    needs: release-tooling
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -16,6 +71,9 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
+
+      - name: Install bubblewrap for fail-closed install isolation
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -55,10 +113,28 @@ jobs:
             exit 2
           fi
 
+          # Exercise the real local installer on the candidate. Without a prior
+          # release artifact the matrix is PARTIAL (exit 2), not a pass. The
+          # isolated build copy is the separate clean checkout: it does not
+          # overlap the evidence root.
+          set +e
+          python3 scripts/release/clean_install.py \
+            --checkout "$build_root" \
+            --candidate-binary "$artifact_directory/horizoncode" \
+            --state-root "$run_root/install-evidence"
+          install_exit=$?
+          set -e
+          if (( install_exit == 1 || install_exit == 3 )); then
+            echo "clean-install evidence failed with exit $install_exit" >&2
+            exit "$install_exit"
+          fi
+
           set +e
           python3 scripts/release/release_gate.py \
             --root "$GITHUB_WORKSPACE" \
             --artifact "$artifact_directory" \
+            --checkout "$build_root" \
+            --candidate-binary "$artifact_directory/horizoncode" \
             --output "$gate_report"
           gate_exit=$?
           set -e
@@ -66,13 +142,15 @@ jobs:
             exit "$gate_exit"
           fi
 
-          python3 - "$build_report" "$gate_report" "$summary_report" <<'PY'
+          python3 - "$build_report" "$gate_report" "$summary_report" "$run_root/install-evidence/report.json" <<'PY'
           import json
           import sys
           from pathlib import Path
 
           build = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
           gate = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+          install_path = Path(sys.argv[4])
+          install = json.loads(install_path.read_text(encoding="utf-8")) if install_path.is_file() else None
           target = gate["audit"]["product_target"]
           artifact = gate["audit"]["artifact"]
           lines = [
@@ -84,6 +162,7 @@ jobs:
               f"- Source-state SHA-256: `{build['source']['source_state_sha256']}`",
               f"- Product target: `{target['classification']}` (`{target['package_name']}`; workspace `{target['workspace_identity']}`)",
               f"- Candidate binary SHA-256: `{artifact.get('binary_sha256')}`",
+              f"- Install matrix: `{install['status'] if install else 'MISSING'}`",
               f"- Release gate: `{gate['status']}` ({len(gate['blockers'])} blockers)",
               f"- Native Windows: `{gate['platform_support_matrix']['lanes']['native_windows']['support_status']}`",
               "- Signing and publication: not performed",

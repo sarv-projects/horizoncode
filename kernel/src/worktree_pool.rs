@@ -1509,3 +1509,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/support/worktree_pool_tests.rs"]
+mod worktree_pool_tests;

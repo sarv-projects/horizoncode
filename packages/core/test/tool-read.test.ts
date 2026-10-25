@@ -20,6 +20,7 @@ import { ToolOutputStore } from "@opencode-ai/core/tool-output-store"
 import { ReadTool } from "@opencode-ai/core/tool/read"
 import { ReadToolFileSystem } from "@opencode-ai/core/tool/read-filesystem"
 import { testEffect } from "./lib/effect"
+import { configServiceMockDefaults } from "./lib/config"
 import { toolIdentity, executeTool, settleTool, toolDefinitions } from "./lib/tool"
 
 const assertions: PermissionV2.AssertInput[] = []
@@ -73,7 +74,7 @@ const permission = Layer.succeed(
     policySnapshotDigest: () => Effect.succeed(`sha256:${"0".repeat(64)}`),
   }),
 )
-const config = Layer.succeed(Config.Service, Config.Service.of({ entries: () => Effect.succeed(configEntries) }))
+const config = Layer.succeed(Config.Service, Config.Service.of({ ...configServiceMockDefaults, entries: () => Effect.succeed(configEntries) }))
 const imageLayer = AppNodeBuilder.build(Image.node, [[Config.node, config]])
 const testFileSystem = Layer.effect(
   FSUtil.Service,

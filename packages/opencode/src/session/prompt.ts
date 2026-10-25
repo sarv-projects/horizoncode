@@ -14,7 +14,7 @@ import { SessionID, MessageID, PartID } from "./schema"
 import { MessageV2 } from "./message-v2"
 import { SessionRevert } from "./revert"
 import { Session } from "./session"
-import { Agent } from "../agent/agent"
+import { Agent, agentProfileDirectoryFailure, isAgentProfileDirectoryError } from "../agent/agent"
 import { Provider } from "@/provider/provider"
 
 import { type Tool as AITool, tool, jsonSchema } from "ai"
@@ -25,6 +25,7 @@ import { Instruction } from "./instruction"
 import { Plugin } from "../plugin"
 import { MAX_STEPS_PROMPT } from "@opencode-ai/core/session/runner/max-steps"
 import { ToolRegistry } from "@/tool/registry"
+import { WebSearchRuntime } from "@/tool/websearch-runtime"
 import { MCP } from "../mcp"
 import { LSP } from "@/lsp/lsp"
 import * as LSPServer from "@/lsp/server"
@@ -79,6 +80,7 @@ import { eq } from "drizzle-orm"
 import { SessionTable } from "@opencode-ai/core/session/sql"
 import { SessionReminders } from "./reminders"
 import { SessionTools } from "./tools"
+import { AgentProfileService } from "@opencode-ai/core/config"
 import { builtinHarnessSystemPromptV1 } from "@opencode-ai/core/harness-profile"
 import { requireToolExecution } from "./tool-batch"
 import type { DirectAttemptAuthority } from "./tool-batch"
@@ -120,7 +122,7 @@ function sessionAgentProfilePin(metadata: Record<string, unknown> | undefined) {
     ["harness", "permissionsDigest", "profileDigest", "profileID", "profileRevision"].some((key) => !Object.hasOwn(value, key)) ||
     typeof value.profileID !== "string" ||
     typeof value.profileRevision !== "string" ||
-    !/^[1-9][0-9]{0,15}$/.test(value.profileRevision) ||
+    !/^[1-9][0-9]{0,19}$/.test(value.profileRevision) ||
     typeof value.profileDigest !== "string" ||
     !/^blake3:[0-9a-f]{64}$/.test(value.profileDigest) ||
     typeof value.permissionsDigest !== "string" ||
@@ -130,11 +132,10 @@ function sessionAgentProfilePin(metadata: Record<string, unknown> | undefined) {
   ) {
     throw new SessionSupervisorError({ stage: "agent-profile", reason: "child Session has an invalid immutable AgentProfileV2 pin" })
   }
-  const revision = Number(value.profileRevision)
-  if (!Number.isSafeInteger(revision) || revision < 1) {
-    throw new SessionSupervisorError({ stage: "agent-profile", reason: "child Session AgentProfileV2 revision exceeds Core's supported integer range" })
+  if (BigInt(value.profileRevision) > 18_446_744_073_709_551_615n) {
+    throw new SessionSupervisorError({ stage: "agent-profile", reason: "child Session AgentProfileV2 revision exceeds u64" })
   }
-  return { profileID: value.profileID, revision, harness: value.harness }
+  return { profileID: value.profileID, revision: value.profileRevision, harness: value.harness }
 }
 
 function managedPreflightProfilePin(metadata: Record<string, unknown> | undefined) {
@@ -142,12 +143,11 @@ function managedPreflightProfilePin(metadata: Record<string, unknown> | undefine
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined
   const value = raw as Record<string, unknown>
   if (value.schemaVersion !== 1 || typeof value.profileID !== "string" ||
-    typeof value.profileRevision !== "string" || !/^[1-9][0-9]{0,15}$/.test(value.profileRevision) ||
+    typeof value.profileRevision !== "string" || !/^[1-9][0-9]{0,19}$/.test(value.profileRevision) ||
     typeof value.profileDigest !== "string" || !/^blake3:[0-9a-f]{64}$/.test(value.profileDigest) ||
     typeof value.harness !== "string" || !/^[A-Za-z0-9._-]{1,256}$/.test(value.harness)) return undefined
-  const revision = Number(value.profileRevision)
-  if (!Number.isSafeInteger(revision) || revision < 1) return undefined
-  return { profileID: value.profileID, revision, profileDigest: value.profileDigest, harness: value.harness }
+  if (BigInt(value.profileRevision) > 18_446_744_073_709_551_615n) return undefined
+  return { profileID: value.profileID, revision: value.profileRevision, profileDigest: value.profileDigest, harness: value.harness }
 }
 
 const AGENT_SPAWN_UNAVAILABLE_MESSAGE =
@@ -297,6 +297,7 @@ const layer = Layer.effect(
     const mcp = yield* MCP.Service
     const lsp = yield* LSP.Service
     const registry = yield* ToolRegistry.Service
+    const webSearchRuntime = yield* WebSearchRuntime.Service
     const truncate = yield* Truncate.Service
     const image = yield* Image.Service
     const scope = yield* Scope.Scope
@@ -350,7 +351,11 @@ const layer = Layer.effect(
 
           const filepath = name.startsWith("~/")
             ? path.join(os.homedir(), name.slice(2))
-            : path.resolve(ctx.worktree, name)
+            // Non-git projects (and installs where the guarded Git read path is
+            // unavailable) pin `worktree` to "/"; resolving an @file there would
+            // address the filesystem root. The instance directory is the
+            // canonical project root in that case.
+            : path.resolve(ctx.worktree === "/" ? ctx.directory : ctx.worktree, name)
 
           const info = yield* fsys.stat(filepath).pipe(Effect.option)
           if (Option.isNone(info)) {
@@ -536,7 +541,9 @@ const layer = Layer.effect(
           : yield* agents.get(agentName)
         : yield* agents.defaultInfo()
       if (!ag) {
-        const available = (yield* agents.list()).filter((a) => !a.hidden).map((a) => a.name)
+        const available = (yield* agents.list().pipe(
+          Effect.catchIf(isAgentProfileDirectoryError, agentProfileDirectoryFailure),
+        )).filter((a) => !a.hidden).map((a) => a.name)
         const hint = available.length ? ` Available agents: ${available.join(", ")}` : ""
         const error = new NamedError.Unknown({ message: `Agent not found: "${agentName}".${hint}` })
         yield* events.publish(Session.Event.Error, { sessionID: input.sessionID, error: error.toObject() })
@@ -1008,6 +1015,26 @@ const layer = Layer.effect(
         )
       })
 
+    /**
+     * Collapse prompt/preflight build failures into the declared managed error
+     * channels. These failures happen before any dispatch, so they fail closed
+     * with the original message preserved in `reason`.
+     */
+    const managedPreflightFailure = (operation: string, error: unknown) => {
+      if (error instanceof SessionSupervisorError) return error
+      if (error instanceof ManagedControl.ManagedControlError) return error
+      const reason = error instanceof Error ? error.message : String(error)
+      return new ManagedControl.ManagedControlError({ operation, code: "managed_unavailable", reason })
+    }
+
+    /** Same collapse for the channel that keeps Session.BusyError visible. */
+    const promptBuildFailure = (error: unknown) => {
+      if (error instanceof Session.BusyError) return error
+      if (error instanceof SessionSupervisorError) return error
+      const reason = error instanceof Error ? error.message : String(error)
+      return new SessionSupervisorError({ stage: "managed_context", reason: `prompt build failed before dispatch: ${reason}` })
+    }
+
     const prepareManagedTaskRequest: Interface["prepareManagedTaskRequest"] = (input) =>
       Effect.gen(function* () {
         const task = input.selection.task
@@ -1080,14 +1107,7 @@ const layer = Layer.effect(
             reason: "Core resolved a different Location than the authenticated P8 worktree target",
           })
         }
-        const profileRevision = Number(task.profile.revision)
-        if (!Number.isSafeInteger(profileRevision) || profileRevision < 1) {
-          return yield* new ManagedControl.ManagedControlError({
-            operation: "managed_context.prepare",
-            code: "agent_profile_stale",
-            reason: "Task-pinned AgentProfileV2 revision is outside Core's supported range",
-          })
-        }
+        const profileRevision = task.profile.revision
         const profile = yield* agents.getProfile(task.profile.profileID, profileRevision)
         const profileProjection = profile.options.horizonAgentProfile
         if (typeof profileProjection !== "object" || profileProjection === null ||
@@ -1228,7 +1248,7 @@ const layer = Layer.effect(
             parentID: root.id,
             title: task.title,
             agent: profile.name,
-            model: { providerID: model.providerID, modelID: model.id },
+            model: { providerID: model.providerID, id: model.id },
             permission: childPermissions,
             workspaceID: targetWorkspaceID,
             metadata: { horizonManagedPreflightV1: stage },
@@ -1283,7 +1303,9 @@ const layer = Layer.effect(
           profileID: task.profile.profileID,
           profileRevision: task.profile.revision,
           profileDigest: task.profile.definitionDigest,
-          toolSources: preflight.toolSources ?? [],
+          // No toolset provenance exists before the child's first resolved run;
+          // this frozen selection pins an empty source set by construction.
+          toolSources: [],
           providerInput,
         })
         if (persistedContextSelection && !sameManagedContextSelectionV1(persistedContextSelection, contextSelection)) {
@@ -1291,6 +1313,23 @@ const layer = Layer.effect(
             operation: "managed_context.prepare",
             code: "managed_conflict",
             reason: "recompiled sequence-1 ContextSelection differs from the exact persisted pre-admission selection",
+          })
+        }
+        const profileRecords = yield* Effect.serviceOption(AgentProfileService)
+        const taskProfile = Option.isSome(profileRecords)
+          ? yield* profileRecords.value.agentProfiles().pipe(
+              Effect.map((records) =>
+                records.find((record) =>
+                  record.profileId === task.profile.profileID && String(record.revision) === task.profile.revision),
+              ),
+              Effect.catch(() => Effect.succeed(undefined)),
+            )
+          : undefined
+        if (!taskProfile) {
+          return yield* new ManagedControl.ManagedControlError({
+            operation: "managed_context.prepare",
+            code: "managed_unavailable",
+            reason: "the task-pinned AgentProfileV2 harness projection is unavailable",
           })
         }
         const exactContextSelection = persistedContextSelection ?? contextSelection
@@ -1301,7 +1340,7 @@ const layer = Layer.effect(
         return {
           contextSelection: exactContextSelection,
           providerInput,
-          toolSources: preflight.toolSources ?? [],
+          toolSources: [],
           context: {
             attemptID: task.candidateAttemptID,
             taskID: task.taskID,
@@ -1316,9 +1355,10 @@ const layer = Layer.effect(
             sourceRevision: exactContextSelection.sourceRevision,
             requestID: input.requestID,
             requestSequence: input.requestSequence,
+            harnessID: taskProfile.harness,
           },
         } satisfies ManagedPreparedRequestV1
-      })
+      }).pipe(Effect.mapError((error) => managedPreflightFailure("managed_task_prepare", error)))
 
     const prepareManagedPrompt: Interface["prepareManagedPrompt"] = (input) =>
       state.withExecutionOwner(input.prompt.sessionID, Effect.gen(function* () {
@@ -1353,7 +1393,7 @@ const layer = Layer.effect(
           return yield* new SessionSupervisorError({ stage: "managed_context", reason: "SessionPrompt failed to compile a no-dispatch managed request" })
         }
         return preflight.providerInput
-      }))
+      })).pipe(Effect.mapError((error) => promptBuildFailure(error)))
 
     const prepareManagedFollowUp: Interface["prepareManagedFollowUp"] = (input) =>
       Effect.gen(function* () {
@@ -1431,7 +1471,7 @@ const layer = Layer.effect(
           })
         }
         const preflight: ManagedPromptPreflight = { remainingTokens: input.authority.remainingTokens(), user, appendUser: user }
-        yield* runLoop(sessionID, input.authority, undefined, undefined, undefined, preflight).pipe(
+        yield* runLoop(sessionID, undefined, input.authority, undefined, undefined, preflight).pipe(
           Effect.provideService(InstanceRef, { ...(yield* InstanceState.context), directory: AbsolutePath.make(scope.worktreeTarget.canonicalRoot) }),
           Effect.provideService(WorkspaceRef, WorkspaceV2.ID.make(scope.worktreeTarget.workspaceID)),
           Effect.ensuring(status.set(sessionID, { type: "idle" })),
@@ -1478,9 +1518,10 @@ const layer = Layer.effect(
             sourceRevision: cursor.seq,
             requestID,
             requestSequence: sequence,
+            harnessID: context.harnessID,
           },
         } satisfies ManagedPreparedRequestV1
-      })
+      }).pipe(Effect.mapError((error) => managedPreflightFailure("managed_follow_up", error)))
 
     const followUpDirectChild: Interface["followUpDirectChild"] = (input) =>
       state.withExecutionOwner(SessionID.make(input.childSessionID), Effect.gen(function* () {
@@ -1641,7 +1682,7 @@ const layer = Layer.effect(
             currentDirectAttempt = refreshed
           },
         }
-        const childAgent = yield* agents.getProfile(pin.profileID, Number(pin.profileRevision))
+        const childAgent = yield* agents.getProfile(pin.profileID, pin.profileRevision)
         const profileValue = childAgent.options.horizonAgentProfile
         const profileProjection = typeof profileValue === "object" && profileValue !== null && !Array.isArray(profileValue)
           ? profileValue as Record<string, unknown>
@@ -1663,7 +1704,7 @@ const layer = Layer.effect(
         const run = promptWork({
           messageID: promptMessageID,
           sessionID: child.id,
-          model: { providerID: model.providerID, modelID: model.modelID },
+          model: { providerID: model.providerID, modelID: model.id },
           agent: childAgent.name,
           parts: [{ type: "text", text: row.payload }],
         }, directAttemptAuthority, undefined, directTurn)
@@ -1671,12 +1712,28 @@ const layer = Layer.effect(
           ? profileProjection.limits as Record<string, unknown>
           : undefined
         const wallTimeMs = limits?.wallTimeMs
-        const result = typeof wallTimeMs === "number" && Number.isSafeInteger(wallTimeMs) && wallTimeMs > 0
-          ? yield* run.pipe(Effect.timeout(`${wallTimeMs} millis`), Effect.flatMap((timed) =>
-              Option.isSome(timed)
-                ? Effect.succeed(timed.value)
-                : Effect.fail(new ManagedControl.ManagedControlError({ operation: "direct_follow_up", code: "agent_profile_limit", reason: "AgentProfileV2 wall-time limit was reached; turn outcome requires reconciliation" })),
-            ))
+        if (wallTimeMs !== undefined && (typeof wallTimeMs !== "string" || !/^[1-9][0-9]{0,19}$/.test(wallTimeMs) ||
+          BigInt(wallTimeMs) > BigInt(Number.MAX_SAFE_INTEGER))) {
+          return yield* new ManagedControl.ManagedControlError({
+            operation: "direct_follow_up",
+            code: "agent_profile_limit",
+            reason: "AgentProfileV2 wall-time limit is invalid or exceeds the supported timer range",
+          })
+        }
+        const result = typeof wallTimeMs === "string"
+          ? yield* run.pipe(
+              Effect.timeoutOrElse({
+                duration: Number(BigInt(wallTimeMs)),
+                orElse: () =>
+                  Effect.fail(
+                    new ManagedControl.ManagedControlError({
+                      operation: "direct_follow_up",
+                      code: "agent_profile_limit",
+                      reason: "AgentProfileV2 wall-time limit was reached; turn outcome requires reconciliation",
+                    }),
+                  ),
+              }),
+            )
           : yield* run
         const output = result.parts.findLast((part) => part.type === "text")
         const resultDigest = ManagedControl.resultDigest({
@@ -1737,7 +1794,12 @@ const layer = Layer.effect(
         }
         yield* sessions.directInboxMarkHostConsumed({ messageID: row.message_id, consumptionAckDigest: ackDigest, hostConsumedAckDigest: ack.consumptionReceiptDigest })
         return undefined
-      }))
+      })).pipe(
+        Effect.mapError((error) => managedPreflightFailure("direct_follow_up", error)),
+        // ManagedControl.call reads SessionSupervisorService from context; the
+        // interface keeps this requirement-free, so bind the captured instance.
+        Effect.provideService(SessionSupervisor.Service, supervisor),
+      )
 
     const lastAssistant = Effect.fnUntraced(function* (sessionID: SessionID) {
       const match = yield* sessions.findMessage(sessionID, (m) => m.info.role !== "user").pipe(Effect.orDie)
@@ -1756,19 +1818,7 @@ const layer = Layer.effect(
       toolSources?: readonly import("@/tool/discovery").ToolsetSourceRefV1[]
     }
 
-    const runLoop: (
-      sessionID: SessionID,
-      directAttempt?: DirectAttemptAuthority,
-      managedAttempt?: ManagedAttemptAuthority,
-      directTurn?: DirectTurnAuthority,
-      managedContext?: ManagedProviderContextV1,
-      preflight?: ManagedPromptPreflight,
-      managedFollowUpRunner?: ManagedFollowUpRunnerV1,
-      managedPreDispatchRecovery?: ManagedPreDispatchRecoveryV1,
-    ) => Effect.Effect<
-      SessionV1.WithParts,
-      SessionSupervisorError
-    > = Effect.fn("SessionPrompt.run")(
+    const runLoopImpl = Effect.fn("SessionPrompt.run")(
       function* (
         sessionID: SessionID,
         directAttempt?: DirectAttemptAuthority,
@@ -1796,6 +1846,10 @@ const layer = Layer.effect(
           const { user: lastUser, assistant: lastAssistant, finished: lastFinished, tasks } = MessageV2.latest(msgs)
 
           if (!lastUser) throw new Error("No user message found in stream. This should never happen.")
+          // The latest projection returns the user Info; the persisted WithParts
+          // entry is re-found by identity so preflight/recovery carry the exact
+          // durable message the loop observed.
+          const lastUserMessage = msgs.findLast((message) => message.info === lastUser)
 
           const lastAssistantMsg = msgs.findLast(
             (msg) => msg.info.role === "assistant" && msg.info.id === lastAssistant?.id,
@@ -1895,7 +1949,22 @@ const layer = Layer.effect(
                     reason: "next managed prompt is not bound to the live HostKernel request and ContextSelection pins",
                   })
                 }
-                yield* createUserMessage(nextPrompt)
+                // The follow-up projection above admits only one text part, so
+                // image normalization is unreachable here. Keep the loop's
+                // public supervisor-only error contract even if that invariant
+                // is ever violated: fail closed instead of widening it.
+                yield* createUserMessage(nextPrompt).pipe(
+                  Effect.mapError((error) =>
+                    error instanceof SessionSupervisorError
+                      ? error
+                      : new SessionSupervisorError({
+                          stage: "managed_follow_up",
+                          reason: `follow-up user message projection failed before dispatch: ${
+                            error instanceof Error ? error.message : String(error)
+                          }`,
+                        }),
+                  ),
+                )
                 yield* continuation.onPromptCommitted({ promptMessageID: nextPrompt.messageID! }).pipe(
                   Effect.catchTag("ManagedControlError", (error) =>
                     Effect.fail(new SessionSupervisorError({
@@ -1986,7 +2055,9 @@ const layer = Layer.effect(
             }
           }
           if (!agent) {
-            const available = (yield* agents.list()).filter((a) => !a.hidden).map((a) => a.name)
+            const available = (yield* agents.list().pipe(
+          Effect.catchIf(isAgentProfileDirectoryError, agentProfileDirectoryFailure),
+        )).filter((a) => !a.hidden).map((a) => a.name)
             const hint = available.length ? ` Available agents: ${available.join(", ")}` : ""
             const error = new NamedError.Unknown({ message: `Agent not found: "${lastUser.agent}".${hint}` })
             yield* events.publish(Session.Event.Error, { sessionID, error: error.toObject() })
@@ -2048,13 +2119,12 @@ const layer = Layer.effect(
               promptOps,
               directAttempt,
               managedAttempt,
-              managedContext,
-              directTurn,
             }).pipe(
               Effect.provideService(Permission.Service, permission),
               Effect.provideService(ToolRegistry.Service, registry),
               Effect.provideService(FSUtil.Service, fsys),
               Effect.provideService(RuntimeFlags.Service, flags),
+              Effect.provideService(WebSearchRuntime.Service, webSearchRuntime),
             )
             const tools = resolvedTools.tools
             const toolDefinitions = resolvedTools.definitions
@@ -2090,7 +2160,9 @@ const layer = Layer.effect(
               sys.mcp(agent, session.permission),
               MessageV2.toModelMessagesEffect(msgs, model),
             ])
-            const harnessPrompt = builtinHarnessSystemPromptV1(agent.options.horizonHarness ?? "native-rich")
+            const configuredHarness = agent.options.horizonHarness
+            const harnessID = typeof configuredHarness === "string" ? configuredHarness : "native-rich"
+            const harnessPrompt = builtinHarnessSystemPromptV1(harnessID)
             if (harnessPrompt === undefined) {
               throw new SessionSupervisorError({ stage: "agent-profile", reason: "selected HarnessProfileV1 system prompt is unavailable" })
             }
@@ -2125,11 +2197,33 @@ const layer = Layer.effect(
               ...(preflight ? { managedRemainingTokens: preflight.remainingTokens } : {}),
             }
             if (preflight) {
-              preflight.user = lastUser
-              preflight.providerInput = yield* handle.prepareManagedRequest(streamInput)
+              if (!lastUserMessage) {
+                return yield* new SessionSupervisorError({
+                  stage: "managed_context",
+                  reason: "prompt stream is missing its persisted user message",
+                })
+              }
+              preflight.user = lastUserMessage
+              // Provider preflight has an open error channel because it runs the
+              // shared LLMRequestPrep pipeline. The prompt loop's public contract
+              // is SessionSupervisorError-only, so an unsupported/preparation
+              // failure must fail closed through the supervisor channel instead
+              // of widening the loop requirement or dispatching anything.
+              preflight.providerInput = yield* handle.prepareManagedRequest(streamInput).pipe(
+                Effect.mapError((error) =>
+                  error instanceof SessionSupervisorError
+                    ? error
+                    : new SessionSupervisorError({
+                        stage: "managed_context",
+                        reason: `managed provider preflight failed before dispatch: ${
+                          error instanceof Error ? error.message : String(error)
+                        }`,
+                      }),
+                ),
+              )
               return "break" as const
             }
-            if (managedAttempt && lastUser.info.role === "user") {
+            if (managedAttempt && lastUser.role === "user") {
               if (!managedContext || !managedPreDispatchRecovery) {
                 return yield* new SessionSupervisorError({
                   stage: "managed_pre_dispatch_recovery",
@@ -2149,8 +2243,14 @@ const layer = Layer.effect(
                   hostCode: "managed_conflict",
                 })
               }
-              const textParts = lastUser.parts.filter((part): part is SessionV1.TextPart => part.type === "text")
-              if (textParts.length !== 1 || lastUser.parts.length !== 1) {
+              if (!lastUserMessage) {
+                return yield* new SessionSupervisorError({
+                  stage: "managed_pre_dispatch_recovery",
+                  reason: "prompt stream is missing its persisted user message",
+                })
+              }
+              const textParts = lastUserMessage.parts.filter((part): part is SessionV1.TextPart => part.type === "text")
+              if (textParts.length !== 1 || lastUserMessage.parts.length !== 1) {
                 return yield* new SessionSupervisorError({ stage: "managed_pre_dispatch_recovery", reason: "managed request lacks one exact persisted user text message" })
               }
               yield* managedPreDispatchRecovery({
@@ -2220,6 +2320,44 @@ const layer = Layer.effect(
       },
     )
 
+    const runLoop: (
+      sessionID: SessionID,
+      directAttempt?: DirectAttemptAuthority,
+      managedAttempt?: ManagedAttemptAuthority,
+      directTurn?: DirectTurnAuthority,
+      managedContext?: ManagedProviderContextV1,
+      preflight?: ManagedPromptPreflight,
+      managedFollowUpRunner?: ManagedFollowUpRunnerV1,
+      managedPreDispatchRecovery?: ManagedPreDispatchRecoveryV1,
+    ) => Effect.Effect<
+      SessionV1.WithParts,
+      SessionSupervisorError
+    > = (
+      sessionID,
+      directAttempt,
+      managedAttempt,
+      directTurn,
+      managedContext,
+      preflight,
+      managedFollowUpRunner,
+      managedPreDispatchRecovery,
+    ) =>
+      runLoopImpl(
+        sessionID,
+        directAttempt,
+        managedAttempt,
+        directTurn,
+        managedContext,
+        preflight,
+        managedFollowUpRunner,
+        managedPreDispatchRecovery,
+      ).pipe(
+        // ManagedControl.call reads SessionSupervisorService from context; the
+        // declared signature keeps this loop requirement-free, so bind the
+        // captured instance exactly like runManagedTask does.
+        Effect.provideService(SessionSupervisor.Service, supervisor),
+      )
+
     const loopWithAttempt: (
       input: LoopInput,
       directAttempt?: DirectAttemptAuthority,
@@ -2271,19 +2409,29 @@ const layer = Layer.effect(
                 (rootDirectSession ? sessionWorkspaceID : undefined)
               const directory = managedScope?.worktreeTarget.canonicalRoot ?? instance.directory
               if (!workspaceID) {
-                promptRun = Effect.fail(new SessionSupervisorError({
-                  stage: "lsp-scope",
-                  reason: "authenticated editor Session has no trusted workspace ID",
-                }))
+                if (trustedAttempt) {
+                  // An Attempt-scoped turn must carry its own trusted workspace;
+                  // never synthesize one from ambient instance state.
+                  promptRun = Effect.fail(new SessionSupervisorError({
+                    stage: "lsp-scope",
+                    reason: "authenticated editor Session has no trusted workspace ID",
+                  }))
+                }
+                // A root direct Session with no trusted workspace ID cannot
+                // build a workspace-bound execution scope. RepoIntel/LSP context
+                // is optional, so withhold it (no execution scope, no LSP
+                // clients) instead of failing the ordinary direct model turn.
               } else {
                 const locationRef = Location.Ref.make({
                   directory: AbsolutePath.make(directory),
-                  workspaceID,
+                  workspaceID: WorkspaceV2.ID.make(workspaceID),
                 })
                 const bridge = yield* EffectBridge.make()
-                const rootWorkspaceSnapshot = rootDirectSession
+                const principal = yield* Effect.serviceOption(TrustedPrincipalContext)
+                const rootWorkspaceSnapshot = rootDirectSession && Option.isSome(principal)
                   ? yield* supervisor.directSessionWorkspaceSnapshot({ sessionID: input.sessionID, locationRef }).pipe(
-                      Effect.catchAll(() => Effect.succeed(undefined)),
+                      Effect.provideService(TrustedPrincipalContext, principal.value),
+                      Effect.catch(() => Effect.succeed(undefined)),
                     )
                   : undefined
                 if (rootDirectSession && !rootWorkspaceSnapshot) {
@@ -2335,11 +2483,12 @@ const layer = Layer.effect(
                     await dispose()
                     return []
                   }
+                  const getLaunchProfiles = config.getGlobalLaunchProfiles
                   if (file) {
                     const fileRelative = path.relative(directory, path.resolve(file))
                     if (fileRelative === ".." || fileRelative.startsWith(`..${path.sep}`) || path.isAbsolute(fileRelative)) return []
                   }
-                  const globalConfig = await bridge.promise(config.getGlobalLaunchProfiles())
+                  const globalConfig = await bridge.promise(getLaunchProfiles())
                   const configured = globalConfig.lsp && typeof globalConfig.lsp === "object"
                     ? Object.entries(globalConfig.lsp)
                     : []
@@ -2387,7 +2536,7 @@ const layer = Layer.effect(
                     let pending = clientJobs.get(key)
                     if (!pending) {
                       pending = (async () => {
-                        const approvalConfig = await bridge.promise(config.getGlobalLaunchProfiles())
+                        const approvalConfig = await bridge.promise(getLaunchProfiles())
                         const configuredEntry = configured.find(([serverID]) => serverID === server.id)?.[1]
                         const initialization = configuredEntry && typeof configuredEntry === "object" &&
                           "initialization" in configuredEntry ? configuredEntry.initialization : undefined
@@ -2567,7 +2716,9 @@ const layer = Layer.effect(
 
       const agent = agentName ? yield* agents.get(agentName) : yield* agents.defaultInfo()
       if (!agent) {
-        const available = (yield* agents.list()).filter((a) => !a.hidden).map((a) => a.name)
+        const available = (yield* agents.list().pipe(
+          Effect.catchIf(isAgentProfileDirectoryError, agentProfileDirectoryFailure),
+        )).filter((a) => !a.hidden).map((a) => a.name)
         const hint = available.length ? ` Available agents: ${available.join(", ")}` : ""
         const error = new NamedError.Unknown({ message: `Agent not found: "${agentName}".${hint}` })
         yield* events.publish(Session.Event.Error, { sessionID: input.sessionID, error: error.toObject() })
@@ -2634,6 +2785,7 @@ const layer = Layer.effect(
       prepareManagedTaskRequest,
       prepareManagedPrompt,
       followUpDirectChild,
+      prepareManagedFollowUp,
       loop,
       shell,
       command,
@@ -2768,6 +2920,9 @@ export const node = LayerNode.make({
     MCP.node,
     LSP.node,
     ToolRegistry.node,
+    // SessionTools.resolve reads WebSearchRuntime in this layer's context; the
+    // sibling ToolRegistry dependency does not share its provided services.
+    WebSearchRuntime.node,
     Truncate.node,
     Image.node,
     Instruction.node,

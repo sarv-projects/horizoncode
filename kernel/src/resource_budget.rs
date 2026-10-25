@@ -1663,7 +1663,6 @@ impl PressureState {
                 } else {
                     Normal
                 }
-                }
             }
         }
     }
@@ -1991,7 +1990,10 @@ mod tests {
             PressureState::Normal,
         );
         assert!(!fresh_tracker.is_expired_at(21, 10));
-        assert!(fresh_tracker.is_expired_at(22, 10));
+        // The freshness bound matches P2's snapshot validation: a sample is
+        // stale only when it is strictly older than the caller's window.
+        assert!(!fresh_tracker.is_expired_at(22, 10));
+        assert!(fresh_tracker.is_expired_at(23, 10));
     }
 
     fn set_memory_capacity(
@@ -3158,7 +3160,9 @@ mod tests {
             PressureLimits { soft: Some(100), hard: Some(200) }, 80, 2, 1,
         ).unwrap();
         assert_eq!(controller.observe(2, 1, Some(20), false), Ok(Recovering));
-        assert_eq!(controller.observe(2, 2, Some(20), false), Ok(Recovering));
+        // Two calm samples satisfy the configured window, then the state moves
+        // one hysteresis step from RECOVERING to NORMAL.
+        assert_eq!(controller.observe(2, 2, Some(20), false), Ok(Normal));
         assert_eq!(controller.observe(2, 3, Some(20), false), Ok(Normal));
     }
 

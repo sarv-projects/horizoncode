@@ -885,10 +885,14 @@ async fn mcp_post(
     if cancel.is_cancelled() || started.elapsed() >= Duration::from_millis(30_000) {
         return Err(HttpExecutionErrorV1::OutcomeUnknown);
     }
+    // `reqwest::json` is intentionally unavailable (the crate disables that
+    // feature so no implicit serializer is reachable). Encode the already
+    // normalized request value here and hand the exact bytes to the transport.
+    let body = serde_json::to_vec(body).map_err(|_| HttpExecutionErrorV1::InvalidRequest)?;
     let mut request = client.post(target)
         .header(reqwest::header::ACCEPT, "application/json, text/event-stream")
         .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .json(body);
+        .body(body);
     if let Some(session) = session_id { request = request.header("Mcp-Session-Id", session); }
     match route.provider_id.as_str() {
         "tavily" => { request = request.header("X-Tavily-Access-Mode", "keyless")
@@ -1406,7 +1410,7 @@ pub fn validate_request(
     validate_request_target(route, &request.target)?;
     if route.provider_id == "brave" {
         let (query, limit) = canonical_search_input(&request.body)?;
-        if fixed_brave_search_target(query, limit).as_deref() != Some(request.target.as_str()) {
+        if fixed_brave_search_target(&query, limit).as_deref() != Some(request.target.as_str()) {
             return Err(HttpExecutionErrorV1::RouteDenied);
         }
     } else if fixed_web_search_route(&route.route_id).as_ref() == Some(route) {
@@ -1763,7 +1767,7 @@ async fn async_execute_pinned(
     })
 }
 
-fn canonical_search_input(body: &[u8]) -> Result<(&str, u8), HttpExecutionErrorV1> {
+fn canonical_search_input(body: &[u8]) -> Result<(String, u8), HttpExecutionErrorV1> {
     let value: serde_json::Value = serde_json::from_slice(body)
         .map_err(|_| HttpExecutionErrorV1::InvalidRequest)?;
     let object = value.as_object().ok_or(HttpExecutionErrorV1::InvalidRequest)?;
@@ -1775,7 +1779,7 @@ fn canonical_search_input(body: &[u8]) -> Result<(&str, u8), HttpExecutionErrorV
         .and_then(|value| u8::try_from(value).ok())
         .filter(|value| (1..=10).contains(value))
         .ok_or(HttpExecutionErrorV1::InvalidRequest)?;
-    Ok((query, limit))
+    Ok((query.to_owned(), limit))
 }
 
 fn provider_search_body(provider: &str, canonical: &[u8]) -> Result<Vec<u8>, HttpExecutionErrorV1> {

@@ -246,7 +246,6 @@ export function createStreamEnvelopeGuard(input: { maxCursors?: number } = {}) {
       const key = JSON.stringify([cursor.sessionID, cursor.partID])
       const state = cursors.get(key)
       if (!state || state.sourceGeneration !== cursor.sourceGeneration) return "resnapshot_required"
-      touch(key, state)
       // An ended stream is final: a later delta for it can only be a replay.
       if (sealed.get(key) === cursor.sourceGeneration) return "duplicate"
       if (cursor.sequence < state.committed) return "duplicate"
@@ -258,6 +257,9 @@ export function createStreamEnvelopeGuard(input: { maxCursors?: number } = {}) {
       }
       const accepted = cursor.sequence + cursor.advance
       if (!Number.isSafeInteger(accepted)) return "resnapshot_required"
+      // Only accepted progress refreshes the bounded LRU. A replayed duplicate
+      // must not keep an ended/old cursor alive under pressure.
+      touch(key, state)
       state.acceptedRanges.set(cursor.sequence, cursor.advance)
       state.accepted = accepted
       return "apply"

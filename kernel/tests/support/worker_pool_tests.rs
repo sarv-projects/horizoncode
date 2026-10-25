@@ -4,14 +4,10 @@
 //! owner fixtures exactly the way the kernel crate does and exercise the real
 //! reservation, worktree and worker state machines together.
 
-#[path = "../src/resource_budget.rs"]
-mod resource_budget;
-#[path = "../src/resource_sampler.rs"]
-mod resource_sampler;
-#[path = "../src/worker_pool.rs"]
-mod worker_pool;
-#[path = "../src/worktree_pool.rs"]
-mod worktree_pool;
+use crate::resource_budget;
+use crate::resource_sampler;
+use crate::worker_pool;
+use crate::worktree_pool;
 
 use std::path::PathBuf;
 

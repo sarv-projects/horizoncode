@@ -1,9 +1,9 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "612762d2-827b-471b-a512-ef8cfa40dfb5",
+  "id": "0c99ff5b-f2ee-4ecf-b3b6-9fd35ccfa7a0",
   "prevIds": [
-    "a1cf13e3-2604-4aca-99b0-157d88200081"
+    "612762d2-827b-471b-a512-ef8cfa40dfb5"
   ],
   "ddl": [
     {
@@ -52,6 +52,18 @@
     },
     {
       "name": "project",
+      "entityType": "tables"
+    },
+    {
+      "name": "direct_provider_request",
+      "entityType": "tables"
+    },
+    {
+      "name": "direct_subagent_inbox",
+      "entityType": "tables"
+    },
+    {
+      "name": "managed_subagent_inbox",
       "entityType": "tables"
     },
     {
@@ -805,6 +817,1116 @@
       "name": "commands",
       "entityType": "columns",
       "table": "project"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "owner_binding",
+      "entityType": "columns",
+      "table": "direct_provider_request"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "session_id",
+      "entityType": "columns",
+      "table": "direct_provider_request"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "request_id",
+      "entityType": "columns",
+      "table": "direct_provider_request"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "source_revision",
+      "entityType": "columns",
+      "table": "direct_provider_request"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "profile_id",
+      "entityType": "columns",
+      "table": "direct_provider_request"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "profile_revision",
+      "entityType": "columns",
+      "table": "direct_provider_request"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "profile_digest",
+      "entityType": "columns",
+      "table": "direct_provider_request"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "permission_scope_digest",
+      "entityType": "columns",
+      "table": "direct_provider_request"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "context_selection_json",
+      "entityType": "columns",
+      "table": "direct_provider_request"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "context_selection_digest",
+      "entityType": "columns",
+      "table": "direct_provider_request"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "provider_id",
+      "entityType": "columns",
+      "table": "direct_provider_request"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "model_id",
+      "entityType": "columns",
+      "table": "direct_provider_request"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "account_ref",
+      "entityType": "columns",
+      "table": "direct_provider_request"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "harness_id",
+      "entityType": "columns",
+      "table": "direct_provider_request"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "harness_revision",
+      "entityType": "columns",
+      "table": "direct_provider_request"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "route_revision",
+      "entityType": "columns",
+      "table": "direct_provider_request"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "endpoint_revision",
+      "entityType": "columns",
+      "table": "direct_provider_request"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "policy_digest",
+      "entityType": "columns",
+      "table": "direct_provider_request"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "normalized_input_digest",
+      "entityType": "columns",
+      "table": "direct_provider_request"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "transport_request_digest",
+      "entityType": "columns",
+      "table": "direct_provider_request"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "pin_digest",
+      "entityType": "columns",
+      "table": "direct_provider_request"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "state",
+      "entityType": "columns",
+      "table": "direct_provider_request"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "assistant_message_id",
+      "entityType": "columns",
+      "table": "direct_provider_request"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "usage_json",
+      "entityType": "columns",
+      "table": "direct_provider_request"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_created",
+      "entityType": "columns",
+      "table": "direct_provider_request"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_updated",
+      "entityType": "columns",
+      "table": "direct_provider_request"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "message_id",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "parent_session_id",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "child_session_id",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "request_id",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "payload",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "payload_digest",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "payload_bytes",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "delivery_mode",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "mailbox_sequence",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "child_attempt_id",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "child_owner_epoch",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "profile_id",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "profile_revision",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "profile_digest",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "permission_scope_digest",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "pins_digest",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "mailbox_capacity",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "state",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "challenge_id",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "effect_id",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "approval_expires_at_unix_ms",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "approval_argument_summary",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "approval_policy_summary",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "capability_lease_digest",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "host_receipt_digest",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "inbox_receipt_digest",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "delivery_attempt_id",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "delivery_owner_epoch",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "delivery_prompt_message_id",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "delivery_scope_digest",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "delivery_workspace_id",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "consumption_ack_digest",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "consumption_proof_json",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "host_consumed_ack_digest",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "wake_claim_request_id",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "wake_claim_digest",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "wake_claim_scope_digest",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "wake_claim_receipt_digest",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_created",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_updated",
+      "entityType": "columns",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "message_id",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "parent_session_id",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "child_session_id",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "request_id",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "goal_id",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "run_id",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "task_id",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "attempt_id",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "owner_epoch",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "binding_digest",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "profile_id",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "profile_revision",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "profile_digest",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "permission_scope_digest",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "payload",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "payload_digest",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "payload_bytes",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "delivery_mode",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "mailbox_sequence",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "mailbox_capacity",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "pins_digest",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "inbox_receipt_digest",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "state",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "challenge_id",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "effect_id",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "capability_lease_digest",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "host_receipt_digest",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "completed_turn_receipt_digest",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "wake_receipt_digest",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "next_request_sequence",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "wake_claim_request_id",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "wake_claim_digest",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "wake_claim_scope_digest",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "wake_claim_receipt_digest",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "delivery_owner_epoch",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "delivery_attempt_id",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "delivery_prompt_message_id",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "delivery_scope_digest",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "delivery_workspace_id",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "delivery_workspace_revision",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "consumption_ack_digest",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "consumption_proof_json",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "host_consumed_ack_digest",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_created",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_updated",
+      "entityType": "columns",
+      "table": "managed_subagent_inbox"
     },
     {
       "type": "text",
@@ -1612,6 +2734,81 @@
       "onUpdate": "NO ACTION",
       "onDelete": "CASCADE",
       "nameExplicit": false,
+      "name": "fk_direct_provider_request_session_id_session_id_fk",
+      "entityType": "fks",
+      "table": "direct_provider_request"
+    },
+    {
+      "columns": [
+        "parent_session_id"
+      ],
+      "tableTo": "session",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_direct_subagent_inbox_parent_session_id_session_id_fk",
+      "entityType": "fks",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "columns": [
+        "child_session_id"
+      ],
+      "tableTo": "session",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_direct_subagent_inbox_child_session_id_session_id_fk",
+      "entityType": "fks",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "columns": [
+        "parent_session_id"
+      ],
+      "tableTo": "session",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_managed_subagent_inbox_parent_session_id_session_id_fk",
+      "entityType": "fks",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "columns": [
+        "child_session_id"
+      ],
+      "tableTo": "session",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_managed_subagent_inbox_child_session_id_session_id_fk",
+      "entityType": "fks",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "columns": [
+        "session_id"
+      ],
+      "tableTo": "session",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
       "name": "fk_message_session_id_session_id_fk",
       "entityType": "fks",
       "table": "message"
@@ -1743,6 +2940,17 @@
     },
     {
       "columns": [
+        "owner_binding",
+        "session_id",
+        "request_id"
+      ],
+      "nameExplicit": false,
+      "name": "direct_provider_request_pk",
+      "entityType": "pks",
+      "table": "direct_provider_request"
+    },
+    {
+      "columns": [
         "session_id",
         "position"
       ],
@@ -1839,6 +3047,24 @@
       "nameExplicit": false,
       "name": "project_pk",
       "table": "project",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "message_id"
+      ],
+      "nameExplicit": false,
+      "name": "direct_subagent_inbox_pk",
+      "table": "direct_subagent_inbox",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "message_id"
+      ],
+      "nameExplicit": false,
+      "name": "managed_subagent_inbox_pk",
+      "table": "managed_subagent_inbox",
       "entityType": "pks"
     },
     {
@@ -1993,6 +3219,148 @@
       "name": "project_directory_source_instance_unique",
       "entityType": "indexes",
       "table": "project_directory"
+    },
+    {
+      "columns": [
+        {
+          "value": "session_id",
+          "isExpression": false
+        },
+        {
+          "value": "state",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "direct_provider_request_session_state_idx",
+      "entityType": "indexes",
+      "table": "direct_provider_request"
+    },
+    {
+      "columns": [
+        {
+          "value": "parent_session_id",
+          "isExpression": false
+        },
+        {
+          "value": "child_session_id",
+          "isExpression": false
+        },
+        {
+          "value": "request_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "origin": "manual",
+      "name": "direct_subagent_inbox_parent_child_request_idx",
+      "entityType": "indexes",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "columns": [
+        {
+          "value": "child_session_id",
+          "isExpression": false
+        },
+        {
+          "value": "mailbox_sequence",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "origin": "manual",
+      "name": "direct_subagent_inbox_child_sequence_idx",
+      "entityType": "indexes",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "columns": [
+        {
+          "value": "child_session_id",
+          "isExpression": false
+        },
+        {
+          "value": "state",
+          "isExpression": false
+        },
+        {
+          "value": "mailbox_sequence",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "direct_subagent_inbox_child_state_sequence_idx",
+      "entityType": "indexes",
+      "table": "direct_subagent_inbox"
+    },
+    {
+      "columns": [
+        {
+          "value": "parent_session_id",
+          "isExpression": false
+        },
+        {
+          "value": "child_session_id",
+          "isExpression": false
+        },
+        {
+          "value": "request_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "origin": "manual",
+      "name": "managed_subagent_inbox_parent_child_request_idx",
+      "entityType": "indexes",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "columns": [
+        {
+          "value": "attempt_id",
+          "isExpression": false
+        },
+        {
+          "value": "mailbox_sequence",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "origin": "manual",
+      "name": "managed_subagent_inbox_attempt_sequence_idx",
+      "entityType": "indexes",
+      "table": "managed_subagent_inbox"
+    },
+    {
+      "columns": [
+        {
+          "value": "attempt_id",
+          "isExpression": false
+        },
+        {
+          "value": "state",
+          "isExpression": false
+        },
+        {
+          "value": "mailbox_sequence",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "managed_subagent_inbox_attempt_state_sequence_idx",
+      "entityType": "indexes",
+      "table": "managed_subagent_inbox"
     },
     {
       "columns": [

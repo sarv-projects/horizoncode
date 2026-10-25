@@ -100,7 +100,7 @@ describe("FeatureExposure derived Settings projection", () => {
     const [auto] = FeatureExposure.list(
       {
         compaction: { auto: false },
-        origins: { auto: { valueSource: "project", pendingApplyAt: "next_turn" } },
+        origins: { auto: { valueSource: "project", policyLock: "unlocked", pendingApplyAt: "next_turn" } },
       },
       { compaction: { auto: true } },
     )
@@ -254,6 +254,83 @@ describe("FeatureExposure derived Settings projection", () => {
     const list = FeatureExposure.list({})
     expect(new Set(list.map((x) => x.featureId)).size).toBe(list.length)
     expect(new Set(list.map((x) => x.settingKey)).size).toBe(list.length)
+  })
+
+  test("settings journey keeps requested, effective, source and lock states distinct through apply", () => {
+    const defaults = FeatureExposure.list({}).find((item) => item.featureId === "compaction.auto")
+    expect(defaults?.state).toMatchObject({
+      requestedEnabled: null,
+      effectiveEnabled: true,
+      effectiveState: "on",
+      valueSource: "default",
+      policyLock: "unlocked",
+    })
+
+    const request = {
+      compaction: { auto: false },
+      origins: {
+        auto: { valueSource: "project" as const, policyLock: "unlocked" as const, pendingApplyAt: "next_turn" as const },
+      },
+    }
+    const pending = FeatureExposure.list(request, { compaction: { auto: true } }).find((item) => item.featureId === "compaction.auto")
+    expect(pending?.state).toMatchObject({
+      requestedEnabled: false,
+      effectiveEnabled: true,
+      effectiveState: "pending_apply",
+      valueSource: "project",
+      policyLock: "unlocked",
+      pendingApplyAt: "next_turn",
+    })
+
+    const applied = FeatureExposure.list(request, { compaction: { auto: false } }).find((item) => item.featureId === "compaction.auto")
+    expect(applied?.state).toMatchObject({
+      requestedEnabled: false,
+      effectiveEnabled: false,
+      effectiveState: "off",
+      valueSource: "project",
+      policyLock: "unlocked",
+    })
+    expect(applied?.state.pendingApplyAt).toBeUndefined()
+
+    const locked = FeatureExposure.list({
+      compaction: { auto: false },
+      origins: { auto: { valueSource: "system_policy", policyLock: "locked", blockedReason: "Managed by administrator" } },
+    }, { compaction: { auto: true } }).find((item) => item.featureId === "compaction.auto")
+    expect(locked?.state).toMatchObject({
+      requestedEnabled: false,
+      effectiveEnabled: true,
+      effectiveState: "blocked",
+      valueSource: "system_policy",
+      policyLock: "locked",
+      blockedReason: "Managed by administrator",
+    })
+  })
+
+  test("a missing canonical capability downgrades an otherwise-effective feature without granting it", () => {
+    const descriptor = FeatureExposure.list({})[0]!
+    const enabled = {
+      ...descriptor,
+      capabilityIds: ["repo.tree", "symbols.search"],
+      state: { ...descriptor.state, requestedEnabled: true, effectiveEnabled: true, effectiveState: "on" as const },
+    }
+    const statuses = new Map([
+      ["repo.tree", { effective: true }],
+      ["symbols.search", { effective: false, reason: "RepoIntel backend unavailable" }],
+    ])
+    const [blocked] = FeatureExposure.applyCapabilityStatus([enabled], statuses)
+    expect(blocked?.state).toMatchObject({
+      requestedEnabled: true,
+      effectiveEnabled: false,
+      effectiveState: "blocked",
+      blockedReason: "RepoIntel backend unavailable",
+    })
+    expect(blocked?.state.pendingApplyAt).toBeUndefined()
+
+    const [available] = FeatureExposure.applyCapabilityStatus([enabled], new Map([
+      ["repo.tree", { effective: true }],
+      ["symbols.search", { effective: true }],
+    ]))
+    expect(available).toEqual(enabled)
   })
 
   test("catalog validation catches duplicate settings, unknown capabilities, and effective code that is not wired", () => {

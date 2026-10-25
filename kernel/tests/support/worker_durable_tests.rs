@@ -1,45 +1,32 @@
 //! OwnerLog-backed durable worker-pool adapter tests (clone-apply-commit,
 //! crash recovery, epoch fence, idempotent delivery).
 //!
-//! Sources are included directly so the tests can construct the same
-//! crate-private authenticated fixtures the kernel ingress uses.
-
-#[path = "../src/messagepack.rs"]
-mod messagepack;
-#[path = "../src/owner_log.rs"]
-mod owner_log;
-#[path = "../src/owner_log_index.rs"]
-mod owner_log_index;
-#[path = "../src/protocol.rs"]
-mod protocol;
-#[path = "../src/resource_budget.rs"]
-mod resource_budget;
-#[path = "../src/resource_sampler.rs"]
-mod resource_sampler;
-#[path = "../src/transport.rs"]
-mod transport;
-#[path = "../src/worker_durable.rs"]
-mod worker_durable;
-#[path = "../src/worker_pool.rs"]
-mod worker_pool;
-#[path = "../src/worktree_pool.rs"]
-mod worktree_pool;
-#[path = "../src/worktree_lifecycle.rs"]
-mod worktree_lifecycle;
+//! Migrated from a standalone `tests/worker_durable.rs` integration target
+//! into the owning `src/worker_durable.rs` lib test build — the same pattern
+//! as `worker_pool_tests.rs`, `worktree_pool_tests.rs` and
+//! `jc_res_012_wire_tests.rs`. The old target recompiled library sources with
+//! `#[path]`, so `crate::…` paths inside them resolved against the test crate
+//! root instead of the library crate; as a `#[cfg(test)]` module of
+//! `worker_durable` these tests construct the exact crate-private
+//! authenticated fixtures the kernel ingress uses, with no visibility changes.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use resource_budget::{AuthenticatedOwnerContext, BudgetDimension, Capacity, ReservationState};
-use resource_sampler::ProcessIdentity;
-use worker_durable::{WorkerCommand, WorkerDurableError, WorkerPoolControl, WorkerPoolOpenConfig};
-use worker_pool::{
+use crate::protocol;
+use crate::resource_budget::{
+    self, AuthenticatedOwnerContext, BudgetDimension, Capacity, ReservationState,
+};
+use crate::resource_sampler::ProcessIdentity;
+use crate::worker_durable::{WorkerCommand, WorkerDurableError, WorkerPoolControl, WorkerPoolOpenConfig};
+use crate::worker_pool::{
     CancelScope, EnqueueRequest, FanOutState, OwnerScopeKey, ReconciliationProof, TicketState,
     VerifiedAttemptBinding, WorkerClass, WorkerPoolError, WorkerSettlement,
     WorkerSettlementOutcome, WorktreeBindingRequest, WorktreeSettlementFacts,
 };
-use worktree_pool::WorktreeRegistration;
+use crate::worktree_lifecycle;
+use crate::worktree_pool::WorktreeRegistration;
 
 const EPOCH: u64 = 7;
 const ATTEMPT: &str = "attempt-a";
@@ -134,7 +121,15 @@ fn enqueue_command(epoch: u64, expires_at_ms: u64) -> WorkerCommand {
 }
 
 fn worktree_command(epoch: u64) -> WorkerCommand {
-    WorkerCommand::RegisterWorktree {
+    // The scope-based registration this harness was written against now decodes
+    // as `LegacyRegisterWorktree`: the command was split into a verified-root
+    // form carrying guarded Create/Inspect provenance plus this historical
+    // caller-scoped form. These tests exercise the durable OwnerLog adapter
+    // (replay, epoch fencing, crash recovery), not worktree verification
+    // provenance, which has dedicated coverage in the in-src schema tests and
+    // `worktree_pool_tests.rs`; the pool-level registration semantics (a clean
+    // worktree becomes Free and can be leased by Reserve) are identical.
+    WorkerCommand::LegacyRegisterWorktree {
         scope: scope(epoch),
         registration: WorktreeRegistration {
             id: "wt-a".to_owned(),
@@ -501,11 +496,20 @@ fn managed_lease_proof_requires_current_durable_attempt_budget_and_worktree() {
             .is_err(),
         "a proof is stale after a later durable pool mutation"
     );
+    // CLAIMED is the durable startup fence immediately before launch, so the
+    // lease proof still resolves; it is NOT an active-parent proof until a
+    // process generation is bound, and that launch-uncertainty window is
+    // independently enforced on the active-parent path.
+    let claimed_lease = control
+        .resolve_managed_lease_proof(WORKER, &binding(EPOCH), &owner(EPOCH), 3)
+        .expect("claimed worker resolves its startup-fence lease proof");
+    assert_eq!(claimed_lease.worker_state(), ReservationState::Claimed);
+    assert!(claimed_lease.process_identity().is_none());
     assert!(
         control
-            .resolve_managed_lease_proof(WORKER, &binding(EPOCH), &owner(EPOCH), 3)
+            .resolve_active_parent_execution_proof(WORKER, &binding(EPOCH), &owner(EPOCH), 3)
             .is_err(),
-        "claimed but not yet process-bound is the launch uncertainty window"
+        "claimed but not yet process-bound cannot authorize active parent execution"
     );
     let revision = control.pool().expect("pool").revision();
     control
@@ -991,7 +995,7 @@ fn explicitly_retained_pre_admission_reservation_does_not_timeout_expire() {
 
 #[test]
 fn logical_root_coordinator_is_durable_scoped_and_allocates_no_worker_slot() {
-    use worker_durable::WorkerAdmissionPinsV1;
+    use crate::worker_durable::WorkerAdmissionPinsV1;
     let root = temp_root();
     let mut control = WorkerPoolControl::open(&root, "pool-a", config(EPOCH)).unwrap();
     let owner = AuthenticatedOwnerContext::from_verified_ingress(
@@ -1031,8 +1035,8 @@ fn logical_root_coordinator_is_durable_scoped_and_allocates_no_worker_slot() {
 /// produce a target for the follow-up Inspect operation.
 #[test]
 fn created_worktree_inspect_target_requires_exact_settled_create_receipt() {
-    use worker_durable::{RootCoordinatorExecutionProofV1, WorkerAdmissionPinsV1};
-    use worktree_lifecycle::{GuardedWorktreeReceiptV1, WorktreeObservedStatusV1, WorkspaceRootRefV1};
+    use crate::worker_durable::{RootCoordinatorExecutionProofV1, WorkerAdmissionPinsV1};
+    use crate::worktree_lifecycle::{GuardedWorktreeReceiptV1, WorktreeObservedStatusV1, WorkspaceRootRefV1};
 
     let data_root = temp_root();
     let mut control = open_and_enable(&data_root, EPOCH);

@@ -1,34 +1,36 @@
-import { expect, test } from "bun:test"
-import { searchToolDescriptorsV1, TOOL_DISCOVERY_LIMITS_V1, type ToolDiscoveryDescriptorV1 } from "../../src/tool/discovery"
+import { describe, expect, it } from "bun:test"
+import { searchToolDescriptorsV1, toolSchemaDigestV1 } from "../../src/tool/discovery"
 
-const descriptor = (id: string): ToolDiscoveryDescriptorV1 => ({
-  id,
-  description: `Searchable ${id}`,
-  tags: ["workspace", "read"],
-  sideEffectClass: "read_only",
-  availability: "available",
+const descriptor = (input: { readonly id?: string; readonly tags?: readonly string[] } = {}) => ({
+  id: input.id ?? "files.read",
+  description: "Read workspace files",
+  tags: input.tags ?? ["workspace", "read"],
+  sideEffectClass: "read_only" as const,
+  availability: "available" as const,
   requiredCapability: "files.read",
-  schemaDigest: `blake3:${"a".repeat(64)}`,
+  schemaDigest: toolSchemaDigestV1({ type: "object", properties: {} }),
 })
 
-test("tool discovery ranks within the bounded candidate window", () => {
-  const candidates = Array.from({ length: TOOL_DISCOVERY_LIMITS_V1.maxCandidates }, (_, index) => descriptor(`tool.${index}`))
-  expect(searchToolDescriptorsV1({ query: "tool.2", descriptors: candidates, limit: 2 }).map((item) => item.id))
-    .toEqual(["tool.2", "tool.20"])
-})
+describe("tool discovery", () => {
+  it("searches tags deterministically while preserving the descriptor type", () => {
+    const read = descriptor()
+    const write = descriptor({ id: "files.write", tags: ["workspace", "mutation"] })
 
-test("tool discovery rejects oversized candidate collections and malformed descriptors", () => {
-  const tooMany = Array.from({ length: TOOL_DISCOVERY_LIMITS_V1.maxCandidates + 1 }, (_, index) => descriptor(`tool.${index}`))
-  expect(() => searchToolDescriptorsV1({ query: "tool", descriptors: tooMany })).toThrow(/candidate or query limit/)
+    expect(searchToolDescriptorsV1({ query: "mutation", descriptors: [read, write] })).toEqual([write])
+    expect(searchToolDescriptorsV1({ query: "workspace", descriptors: [write, read] }).map((item) => item.id))
+      .toEqual(["files.read", "files.write"])
+  })
 
-  const malformed = { ...descriptor("tool.valid"), schemaDigest: "sha256:wrong-algorithm" }
-  expect(() => searchToolDescriptorsV1({ query: "tool", descriptors: [malformed] })).toThrow(/malformed or exceeds/)
-})
+  it("rejects malformed or over-budget tags before returning candidates", () => {
+    expect(() => searchToolDescriptorsV1({ query: "read", descriptors: [descriptor({ tags: ["x".repeat(65)] })] }))
+      .toThrow("tool discovery descriptor is malformed or exceeds its bounds")
 
-test("tool discovery rejects aggregate description overflow", () => {
-  const oversized = Array.from({ length: 256 }, (_, index) => ({
-    ...descriptor(`tool.${index}`),
-    tags: Array.from({ length: 32 }, () => "t".repeat(64)),
-  }))
-  expect(() => searchToolDescriptorsV1({ query: "tool", descriptors: oversized })).toThrow(/aggregate bound/)
+    const oversized = Array.from({ length: 256 }, (_, index) => descriptor({
+      id: `tool.${index}`,
+      tags: Array.from({ length: 8 }, () => "x".repeat(64)),
+    }))
+    expect(() => searchToolDescriptorsV1({ query: "x", descriptors: oversized })).toThrow(
+      "tool discovery descriptions exceed the aggregate bound",
+    )
+  })
 })

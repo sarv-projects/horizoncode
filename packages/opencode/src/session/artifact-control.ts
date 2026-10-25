@@ -101,8 +101,9 @@ function validateScope(operation: string, scope: ArtifactReadScopeV1) {
   if ("managedAttempt" in scope && scope.managedAttempt.sessionID !== scope.sessionID ||
       "directAttempt" in scope && scope.directAttempt.childSessionID !== scope.sessionID ||
       "directSession" in scope && (!/^[1-9][0-9]{0,19}$/.test(scope.directSession.ownerEpoch) || BigInt(scope.directSession.ownerEpoch) > MAX_U64)) {
-    throw fail(operation, "artifact_scope_unavailable", "a matching authenticated Attempt scope is required")
+    return Effect.fail(fail(operation, "artifact_scope_unavailable", "a matching authenticated Attempt scope is required"))
   }
+  return Effect.void
 }
 
 const directSessionArtifacts = new WeakMap<object, ReadonlyMap<string, ArtifactRefWireV1>>()
@@ -117,8 +118,8 @@ function request(
   ref: ArtifactRefWireV1,
   range?: { readonly offset: string; readonly maxBytes: number },
 ) {
-  validateScope(operation, scope)
   return Effect.gen(function* () {
+    yield* validateScope(operation, scope)
     const supervisor = yield* SessionSupervisor.Service
     if (operation === "artifacts.read_range" && !range) {
       return yield* Effect.fail(fail(operation, "artifact_protocol", "a bounded range selector is required"))
@@ -222,7 +223,7 @@ export const resolveVerifiedScope = Effect.fn("ArtifactControl.resolveVerifiedSc
     ),
   )
   const scope = { sessionID: managedAttempt.sessionID, managedAttempt }
-  validateScope(operation, scope)
+  yield* validateScope(operation, scope)
   return scope
 })
 

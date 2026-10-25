@@ -77,7 +77,7 @@ fn parse_json_without_duplicate_keys(body: &str) -> Result<serde_json::Value, Fr
         fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> { Ok(value.into()) }
         fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> { Ok(value.into()) }
         fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> { Ok(value.into()) }
-        fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E> {
+        fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E> where E: de::Error {
             serde_json::Number::from_f64(value).map(serde_json::Value::Number)
                 .ok_or_else(|| de::Error::custom("non-finite JSON number"))
         }
@@ -153,7 +153,7 @@ fn within_json_bounds(value: &serde_json::Value, depth: usize, nodes: &mut usize
 
 fn to_wire_value(value: serde_json::Value) -> Result<Value, FrameError> {
     Ok(match value {
-        serde_json::Value::Null => Value::Nil,
+        serde_json::Value::Null => Value::Null,
         serde_json::Value::Bool(value) => Value::Bool(value),
         serde_json::Value::Number(number) => {
             if let Some(value) = number.as_u64() { Value::Unsigned(value) }

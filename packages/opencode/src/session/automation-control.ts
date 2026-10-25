@@ -316,22 +316,22 @@ function automationMutation(
       ...arguments_,
     }
     const binding = { idempotencyKey: key, inputDigest, automationID: targetID, hostOperation: operation }
-    const attempted = yield* Effect.either(request(hostOperation, body, scope, key))
+    const attempted = yield* Effect.result(request(hostOperation, body, scope, key))
     let initialFailure: AutomationControlError | undefined
-    if (attempted._tag === "Right") {
-      const decoded = yield* Effect.either(Effect.try({
-        try: () => decodeMutation(operation, attempted.right, expectedStatus, binding),
+    if (attempted._tag === "Success") {
+      const decoded = yield* Effect.result(Effect.try({
+        try: () => decodeMutation(operation, attempted.success, expectedStatus, binding),
         catch: (error) => error instanceof AutomationControlError ? error : new AutomationControlError({ operation, code: "managed_protocol", reason: "HostKernel returned a malformed committed automation receipt" }),
       }))
-      if (decoded._tag === "Right") return decoded.right
-      initialFailure = decoded.left
+      if (decoded._tag === "Success") return decoded.success
+      initialFailure = decoded.failure
     } else {
-      initialFailure = attempted.left
+      initialFailure = attempted.failure
     }
 
     // Once the one-use lease has been issued, a lost or malformed reply is
     // reconciled through a read-only host operation. Never repeat the mutation.
-    const reconciled = yield* Effect.either(request("automations.reconcile", {
+    const reconciled = yield* Effect.result(request("automations.reconcile", {
       locationID: prepared.locationID,
       userActionID: prepared.userActionID,
       challengeID,
@@ -342,13 +342,13 @@ function automationMutation(
       automationID: targetID,
       hostOperation,
     }, scope))
-    if (reconciled._tag === "Left") {
+    if (reconciled._tag === "Failure") {
       return yield* Effect.fail(new AutomationControlError({ operation, code: "effect_outcome_unknown", reason: "Mutation reply was lost and HostKernel reconciliation is unavailable; do not retry this one-use action" }))
     }
-    const state = reconciled.right.status
+    const state = reconciled.success.status
     if (state === "COMMITTED") {
       return yield* Effect.try({
-        try: () => decodeMutation(operation, reconciled.right, expectedStatus, binding),
+        try: () => decodeMutation(operation, reconciled.success, expectedStatus, binding),
         catch: (error) => error instanceof AutomationControlError ? error : new AutomationControlError({ operation, code: "managed_protocol", reason: "HostKernel returned malformed reconciled automation evidence" }),
       })
     }
@@ -390,10 +390,13 @@ function scopeBody(operation: string, scope: AutomationScope) {
 export const list = Effect.fn("AutomationControl.list")(function* (scope: AutomationScope) {
   const operation = "automations.list"
   const response = yield* request(operation, scopeBody(operation, scope), scope)
-  if (!Array.isArray(response.automations) || response.automations.length > 128) {
+  // Narrow through a local: property narrowing does not survive the closure
+  // below, and each entry stays unknown until decodeSummary validates it.
+  const automations: unknown = response.automations
+  if (!Array.isArray(automations) || automations.length > 128) {
     return yield* Effect.fail(new AutomationControlError({ operation, code: "managed_protocol", reason: "automations is not bounded" }))
   }
-  return yield* Effect.try({ try: () => ({ automations: response.automations.map((item) => decodeSummary(operation, item)) }), catch: (error) => error as AutomationControlError })
+  return yield* Effect.try({ try: () => ({ automations: automations.map((item: unknown) => decodeSummary(operation, item)) }), catch: (error) => error as AutomationControlError })
 })
 
 export const inspect = Effect.fn("AutomationControl.inspect")(function* (scope: AutomationScope, automationID: string) {
@@ -404,12 +407,20 @@ export const inspect = Effect.fn("AutomationControl.inspect")(function* (scope: 
 
 export const history = Effect.fn("AutomationControl.history")(function* (scope: AutomationScope, automationID: string, limit = 128) {
   const operation = "automations.history"
-  const response = yield* request(operation, { ...scopeBody(operation, scope), automationID: id(operation, automationID, "automationID"), limit: integer(operation, limit, "limit", 1, 128) }, scope)
-  if (!Array.isArray(response.history) || response.history.length > 128) return yield* Effect.fail(new AutomationControlError({ operation, code: "managed_protocol", reason: "history is not bounded" }))
+  const input = yield* Effect.try({
+    try: () => ({
+      automationID: id(operation, automationID, "automationID"),
+      limit: integer(operation, limit, "limit", 1, 128),
+    }),
+    catch: (error) => error as AutomationControlError,
+  })
+  const response = yield* request(operation, { ...scopeBody(operation, scope), ...input }, scope)
+  const history: unknown = response.history
+  if (!Array.isArray(history) || history.length > 128) return yield* Effect.fail(new AutomationControlError({ operation, code: "managed_protocol", reason: "history is not bounded" }))
   return yield* Effect.try({ try: () => ({
     automationID: id(operation, response.automationID, "automationID"),
     version: revision(operation, response.version, "version"),
-    history: response.history.map((item) => decodeOccurrence(operation, item)),
+    history: history.map((item: unknown) => decodeOccurrence(operation, item)),
     hasMore: boolean(operation, response.hasMore, "hasMore"),
   }), catch: (error) => error as AutomationControlError })
 })
@@ -447,20 +458,34 @@ export const update = Effect.fn("AutomationControl.update")(function* (scope: Au
 
 export const setEnabled = Effect.fn("AutomationControl.setEnabled")(function* (scope: AutomationScope, automationID: string, expectedVersion: string, idempotencyKey: string, enabled: boolean) {
   const operation = enabled ? "enable" : "disable"
-  const key = id(operation, idempotencyKey, "idempotencyKey")
-  const targetID = id(operation, automationID, "automationID")
-  const expected = revision(operation, expectedVersion, "expectedVersion")
-  return yield* automationMutation(operation, scope, targetID, key, { automationID: targetID, expectedVersion: expected, idempotencyKey: key }, enabled ? "enabled" : "disabled")
+  const input = yield* Effect.try({
+    try: () => ({
+      key: id(operation, idempotencyKey, "idempotencyKey"),
+      targetID: id(operation, automationID, "automationID"),
+      expected: revision(operation, expectedVersion, "expectedVersion"),
+    }),
+    catch: (error) => error as AutomationControlError,
+  })
+  return yield* automationMutation(operation, scope, input.targetID, input.key, { automationID: input.targetID, expectedVersion: input.expected, idempotencyKey: input.key }, enabled ? "enabled" : "disabled")
 })
 
 export const runNow = Effect.fn("AutomationControl.runNow")(function* (scope: AutomationScope, automationID: string, expectedVersion: string, idempotencyKey: string) {
   const operation = "run_now"
   // V1 has no Guarded automation invocation contract. Refuse locally before the
   // HostKernel boundary so this adapter cannot schedule or start an occurrence.
-  id(operation, automationID, "automationID")
-  revision(operation, expectedVersion, "expectedVersion")
-  id(operation, idempotencyKey, "idempotencyKey")
-  scopeBody(operation, scope)
+  return yield* Effect.try({
+    try: () => {
+      id(operation, automationID, "automationID")
+      revision(operation, expectedVersion, "expectedVersion")
+      id(operation, idempotencyKey, "idempotencyKey")
+      scopeBody(operation, scope)
+    },
+    catch: (error) => error as AutomationControlError,
+  }).pipe(Effect.flatMap(() => Effect.fail(new AutomationControlError({
+    operation,
+    code: "capability_unavailable",
+    reason: "Guarded automation invocation is unavailable in V1",
+  }))))
   return yield* Effect.fail(new AutomationControlError({
     operation,
     code: "capability_unavailable",

@@ -16,7 +16,7 @@ import { Database } from "@opencode-ai/core/database/database"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { TrustedPrincipalContext } from "@opencode-ai/core/trusted-principal"
-import { SessionSupervisor, SessionSupervisorError } from "@opencode-ai/core/session/supervisor"
+import { SessionSupervisor, SessionSupervisorError, type Service as SessionSupervisorService } from "@opencode-ai/core/session/supervisor"
 import { SessionStatus } from "./status"
 import * as SessionExecutionLocal from "@opencode-ai/core/session/execution/local"
 import { locationServiceMapLayer } from "@opencode-ai/core/location-services"
@@ -34,7 +34,8 @@ import { lt } from "drizzle-orm"
 import { or } from "drizzle-orm"
 import type { SQL } from "drizzle-orm"
 import { DirectSubagentInboxTable, ManagedSubagentInboxTable, PartTable, SessionTable } from "@opencode-ai/core/session/sql"
-import { ProjectTable } from "@opencode-ai/core/project/sql"
+import { ProjectTable, ProjectDirectoryTable } from "@opencode-ai/core/project/sql"
+import { AbsolutePath } from "@opencode-ai/core/schema"
 import { MessageV2 } from "./message-v2"
 import type { InstanceContext } from "../project/instance-context"
 import { InstanceState } from "@/effect/instance-state"
@@ -572,6 +573,7 @@ export type ManagedChildSessionCompletionProjectionV1 = {
   readonly childSessionStateDigest: string
   readonly childSessionOutputDigest: string
   readonly childSessionOutputBytes: number
+  readonly childSessionOutcomeKind: "assistant_completed" | "assistant_error" | "tool_error"
 }
 
 /** Fresh Core-side observation used only after an owner-epoch change. */
@@ -801,7 +803,7 @@ export interface Interface {
   ) => Effect.Effect<Option.Option<SessionV1.WithParts>, NotFound>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/Session") {}
+export class Service extends Context.Service<Service, Interface>()("@horizoncode/Session") {}
 
 export const use = serviceUse(Service)
 
@@ -816,7 +818,7 @@ export type Patch = Omit<Partial<Info>, "time" | "share" | "summary" | "revert" 
 const layer: Layer.Layer<
   Service,
   never,
-  BackgroundJob.Service | RuntimeFlags.Service | Database.Service | EventV2Bridge.Service | SessionSupervisor.Service | SessionStatus.Service
+  BackgroundJob.Service | RuntimeFlags.Service | Database.Service | EventV2Bridge.Service | SessionSupervisorService | SessionStatus.Service
 > = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -989,10 +991,10 @@ const layer: Layer.Layer<
     const updatePart = <T extends SessionV1.Part>(part: T): Effect.Effect<T> =>
       Effect.gen(function* () {
         if ((part.type === "text" || part.type === "reasoning") && part.text.length === 0 && part.time?.end === undefined) {
-          partDeltaCursor.begin({ ...part, field: "text" })
+          partDeltaCursor.begin({ sessionID: part.sessionID, messageID: part.messageID, partID: part.id, field: "text" })
         }
         if ((part.type === "text" || part.type === "reasoning") && part.time?.end !== undefined) {
-          partDeltaCursor.end({ ...part, field: "text" })
+          partDeltaCursor.end({ sessionID: part.sessionID, messageID: part.messageID, partID: part.id, field: "text" })
         }
         yield* events.publish(SessionV1.Event.PartUpdated, {
           sessionID: part.sessionID,
@@ -1121,7 +1123,7 @@ const layer: Layer.Layer<
     })
 
     const setMetadata = Effect.fn("Session.setMetadata")(function* (input: typeof SetMetadataInput.Type) {
-      const current = yield* get(input.sessionID)
+      const current = yield* get(input.sessionID).pipe(Effect.orDie)
       const metadata = { ...input.metadata }
       // Ownership is immutable after creation. Metadata updates may change
       // ordinary fields, but cannot assign, remove, or transfer this authority.
@@ -1310,18 +1312,27 @@ const layer: Layer.Layer<
         }))
       }
       const cursor = yield* supervisor.sessionProjectionCursor(input.sessionID)
-      if (cursor.ownerKind !== "session" || cursor.ownerId !== input.sessionID) {
+      const ownerKind = cursor.ownerKind
+      if (ownerKind !== "session" || cursor.ownerId !== input.sessionID) {
         return yield* Effect.fail(new SessionSupervisorError({
           stage: "managed_root_session",
           reason: "SessionSupervisor returned a cursor for a different Session owner",
         }))
+      }
+      // Project while the guard's literal narrowing for ownerKind still holds;
+      // the durable projection type requires the "session" owner kind exactly.
+      const sourceCursor: { ownerKind: "session"; ownerId: string; seq: string; eventDigest: string } = {
+        ownerKind,
+        ownerId: cursor.ownerId,
+        seq: cursor.seq,
+        eventDigest: cursor.eventDigest,
       }
       const sourceInstance = yield* database.db
         .select({ sourceInstanceID: ProjectDirectoryTable.source_instance_id })
         .from(ProjectDirectoryTable)
         .where(and(
           eq(ProjectDirectoryTable.project_id, info.projectID),
-          eq(ProjectDirectoryTable.directory, info.directory),
+          eq(ProjectDirectoryTable.directory, AbsolutePath.make(info.directory)),
         ))
         .get()
         .pipe(Effect.orDie)
@@ -1345,7 +1356,7 @@ const layer: Layer.Layer<
         sessionID: info.id,
         sourceStoreID: database.sourceStoreID,
         sourceInstanceID: sourceInstance.sourceInstanceID,
-        sourceCursor: cursor,
+        sourceCursor,
         sourceEpoch: String(sourceEpochRow.sourceEpoch),
         latestObservedMessageID: latestMessage?.info.id ?? null,
         latestObservedPartID: latestPart?.id ?? null,
@@ -1620,6 +1631,9 @@ const layer: Layer.Layer<
       state: DirectSubagentInboxStateV1
       challengeID?: string | null
       effectID?: string | null
+      approvalExpiresAtUnixMs?: number | null
+      approvalArgumentSummary?: string | null
+      approvalPolicySummary?: string | null
       capabilityLeaseDigest?: string | null
       pinsDigest?: string | null
       hostReceiptDigest?: string | null
@@ -1647,9 +1661,11 @@ const layer: Layer.Layer<
         approval_argument_summary: input.approvalArgumentSummary === undefined ? current.approval_argument_summary : input.approvalArgumentSummary,
         approval_policy_summary: input.approvalPolicySummary === undefined ? current.approval_policy_summary : input.approvalPolicySummary,
         capability_lease_digest: input.capabilityLeaseDigest === undefined ? current.capability_lease_digest : input.capabilityLeaseDigest,
-        pins_digest: input.pinsDigest === undefined ? current.pins_digest : input.pinsDigest,
+        // pins_digest / inbox_receipt_digest are NOT NULL in the direct inbox
+        // table: a null projection value means "leave the durable pin unchanged".
+        pins_digest: input.pinsDigest ?? current.pins_digest,
         host_receipt_digest: input.hostReceiptDigest === undefined ? current.host_receipt_digest : input.hostReceiptDigest,
-        inbox_receipt_digest: input.inboxReceiptDigest === undefined ? current.inbox_receipt_digest : input.inboxReceiptDigest,
+        inbox_receipt_digest: input.inboxReceiptDigest ?? current.inbox_receipt_digest,
         delivery_attempt_id: input.deliveryAttemptID === undefined ? current.delivery_attempt_id : input.deliveryAttemptID,
         delivery_owner_epoch: input.deliveryOwnerEpoch === undefined ? current.delivery_owner_epoch : input.deliveryOwnerEpoch,
         time_updated: Date.now(),
@@ -1798,7 +1814,9 @@ const layer: Layer.Layer<
       return yield* db.select().from(ManagedSubagentInboxTable).where(eq(ManagedSubagentInboxTable.message_id, messageID)).get().pipe(Effect.orDie)
     })
     const managedInboxList = Effect.fn("Session.managedInboxList")(function* (attemptID: string) {
-      if (!/^attempt_[0-9a-f]{64}$/.test(attemptID)) return yield* Effect.fail(new Error("managed inbox Attempt ID is invalid"))
+      // The reader interface is infallible: a malformed Attempt identity is an
+      // invariant violation, so it defects instead of opening a query.
+      if (!/^attempt_[0-9a-f]{64}$/.test(attemptID)) return yield* Effect.die(new Error("managed inbox Attempt ID is invalid"))
       return yield* db.select().from(ManagedSubagentInboxTable).where(eq(ManagedSubagentInboxTable.attempt_id, attemptID)).all().pipe(Effect.orDie)
     })
     const managedInboxCreateDraft = Effect.fn("Session.managedInboxCreateDraft")(function* (input: ManagedSubagentInboxDraftV1) {
@@ -1917,7 +1935,7 @@ const layer: Layer.Layer<
         !/^blake3:[0-9a-f]{64}$/.test(input.profileDigest) || !digest.test(input.permissionScopeDigest) ||
         !digest.test(input.scopeDigest) || !/^[A-Za-z0-9._:-]{1,256}$/.test(input.workspaceID) ||
         !digest.test(input.workspaceRevision) || (input.deliveryMode === "follow_up" &&
-          (typeof input.triggerMessageID !== "string" || !/^[A-Za-z0-9._:-]{1,256}$/.test(input.triggerMessageID))) {
+          (typeof input.triggerMessageID !== "string" || !/^[A-Za-z0-9._:-]{1,256}$/.test(input.triggerMessageID)))) {
         return yield* Effect.fail(new Error("managed inbox claim requires the exact authenticated live Attempt scope"))
       }
       return yield* db.transaction((tx) => Effect.gen(function* () {
@@ -2144,9 +2162,8 @@ const layer: Layer.Layer<
       if (input.state === "committed" && (!current.capability_lease_digest || !current.inbox_receipt_digest || !input.hostReceiptDigest)) {
         return yield* Effect.fail(new Error("managed inbox commit requires retained Guard lease, exact Core receipt and HostKernel ACK"))
       }
-      if (input.state === "delivering" && (!input.deliveryOwnerEpoch || !input.deliveryAttemptID || input.deliveryOwnerEpoch !== current.owner_epoch || input.deliveryAttemptID !== current.attempt_id)) {
-        return yield* Effect.fail(new Error("managed inbox delivery claim requires exact current Attempt ownership"))
-      }
+      // "delivering"/"consumed" were already rejected above: those states are
+      // reachable only through their proof-bound atomic APIs.
       if (input.state === "committed" && current.delivery_mode === "follow_up" &&
         (!input.completedTurnReceiptDigest || !input.wakeReceiptDigest || !input.nextRequestSequence)) {
         return yield* Effect.fail(new Error("managed follow-up ACK requires the exact one-use wake receipt"))

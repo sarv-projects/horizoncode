@@ -437,6 +437,13 @@ test("reports raster analytics with measured provenance and freshness", async ()
         provenance: "measured",
         source: "svg-raster-port",
       },
+      {
+        metric: "ui.artifact.raster_cache_bytes",
+        value: expect.any(Number),
+        unit: "bytes",
+        provenance: "measured",
+        source: "svg-raster-port",
+      },
       { metric: "ui.artifact.raster_requests", value: 1, unit: "events", provenance: "measured", source: "svg-raster-port" },
       { metric: "ui.artifact.raster_completed", value: 1, unit: "events", provenance: "measured", source: "svg-raster-port" },
       { metric: "ui.artifact.raster_failed", value: 0, unit: "events", provenance: "measured", source: "svg-raster-port" },
@@ -445,6 +452,9 @@ test("reports raster analytics with measured provenance and freshness", async ()
       { metric: "ui.artifact.render_failed", value: 1, unit: "renders", provenance: "measured", source: "tui-artifact-renderer" },
     ])
     expect(observations.every((observation) => Number.isSafeInteger(observation.observedAtMs))).toBe(true)
+    const cacheBytes = observations.find((observation) => observation.metric === "ui.artifact.raster_cache_bytes")
+    expect(cacheBytes?.value).toBeGreaterThan(0)
+    expect(cacheBytes?.value).toBeLessThanOrEqual(4_096)
   } finally {
     renderer.dispose()
   }

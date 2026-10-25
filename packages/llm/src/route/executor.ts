@@ -1,4 +1,4 @@
-import { Cause, Context, Effect, Layer, Random, Stream } from "effect"
+import { Cause, Context, Effect, Layer, Option, Random, Stream } from "effect"
 import {
   FetchHttpClient,
   Headers,
@@ -24,7 +24,7 @@ import {
 } from "../schema"
 import { isContextOverflow } from "../provider-error"
 import type { ContextSelectionV1 as ContextSelectionValueV1 } from "@opencode-ai/schema/context-selection-v1"
-import { DirectProviderTransport } from "./direct-provider-transport"
+import * as DirectProviderTransport from "./direct-provider-transport"
 
 /** Internal, non-wire pins supplied by Core for one canonical direct request. */
 export type DirectProviderRequestContextV1 = {
@@ -438,7 +438,9 @@ const executeDirectOnce = (
       reason: new TransportReason({ message: "Authenticated direct provider request context is malformed" }),
     })
   }
-  const webRequest = yield* HttpClientRequest.toWeb(request)
+  const webRequest = yield* HttpClientRequest.toWeb(request).pipe(
+    Effect.mapError((error) => toHttpError(redactedNames)(error)),
+  )
   const response = yield* directTransport.dispatch({
     route: {
       providerID: direct.providerID,
@@ -472,11 +474,14 @@ const retryStatusFailures = <A, R>(
     )
   })
 
-export const layer: Layer.Layer<Service, never, HttpClient.HttpClient | DirectProviderTransport.Service> = Layer.effect(
+export const layer: Layer.Layer<Service, never, HttpClient.HttpClient> = Layer.effect(
   Service,
   Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient
-    const directTransport = yield* DirectProviderTransport.Service
+    // The selected-route transport is supplied by the owning runtime. Absence
+    // is a typed, fail-closed direct-path error, not a missing-service defect;
+    // ordinary non-direct requests remain usable.
+    const directTransport = yield* Effect.serviceOption(DirectProviderTransport.Service)
     const executeOnce = (request: HttpClientRequest.HttpClientRequest, redactedNames: ReadonlyArray<string | RegExp>) =>
       Effect.gen(function* () {
         return yield* http
@@ -486,7 +491,16 @@ export const layer: Layer.Layer<Service, never, HttpClient.HttpClient | DirectPr
     return Service.of({
       execute: (request, context) => Effect.gen(function* () {
         const redactedNames = yield* Headers.CurrentRedactedNames
-        if (context?.directContext) return yield* executeDirectOnce(directTransport, request, context, redactedNames)
+        if (context?.directContext) {
+          if (Option.isNone(directTransport)) {
+            return yield* new LLMError({
+              module: "RequestExecutor",
+              method: "execute",
+              reason: new TransportReason({ message: "Direct provider transport is unavailable" }),
+            })
+          }
+          return yield* executeDirectOnce(directTransport.value, request, context, redactedNames)
+        }
         return yield* retryStatusFailures(executeOnce(request, redactedNames))
       }),
     })

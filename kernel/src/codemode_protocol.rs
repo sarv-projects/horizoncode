@@ -58,6 +58,10 @@ pub struct CodeModeCallResultV1 {
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
+    #[serde(rename = "resultDigest", skip_serializing_if = "Option::is_none")]
+    pub result_digest: Option<String>,
+    #[serde(rename = "outputBytes", skip_serializing_if = "Option::is_none")]
+    pub output_bytes: Option<usize>,
     #[serde(rename = "receiptRef", skip_serializing_if = "Option::is_none")]
     pub receipt_ref: Option<String>,
     #[serde(rename = "receiptKind", skip_serializing_if = "Option::is_none")]
@@ -244,6 +248,8 @@ impl CodeModeFrameV1 {
                     || frame.results.iter().any(|result| !valid_id(&result.call_id)
                         || !matches!(result.status.as_str(), "settled" | "rejected" | "cancelled" | "unknown")
                         || result.output.as_ref().is_some_and(|output| output.len() > MAX_OUTPUT_BYTES)
+                        || result.result_digest.as_ref().is_some_and(|digest| !digest.starts_with("blake3:") || !valid_digest(digest))
+                        || result.output_bytes.is_some_and(|bytes| bytes > MAX_OUTPUT_BYTES)
                         || result.receipt_ref.as_ref().is_some_and(|value| !valid_id(value))
                         || result.receipt_digest.as_ref().is_some_and(|value| !valid_digest(value))
                         || result.error_code.as_ref().is_some_and(|value| value.len() > 128))
@@ -251,10 +257,17 @@ impl CodeModeFrameV1 {
                     || frame.results.iter().map(|row| row.call_id.as_str()).collect::<HashSet<_>>().len() != frame.results.len()
                 { return Err(CodeModeFrameErrorV1::Invalid); }
                 if frame.results.iter().any(|row| match row.status.as_str() {
-                    "unknown" => row.receipt_ref.is_some() || row.receipt_kind.is_some() || row.receipt_digest.is_some() || row.output.is_some(),
+                    "unknown" => row.receipt_ref.is_some() || row.receipt_kind.is_some() || row.receipt_digest.is_some()
+                        || row.output.is_some() || row.result_digest.is_some() || row.output_bytes.is_some() || row.error_code.is_some(),
                     "settled" | "rejected" | "cancelled" => row.receipt_ref.is_none()
                         || row.receipt_kind.as_deref().is_none_or(|kind| !matches!(kind, "effect_receipt" | "host_decision" | "tool_result"))
-                        || (row.receipt_kind.as_deref() == Some("host_decision") && row.output.is_some())
+                        || (row.receipt_kind.as_deref() == Some("host_decision") && (row.output.is_some() || row.result_digest.is_some() || row.output_bytes.is_some()))
+                        || (row.receipt_kind.as_deref() == Some("effect_receipt") && (row.result_digest.is_some() || row.output_bytes.is_some()))
+                        || (row.receipt_kind.as_deref() == Some("tool_result") && row.status == "settled"
+                            && (row.output.is_none() || row.result_digest.as_deref() != row.output.as_deref().and_then(|output| codemode_tool_result_digest_v1(output).ok()).as_deref()
+                                || row.output_bytes != row.output.as_ref().map(|output| output.as_bytes().len())))
+                        || (row.receipt_kind.as_deref() == Some("tool_result") && row.status != "settled"
+                            && (row.result_digest.is_some() || row.output_bytes.is_some() || row.error_code.is_none()))
                         || row.receipt_digest.as_deref().is_none_or(|value| !valid_digest(value)),
                     _ => true,
                 })
@@ -578,7 +591,7 @@ pub(crate) fn codemode_public_run_receipt_digest(
     use crate::messagepack::{self, Value, FRAME_LIMITS};
     if waves.is_empty() { return Ok(None); }
     let mut tuples = Vec::new();
-    let mut previous_wave = None;
+    let mut previous_wave: Option<u8> = None;
     for (wave_index, rows) in waves {
         if previous_wave.is_some_and(|previous| *wave_index != previous.saturating_add(1))
             || (previous_wave.is_none() && *wave_index != 0)
@@ -655,13 +668,13 @@ fn schema_digest(schema: &JsonMap) -> Option<String> {
 
 fn tool_set_digest(tools: &[CodeModeToolV1]) -> Option<String> {
     use crate::messagepack::{self, Value as Mp};
-    let rows = tools.iter().map(|tool| Mp::Map(BTreeMap::from([
+    let rows = tools.iter().map(|tool| Some(Mp::Map(BTreeMap::from([
         ("toolName".into(), Mp::String(tool.tool_name.clone())),
         ("capabilityId".into(), Mp::String(tool.capability_id.clone())),
         ("description".into(), Mp::String(tool.description.clone())),
         ("inputSchema".into(), json_to_mp(&serde_json::Value::Object(tool.input_schema.clone().into_iter().collect()))?),
         ("inputSchemaDigest".into(), Mp::String(tool.input_schema_digest.clone())),
-    ]))).collect::<Option<Vec<_>>>()?;
+    ])))).collect::<Option<Vec<_>>>()?;
     let limits = messagepack::Limits { max_encoded_bytes: 256 * 1024, max_depth: 16,
         max_nodes: 4096, max_collection_items: 4096, max_scalar_bytes: 64 * 1024 };
     let bytes = messagepack::encode(&Mp::Array(rows), limits).ok()?;
@@ -749,6 +762,16 @@ fn blake3_hex(domain: &[u8], payload: &[u8]) -> String {
     format!("blake3:{}", hasher.finalize().to_hex())
 }
 
+fn codemode_tool_result_digest_v1(output: &str) -> Result<String, CodeModeFrameErrorV1> {
+    use crate::messagepack::{self, Value, FRAME_LIMITS};
+    if output.len() > MAX_OUTPUT_BYTES {
+        return Err(CodeModeFrameErrorV1::Invalid);
+    }
+    let projection = Value::Map(BTreeMap::from([("output".to_owned(), Value::String(output.to_owned()))]));
+    let encoded = messagepack::encode(&projection, FRAME_LIMITS).map_err(|_| CodeModeFrameErrorV1::Invalid)?;
+    Ok(blake3_hex(b"horizoncode.codemode-tool-result.v1\0", &encoded))
+}
+
 #[cfg(test)]
 mod contract_tests {
     use super::*;
@@ -773,6 +796,7 @@ mod contract_tests {
     fn wave_result_at(call_ids: &[&str], status: &str, sequence: &str, wave_index: u8) -> CodeModeFrameV1 {
         let results = call_ids.iter().map(|id| CodeModeCallResultV1 {
             call_id: (*id).into(), status: status.into(), output: None,
+            result_digest: None, output_bytes: None,
             receipt_ref: Some(format!("receipt-{id}")),
             receipt_kind: Some("effect_receipt".into()),
             receipt_digest: Some(format!("blake3:{}", "a".repeat(64))), error_code: None,
@@ -829,6 +853,45 @@ mod contract_tests {
     }
 
     #[test]
+    fn settled_tool_result_requires_matching_digest_and_utf8_byte_count() {
+        let output = "é🙂";
+        let result = CodeModeCallResultV1 {
+            call_id: "call-read".into(),
+            status: "settled".into(),
+            output: Some(output.into()),
+            result_digest: Some(codemode_tool_result_digest_v1(output).unwrap()),
+            output_bytes: Some(output.as_bytes().len()),
+            receipt_ref: Some("tool_result:call-read".into()),
+            receipt_kind: Some("tool_result".into()),
+            receipt_digest: Some(format!("blake3:{}", "a".repeat(64))),
+            error_code: None,
+        };
+        let mut frame = CodeModeWaveResultV1 {
+            schema_version: 1, frame_type: "wave_result".into(), request_id: "request-1".into(),
+            sequence: "2".into(), wave_index: 0, batch_id: "batch-1".into(), status: "settled".into(),
+            results: vec![result], receipt_digest: None,
+        };
+        frame.receipt_digest = Some(codemode_public_wave_receipt_digest(0, &frame.results).unwrap());
+        let valid = CodeModeFrameV1::WaveResult(frame.clone());
+        assert!(valid.validate().is_ok());
+        let encoded = valid.to_json_line().unwrap();
+        let decoded = CodeModeFrameV1::from_json_line(&encoded).unwrap();
+        assert_eq!(decoded, valid);
+
+        let mut wrong_bytes = frame.clone();
+        wrong_bytes.results[0].output_bytes = Some(output.chars().count());
+        assert_eq!(CodeModeFrameV1::WaveResult(wrong_bytes).validate(), Err(CodeModeFrameErrorV1::Invalid));
+
+        let mut wrong_digest = frame.clone();
+        wrong_digest.results[0].result_digest = Some(format!("blake3:{}", "b".repeat(64)));
+        assert_eq!(CodeModeFrameV1::WaveResult(wrong_digest).validate(), Err(CodeModeFrameErrorV1::Invalid));
+
+        let mut missing_digest = frame;
+        missing_digest.results[0].result_digest = None;
+        assert_eq!(CodeModeFrameV1::WaveResult(missing_digest).validate(), Err(CodeModeFrameErrorV1::Invalid));
+    }
+
+    #[test]
     fn known_rejected_result_is_terminal_and_allows_one_failed_completion() {
         let start = CodeModeFrameV1::Start(start_frame());
         let mut conversation = CodeModeConversationV1::start(&start).unwrap();
@@ -869,7 +932,8 @@ mod contract_tests {
             schema_version: 1, frame_type: "wave_result".into(), request_id: "request-1".into(),
             sequence: "2".into(), wave_index: 0, batch_id: "batch-1".into(), status: "unknown".into(),
             results: vec![CodeModeCallResultV1 { call_id: "call-a".into(), status: "unknown".into(),
-                output: None, receipt_ref: None, receipt_kind: None, receipt_digest: None, error_code: None }],
+                output: None, result_digest: None, output_bytes: None, receipt_ref: None, receipt_kind: None,
+                receipt_digest: None, error_code: None }],
             receipt_digest: None,
         });
         unknown.accept_host_wave_result(&unknown_result).unwrap();
@@ -892,8 +956,16 @@ mod contract_tests {
         });
         assert_eq!(frame.validate(), Err(CodeModeFrameErrorV1::Invalid));
 
+        let start = CodeModeFrameV1::Start(start_frame());
+        let mut conversation = CodeModeConversationV1::start(&start).unwrap();
+        let wave = wave_request("call-a", "1", 0, 2);
+        conversation.accept_helper_frame(&wave).unwrap();
         let CodeModeFrameV1::WaveResult(mut forged) = wave_result(&["call-a"], "rejected") else { unreachable!() };
         forged.receipt_digest = Some(format!("blake3:{}", "f".repeat(64)));
-        assert_eq!(CodeModeFrameV1::WaveResult(forged).validate(), Err(CodeModeFrameErrorV1::Invalid));
+        let forged = CodeModeFrameV1::WaveResult(forged);
+        // Schema/frame validation checks shape; the stateful host receiver binds
+        // the aggregate digest to this exact accepted wave.
+        assert!(forged.validate().is_ok());
+        assert_eq!(conversation.accept_host_wave_result(&forged), Err(CodeModeFrameErrorV1::Invalid));
     }
 }

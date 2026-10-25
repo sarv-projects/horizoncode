@@ -2,9 +2,10 @@ import { NodeHttpServer, NodeServices } from "@effect/platform-node"
 import { describe, expect, test } from "bun:test"
 import { Context, Effect, Layer, Option, Ref, Schema } from "effect"
 import { HttpBody, HttpClient, HttpClientRequest, HttpRouter } from "effect/unstable/http"
-import { HttpApiBuilder } from "effect/unstable/httpapi"
+import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi"
 import * as Socket from "effect/unstable/socket/Socket"
 import { MoveSession } from "@opencode-ai/core/control-plane/move-session"
+import { Config as CoreConfig } from "@opencode-ai/core/config"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionSupervisor } from "@opencode-ai/core/session/supervisor"
 import { SessionV2 } from "@opencode-ai/core/session"
@@ -15,7 +16,10 @@ import { Config } from "../../src/config/config"
 import { Installation } from "../../src/installation"
 import { Project } from "../../src/project/project"
 import { ServerAuth } from "../../src/server/auth"
-import { RootHttpApi } from "../../src/server/routes/instance/httpapi/api"
+import { Provider } from "../../src/provider/provider"
+import { WebSearchRuntime } from "../../src/tool/websearch-runtime"
+import { RuntimeFlags } from "../../src/effect/runtime-flags"
+import { InstanceHttpApi, RootHttpApi } from "../../src/server/routes/instance/httpapi/api"
 import { controlHandlers } from "../../src/server/routes/instance/httpapi/handlers/control"
 import { controlPlaneHandlers } from "../../src/server/routes/instance/httpapi/handlers/control-plane"
 import { goalReviewHandlers } from "../../src/server/routes/instance/httpapi/handlers/goal-review"
@@ -124,7 +128,10 @@ const goalReviewSupervisorLayer = Layer.mock(SessionSupervisor.Service)({
           runID: "run-control",
           status: operation === "pause_run" ? "PAUSED" : operation === "resume_run" ? "RUNNING" : "CANCELLING",
           runPhase: operation === "pause_run" ? "PAUSED" : operation === "resume_run" ? "RUNNING" : "CANCELLING",
-          revision: "5",
+          // HostKernel emits `revision` as a JSON unsigned integer
+          // (`Value::Unsigned(snapshot.revision)`); a decimal string here is a
+          // protocol mismatch, not a wire value — the route answers DecimalU64.
+          revision: 5,
         }
       }
       return yield* Ref.get(goalReviewHostResponse)
@@ -136,26 +143,80 @@ const goalReviewWorkspaceMiddleware = Layer.mergeAll(
   workspaceRoutingLayer.pipe(Layer.provide(Socket.layerWebSocketConstructorGlobal)),
 )
 
-const goalReviewRoutes = HttpApiBuilder.layer(GoalReviewApi).pipe(
+// Production wires `goalReviewHandlers` (built on `InstanceHttpApi`) into the
+// instance route tree and supplies `schemaErrorLayer` alongside the auth and
+// workspace/instance middleware (`server.ts` `instanceRoutes`). The test keeps
+// the focused route surface required by `test/AGENTS.md`, but it must serve the
+// *same* API identity as the handler group: `HttpApiBuilder.layer` requires
+// `ApiGroup<ApiId, Name>` for its groups while `HttpApiBuilder.group` provides
+// `ApiGroup<ApiId, Name>` for the API it was built against. `GoalReviewApi` is a
+// standalone `HttpApi.make("goalReview")` value, so pairing it with the
+// production handlers leaves `ApiGroup<"goalReview", "goalReview">` unsatisfied.
+// Group services are keyed by group identifier at runtime
+// (`effect/httpapi/HttpApiGroup/<identifier>`), so restricting the group set to
+// the one under test only narrows which routes are registered; it changes no
+// handler, middleware or endpoint contract.
+const goalReviewRoutesApi = HttpApi.make(InstanceHttpApi.identifier).addHttpApi(GoalReviewApi)
+const goalReviewRoutes = HttpApiBuilder.layer(goalReviewRoutesApi).pipe(
   Layer.provide(goalReviewHandlers),
-  Layer.provide([authorizationLayer, goalReviewWorkspaceMiddleware]),
+  Layer.provide([
+    authorizationLayer,
+    goalReviewWorkspaceMiddleware,
+    schemaErrorLayer,
+    // These are app-level dependencies of the production handler graph, not
+    // inputs to the route tests below. Supply strict partial layers so any
+    // accidental provider/search use fails loudly instead of leaking as an
+    // unrelated test-effect service requirement.
+    Layer.mock(Provider.Service)({}),
+    Layer.mock(WebSearchRuntime.Service)({}),
+  ]),
 )
 
-const itGoalReview = testEffect(
-  Layer.mergeAll(
-    goalReviewTestStateLayer,
-    NodeHttpServer.layerTest,
-    NodeServices.layer,
-    workspaceLayerWithRuntimeFlags({ experimentalWorkspaces: true }),
-    goalReviewSupervisorLayer,
-    ServerAuth.Config.configLayer({
-      password: Option.some("executor-secret"),
-      username: "executor",
-      reviewerPassword: Option.some("reviewer-secret"),
-      reviewerUsername: "reviewer",
-    }),
-  ),
+// The Goal review group's managed-control handlers declare a build-time
+// requirement on the Core AgentProfile service, and `ManagedControl.goalReviewSnapshot`
+// (used by verification, Run control and decision routes) resolves the profile
+// catalog at request time for the eligibility projection. These tests assert
+// revision/CAS and inbox behavior, never profile content, so the fixture supplies
+// an explicitly empty catalog — truthfully "no profile configured here" — and
+// every other method still fails loudly if a path outside that contract runs.
+const agentProfilesStub = Layer.succeed(
+  CoreConfig.AgentProfileService,
+  CoreConfig.AgentProfileService.of({
+    agentProfiles: () => Effect.succeed([]),
+    agentProfileSelectors: () => Effect.die("not exercised by the Goal review route tests"),
+    agentProfile: () => Effect.die("not exercised by the Goal review route tests"),
+    agentProfileSelector: () => Effect.die("not exercised by the Goal review route tests"),
+    primaryAgentProfile: () => Effect.die("not exercised by the Goal review route tests"),
+  }),
 )
+
+const itGoalReviewLayer = Layer.mergeAll(
+  goalReviewTestStateLayer,
+  NodeHttpServer.layerTest,
+  NodeServices.layer,
+  workspaceLayerWithRuntimeFlags({ experimentalWorkspaces: true }),
+  // `goalReviewHandlers` yields `RuntimeFlags.Service` inside its handler
+  // context, so `HttpApiBuilder.group` puts it in the route layer's raw
+  // `RIn`. `workspaceLayerWithRuntimeFlags` builds exactly this override as a
+  // *dependency* of `Workspace.node`, and `LayerNode.compile` feeds
+  // dependencies through `Layer.provide`, which by contract exposes only the
+  // consuming layer's own services — the fixture's group therefore cannot
+  // discharge the routes' requirement. Production lists `RuntimeFlags.node`
+  // directly in `server.ts`'s `app` group for the same reason; supply the
+  // identically-overridden service here so the requirement is met by a real
+  // layer rather than asserted away.
+  RuntimeFlags.layer({ experimentalWorkspaces: true }),
+  goalReviewSupervisorLayer,
+  agentProfilesStub,
+  ServerAuth.Config.configLayer({
+    password: Option.some("executor-secret"),
+    username: "executor",
+    reviewerPassword: Option.some("reviewer-secret"),
+    reviewerUsername: Option.some("reviewer"),
+  }),
+)
+
+const itGoalReview = testEffect(itGoalReviewLayer)
 
 const serveGoalReview = () =>
   HttpRouter.serve(goalReviewRoutes, { disableListenLog: true, disableLogger: true }).pipe(Layer.build)
@@ -266,6 +327,7 @@ describe("Goal verification v1 route contract", () => {
       taskID: "task-1",
       attemptID: "attempt_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       finalRevision: "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      setIdentityDigest: "blake3:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
       challengeSetDigest: "blake3:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
       verificationRunID: "verification-1",
       reason: "transport_lost",
@@ -296,7 +358,7 @@ describe("Goal Run control v1 route contract", () => {
     }
     expect(Schema.decodeUnknownSync(GoalRunControlInputV1)(input, { onExcessProperty: "error" })).toEqual(input)
     expect(() => Schema.decodeUnknownSync(GoalRunControlInputV1)({ ...input, action: "restart" })).toThrow()
-    expect(() => Schema.decodeUnknownSync(GoalRunControlInputV1)({ ...input, expectedRevision: "999" }, { onExcessProperty: "error" })).toThrow()
+    expect(() => Schema.decodeUnknownSync(GoalRunControlInputV1)({ ...input, expectedRevision: "18446744073709551616" }, { onExcessProperty: "error" })).toThrow()
   })
 })
 
@@ -449,11 +511,13 @@ describe("Goal review inbox HttpApi", () => {
         schemaVersion: 1,
         goalID: "goal-plan",
         specID: "spec-plan",
-        specDigest: `sha256:${"a".repeat(64)}`,
+        specDigest: `blake3:${"a".repeat(64)}`,
         expectedGoalRevision: revision,
         runID: "run-plan",
         tasks: [{
           taskID: "task-plan",
+          title: "Plan the reviewed task",
+          purpose: "Exercise the plan wire contract",
           dependencies: [],
           criterionIDs: ["criterion-plan"],
           requiredCapabilities: [],
@@ -482,6 +546,9 @@ describe("Goal review inbox HttpApi", () => {
         expectedGoalRevision: "18446744073709551615",
         specID: "spec-start",
         specDigest: `blake3:${"a".repeat(64)}`,
+        // Core-verified active top-level Session selector: the caller supplies it
+        // and Rust pins it atomically; identity fields are never derived here.
+        sessionID: SessionV2.ID.make("ses_start"),
         idempotencyKey: "start-delivery-1",
       } as const
       expect(Schema.decodeUnknownSync(GoalRunStartInputV1)(payload, { onExcessProperty: "error" }))

@@ -1,6 +1,7 @@
 import { createMemo, createSignal, onCleanup, Show } from "solid-js"
 import { useTheme } from "../context/theme"
 import type { TuiArtifactRendererV1 } from "../util/artifact-render"
+import { inspectCodeDisplayBounds, DEFAULT_CODE_DISPLAY_POLICY } from "../util/code-display"
 
 /**
  * Renders one assistant text part through the artifact renderer boundary.
@@ -35,6 +36,15 @@ export function ArtifactMarkdown(props: {
     if (!hasDerivedContent) return
     return rendered().fidelity
   })
+  // §31.23: long settled/fenced content is concealed by default; the canonical
+  // part/artifact remains the source for expansion and review.
+  const autoConceal = createMemo(() => {
+    const bounds = inspectCodeDisplayBounds(props.source, {
+      maxLines: DEFAULT_CODE_DISPLAY_POLICY.concealAfterLines,
+      maxBytes: DEFAULT_CODE_DISPLAY_POLICY.lazyHighlightMaxBytes,
+    })
+    return bounds.exceedsLineLimit || bounds.exceedsByteLimit
+  })
 
   return (
     <box flexDirection="column">
@@ -49,7 +59,7 @@ export function ArtifactMarkdown(props: {
         internalBlockMode="top-level"
         content={rendered().content}
         tableOptions={{ style: "grid" }}
-        conceal={props.conceal ?? false}
+        conceal={props.conceal ?? autoConceal()}
         fg={theme.markdownText}
         bg={theme.background}
       />

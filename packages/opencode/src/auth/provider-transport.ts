@@ -3,6 +3,16 @@ import { blake3 } from "@noble/hashes/blake3.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
 import { SecretBrokerError, type TrustedSecretUseContext } from "./secret-broker"
 import type { SecretBrokerV1 } from "@opencode-ai/schema/secret-broker-v1"
+import type {
+  ModelsDevCatalogFreshnessV1 as ModelsDevCatalogFreshnessSchema,
+  ModelsDevCatalogSourceV1 as ModelsDevCatalogSourceSchema,
+  PrefixCacheSupportV1 as PrefixCacheSupportSchema,
+} from "@opencode-ai/schema/context-compile-policy-v1"
+
+/** §30.26.4 route-capability vocabulary; the schema contract is the sole type authority. */
+type PrefixCacheSupportV1 = typeof PrefixCacheSupportSchema.Type
+type CatalogSourceV1 = typeof ModelsDevCatalogSourceSchema.Type
+type CatalogFreshnessV1 = typeof ModelsDevCatalogFreshnessSchema.Type
 
 const MAX_PROVIDER_BODY_BYTES = 1024 * 1024
 const MAX_DIRECT_PROVIDER_RESPONSE_BYTES = 10 * 1024 * 1024
@@ -36,12 +46,107 @@ export type DirectProviderRouteV1 = {
   readonly endpointBase: string
   readonly anonymousOpenCodeFree: boolean
   readonly credentialHeader: ProviderTransportInput["credentialHeader"]
+  /**
+   * §30.26.4/§30.26.9 prefix-cache capability for this exact pinned route.
+   * Projected together with the route selection and never mutated after pin.
+   * Readers MUST treat a missing value as `"unknown"`; it is only ever
+   * promoted away from `"unknown"` with §30.26.10 real-route validation
+   * evidence. The route adapter is authoritative here — advisory catalog
+   * pricing can never set it (CX-017). Read-only capability metadata: it is
+   * deliberately excluded from the transport digest and changes no dispatch
+   * bound, eligibility check, or UNKNOWN/no-replay rule.
+   */
+  readonly prefixCacheSupport?: PrefixCacheSupportV1
 }
 
 export type PreparedDirectProviderTransportV1 = {
   readonly route: DirectProviderRouteV1
   readonly transport: Readonly<ProviderTransportInput>
   readonly transportRequestDigest: string
+}
+
+/** §30.26.4 `catalogSnapshot` input: advisory Models.dev provenance for one pinned route. */
+export type ContextCompileCatalogSnapshotV1 = {
+  readonly source: CatalogSourceV1
+  readonly freshness: CatalogFreshnessV1
+  readonly model?: {
+    readonly limit: { readonly context: number; readonly output: number; readonly input?: number }
+    readonly cost?: { readonly cache_read?: number; readonly cache_write?: number }
+  }
+}
+
+type SnapshotModelRow = {
+  readonly id?: string
+  readonly limit?: { readonly context?: number; readonly output?: number; readonly input?: number }
+  readonly cost?: { readonly cache_read?: number; readonly cache_write?: number }
+}
+
+export type ContextCompileCatalogSnapshotInputV1 = {
+  /** Result of Core `ModelsDev.getSnapshot()`: provenance plus raw provider rows. */
+  readonly snapshot: {
+    readonly source: string
+    readonly freshness: string
+    readonly providers: Readonly<Record<string, { readonly models?: Readonly<Record<string, SnapshotModelRow>> }>>
+  }
+  readonly providerID: string
+  readonly modelID: string
+}
+
+const positiveLimit = (value: unknown): value is number =>
+  typeof value === "number" && Number.isSafeInteger(value) && value > 0
+const knownPrice = (value: unknown): number | undefined =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined
+
+/**
+ * Project the pinned Models.dev snapshot's advisory row for this exact route
+ * into the §30.26.4 `catalogSnapshot` resolver input (step 3). Read-only: it
+ * never enables a route, never claims freshness the snapshot did not record,
+ * and OMITS rather than fabricates a malformed/unavailable model row so the
+ * resolver falls back to the conservative tier instead of throwing at the
+ * consumer. Matches the row by key first, then by declared model id (catalog
+ * keys and declared ids can differ).
+ */
+export function contextCompileCatalogSnapshot(
+  input: ContextCompileCatalogSnapshotInputV1,
+): ContextCompileCatalogSnapshotV1 {
+  const source: CatalogSourceV1 =
+    input.snapshot.source === "cache" ||
+    input.snapshot.source === "bundled" ||
+    input.snapshot.source === "override" ||
+    input.snapshot.source === "unavailable"
+      ? input.snapshot.source
+      : "unavailable"
+  const freshness: CatalogFreshnessV1 =
+    input.snapshot.freshness === "fresh" || input.snapshot.freshness === "stale"
+      ? input.snapshot.freshness
+      : "unknown"
+  // An unavailable snapshot never carries a model row (resolver contract).
+  if (source === "unavailable") return { source, freshness }
+
+  const models = input.snapshot.providers[input.providerID]?.models
+  const row = models?.[input.modelID] ?? Object.values(models ?? {}).find((candidate) => candidate.id === input.modelID)
+  if (!row) return { source, freshness }
+  const context = row.limit?.context
+  const output = row.limit?.output
+  if (!positiveLimit(context) || !positiveLimit(output)) return { source, freshness }
+  const inputLimit = positiveLimit(row.limit?.input) ? row.limit.input : undefined
+  const cacheRead = knownPrice(row.cost?.cache_read)
+  const cacheWrite = knownPrice(row.cost?.cache_write)
+  return {
+    source,
+    freshness,
+    model: {
+      limit: { context, output, ...(inputLimit === undefined ? {} : { input: inputLimit }) },
+      ...(cacheRead === undefined && cacheWrite === undefined
+        ? {}
+        : {
+            cost: {
+              ...(cacheRead === undefined ? {} : { cache_read: cacheRead }),
+              ...(cacheWrite === undefined ? {} : { cache_write: cacheWrite }),
+            },
+          }),
+    },
+  }
 }
 
 const DIRECT_PUBLIC_TOKEN = "public"
@@ -145,7 +250,7 @@ export function createPinnedDirectProviderFetch(options: {
   readonly signal?: AbortSignal
 }): typeof fetch {
   let used = false
-  return async (input, init) => {
+  return (async (input, init) => {
     if (used) throw new SecretBrokerError("CONFLICT", "Direct provider request permits exactly one SDK dispatch")
     used = true
     const replay = await prepareDirectProviderTransportRequest({ route: options.prepared.route, input, init })
@@ -222,7 +327,7 @@ export function createPinnedDirectProviderFetch(options: {
       await options.markUnknown("provider transport failed after durable DISPATCHING; delivery may have occurred")
       throw error
     }
-  }
+  }) as typeof fetch
 }
 
 export type AuthorizedSearchProviderResponseV1 = {
@@ -822,7 +927,20 @@ export function decodeSearchSecretAuthorization(value: unknown, now = Date.now()
     attemptDigest: root.attemptDigest,
     routeKey: root.routeKey as SearchSecretAuthorizationV1["routeKey"],
     attempt: root.attempt,
-    providerRequest: { ...rawProvider, headers } as SearchSecretAuthorizationV1["providerRequest"],
+    // Every field below was validated by exactKeys and the guard chain above;
+    // assemble the typed projection explicitly instead of casting a spread of
+    // unknown-typed records.
+    providerRequest: {
+      providerId: rawProvider.providerId,
+      routeId: rawProvider.routeId,
+      method: rawProvider.method,
+      destination: rawProvider.destination,
+      body: rawProvider.body,
+      headers,
+      credentialHeaderName: rawProvider.credentialHeaderName,
+      credentialHeaderPrefix: rawProvider.credentialHeaderPrefix,
+      operationDigest: rawProvider.operationDigest,
+    },
     request: rawRequest as SearchSecretAuthorizationV1["request"],
     trusted: rawTrusted as SearchSecretAuthorizationV1["trusted"],
   } as SearchSecretAuthorizationV1

@@ -183,7 +183,6 @@ export function parseExecuteResult(input: unknown): ExecuteResult {
   let result: ExecuteResult
   try {
     assertPlainDataRecord(input)
-    boundedCallbackJson(input, MAX_OUTPUT_BYTES)
     if (
       !hasExactFields(
         input,

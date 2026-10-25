@@ -12,6 +12,10 @@ import {
   parseStartRequest,
   MAX_CALLBACKS_IN_FLIGHT,
   MAX_CALLBACKS_PER_GENERATION,
+  MAX_CODE_BYTES,
+  MAX_DEADLINE_MS,
+  MAX_OUTPUT_BYTES,
+  MIN_DEADLINE_MS,
   type CallbackRequest,
   type CallbackResult,
   type ExecuteRequest,
@@ -743,11 +747,11 @@ export function validateExecutionReplOperationRequestV1(input: unknown): Executi
     sessionID: value.sessionID,
     locationID: value.locationID,
     workspaceRevision: value.workspaceRevision,
-    requestSequence: value.requestSequence,
-    effectID: value.effectID,
-    challengeID: value.challengeID,
-    capabilityID: value.capabilityID,
-    capabilityLeaseDigest: value.capabilityLeaseDigest,
+    requestSequence: value.requestSequence as string,
+    effectID: value.effectID as string,
+    challengeID: value.challengeID as string,
+    capabilityID: value.capabilityID as ExecutionReplOperationRequestV1["capabilityID"],
+    capabilityLeaseDigest: value.capabilityLeaseDigest as string,
     ...(value.managedAttempt === undefined ? {} : { managedAttempt: freezeManagedAttemptScope(value.managedAttempt as ManagedAttemptScopeV1) }),
     ...(value.directAttempt === undefined ? {} : { directAttempt: freezeDirectAttemptScope(value.directAttempt as DirectAttemptScopeV1) }),
     operation: Object.freeze({ ...operation }) as ExecutionReplOperationRequestV1["operation"],
@@ -807,7 +811,7 @@ export function validateExecutionReplOperationReceiptV1(
     requestSequence: input.requestSequence,
     effectID: input.effectID,
     challengeID: input.challengeID,
-    capabilityID: input.capabilityID,
+    capabilityID: input.capabilityID as ExecutionReplOperationReceiptV1["capabilityID"],
     capabilityLeaseDigest: input.capabilityLeaseDigest,
     operationDigest: input.operationDigest,
     dispatchReceiptDigest: input.dispatchReceiptDigest,
@@ -1468,8 +1472,15 @@ export async function dispatchSupervisedReplOperationV1(input: {
   readonly nowMs?: number
 }): Promise<{ readonly receipt: ExecutionReplOperationReceiptV1; readonly session: ReplSession }> {
   const capabilityID = input.operation.kind === "execute" ? "repl.execute" : "repl.reset"
-  assertLanguageServiceProcessAllowed(capabilityID)
   const session = input.registry.requireOwned(input.ref, input.authority)
+  // Exact Location pin before the route gate, Guard challenge or HostKernel
+  // sequence: a LocationRef for another workspace must never reach
+  // authorization (REPL-002). The authenticated session's workspace is
+  // authority; the caller's LocationRef is only ever a claim.
+  if (input.locationRef.workspaceID !== session.workspaceId) {
+    throw new TypeError("REPL operation location pin does not match the authenticated session workspace")
+  }
+  assertLanguageServiceProcessAllowed(capabilityID)
   if (!session.processRef) throw new TypeError("REPL generation has no HostKernel interpreter identity")
   const processRef = supervisedProcessRef(session, session.processRef)
   const attempt = session.managedAttemptScope ?? session.directAttemptScope
@@ -1678,6 +1689,9 @@ export async function completeSupervisedReplCallbackV1(input: {
     } catch (error) {
       input.registry.markUnknownOwned(input.ref, input.authority)
       throw error
+    }
+    if (result.status === "unknown") {
+      throw new ReplDispatchEnvelopeError("an UNKNOWN callback outcome has no reply; quarantine the interpreter generation")
     }
     const resultForHost: ExecutionReplCallbackResultV1 = result.status === "ok"
       ? Object.freeze({

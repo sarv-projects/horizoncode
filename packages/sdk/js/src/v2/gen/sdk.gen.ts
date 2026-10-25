@@ -263,6 +263,8 @@ import type {
   SessionStatusResponses,
   SessionSubagentsErrors,
   SessionSubagentsResponses,
+  SessionSubagentWaitErrors,
+  SessionSubagentWaitResponses,
   SessionSubagentMessageErrors,
   SessionSubagentMessageResponses,
   SessionSummarizeErrors,

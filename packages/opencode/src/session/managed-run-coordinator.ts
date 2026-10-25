@@ -1,11 +1,14 @@
 import { SessionSupervisor } from "@opencode-ai/core/session/supervisor"
-import { Effect, Either, Option, Schema } from "effect"
+import { Effect, Option, Result, Schema } from "effect"
 import * as SubagentDeliveryV1 from "@opencode-ai/schema/subagent-delivery-v1"
+import { ProviderV2 } from "@opencode-ai/core/provider"
+import { ModelV2 } from "@opencode-ai/core/model"
 import { SessionPrompt } from "@/session/prompt"
 import { Session } from "@/session/session"
 import { ManagedControl, ManagedControlError } from "@/session/managed-control"
 import { sameManagedContextSelectionV1 } from "@/session/llm"
-import { SessionID } from "@/session/schema"
+import { managedRouteProjection } from "@/provider/provider"
+import { MessageID, SessionID } from "@/session/schema"
 import type { TrustedPrincipal } from "@opencode-ai/core/trusted-principal"
 import { createHash } from "node:crypto"
 import { managedMessageConsumptionAckDigest, managedMessageInboxReceiptDigest } from "./managed-subagent-inbox"
@@ -146,7 +149,9 @@ export const executeNextManagedTask = Effect.fn("ManagedRunCoordinator.executeNe
         proof.consumingScopeDigest !== ManagedControl.managedAttemptEffectScopeDigest(scope)) {
         return yield* new ManagedControlError({ operation: "managed_follow_up_recovery", code: "managed_unknown", reason: "stored follow-up ACK proof cannot be reconciled against the current HostKernel scope" })
       }
-      const prompt = yield* sessions.findMessage(SessionID.make(scope.sessionID), (item) => item.info.id === proof.promptMessageID)
+      const prompt = yield* sessions.findMessage(SessionID.make(scope.sessionID), (item) => item.info.id === proof.promptMessageID).pipe(
+        Effect.catchTag("NotFoundError", () => Effect.succeed(Option.none())),
+      )
       if (Option.isNone(prompt) || prompt.value.info.role !== "user" || prompt.value.parts.length !== 1 ||
         prompt.value.parts[0]?.type !== "text" ||
         `sha256:${createHash("sha256").update(prompt.value.parts[0].text, "utf8").digest("hex")}` !== row.payload_digest) {
@@ -204,7 +209,7 @@ export const executeNextManagedTask = Effect.fn("ManagedRunCoordinator.executeNe
     }
     const promptMessageID = `msg_managed_followup_${createHash("sha256").update(`${row.message_id}\0${requestID}`).digest("hex").slice(0, 32)}`
     const prepared = yield* prompt.prepareManagedFollowUp({
-      prompt: { messageID: promptMessageID, sessionID: scope.sessionID, parts: [{ type: "text", text: row.payload }] },
+      prompt: { messageID: MessageID.make(promptMessageID), sessionID: SessionID.make(scope.sessionID), parts: [{ type: "text", text: row.payload }] },
       authority: runInput.authority,
       context: runInput.context,
       requestID,
@@ -232,13 +237,15 @@ export const executeNextManagedTask = Effect.fn("ManagedRunCoordinator.executeNe
       initialProviderInput: prepared.providerInput,
     }
     return {
-      prompt: { messageID: promptMessageID, sessionID: scope.sessionID, parts: [{ type: "text", text: row.payload }] },
+      prompt: { messageID: MessageID.make(promptMessageID), sessionID: SessionID.make(scope.sessionID), parts: [{ type: "text" as const, text: row.payload }] },
       context,
-      onPromptCommitted: ({ promptMessageID: committedPromptMessageID }) => Effect.gen(function* () {
+      onPromptCommitted: ({ promptMessageID: committedPromptMessageID }: { readonly promptMessageID: string }) => Effect.gen(function* () {
         if (committedPromptMessageID !== promptMessageID || !ManagedControl.sameManagedAttemptScope(runInput.authority.currentScope(), advanced.managedAttempt)) {
           return yield* new ManagedControlError({ operation: "managed_follow_up", code: "managed_conflict", reason: "committed prompt no longer matches the one-use managed wake claim" })
         }
-        const message = yield* sessions.findMessage(SessionID.make(scope.sessionID), (item) => item.info.id === promptMessageID)
+        const message = yield* sessions.findMessage(SessionID.make(scope.sessionID), (item) => item.info.id === promptMessageID).pipe(
+          Effect.catchTag("NotFoundError", () => Effect.succeed(Option.none())),
+        )
         if (Option.isNone(message) || message.value.info.role !== "user" || message.value.parts.length !== 1 ||
           message.value.parts[0]?.type !== "text" || message.value.parts[0].text !== row.payload) {
           return yield* new ManagedControlError({ operation: "managed_follow_up", code: "managed_conflict", reason: "persisted follow-up message differs from the exact compiled inbox payload" })
@@ -283,9 +290,9 @@ export const executeNextManagedTask = Effect.fn("ManagedRunCoordinator.executeNe
           consumptionAckDigest: proof.consumptionAckDigest,
           hostConsumedAckDigest: ack.receiptDigest,
         }).pipe(Effect.mapError((error) => new ManagedControlError({ operation: "managed_follow_up", code: "managed_unknown", reason: `Core could not persist HostKernel consumption receipt: ${error.message}` })))
-      }),
+      }).pipe(Effect.provideService(SessionSupervisor.Service, supervisor)),
     }
-  })
+  }).pipe(Effect.provideService(SessionSupervisor.Service, supervisor))
   const managedPreDispatchRecovery: SessionPrompt.ManagedPreDispatchRecoveryV1 = (runInput) => Effect.gen(function* () {
     const scope = runInput.authority.currentScope()
     if (runInput.sessionID !== scope.sessionID || runInput.context.selectionSessionID !== scope.sessionID ||
@@ -372,7 +379,7 @@ export const executeNextManagedTask = Effect.fn("ManagedRunCoordinator.executeNe
     yield* sessions.managedInboxMarkHostConsumed({ messageID: row.message_id, consumptionAckDigest, hostConsumedAckDigest: ack.receiptDigest }).pipe(
       Effect.mapError((error) => new ManagedControlError({ operation: "managed_pre_dispatch_recovery", code: "managed_unknown", reason: `Core could not persist the recovered HostKernel ACK: ${error.message}` })),
     )
-  })
+  }).pipe(Effect.provideService(SessionSupervisor.Service, supervisor))
   const selection = yield* ManagedControl.nextSchedulableTask({
     trustedPrincipal: input.trustedPrincipal,
     goalID: input.goalID,
@@ -478,7 +485,7 @@ export const executeNextManagedTask = Effect.fn("ManagedRunCoordinator.executeNe
         attempt.contextSelectionDigest !== scope.contextSelectionDigest) {
         return { status: "UNAVAILABLE" as const, selection, recovery, reason: "persisted initial ContextSelection is unavailable for exact pre-consume recovery" }
       }
-      const preparedResult = yield* Effect.either(prompt.prepareManagedTaskRequest({
+      const preparedResult = yield* Effect.result(prompt.prepareManagedTaskRequest({
         selection: activeSelection,
         rootSessionID: input.rootSessionID,
         childSessionID: attempt.sessionID,
@@ -487,36 +494,16 @@ export const executeNextManagedTask = Effect.fn("ManagedRunCoordinator.executeNe
         requestSequence: scope.requestSequence,
         trustedPrincipal: input.trustedPrincipal,
       }).pipe(Effect.provideService(SessionSupervisor.Service, supervisor)))
-      if (Either.isLeft(preparedResult)) {
+      if (Result.isFailure(preparedResult)) {
         return { status: "UNAVAILABLE" as const, selection, recovery, reason: "exact initial managed provider request could not be safely re-prepared" }
       }
-      const prepared = preparedResult.right
+      const prepared = preparedResult.success
       if (!sameManagedContextSelectionV1(prepared.contextSelection, attempt.contextSelection) ||
         prepared.contextSelection.attemptID !== attempt.attemptID ||
         prepared.contextSelection.sessionID !== attempt.sessionID ||
         prepared.contextSelection.requestID !== scope.requestID ||
         prepared.contextSelection.requestSequence !== scope.requestSequence) {
         return { status: "UNAVAILABLE" as const, selection, recovery, reason: "reprepared initial provider context differs from the durable HostKernel selection" }
-      }
-      const admission = {
-        goalID: recovery.goalID,
-        runID: recovery.runID,
-        taskID: task.taskID,
-        attemptID: attempt.attemptID,
-        parentSessionID: recovery.sessionID,
-        ownerEpoch: attempt.ownerEpoch,
-        locationID: recovery.locationID,
-        sessionID: attempt.sessionID,
-        workspaceRevision: scope.workspaceRevision,
-        attemptPhase: attempt.phase,
-        runPhase: attempt.runPhase,
-        revision: scope.expectedManagedRevision,
-        profile: {
-          profileID: task.profile.profileID,
-          profileRevision: task.profile.revision,
-          profileDigest: task.profile.definitionDigest,
-        },
-        managedAttempt: scope,
       }
       const handoff = yield* ManagedControl.claimManagedDispatch({
         goalID: recovery.goalID,
@@ -543,13 +530,47 @@ export const executeNextManagedTask = Effect.fn("ManagedRunCoordinator.executeNe
         JSON.stringify(consumeReceipt.worktreeTarget) !== JSON.stringify(handoff.worktreeTarget)) {
         return yield* new ManagedControlError({ operation: "consume_dispatch", code: "managed_protocol", reason: "recovered consume receipt differs from the existing HostKernel Attempt pins" })
       }
+      // The provider route is re-derived from the Rust-pinned handoff profile,
+      // the same trusted source the main admission path pins it from.
+      const managedProviderRoute = yield* Effect.mapError(
+        managedRouteProjection({
+          providerID: ProviderV2.ID.make(handoff.profileDefinition.model.providerId),
+          modelID: ModelV2.ID.make(handoff.profileDefinition.model.modelId),
+          harnessID: handoff.profileDefinition.harness,
+        }),
+        (error) => new ManagedControlError({ operation: "claim_dispatch", code: "provider_route_unavailable", reason: error.message }),
+      )
+      const admission = {
+        goalID: recovery.goalID,
+        runID: recovery.runID,
+        taskID: task.taskID,
+        attemptID: attempt.attemptID,
+        parentSessionID: recovery.sessionID,
+        ownerEpoch: attempt.ownerEpoch,
+        locationID: recovery.locationID,
+        sessionID: attempt.sessionID,
+        workspaceRevision: scope.workspaceRevision,
+        attemptPhase: attempt.phase,
+        runPhase: attempt.runPhase,
+        revision: scope.expectedManagedRevision,
+        requestSequence: scope.requestSequence,
+        requestID: scope.requestID,
+        contextSelectionDigest: scope.contextSelectionDigest,
+        profile: {
+          profileID: task.profile.profileID,
+          profileRevision: task.profile.revision,
+          profileDigest: task.profile.definitionDigest,
+        },
+        managedProviderRoute,
+        managedAttempt: scope,
+      }
       const child = yield* prompt.runManagedTask({
         selection: activeSelection,
         admission,
         handoff,
         consumeReceipt,
         trustedPrincipal: input.trustedPrincipal,
-        preparedRequest: prepared.preparedRequest,
+        preparedRequest: prepared,
         managedFollowUpRunner,
         managedPreDispatchRecovery,
       }).pipe(Effect.provideService(SessionSupervisor.Service, supervisor))
@@ -618,7 +639,7 @@ export const executeNextManagedTask = Effect.fn("ManagedRunCoordinator.executeNe
     }
     const completion = yield* sessions.managedChildSessionCompletion({
       sessionID: childID,
-      parentSessionID: input.rootSessionID,
+      parentSessionID: SessionID.make(input.rootSessionID),
       goalID: recovery.goalID,
       runID: recovery.runID,
       taskID: task.taskID,
@@ -697,7 +718,7 @@ export const executeNextManagedTask = Effect.fn("ManagedRunCoordinator.executeNe
   // P8 first reserves against trusted facts that do not depend on the prompt.
   // Core then compiles on that exact target without dispatch and binds the
   // resulting selection to the same reservation before Attempt admission.
-  const preparedResult = yield* Effect.either(prompt.prepareManagedTaskRequest({
+  const preparedResult = yield* Effect.result(prompt.prepareManagedTaskRequest({
     selection: activeSelection,
     rootSessionID: input.rootSessionID,
     childSessionID,
@@ -706,10 +727,10 @@ export const executeNextManagedTask = Effect.fn("ManagedRunCoordinator.executeNe
     requestSequence: "1",
     trustedPrincipal: input.trustedPrincipal,
   }))
-  if (Either.isLeft(preparedResult)) {
+  if (Result.isFailure(preparedResult)) {
     return { status: "UNAVAILABLE" as const, selection, reason: "exact managed provider request preflight is unavailable" }
   }
-  const prepared = preparedResult.right
+  const prepared = preparedResult.success
   // Re-submit Stage B with the exact persisted selection. This is an
   // idempotent identity check when reserve reports an already-bound candidate,
   // and reconciles a lost bind response without minting a second reservation.
@@ -722,7 +743,8 @@ export const executeNextManagedTask = Effect.fn("ManagedRunCoordinator.executeNe
   if (!boundReservation.contextSelectionDigest) {
     return { status: "UNAVAILABLE" as const, selection, reason: "HostKernel Stage-B receipt omitted its canonical ContextSelection digest" }
   }
-  if (!("receiptDigest" in boundReservation.preAdmissionProof)) {
+  const preAdmissionProofDigest = boundReservation.preAdmissionProof.receiptDigest
+  if (preAdmissionProofDigest === undefined) {
     return { status: "UNAVAILABLE" as const, selection, reason: "HostKernel Stage-B receipt omitted its stable context-bound receipt identity" }
   }
   const admission = yield* ManagedControl.admitAttempt({
@@ -735,7 +757,7 @@ export const executeNextManagedTask = Effect.fn("ManagedRunCoordinator.executeNe
     sessionID: childSessionID,
     expectedRevision: selection.revision,
     profileSelection: { profileId: task.profile.profileID, revision: task.profile.revision },
-    preAdmissionProofDigest: boundReservation.preAdmissionProof.receiptDigest,
+    preAdmissionProofDigest,
     contextSelection: prepared.contextSelection,
   })
   if (admission.contextSelectionDigest !== boundReservation.contextSelectionDigest ||
@@ -765,7 +787,7 @@ export const executeNextManagedTask = Effect.fn("ManagedRunCoordinator.executeNe
     handoff,
     consumeReceipt,
     trustedPrincipal: input.trustedPrincipal,
-    preparedRequest: prepared.preparedRequest,
+    preparedRequest: prepared,
     managedFollowUpRunner,
     managedPreDispatchRecovery,
   }).pipe(Effect.provideService(SessionSupervisor.Service, supervisor))

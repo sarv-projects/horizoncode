@@ -735,9 +735,12 @@ mod tests {
             delegated_root: "/sys/fs/cgroup/user.slice".to_owned(),
             delegated_root_device: 1,
             delegated_root_inode: 2,
+            delegated_root_owner_uid: 1000,
             relative_path: format!("horizoncode-execution-v1/{}", digest_component("execution_test")),
             cgroup_device: 3,
             cgroup_inode: 4,
+            cgroup_owner_uid: 1000,
+            cgroup_hierarchy_hidden: true,
             execution_id: "execution_test".to_owned(),
             effect_id: "effect_test".to_owned(),
             capability_lease_digest: format!("blake3:{}", "a".repeat(64)),
@@ -773,5 +776,29 @@ mod tests {
             fields.remove("processGeneration");
         }
         assert!(CgroupIdentityV1::from_value(&value).is_err());
+    }
+
+    #[test]
+    fn janitor_requires_hidden_hierarchy_and_exact_persisted_quiescence() {
+        let mut unhidden = identity();
+        unhidden.cgroup_hierarchy_hidden = false;
+        let exact_proof = quiescence_digest(&unhidden);
+        assert!(ExecutionCgroupV2::remove_quiescent_if_empty(&unhidden, &exact_proof).is_err());
+
+        let hidden = identity();
+        assert!(ExecutionCgroupV2::remove_quiescent_if_empty(&hidden, "blake3:stale").is_err());
+    }
+
+    #[test]
+    fn legacy_cgroup_identity_cannot_claim_hidden_hierarchy() {
+        let mut value = identity().to_value();
+        if let crate::protocol::Value::Map(fields) = &mut value {
+            fields.remove("delegatedRootOwnerUID");
+            fields.remove("cgroupOwnerUID");
+            fields.remove("cgroupHierarchyHidden");
+        }
+
+        let decoded = CgroupIdentityV1::from_value(&value).unwrap();
+        assert!(!decoded.cgroup_hierarchy_hidden);
     }
 }

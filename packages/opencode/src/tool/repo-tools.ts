@@ -3,6 +3,7 @@ import { Effect, Option, Schema } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import { Config } from "@/config/config"
 import { SessionSupervisor } from "@opencode-ai/core/session/supervisor"
+import type { Interface as SessionSupervisorInterface } from "@opencode-ai/core/session/supervisor"
 import { TrustedPrincipalContext } from "@opencode-ai/core/trusted-principal"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { Location as LocationSchema } from "@opencode-ai/schema"
@@ -12,6 +13,20 @@ import * as Tool from "./tool"
 
 const REPO_SEARCH_OUTPUT_MAX_BYTES = 32 * 1024
 const REPO_SEARCH_OUTPUT_TRUNCATION = "[output truncated at 32 KiB; narrow the query or continue with nextCursor]"
+
+const RepoSearchPath = Schema.String.check(Schema.makeFilter((value) => {
+  if (Buffer.byteLength(value, "utf8") > 4_096) return "path exceeds 4096 UTF-8 bytes"
+  if (value === ".") return undefined
+  if (value.startsWith("/") || value.includes("\\") || value.includes(":")) {
+    return "path must be a normalized relative path"
+  }
+  if (value.split("/").some((segment) => segment.length === 0 || segment === "." || segment === "..")) {
+    return "path must not contain empty, dot, or parent segments"
+  }
+  if (/[\u0000-\u001f\u007f]/u.test(value)) return "path must not contain control characters"
+  return undefined
+}))
+
 const RepoDiscoveryParameters = Schema.Struct({
   path: Schema.optional(RepoSearchPath).annotate({ description: "Subdirectory relative to the project root." }),
   depth: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 16 }))).annotate({
@@ -230,7 +245,7 @@ const renderDiscoveryPage = (page: RepoIntelligenceSchema.RepoDiscoveryPageV1) =
 }
 
 const runRepoDiscovery = (
-  supervisor: SessionSupervisor.Interface,
+  supervisor: SessionSupervisorInterface,
   input: DiscoveryInput,
   ctx: Tool.Context,
   mode: "tree" | "manifests",
@@ -346,7 +361,7 @@ const discoveryTool = (name: string, capabilityID: "repo.tree" | "repo.detect", 
         Effect.map((result) => ({ title: `${name} ${result.status.toLowerCase()}`, metadata: { status: result.status, count: result.count }, output: result.output })),
         Effect.catch((error) => Effect.succeed({
           title: `${name} unavailable`,
-          metadata: { status: "UNAVAILABLE", reason: error instanceof Error ? error.message : "hostkernel_discovery_failed" },
+          metadata: { status: "UNAVAILABLE", count: 0, reason: error instanceof Error ? error.message : "hostkernel_discovery_failed" },
           output: "status: UNAVAILABLE\nreason: authenticated HostKernel discovery failed",
         })),
         Effect.orDie,
@@ -366,19 +381,6 @@ const RepoSearchQuery = Schema.String.check(Schema.makeFilter((value) => {
   return undefined
 }))
 
-const RepoSearchPath = Schema.String.check(Schema.makeFilter((value) => {
-  if (Buffer.byteLength(value, "utf8") > 4_096) return "path exceeds 4096 UTF-8 bytes"
-  if (value === ".") return undefined
-  if (value.startsWith("/") || value.includes("\\") || value.includes(":")) {
-    return "path must be a normalized relative path"
-  }
-  if (value.split("/").some((segment) => segment.length === 0 || segment === "." || segment === "..")) {
-    return "path must not contain empty, dot, or parent segments"
-  }
-  if (/[\u0000-\u001f\u007f]/u.test(value)) return "path must not contain control characters"
-  return undefined
-}))
-
 export const RepoSearchParameters = Schema.Struct({
   query: RepoSearchQuery.annotate({ description: "Single-line symbol name or prefix (1-1024 UTF-8 bytes)." }),
   path: Schema.optional(RepoSearchPath).annotate({
@@ -388,13 +390,16 @@ export const RepoSearchParameters = Schema.Struct({
     description: "Maximum results (1-100, default 50).",
   }),
   cursor: Schema.optional(
-    Schema.String.check(Schema.isNonEmpty()).check(
-      Schema.isMaxLength(RepoIntelligenceSchema.MAX_STRUCTURE_CURSOR_BYTES),
-    ),
+    RepoIntelligenceSchema.RepoStructureCursorLeaseRefV1,
   ).annotate({ description: "Opaque cursor returned by a previous reply." }),
 })
 
-type RepoSearchInput = { query: string; path?: string; maxResults?: number; cursor?: string }
+type RepoSearchInput = {
+  query: string
+  path?: string
+  maxResults?: number
+  cursor?: RepoIntelligenceSchema.RepoStructureCursorLeaseRefV1
+}
 
 const REPO_STRUCTURE_QUERY_MAX_BYTES = 262_144
 
@@ -534,7 +539,7 @@ const runRepoStructureSearch = (
 
     return {
       output: `${renderAnalysisProfile(analysisProfile)}\n${renderStructurePage(page)}`,
-      count: page.coverage.nodes,
+      count: Number(page.coverage.nodes),
       status: page.status,
       analysisProfile,
     }
@@ -550,7 +555,7 @@ const runRepoStructureSearch = (
   )
 
 const runRepoDefinitionCandidates = (
-  supervisor: SessionSupervisor.Interface,
+  supervisor: SessionSupervisorInterface,
   client: ReturnType<typeof RepoIntel.repoStructureClientFromSupervisor>,
   params: RepoSearchInput,
   ctx: Tool.Context,
@@ -603,7 +608,7 @@ const runRepoDefinitionCandidates = (
   let bytesRead = 0
   const candidates = new Set<string>()
   for (const [pathRef, nodes] of selected) {
-    const read = yield* Effect.either(supervisor.readRepoDocument({
+    const read = yield* Effect.result(supervisor.readRepoDocument({
       sessionID: ctx.sessionID,
       locationRef,
       request: {
@@ -614,10 +619,10 @@ const runRepoDefinitionCandidates = (
         maxBytes: 131_072,
       },
     }).pipe(Effect.provideService(TrustedPrincipalContext, principal.value)))
-    if (read._tag === "Left") {
+    if (read._tag === "Failure") {
       return { output: boundRepoSearchLines([...header, "status: STALE", "reason: exact-revision source read was rejected"]), count: 0, status: "STALE", analysisProfile: profile }
     }
-    const document = read.right
+    const document = read.success
     if (document.revisionKind !== "workspace" || document.observedWorkspaceRevision !== page.sourceRevision ||
       document.contentDigest !== nodes[0]?.fileDigest) {
       return { output: boundRepoSearchLines([...header, "status: STALE", "reason: source digest or revision changed"]), count: 0, status: "STALE", analysisProfile: profile }

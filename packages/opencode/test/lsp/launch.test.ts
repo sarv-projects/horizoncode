@@ -103,7 +103,7 @@ describe("lsp.launch guard mediation", () => {
     }
   })
 
-  test("language-server action names remain internal, not public catalog capabilities", async () => {
+  test("language-service lifecycle uses the canonical Guarded action names only", async () => {
     const path = await import("node:path")
     const guard = await Bun.file(path.resolve(import.meta.dir, "../../../../kernel/src/guard.rs")).text()
     const catalog = await Bun.file(
@@ -112,10 +112,16 @@ describe("lsp.launch guard mediation", () => {
     const registry = await Bun.file(
       path.resolve(import.meta.dir, "../../../../arch_V1/contracts-v2/capability-registry-v1.json"),
     ).text()
-    for (const action of ["language.server.start", "language.server.stop"]) {
+    for (const action of ["language.start", "language.stop"]) {
       expect(guard).toContain(`"${action}"`)
-      expect(catalog).not.toContain(action)
-      expect(registry).not.toContain(action)
+      expect(catalog).toContain(action)
+      expect(registry).toContain(`"${action}"`)
+    }
+    // No second/legacy action family may become a parallel authority.
+    for (const obsolete of ["language.server.start", "language.server.stop"]) {
+      expect(guard).not.toContain(obsolete)
+      expect(catalog).not.toContain(obsolete)
+      expect(registry).not.toContain(obsolete)
     }
     expect(languageServiceProcessRouteAvailable()).toBe(false)
   })

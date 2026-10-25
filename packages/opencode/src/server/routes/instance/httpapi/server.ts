@@ -46,6 +46,7 @@ import { Discovery } from "@/skill/discovery"
 import { Storage } from "@/storage/storage"
 import { ToolRegistry } from "@/tool/registry"
 import { Truncate } from "@/tool/truncate"
+import { WebSearchRuntime } from "@/tool/websearch-runtime"
 import { Worktree } from "@/worktree"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { MoveSession } from "@opencode-ai/core/control-plane/move-session"
@@ -216,6 +217,9 @@ const uiRoute = HttpRouter.use((router) =>
   }),
 ).pipe(Layer.provide(authOnlyRouterLayer))
 
+// Phantom-free contract type for the route tree. `HttpRouter.serve` computes
+// `RIn` from this union (`Request.Only<"Requires", ...>` in particular), so the
+// `Requires` marker is declared exactly as the router algebra produces it.
 type RouteRequirements =
   | HttpRouter.HttpRouter
   | HttpRouter.Request<"Error", unknown>
@@ -266,6 +270,14 @@ const app = LayerNode.group([
   Command.node,
   Truncate.node,
   ToolRegistry.node,
+  // The instance route tree yields WebSearchRuntime.Service while its handler
+  // groups build (handlers/websearch.ts). ToolRegistry/SessionPrompt carrying
+  // this node as a private dependency does not expose it to the routes, so the
+  // production route tree died at startup with
+  // `Service not found: @horizoncode/WebSearchRuntime`. Exposing the node in the
+  // app group is what makes `opencode serve` buildable; it is the same node, so
+  // it is built once (memoized) and the Guard/HostKernel wiring is unchanged.
+  WebSearchRuntime.node,
   Format.node,
   Project.node,
   Vcs.node,

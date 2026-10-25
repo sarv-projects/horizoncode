@@ -431,7 +431,7 @@ test("provider API default IDs keep OpenCode on active explicitly free models", 
   const defaults = Provider.defaultModelIDs({
     opencode: {
       models: {
-        paid: { id: "paid", status: "active" as const, cost: { input: 4, output: 8 } },
+        paid: { id: "paid", status: "active" as const, cost: { input: 4, output: 8, cache: { read: 0, write: 0 } } },
         unknown: { id: "unknown", status: "active" as const, cost: undefined },
         inactiveFree: {
           id: "inactiveFree",
@@ -752,12 +752,14 @@ it.instance(
 )
 
 it.instance(
-  "model modalities default correctly",
+  "model modalities default to unknown when not declared",
   Effect.gen(function* () {
     const providers = yield* list
     const model = providers[ProviderV2.ID.make("test-provider")].models["test-model"]
-    expect(model.capabilities.input.text).toBe(true)
-    expect(model.capabilities.output.text).toBe(true)
+    // Absent modality metadata is unknown, never an affirmative capability
+    // claim (same honesty rule as AN-002 for cost).
+    expect(model.capabilities.input.text).toBe(false)
+    expect(model.capabilities.output.text).toBe(false)
   }),
   {
     config: {
@@ -1160,10 +1162,12 @@ it.instance(
 )
 
 it.instance(
-  "model defaults tool_call to true when not specified",
+  "model defaults tool_call to false when not specified",
   Effect.gen(function* () {
     const providers = yield* list
-    expect(providers[ProviderV2.ID.make("default-tools")].models["model"].capabilities.toolcall).toBe(true)
+    // Unknown tool-call metadata must not become an affirmative capability
+    // claim; a native tool harness requires an explicit advertisement.
+    expect(providers[ProviderV2.ID.make("default-tools")].models["model"].capabilities.toolcall).toBe(false)
   }),
   {
     config: {
@@ -1558,7 +1562,7 @@ test("mode options and cost are derived from the base model", () => {
   expect(model.cost.experimentalOver200K).toEqual({
     input: 5,
     output: 22.5,
-    cache: { read: 0.5, write: 0 },
+    cache: { read: 0.5, write: undefined },
   })
 })
 
@@ -1584,7 +1588,8 @@ test("models.dev normalization fills required response fields", () => {
   expect(model.capabilities.temperature).toBe(false)
   expect(model.capabilities.reasoning).toBe(false)
   expect(model.capabilities.attachment).toBe(false)
-  expect(model.capabilities.toolcall).toBe(true)
+  // tool_call is absent in this fixture; the normalized default stays false.
+  expect(model.capabilities.toolcall).toBe(false)
   expect(model.capabilities.interleaved).toEqual({ field: "reasoning_text" })
   expect(model.release_date).toBe("")
 })

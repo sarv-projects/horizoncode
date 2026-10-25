@@ -12,7 +12,7 @@ const artifact = { artifactId: "instructions", digest, byteLength: "0", mediaTyp
 const profile = {
   schemaVersion: 2,
   profileId: "specialist.reader",
-  revision: 1,
+  revision: "1",
   name: "Reader",
   description: "Read-only specialist",
   source: "user",
@@ -25,7 +25,7 @@ const profile = {
   harness: "native-minimal",
   reasoning: "low",
   variants: [],
-  instructions: { extraRefs: [artifact], maxCompiledTokens: 4096 },
+  instructions: { extraRefs: [artifact], maxCompiledTokens: "4096" },
   tools: [{ effect: "allow", toolPattern: "files.read" }, { effect: "deny", toolPattern: "files.write" }],
   allowedSkillIds: [],
   deniedSkillIds: [],
@@ -41,7 +41,7 @@ const profile = {
   lifecycleHooks: [],
   capabilityCeiling: [],
   permissionCeilingDigest: digest,
-  limits: { maxDepth: 1, maxActiveChildren: 1, maxTotalChildren: 2, maxPendingMessages: 4, maxMessageBytes: 4096, tokenBudget: 8192, wallTimeMs: 60000 },
+  limits: { maxDepth: 1, maxActiveChildren: 1, maxTotalChildren: 2, maxPendingMessages: 4, maxMessageBytes: 4096, tokenBudget: "8192", wallTimeMs: "60000" },
   maxParallelChildren: 1,
   enabled: true,
   definitionDigest: digest,
@@ -70,7 +70,7 @@ describe("AgentProfileV2 schema and safe resolution", () => {
       Object.entries(profile).filter(([key]) => key !== "definitionDigest" && key !== "permissionCeilingDigest"),
     )
     const decoded = Schema.decodeUnknownSync(AgentProfile.AgentProfileDefinitionV2)(definition as unknown)
-    expect(decoded.profileId).toBe("specialist.reader")
+    expect(decoded.profileId as string).toBe("specialist.reader")
     const callerWithDigest = Schema.decodeUnknownSync(AgentProfile.AgentProfileDefinitionV2)(profile as unknown)
     expect(callerWithDigest).not.toHaveProperty("definitionDigest")
     expect(callerWithDigest).not.toHaveProperty("permissionCeilingDigest")
@@ -121,6 +121,54 @@ describe("AgentProfileV2 schema and safe resolution", () => {
     expect(() => Schema.decodeUnknownSync(Composition.Digest)("sha256:bad")).toThrow()
   })
 
+  test("encodes profile revisions and u64 budgets as canonical decimal strings", () => {
+    const valid = {
+      ...profile,
+      revision: "18446744073709551615",
+      limits: {
+        ...profile.limits,
+        tokenBudget: "9007199254740993",
+        wallTimeMs: "18446744073709551615",
+      },
+    }
+    expect(Schema.decodeUnknownSync(AgentProfile.AgentProfileV2)(valid as unknown)).toMatchObject({
+      revision: "18446744073709551615",
+      limits: { tokenBudget: "9007199254740993", wallTimeMs: "18446744073709551615" },
+    })
+    for (const invalid of [
+      { ...valid, revision: "01" },
+      { ...valid, revision: "01" },
+      { ...valid, revision: "18446744073709551616" },
+      { ...valid, limits: { ...valid.limits, tokenBudget: 8192 } },
+      { ...valid, limits: { ...valid.limits, tokenBudget: "0" } },
+      { ...valid, limits: { ...valid.limits, wallTimeMs: "18446744073709551616" } },
+    ]) {
+      expect(() => Schema.decodeUnknownSync(AgentProfile.AgentProfileV2)(invalid as unknown)).toThrow()
+    }
+  })
+
+  test("publishes profile u64 fields as JSON strings, not JavaScript integers", () => {
+    const contract = AgentProfile.jsonSchemaDocument()
+    const definition = contract.$defs.AgentProfileDefinitionV2 as {
+      properties: { revision: unknown; instructions: unknown; context: unknown; limits: unknown }
+    }
+    const revisionSchema = contract.$defs["Horizon.AgentProfileV2.Revision"] as Record<string, unknown>
+    const limitsSchema = contract.$defs["Horizon.AgentProfileV2.Limits"] as {
+      properties: { tokenBudget: unknown; wallTimeMs: unknown }
+    }
+    expect(revisionSchema).toEqual({ $ref: "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64" })
+    expect(definition.properties.revision).toMatchObject({ $ref: "#/$defs/Horizon.AgentProfileV2.Revision" })
+    const instructionSchema = definition.properties.instructions as { properties: { maxCompiledTokens: unknown } }
+    const contextSchema = definition.properties.context as { properties: { maxParentHistoryTokens: unknown } }
+    expect(instructionSchema.properties.maxCompiledTokens).toEqual({ $ref: "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64" })
+    expect(contextSchema.properties.maxParentHistoryTokens).toMatchObject({
+      anyOf: [{ $ref: "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64" }, { type: "null" }],
+    })
+    expect(definition.properties.limits).toMatchObject({ $ref: "#/$defs/Horizon.AgentProfileV2.Limits" })
+    expect(limitsSchema.properties.tokenBudget).toMatchObject({ anyOf: [{ $ref: "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64" }, { type: "null" }] })
+    expect(limitsSchema.properties.wallTimeMs).toMatchObject({ anyOf: [{ $ref: "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64" }, { type: "null" }] })
+  })
+
   test("resolves only the pinned revision and exact provider, model, harness, and supported wire", () => {
     const decoded = Schema.decodeUnknownSync(AgentProfile.AgentProfileV2)(profile as unknown)
     const selected = { providerId: "local", modelId: "small", harness: "native-minimal", wireApi: "chat_completions" as const }
@@ -136,7 +184,7 @@ describe("AgentProfileV2 schema and safe resolution", () => {
     const resolved = AgentProfile.resolveProfile(options)
     expect(resolved.status).toBe("available")
     if (resolved.status === "available") expect(resolved.selection).toEqual(selected)
-    expect(AgentProfile.resolveProfile({ ...options, trustedRevision: { ...expected, revision: Schema.decodeUnknownSync(AgentProfile.Revision)(2) } })).toMatchObject({ status: "unavailable", reason: "revision_mismatch" })
+    expect(AgentProfile.resolveProfile({ ...options, trustedRevision: { ...expected, revision: Schema.decodeUnknownSync(AgentProfile.Revision)("2") } })).toMatchObject({ status: "unavailable", reason: "revision_mismatch" })
     expect(AgentProfile.resolveProfile({ ...options, selected: { ...selected, modelId: "other" } })).toMatchObject({ status: "unavailable", reason: "selection_mismatch" })
     expect(AgentProfile.resolveProfile({ ...options, selected: { ...selected, wireApi: "responses" } })).toMatchObject({ status: "unavailable", reason: "wire_unsupported" })
     const alteredDigest = Schema.decodeUnknownSync(Composition.Digest)(`blake3:${"a".repeat(64)}`)

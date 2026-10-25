@@ -67,12 +67,14 @@ export const projectRepoIntelGenerationCacheObservation = (input: {
   }
 
   const expiresAtUnixMs = Date.parse(input.generation.expiresAt)
+  const coverageFiles = Number(input.generation.coverage.files)
+  const coverageBytes = Number(input.generation.coverage.bytes)
   if (
     !Number.isFinite(expiresAtUnixMs) ||
     expiresAtUnixMs <= input.observedAtUnixMs ||
     expiresAtUnixMs - input.observedAtUnixMs > 30_000 ||
-    input.generation.coverage.files > 4096 ||
-    input.generation.coverage.bytes > 67_108_864
+    !Number.isSafeInteger(coverageFiles) || coverageFiles < 0 || coverageFiles > 4096 ||
+    !Number.isSafeInteger(coverageBytes) || coverageBytes < 0 || coverageBytes > 67_108_864
   ) {
     return undefined
   }
@@ -96,8 +98,8 @@ export const projectRepoIntelGenerationCacheObservation = (input: {
       ttlMs: expiresAtUnixMs - input.observedAtUnixMs,
     },
     sourceSnapshot: {
-      fileCount: input.generation.coverage.files,
-      observedBytes: input.generation.coverage.bytes,
+      fileCount: coverageFiles,
+      observedBytes: coverageBytes,
       maxFiles: 4096,
       maxObservedBytes: 67_108_864,
     },

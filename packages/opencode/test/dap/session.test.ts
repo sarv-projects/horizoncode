@@ -172,12 +172,26 @@ describe("dap.session lifecycle", () => {
       attemptID: "attempt-1",
       ownerEpoch: "7",
       expectedManagedRevision: "9",
+      requestSequence: "1",
+      requestID: "request-1",
+      contextSelectionDigest: "blake3:" + "9".repeat(64),
       locationID: "location-1",
       sessionID: "session-1",
       workspaceRevision: authority.workspaceRevision,
       effectiveMaxTokens: "100000",
       remainingTokens: "100000",
       delegationBindingDigest: "blake3:" + "e".repeat(64),
+      permissionScopeDigest: "blake3:" + "a".repeat(64),
+      worktreeTarget: {
+        worktreeID: "worktree-1",
+        worktreeBaseRevision: "blake3:" + "5".repeat(64),
+        worktreePoolRevision: "3",
+        locationID: "location-1",
+        workspaceID: "ws-1",
+        workspaceRef: "worktree-1",
+        canonicalRoot: "/workspace/ws-1",
+        workspaceRevision: authority.workspaceRevision,
+      },
     }
     const session = makeSessions().create({ ...created(), managedAttemptScope })
     expect(session.managedAttemptScope).toEqual(managedAttemptScope)
@@ -382,6 +396,20 @@ describe("dap.session lifecycle", () => {
     expect(sessions.requireOwned(newRef, authority).generation).toBe(2)
   })
 
+  test("local session close is bookkeeping and does not unlock DAP effects", () => {
+    const sessions = makeSessions()
+    sessions.create(created())
+    const ref = { sessionID: "session-1", generation: 1 }
+
+    expect(debugEffectRouteAvailable()).toBe(false)
+    sessions.activateOwned(ref, authority)
+    expect(sessions.terminateOwned(ref, authority).state).toBe("terminated")
+    expect(capture<DapSession.StaleRefError>(() => sessions.requireOwned(ref, authority)).reason).toBe(
+      "session_terminated",
+    )
+    expect(debugEffectRouteAvailable()).toBe(false)
+  })
+
   test("crashing and restarting one adapter does not stale another session's object refs", () => {
     const sessions = makeSessions()
     sessions.create(created())
@@ -526,12 +554,26 @@ describe("dap.session canonical Guard effect route", () => {
       attemptID: "attempt-1",
       ownerEpoch: "7",
       expectedManagedRevision: "9",
+      requestSequence: "1",
+      requestID: "request-1",
+      contextSelectionDigest: "blake3:" + "9".repeat(64),
       locationID: "location-1",
       sessionID: "session-1",
       workspaceRevision: authority.workspaceRevision,
       effectiveMaxTokens: "100000",
       remainingTokens: "100000",
       delegationBindingDigest: "blake3:" + "e".repeat(64),
+      permissionScopeDigest: "blake3:" + "a".repeat(64),
+      worktreeTarget: {
+        worktreeID: "worktree-1",
+        worktreeBaseRevision: "blake3:" + "5".repeat(64),
+        worktreePoolRevision: "3",
+        locationID: "location-1",
+        workspaceID: "ws-1",
+        workspaceRef: "worktree-1",
+        canonicalRoot: "/workspace/ws-1",
+        workspaceRevision: authority.workspaceRevision,
+      },
     }
     const requests: DebugEffectRequest[] = []
     setDebugEffectRoute({

@@ -181,12 +181,10 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
                   ),
                 ),
                 Effect.mapError((error) => {
-                  if (error._tag === "Integration.Authorization") {
-                    return new InvalidRequestError({
-                      message: "Authentication failed",
-                      kind: "integration_authorization",
-                    })
-                  }
+                  // The former `Integration.Authorization` tag branch was
+                  // unreachable: this union only carries ConflictError |
+                  // SessionNotFoundError | Error, so `_tag` can never equal it
+                  // (TS2367). Runtime behaviour is unchanged by removing it.
                   if (error instanceof SessionSupervisorError) {
                     return mapSupervisorError(error, ctx.params.sessionID)
                   }
@@ -306,14 +304,26 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
         "session.revert.commit",
         Effect.fn(function* (ctx) {
           yield* session.revert.commit(ctx.params.sessionID).pipe(
-            Effect.catchTag(
-              "Session.NotFoundError",
-              (error) =>
-                new SessionNotFoundError({
+            Effect.mapError((error) => {
+              if (error._tag === "Session.NotFoundError")
+                return new SessionNotFoundError({
                   sessionID: error.sessionID,
                   message: `Session not found: ${error.sessionID}`,
-                }),
-            ),
+                })
+              // Fail-closed principal denial raised by the Core seam: the
+              // `session.revert.*` family must deny identically, so this
+              // returns exactly what `mapSupervisorError` returns for
+              // `stage === "authorization"` (its `:26` arm) — a 403 carrying
+              // the verbatim Core reason.
+              //
+              // `mapSupervisorError` itself cannot be called here: its declared
+              // return is `ForbiddenError | ConflictError | ServiceUnavailableError`
+              // and the `ConflictError` (409, `stage: "ownership"`) arm is neither
+              // producible by `revert.commit` nor declared on this endpoint, so
+              // it does not typecheck against the authorized
+              // `error: [SessionNotFoundError, ForbiddenError]`.
+              return new ForbiddenError({ message: error.message })
+            }),
           )
           return HttpApiSchema.NoContent.make()
         }),

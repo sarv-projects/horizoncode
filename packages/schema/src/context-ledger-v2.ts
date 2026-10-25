@@ -1,5 +1,6 @@
 /** Read-only, request-bound projection of the model-visible context. */
 import { Schema } from "effect"
+import { ContextCompilePolicyV1 } from "./context-compile-policy-v1"
 import { ContextSelectionV1 } from "./context-selection-v1"
 import { SessionID } from "./session-id"
 
@@ -62,6 +63,13 @@ export const ContextLedgerV2 = Schema.Struct({
   entries: Schema.Array(ContextLedgerEntryV2).check(Schema.isMaxLength(512)),
   completeness: Schema.Literals(["complete", "partial"]),
   partialReason: Schema.optional(Schema.String.check(Schema.isNonEmpty()).check(Schema.isMaxLength(256))),
+  /**
+   * §30.26 compile tier, bound into the ledger digest by Core. Optional to
+   * match the canonical `arch_V1/contracts-v2/context-ledger-v2.schema.json`
+   * (`compilePolicy` is not required); without this mirror field the strict
+   * typed decode strips or rejects the policy P3 attaches.
+   */
+  compilePolicy: Schema.optional(ContextCompilePolicyV1),
 }).check(Schema.makeFilter((ledger) => {
   if ((ledger.completeness === "partial") !== (ledger.partialReason !== undefined)) return "partial ledger completeness requires exactly one reason"
   if (ledger.lane === "managed" && ledger.contextSelection.attemptID === undefined) return "managed ledger requires an Attempt-bound ContextSelection"

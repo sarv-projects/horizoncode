@@ -2,9 +2,9 @@
 
 use horizoncode_kernel::messagepack::Value;
 use horizoncode_kernel::protocol::{
-    AuthenticatedPrincipalV1, CursorV1, FEATURE_EFFECTS_V2, KernelHelloV1,
-    KernelStartupStatusV1, RpcControlV1, RpcMessageV1, RpcOutcomeV1, RpcRequestV1,
-    RpcResponseV1, read_message, write_message,
+    AuthenticatedPrincipalV1, CursorV1, FEATURE_EFFECTS_V2, KernelHelloV1, KernelStartupStatusV1,
+    RpcControlV1, RpcMessageV1, RpcOutcomeV1, RpcRequestV1, RpcResponseV1, read_message,
+    write_message,
 };
 use horizoncode_kernel::unix_peer::{
     AuthenticatedUnixStream, UnixPeerPolicy, connect_authenticated,
@@ -28,15 +28,31 @@ struct TestDir(PathBuf);
 
 impl TestDir {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "hz-effects-process-{}-{}-{}",
+        // Keep the path short: the authenticated Unix socket beneath this
+        // directory must fit within SUN_LEN (108 bytes including the NUL) even
+        // with the kernel's `hz-kernel-<nonce>.sock` suffix on a repository-local
+        // TMPDIR. The base plus this child plus `state/` plus the longest fixture
+        // nonce (`effects_mixed_recovery_one`, 26 bytes) must stay <= 107 bytes,
+        // so the child name budget here is 12 bytes. A compact hex pid/counter
+        // keeps the full socket path inside that budget; the assertion below
+        // fails loudly if a future base path breaks the budget instead of
+        // surfacing as an opaque socket-bind error from the child kernel.
+        let name = format!(
+            "{:x}{:x}",
             std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
             NEXT.fetch_add(1, Ordering::Relaxed),
-        ));
+        );
+        assert!(
+            name.len() <= 12,
+            "fixture name {name:?} exceeds the SUN_LEN budget"
+        );
+        let base = std::env::temp_dir();
+        assert!(
+            base.as_os_str().len() + 1 + name.len() + 6 + 41 <= 107,
+            "TMPDIR {:?} is too long for the authenticated Unix socket budget",
+            base
+        );
+        let path = base.join(&name);
         fs::create_dir(&path).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
         Self(path)
@@ -73,6 +89,11 @@ impl HostProcess {
         // Production starts each host with a nonce-derived socket name, so a restarted host
         // never collides with the stale socket file left by its predecessor.
         let socket = state.join(format!("hz-kernel-{nonce}.sock"));
+        assert!(
+            socket.as_os_str().len() < 108,
+            "authenticated Unix socket path {} exceeds SUN_LEN",
+            socket.display()
+        );
         let host_exe = fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
         let kernel_exe = fs::canonicalize(env!("CARGO_BIN_EXE_hz-kernel")).unwrap();
         let mut child = TestProcess(
@@ -177,7 +198,21 @@ impl HostProcess {
             trace_id: format!("trace_effect_{id}"),
             body,
         };
-        write_message(&mut self.stream, &RpcMessageV1::Request(Box::new(request))).unwrap();
+        write_message(
+            &mut self.stream,
+            // Root direct-session admission resolves the permission mode against
+            // an authenticated Core subject (§14/DEC-V1-28); the same subject
+            // that registered the Location fronts every request on this
+            // channel, matching how production Core presents itself.
+            &RpcMessageV1::AuthenticatedRequest {
+                request: Box::new(request),
+                principal: AuthenticatedPrincipalV1::ServerAuth {
+                    subject: "effects-process-user".to_owned(),
+                },
+                context: None,
+            },
+        )
+        .unwrap();
         match read_message(&mut self.stream).unwrap() {
             Some(RpcMessageV1::Response(response)) => *response,
             other => panic!("expected host RPC response, got {other:?}"),
@@ -227,7 +262,12 @@ impl HostProcess {
         let response = self.request_server_auth(
             FEATURE_EFFECTS_V2,
             "register_location",
-            value_map([("canonicalRoot", string(root.to_str().unwrap()))]),
+            value_map([
+                ("canonicalRoot", string(root.to_str().unwrap())),
+                // Direct-session admission requires a Location bound to a
+                // registered workspace, not just a canonical root.
+                ("workspaceID", string("wrk_effects_process")),
+            ]),
             "effects-process-user",
         );
         assert_eq!(response.outcome, RpcOutcomeV1::Ok, "{:?}", response.error);
@@ -323,13 +363,38 @@ fn value_string<'a>(value: &'a Value, key: &str) -> &'a str {
     value
 }
 
+struct PreparedBatch {
+    challenge_id: Option<String>,
+    effect_id: String,
+    capability_lease_digest: Option<String>,
+}
+
+fn prepared_batch(body: &Value) -> PreparedBatch {
+    let effect_id = value_string(body, "effectID").to_owned();
+    match value_string(body, "status") {
+        "prepared" => PreparedBatch {
+            challenge_id: None,
+            effect_id,
+            capability_lease_digest: Some(
+                value_string(body, "capabilityLeaseDigest").to_owned(),
+            ),
+        },
+        "needs_approval" => PreparedBatch {
+            challenge_id: Some(value_string(body, "challengeID").to_owned()),
+            effect_id,
+            capability_lease_digest: None,
+        },
+        status => panic!("unexpected prepared effect status: {status}"),
+    }
+}
+
 fn prepare_write(
     host: &mut HostProcess,
     location: &str,
     batch: &str,
     path: &str,
     content: &str,
-) -> (String, String) {
+) -> PreparedBatch {
     let prepared = host.prepare(
         location,
         batch,
@@ -337,16 +402,27 @@ fn prepare_write(
         value_map([("path", string(path)), ("content", string(content))]),
     );
     assert_eq!(prepared.outcome, RpcOutcomeV1::Ok, "{:?}", prepared.error);
-    let body = prepared.body.unwrap();
-    assert_eq!(value_string(&body, "status"), "needs_approval");
-    (
-        value_string(&body, "challengeID").to_owned(),
-        value_string(&body, "effectID").to_owned(),
-    )
+    prepared_batch(prepared.body.as_ref().unwrap())
+}
+
+fn lease_for_prepared_write(
+    host: &mut HostProcess,
+    prepared: &PreparedBatch,
+    decision: &str,
+) -> String {
+    if let Some(lease) = &prepared.capability_lease_digest {
+        return lease.clone();
+    }
+    let approval = host.approve(
+        prepared.challenge_id.as_deref().expect("ASK has challenge"),
+        decision,
+    );
+    assert_eq!(approval.outcome, RpcOutcomeV1::Ok);
+    value_string(approval.body.as_ref().unwrap(), "capabilityLeaseDigest").to_owned()
 }
 
 #[test]
-fn hz_kernel_process_effects_require_guard_approval_and_settle_one_use_write_and_patch() {
+fn hz_kernel_process_effects_require_guard_lease_and_settle_one_use_write_and_patch() {
     let directory = TestDir::new();
     let state = directory.0.join("state");
     let workspace = directory.0.join("workspace");
@@ -356,7 +432,7 @@ fn hz_kernel_process_effects_require_guard_approval_and_settle_one_use_write_and
     let mut host = HostProcess::launch(&state, "effects_nonce", INCARNATION, true);
     let location = host.register_location(&workspace);
 
-    let (challenge, effect) = prepare_write(
+    let prepared = prepare_write(
         &mut host,
         &location,
         "write_batch",
@@ -364,16 +440,15 @@ fn hz_kernel_process_effects_require_guard_approval_and_settle_one_use_write_and
         "approved content",
     );
     assert!(!workspace.join("approved.txt").exists());
-    let unapproved = host.execute_write(&location, &effect, "missing-lease", "approved content");
-    assert_eq!(unapproved.outcome, RpcOutcomeV1::Error);
-    let approval = host.approve(&challenge, "allow_once");
-    assert_eq!(approval.outcome, RpcOutcomeV1::Ok);
-    assert_eq!(
-        value_string(approval.body.as_ref().unwrap(), "status"),
-        "approved"
+    let unapproved = host.execute_write(
+        &location,
+        &prepared.effect_id,
+        "missing-lease",
+        "approved content",
     );
-    let lease = value_string(approval.body.as_ref().unwrap(), "capabilityLeaseDigest").to_owned();
-    let settled = host.execute_write(&location, &effect, &lease, "approved content");
+    assert_eq!(unapproved.outcome, RpcOutcomeV1::Error);
+    let lease = lease_for_prepared_write(&mut host, &prepared, "allow_once");
+    let settled = host.execute_write(&location, &prepared.effect_id, &lease, "approved content");
     assert_eq!(settled.outcome, RpcOutcomeV1::Ok);
     assert_eq!(
         value_string(settled.body.as_ref().unwrap(), "status"),
@@ -398,13 +473,13 @@ fn hz_kernel_process_effects_require_guard_approval_and_settle_one_use_write_and
         .unwrap()
         .query_row(
             "SELECT content_digest FROM effect_challenges WHERE effect_id=?1",
-            [&effect],
+            [&prepared.effect_id],
             |row| row.get(0),
         )
         .unwrap();
     assert!(content_digest.starts_with("blake3:"));
     assert_eq!(
-        host.execute_write(&location, &effect, &lease, "approved content")
+        host.execute_write(&location, &prepared.effect_id, &lease, "approved content")
             .outcome,
         RpcOutcomeV1::Error
     );
@@ -423,12 +498,9 @@ fn hz_kernel_process_effects_require_guard_approval_and_settle_one_use_write_and
     );
     assert_eq!(prepared.outcome, RpcOutcomeV1::Ok);
     let body = prepared.body.unwrap();
-    assert_eq!(value_string(&body, "status"), "needs_approval");
-    let challenge = value_string(&body, "challengeID").to_owned();
-    let effect = value_string(&body, "effectID").to_owned();
-    let approved = host.approve(&challenge, "allow_once");
-    assert_eq!(approved.outcome, RpcOutcomeV1::Ok);
-    let lease = value_string(approved.body.as_ref().unwrap(), "capabilityLeaseDigest").to_owned();
+    let prepared = prepared_batch(&body);
+    let effect = prepared.effect_id.clone();
+    let lease = lease_for_prepared_write(&mut host, &prepared, "allow_once");
     let patched = host.request(
         FEATURE_EFFECTS_V2,
         "execute_patch",
@@ -459,7 +531,7 @@ fn hz_kernel_cancel_keeps_prepared_effect_for_unknown_reconciliation() {
     let mut host = HostProcess::launch(&state, "prepared_cancel_one", INCARNATION, true);
     let location = host.register_location(&workspace);
     let target = workspace.join("prepared-cancelled.txt");
-    let (challenge, effect) = prepare_write(
+    let prepared = prepare_write(
         &mut host,
         &location,
         "batch_prepared_cancel",
@@ -467,9 +539,8 @@ fn hz_kernel_cancel_keeps_prepared_effect_for_unknown_reconciliation() {
         "must-not-be-replayed",
     );
     assert!(!target.exists());
-    let approved = host.approve(&challenge, "allow_once");
-    assert_eq!(approved.outcome, RpcOutcomeV1::Ok, "{:?}", approved.error);
-    let lease = value_string(approved.body.as_ref().unwrap(), "capabilityLeaseDigest").to_owned();
+    let effect = &prepared.effect_id;
+    let lease = lease_for_prepared_write(&mut host, &prepared, "allow_once");
 
     // Model the durable crash window after PREPARED is recorded and before the
     // filesystem result is observed. Cancellation must leave this row alone so
@@ -481,8 +552,15 @@ fn hz_kernel_cancel_keeps_prepared_effect_for_unknown_reconciliation() {
     let db = Connection::open(&effect_db).unwrap();
     let content_digest: String = db
         .query_row(
-            "SELECT content_digest FROM effect_challenges WHERE challenge_id=?1",
-            [&challenge],
+            "SELECT content_digest FROM effect_challenges WHERE effect_id=?1",
+            [effect],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let challenge: String = db
+        .query_row(
+            "SELECT challenge_id FROM effect_challenges WHERE effect_id=?1",
+            [effect],
             |row| row.get(0),
         )
         .unwrap();
@@ -618,10 +696,8 @@ fn hz_kernel_process_patch_prevalidates_every_target_and_applies_approved_operat
             patch("duplicate.txt", Value::Nil, Some("Yg==")),
         ]),
     );
-    assert_eq!(
-        value_string(denied.body.as_ref().unwrap(), "status"),
-        "denied"
-    );
+    assert_eq!(denied.outcome, RpcOutcomeV1::Error);
+    assert!(denied.error.is_some(), "duplicate patch rejection is typed");
     assert!(!workspace.join("duplicate.txt").exists());
 
     let malformed = prepare_patch(
@@ -655,10 +731,8 @@ fn hz_kernel_process_patch_prevalidates_every_target_and_applies_approved_operat
         "stale",
         Value::Array(vec![patch("update.txt", string("d3Jvbmc="), Some("YQ=="))]),
     );
-    assert_eq!(
-        value_string(stale.body.as_ref().unwrap(), "status"),
-        "denied"
-    );
+    assert_eq!(stale.outcome, RpcOutcomeV1::Error);
+    assert!(stale.error.is_some(), "stale patch preimage is a typed denial");
     assert_eq!(fs::read(workspace.join("update.txt")).unwrap(), b"before");
     let oversized = prepare_patch(
         &mut host,
@@ -685,12 +759,15 @@ fn hz_kernel_process_patch_prevalidates_every_target_and_applies_approved_operat
             batch,
             Value::Array(vec![patch(path, string("b3V0c2lkZQ=="), Some("bmV3"))]),
         );
-        assert_eq!(
-            value_string(response.body.as_ref().unwrap(), "status"),
-            "denied"
-        );
+        assert_eq!(response.outcome, RpcOutcomeV1::Error);
+        assert!(response.error.is_some(), "unsafe patch target is a typed denial");
     }
     assert_eq!(fs::read(&outside).unwrap(), b"outside");
+    // Workspace-revision checks include the current tree. Remove the adversarial
+    // links after asserting their denial so the later independent valid patch
+    // starts from a stable, ordinary workspace snapshot.
+    fs::remove_file(workspace.join("symlink.txt")).unwrap();
+    fs::remove_file(workspace.join("hardlink.txt")).unwrap();
     let partial = prepare_patch(
         &mut host,
         "all_validate",
@@ -699,9 +776,11 @@ fn hz_kernel_process_patch_prevalidates_every_target_and_applies_approved_operat
             patch("hardlink.txt", string("b3V0c2lkZQ=="), Some("bmV3")),
         ]),
     );
+    assert_eq!(partial.outcome, RpcOutcomeV1::Ok);
     assert_eq!(
         value_string(partial.body.as_ref().unwrap(), "status"),
-        "denied"
+        "denied",
+        "unsafe member denies the whole patch before any member is applied"
     );
     assert!(!workspace.join("should-not-create.txt").exists());
 
@@ -722,15 +801,9 @@ fn hz_kernel_process_patch_prevalidates_every_target_and_applies_approved_operat
     ]);
     let prepared = prepare_patch(&mut host, "apply", operations.clone());
     assert_eq!(prepared.outcome, RpcOutcomeV1::Ok);
-    assert_eq!(
-        value_string(prepared.body.as_ref().unwrap(), "status"),
-        "needs_approval"
-    );
-    let challenge = value_string(prepared.body.as_ref().unwrap(), "challengeID").to_owned();
-    let effect = value_string(prepared.body.as_ref().unwrap(), "effectID").to_owned();
-    let approval = host.approve(&challenge, "allow_once");
-    assert_eq!(approval.outcome, RpcOutcomeV1::Ok);
-    let lease = value_string(approval.body.as_ref().unwrap(), "capabilityLeaseDigest").to_owned();
+    let prepared = prepared_batch(prepared.body.as_ref().unwrap());
+    let effect = prepared.effect_id.clone();
+    let lease = lease_for_prepared_write(&mut host, &prepared, "allow_once");
     let changed = host.request(
         FEATURE_EFFECTS_V2,
         "execute_patch",
@@ -849,28 +922,36 @@ fn hz_kernel_process_effects_fail_closed_for_unregistered_location_bad_paths_den
             "files.write",
             value_map([("path", string(path)), ("content", string("overwrite"))]),
         );
-        assert_eq!(response.outcome, RpcOutcomeV1::Ok);
-        assert_eq!(
-            value_string(response.body.as_ref().unwrap(), "status"),
-            "denied"
-        );
+        assert_eq!(response.outcome, RpcOutcomeV1::Error);
+        assert!(response.error.is_some());
     }
     assert_eq!(fs::read(&outside).unwrap(), b"outside");
+    // The current workspace-revision contract rejects a root containing any
+    // symlink; after proving the escape denial, remove the adversarial fixture
+    // before exercising the independent approval-denial case below.
+    fs::remove_file(workspace.join("escape.txt")).unwrap();
 
-    let (challenge, effect) = prepare_write(
+    let prepared = prepare_write(
         &mut host,
         &location,
         "denied",
         "denied.txt",
         "must remain absent",
     );
-    let denied = host.approve(&challenge, "deny");
-    assert_eq!(denied.outcome, RpcOutcomeV1::Ok);
-    assert_eq!(
-        value_string(denied.body.as_ref().unwrap(), "status"),
-        "denied"
+    let denied = host.execute_write(
+        &location,
+        &prepared.effect_id,
+        "not-issued",
+        "must remain absent",
     );
-    let replay = host.execute_write(&location, &effect, "not-issued", "must remain absent");
+    assert_eq!(denied.outcome, RpcOutcomeV1::Error);
+    assert!(denied.error.is_some());
+    let replay = host.execute_write(
+        &location,
+        &prepared.effect_id,
+        "not-issued",
+        "must remain absent",
+    );
     assert_eq!(replay.outcome, RpcOutcomeV1::Error);
     assert!(!workspace.join("denied.txt").exists());
 }
@@ -885,36 +966,34 @@ fn hz_kernel_process_effect_lease_is_fenced_across_restart_and_receipt_reconcile
     let workspace = fs::canonicalize(workspace).unwrap();
     let mut host = HostProcess::launch(&state, "effects_restart_one", INCARNATION, true);
     let location = host.register_location(&workspace);
-    let (challenge, effect) = prepare_write(
+    let prepared = prepare_write(
         &mut host,
         &location,
         "restart_batch",
         "restart.txt",
         "persisted approval",
     );
-    let approval = host.approve(&challenge, "allow_once");
-    assert_eq!(approval.outcome, RpcOutcomeV1::Ok);
-    let lease = value_string(approval.body.as_ref().unwrap(), "capabilityLeaseDigest").to_owned();
+    let lease = lease_for_prepared_write(&mut host, &prepared, "allow_once");
+    let effect = &prepared.effect_id;
     drop(host);
 
     let mut restarted = HostProcess::launch(&state, "effects_restart_two", INCARNATION, true);
     let location_after_restart = restarted.register_location(&workspace);
     assert_eq!(location_after_restart, location);
-    let stale = restarted.execute_write(&location, &effect, &lease, "persisted approval");
+    let stale = restarted.execute_write(&location, effect, &lease, "persisted approval");
     assert_eq!(stale.outcome, RpcOutcomeV1::Error);
     assert!(!workspace.join("restart.txt").exists());
 
-    let (challenge, effect) = prepare_write(
+    let prepared = prepare_write(
         &mut restarted,
         &location,
         "receipt_batch",
         "receipt.txt",
         "settled before disconnect",
     );
-    let approval = restarted.approve(&challenge, "allow_once");
-    assert_eq!(approval.outcome, RpcOutcomeV1::Ok);
-    let lease = value_string(approval.body.as_ref().unwrap(), "capabilityLeaseDigest").to_owned();
-    let executed = restarted.execute_write(&location, &effect, &lease, "settled before disconnect");
+    let lease = lease_for_prepared_write(&mut restarted, &prepared, "allow_once");
+    let effect = &prepared.effect_id;
+    let executed = restarted.execute_write(&location, effect, &lease, "settled before disconnect");
     assert_eq!(executed.outcome, RpcOutcomeV1::Ok);
     drop(restarted);
 
@@ -923,7 +1002,7 @@ fn hz_kernel_process_effect_lease_is_fenced_across_restart_and_receipt_reconcile
         FEATURE_EFFECTS_V2,
         "reconcile_effect",
         value_map([
-            ("effectID", string(&effect)),
+            ("effectID", string(effect)),
             ("locationID", string(&location)),
             ("sessionID", string(SESSION)),
         ]),
@@ -1001,11 +1080,9 @@ fn hz_kernel_process_mixed_patch_recovery_remains_unknown_without_replaying_miss
         value_map([("operations", operations.clone())]),
     );
     assert_eq!(prepared.outcome, RpcOutcomeV1::Ok);
-    let challenge = value_string(prepared.body.as_ref().unwrap(), "challengeID").to_owned();
-    let effect = value_string(prepared.body.as_ref().unwrap(), "effectID").to_owned();
-    let approval = host.approve(&challenge, "allow_once");
-    assert_eq!(approval.outcome, RpcOutcomeV1::Ok);
-    let lease = value_string(approval.body.as_ref().unwrap(), "capabilityLeaseDigest").to_owned();
+    let prepared = prepared_batch(prepared.body.as_ref().unwrap());
+    let effect = prepared.effect_id.clone();
+    let lease = lease_for_prepared_write(&mut host, &prepared, "allow_once");
     let executed = host.request(
         FEATURE_EFFECTS_V2,
         "execute_patch",
@@ -1088,12 +1165,9 @@ fn hz_kernel_process_patch_restart_classifies_all_before_all_after_and_mixed_wit
             value_map([("operations", operations.clone())]),
         );
         assert_eq!(prepared.outcome, RpcOutcomeV1::Ok);
-        let challenge = value_string(prepared.body.as_ref().unwrap(), "challengeID").to_owned();
-        let effect = value_string(prepared.body.as_ref().unwrap(), "effectID").to_owned();
-        let approved = host.approve(&challenge, "allow_once");
-        assert_eq!(approved.outcome, RpcOutcomeV1::Ok);
-        let lease =
-            value_string(approved.body.as_ref().unwrap(), "capabilityLeaseDigest").to_owned();
+        let prepared = prepared_batch(prepared.body.as_ref().unwrap());
+        let effect = prepared.effect_id.clone();
+        let lease = lease_for_prepared_write(host, &prepared, "allow_once");
         let executed = host.request(
             FEATURE_EFFECTS_V2,
             "execute_patch",
@@ -1134,20 +1208,15 @@ fn hz_kernel_process_patch_restart_classifies_all_before_all_after_and_mixed_wit
     assert_eq!(fs::read(workspace.join("mixed-one.txt")).unwrap(), b"one");
     assert_eq!(fs::read(workspace.join("mixed-two.txt")).unwrap(), b"two");
 
-    let (mismatch_challenge, mismatch_effect) = prepare_write(
+    let mismatch_prepared = prepare_write(
         &mut host,
         &location,
         "recover_target_mismatch",
         "target-mismatch.txt",
         "written once",
     );
-    let mismatch_approval = host.approve(&mismatch_challenge, "allow_once");
-    assert_eq!(mismatch_approval.outcome, RpcOutcomeV1::Ok);
-    let mismatch_lease = value_string(
-        mismatch_approval.body.as_ref().unwrap(),
-        "capabilityLeaseDigest",
-    )
-    .to_owned();
+    let mismatch_lease = lease_for_prepared_write(&mut host, &mismatch_prepared, "allow_once");
+    let mismatch_effect = &mismatch_prepared.effect_id;
     let mismatch_settled =
         host.execute_write(&location, &mismatch_effect, &mismatch_lease, "written once");
     assert_eq!(mismatch_settled.outcome, RpcOutcomeV1::Ok);
@@ -1378,16 +1447,15 @@ fn session_page_ack_wait_does_not_block_independent_host_effect_service() {
         true,
     );
     let location = host.register_location(&workspace);
-    let (challenge, effect) = prepare_write(
+    let prepared = prepare_write(
         &mut host,
         &location,
         "independent_batch",
         "while-page-pending.txt",
         "independent service",
     );
-    let approval = host.approve(&challenge, "allow_once");
-    assert_eq!(approval.outcome, RpcOutcomeV1::Ok);
-    let lease = value_string(approval.body.as_ref().unwrap(), "capabilityLeaseDigest").to_owned();
+    let lease = lease_for_prepared_write(&mut host, &prepared, "allow_once");
+    let effect = &prepared.effect_id;
     let settled = host.execute_write(&location, &effect, &lease, "independent service");
     assert_eq!(settled.outcome, RpcOutcomeV1::Ok);
     assert_eq!(

@@ -3,7 +3,11 @@ import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Database } from "@opencode-ai/core/database/database"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
-import { SessionSupervisor, SessionSupervisorError } from "@opencode-ai/core/session/supervisor"
+import {
+  SessionSupervisor,
+  SessionSupervisorError,
+  type Interface as SessionSupervisorInterface,
+} from "@opencode-ai/core/session/supervisor"
 import { Cause, Effect, Exit, Layer, LayerMap, Stream } from "effect"
 import { Agent } from "../../src/agent/agent"
 import { BackgroundJob } from "@/background/job"
@@ -49,6 +53,7 @@ const ref = {
   providerID: ProviderV2.ID.make("test"),
   modelID: ModelV2.ID.make("test-model"),
 }
+const model = { id: ref.modelID, providerID: ref.providerID } as Provider.Model
 
 const UNAVAILABLE = [
   "Task/subagent execution is unavailable: an authenticated Rust direct Attempt",
@@ -59,7 +64,7 @@ const PROFILE_CONFIG_DIR = path.join(Global.Path.tmp, `task-profile-test-${proce
 
 describe("managed Task token authority", () => {
   test("accepts Rust remainder only under the pinned AgentProfileV2 ceiling", () => {
-    expect(managedTaskTokenBudget({ effectiveMaxTokens: "1000", remainingTokens: "400", profileTokenBudget: 1200 }))
+    expect(managedTaskTokenBudget({ effectiveMaxTokens: "1000", remainingTokens: "400", profileTokenBudget: "1200" }))
       .toEqual({ effectiveMaxTokens: "1000", remainingTokens: "400" })
     expect(managedTaskTokenBudget({ effectiveMaxTokens: "1000", remainingTokens: "400" }))
       .toEqual({ effectiveMaxTokens: "1000", remainingTokens: "400" })
@@ -68,13 +73,14 @@ describe("managed Task token authority", () => {
   test("rejects exhaustion, forged increase, stale profile ceiling, and noncanonical values", () => {
     expect(() => managedTaskTokenBudget({ effectiveMaxTokens: "1000", remainingTokens: "0" })).toThrow()
     expect(() => managedTaskTokenBudget({ effectiveMaxTokens: "1000", remainingTokens: "1001" })).toThrow()
-    expect(() => managedTaskTokenBudget({ effectiveMaxTokens: "1000", remainingTokens: "500", profileTokenBudget: 999 })).toThrow()
+    expect(() => managedTaskTokenBudget({ effectiveMaxTokens: "1000", remainingTokens: "500", profileTokenBudget: "999" })).toThrow()
+    expect(managedTaskTokenBudget({ effectiveMaxTokens: "9007199254740993", remainingTokens: "9007199254740993", profileTokenBudget: "18446744073709551615" })).toMatchObject({ effectiveMaxTokens: "9007199254740993" })
     expect(() => managedTaskTokenBudget({ effectiveMaxTokens: "01", remainingTokens: "1" })).toThrow()
   })
 
   test("rejects recovery when the accepted Spec or immutable AgentProfileV2 pin changed", () => {
     const task = { taskID: "task-a", profile: { profileID: "agent-a", revision: "3", definitionDigest: RECEIPT, ownerBindingDigest: RECEIPT } }
-    const profileDefinition = { profileId: "agent-a", revision: 3 } as AgentProfileV2.AgentProfileDefinitionV2
+    const profileDefinition = { profileId: "agent-a", revision: "3" } as AgentProfileV2.AgentProfileDefinitionV2
     const handoff = { goalID: "goal-a", runID: "run-a", taskID: "task-a", acceptedSpecDigest: RECEIPT,
       profileID: "agent-a", profileRevision: "3", profileDigest: RECEIPT, profileDefinition }
     const input = { selection: { goalID: "goal-a", runID: "run-a", specDigest: RECEIPT }, task, handoff }
@@ -144,6 +150,31 @@ type FakeAttempt = {
 }
 
 /**
+ * Canonical `expectedRevision` parsing at the scripted kernel boundary. The
+ * decoded domain form is a canonical decimal string, the private wire form is a
+ * MessagePack uint64 (`bigint` in Core's `DirectAttemptScopeWireV1`), and
+ * callers may legitimately hold a safe number — one value, three JS spellings.
+ * Non-canonical spellings (`01`, `-1`, `1.0`, foreign objects) never coerce.
+ */
+function parseCanonicalRevision(value: unknown): bigint | null {
+  const text =
+    typeof value === "bigint"
+      ? value.toString()
+      : typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+        ? value.toString()
+        : typeof value === "string"
+          ? value
+          : undefined
+  return text !== undefined && /^(0|[1-9][0-9]*)$/.test(text) ? BigInt(text) : null
+}
+
+/** Exact canonical equivalence with the durable numeric Attempt revision. */
+function canonicalRevisionMatches(value: unknown, revision: number): boolean {
+  const parsed = parseCanonicalRevision(value)
+  return parsed !== null && parsed === BigInt(revision)
+}
+
+/**
  * Scripted stand-in for the authenticated `managed.v1` kernel boundary. It keeps the
  * one-use delivery-key discipline and returns the exact response shapes the real
  * kernel projects, so the Task tool's protocol usage and settlement bookkeeping are
@@ -189,6 +220,25 @@ class FakeManagedKernel {
       }
       const response = (attemptID: string, status: string) => {
         const attempt = self.attempts.get(attemptID)!
+        // The 15-field live scope both admit and snapshot project; the real
+        // kernel stamps `expectedRevision` with the current Attempt revision.
+        const directAttempt = {
+          attemptID,
+          parentSessionID: attempt.intent.parentSessionID,
+          childSessionID: attempt.intent.childSessionID,
+          profileID: String(attempt.intent.profileID),
+          profileRevision: String(attempt.intent.profileRevision),
+          profileDigest: String(attempt.intent.profileDigest),
+          ownerEpoch: 1,
+          expectedRevision: attempt.revision,
+          locationID: attempt.intent.locationID,
+          workspaceID: attempt.intent.workspaceID,
+          workspaceRevision: `blake3:${"b".repeat(64)}`,
+          capabilityDigest: attempt.intent.capabilityDigest,
+          permissionsDigest: attempt.intent.permissionsDigest,
+          budgetDigest: attempt.intent.budgetDigest,
+          scopeDigest: attempt.intent.scopeDigest,
+        }
         return {
           status,
           attemptID,
@@ -204,25 +254,11 @@ class FakeManagedKernel {
                 ownerEpoch: 1,
                 locationID: attempt.intent.locationID,
                 workspaceID: attempt.intent.workspaceID,
-                directAttempt: {
-                  attemptID,
-                  parentSessionID: attempt.intent.parentSessionID,
-                  childSessionID: attempt.intent.childSessionID,
-                  profileID: String(attempt.intent.profileID),
-                  profileRevision: String(attempt.intent.profileRevision),
-                  profileDigest: String(attempt.intent.profileDigest),
-                  ownerEpoch: 1,
-                  expectedRevision: 1,
-                  locationID: attempt.intent.locationID,
-                  workspaceID: attempt.intent.workspaceID,
-                  workspaceRevision: `blake3:${"b".repeat(64)}`,
-                  capabilityDigest: attempt.intent.capabilityDigest,
-                  permissionsDigest: attempt.intent.permissionsDigest,
-                  budgetDigest: attempt.intent.budgetDigest,
-                  scopeDigest: attempt.intent.scopeDigest,
-                },
+                directAttempt,
               }
-            : {}),
+            : status === "SNAPSHOT"
+              ? { directAttempt }
+              : {}),
         }
       }
       const claimDelivery = (key: string, logical: string) => {
@@ -291,7 +327,11 @@ class FakeManagedKernel {
         if (attempt.phase !== "EXECUTING") {
           return yield* Effect.fail(self.#error(operation, "managed_conflict", "direct Attempt is not executing"))
         }
-        if (body.expectedRevision !== attempt.revision) {
+        const expectedRevision = parseCanonicalRevision(body.expectedRevision)
+        if (expectedRevision === null) {
+          return yield* Effect.fail(self.#error(operation, "invalid_effect_request", "expectedRevision is not a canonical decimal revision"))
+        }
+        if (expectedRevision !== BigInt(attempt.revision)) {
           return yield* Effect.fail(self.#error(operation, "managed_conflict", "stale direct Attempt revision"))
         }
         attempt.phase = outcome === "succeeded" ? "SUCCEEDED" : outcome === "failed" ? "FAILED" : "UNKNOWN"
@@ -314,7 +354,7 @@ class FakeManagedKernel {
           typeof scope !== "object" || scope === null ||
           !Array.isArray(effectIDs) || effectIDs.length === 0 ||
           effectIDs.some((effectID) => typeof effectID !== "string") ||
-          BigInt(String((scope as Record<string, unknown>).expectedRevision)) !== BigInt(attempt.revision)
+          !canonicalRevisionMatches((scope as Record<string, unknown>).expectedRevision, attempt.revision)
         ) {
           return yield* Effect.fail(self.#error(operation, "managed_conflict", "invalid or stale direct effect binding"))
         }
@@ -344,7 +384,11 @@ class FakeManagedKernel {
           if (attempt.phase !== "EXECUTING") {
             return yield* Effect.fail(self.#error(operation, "managed_conflict", "direct Attempt is not executing"))
           }
-          if (body.expectedRevision !== attempt.revision) {
+          const expectedRevision = parseCanonicalRevision(body.expectedRevision)
+          if (expectedRevision === null) {
+            return yield* Effect.fail(self.#error(operation, "invalid_effect_request", "expectedRevision is not a canonical decimal revision"))
+          }
+          if (expectedRevision !== BigInt(attempt.revision)) {
             return yield* Effect.fail(self.#error(operation, "managed_conflict", "stale direct Attempt revision"))
           }
           attempt.phase = "CANCELLED"
@@ -386,15 +430,19 @@ const testSupervisorLayer = Layer.succeed(
     executeWrite: () => Effect.die("unexpected effect execution"),
     executePatch: () => Effect.die("unexpected patch execution"),
     runPatch: () => Effect.die("unexpected patch execution"),
-    requestHostKernel: (serviceID, operation, body, options) =>
-      activeKernel.handle(serviceID, operation, body, options as { readonly deliveryID?: string } | undefined),
+    requestHostKernel: (
+      serviceID: string,
+      operation: string,
+      body: Readonly<Record<string, unknown>>,
+      options?: { readonly deliveryID?: string },
+    ) => activeKernel.handle(serviceID, operation, body, options),
     hostOwnerEpoch: () =>
       activeKernel.hosted
         ? Effect.succeed(1)
         : Effect.fail(new SessionSupervisorError({ stage: "host-kernel", reason: "host kernel is unavailable" })),
     subscribeHostKernelEvents: () => Stream.die("unexpected host kernel event subscription"),
     watchSession: () => Effect.die("unexpected session watch"),
-  }),
+  } as unknown as SessionSupervisorInterface),
 )
 
 const testSupervisorNode = LayerNode.make({
@@ -418,6 +466,7 @@ const testAgentProfiles = Layer.succeed(
       ]),
     agentProfile: () => Effect.succeed(profile as unknown as AgentProfileV2.AgentProfileDefinitionV2),
     agentProfileSelector: () => Effect.succeed(profile as unknown as AgentProfileV2.AgentProfileDefinitionV2),
+    primaryAgentProfile: () => Effect.succeed(profile as unknown as AgentProfileV2.AgentProfileDefinitionV2),
   }),
 )
 
@@ -595,6 +644,123 @@ const baseContext = (chat: { id: SessionID }, assistant: { id: MessageID }, abor
   messages: [],
   metadata: () => Effect.void,
   ask: () => Effect.void,
+})
+
+describe("direct Attempt expectedRevision canonical forms", () => {
+  const admitBody = (attemptID: string): Record<string, unknown> => ({
+    attemptID,
+    parentSessionID: "ses_parent000000000000",
+    childSessionID: `ses_${attemptID}`,
+    agent: "general",
+    profileSelection: { profileId: "user.general", revision: 1 },
+    scopeDigest: `sha256:${"a".repeat(64)}`,
+    locationID: `loc_${"c".repeat(64)}`,
+    workspaceID: "workspace-1",
+    capabilityDigest: `sha256:${"b".repeat(64)}`,
+    permissionsDigest: `sha256:${"d".repeat(64)}`,
+    budgetDigest: `sha256:${"e".repeat(64)}`,
+  })
+
+  it.instance(
+    "cancel and settle accept string, number and bigint revisions and still fence stale or non-canonical values",
+    () => {
+      const kernel = freshKernel()
+      return Effect.gen(function* () {
+        const admit = (attemptID: string) =>
+          Effect.exit(
+            kernel.handle("managed.v1", "admit_direct_attempt", admitBody(attemptID), {
+              deliveryID: `admit-${attemptID}`,
+            }),
+          )
+        const cancelBody = (attemptID: string, expectedRevision: unknown) =>
+          Effect.exit(
+            kernel.handle(
+              "managed.v1",
+              "cancel_direct_attempt",
+              { attemptID, expectedRevision },
+              { deliveryID: `cancel-${attemptID}` },
+            ),
+          )
+        const settleBody = (attemptID: string, expectedRevision: unknown) =>
+          Effect.exit(
+            kernel.handle(
+              "managed.v1",
+              "settle_direct_attempt",
+              {
+                attemptID,
+                outcome: "succeeded",
+                expectedRevision,
+                resultDigest: `sha256:${"f".repeat(64)}`,
+              },
+              { deliveryID: `settle-${attemptID}` },
+            ),
+          )
+
+        // Consumer seam: raw kernel bodies in each canonical JS spelling.
+        for (const [attemptID, revision] of [
+          ["att_consumerstring01", "1"],
+          ["att_consumernumber01", 1],
+          ["att_consumerbigint01", 1n],
+        ] as const) {
+          expect(Exit.isSuccess(yield* admit(attemptID))).toBe(true)
+          expect(Exit.isSuccess(yield* cancelBody(attemptID, revision))).toBe(true)
+          expect(kernel.attempts.get(attemptID)!.phase).toBe("CANCELLED")
+        }
+        for (const [attemptID, revision] of [
+          ["att_settlestring0001", "1"],
+          ["att_settlenumber0001", 1],
+          ["att_settlebigint0001", 1n],
+        ] as const) {
+          expect(Exit.isSuccess(yield* admit(attemptID))).toBe(true)
+          expect(Exit.isSuccess(yield* settleBody(attemptID, revision))).toBe(true)
+          expect(kernel.attempts.get(attemptID)!.phase).toBe("SUCCEEDED")
+        }
+
+        // Producer seam: managed-control accepts every documented input form
+        // and always serializes the uint64 wire form (bigint) in the body.
+        for (const [attemptID, input] of [
+          ["att_producerstring001", "1"],
+          ["att_producernumber001", 1],
+          ["att_producerbigint001", 1n],
+        ] as const) {
+          expect(Exit.isSuccess(yield* admit(attemptID))).toBe(true)
+          const cancel = yield* Effect.exit(
+            ManagedControl.cancelDirectAttempt({ attemptID, expectedRevision: input }),
+          )
+          expect(Exit.isSuccess(cancel)).toBe(true)
+          expect(kernel.attempts.get(attemptID)!.phase).toBe("CANCELLED")
+          const recorded = [...kernel.calls].reverse().find((call) => call.operation === "cancel_direct_attempt")!
+          expect(typeof recorded.body.expectedRevision).toBe("bigint")
+        }
+        const settleAttemptID = "att_producersettle001"
+        expect(Exit.isSuccess(yield* admit(settleAttemptID))).toBe(true)
+        const settle = yield* Effect.exit(
+          ManagedControl.settleDirectAttempt({
+            attemptID: settleAttemptID,
+            outcome: "succeeded",
+            expectedRevision: "1",
+            resultDigest: `sha256:${"f".repeat(64)}`,
+          }),
+        )
+        expect(Exit.isSuccess(settle)).toBe(true)
+        expect(kernel.attempts.get(settleAttemptID)!.phase).toBe("SUCCEEDED")
+        const recordedSettle = [...kernel.calls].reverse().find((call) => call.operation === "settle_direct_attempt")!
+        expect(typeof recordedSettle.body.expectedRevision).toBe("bigint")
+
+        // A stale value is still a typed conflict — never retried blindly.
+        const staleID = "att_stalerevision0001"
+        expect(Exit.isSuccess(yield* admit(staleID))).toBe(true)
+        const stale = yield* cancelBody(staleID, 2)
+        expect(expectFailure(stale).message).toContain("stale direct Attempt revision")
+
+        // A non-canonical spelling is rejected as invalid, never coerced.
+        const invalidID = "att_noncanonical00001"
+        expect(Exit.isSuccess(yield* admit(invalidID))).toBe(true)
+        const invalid = yield* cancelBody(invalidID, "01")
+        expect(expectFailure(invalid).message).toContain("expectedRevision is not a canonical decimal revision")
+      })
+    },
+  )
 })
 
 describe("tool.task authenticated dispatch", () => {
@@ -893,7 +1059,7 @@ describe("tool.task authenticated dispatch", () => {
                     })
                     expect(directAttempt!.currentScope().expectedRevision).toBe("2")
                     return outputText({ info: assistant, text: "child output" })
-                  }),
+                  }).pipe(Effect.provide(testSupervisorLayer)),
               }),
             },
             metadata: (input) => Effect.sync(() => void metadata.push(input.metadata ?? {})),
@@ -929,7 +1095,7 @@ describe("tool.task authenticated dispatch", () => {
       const settle = kernel.calls.find((call) => call.operation === "settle_direct_attempt")!
       expect(String(settle.body.outcome)).toBe("succeeded")
       expect(String(settle.body.resultDigest)).toMatch(/^sha256:[a-f0-9]{64}$/)
-      expect(settle.body.expectedRevision).toBe(2)
+      expect(settle.body.expectedRevision).toBe(2n)
       expect(settle.deliveryID).toBe(`${admitted.deliveryID}.settle`)
 
       expect(kernel.attempts.get(String(admitted.body.attemptID))!.phase).toBe("SUCCEEDED")
@@ -1021,7 +1187,7 @@ describe("tool.task authenticated dispatch", () => {
       const attempt = [...kernel.attempts.values()][0]!
       expect(attempt.phase).toBe("CANCELLED")
       const cancel = kernel.calls.find((call) => call.operation === "cancel_direct_attempt")!
-      expect(cancel.body.expectedRevision).toBe(1)
+      expect(cancel.body.expectedRevision).toBe(1n)
       // A cancelled Attempt is never settled as success afterwards.
       expect(kernel.calls.some((call) => call.operation === "settle_direct_attempt")).toBe(false)
     })
@@ -1127,27 +1293,72 @@ describe("tool.task authenticated dispatch", () => {
     return Effect.gen(function* () {
       const sessions = yield* Session.Service
       const { chat, assistant } = yield* seed()
-      const originalPermission = Permission.fromConfig({ read: "deny" })
-      const child = yield* sessions.create({
-        parentID: chat.id,
-        agent: "general",
-        permission: originalPermission,
-        title: "Existing child",
-      })
       const tool = yield* TaskTool
       const def = yield* tool.init()
       let metadataUpdates = 0
 
+      // A real first dispatch is what writes the immutable profile/attempt pins
+      // into the child's metadata and admits the durable Attempt a resume must
+      // later snapshot — a hand-crafted child can never satisfy the authenticated
+      // live-Attempt match (`task_id does not identify...` /
+      // `resuming a child without its immutable AgentProfileV2 pin`).
+      const initial = yield* def
+        .execute(
+          { description: "initial task", prompt: "start the existing task", subagent_type: "general" },
+          {
+            ...baseContext(chat, assistant, new AbortController().signal),
+            extra: {
+              bypassAgentCheck: true,
+              promptOps: promptOps({
+                prompt: () => Effect.sync(() => outputText({ info: assistant, text: "child output" })),
+              }),
+            },
+          },
+        )
+        .pipe(Effect.exit)
+      expect(Exit.isSuccess(initial)).toBe(true)
+      const children = yield* sessions.children(chat.id)
+      expect(children).toHaveLength(1)
+      const child = children[0]!
+      const attemptID = String(kernel.calls[0]!.body.attemptID)
+      expect(String(kernel.calls[0]!.body.childSessionID)).toBe(child.id)
+
+      // Recreate the mid-flight state a real resume observes: the Attempt is
+      // admitted and still EXECUTING (pre-bind, no terminal receipt), and the
+      // one-use delivery keys are free for the resumed settlement.
+      const inFlight = kernel.attempts.get(attemptID)!
+      inFlight.phase = "EXECUTING"
+      inFlight.revision = 1
+      inFlight.receiptDigest = null
+      inFlight.resultDigest = null
+      inFlight.failureCode = null
+      inFlight.retryable = null
+      kernel.deliveries.clear()
+      // The existing child carries its own restriction on top of the derived
+      // rules; the resume merge must preserve it.
+      yield* sessions.setPermission({
+        sessionID: child.id,
+        permission: [
+          ...(child.permission ?? []),
+          { permission: "read", pattern: "*", action: "deny" as const },
+        ],
+      })
+
+      const callsBeforeResume = kernel.calls.length
+      let resumePrompts = 0
       const exit = yield* def
         .execute(
           { description: "resume child", prompt: "continue the existing task", subagent_type: "general", task_id: child.id },
           {
             ...baseContext(chat, assistant, new AbortController().signal),
-            agent: "plan",
             extra: {
               bypassAgentCheck: true,
               promptOps: promptOps({
-                prompt: () => Effect.sync(() => outputText({ info: assistant, text: "resumed output" })),
+                prompt: () =>
+                  Effect.sync(() => {
+                    resumePrompts += 1
+                    return outputText({ info: assistant, text: "resumed output" })
+                  }),
               }),
             },
             metadata: () => Effect.sync(() => metadataUpdates++),
@@ -1155,14 +1366,23 @@ describe("tool.task authenticated dispatch", () => {
         )
         .pipe(Effect.exit)
 
-      expect(Exit.isSuccess(exit)).toBe(true)
-      // The resume Attempt is admitted for the existing child session.
-      const admitted = kernel.calls[0]!
-      expect(admitted.operation).toBe("admit_direct_attempt")
-      expect(String(admitted.body.childSessionID)).toBe(child.id)
-      expect(kernel.calls.some((call) => call.operation === "settle_direct_attempt")).toBe(true)
-      expect(metadataUpdates).toBe(1)
-      // The existing child keeps its original deny rule.
+      // Fencing contract while `DIRECT_CHILD_TURN_RPC_ENABLED` stays false
+      // (resume/follow-up is closed until the integrated P1 Guard/lease path and
+      // P8 recovery acceptance — see the flag's own comment in
+      // `src/session/managed-control.ts`): the resume resolves the SAME Attempt
+      // through the authenticated live snapshot first — never admitting a
+      // replacement (the test's namesake boundary) — and is then refused by the
+      // direct-turn lifecycle gate before any prompt, settlement or child
+      // mutation. RE-ARM: when that flag opens, restore the successful-resume
+      // assertions (snapshot + settle + metadataUpdates === 1) recorded in
+      // `reports/phases/P2.md` continuation 30.
+      const error = expectFailure(exit)
+      expect(error.message).toContain("direct child turns remain disabled")
+      const resumeCalls = kernel.calls.slice(callsBeforeResume)
+      expect(resumeCalls.map((call) => call.operation)).toEqual(["direct_attempt_snapshot"])
+      expect(resumePrompts).toBe(0)
+      expect(kernel.calls.filter((call) => call.operation === "admit_direct_attempt")).toHaveLength(1)
+      // The existing child keeps its original deny rule, untouched by the refusal.
       const existing = yield* sessions.get(child.id)
       expect(existing.permission).toContainEqual({ permission: "read", pattern: "*", action: "deny" })
     })

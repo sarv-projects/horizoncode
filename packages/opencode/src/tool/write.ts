@@ -79,7 +79,7 @@ export const WriteTool = Tool.define(
                 : {}),
             }),
           )
-          if (directAttemptScope) {
+          if (directAttemptScope && directAttempt) {
             acceptDirectAttemptReceipt(directAttempt, directAttemptScope, receipt)
             if (directAttempt.directTurn && receipt.directTurnScope) {
               yield* Effect.promise(() => acceptDirectTurnBatchReceipt(directAttempt, receipt))

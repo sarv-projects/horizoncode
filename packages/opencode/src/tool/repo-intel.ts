@@ -377,8 +377,9 @@ export const repoStructureClientFromTransport = <R>(transport: RepoStructureTran
       }
       if (
         page.nodes.length > input.query.maxNodes ||
-        page.coverage.nodes !== page.nodes.length ||
-        page.coverage.bytes > input.query.maxBytes ||
+        BigInt(page.coverage.files) > 4096n ||
+        BigInt(page.coverage.nodes) !== BigInt(page.nodes.length) ||
+        BigInt(page.coverage.bytes) > BigInt(input.query.maxBytes) ||
         Buffer.byteLength(JSON.stringify(page), "utf8") > input.query.maxBytes
       ) {
         return yield* Effect.fail(structureTransportRejected("RepoIntel page exceeds or misreports query bounds"))
@@ -641,7 +642,7 @@ export interface RepoIntelCacheOwnerObservationV1 {
   readonly reclaimedBytes: null
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/RepoIntel") {}
+export class Service extends Context.Service<Service, Interface>()("@horizoncode/RepoIntel") {}
 
 interface CollectedFile {
   readonly rel: string

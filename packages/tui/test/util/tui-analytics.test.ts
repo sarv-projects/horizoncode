@@ -92,7 +92,7 @@ describe("TUI analytics projection", () => {
       },
     ])
 
-    expect(usage[0]).toBe("Recent assistant usage (last 2 Session messages): 2 messages · 1 provenance record · 1 without usable provenance")
+    expect(usage[0]).toBe("Recent usage (last 2 Session messages): 2 assistant messages · 2 provider steps/records · 1 provenance record · 1 unknown")
     expect(usage[1]).toContain("opencode/nemotron/free · request request-42")
     expect(usage[1]).toContain("in provider-reported:12")
     expect(usage[1]).toContain("reasoning unknown")
@@ -114,7 +114,7 @@ describe("TUI analytics projection", () => {
       ...Array.from({ length: 256 }, () => ({ role: "user" })),
     ]
     const rows = projectSessionUsage(messages)
-    expect(rows[0]).toBe("Recent assistant usage (last 256 Session messages): 0 messages · 0 provenance records · 0 without usable provenance")
+    expect(rows[0]).toBe("Recent usage (last 256 Session messages): 0 assistant messages · 0 provider steps/records · 0 provenance records · 0 unknown")
     expect(rows.join("\n")).not.toContain("old-provider")
   })
 
@@ -312,14 +312,6 @@ describe("TUI analytics projection", () => {
         observedAtMs: now,
       },
       {
-        metric: "ui.artifact.raster_cache_bytes",
-        value: 800,
-        unit: "bytes",
-        provenance: "measured",
-        source: "svg-raster-port",
-        observedAtMs: 1_500,
-      },
-      {
         metric: "ui.artifact.raster_completed",
         value: 4,
         unit: "events",
@@ -334,6 +326,14 @@ describe("TUI analytics projection", () => {
         provenance: "measured",
         source: "svg-raster-port",
         observedAtMs: now,
+      },
+      {
+        metric: "ui.artifact.raster_cache_bytes",
+        value: 800,
+        unit: "bytes",
+        provenance: "measured",
+        source: "svg-raster-port",
+        observedAtMs: 1_500,
       },
     ] as unknown as SvgRasterObservationV1[])
 

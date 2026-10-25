@@ -57,7 +57,7 @@ export const checkpointHandlers = HttpApiBuilder.group(InstanceHttpApi, "checkpo
       sessionID: string
       checkpointID: string
       mode: "FULL" | "SELECTED_PATHS"
-      selectedPaths: string[]
+      selectedPaths: readonly string[]
     }) {
       const instance = yield* InstanceState.context
       const authenticated = yield* Effect.serviceOption(TrustedPrincipalContext)
@@ -73,15 +73,21 @@ export const checkpointHandlers = HttpApiBuilder.group(InstanceHttpApi, "checkpo
         name: "CheckpointUnavailableError",
         data: { code: "checkpoint_unavailable", reason: error.message },
       })))
-      return yield* CheckpointControl.previewRestore({
+      const preview = yield* CheckpointControl.previewRestore({
         locationID, sessionID: input.sessionID, trustedPrincipal: authenticated.value.principal,
-      }, input).pipe(Effect.mapError((error) => {
+      }, { ...input, selectedPaths: [...input.selectedPaths] }).pipe(Effect.mapError((error) => {
         const data = { code: error.code, reason: error.reason }
         if (error.code === "authorization" || error.code === "missing_principal") return new ApiCheckpointForbiddenError({ name: "CheckpointForbiddenError", data })
         if (error.code === "managed_not_found" || error.code === "checkpoint_not_found") return new ApiCheckpointNotFoundError({ name: "CheckpointNotFoundError", data })
         if (error.code === "managed_unavailable" || error.code === "checkpoint_unavailable" || error.code === "capability_unavailable") return new ApiCheckpointUnavailableError({ name: "CheckpointUnavailableError", data })
         return new ApiCheckpointError({ name: "CheckpointError", data })
       }))
+      // Core normalizes an absent conflict path by omitting the key; the HTTP
+      // contract declares the HostKernel's always-present nullable path.
+      return {
+        ...preview,
+        conflicts: preview.conflicts.map((conflict) => ({ path: conflict.path ?? null, kind: conflict.kind })),
+      }
     })
 
     return handlers

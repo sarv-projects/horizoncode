@@ -108,7 +108,7 @@ impl VerifierInvocationV1 {
                 .binding
                 .attempt_scope_digest
                 .as_deref()
-                .is_none_or(|digest| !is_blake3_digest(digest))
+                .is_some_and(|digest| !is_blake3_digest(digest))
             || source.launch_spec.profile_digest != source.profile_digest
             || source.launch_spec.executable_digest.is_empty()
             || source.launch_spec.max_output_bytes == 0
@@ -196,7 +196,12 @@ impl VerifierInvocationV1 {
             reviewer_principal,
             execution_principal: binding.execution_principal.clone(),
             profile_id,
+            // Fixture facts are supplied by the trusted caller: the revision is
+            // the binding's own pinned revision (validated equal at admission)
+            // and the executable digest is the launch spec's recorded digest.
+            profile_revision: binding.profile_revision,
             profile_digest,
+            executable_digest: launch_spec.executable_digest.clone(),
             sandbox_policy_digest,
             test_identity,
             cancel_generation,
@@ -681,6 +686,8 @@ mod tests {
                 profile_revision: 1,
                 profile_digest: launch_spec.profile_digest.clone(),
                 executable_digest: launch_spec.executable_digest.clone(),
+                // Verifier executions never enable DAP evaluate; fail closed.
+                dap_allow_evaluate: false,
             },
             launch_spec,
         };

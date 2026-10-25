@@ -21,6 +21,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Restore pinned source without overwriting overlays
         run: python3 scripts/architecture/bootstrap_source.py --apply
+      - name: Install bubblewrap for fail-closed install-isolation tests
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap
+      - name: Release tooling syntax, failure paths, and dry-run packaging
+        run: |
+          bash -n install
+          python3 -m unittest scripts.release.test_release_readiness -v
+          python3 scripts/release/prepare_build.py \
+            --source "$PWD" \
+            --destination "$PWD/kernel/target/horizoncode-release/full-gate-dry-run" \
+            --dry-run
       - name: Install locked dependencies
         run: bun install --frozen-lockfile
       - name: Fast contract and source parity preflight

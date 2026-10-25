@@ -392,6 +392,61 @@ P1 acceptance, and BYO remains unavailable until one-use SecretBroker transport 
 - Reject/bound: no verbatim copying; HorizonCode-owned API, capability vector and fail-closed guarantees; placement of the crate is not authority.
 - Proof required: real confinement matrix + denial tests (crate suite 24/24 incl. 10 real confinement tests + capability record), ExecutionHost wiring evidence once P1-K integrates.
 
+### SRC-027 — OpenCode provider layer consumed as a standalone SDK (provider list, auth and connection recipes)
+
+- Source: opencode; status **PRESERVE_EXISTING + ADAPT (hardened boundaries)**; priority P6/P0.
+- User directive 2026-10-23: the provider list, credential storage, login/OAuth/device and API-key
+  flows, environment-source recipes, endpoint/header handling and bundled adapters come from this
+  layer. OMP pi-ai/pi-catalog is the registered alternative (SRC-016), not a second live source.
+- Pinned file: [packages/opencode/src/provider/provider.ts](https://github.com/anomalyco/opencode/blob/b1fe25ab5ecc9f9bc911a8a2e6a51565cc764322/packages/opencode/src/provider/provider.ts).
+- Pinned file: [packages/opencode/src/provider/transform.ts](https://github.com/anomalyco/opencode/blob/b1fe25ab5ecc9f9bc911a8a2e6a51565cc764322/packages/opencode/src/provider/transform.ts).
+- Pinned file: [packages/opencode/src/auth/index.ts](https://github.com/anomalyco/opencode/blob/b1fe25ab5ecc9f9bc911a8a2e6a51565cc764322/packages/opencode/src/auth/index.ts).
+- Pinned file: [packages/core/src/models-dev.ts](https://github.com/anomalyco/opencode/blob/b1fe25ab5ecc9f9bc911a8a2e6a51565cc764322/packages/core/src/models-dev.ts).
+- Extract **source and wiring**: provider registry/bundled adapters, display identities (`opencode`,
+  `opencode-go`), defaults, auth flows, connection recipes and metadata merge. Preserve Horizon
+  hardening: Guard/SecretBroker leases, exact route projection, bounded transport, fail-closed
+  credential rejection and UNKNOWN/no-replay semantics.
+- Local map: §20.16; `packages/opencode/src/provider/UPSTREAM.md`.
+- Update candidate (observed 2026-10-23; awaiting §20.16.3 adoption): dev head `43868389223f3553c6786c2f1cfa70a657f8a8bf` fetched
+  2026-10-23. The pinned revision above stays authoritative until the §20.16.3 procedure is executed
+  and the focused provider/auth/models-dev suites plus P6-PROVIDER-001..004 pass on the exact diff.
+
+### SRC-028 — Models.dev advisory metadata source
+
+- Source: models.dev metadata published for the OpenCode provider ecosystem; status
+  **REFERENCE_ONLY (runtime metadata, not source code)**; priority P6.
+- Runtime endpoint: `https://models.opencode.ai` → `/api.json` (already the `DEFAULT_SOURCE` in
+  `packages/core/src/models-dev.ts`). Project: [models.dev](https://models.dev), MIT.
+- Use: advisory model metadata only — ids, names, modalities, limits, status, costs, consumption and
+  provider request hints. Never route authority, never proof of endpoint health or free entitlement.
+- Provenance: each snapshot records source URL, retrieval time, SHA-256 digest and MIT attribution in
+  the existing sidecar. Startup attempts one bounded refresh; stale/offline falls back to the last
+  known-good cache and shows freshness rather than silently treating it as current.
+- Reject/bound: no second metadata source, no hidden paid catalog, no metadata-driven model switch,
+  no credential material in the snapshot. Acceptance: P6-PROVIDER-003/004.
+
+### SRC-029 — Session export/import (P3-11) transfer seam
+
+- Source: opencode; status **REUSE + ADAPTER**; priority P7 (transfer seam) with P6 command surface.
+- License: MIT top-level, `Copyright (c) 2025 opencode`.
+- **Revision caveat (recorded honestly):** these paths are **absent** at the primary pin
+  `b1fe25ab5ecc9f9bc911a8a2e6a51565cc764322`. They exist at the fetched update candidate
+  `43868389223f3553c6786c2f1cfa70a657f8a8bf` (2026-10-23), which was inspected read-only. Do not
+  attribute them to the primary pin; before copying any code, follow §42.3 with the exact candidate
+  file hashes and re-verify each callee at that same revision.
+- Candidate files at `4386838`:
+  `packages/core/src/session/transfer.ts` (export/import `Interface`, `ImportConflictError` 409,
+  `sanitize` family, `isSettled`, `makeGlobalNode(deps:[App,Bus,Database,Project,Session])`) and
+  `packages/schema/src/session-transfer.ts` (`SessionTransfer.Data = Session.Info + messages`).
+- Extract: transfer/sanitize algorithm, digest-bound two-phase preview→commit, 409-on-existing
+  conflict, own-JSON-only import. Local callees (Core Session store, project, bus, database) exist as
+  Horizon owners.
+- Reject/bound: **no URL/HTTP import** in V1 start; extend sanitizer to `horizonPrincipalOwner`,
+  provider/auth material and token-bearing tool output; no credential copy; no second Session writer
+  or merge — import creates a new Session through the existing create path; one owner per Session.
+- Local mapping and take-map: `repo_take/NOTES.md` §5; `reports/phases/P7.md` continuation 5.
+  Acceptance: §30.30 REL-N / §46 P3-11 rows. Command/ActionDescriptor surface stays P6-owned.
+
 ## 42.3 Mandatory upstream-to-Horizon implementation procedure
 
 1. **Authority first:** read adopted §17, §§01–05, 12–14, §20, §24 and §33 before a path is mutated. HorizonCode direct Core (OpenCode-derived) owns Session/Input/Message/Part/continuation; provider transport follows A-V2-27; Rust OwnerLog/Guard owns managed Goal/Run/Task/effects/evidence. Direct Sessions do NOT require a Goal.

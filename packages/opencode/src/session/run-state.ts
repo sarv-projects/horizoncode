@@ -23,7 +23,7 @@ export interface Interface {
   ) => Effect.Effect<SessionV1.WithParts, Session.BusyError | SessionSupervisorError>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/SessionRunState") {}
+export class Service extends Context.Service<Service, Interface>()("@horizoncode/SessionRunState") {}
 
 const layer = Layer.effect(
   Service,

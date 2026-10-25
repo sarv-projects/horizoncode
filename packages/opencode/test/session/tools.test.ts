@@ -9,7 +9,7 @@ import { Provider } from "@/provider/provider"
 import { Session } from "@/session/session"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { SessionProcessor } from "@/session/processor"
-import { SessionTools } from "@/session/tools"
+import { exposeCodingProfileToolIDsV1, SessionTools } from "@/session/tools"
 import { createToolBatchContext } from "@/session/tool-batch"
 import { Tool } from "@/tool/tool"
 import { ToolRegistry } from "@/tool/registry"
@@ -83,7 +83,9 @@ const layer = Layer.mergeAll(
         Effect.succeed<Tool.Def[]>([
           {
             id: "timing",
-            capability: { id: "diagnostic.timing", effectClass: "read_only" },
+            // This synthetic timing tool exercises tool-call state handling while
+            // using an existing canonical capability accepted by the Coding tier.
+            capability: { id: "tools.search", effectClass: "read_only" },
             description: "updates metadata more than once",
             parameters: Schema.Struct({}),
             jsonSchema: { type: "object", properties: {} },
@@ -114,6 +116,17 @@ const layer = Layer.mergeAll(
 )
 
 const it = testEffect(layer)
+
+it.effect("does not expose unclassified registry capabilities through the Coding profile", () =>
+  Effect.sync(() => {
+    expect(exposeCodingProfileToolIDsV1({
+      capabilities: [
+        { id: "diagnostic.timing", effectClass: "read_only" },
+        { id: "tools.search", effectClass: "read_only" },
+      ],
+    })).toEqual(["tools.search"])
+  }),
+)
 
 it.instance("projects the canonical question control without granting effect authority", () =>
   Effect.gen(function* () {
@@ -227,7 +240,7 @@ it.instance(
       if (!execute) throw new Error("timing tool is missing execute")
 
       const batch = createToolBatchContext()
-      batch.outcomes.set(callID, { status: "allowed", capabilityID: "diagnostic.timing" })
+      batch.outcomes.set(callID, { status: "allowed", capabilityID: "tools.search" })
 
       yield* Effect.promise(() =>
         execute(

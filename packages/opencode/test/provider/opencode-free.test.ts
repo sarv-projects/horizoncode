@@ -48,8 +48,9 @@ const catalog: Record<string, ModelsDev.Provider> = {
     id: "opencode",
     name: "OpenCode Default",
     env: ["OPENCODE_API_KEY"],
+    api: "https://opencode.ai/api",
     models: {
-      "big-pickle": catalogModel({ input: 0, output: 0, cache_read: 0, cache_write: 0 }),
+      "big-pickle": { ...catalogModel({ input: 0, output: 0, cache_read: 0, cache_write: 0 }), id: "big-pickle" },
       "mimo-v2.5-free": { ...catalogModel({ input: 0, output: 0, cache_read: 0, cache_write: 0 }), id: "mimo-v2.5-free" },
       "gpt-5": { ...catalogModel({ input: 1, output: 2 }), id: "gpt-5" },
       "claude-sonnet-4-5": { ...catalogModel({ input: 1, output: 2 }), id: "claude-sonnet-4-5" },
@@ -91,6 +92,10 @@ const auth = LayerNode.make({
       credentialRefsForProviders: () => Effect.succeed({}),
       revokeCredential: () => Effect.die("unused credential revoke in provider pricing fixture"),
       authorizeCredentialUse: () => Effect.die("unused provider credential lease in free-model fixture"),
+      dispatchAuthorizedSearchRequest: () => Effect.die("unused search dispatch in free-model fixture"),
+      dispatchAuthorizedManagedProviderRequest: () => Effect.die("unused managed dispatch in free-model fixture"),
+      createPinnedDirectProviderFetch: () => Effect.die("unused pinned fetch in free-model fixture"),
+      dispatchPinnedDirectProviderRequest: () => Effect.die("unused pinned direct dispatch in free-model fixture"),
     }),
   ),
   deps: [],
@@ -249,10 +254,21 @@ describe("opencode provider keyless free access", () => {
       yield* remove("OPENCODE_API_KEY")
       const provider = yield* Provider.Service
       const selected = yield* provider.getModel(ProviderV2.ID.opencode, ModelV2.ID.make("big-pickle"))
-      const language = (yield* provider.getLanguage(selected)) as unknown as {
+      // The pinned direct lane is the only sanctioned path that constructs the
+      // anonymous SDK request; legacy getLanguage stays fail-closed.
+      const { language, route } = yield* provider.getDirectLanguage({
+        model: selected,
+        harnessID: "native-rich",
+        fetch: globalThis.fetch,
+      })
+      // §30.26.9 producer: the pinned direct route carries its route-adapter
+      // prefix-cache capability (conservative "unknown" until §30.26.10
+      // real-route validation) for the context-compile resolver.
+      expect(route.prefixCacheSupport).toBe("unknown")
+      const config = (language as unknown as {
         config: { headers: () => Record<string, string> }
-      }
-      const headers = new Headers(language.config.headers())
+      }).config
+      const headers = new Headers(config.headers())
 
       expect(headers.get("authorization")).toBe("Bearer public")
     }),

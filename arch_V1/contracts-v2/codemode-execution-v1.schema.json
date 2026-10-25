@@ -424,7 +424,7 @@
     "wave-payloadBytes-equals-sum-of-call-argumentsBytes",
     "completed-result-has-all-waves-settled-with-receipts",
     "completed-zero-call-pure-computation-has-no-waves-totalCalls-zero-and-no-nested-receiptDigest;outer-helper-process-retains-its-ordinary-Guarded-process-effect-receipt",
-    "every-nonempty-result-with-only-known-terminal-call-outcomes-has-exact-per-call-receipts-and-ordered-aggregate-nested-receiptDigest-defined-in-12.21-as-BLAKE3-domain-horizoncode.codemode-receipts.v1-NUL-over-canonical-MessagePack-of-wave-call-ordered-callId-receiptRef-receiptDigest-tuples",
+    "every-nonempty-result-with-only-known-terminal-call-outcomes-has-exact-per-call-receipts-and-ordered-v2-wave-and-run-digests-over-canonical-MessagePack-tuples-[waveIndex,callIndex,callId,status,receiptKind,receiptRef,receiptDigest]-using-domains-horizoncode.codemode-wave-receipts.v2-NUL-and-horizoncode.codemode-receipts.v2-NUL",
     "execution-status-unknown-requires-an-unknown-callOutcome;completed-or-failed-or-cancelled-never-contains-an-unknown-callOutcome",
     "failed-or-cancelled-result-has-no-later-wave-after-first-non-settled-wave",
     "truncated-is-true-if-any-output-was-omitted-to-respect-aggregate-output-cap",

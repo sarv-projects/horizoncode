@@ -41,6 +41,10 @@ export type ConflictError = {
 export const isConflictError = (value: unknown): value is ConflictError =>
   typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "ConflictError"
 
+export type ForbiddenError = { readonly _tag: "ForbiddenError"; readonly message: string }
+export const isForbiddenError = (value: unknown): value is ForbiddenError =>
+  typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "ForbiddenError"
+
 export type ServiceUnavailableError = {
   readonly _tag: "ServiceUnavailableError"
   readonly message: string
@@ -48,14 +52,6 @@ export type ServiceUnavailableError = {
 }
 export const isServiceUnavailableError = (value: unknown): value is ServiceUnavailableError =>
   typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "ServiceUnavailableError"
-
-export type UnknownError = {
-  readonly _tag: "UnknownError"
-  readonly message: string
-  readonly ref?: string | undefined
-}
-export const isUnknownError = (value: unknown): value is UnknownError =>
-  typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "UnknownError"
 
 export type MessageNotFoundError = {
   readonly _tag: "MessageNotFoundError"
@@ -65,6 +61,14 @@ export type MessageNotFoundError = {
 }
 export const isMessageNotFoundError = (value: unknown): value is MessageNotFoundError =>
   typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "MessageNotFoundError"
+
+export type UnknownError = {
+  readonly _tag: "UnknownError"
+  readonly message: string
+  readonly ref?: string | undefined
+}
+export const isUnknownError = (value: unknown): value is UnknownError =>
+  typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "UnknownError"
 
 export type ProviderNotFoundError = {
   readonly _tag: "ProviderNotFoundError"
@@ -253,6 +257,7 @@ export type SessionsListOutput = {
       readonly messageID: string
       readonly partID?: string
       readonly snapshot?: string
+      readonly restoreFiles?: ReadonlyArray<string>
       readonly diff?: string
       readonly files?: ReadonlyArray<{
         readonly path: string
@@ -315,6 +320,7 @@ export type SessionsCreateOutput = {
       readonly messageID: string
       readonly partID?: string
       readonly snapshot?: string
+      readonly restoreFiles?: ReadonlyArray<string>
       readonly diff?: string
       readonly files?: ReadonlyArray<{
         readonly path: string
@@ -353,6 +359,7 @@ export type SessionsGetOutput = {
       readonly messageID: string
       readonly partID?: string
       readonly snapshot?: string
+      readonly restoreFiles?: ReadonlyArray<string>
       readonly diff?: string
       readonly files?: ReadonlyArray<{
         readonly path: string
@@ -501,6 +508,7 @@ export type SessionsStageOutput = {
     readonly messageID: string
     readonly partID?: string
     readonly snapshot?: string
+    readonly restoreFiles?: ReadonlyArray<string>
     readonly diff?: string
     readonly files?: ReadonlyArray<{
       readonly path: string
@@ -662,6 +670,70 @@ export type SessionsContextOutput = {
           readonly reasoning: number
           readonly cache: { readonly read: number; readonly write: number }
         }
+        readonly usageProvenance?: {
+          readonly providerID: string
+          readonly modelID: string
+          readonly operationID?: string
+          readonly requestID?: string
+          readonly cost:
+            | { readonly status: "provider-reported"; readonly value: number }
+            | {
+                readonly status: "measured"
+                readonly value: number
+                readonly measurementSource: "provider-billing-receipt-v1"
+                readonly evidenceRef: string
+              }
+            | {
+                readonly status: "estimated"
+                readonly value: number
+                readonly priceSource: string
+                readonly pricingRevision: string
+                readonly pricing: {
+                  readonly input: number
+                  readonly output: number
+                  readonly cacheRead: number
+                  readonly cacheWrite: number
+                }
+                readonly algorithm: "per-million-linear-v1"
+                readonly tokenInputs: {
+                  readonly input: number
+                  readonly output: number
+                  readonly reasoning: number
+                  readonly cacheRead: number
+                  readonly cacheWrite: number
+                }
+              }
+            | { readonly status: "unknown"; readonly value?: never }
+          readonly tokens: {
+            readonly input:
+              | { readonly status: "provider-reported"; readonly value: number }
+              | { readonly status: "measured"; readonly value: number }
+              | { readonly status: "estimated"; readonly value: number }
+              | { readonly status: "unknown"; readonly value?: never }
+            readonly output:
+              | { readonly status: "provider-reported"; readonly value: number }
+              | { readonly status: "measured"; readonly value: number }
+              | { readonly status: "estimated"; readonly value: number }
+              | { readonly status: "unknown"; readonly value?: never }
+            readonly reasoning:
+              | { readonly status: "provider-reported"; readonly value: number }
+              | { readonly status: "measured"; readonly value: number }
+              | { readonly status: "estimated"; readonly value: number }
+              | { readonly status: "unknown"; readonly value?: never }
+            readonly cache: {
+              readonly read:
+                | { readonly status: "provider-reported"; readonly value: number }
+                | { readonly status: "measured"; readonly value: number }
+                | { readonly status: "estimated"; readonly value: number }
+                | { readonly status: "unknown"; readonly value?: never }
+              readonly write:
+                | { readonly status: "provider-reported"; readonly value: number }
+                | { readonly status: "measured"; readonly value: number }
+                | { readonly status: "estimated"; readonly value: number }
+                | { readonly status: "unknown"; readonly value?: never }
+            }
+          }
+        }
         readonly error?: { readonly type: "unknown"; readonly message: string }
       }
     | {
@@ -806,6 +878,251 @@ export type SessionsHistoryOutput = {
     | {
         readonly id: string
         readonly metadata?: { readonly [x: string]: JsonValue }
+        readonly type: "session.import.restored"
+        readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+        readonly location?: { readonly directory: string; readonly workspaceID?: string }
+        readonly data: {
+          readonly timestamp: number
+          readonly sessionID: string
+          readonly sourceDigest: string
+          readonly message:
+            | {
+                readonly id: string
+                readonly metadata?: { readonly [x: string]: JsonValue }
+                readonly time: { readonly created: number }
+                readonly type: "agent-switched"
+                readonly agent: string
+              }
+            | {
+                readonly id: string
+                readonly metadata?: { readonly [x: string]: JsonValue }
+                readonly time: { readonly created: number }
+                readonly type: "model-switched"
+                readonly model: { readonly id: string; readonly providerID: string; readonly variant?: string }
+              }
+            | {
+                readonly id: string
+                readonly metadata?: { readonly [x: string]: JsonValue }
+                readonly time: { readonly created: number }
+                readonly text: string
+                readonly files?: ReadonlyArray<{
+                  readonly uri: string
+                  readonly mime: string
+                  readonly name?: string
+                  readonly description?: string
+                  readonly source?: { readonly start: number; readonly end: number; readonly text: string }
+                }>
+                readonly agents?: ReadonlyArray<{
+                  readonly name: string
+                  readonly source?: { readonly start: number; readonly end: number; readonly text: string }
+                }>
+                readonly type: "user"
+              }
+            | {
+                readonly id: string
+                readonly metadata?: { readonly [x: string]: JsonValue }
+                readonly time: { readonly created: number }
+                readonly sessionID: string
+                readonly text: string
+                readonly type: "synthetic"
+              }
+            | {
+                readonly id: string
+                readonly metadata?: { readonly [x: string]: JsonValue }
+                readonly time: { readonly created: number }
+                readonly type: "system"
+                readonly text: string
+              }
+            | {
+                readonly id: string
+                readonly metadata?: { readonly [x: string]: JsonValue }
+                readonly time: { readonly created: number; readonly completed?: number }
+                readonly type: "shell"
+                readonly callID: string
+                readonly command: string
+                readonly output: string
+              }
+            | {
+                readonly id: string
+                readonly metadata?: { readonly [x: string]: JsonValue }
+                readonly time: { readonly created: number; readonly completed?: number }
+                readonly type: "assistant"
+                readonly agent: string
+                readonly model: { readonly id: string; readonly providerID: string; readonly variant?: string }
+                readonly content: ReadonlyArray<
+                  | { readonly type: "text"; readonly id: string; readonly text: string }
+                  | {
+                      readonly type: "reasoning"
+                      readonly id: string
+                      readonly text: string
+                      readonly providerMetadata?: { readonly [x: string]: { readonly [x: string]: JsonValue } }
+                      readonly time?: { readonly created: number; readonly completed?: number }
+                    }
+                  | {
+                      readonly type: "tool"
+                      readonly id: string
+                      readonly name: string
+                      readonly provider?: {
+                        readonly executed: boolean
+                        readonly metadata?: { readonly [x: string]: { readonly [x: string]: JsonValue } }
+                        readonly resultMetadata?: { readonly [x: string]: { readonly [x: string]: JsonValue } }
+                      }
+                      readonly state:
+                        | { readonly status: "pending"; readonly input: string }
+                        | {
+                            readonly status: "running"
+                            readonly input: { readonly [x: string]: JsonValue }
+                            readonly structured: { readonly [x: string]: JsonValue }
+                            readonly content: ReadonlyArray<
+                              | { readonly type: "text"; readonly text: string }
+                              | {
+                                  readonly type: "file"
+                                  readonly uri: string
+                                  readonly mime: string
+                                  readonly name?: string
+                                }
+                            >
+                          }
+                        | {
+                            readonly status: "completed"
+                            readonly input: { readonly [x: string]: JsonValue }
+                            readonly attachments?: ReadonlyArray<{
+                              readonly uri: string
+                              readonly mime: string
+                              readonly name?: string
+                              readonly description?: string
+                              readonly source?: { readonly start: number; readonly end: number; readonly text: string }
+                            }>
+                            readonly content: ReadonlyArray<
+                              | { readonly type: "text"; readonly text: string }
+                              | {
+                                  readonly type: "file"
+                                  readonly uri: string
+                                  readonly mime: string
+                                  readonly name?: string
+                                }
+                            >
+                            readonly outputPaths?: ReadonlyArray<string>
+                            readonly structured: { readonly [x: string]: JsonValue }
+                            readonly result?: JsonValue
+                          }
+                        | {
+                            readonly status: "error"
+                            readonly input: { readonly [x: string]: JsonValue }
+                            readonly content: ReadonlyArray<
+                              | { readonly type: "text"; readonly text: string }
+                              | {
+                                  readonly type: "file"
+                                  readonly uri: string
+                                  readonly mime: string
+                                  readonly name?: string
+                                }
+                            >
+                            readonly structured: { readonly [x: string]: JsonValue }
+                            readonly error: { readonly type: "unknown"; readonly message: string }
+                            readonly result?: JsonValue
+                          }
+                      readonly time: {
+                        readonly created: number
+                        readonly ran?: number
+                        readonly completed?: number
+                        readonly pruned?: number
+                      }
+                    }
+                >
+                readonly snapshot?: {
+                  readonly start?: string
+                  readonly end?: string
+                  readonly files?: ReadonlyArray<string>
+                }
+                readonly finish?: string
+                readonly cost?: number
+                readonly tokens?: {
+                  readonly input: number
+                  readonly output: number
+                  readonly reasoning: number
+                  readonly cache: { readonly read: number; readonly write: number }
+                }
+                readonly usageProvenance?: {
+                  readonly providerID: string
+                  readonly modelID: string
+                  readonly operationID?: string
+                  readonly requestID?: string
+                  readonly cost:
+                    | { readonly status: "provider-reported"; readonly value: number }
+                    | {
+                        readonly status: "measured"
+                        readonly value: number
+                        readonly measurementSource: "provider-billing-receipt-v1"
+                        readonly evidenceRef: string
+                      }
+                    | {
+                        readonly status: "estimated"
+                        readonly value: number
+                        readonly priceSource: string
+                        readonly pricingRevision: string
+                        readonly pricing: {
+                          readonly input: number
+                          readonly output: number
+                          readonly cacheRead: number
+                          readonly cacheWrite: number
+                        }
+                        readonly algorithm: "per-million-linear-v1"
+                        readonly tokenInputs: {
+                          readonly input: number
+                          readonly output: number
+                          readonly reasoning: number
+                          readonly cacheRead: number
+                          readonly cacheWrite: number
+                        }
+                      }
+                    | { readonly status: "unknown"; readonly value?: never }
+                  readonly tokens: {
+                    readonly input:
+                      | { readonly status: "provider-reported"; readonly value: number }
+                      | { readonly status: "measured"; readonly value: number }
+                      | { readonly status: "estimated"; readonly value: number }
+                      | { readonly status: "unknown"; readonly value?: never }
+                    readonly output:
+                      | { readonly status: "provider-reported"; readonly value: number }
+                      | { readonly status: "measured"; readonly value: number }
+                      | { readonly status: "estimated"; readonly value: number }
+                      | { readonly status: "unknown"; readonly value?: never }
+                    readonly reasoning:
+                      | { readonly status: "provider-reported"; readonly value: number }
+                      | { readonly status: "measured"; readonly value: number }
+                      | { readonly status: "estimated"; readonly value: number }
+                      | { readonly status: "unknown"; readonly value?: never }
+                    readonly cache: {
+                      readonly read:
+                        | { readonly status: "provider-reported"; readonly value: number }
+                        | { readonly status: "measured"; readonly value: number }
+                        | { readonly status: "estimated"; readonly value: number }
+                        | { readonly status: "unknown"; readonly value?: never }
+                      readonly write:
+                        | { readonly status: "provider-reported"; readonly value: number }
+                        | { readonly status: "measured"; readonly value: number }
+                        | { readonly status: "estimated"; readonly value: number }
+                        | { readonly status: "unknown"; readonly value?: never }
+                    }
+                  }
+                }
+                readonly error?: { readonly type: "unknown"; readonly message: string }
+              }
+            | {
+                readonly type: "compaction"
+                readonly reason: "auto" | "manual"
+                readonly summary: string
+                readonly recent: string
+                readonly id: string
+                readonly metadata?: { readonly [x: string]: JsonValue }
+                readonly time: { readonly created: number }
+              }
+        }
+      }
+    | {
+        readonly id: string
+        readonly metadata?: { readonly [x: string]: JsonValue }
         readonly type: "session.next.shell.started"
         readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
         readonly location?: { readonly directory: string; readonly workspaceID?: string }
@@ -856,12 +1173,76 @@ export type SessionsHistoryOutput = {
           readonly sessionID: string
           readonly assistantMessageID: string
           readonly finish: string
-          readonly cost: number
-          readonly tokens: {
+          readonly cost?: number
+          readonly tokens?: {
             readonly input: number
             readonly output: number
             readonly reasoning: number
             readonly cache: { readonly read: number; readonly write: number }
+          }
+          readonly usageProvenance?: {
+            readonly providerID: string
+            readonly modelID: string
+            readonly operationID?: string
+            readonly requestID?: string
+            readonly cost:
+              | { readonly status: "provider-reported"; readonly value: number }
+              | {
+                  readonly status: "measured"
+                  readonly value: number
+                  readonly measurementSource: "provider-billing-receipt-v1"
+                  readonly evidenceRef: string
+                }
+              | {
+                  readonly status: "estimated"
+                  readonly value: number
+                  readonly priceSource: string
+                  readonly pricingRevision: string
+                  readonly pricing: {
+                    readonly input: number
+                    readonly output: number
+                    readonly cacheRead: number
+                    readonly cacheWrite: number
+                  }
+                  readonly algorithm: "per-million-linear-v1"
+                  readonly tokenInputs: {
+                    readonly input: number
+                    readonly output: number
+                    readonly reasoning: number
+                    readonly cacheRead: number
+                    readonly cacheWrite: number
+                  }
+                }
+              | { readonly status: "unknown"; readonly value?: never }
+            readonly tokens: {
+              readonly input:
+                | { readonly status: "provider-reported"; readonly value: number }
+                | { readonly status: "measured"; readonly value: number }
+                | { readonly status: "estimated"; readonly value: number }
+                | { readonly status: "unknown"; readonly value?: never }
+              readonly output:
+                | { readonly status: "provider-reported"; readonly value: number }
+                | { readonly status: "measured"; readonly value: number }
+                | { readonly status: "estimated"; readonly value: number }
+                | { readonly status: "unknown"; readonly value?: never }
+              readonly reasoning:
+                | { readonly status: "provider-reported"; readonly value: number }
+                | { readonly status: "measured"; readonly value: number }
+                | { readonly status: "estimated"; readonly value: number }
+                | { readonly status: "unknown"; readonly value?: never }
+              readonly cache: {
+                readonly read:
+                  | { readonly status: "provider-reported"; readonly value: number }
+                  | { readonly status: "measured"; readonly value: number }
+                  | { readonly status: "estimated"; readonly value: number }
+                  | { readonly status: "unknown"; readonly value?: never }
+                readonly write:
+                  | { readonly status: "provider-reported"; readonly value: number }
+                  | { readonly status: "measured"; readonly value: number }
+                  | { readonly status: "estimated"; readonly value: number }
+                  | { readonly status: "unknown"; readonly value?: never }
+              }
+            }
           }
           readonly snapshot?: string
           readonly files?: ReadonlyArray<string>
@@ -891,6 +1272,7 @@ export type SessionsHistoryOutput = {
           readonly sessionID: string
           readonly assistantMessageID: string
           readonly textID: string
+          readonly sourceGeneration?: string
         }
       }
     | {
@@ -905,6 +1287,8 @@ export type SessionsHistoryOutput = {
           readonly assistantMessageID: string
           readonly textID: string
           readonly text: string
+          readonly sequence?: number
+          readonly sourceGeneration?: string
         }
       }
     | {
@@ -919,6 +1303,7 @@ export type SessionsHistoryOutput = {
           readonly assistantMessageID: string
           readonly callID: string
           readonly name: string
+          readonly sourceGeneration?: string
         }
       }
     | {
@@ -933,6 +1318,8 @@ export type SessionsHistoryOutput = {
           readonly assistantMessageID: string
           readonly callID: string
           readonly text: string
+          readonly sequence?: number
+          readonly sourceGeneration?: string
         }
       }
     | {
@@ -1026,6 +1413,7 @@ export type SessionsHistoryOutput = {
           readonly sessionID: string
           readonly assistantMessageID: string
           readonly reasoningID: string
+          readonly sourceGeneration?: string
           readonly providerMetadata?: { readonly [x: string]: { readonly [x: string]: JsonValue } }
         }
       }
@@ -1041,6 +1429,8 @@ export type SessionsHistoryOutput = {
           readonly assistantMessageID: string
           readonly reasoningID: string
           readonly text: string
+          readonly sequence?: number
+          readonly sourceGeneration?: string
           readonly providerMetadata?: { readonly [x: string]: { readonly [x: string]: JsonValue } }
         }
       }
@@ -1105,6 +1495,7 @@ export type SessionsHistoryOutput = {
             readonly messageID: string
             readonly partID?: string
             readonly snapshot?: string
+            readonly restoreFiles?: ReadonlyArray<string>
             readonly diff?: string
             readonly files?: ReadonlyArray<{
               readonly path: string
@@ -1264,6 +1655,251 @@ export type SessionsEventsOutput =
   | {
       readonly id: string
       readonly metadata?: { readonly [x: string]: unknown }
+      readonly type: "session.import.restored"
+      readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+      readonly location?: { readonly directory: string; readonly workspaceID?: string }
+      readonly data: {
+        readonly timestamp: number
+        readonly sessionID: string
+        readonly sourceDigest: string
+        readonly message:
+          | {
+              readonly id: string
+              readonly metadata?: { readonly [x: string]: unknown }
+              readonly time: { readonly created: number }
+              readonly type: "agent-switched"
+              readonly agent: string
+            }
+          | {
+              readonly id: string
+              readonly metadata?: { readonly [x: string]: unknown }
+              readonly time: { readonly created: number }
+              readonly type: "model-switched"
+              readonly model: { readonly id: string; readonly providerID: string; readonly variant?: string }
+            }
+          | {
+              readonly id: string
+              readonly metadata?: { readonly [x: string]: unknown }
+              readonly time: { readonly created: number }
+              readonly text: string
+              readonly files?: ReadonlyArray<{
+                readonly uri: string
+                readonly mime: string
+                readonly name?: string
+                readonly description?: string
+                readonly source?: { readonly start: number; readonly end: number; readonly text: string }
+              }>
+              readonly agents?: ReadonlyArray<{
+                readonly name: string
+                readonly source?: { readonly start: number; readonly end: number; readonly text: string }
+              }>
+              readonly type: "user"
+            }
+          | {
+              readonly id: string
+              readonly metadata?: { readonly [x: string]: unknown }
+              readonly time: { readonly created: number }
+              readonly sessionID: string
+              readonly text: string
+              readonly type: "synthetic"
+            }
+          | {
+              readonly id: string
+              readonly metadata?: { readonly [x: string]: unknown }
+              readonly time: { readonly created: number }
+              readonly type: "system"
+              readonly text: string
+            }
+          | {
+              readonly id: string
+              readonly metadata?: { readonly [x: string]: unknown }
+              readonly time: { readonly created: number; readonly completed?: number }
+              readonly type: "shell"
+              readonly callID: string
+              readonly command: string
+              readonly output: string
+            }
+          | {
+              readonly id: string
+              readonly metadata?: { readonly [x: string]: unknown }
+              readonly time: { readonly created: number; readonly completed?: number }
+              readonly type: "assistant"
+              readonly agent: string
+              readonly model: { readonly id: string; readonly providerID: string; readonly variant?: string }
+              readonly content: ReadonlyArray<
+                | { readonly type: "text"; readonly id: string; readonly text: string }
+                | {
+                    readonly type: "reasoning"
+                    readonly id: string
+                    readonly text: string
+                    readonly providerMetadata?: { readonly [x: string]: { readonly [x: string]: unknown } }
+                    readonly time?: { readonly created: number; readonly completed?: number }
+                  }
+                | {
+                    readonly type: "tool"
+                    readonly id: string
+                    readonly name: string
+                    readonly provider?: {
+                      readonly executed: boolean
+                      readonly metadata?: { readonly [x: string]: { readonly [x: string]: unknown } }
+                      readonly resultMetadata?: { readonly [x: string]: { readonly [x: string]: unknown } }
+                    }
+                    readonly state:
+                      | { readonly status: "pending"; readonly input: string }
+                      | {
+                          readonly status: "running"
+                          readonly input: { readonly [x: string]: unknown }
+                          readonly structured: { readonly [x: string]: unknown }
+                          readonly content: ReadonlyArray<
+                            | { readonly type: "text"; readonly text: string }
+                            | {
+                                readonly type: "file"
+                                readonly uri: string
+                                readonly mime: string
+                                readonly name?: string
+                              }
+                          >
+                        }
+                      | {
+                          readonly status: "completed"
+                          readonly input: { readonly [x: string]: unknown }
+                          readonly attachments?: ReadonlyArray<{
+                            readonly uri: string
+                            readonly mime: string
+                            readonly name?: string
+                            readonly description?: string
+                            readonly source?: { readonly start: number; readonly end: number; readonly text: string }
+                          }>
+                          readonly content: ReadonlyArray<
+                            | { readonly type: "text"; readonly text: string }
+                            | {
+                                readonly type: "file"
+                                readonly uri: string
+                                readonly mime: string
+                                readonly name?: string
+                              }
+                          >
+                          readonly outputPaths?: ReadonlyArray<string>
+                          readonly structured: { readonly [x: string]: unknown }
+                          readonly result?: unknown
+                        }
+                      | {
+                          readonly status: "error"
+                          readonly input: { readonly [x: string]: unknown }
+                          readonly content: ReadonlyArray<
+                            | { readonly type: "text"; readonly text: string }
+                            | {
+                                readonly type: "file"
+                                readonly uri: string
+                                readonly mime: string
+                                readonly name?: string
+                              }
+                          >
+                          readonly structured: { readonly [x: string]: unknown }
+                          readonly error: { readonly type: "unknown"; readonly message: string }
+                          readonly result?: unknown
+                        }
+                    readonly time: {
+                      readonly created: number
+                      readonly ran?: number
+                      readonly completed?: number
+                      readonly pruned?: number
+                    }
+                  }
+              >
+              readonly snapshot?: {
+                readonly start?: string
+                readonly end?: string
+                readonly files?: ReadonlyArray<string>
+              }
+              readonly finish?: string
+              readonly cost?: number
+              readonly tokens?: {
+                readonly input: number
+                readonly output: number
+                readonly reasoning: number
+                readonly cache: { readonly read: number; readonly write: number }
+              }
+              readonly usageProvenance?: {
+                readonly providerID: string
+                readonly modelID: string
+                readonly operationID?: string
+                readonly requestID?: string
+                readonly cost:
+                  | { readonly status: "provider-reported"; readonly value: number }
+                  | {
+                      readonly status: "measured"
+                      readonly value: number
+                      readonly measurementSource: "provider-billing-receipt-v1"
+                      readonly evidenceRef: string
+                    }
+                  | {
+                      readonly status: "estimated"
+                      readonly value: number
+                      readonly priceSource: string
+                      readonly pricingRevision: string
+                      readonly pricing: {
+                        readonly input: number
+                        readonly output: number
+                        readonly cacheRead: number
+                        readonly cacheWrite: number
+                      }
+                      readonly algorithm: "per-million-linear-v1"
+                      readonly tokenInputs: {
+                        readonly input: number
+                        readonly output: number
+                        readonly reasoning: number
+                        readonly cacheRead: number
+                        readonly cacheWrite: number
+                      }
+                    }
+                  | { readonly status: "unknown"; readonly value?: never }
+                readonly tokens: {
+                  readonly input:
+                    | { readonly status: "provider-reported"; readonly value: number }
+                    | { readonly status: "measured"; readonly value: number }
+                    | { readonly status: "estimated"; readonly value: number }
+                    | { readonly status: "unknown"; readonly value?: never }
+                  readonly output:
+                    | { readonly status: "provider-reported"; readonly value: number }
+                    | { readonly status: "measured"; readonly value: number }
+                    | { readonly status: "estimated"; readonly value: number }
+                    | { readonly status: "unknown"; readonly value?: never }
+                  readonly reasoning:
+                    | { readonly status: "provider-reported"; readonly value: number }
+                    | { readonly status: "measured"; readonly value: number }
+                    | { readonly status: "estimated"; readonly value: number }
+                    | { readonly status: "unknown"; readonly value?: never }
+                  readonly cache: {
+                    readonly read:
+                      | { readonly status: "provider-reported"; readonly value: number }
+                      | { readonly status: "measured"; readonly value: number }
+                      | { readonly status: "estimated"; readonly value: number }
+                      | { readonly status: "unknown"; readonly value?: never }
+                    readonly write:
+                      | { readonly status: "provider-reported"; readonly value: number }
+                      | { readonly status: "measured"; readonly value: number }
+                      | { readonly status: "estimated"; readonly value: number }
+                      | { readonly status: "unknown"; readonly value?: never }
+                  }
+                }
+              }
+              readonly error?: { readonly type: "unknown"; readonly message: string }
+            }
+          | {
+              readonly type: "compaction"
+              readonly reason: "auto" | "manual"
+              readonly summary: string
+              readonly recent: string
+              readonly id: string
+              readonly metadata?: { readonly [x: string]: unknown }
+              readonly time: { readonly created: number }
+            }
+      }
+    }
+  | {
+      readonly id: string
+      readonly metadata?: { readonly [x: string]: unknown }
       readonly type: "session.next.shell.started"
       readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
       readonly location?: { readonly directory: string; readonly workspaceID?: string }
@@ -1314,12 +1950,76 @@ export type SessionsEventsOutput =
         readonly sessionID: string
         readonly assistantMessageID: string
         readonly finish: string
-        readonly cost: number
-        readonly tokens: {
+        readonly cost?: number
+        readonly tokens?: {
           readonly input: number
           readonly output: number
           readonly reasoning: number
           readonly cache: { readonly read: number; readonly write: number }
+        }
+        readonly usageProvenance?: {
+          readonly providerID: string
+          readonly modelID: string
+          readonly operationID?: string
+          readonly requestID?: string
+          readonly cost:
+            | { readonly status: "provider-reported"; readonly value: number }
+            | {
+                readonly status: "measured"
+                readonly value: number
+                readonly measurementSource: "provider-billing-receipt-v1"
+                readonly evidenceRef: string
+              }
+            | {
+                readonly status: "estimated"
+                readonly value: number
+                readonly priceSource: string
+                readonly pricingRevision: string
+                readonly pricing: {
+                  readonly input: number
+                  readonly output: number
+                  readonly cacheRead: number
+                  readonly cacheWrite: number
+                }
+                readonly algorithm: "per-million-linear-v1"
+                readonly tokenInputs: {
+                  readonly input: number
+                  readonly output: number
+                  readonly reasoning: number
+                  readonly cacheRead: number
+                  readonly cacheWrite: number
+                }
+              }
+            | { readonly status: "unknown"; readonly value?: never }
+          readonly tokens: {
+            readonly input:
+              | { readonly status: "provider-reported"; readonly value: number }
+              | { readonly status: "measured"; readonly value: number }
+              | { readonly status: "estimated"; readonly value: number }
+              | { readonly status: "unknown"; readonly value?: never }
+            readonly output:
+              | { readonly status: "provider-reported"; readonly value: number }
+              | { readonly status: "measured"; readonly value: number }
+              | { readonly status: "estimated"; readonly value: number }
+              | { readonly status: "unknown"; readonly value?: never }
+            readonly reasoning:
+              | { readonly status: "provider-reported"; readonly value: number }
+              | { readonly status: "measured"; readonly value: number }
+              | { readonly status: "estimated"; readonly value: number }
+              | { readonly status: "unknown"; readonly value?: never }
+            readonly cache: {
+              readonly read:
+                | { readonly status: "provider-reported"; readonly value: number }
+                | { readonly status: "measured"; readonly value: number }
+                | { readonly status: "estimated"; readonly value: number }
+                | { readonly status: "unknown"; readonly value?: never }
+              readonly write:
+                | { readonly status: "provider-reported"; readonly value: number }
+                | { readonly status: "measured"; readonly value: number }
+                | { readonly status: "estimated"; readonly value: number }
+                | { readonly status: "unknown"; readonly value?: never }
+            }
+          }
         }
         readonly snapshot?: string
         readonly files?: ReadonlyArray<string>
@@ -1349,6 +2049,7 @@ export type SessionsEventsOutput =
         readonly sessionID: string
         readonly assistantMessageID: string
         readonly textID: string
+        readonly sourceGeneration?: string
       }
     }
   | {
@@ -1363,6 +2064,8 @@ export type SessionsEventsOutput =
         readonly assistantMessageID: string
         readonly textID: string
         readonly text: string
+        readonly sequence?: number
+        readonly sourceGeneration?: string
       }
     }
   | {
@@ -1377,6 +2080,7 @@ export type SessionsEventsOutput =
         readonly assistantMessageID: string
         readonly callID: string
         readonly name: string
+        readonly sourceGeneration?: string
       }
     }
   | {
@@ -1391,6 +2095,8 @@ export type SessionsEventsOutput =
         readonly assistantMessageID: string
         readonly callID: string
         readonly text: string
+        readonly sequence?: number
+        readonly sourceGeneration?: string
       }
     }
   | {
@@ -1484,6 +2190,7 @@ export type SessionsEventsOutput =
         readonly sessionID: string
         readonly assistantMessageID: string
         readonly reasoningID: string
+        readonly sourceGeneration?: string
         readonly providerMetadata?: { readonly [x: string]: { readonly [x: string]: unknown } }
       }
     }
@@ -1499,6 +2206,8 @@ export type SessionsEventsOutput =
         readonly assistantMessageID: string
         readonly reasoningID: string
         readonly text: string
+        readonly sequence?: number
+        readonly sourceGeneration?: string
         readonly providerMetadata?: { readonly [x: string]: { readonly [x: string]: unknown } }
       }
     }
@@ -1563,6 +2272,7 @@ export type SessionsEventsOutput =
           readonly messageID: string
           readonly partID?: string
           readonly snapshot?: string
+          readonly restoreFiles?: ReadonlyArray<string>
           readonly diff?: string
           readonly files?: ReadonlyArray<{
             readonly path: string
@@ -1740,6 +2450,70 @@ export type SessionsMessageOutput = {
           readonly reasoning: number
           readonly cache: { readonly read: number; readonly write: number }
         }
+        readonly usageProvenance?: {
+          readonly providerID: string
+          readonly modelID: string
+          readonly operationID?: string
+          readonly requestID?: string
+          readonly cost:
+            | { readonly status: "provider-reported"; readonly value: number }
+            | {
+                readonly status: "measured"
+                readonly value: number
+                readonly measurementSource: "provider-billing-receipt-v1"
+                readonly evidenceRef: string
+              }
+            | {
+                readonly status: "estimated"
+                readonly value: number
+                readonly priceSource: string
+                readonly pricingRevision: string
+                readonly pricing: {
+                  readonly input: number
+                  readonly output: number
+                  readonly cacheRead: number
+                  readonly cacheWrite: number
+                }
+                readonly algorithm: "per-million-linear-v1"
+                readonly tokenInputs: {
+                  readonly input: number
+                  readonly output: number
+                  readonly reasoning: number
+                  readonly cacheRead: number
+                  readonly cacheWrite: number
+                }
+              }
+            | { readonly status: "unknown"; readonly value?: never }
+          readonly tokens: {
+            readonly input:
+              | { readonly status: "provider-reported"; readonly value: number }
+              | { readonly status: "measured"; readonly value: number }
+              | { readonly status: "estimated"; readonly value: number }
+              | { readonly status: "unknown"; readonly value?: never }
+            readonly output:
+              | { readonly status: "provider-reported"; readonly value: number }
+              | { readonly status: "measured"; readonly value: number }
+              | { readonly status: "estimated"; readonly value: number }
+              | { readonly status: "unknown"; readonly value?: never }
+            readonly reasoning:
+              | { readonly status: "provider-reported"; readonly value: number }
+              | { readonly status: "measured"; readonly value: number }
+              | { readonly status: "estimated"; readonly value: number }
+              | { readonly status: "unknown"; readonly value?: never }
+            readonly cache: {
+              readonly read:
+                | { readonly status: "provider-reported"; readonly value: number }
+                | { readonly status: "measured"; readonly value: number }
+                | { readonly status: "estimated"; readonly value: number }
+                | { readonly status: "unknown"; readonly value?: never }
+              readonly write:
+                | { readonly status: "provider-reported"; readonly value: number }
+                | { readonly status: "measured"; readonly value: number }
+                | { readonly status: "estimated"; readonly value: number }
+                | { readonly status: "unknown"; readonly value?: never }
+            }
+          }
+        }
         readonly error?: { readonly type: "unknown"; readonly message: string }
       }
     | {
@@ -1911,6 +2685,70 @@ export type MessagesListOutput = {
           readonly output: number
           readonly reasoning: number
           readonly cache: { readonly read: number; readonly write: number }
+        }
+        readonly usageProvenance?: {
+          readonly providerID: string
+          readonly modelID: string
+          readonly operationID?: string
+          readonly requestID?: string
+          readonly cost:
+            | { readonly status: "provider-reported"; readonly value: number }
+            | {
+                readonly status: "measured"
+                readonly value: number
+                readonly measurementSource: "provider-billing-receipt-v1"
+                readonly evidenceRef: string
+              }
+            | {
+                readonly status: "estimated"
+                readonly value: number
+                readonly priceSource: string
+                readonly pricingRevision: string
+                readonly pricing: {
+                  readonly input: number
+                  readonly output: number
+                  readonly cacheRead: number
+                  readonly cacheWrite: number
+                }
+                readonly algorithm: "per-million-linear-v1"
+                readonly tokenInputs: {
+                  readonly input: number
+                  readonly output: number
+                  readonly reasoning: number
+                  readonly cacheRead: number
+                  readonly cacheWrite: number
+                }
+              }
+            | { readonly status: "unknown"; readonly value?: never }
+          readonly tokens: {
+            readonly input:
+              | { readonly status: "provider-reported"; readonly value: number }
+              | { readonly status: "measured"; readonly value: number }
+              | { readonly status: "estimated"; readonly value: number }
+              | { readonly status: "unknown"; readonly value?: never }
+            readonly output:
+              | { readonly status: "provider-reported"; readonly value: number }
+              | { readonly status: "measured"; readonly value: number }
+              | { readonly status: "estimated"; readonly value: number }
+              | { readonly status: "unknown"; readonly value?: never }
+            readonly reasoning:
+              | { readonly status: "provider-reported"; readonly value: number }
+              | { readonly status: "measured"; readonly value: number }
+              | { readonly status: "estimated"; readonly value: number }
+              | { readonly status: "unknown"; readonly value?: never }
+            readonly cache: {
+              readonly read:
+                | { readonly status: "provider-reported"; readonly value: number }
+                | { readonly status: "measured"; readonly value: number }
+                | { readonly status: "estimated"; readonly value: number }
+                | { readonly status: "unknown"; readonly value?: never }
+              readonly write:
+                | { readonly status: "provider-reported"; readonly value: number }
+                | { readonly status: "measured"; readonly value: number }
+                | { readonly status: "estimated"; readonly value: number }
+                | { readonly status: "unknown"; readonly value?: never }
+            }
+          }
         }
         readonly error?: { readonly type: "unknown"; readonly message: string }
       }
@@ -2535,6 +3373,14 @@ export type SkillsListOutput = {
     readonly slash?: boolean
     readonly location: string
     readonly content: string
+    readonly identity: {
+      readonly schemaVersion: 1
+      readonly id: string
+      readonly alias: string
+      readonly source: "builtin" | "project" | "user" | "remote"
+      readonly trust: "sealed_builtin" | "untrusted"
+      readonly revision: string
+    }
   }>
 }
 

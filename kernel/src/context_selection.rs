@@ -37,7 +37,7 @@ impl ContextSelectionV1 {
     pub(crate) fn decode_json(value: &serde_json::Value) -> Option<Self> {
         fn convert(value: &serde_json::Value) -> Option<Value> {
             Some(match value {
-                serde_json::Value::Null => Value::Nil,
+                serde_json::Value::Null => Value::Null,
                 serde_json::Value::Bool(value) => Value::Bool(*value),
                 serde_json::Value::Number(value) if value.is_u64() => Value::Unsigned(value.as_u64()?),
                 serde_json::Value::Number(value) if value.is_i64() => Value::Signed(value.as_i64()?),
@@ -138,9 +138,16 @@ impl ContextSelectionV1 {
             if source_authority != expected_authority || fields.get("included") != Some(&Value::Bool(true)) { return None }
             let trust = text_enum(fields, "trust", &["system", "user", "workspace", "external", "mixed"])?;
             let inclusion_reason = text_enum(fields, "inclusionReason", &[
-                "required", "current_request", "selected_tool", "profile", "instruction", "skill", "template", "artifact", "retrieval", "history", "summary",
+                "required", "current_request", "selected_tool", "profile", "instruction", "skill", "template", "artifact", "retrieval", "context_anchor", "history", "summary",
             ])?;
             if harness_revision.is_some() != (kind == "tool" && source_id.starts_with("toolset:")) { return None }
+            // Canonical `harnessRevision` bounds live on `$defs/source`
+            // (integer `1..=9007199254740991`), i.e. lane-independent, and the
+            // TS mirror enforces them on `ContextSelectionSourceV1` for every
+            // lane. Enforce here so the direct lane cannot accept `0` or
+            // `> MAX_SAFE_INTEGER`; the managed toolset branch below repeats the
+            // same bound on the value it feeds into the generation digest.
+            if harness_revision.is_some_and(|revision| !(1..=9_007_199_254_740_991).contains(&revision)) { return None }
             decoded.push(ContextSelectionSourceV1 { kind, source_id, source_revision, content_digest, source_authority, trust, inclusion_reason, harness_revision });
         }
         if (mode == "fresh" && has_session_message) || (mode != "fresh" && !has_session_message) { return None }
@@ -233,6 +240,9 @@ impl ContextSelectionV1 {
                 Value::Float(bits) => serde_json::Number::from_f64(f64::from_bits(*bits))
                     .map(serde_json::Value::Number).unwrap_or(serde_json::Value::Null),
                 Value::String(value) => serde_json::Value::String(value.clone()),
+                Value::Binary(bytes) => serde_json::Value::Array(
+                    bytes.iter().map(|byte| serde_json::Value::Number((*byte).into())).collect(),
+                ),
                 Value::Array(values) => serde_json::Value::Array(values.iter().map(convert).collect()),
                 Value::Map(values) => serde_json::Value::Object(values.iter().map(|(key, value)| (key.clone(), convert(value))).collect()),
             }
@@ -378,6 +388,24 @@ mod tests {
         serde_json::from_str(include_str!("../tests/fixtures/context-selection-v1.json")).unwrap()
     }
 
+    /// The exact domain-separated BLAKE3 generation digests the decoder
+    /// recomputes over `horizon.toolset.v1\0` + compact JSON
+    /// `{"harnessID":"horizon.native","harnessRevision":N,"members":[]}`.
+    /// Shared by the managed (CTX-006) and direct-lane bound matrices so both
+    /// tests pin identical fixture bytes.
+    const GENERATION_1: &str = "blake3:2e76c0a2b5575398bb1f0e70bbf5f9f952680e9f1320c45b9aebe87950dfcd41";
+    const GENERATION_MAX: &str = "blake3:3da61f55abff1515f9d596e7fc31fc7080060df9d71f5a86e9f993ec435d7ba8";
+    const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+
+    /// The canonical direct-lane selection fixture (§30.26 direct pins) with one
+    /// extra source appended, so both new matrices start from bytes that already
+    /// decode today.
+    fn direct_selection_with(extra: serde_json::Value) -> serde_json::Value {
+        let mut selection = ContextSelectionV1::test_fixture().json_value();
+        selection["sources"].as_array_mut().unwrap().push(extra);
+        selection
+    }
+
     #[test]
     fn strict_context_selection_decoder_binds_the_full_canonical_map() {
         let fixture = valid();
@@ -400,5 +428,206 @@ mod tests {
         assert!(ContextSelectionV1::decode(&value(omitted)).is_none());
         let mut malformed_session = fixture["selection"].clone(); malformed_session["sessionID"] = json!("session-without-prefix");
         assert!(ContextSelectionV1::decode(&value(malformed_session)).is_none());
+    }
+
+    /// CTX-006 (arch_V1/32 §32.45) — cross-runtime `harnessRevision` parity.
+    ///
+    /// The exact same fixture bytes the canonical
+    /// `arch_V1/contracts-v2/context-selection-v1.schema.json` (Draft 2020-12
+    /// validator) and the TS strict mirror
+    /// (`packages/schema/test/context-selection-v1.test.ts`) validate:
+    /// all three accept the positive u64 integer forms `1` and
+    /// `9_007_199_254_740_991`, and all three reject the decimal-string form,
+    /// `0`, a negative, and `> 9_007_199_254_740_991`. `sourceRevision` stays
+    /// a `DecimalU64` string and is asserted as a regression guard.
+    ///
+    /// The toolset `sourceRevision`/`contentDigest` are the exact domain-
+    /// separated BLAKE3 digests this decoder recomputes over
+    /// `horizon.toolset.v1\0` + compact JSON
+    /// `{"harnessID":"horizon.native","harnessRevision":N,"members":[]}`,
+    /// so a digest mismatch would fail the accept cases.
+    #[test]
+    fn ctx_006_harness_revision_matrix_matches_canonical_schema_and_ts_mirror() {
+        const MAX_SAFE: u64 = MAX_SAFE_INTEGER;
+        let fixture = |harness_revision: serde_json::Value, generation: &str| json!({
+            "schemaVersion": 1,
+            "lane": "managed",
+            "sessionID": "ses_01J9ABCDEF0123456789ABCDEFGH",
+            "requestID": "ctxreq_01J9ABCDEF0123456789ABCDEFGH",
+            "attemptID": "attempt_01J9ABCDEF0123456789ABCDEFGH",
+            "requestSequence": "1",
+            "mode": "conversation_slice",
+            "sourceRevision": "12",
+            "sources": [
+                {
+                    "kind": "session-message",
+                    "sourceID": "msg_01J9ABCDEF0123456789ABCDEFGH",
+                    "sourceRevision": "12",
+                    "contentDigest": format!("sha256:{}", "a".repeat(64)),
+                    "sourceAuthority": "session-store",
+                    "trust": "user",
+                    "included": true,
+                    "inclusionReason": "history"
+                },
+                {
+                    "kind": "provider-input",
+                    "sourceID": "ctxreq_01J9ABCDEF0123456789ABCDEFGH",
+                    "sourceRevision": "1",
+                    "contentDigest": format!("blake3:{}", "b".repeat(64)),
+                    "sourceAuthority": "core-prompt-compiler",
+                    "trust": "mixed",
+                    "included": true,
+                    "inclusionReason": "current_request"
+                },
+                {
+                    "kind": "managed-task",
+                    "sourceID": "task_01J9ABCDEF0123456789ABCDEFGH",
+                    "sourceRevision": "7",
+                    "contentDigest": format!("blake3:{}", "9".repeat(64)),
+                    "sourceAuthority": "managed-control",
+                    "trust": "workspace",
+                    "included": true,
+                    "inclusionReason": "required"
+                },
+                {
+                    "kind": "accepted-spec",
+                    "sourceID": "spec_01J9ABCDEF0123456789ABCDEFGH",
+                    "sourceRevision": "3",
+                    "contentDigest": format!("blake3:{}", "6".repeat(64)),
+                    "sourceAuthority": "managed-control",
+                    "trust": "workspace",
+                    "included": true,
+                    "inclusionReason": "required"
+                },
+                {
+                    "kind": "agent-profile",
+                    "sourceID": "profile_default",
+                    "sourceRevision": "1",
+                    "contentDigest": format!("blake3:{}", "c".repeat(64)),
+                    "sourceAuthority": "core-config",
+                    "trust": "system",
+                    "included": true,
+                    "inclusionReason": "profile"
+                },
+                {
+                    "kind": "tool",
+                    "sourceID": "toolset:horizon.native",
+                    "sourceRevision": generation.to_owned(),
+                    "contentDigest": generation.to_owned(),
+                    "sourceAuthority": "tool-registry",
+                    "trust": "system",
+                    "included": true,
+                    "inclusionReason": "selected_tool",
+                    "harnessRevision": harness_revision
+                }
+            ]
+        });
+        // Accept: exact positive u64 integer forms; the digests are
+        // recomputed by the decoder, so they must match the fixture bytes.
+        let decoded = ContextSelectionV1::decode(&value(fixture(json!(1), GENERATION_1)))
+            .expect("harnessRevision 1 must decode like the canonical schema and TS mirror");
+        assert_eq!(decoded.sources.last().unwrap().harness_revision, Some(1));
+        let decoded = ContextSelectionV1::decode(&value(fixture(json!(MAX_SAFE), GENERATION_MAX)))
+            .expect("harnessRevision at MAX_SAFE_INTEGER must decode like the canonical schema and TS mirror");
+        assert_eq!(decoded.sources.last().unwrap().harness_revision, Some(MAX_SAFE));
+        // Reject: decimal-string form, zero, negative, above MAX_SAFE_INTEGER.
+        for (label, bad) in [
+            ("decimal_string", json!("1")),
+            ("zero", json!(0)),
+            ("negative", json!(-1)),
+            ("above_max_safe", json!(MAX_SAFE + 1)),
+        ] {
+            assert!(
+                ContextSelectionV1::decode(&value(fixture(bad, GENERATION_1))).is_none(),
+                "harnessRevision {label} must be rejected like the canonical schema and TS mirror"
+            );
+        }
+        // Regression guard against over-correcting: `sourceRevision` stays a
+        // DecimalU64 string and is never re-typed to an integer.
+        let mut numeric_revision = fixture(json!(1), GENERATION_1);
+        numeric_revision["sourceRevision"] = json!(12);
+        assert!(ContextSelectionV1::decode(&value(numeric_revision)).is_none());
+    }
+
+    /// CTX-006 (arch_V1/32 §32.45) — the *direct* lane of the same
+    /// `harnessRevision` parity matrix.
+    ///
+    /// Canonical `contracts-v2/context-selection-v1.schema.json` declares
+    /// `harnessRevision` as `integer` `minimum: 1` `maximum: 9007199254740991`
+    /// on `$defs/source` — lane-independent — and the TS strict mirror mirrors
+    /// it on `ContextSelectionSourceV1` (`Schema.Int` `>=1` `<= MAX_SAFE_INTEGER`),
+    /// also lane-independent. The Rust decoder previously enforced the bound
+    /// only inside the *managed* toolset branch (which also recomputes the
+    /// generation digest), so a **direct-lane** `toolset:` manifest with
+    /// `harnessRevision: 0` (or `> MAX_SAFE_INTEGER`) decoded here while both
+    /// other runtimes rejected it.
+    ///
+    /// Direct lane is the right lane for this probe: the canonical schema
+    /// excludes only `managed-task`/`accepted-spec` from `lane: direct`, the
+    /// `toolset:` → `harnessRevision` presence rule (allOf[5]) is global, and
+    /// the bounds live on the source definition itself.
+    #[test]
+    fn ctx_006_direct_lane_harness_revision_bounds_match_canonical_schema_and_ts_mirror() {
+        let fixture = |harness_revision: serde_json::Value| direct_selection_with(json!({
+            "kind": "tool",
+            "sourceID": "toolset:horizon.native",
+            "sourceRevision": GENERATION_1,
+            "contentDigest": GENERATION_1,
+            "sourceAuthority": "tool-registry",
+            "trust": "system",
+            "included": true,
+            "inclusionReason": "selected_tool",
+            "harnessRevision": harness_revision
+        }));
+        // Accept: the exact positive u64 integer forms, in the direct lane too.
+        let decoded = ContextSelectionV1::decode(&value(fixture(json!(1))))
+            .expect("direct-lane harnessRevision 1 must decode like the canonical schema and TS mirror");
+        assert_eq!(decoded.sources.last().unwrap().harness_revision, Some(1));
+        let decoded = ContextSelectionV1::decode(&value(fixture(json!(MAX_SAFE_INTEGER))))
+            .expect("direct-lane harnessRevision at MAX_SAFE_INTEGER must decode like the canonical schema and TS mirror");
+        assert_eq!(decoded.sources.last().unwrap().harness_revision, Some(MAX_SAFE_INTEGER));
+        // Reject: the identical CTX-006 matrix, previously accepted by the
+        // direct lane because the bound check lived only in the managed branch.
+        for (label, bad) in [
+            ("decimal_string", json!("1")),
+            ("zero", json!(0)),
+            ("negative", json!(-1)),
+            ("above_max_safe", json!(MAX_SAFE_INTEGER + 1)),
+        ] {
+            assert!(
+                ContextSelectionV1::decode(&value(fixture(bad))).is_none(),
+                "direct-lane harnessRevision {label} must be rejected like the canonical schema and TS mirror"
+            );
+        }
+    }
+
+    /// §30.26 context anchors — `inclusionReason: context_anchor` is a canonical
+    /// selection value.
+    ///
+    /// Canonical `$defs/source.properties.inclusionReason` and the TS strict
+    /// mirror `ContextSelectionInclusionReasonV1` both allow **12** values with
+    /// `context_anchor` between `retrieval` and `history`; the Rust decoder's
+    /// `text_enum` list carried only 11, so a §30.26 anchor selection
+    /// (`kind: artifact`, `inclusionReason: context_anchor`) decoded in the
+    /// canonical schema and the TS mirror and was rejected here.
+    #[test]
+    fn ctx_030_26_context_anchor_inclusion_reason_decodes_like_canonical_and_ts_mirror() {
+        let selection = || direct_selection_with(json!({
+            "kind": "artifact",
+            "sourceID": "artifact_repo_context_anchor",
+            "sourceRevision": "3",
+            "contentDigest": format!("blake3:{}", "d".repeat(64)),
+            "sourceAuthority": "artifact-store",
+            "trust": "workspace",
+            "included": true,
+            "inclusionReason": "context_anchor"
+        }));
+        let decoded = ContextSelectionV1::decode(&value(selection()))
+            .expect("§30.26 context_anchor selection must decode like the canonical schema and TS mirror");
+        assert_eq!(decoded.sources.last().unwrap().inclusion_reason, "context_anchor");
+        // The enum stays closed: an invented 13th reason is still rejected.
+        let mut invented = selection();
+        invented["sources"].as_array_mut().unwrap()[3]["inclusionReason"] = json!("context_anchor_v2");
+        assert!(ContextSelectionV1::decode(&value(invented)).is_none());
     }
 }

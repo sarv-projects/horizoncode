@@ -15,7 +15,14 @@ import {
   type ToolBatchGateInput,
 } from "../../src/session/tool-batch"
 import * as ToolBatch from "../../src/session/tool-batch"
-import type { ManagedAttemptScopeV1 } from "../../src/session/managed-control"
+import { codeModeReceiptDigestV1, codeModeToolResultDigestV1, codeModeWaveReceiptDigestV2 } from "../../src/tool/code-mode-protocol"
+import {
+  createDirectTurnAuthority,
+  type DirectAttemptScopeV1,
+  type DirectTurnScopeV1,
+  type ManagedAttemptAuthority,
+  type ManagedAttemptScopeV1,
+} from "../../src/session/managed-control"
 
 const writeDefinition: ToolBatchDefinition = {
   capability: { id: "files.write", effectClass: "effect" },
@@ -168,7 +175,7 @@ function directAttemptScope(expectedRevision = "1", workspaceRevision = "blake3:
     childSessionID: "session_1",
     profileID: "profile_child",
     profileRevision: "1",
-    profileDigest: "sha256:" + "9".repeat(64),
+    profileDigest: "blake3:" + "9".repeat(64),
     ownerEpoch: "1",
     expectedRevision,
     locationID: "loc_child",
@@ -181,6 +188,38 @@ function directAttemptScope(expectedRevision = "1", workspaceRevision = "blake3:
   }
 }
 
+function directTurnScopeFor(scope: DirectAttemptScopeV1): DirectTurnScopeV1 {
+  return {
+    directAttempt: scope,
+    runnerCycleID: "cycle_child",
+    turnSequence: "1",
+    cycleDigest: "blake3:" + "c".repeat(64),
+  }
+}
+
+function directTurnAuthority(scope: DirectAttemptScopeV1) {
+  return createDirectTurnAuthority(directTurnScopeFor(scope), async () => {})
+}
+
+function managedAuthority(
+  currentScope: () => ManagedAttemptScopeV1,
+  acceptRefreshedScope: ManagedAttemptAuthority["acceptRefreshedScope"] = () => {},
+): ManagedAttemptAuthority {
+  return {
+    currentScope,
+    effectiveMaxTokens: () => currentScope().effectiveMaxTokens,
+    remainingTokens: () => currentScope().remainingTokens,
+    contextSelectionPin: () => ({
+      requestSequence: currentScope().requestSequence,
+      requestID: currentScope().requestID,
+      contextSelectionDigest: currentScope().contextSelectionDigest,
+    }),
+    latestProviderSettlement: () => undefined,
+    rememberProviderSettlement: () => {},
+    acceptRefreshedScope,
+  }
+}
+
 function managedAttemptScope(expectedManagedRevision = "1"): ManagedAttemptScopeV1 {
   const workspaceRevision = "blake3:" + "a".repeat(64)
   return {
@@ -190,12 +229,16 @@ function managedAttemptScope(expectedManagedRevision = "1"): ManagedAttemptScope
     attemptID: "att_managed_serial",
     ownerEpoch: "1",
     expectedManagedRevision,
+    requestSequence: "1",
+    requestID: "req_managed_1",
+    contextSelectionDigest: "blake3:" + "1".repeat(64),
     locationID: "loc_child",
     sessionID: "session_1",
     workspaceRevision,
     effectiveMaxTokens: "5000",
     remainingTokens: "5000",
     delegationBindingDigest: "blake3:" + "b".repeat(64),
+    permissionScopeDigest: "blake3:" + "7".repeat(64),
     worktreeTarget: {
       worktreeID: "wt_serial",
       worktreeBaseRevision: "base_serial",
@@ -320,9 +363,10 @@ test("child effect batch binds every prepared effect atomically before exposing 
         currentScope = refreshed
       },
     },
+    directTurn: directTurnAuthority(originalScope),
     definitions: { write: writeDefinition, bash: terminalDefinition },
-    prepareToolBatch: async (request: { directAttempt?: unknown }) => {
-      prepareScope = request.directAttempt
+    prepareToolBatch: async (request) => {
+      prepareScope = request.directTurnScope
       return {
         status: "admitted_batch" as const,
         calls: [
@@ -350,7 +394,7 @@ test("child effect batch binds every prepared effect atomically before exposing 
             execution: { command: "echo safe", cwd: "/workspace", timeoutMs: 1000 },
           },
         ],
-        directAttempt: refreshedScope,
+        directTurnScope: directTurnScopeFor(refreshedScope),
         attemptScopeTransition: "batch_bind" as const,
       }
     },
@@ -368,7 +412,7 @@ test("child effect batch binds every prepared effect atomically before exposing 
   )
 
   expect(output.filter((part) => part.type === "tool-call")).toHaveLength(2)
-  expect(prepareScope).toEqual(originalScope)
+  expect(prepareScope).toEqual(directTurnScopeFor(originalScope))
   expect(accepted).toEqual([{ previous: originalScope, refreshed: refreshedScope, transition: "batch_bind" }])
   expect(currentScope).toEqual(refreshedScope)
   expect(toolCallOutcome(gate.context, "child_write_batch")).toMatchObject({ status: "admitted" })
@@ -390,6 +434,7 @@ test("child batch binding failure cancels and exposes no effect call", async () 
         throw new Error("stale direct Attempt scope")
       },
     },
+    directTurn: directTurnAuthority(scope),
     prepareToolBatch: async () => ({
       status: "admitted" as const,
       challenge: {
@@ -399,7 +444,7 @@ test("child batch binding failure cancels and exposes no effect call", async () 
         resource: "a.txt",
         existed: false,
       },
-      directAttempt: refreshedScope,
+      directTurnScope: directTurnScopeFor(refreshedScope),
       attemptScopeTransition: "batch_bind" as const,
     }),
     cancelToolBatch: async () => {
@@ -443,9 +488,11 @@ test("child Attempt batches use the refreshed trusted revision on the next turn"
         current = refreshed
       },
     },
-    prepareToolBatch: async (request: { directAttempt?: typeof initial }) => {
-      seenPrepare.push(request.directAttempt!.expectedRevision)
-      const effectID = `effect_${request.directAttempt!.expectedRevision}`
+    directTurn: directTurnAuthority(initial),
+    prepareToolBatch: async (request) => {
+      const attempt = request.directTurnScope!.directAttempt
+      seenPrepare.push(attempt.expectedRevision)
+      const effectID = `effect_${attempt.expectedRevision}`
       return {
         status: "admitted" as const,
         challenge: {
@@ -455,7 +502,10 @@ test("child Attempt batches use the refreshed trusted revision on the next turn"
           resource: "a.txt",
           existed: false,
         },
-        directAttempt: { ...request.directAttempt!, expectedRevision: String(Number(request.directAttempt!.expectedRevision) + 1) },
+        directTurnScope: {
+          ...request.directTurnScope!,
+          directAttempt: { ...attempt, expectedRevision: String(Number(attempt.expectedRevision) + 1) },
+        },
         attemptScopeTransition: "batch_bind" as const,
       }
     },
@@ -500,6 +550,7 @@ test("direct Attempt receipt scope is accepted and exposed for the next ToolBatc
         current = refreshed
       },
     },
+    directTurn: directTurnAuthority(original),
     prepareToolBatch: async () => ({
       status: "admitted" as const,
       challenge: {
@@ -509,7 +560,7 @@ test("direct Attempt receipt scope is accepted and exposed for the next ToolBatc
         resource: "a.txt",
         existed: false,
       },
-      directAttempt: bound,
+      directTurnScope: directTurnScopeFor(bound),
       attemptScopeTransition: "batch_bind" as const,
     }),
   } as Partial<ToolBatchGateInput>)
@@ -531,6 +582,85 @@ test("direct Attempt receipt scope is accepted and exposed for the next ToolBatc
   expect(ToolBatch.currentDirectAttemptScope(outcome.directAttempt)).toEqual(receiptScope)
 })
 
+test("a direct child effect without a HostKernel DirectTurnAuthority is withheld before Guard", async () => {
+  let preparations = 0
+  const gate = gateInput({
+    parentSessionID: "session_parent",
+    directAttempt: { currentScope: () => directAttemptScope(), acceptRefreshedScope: () => {} },
+    prepareToolBatch: async () => {
+      preparations++
+      return { status: "denied", reason: "must not reach Guard" }
+    },
+  } as Partial<ToolBatchGateInput>)
+  await collect(
+    gateToolCallStream(stream([toolCall("child_no_turn", "write", '{"filePath":"/workspace/a.txt","content":"x"}'), finish]), gate),
+  )
+  expect(preparations).toBe(0)
+  expect(toolCallOutcome(gate.context, "child_no_turn")).toEqual({
+    status: "denied",
+    reason: "direct child effect withheld: HostKernel-issued DirectTurnScope is unavailable",
+  })
+})
+
+test("final direct turn receipts accept only a completed HostKernel DirectTurnScope", async () => {
+  const original = directAttemptScope()
+  const bound = { ...original, expectedRevision: "2" }
+  const receiptScope = { ...bound, expectedRevision: "3" }
+  let current = original
+  const turnAuthority = createDirectTurnAuthority(directTurnScopeFor(original), async () => {})
+  const gate = gateInput({
+    parentSessionID: "session_parent",
+    directAttempt: {
+      currentScope: () => current,
+      acceptRefreshedScope: ({ refreshed }) => {
+        current = refreshed
+      },
+    },
+    directTurn: turnAuthority,
+    prepareToolBatch: async () => ({
+      status: "admitted" as const,
+      challenge: {
+        challengeID: "ch_turn_final",
+        effectID: "eff_turn_final",
+        target: "/workspace/a.txt",
+        resource: "a.txt",
+        existed: false,
+      },
+      directTurnScope: directTurnScopeFor(bound),
+      attemptScopeTransition: "batch_bind" as const,
+    }),
+  } as Partial<ToolBatchGateInput>)
+  await collect(
+    gateToolCallStream(stream([toolCall("turn_final", "write", '{"filePath":"/workspace/a.txt","content":"x"}'), finish]), gate),
+  )
+  const outcome = toolCallOutcome(gate.context, "turn_final") as any
+  expect(outcome.status).toBe("admitted")
+  const authority = outcome.directAttempt
+
+  await expect(ToolBatch.acceptDirectTurnBatchReceipt(authority, {})).rejects.toThrow(
+    "final effect receipt omitted DirectTurnScope",
+  )
+  await expect(
+    ToolBatch.acceptDirectTurnBatchReceipt(authority, {
+      directTurnScope: { ...directTurnScopeFor(receiptScope), runnerCycleID: "cycle_other" },
+    }),
+  ).rejects.toThrow("stale or mismatched completed DirectTurnScope")
+  await expect(
+    ToolBatch.acceptDirectTurnBatchReceipt(authority, {
+      directTurnScope: directTurnScopeFor({ ...receiptScope, expectedRevision: "9" }),
+    }),
+  ).rejects.toThrow("differs from the settled DirectAttempt head")
+  // The terminal effect receipt advances the DirectAttempt head first; only then
+  // can the completed turn scope match the settled head.
+  ToolBatch.acceptDirectAttemptReceipt(authority, bound, {
+    directAttempt: receiptScope,
+    attemptScopeTransition: "effect_receipt",
+  })
+  await ToolBatch.acceptDirectTurnBatchReceipt(authority, { directTurnScope: directTurnScopeFor(receiptScope) })
+  expect(current).toEqual(receiptScope)
+  expect(turnAuthority.currentScope().directAttempt).toEqual(receiptScope)
+})
+
 test("validates every child effect identity before binding the batch to its Attempt", async () => {
   const scope = directAttemptScope()
   let bindings = 0
@@ -543,6 +673,7 @@ test("validates every child effect identity before binding the batch to its Atte
         bindings++
       },
     },
+    directTurn: directTurnAuthority(scope),
     prepareToolBatch: async (request) => ({
       status: "admitted_batch",
       calls: request.calls.map((call, index) => ({
@@ -1280,7 +1411,7 @@ test("spoofed question.ask tool names are denied before Guard preparation and ca
   expect(preparations).toBe(0)
   expect(toolCallOutcome(gate.context, "spoofed_question")).toEqual({
     status: "denied",
-    reason: "unsupported control capability",
+    reason: "control capability must be used as a single CodeMode wave call",
   })
   expect(() =>
     requireToolExecution({
@@ -1289,7 +1420,7 @@ test("spoofed question.ask tool names are denied before Guard preparation and ca
       toolName: "question_alias",
       capability: questionDefinition.capability,
     }),
-  ).toThrow("Tool batch denied: unsupported control capability")
+  ).toThrow("Tool batch denied: control capability must be used as a single CodeMode wave call")
 })
 
 test("question.ask mixed with an effect call denies the complete batch before Guard or callbacks", async () => {
@@ -1315,11 +1446,11 @@ test("question.ask mixed with an effect call denies the complete batch before Gu
   expect(preparations).toBe(0)
   expect(toolCallOutcome(gate.context, "question_mixed")).toEqual({
     status: "denied",
-    reason: "control capability must be used in a standalone batch",
+    reason: "control capability must be used as a single CodeMode wave call",
   })
   expect(toolCallOutcome(gate.context, "write_mixed")).toEqual({
     status: "denied",
-    reason: "control capability must be used in a standalone batch",
+    reason: "control capability must be used as a single CodeMode wave call",
   })
   expect(() =>
     requireToolExecution({
@@ -1328,7 +1459,7 @@ test("question.ask mixed with an effect call denies the complete batch before Gu
       toolName: "write",
       capability: writeDefinition.capability,
     }),
-  ).toThrow("Tool batch denied: control capability must be used in a standalone batch")
+  ).toThrow("Tool batch denied: control capability must be used as a single CodeMode wave call")
 })
 
 test("question.ask malformed JSON is denied as invalid arguments before Guard admission", async () => {
@@ -1840,6 +1971,7 @@ test("serial Attempt batch requests each later lease only after the previous rec
         current = refreshed
       },
     },
+    directTurn: directTurnAuthority(original),
     prepareToolBatch: async (request) => ({
       status: "prepared_batch",
       calls: [
@@ -1850,7 +1982,7 @@ test("serial Attempt batch requests each later lease only after the previous rec
         leaseNextCalls.push({ callID, previousEffectID })
         return Effect.succeed({ callID, capabilityID: "files.write", lease: secondLease })
       },
-      directAttempt: bound,
+      directTurnScope: directTurnScopeFor(bound),
       attemptScopeTransition: "batch_bind",
     }),
   } as Partial<ToolBatchGateInput>)
@@ -1904,14 +2036,11 @@ test("serial Attempt batch advances a managed Attempt lease scope from the recei
   const accepted: string[] = []
   const order: string[] = []
   const gate = gateInput({
-    managedAttempt: {
-      currentScope: () => current,
-      acceptRefreshedScope: ({ previous, refreshed, transition }) => {
-        expect(previous).toEqual(current)
-        accepted.push(`${previous.expectedManagedRevision}->${refreshed.expectedManagedRevision}:${transition}`)
-        current = refreshed
-      },
-    },
+    managedAttempt: managedAuthority(() => current, ({ previous, refreshed, transition }) => {
+      expect(previous).toEqual(current)
+      accepted.push(`${previous.expectedManagedRevision}->${refreshed.expectedManagedRevision}:${transition}`)
+      current = refreshed
+    }),
     beforeManagedEffects: async ({ stepFinishIndex }) => {
       expect(stepFinishIndex).toBe(0)
       order.push("usage")
@@ -1969,13 +2098,10 @@ test("fails closed when a serial lease returns a stale managed Attempt scope", a
   }
   let current = original
   const gate = gateInput({
-    managedAttempt: {
-      currentScope: () => current,
-      acceptRefreshedScope: ({ previous, refreshed }) => {
-        expect(previous).toEqual(current)
-        current = refreshed
-      },
-    },
+    managedAttempt: managedAuthority(() => current, ({ previous, refreshed }) => {
+      expect(previous).toEqual(current)
+      current = refreshed
+    }),
     beforeManagedEffects: async () => "ACCOUNTED",
     prepareToolBatch: async (request) => ({
       status: "prepared_batch",
@@ -2020,10 +2146,7 @@ test("managed effects stay fail-closed when pre-Guard usage accounting is absent
   for (const beforeManagedEffects of [undefined, async () => "STOPPED" as const]) {
     let preparations = 0
     const gate = gateInput({
-      managedAttempt: {
-        currentScope: () => managedAttemptScope(),
-        acceptRefreshedScope: () => {},
-      },
+      managedAttempt: managedAuthority(() => managedAttemptScope()),
       ...(beforeManagedEffects ? { beforeManagedEffects } : {}),
       prepareToolBatch: async () => {
         preparations++
@@ -2044,10 +2167,7 @@ test("an authenticated exhausted managed scope is denied before ToolBatch prepar
   let preparations = 0
   const exhausted = { ...managedAttemptScope(), remainingTokens: "0" }
   const gate = gateInput({
-    managedAttempt: {
-      currentScope: () => exhausted,
-      acceptRefreshedScope: () => {},
-    },
+    managedAttempt: managedAuthority(() => exhausted),
     beforeManagedEffects: async () => "ACCOUNTED" as const,
     prepareToolBatch: async () => {
       preparations++
@@ -2078,6 +2198,7 @@ test("a failed serial Attempt member aborts later members instead of leaving the
         current = refreshed
       },
     },
+    directTurn: directTurnAuthority(original),
     prepareToolBatch: async (request) => ({
       status: "prepared_batch",
       calls: [
@@ -2092,7 +2213,7 @@ test("a failed serial Attempt member aborts later members instead of leaving the
           lease: { effectID: "eff_failed_second", capabilityLeaseDigest: `blake3:${"f".repeat(64)}` },
         })
       },
-      directAttempt: bound,
+      directTurnScope: directTurnScopeFor(bound),
       attemptScopeTransition: "batch_bind",
     }),
   } as Partial<ToolBatchGateInput>)
@@ -2132,6 +2253,7 @@ test("fails closed when a serial Attempt member has no lease or leaseNext contin
   const gate = gateInput({
     parentSessionID: "session_parent",
     directAttempt: { currentScope: () => original, acceptRefreshedScope: () => {} },
+    directTurn: directTurnAuthority(original),
     prepareToolBatch: async (request) => ({
       status: "prepared_batch",
       calls: [
@@ -2142,7 +2264,7 @@ test("fails closed when a serial Attempt member has no lease or leaseNext contin
         },
         { callID: request.calls[1]!.callID, capabilityID: "files.write" },
       ],
-      directAttempt: bound,
+      directTurnScope: directTurnScopeFor(bound),
       attemptScopeTransition: "batch_bind",
     }),
   } as Partial<ToolBatchGateInput>)
@@ -2290,4 +2412,198 @@ test("withholds provider-executed tool calls and denies every member of the batc
       requireToolExecution({ context: gate.context, callID, capability: writeDefinition.capability }),
     ).toThrow("Tool batch denied")
   }
+})
+
+function codeModeFrame(callIDs: readonly string[], waveIndex = 0) {
+  return {
+    schemaVersion: 1 as const,
+    frameType: "wave_request" as const,
+    requestId: "req_codemode_wave",
+    sequence: String(waveIndex),
+    waveIndex,
+    calls: callIDs.map((callId) => ({
+      callId,
+      toolName: "read",
+      capabilityId: "files.read",
+      arguments: { path: `${callId}.txt` },
+      argumentBytes: Buffer.byteLength(JSON.stringify({ path: `${callId}.txt` }), "utf8"),
+    })),
+  }
+}
+
+function codeModeCallbacks(count: number, outputs: readonly string[] = []) {
+  return Array.from({ length: count }, (_, index) => ({
+    call: {
+      type: "tool-call" as const,
+      toolCallId: `call_${index}`,
+      toolName: "read",
+      input: "{}",
+    },
+    status: "settled" as const,
+    ...(outputs[index] === undefined ? {} : { output: outputs[index]! }),
+    ...(outputs[index] === undefined
+      ? {}
+      : {
+          resultDigest: codeModeToolResultDigestV1(outputs[index]!),
+          outputBytes: Buffer.byteLength(outputs[index]!, "utf8"),
+        }),
+  })) as unknown as Parameters<typeof ToolBatch.codeModeSettlementFromReceipts>[2]
+}
+
+function receiptRow(
+  callIndex: number,
+  status: "settled" | "rejected" | "cancelled",
+  receiptKind: "effect_receipt" | "host_decision" | "tool_result",
+  extras: { readonly resultDigest?: string; readonly outputBytes?: number } = {},
+) {
+  return {
+    callIndex,
+    callID: `call_${callIndex}`,
+    status,
+    receiptKind,
+    receiptRef: `challenge_${callIndex}`,
+    receiptDigest: `blake3:${String(callIndex + 1).repeat(64).slice(0, 64)}`,
+    resultDigest: extras.resultDigest ?? null,
+    outputBytes: extras.outputBytes ?? null,
+    errorCode: null,
+  }
+}
+
+test("CodeMode wave settlement uses the v2 ordered digest for mixed effect and host-callback receipts", () => {
+  const frame = codeModeFrame(["call_0", "call_1"])
+  const hostOutput = "host callback output"
+  const callbacks = codeModeCallbacks(2, ["effect output", hostOutput])
+  const hostDigest = codeModeToolResultDigestV1(hostOutput)
+  const rows = [
+    receiptRow(0, "settled", "effect_receipt"),
+    receiptRow(1, "settled", "tool_result", {
+      resultDigest: hostDigest,
+      outputBytes: Buffer.byteLength(hostOutput, "utf8"),
+    }),
+  ]
+  const v2 = codeModeWaveReceiptDigestV2(
+    0,
+    rows.map((row, callIndex) => ({
+      callId: `call_${callIndex}`,
+      status: row.status,
+      receiptKind: row.receiptKind,
+      receiptRef: row.receiptRef,
+      receiptDigest: row.receiptDigest,
+      ...(row.resultDigest ? { resultDigest: row.resultDigest } : {}),
+      ...(row.outputBytes === null ? {} : { outputBytes: row.outputBytes }),
+    })),
+  )
+  const legacy = codeModeReceiptDigestV1(rows.map((row, callIndex) => [
+    callIndex,
+    row.callID,
+    row.status,
+    row.receiptKind,
+    row.receiptRef,
+    row.receiptDigest,
+  ] as const))
+  expect(v2).not.toBe(legacy)
+
+  const value = {
+    status: "settled",
+    requestID: frame.requestId,
+    batchID: "batch_codemode_1",
+    waveIndex: 0,
+    results: rows,
+    receiptDigest: v2,
+  }
+  const settlement = ToolBatch.codeModeSettlementFromReceipts(value, frame, callbacks)
+  expect(settlement).toMatchObject({ status: "settled", receiptDigest: v2 })
+  expect(settlement.results[0]).toMatchObject({ receiptKind: "effect_receipt" })
+  expect(settlement.results[1]).toMatchObject({ receiptKind: "tool_result", resultDigest: hostDigest })
+
+  // A legacy v1 digest is never accepted as the authoritative wave digest.
+  expect(() => ToolBatch.codeModeSettlementFromReceipts({ ...value, receiptDigest: legacy }, frame, callbacks))
+    .toThrow("aggregate receipt digest differs")
+})
+
+test("CodeMode UNKNOWN waves expose no aggregate digest and zero-call waves stay digestless", () => {
+  const frame = codeModeFrame(["call_0"])
+  const unknown = {
+    status: "unknown",
+    requestID: frame.requestId,
+    batchID: "batch_codemode_unknown",
+    waveIndex: 0,
+    results: [{
+      callIndex: 0,
+      callID: "call_0",
+      status: "unknown",
+      receiptKind: null,
+      receiptRef: null,
+      receiptDigest: null,
+      resultDigest: null,
+      outputBytes: null,
+      errorCode: null,
+    }],
+    receiptDigest: null,
+  }
+  const settlement = ToolBatch.codeModeSettlementFromReceipts(
+    unknown,
+    frame,
+    [{ call: { type: "tool-call", toolCallId: "call_0", toolName: "read", input: "{}" }, status: "unknown" }] as unknown as Parameters<typeof ToolBatch.codeModeSettlementFromReceipts>[2],
+  )
+  expect(settlement.status).toBe("unknown")
+  expect(settlement.receiptDigest).toBeUndefined()
+  expect(() => ToolBatch.codeModeSettlementFromReceipts(
+    { ...unknown, receiptDigest: `blake3:${"a".repeat(64)}` },
+    frame,
+    [{ call: { type: "tool-call", toolCallId: "call_0", toolName: "read", input: "{}" }, status: "unknown" }] as unknown as Parameters<typeof ToolBatch.codeModeSettlementFromReceipts>[2],
+  )).toThrow("UNKNOWN CodeMode wave cannot expose")
+
+  // No call could be dispatched: the projection retains no fabricated digest.
+  const empty = codeModeFrame([])
+  const zeroValue = {
+    status: "settled",
+    requestID: empty.requestId,
+    batchID: "batch_codemode_empty",
+    waveIndex: 0,
+    results: [],
+    receiptDigest: null,
+  }
+  const zero = ToolBatch.codeModeSettlementFromReceipts(zeroValue, empty, [])
+  expect(zero.status).toBe("settled")
+  expect(zero.results).toEqual([])
+  expect(zero.receiptDigest).toBeUndefined()
+  expect(() => ToolBatch.codeModeSettlementFromReceipts({
+    ...zeroValue,
+    receiptDigest: `blake3:${"b".repeat(64)}`,
+  }, empty, [])).toThrow("Zero-call CodeMode wave cannot expose")
+})
+
+test("CodeMode pre-dispatch decisions bind the v2 digest and reject a zero-call wave", () => {
+  const frame = codeModeFrame(["call_0", "call_1"])
+  const rows = [receiptRow(0, "rejected", "host_decision"), receiptRow(1, "cancelled", "host_decision")]
+  const digest = codeModeWaveReceiptDigestV2(0, rows.map((row, callIndex) => ({
+    callId: `call_${callIndex}`,
+    status: row.status,
+    receiptKind: row.receiptKind,
+    receiptRef: row.receiptRef,
+    receiptDigest: row.receiptDigest,
+  })))
+  const settlement = ToolBatch.codeModeSettlementFromPreDispatch({
+    status: "pre_dispatch_terminal",
+    decision: "rejected",
+    requestID: frame.requestId,
+    batchID: "batch_codemode_pre",
+    waveIndex: 0,
+    results: rows,
+    receiptDigest: digest,
+  }, frame)
+  expect(settlement).toMatchObject({ status: "rejected", receiptDigest: digest })
+  expect(settlement.results.map((row) => row.status)).toEqual(["rejected", "cancelled"])
+
+  const empty = codeModeFrame([])
+  expect(() => ToolBatch.codeModeSettlementFromPreDispatch({
+    status: "pre_dispatch_terminal",
+    decision: "rejected",
+    requestID: empty.requestId,
+    batchID: "batch_codemode_pre_empty",
+    waveIndex: 0,
+    results: [],
+    receiptDigest: `blake3:${"c".repeat(64)}`,
+  }, empty)).toThrow("zero-call wave")
 })

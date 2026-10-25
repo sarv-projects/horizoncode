@@ -37,6 +37,16 @@ export type DirectProviderRequestV1 = DirectProviderRequestPinsV1 & {
   readonly usage?: Readonly<Record<string, unknown>>
 }
 
+/** The transport-side projection that must exactly match the pinned direct route. */
+export type DirectProviderRouteProjectionV1 = {
+  readonly providerID: string
+  readonly modelID: string
+  readonly harnessID: string
+  readonly routeID: string
+  readonly routeRevision: string
+  readonly endpointRevision: string
+}
+
 const ID = /^[A-Za-z0-9._:-]{1,256}$/
 const DIGEST = /^(?:blake3|sha256):[0-9a-f]{64}$/
 const U64_MAX = "18446744073709551615"
@@ -97,7 +107,7 @@ export function validateDirectProviderRequestPinsV1(value: DirectProviderRequest
   const validPositiveU64 = (candidate: string) => POSITIVE_U64.test(candidate) && (candidate.length < U64_MAX.length || (candidate.length === U64_MAX.length && candidate <= U64_MAX))
   if (!ID.test(value.requestID) || !ID.test(value.profileID) || !validPositiveU64(value.profileRevision) ||
     !ID.test(value.providerID) || !ID.test(value.modelID) || !ID.test(value.harnessID) ||
-    !ID.test(value.harnessRevision) || !ID.test(value.routeRevision) || !ID.test(value.endpointRevision)) {
+    !validPositiveU64(value.harnessRevision) || !ID.test(value.routeRevision) || !ID.test(value.endpointRevision)) {
     throw new TypeError("provider request identity pin is malformed")
   }
   if (!validU64(value.sourceRevision) || !/^blake3:[0-9a-f]{64}$/.test(value.profileDigest) ||
@@ -116,4 +126,24 @@ export function validateDirectProviderRequestPinsV1(value: DirectProviderRequest
   // Canonicalization also enforces strict serializability and the persistent-reference bound.
   canonical(value)
   return { ...value, contextSelection: selection }
+}
+
+/**
+ * Prove that the frozen transport route is the exact route the journal pinned.
+ * Any provider/model/account/harness/route/endpoint revision difference fails
+ * before bytes are sent. There is no fallback comparison and no "closest" route.
+ */
+export function assertDirectProviderRouteMatchV1(
+  pins: Pick<DirectProviderRequestPinsV1, "providerID" | "modelID" | "harnessID" | "routeRevision" | "endpointRevision">,
+  route: DirectProviderRouteProjectionV1,
+): void {
+  if (pins.providerID !== route.providerID) throw new TypeError("direct provider route mismatch: provider")
+  if (pins.modelID !== route.modelID) throw new TypeError("direct provider route mismatch: model")
+  if (pins.harnessID !== route.harnessID) throw new TypeError("direct provider route mismatch: harness")
+  if (pins.routeRevision !== route.routeRevision || route.routeID !== route.routeRevision)
+    throw new TypeError("direct provider route mismatch: route revision")
+  if (pins.endpointRevision !== route.endpointRevision)
+    throw new TypeError("direct provider route mismatch: endpoint revision")
+  if (!/^llm_[a-f0-9]{64}$/.test(route.routeID) || !/^blake3:[a-f0-9]{64}$/.test(route.endpointRevision))
+    throw new TypeError("direct provider route identity is malformed")
 }

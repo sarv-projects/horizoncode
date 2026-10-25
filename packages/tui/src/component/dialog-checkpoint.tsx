@@ -161,10 +161,15 @@ export function DialogCheckpoint(props: { sessionID: string }) {
   const [busy, setBusy] = createSignal(false)
 
   onMount(() => {
-    void sdk.client.checkpoint.list({ sessionID: props.sessionID }, { throwOnError: true })
+    void sdk.client.experimental.checkpoint.list({ sessionID: props.sessionID }, { throwOnError: true })
       .then((response) => {
-        const ids = response.data.checkpointIDs
-        if (!Array.isArray(ids) || ids.length > 32 || ids.some((id) => typeof id !== "string" || id.length > 256)) {
+        // The generated client unwraps the single-property envelope to the
+        // property value in its return type; the wire body is still
+        // `{ checkpointIDs }`. Validate the documented envelope explicitly.
+        const body = response.data as unknown
+        if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("Checkpoint list response failed validation.")
+        const ids = (body as { checkpointIDs?: unknown }).checkpointIDs
+        if (!Array.isArray(ids) || ids.length > 32 || ids.some((id) => typeof id !== "string" || !ID.test(id))) {
           throw new Error("Checkpoint list response failed validation.")
         }
         setCheckpointIDs(ids)
@@ -177,7 +182,7 @@ export function DialogCheckpoint(props: { sessionID: string }) {
     if (busy()) return
     setBusy(true)
     try {
-      const response = await sdk.client.checkpoint.restorePreview({
+      const response = await sdk.client.experimental.checkpoint.restorePreview({
         sessionID: props.sessionID,
         checkpointID,
         mode: "FULL",

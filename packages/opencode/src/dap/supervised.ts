@@ -6,6 +6,7 @@
  */
 
 import { randomUUID } from "node:crypto"
+import path from "node:path"
 import { Effect } from "effect"
 import { Location } from "@opencode-ai/schema"
 import type { Interface as SessionSupervisorInterface } from "@opencode-ai/core/session/supervisor"
@@ -17,6 +18,7 @@ import {
   readEditorProcessStatusV1,
   type EditorProcessStatusV1,
   type EditorProcessLifecycleScopeV1,
+  type RequestExecutionHostV1,
 } from "@/lsp/process-lifecycle"
 import { makeEditorProtocolGuardAuthorizerV1 } from "@/lsp/guard-authorizer"
 import type { HostProcessRefV1 } from "@/lsp/process-scope"
@@ -26,20 +28,7 @@ import { HostKernelDapProtocolClientV1 } from "./host-protocol-client"
 
 type RunTrustedEffect = <A, E, R>(effect: Effect.Effect<A, E, R>) => Promise<A>
 
-type DapHostRequestV1 = (
-  serviceID: "execution.v1",
-  operation:
-    | "resolve_launch_profile"
-    | "prepare"
-    | "launch"
-    | "status"
-    | "read"
-    | "cancel"
-    | "protocol_op"
-    | "protocol_read"
-    | "protocol_reply",
-  body: Readonly<Record<string, unknown>>,
-) => Promise<unknown>
+type DapHostRequestV1 = RequestExecutionHostV1
 
 /** Resolve and start only an immutable global DAP profile. Debuggee launch or
  * attach authority is intentionally separate and unavailable in this helper. */
@@ -83,7 +72,16 @@ export async function createSupervisedDapClientV1(input: {
         (input.managedAttempt && input.workspaceID !== undefined)) {
       throw new TypeError("supervised DAP scope does not match the authenticated Attempt workspace pins")
     }
-  } else if (!input.sessionID || !input.locationID || !/^blake3:[0-9a-f]{64}$/.test(input.workspaceRevision)) {
+    if (input.workspaceID !== undefined && input.locationRef.workspaceID !== input.workspaceID) {
+      throw new TypeError("supervised DAP location pin does not match the authenticated workspace ID")
+    }
+    if (input.managedAttempt !== undefined &&
+        (path.resolve(input.locationRef.directory) !== path.resolve(input.managedAttempt.worktreeTarget.canonicalRoot) ||
+          input.locationRef.workspaceID !== input.managedAttempt.worktreeTarget.workspaceID)) {
+      throw new TypeError("supervised DAP scope does not match the managed Attempt worktree target")
+    }
+  } else if (!input.sessionID || !input.locationID || !input.workspaceID ||
+      input.locationRef.workspaceID !== input.workspaceID || !/^blake3:[0-9a-f]{64}$/.test(input.workspaceRevision)) {
     throw new TypeError("supervised DAP root Session scope is malformed")
   }
   assertLanguageServiceProcessAllowed("debug.start")

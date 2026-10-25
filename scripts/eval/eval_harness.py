@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping, Protocol
 
+import blake3
+
 SCHEMA = "horizoncode.eval.manifest.v1"
 MAX_MANIFEST_BYTES = 2 * 1024 * 1024
 MAX_TASKS = 10_000
@@ -32,6 +34,9 @@ MAX_TASK_INPUT_BYTES = 1_048_576
 ARMS = ("minimal", "horizoncode")
 ABLATION_FEATURES = {"delegation", "repointel", "codemode", "verification_retry"}
 LANES = {"development", "smoke", "heldout"}
+# §30.27 HUP-001/002: one frozen bundle per model class so a strong, small and
+# local comparison are separately identified and never conflated in one score.
+MODEL_CLASSES = ("strong", "small", "local")
 
 
 class EvalError(ValueError):
@@ -290,10 +295,12 @@ def validate_manifest(value: object) -> None:
 
     shared = value.get("shared")
     if not isinstance(shared, dict) or set(shared) != {
-        "providerRoute", "modelRevision", "repositoryImageDigest", "promptDigest",
+        "providerRoute", "modelRevision", "modelClass", "repositoryImageDigest", "promptDigest",
         "oracleDigest", "permissionProfileDigest", "sampling", "budgets", "toolAllowlist"
     }:
         raise EvalError("shared paired-arm configuration is required")
+    if shared.get("modelClass") not in MODEL_CLASSES:
+        raise EvalError("shared.modelClass must be strong, small, or local")
     for field in ("providerRoute", "modelRevision", "repositoryImageDigest", "promptDigest",
                   "oracleDigest", "permissionProfileDigest"):
         _token(shared.get(field), f"shared.{field}")
@@ -518,6 +525,15 @@ class HostRunBridge(Protocol):
     against the same live managed Attempt before any dispatch, so process restart
     cannot repeat an ambiguous effect. In V1 this protocol is not installed by the
     CLI; until P1/P2 wire its authenticated source, live evaluation is unavailable.
+
+    Optional control-plane members (all required once a control plane is used):
+
+    * ``prepare_dispatch(invocation) -> HostRunDispatchHandleV1`` reports the
+      host-derived Goal/Attempt identity the pre-dispatch `host_run.bind` body
+      must name. It grants no authority: HostKernel re-derives every pin.
+    * ``control_plane`` / ``owner_log`` supply the default
+      ``HostRunControlPlaneClient`` and P8 OwnerLog append seam for
+      `run_host_paired_evaluation`.
     """
 
     def dispatch_guarded_trial(self, invocation: HostRunInvocationV1) -> HostRunOutcomeV1: ...
@@ -626,6 +642,49 @@ def _bounded_optional_counter(value, name: str) -> int | None:
     return value
 
 
+def _validate_host_run_trial_evidence(row: Mapping, *, require_complete: bool) -> None:
+    """Reject self-contradictory HostRun trial evidence and unverified resource claims.
+
+    Only rows produced for an actual HostRun outcome are checked. A locally edited but
+    well-shaped journal is still not authenticated evidence; this function exists so a
+    persisted/summarized row cannot assert a PASS, security state, or resource figure that
+    contradicts its own recorded verdict. Missing evidence stays blocked by the runner's
+    authenticated-reconciliation guard.
+    """
+    outcome_keys = {"verifierVerdict", "securityFailure", "resourceUse", "falseCompletion",
+                    "failureClass"}
+    if not require_complete and not (outcome_keys & set(row)):
+        return
+    status = row.get("status")
+    verdict = row.get("verifierVerdict")
+    security = row.get("securityFailure")
+    false_completion = row.get("falseCompletion")
+    failure_class = row.get("failureClass")
+    resource = row.get("resourceUse")
+    if verdict not in {"PASS", "FAIL", "INCOMPLETE"}:
+        raise EvalError("HostRun trial is missing a valid verifier verdict")
+    if not isinstance(security, bool):
+        raise EvalError("HostRun trial is missing its security outcome")
+    if not isinstance(false_completion, bool):
+        raise EvalError("HostRun trial is missing its false-completion verdict")
+    if (not isinstance(resource, Mapping) or set(resource) - {"status", "reason"}
+            or resource.get("status") != "UNKNOWN"):
+        raise EvalError(
+            "HostRun trial resource use must stay UNKNOWN without a verified RC0 attestation")
+    if status == "PASS_VERIFIED":
+        if security or verdict != "PASS" or false_completion or failure_class != "none":
+            raise EvalError("HostRun PASS_VERIFIED contradicts its verifier/security evidence")
+    elif status == "FAIL_UNVERIFIED":
+        if false_completion != (verdict == "FAIL"):
+            raise EvalError("HostRun failure contradicts its false-completion verdict")
+        if security and failure_class != "security_failure":
+            raise EvalError("HostRun security failure must carry the security failure class")
+        if verdict == "PASS" and failure_class != "budget_exhaustion":
+            raise EvalError("HostRun PASS verdict may only fail on budget exhaustion")
+        if verdict == "INCOMPLETE" and failure_class != "test_verification":
+            raise EvalError("HostRun incomplete verdict must fail at test verification")
+
+
 def _validate_host_run_outcome(outcome, invocation, manifest, task, arm) -> tuple[str, dict]:
     """Require exact route/config/evidence pins before any trial can score."""
     if not isinstance(outcome, HostRunOutcomeV1):
@@ -645,6 +704,9 @@ def _validate_host_run_outcome(outcome, invocation, manifest, task, arm) -> tupl
     for field in ("attempt_id", "workspace_revision", "host_run_receipt_ref", "verifier_evidence_ref"):
         value = getattr(outcome, field)
         _token(value, f"HostRun.{field}")
+    if outcome.host_run_receipt_ref == outcome.verifier_evidence_ref:
+        raise EvalError(
+            "HostRun receipt and independent verifier evidence must be distinct references")
     if not re.fullmatch(r"blake3:[0-9a-f]{64}", outcome.owner_log_event_digest):
         raise EvalError("HostRun outcome lacks an exact OwnerLog event digest")
     if outcome.verifier_verdict not in {"PASS", "FAIL", "INCOMPLETE"}:
@@ -662,7 +724,9 @@ def _validate_host_run_outcome(outcome, invocation, manifest, task, arm) -> tupl
     }
     if (outcome.cost_provenance == "UNKNOWN") != (outcome.cost_micros is None):
         raise EvalError("HostRun cost value and provenance disagree")
-    if not isinstance(outcome.resource_use, Mapping) or outcome.resource_use.get("status") != "UNKNOWN":
+    if (type(outcome.resource_use) is not dict
+            or set(outcome.resource_use) != {"status"}
+            or outcome.resource_use.get("status") != "UNKNOWN"):
         raise EvalError("HostRun resource use remains UNKNOWN until RC0 attestation is integrated")
     if not isinstance(outcome.security_failure, bool) or not isinstance(outcome.capability_complete, bool):
         raise EvalError("HostRun security and capability outcomes must be booleans")
@@ -717,11 +781,618 @@ def _validate_host_run_outcome(outcome, invocation, manifest, task, arm) -> tupl
     return status, row
 
 
+# ---------------------------------------------------------------------------
+# HostRun control plane — P2's authenticated `managed.v1` HostRun routes
+# ---------------------------------------------------------------------------
+#
+#   append      managed.v1/host_run.bind          strict 7-field body, pre-dispatch
+#   post-commit managed.v1/host_run.bind_receipt  strict 6-field body
+#   resolve     managed.v1/host_run.inspect       strict 2-field body, read-only
+#
+# Every authority pin inside the returned binding is derived host-side by
+# HostKernel from the authenticated peer/fence, the live managed Attempt, the
+# start-pinned SessionLink, the registered Location and P8's durable
+# reservation. This module only ever *sends* the evaluator's own correlation
+# facts (the Goal/Attempt handle the bridge reports, the frozen manifest
+# digest, task/arm/group) and *reads* the reconciliation; no request field and
+# no response field is treated as authority without an exact contract check.
+# The raw dispatch idempotency key is never sent: only its BLAKE3 digest.
+
+MANAGED_SERVICE_ID = "managed.v1"
+HOST_RUN_BIND_OPERATION = "host_run.bind"
+HOST_RUN_BIND_RECEIPT_OPERATION = "host_run.bind_receipt"
+HOST_RUN_INSPECT_OPERATION = "host_run.inspect"
+
+BLAKE3_DIGEST_PATTERN = re.compile(r"blake3:[0-9a-f]{64}")
+# P2 accepts the bare hex or the `blake3:`-prefixed form for OwnerLog event digests.
+OWNER_EVENT_DIGEST_PATTERN = re.compile(r"(?:blake3:)?[0-9a-f]{64}")
+DECIMAL_PATTERN = re.compile(r"[0-9]{1,19}")
+
+# The complete typed UNKNOWN-reason catalogue produced by
+# `ManagedSnapshot::reconcile_host_run` and the HostKernel `host_run.inspect`
+# route (kernel/src/managed_control.rs). Frozen here so a response carrying any
+# other reason — or none at all — is treated as ambiguous instead of being
+# quietly accepted. No reason in this catalogue may ever authorize redispatch.
+HOST_RUN_UNKNOWN_REASONS = (
+    "host_run_binding_absent",
+    "host_run_binding_identity_mismatch",
+    "host_run_effect_projection_unavailable",
+    "host_run_effect_projection_incomplete",
+    "host_run_effect_projection_identity_mismatch",
+    "host_run_effect_projection_ambiguous",
+    "host_run_managed_terminal_unsettled",
+    "host_run_task_unverified",
+    "host_run_attempt_unknown",
+    "host_run_attempt_receipt_missing",
+    "host_run_binding_receipt_missing",
+    "host_run_verifier_evidence_missing",
+    "host_run_verifier_pins_unavailable",
+    "host_run_p8_owner_receipt_missing",
+    "host_run_p8_settlement_missing",
+)
+HOST_RUN_BINDING_ABSENT = "host_run_binding_absent"
+HOST_RUN_TERMINAL_STATUSES = ("SUCCEEDED", "FAILED", "CANCELLED")
+HOST_RUN_OUTCOME_STATUSES = ("PASS_VERIFIED", "FAIL_UNVERIFIED", "UNSUPPORTED_CAPABILITY")
+
+# Which terminal host status corroborates which persisted evaluator row.
+# PASS_VERIFIED may only be corroborated by SUCCEEDED — never by FAILED or
+# CANCELLED. FAIL_UNVERIFIED requires FAILED: a cancelled Attempt does not
+# evidence a failed verification. UNSUPPORTED_CAPABILITY is never a scoring
+# status, so either non-success terminal corroborates it; it still never
+# releases a PASS.
+HOST_RUN_RECONCILIATION_STATUS_FOR_OUTCOME = {
+    "PASS_VERIFIED": ("SUCCEEDED",),
+    "FAIL_UNVERIFIED": ("FAILED",),
+    "UNSUPPORTED_CAPABILITY": ("FAILED", "CANCELLED"),
+}
+
+# Exact field sets published by the Rust route handlers (strict_fields()).
+HOST_RUN_BIND_BODY_FIELDS = (
+    "goalID", "attemptID", "dispatchKeyDigest", "manifestDigest",
+    "evaluatorTaskId", "armId", "taskGroup",
+)
+HOST_RUN_BIND_RECEIPT_BODY_FIELDS = (
+    "goalID", "dispatchKeyDigest", "bindingDigest",
+    "ownerLogID", "ownerLogSequence", "ownerLogEventDigest",
+)
+HOST_RUN_INSPECT_BODY_FIELDS = ("goalID", "dispatchKeyDigest")
+
+# `HostRunDispatchBindingV1::value()` — 21 preimage fields plus bindingDigest.
+HOST_RUN_BINDING_FIELDS = (
+    "schemaVersion", "dispatchKeyDigest", "manifestDigest", "evaluatorTaskId",
+    "armId", "taskGroup", "runId", "managedTaskId", "attemptId",
+    "evaluationSessionId", "coreProcessGeneration", "ownerId", "ownerEpoch",
+    "workerExecutionId", "delegationBindingDigest", "acceptedSpecDigest",
+    "providerSelectionDigest", "workspaceBindingDigest",
+    "admittedWorkspaceRevision", "attemptScopeDigest",
+    "ownerPrincipalBindingDigest", "bindingDigest",
+)
+HOST_RUN_BINDING_DIGEST_FIELDS = (
+    "dispatchKeyDigest", "manifestDigest", "delegationBindingDigest",
+    "acceptedSpecDigest", "providerSelectionDigest", "workspaceBindingDigest",
+    "attemptScopeDigest", "ownerPrincipalBindingDigest", "bindingDigest",
+)
+HOST_RUN_BINDING_ID_FIELDS = (
+    "evaluatorTaskId", "armId", "taskGroup", "runId", "managedTaskId",
+    "attemptId", "evaluationSessionId", "ownerId", "workerExecutionId",
+)
+# `HostRunDispatchBindingReceiptV1::value()`.
+HOST_RUN_BINDING_RECEIPT_FIELDS = (
+    "schemaVersion", "dispatchKeyDigest", "bindingDigest", "ownerLogSequence",
+    "ownerLogEventDigest", "bindingManagedRevision",
+)
+# `HostRunDispatchP8OwnerReceiptV1::value()`.
+HOST_RUN_P8_OWNER_RECEIPT_FIELDS = (
+    "schemaVersion", "dispatchKeyDigest", "bindingDigest", "ownerLogID",
+    "ownerLogSequence", "ownerLogEventDigest",
+)
+HOST_RUN_RECONCILIATION_FIELDS = (
+    "schemaVersion", "dispatchKeyDigest", "status", "unknownReason", "binding",
+    "bindingDigest", "attemptReceiptDigest", "verifiedRevision",
+)
+
+
+class HostRunReconciliationBlocked(EvalError):
+    """A persisted or in-flight dispatch key could not be exactly resolved.
+
+    Raised instead of reusing, skipping or redispatching an ambiguous key.
+    Always fail-closed: the caller keeps the run blocked and journals UNKNOWN.
+    """
+
+    def __init__(self, message: str, reason: str | None = None):
+        super().__init__(message)
+        self.reason = reason
+
+
+def host_run_manifest_digest(manifest: Mapping) -> str:
+    """BLAKE3 of the canonical frozen manifest bytes sent to `host_run.bind`."""
+    return "blake3:" + blake3.blake3(canonical_json(dict(manifest))).hex()
+
+
+def host_run_dispatch_key_digest(dispatch_idempotency_key: str) -> str:
+    """BLAKE3 of the raw dispatch idempotency key; the raw key is never sent."""
+    return blake3.blake3_digest(_token(dispatch_idempotency_key, "dispatchIdempotencyKey"))
+
+
+def host_run_dispatch_key(manifest_digest: str, task_id: str, arm_id: str) -> str:
+    """Canonical per-pair dispatch idempotency key (rebuildable from a journal row)."""
+    return digest({"manifestDigest": manifest_digest, "taskId": task_id,
+                   "armId": arm_id, "lane": "HUP_PAIRED_HOST_RUN_V1"})
+
+
+def _require_exact_fields(value, fields, what: str) -> dict:
+    if type(value) is not dict:
+        raise EvalError(f"{what} must be a plain JSON object")
+    if set(value) != set(fields):
+        raise EvalError(f"{what} fields differ from the frozen HostRun contract")
+    return value
+
+
+def _require_schema_version(value: Mapping, what: str) -> None:
+    version = value.get("schemaVersion")
+    if type(version) is not int or version != 1:
+        raise EvalError(f"{what} schema version is unsupported")
+
+
+def _require_blake3(value, what: str) -> str:
+    if not isinstance(value, str) or BLAKE3_DIGEST_PATTERN.fullmatch(value) is None:
+        raise EvalError(f"{what} must be a canonical blake3 digest")
+    return value
+
+
+def _require_id(value, what: str) -> str:
+    return _token(value, what)
+
+
+def _require_decimal(value, what: str, *, nonzero: bool = True) -> str:
+    if not isinstance(value, str) or DECIMAL_PATTERN.fullmatch(value) is None:
+        raise EvalError(f"{what} must be a canonical decimal string")
+    if nonzero and int(value) == 0:
+        raise EvalError(f"{what} must be positive")
+    return value
+
+
+def _require_owner_event_digest(value, what: str) -> str:
+    if not isinstance(value, str) or OWNER_EVENT_DIGEST_PATTERN.fullmatch(value) is None:
+        raise EvalError(f"{what} is not an OwnerLog event digest")
+    return value
+
+
+def host_run_bind_body(*, goal_id: str, attempt_id: str, dispatch_key_digest: str,
+                       manifest_digest: str, evaluator_task_id: str, arm_id: str,
+                       task_group: str) -> dict:
+    """Strict `managed.v1/host_run.bind` request body (exactly seven fields)."""
+    body = {
+        "goalID": _require_id(goal_id, "hostRun.goalID"),
+        "attemptID": _require_id(attempt_id, "hostRun.attemptID"),
+        "dispatchKeyDigest": _require_blake3(dispatch_key_digest, "hostRun.dispatchKeyDigest"),
+        "manifestDigest": _require_blake3(manifest_digest, "hostRun.manifestDigest"),
+        "evaluatorTaskId": _require_id(evaluator_task_id, "hostRun.evaluatorTaskId"),
+        "armId": _require_id(arm_id, "hostRun.armId"),
+        "taskGroup": _require_id(task_group, "hostRun.taskGroup"),
+    }
+    return _require_exact_fields(body, HOST_RUN_BIND_BODY_FIELDS, "hostRun.bind body")
+
+
+def host_run_bind_receipt_body(*, goal_id: str, dispatch_key_digest: str,
+                               binding_digest: str, owner_log_id: str,
+                               owner_log_sequence: str,
+                               owner_log_event_digest: str) -> dict:
+    """Strict `managed.v1/host_run.bind_receipt` body (exactly six fields).
+
+    The OwnerLog cursor facts come from the P8 post-commit append receipt, never
+    from an event body.
+    """
+    body = {
+        "goalID": _require_id(goal_id, "hostRun.goalID"),
+        "dispatchKeyDigest": _require_blake3(dispatch_key_digest, "hostRun.dispatchKeyDigest"),
+        "bindingDigest": _require_blake3(binding_digest, "hostRun.bindingDigest"),
+        "ownerLogID": _require_id(owner_log_id, "hostRun.ownerLogID"),
+        "ownerLogSequence": _require_decimal(owner_log_sequence, "hostRun.ownerLogSequence"),
+        "ownerLogEventDigest": _require_owner_event_digest(
+            owner_log_event_digest, "hostRun.ownerLogEventDigest"),
+    }
+    return _require_exact_fields(body, HOST_RUN_BIND_RECEIPT_BODY_FIELDS,
+                                 "hostRun.bind_receipt body")
+
+
+def host_run_inspect_body(*, goal_id: str, dispatch_key_digest: str) -> dict:
+    """Strict `managed.v1/host_run.inspect` body (exactly two fields)."""
+    body = {
+        "goalID": _require_id(goal_id, "hostRun.goalID"),
+        "dispatchKeyDigest": _require_blake3(dispatch_key_digest, "hostRun.dispatchKeyDigest"),
+    }
+    return _require_exact_fields(body, HOST_RUN_INSPECT_BODY_FIELDS, "hostRun.inspect body")
+
+
+def _validate_host_run_binding(value, what: str) -> dict:
+    binding = _require_exact_fields(value, HOST_RUN_BINDING_FIELDS, what)
+    _require_schema_version(binding, what)
+    for field in HOST_RUN_BINDING_DIGEST_FIELDS:
+        _require_blake3(binding[field], f"{what}.{field}")
+    for field in HOST_RUN_BINDING_ID_FIELDS:
+        _require_id(binding[field], f"{what}.{field}")
+    for field in ("coreProcessGeneration", "ownerEpoch"):
+        _require_decimal(binding[field], f"{what}.{field}")
+    _require_id(binding["admittedWorkspaceRevision"], f"{what}.admittedWorkspaceRevision")
+    return binding
+
+
+def parse_host_run_bind_response(value, *, dispatch_key_digest: str,
+                                 manifest_digest: str) -> tuple[dict, dict]:
+    """Validate `host_run.bind`'s `{schemaVersion, binding, receipt}` reply."""
+    response = _require_exact_fields(
+        value, ("schemaVersion", "binding", "receipt"), "hostRun.bind response")
+    _require_schema_version(response, "hostRun.bind response")
+    binding = _validate_host_run_binding(response["binding"], "hostRun.bind binding")
+    receipt = _require_exact_fields(
+        response["receipt"], HOST_RUN_BINDING_RECEIPT_FIELDS, "hostRun.bind receipt")
+    _require_schema_version(receipt, "hostRun.bind receipt")
+    _require_blake3(receipt["dispatchKeyDigest"], "hostRun.bind receipt.dispatchKeyDigest")
+    _require_blake3(receipt["bindingDigest"], "hostRun.bind receipt.bindingDigest")
+    _require_decimal(receipt["ownerLogSequence"], "hostRun.bind receipt.ownerLogSequence")
+    _require_owner_event_digest(receipt["ownerLogEventDigest"],
+                                "hostRun.bind receipt.ownerLogEventDigest")
+    _require_decimal(receipt["bindingManagedRevision"],
+                     "hostRun.bind receipt.bindingManagedRevision")
+    if binding["dispatchKeyDigest"] != dispatch_key_digest:
+        raise EvalError("host_run.bind returned a binding for a different dispatch key")
+    if binding["manifestDigest"] != manifest_digest:
+        raise EvalError("host_run.bind returned a binding for a different manifest")
+    if receipt["dispatchKeyDigest"] != dispatch_key_digest:
+        raise EvalError("host_run.bind receipt names a different dispatch key")
+    if receipt["bindingDigest"] != binding["bindingDigest"]:
+        raise EvalError("host_run.bind receipt names a different binding")
+    return binding, receipt
+
+
+def parse_host_run_bind_receipt_response(value, *, dispatch_key_digest: str,
+                                         binding_digest: str) -> dict:
+    """Validate `host_run.bind_receipt`'s `{schemaVersion, status, receipt}` reply."""
+    response = _require_exact_fields(
+        value, ("schemaVersion", "status", "receipt"), "hostRun.bind_receipt response")
+    _require_schema_version(response, "hostRun.bind_receipt response")
+    if response["status"] != "RECORDED":
+        raise EvalError("host_run.bind_receipt did not record the post-commit receipt")
+    receipt = _require_exact_fields(
+        response["receipt"], HOST_RUN_P8_OWNER_RECEIPT_FIELDS,
+        "hostRun.bind_receipt receipt")
+    _require_schema_version(receipt, "hostRun.bind_receipt receipt")
+    _require_blake3(receipt["dispatchKeyDigest"], "hostRun.bind_receipt receipt.dispatchKeyDigest")
+    _require_blake3(receipt["bindingDigest"], "hostRun.bind_receipt receipt.bindingDigest")
+    _require_id(receipt["ownerLogID"], "hostRun.bind_receipt receipt.ownerLogID")
+    _require_decimal(receipt["ownerLogSequence"], "hostRun.bind_receipt receipt.ownerLogSequence")
+    _require_owner_event_digest(receipt["ownerLogEventDigest"],
+                                "hostRun.bind_receipt receipt.ownerLogEventDigest")
+    if receipt["dispatchKeyDigest"] != dispatch_key_digest:
+        raise EvalError("host_run.bind_receipt names a different dispatch key")
+    if receipt["bindingDigest"] != binding_digest:
+        raise EvalError("host_run.bind_receipt names a different binding")
+    return receipt
+
+
+def parse_host_run_inspect_response(value, *, dispatch_key_digest: str) -> dict:
+    """Validate `host_run.inspect`'s `HostRunReconciliationV1` reply.
+
+    Null fields are omitted by the route, so absent keys are expected. A
+    terminal status must carry no unknown reason; an UNKNOWN status must carry
+    one of the frozen typed reasons; a status outside the four published values
+    or an unrecognised reason is rejected rather than trusted.
+    """
+    if type(value) is not dict:
+        raise EvalError("hostRun.inspect response must be a plain JSON object")
+    if set(value) - set(HOST_RUN_RECONCILIATION_FIELDS):
+        raise EvalError("hostRun.inspect response carries fields outside the frozen contract")
+    reconciliation = dict(value)
+    _require_schema_version(reconciliation, "hostRun.inspect response")
+    status = reconciliation.get("status")
+    if status not in ("SUCCEEDED", "FAILED", "CANCELLED", "UNKNOWN"):
+        raise EvalError("hostRun.inspect response status is invalid")
+    if reconciliation.get("dispatchKeyDigest") != dispatch_key_digest:
+        raise EvalError("hostRun.inspect resolved a different dispatch key")
+    reason = reconciliation.get("unknownReason")
+    if status == "UNKNOWN":
+        if reason not in HOST_RUN_UNKNOWN_REASONS:
+            raise EvalError("hostRun.inspect UNKNOWN status carries an unrecognised reason")
+    elif reason is not None:
+        raise EvalError("hostRun.inspect terminal status carries an unknown reason")
+    binding = reconciliation.get("binding")
+    if binding is not None:
+        binding = _validate_host_run_binding(binding, "hostRun.inspect binding")
+        if binding["dispatchKeyDigest"] != dispatch_key_digest:
+            raise EvalError("hostRun.inspect binding names a different dispatch key")
+        reconciliation["binding"] = binding
+    digest_value = reconciliation.get("bindingDigest")
+    if digest_value is not None:
+        _require_blake3(digest_value, "hostRun.inspect bindingDigest")
+        if binding is None:
+            raise EvalError("hostRun.inspect returned a binding digest without a binding")
+        if digest_value != binding["bindingDigest"]:
+            raise EvalError("hostRun.inspect binding digest disagrees with its binding")
+    for field in ("attemptReceiptDigest", "verifiedRevision"):
+        present = reconciliation.get(field)
+        if present is not None:
+            _require_id(present, f"hostRun.inspect {field}")
+    return reconciliation
+
+
+class HostRunTransport(Protocol):
+    """RPC seam to the authenticated HostKernel; no implementation is installed."""
+
+    def call(self, service: str, operation: str, body: Mapping) -> Mapping: ...
+
+
+class HostRunOwnerLog(Protocol):
+    """P8 OwnerLog append seam for the mirrored `HostRunDispatchBoundV1` event.
+
+    The Rust append (P8 `worker_durable`) is not compiled into any Python
+    path; it must return the *receipt* facts derived from the committed
+    OwnerLog cursor, which this consumer then submits through
+    `host_run.bind_receipt`. A caller-supplied cursor is never accepted here.
+    """
+
+    def append_dispatch_bound(self, binding: Mapping, binding_digest: str) -> Mapping: ...
+
+
+@dataclass(frozen=True)
+class HostRunDispatchHandleV1:
+    """Host-derived Goal/Attempt identity for one pair, reported by the bridge."""
+
+    goal_id: str
+    attempt_id: str
+
+
+class HostRunControlPlaneClient:
+    """Typed consumer for the three HostRun routes with strict bodies/replies."""
+
+    def __init__(self, transport: HostRunTransport, goal_id: str):
+        if not callable(getattr(transport, "call", None)):
+            raise EvalError("HostRun transport is unavailable")
+        self._transport = transport
+        self.goal_id = _require_id(goal_id, "hostRun.goalID")
+
+    def _call(self, operation: str, body: Mapping) -> Mapping:
+        try:
+            response = self._transport.call(MANAGED_SERVICE_ID, operation, dict(body))
+        except EvalError:
+            raise
+        except Exception as exc:
+            raise EvalError(
+                f"host_run route {operation} failed: {type(exc).__name__}") from exc
+        if not isinstance(response, Mapping):
+            raise EvalError(f"host_run route {operation} returned a non-object response")
+        return dict(response)
+
+    def bind(self, *, attempt_id: str, dispatch_key_digest: str, manifest_digest: str,
+             evaluator_task_id: str, arm_id: str, task_group: str) -> tuple[dict, dict]:
+        body = host_run_bind_body(
+            goal_id=self.goal_id, attempt_id=attempt_id,
+            dispatch_key_digest=dispatch_key_digest, manifest_digest=manifest_digest,
+            evaluator_task_id=evaluator_task_id, arm_id=arm_id, task_group=task_group)
+        return parse_host_run_bind_response(
+            self._call(HOST_RUN_BIND_OPERATION, body),
+            dispatch_key_digest=dispatch_key_digest, manifest_digest=manifest_digest)
+
+    def commit_owner_receipt(self, *, dispatch_key_digest: str, binding_digest: str,
+                             owner_receipt: Mapping) -> dict:
+        receipt = _require_exact_fields(
+            owner_receipt,
+            ("ownerLogID", "ownerLogSequence", "ownerLogEventDigest"),
+            "P8 OwnerLog post-commit receipt")
+        body = host_run_bind_receipt_body(
+            goal_id=self.goal_id, dispatch_key_digest=dispatch_key_digest,
+            binding_digest=binding_digest,
+            owner_log_id=receipt["ownerLogID"],
+            owner_log_sequence=receipt["ownerLogSequence"],
+            owner_log_event_digest=receipt["ownerLogEventDigest"])
+        return parse_host_run_bind_receipt_response(
+            self._call(HOST_RUN_BIND_RECEIPT_OPERATION, body),
+            dispatch_key_digest=dispatch_key_digest, binding_digest=binding_digest)
+
+    def inspect(self, dispatch_key_digest: str) -> dict:
+        body = host_run_inspect_body(goal_id=self.goal_id,
+                                     dispatch_key_digest=dispatch_key_digest)
+        return parse_host_run_inspect_response(
+            self._call(HOST_RUN_INSPECT_OPERATION, body),
+            dispatch_key_digest=dispatch_key_digest)
+
+
+def host_run_binding_is_absent(reconciliation: Mapping, dispatch_key_digest: str) -> bool:
+    """True only for the exact typed "this key was never bound" resolution.
+
+    Anything else — a present binding, a different key, an unrecognised shape —
+    means the key may already have been dispatched and must not be redispatched.
+    """
+    return (
+        isinstance(reconciliation, Mapping)
+        and reconciliation.get("status") == "UNKNOWN"
+        and reconciliation.get("unknownReason") == HOST_RUN_BINDING_ABSENT
+        and reconciliation.get("dispatchKeyDigest") == dispatch_key_digest
+        and not reconciliation.get("binding")
+        and not reconciliation.get("bindingDigest")
+        and not reconciliation.get("attemptReceiptDigest")
+        and not reconciliation.get("verifiedRevision")
+    )
+
+
+def _require_exact_terminal_resolution(reconciliation, *, dispatch_key_digest: str,
+                                       expected_statuses, manifest_digest: str,
+                                       task_id: str, arm_id: str, task_group: str,
+                                       workspace_revision, context: str) -> None:
+    """Release a dispatch key only on an exact, fully pinned terminal resolution."""
+    detail = None
+    try:
+        parsed = parse_host_run_inspect_response(
+            reconciliation, dispatch_key_digest=dispatch_key_digest)
+    except EvalError as exc:
+        detail = str(exc)
+        parsed = None
+    if parsed is not None:
+        status = parsed.get("status")
+        if status not in HOST_RUN_TERMINAL_STATUSES:
+            detail = f"resolution is {status} with reason "\
+                     f"{parsed.get('unknownReason')!r}"
+        elif status not in expected_statuses:
+            detail = f"resolution {status} does not corroborate the persisted row"
+        else:
+            binding = parsed.get("binding")
+            if binding is None or parsed.get("bindingDigest") is None:
+                detail = "terminal resolution carries no binding"
+            elif binding.get("manifestDigest") != manifest_digest:
+                detail = "binding names a different manifest"
+            elif (binding.get("evaluatorTaskId") != task_id
+                    or binding.get("armId") != arm_id
+                    or binding.get("taskGroup") != task_group):
+                detail = "binding names a different task/arm/group"
+            elif not parsed.get("attemptReceiptDigest"):
+                detail = "terminal resolution carries no Attempt receipt digest"
+            elif status == "SUCCEEDED":
+                verified = parsed.get("verifiedRevision")
+                if not isinstance(verified, str) or not verified:
+                    detail = "SUCCEEDED resolution carries no verified revision"
+                elif workspace_revision is None:
+                    detail = "persisted row records no final workspace revision"
+                elif verified != workspace_revision:
+                    detail = "verified revision differs from the recorded final revision"
+    if detail is not None:
+        raise HostRunReconciliationBlocked(
+            f"{context} ({detail})",
+            reason=str(parsed.get("unknownReason")) if parsed else None,
+        )
+
+
+def host_run_row_dispatch_key(manifest_digest: str, row: Mapping,
+                              context: str) -> str:
+    """Rebuild the canonical dispatch key for a persisted row, exactly.
+
+    The row's own recorded key, when present, must agree with the frozen
+    pair identity; a disagreement is a foreign row and stays blocked.
+    """
+    task_id = _require_id(row.get("taskId"), "journal.taskId")
+    arm_id = _require_id(row.get("armId"), "journal.armId")
+    expected = host_run_dispatch_key(manifest_digest, task_id, arm_id)
+    recorded = row.get("dispatchIdempotencyKey")
+    if recorded is not None and recorded != expected:
+        raise HostRunReconciliationBlocked(
+            f"{context} (recorded dispatch key differs from the frozen pair identity)")
+    return expected
+
+
+def reconcile_persisted_host_run_outcome(control_plane, manifest: Mapping,
+                                         manifest_digest: str, row: Mapping) -> None:
+    """Resolve a persisted PASS/FAIL/UNSUPPORTED row through `host_run.inspect`.
+
+    Only an exact terminal resolution releases the row for reuse. Everything
+    else — missing, stale, foreign, duplicate, conflicting or ambiguous
+    evidence, an unavailable route, or an exception — keeps the run blocked and
+    never redispatches.
+    """
+    context = "persisted HostRun outcome requires authenticated reconciliation before reuse"
+    status = row.get("status")
+    if status not in HOST_RUN_OUTCOME_STATUSES:
+        raise HostRunReconciliationBlocked(f"{context} (row status {status!r})")
+    dispatch_key = host_run_row_dispatch_key(manifest_digest, row, context)
+    dispatch_key_digest = host_run_dispatch_key_digest(dispatch_key)
+    task_id = row["taskId"]
+    try:
+        task_group = (row.get("taskGroup")
+                      or next(task["taskGroup"] for task in manifest["tasks"]
+                              if task["taskId"] == task_id))
+    except StopIteration as exc:
+        raise HostRunReconciliationBlocked(
+            f"{context} (row names a task outside the frozen manifest)") from exc
+    try:
+        reconciliation = control_plane.inspect(dispatch_key_digest)
+    except HostRunReconciliationBlocked:
+        raise
+    except Exception as exc:
+        raise HostRunReconciliationBlocked(
+            f"{context} (host_run.inspect failed: {type(exc).__name__})") from exc
+    _require_exact_terminal_resolution(
+        reconciliation,
+        dispatch_key_digest=dispatch_key_digest,
+        expected_statuses=HOST_RUN_RECONCILIATION_STATUS_FOR_OUTCOME[status],
+        manifest_digest=host_run_manifest_digest(manifest),
+        task_id=task_id,
+        arm_id=row["armId"],
+        task_group=task_group,
+        workspace_revision=row.get("workspaceRevision"),
+        context=context,
+    )
+
+
+def _begin_host_run_dispatch(control_plane, owner_log, bridge, invocation, manifest,
+                             task_pin, arm_pin, dispatch_key_digest: str) -> None:
+    """Pre-dispatch append: reconcile → bind → P8 OwnerLog mirror → post-commit.
+
+    Reconciling *before* anything else is what makes a crashed or restarted
+    sibling safe: a key that already carries a durable binding is possibly
+    dispatched and raises instead of binding or dispatching a second time.
+    Nothing here is dispatched; HostRun dispatch happens only after the
+    post-commit receipt is durable.
+    """
+    reconciliation = control_plane.inspect(dispatch_key_digest)
+    if not host_run_binding_is_absent(reconciliation, dispatch_key_digest):
+        raise HostRunReconciliationBlocked(
+            "a durable HostRun binding already exists for this dispatch key; "
+            "a possibly-dispatched key is never redispatched",
+            reason=(reconciliation.get("unknownReason")
+                    if isinstance(reconciliation, Mapping) else None))
+    handle = bridge.prepare_dispatch(invocation)
+    if not isinstance(handle, HostRunDispatchHandleV1):
+        raise EvalError("HostRun bridge prepare_dispatch must return a HostRunDispatchHandleV1")
+    if handle.goal_id != control_plane.goal_id:
+        raise EvalError("HostRun dispatch handle names a foreign Goal")
+    binding, receipt = control_plane.bind(
+        attempt_id=handle.attempt_id,
+        dispatch_key_digest=dispatch_key_digest,
+        manifest_digest=host_run_manifest_digest(manifest),
+        evaluator_task_id=task_pin["taskId"],
+        arm_id=arm_pin["id"],
+        task_group=task_pin["taskGroup"],
+    )
+    # The OwnerLog cursor/event digest comes from this separate post-commit
+    # receipt, never from the event body itself.
+    owner_receipt = owner_log.append_dispatch_bound(binding, receipt["bindingDigest"])
+    control_plane.commit_owner_receipt(
+        dispatch_key_digest=dispatch_key_digest,
+        binding_digest=receipt["bindingDigest"],
+        owner_receipt=owner_receipt,
+    )
+
+
+def _resolve_host_run_dispatch(control_plane, row: Mapping, outcome, manifest,
+                               invocation, dispatch_key_digest: str) -> str:
+    """Post-dispatch resolve: a non-exact terminal resolution demotes to UNKNOWN."""
+    context = "HostRun dispatch requires an exact terminal reconciliation"
+    try:
+        reconciliation = control_plane.inspect(dispatch_key_digest)
+    except HostRunReconciliationBlocked:
+        raise
+    except Exception as exc:
+        raise HostRunReconciliationBlocked(
+            f"{context} (host_run.inspect failed: {type(exc).__name__})") from exc
+    _require_exact_terminal_resolution(
+        reconciliation,
+        dispatch_key_digest=dispatch_key_digest,
+        expected_statuses=HOST_RUN_RECONCILIATION_STATUS_FOR_OUTCOME[row["status"]],
+        manifest_digest=host_run_manifest_digest(manifest),
+        task_id=row["taskId"],
+        arm_id=row["armId"],
+        task_group=row["taskGroup"],
+        workspace_revision=outcome.workspace_revision,
+        context=context,
+    )
+    return dispatch_key_digest
+
+
 def run_host_paired_evaluation(
     manifest: Mapping,
     bridge: HostRunBridge,
     task_resolver: TaskImageResolver,
     artifact_path: Path,
+    control_plane: HostRunControlPlaneClient | None = None,
+    owner_log: HostRunOwnerLog | None = None,
 ) -> EvaluationResult:
     """Run paired tasks only through authenticated HostRun; never call providers directly.
 
@@ -729,6 +1400,15 @@ def run_host_paired_evaluation(
     bridge remains unavailable until authenticated P1/P2 HostRun and independent
     verifier integration lands. Its reports can inform development but never become
     official benchmark or release claims automatically.
+
+    When ``control_plane`` (or ``bridge.control_plane``) is supplied, every pair
+    goes through the published HostRun sequence — pre-dispatch
+    ``host_run.inspect`` reconciliation, ``host_run.bind`` append, P8 OwnerLog
+    mirror append, ``host_run.bind_receipt`` post-commit, dispatch, then a
+    resolving ``host_run.inspect``. A persisted PASS/FAIL/UNSUPPORTED row is
+    reused only after ``host_run.inspect`` returns an exact terminal resolution;
+    every other outcome keeps the run blocked and never redispatches. Without a
+    control plane the runner behaves exactly as before and stays non-authoritative.
     """
     frozen = json.loads(canonical_json(dict(manifest)))
     validate_manifest(frozen)
@@ -738,6 +1418,21 @@ def run_host_paired_evaluation(
         raise EvalError("authenticated HostRun bridge is unavailable")
     if not callable(getattr(task_resolver, "resolve_task", None)):
         raise EvalError("repository-local task image resolver is unavailable")
+    control = control_plane if control_plane is not None else getattr(
+        bridge, "control_plane", None)
+    if control is not None:
+        if not all(callable(getattr(control, name, None))
+                   for name in ("bind", "commit_owner_receipt", "inspect")):
+            raise EvalError(
+                "HostRun control plane must expose bind, commit_owner_receipt and inspect")
+        if owner_log is None:
+            owner_log = getattr(bridge, "owner_log", None)
+        if not callable(getattr(owner_log, "append_dispatch_bound", None)):
+            raise EvalError(
+                "P8 OwnerLog append seam for HostRunDispatchBoundV1 is unavailable")
+        if not callable(getattr(bridge, "prepare_dispatch", None)):
+            raise EvalError(
+                "HostRun bridge cannot supply the host-derived dispatch handle")
     frozen_digest = digest(frozen)
     shared_digest = digest(frozen["shared"])
     tasks = {task["taskId"]: task for task in frozen["tasks"]}
@@ -749,6 +1444,15 @@ def run_host_paired_evaluation(
         existing_keys = {(row.get("taskId"), row.get("armId")) for row in journal.records}
         if not existing_keys.issubset(plan_keys):
             raise EvalError("HostRun artifact contains trial rows outside this frozen paired plan")
+        outcome_rows = [row for row in journal.records
+                        if row.get("status") in HOST_RUN_OUTCOME_STATUSES]
+        if outcome_rows:
+            if control is None:
+                raise EvalError(
+                    "persisted HostRun outcome requires authenticated reconciliation before reuse"
+                )
+            for row in outcome_rows:
+                reconcile_persisted_host_run_outcome(control, frozen, frozen_digest, row)
         stopped = next((row for row in journal.records if row.get("status") in {
             "CANCELLED", "INFRASTRUCTURE_FAILURE", "NOT_RUN", "UNKNOWN"
         }), None)
@@ -792,25 +1496,39 @@ def run_host_paired_evaluation(
                 raise EvalError("resolved task group differs from frozen manifest")
             invocation = HostRunInvocationV1(
                 frozen_digest, shared_digest,
-                digest({"manifestDigest": frozen_digest, "taskId": task_id,
-                        "armId": arm_id, "lane": "HUP_PAIRED_HOST_RUN_V1"}),
+                host_run_dispatch_key(frozen_digest, task_id, arm_id),
                 call_index, task_envelope,
                 dict(arm_pin), dict(frozen["shared"]),
             )
             journal.assert_current()
+            dispatch_key_digest = (
+                host_run_dispatch_key_digest(invocation.dispatch_idempotency_key)
+                if control is not None else None)
             try:
+                if control is not None:
+                    _begin_host_run_dispatch(
+                        control, owner_log, bridge, invocation, frozen, task_pin, arm_pin,
+                        dispatch_key_digest)
                 outcome = bridge.dispatch_guarded_trial(invocation)
                 status, row = _validate_host_run_outcome(outcome, invocation, frozen, task_pin, arm_pin)
+                if control is not None:
+                    row["hostRunDispatchKeyDigest"] = _resolve_host_run_dispatch(
+                        control, row, outcome, frozen, invocation, dispatch_key_digest)
             except Exception as exc:
                 row = {"taskId": task_id, "taskGroup": task_pin["taskGroup"],
                        "armId": arm_id, "manifestDigest": frozen_digest,
-                       # The bridge was entered, so dispatch may have happened.
-                       # Treat the result as UNKNOWN and never retry this pair.
+                       # The HostRun flow was entered (a binding may exist), so
+                       # dispatch may have happened. Treat the result as
+                       # UNKNOWN and never retry this pair.
                        "status": "UNKNOWN", "failureClass": "unknown",
                        "errorType": type(exc).__name__, "dispatchStarted": True,
                        "hostRunDispatchIndex": call_index,
                        "dispatchIdempotencyKey": invocation.dispatch_idempotency_key,
                        "mode": "HOST_RUN_PAIRED"}
+                if dispatch_key_digest is not None:
+                    row["hostRunDispatchKeyDigest"] = dispatch_key_digest
+                if isinstance(exc, HostRunReconciliationBlocked) and exc.reason:
+                    row["hostRunUnknownReason"] = exc.reason
                 status = row["status"]
             journal.append(row)
             existing_keys.add((task_id, arm_id))
@@ -936,6 +1654,10 @@ def summarize_pairs(records: list[dict] | tuple[dict, ...], manifest: Mapping) -
         mode = row.get("mode")
         if mode not in {"FAKE_SELF_CHECK", "HOST_RUN_PAIRED"}:
             raise EvalError("summary trial has an unknown execution mode")
+        if mode == "HOST_RUN_PAIRED" and row.get("status") in {
+            "PASS_VERIFIED", "FAIL_UNVERIFIED", "UNSUPPORTED_CAPABILITY"
+        }:
+            _validate_host_run_trial_evidence(row, require_complete=True)
         execution_modes.add(mode)
         for field in ("elapsedMs", "inputTokens", "outputTokens", "toolCalls", "retries",
                       "interventions", "costMicros"):
@@ -1154,12 +1876,15 @@ class _ArtifactJournal:
                  mode: str = "FAKE_SELF_CHECK"):
         if mode not in {"FAKE_SELF_CHECK", "HOST_RUN_PAIRED"}:
             raise EvalError("unsupported evaluation journal mode")
+        # Initialize owned descriptors first so __del__ is safe when a later
+        # path/validation step raises before the journal is fully constructed.
+        self.artifact_fd = -1
+        self.parent_fd = -1
         root, components = _artifact_location(path)
         self.root = root
         self.components = components
         self.parent_fd = _open_parent(root, components[:-1], create=True)
         self.name = components[-1]
-        self.artifact_fd = -1
         self.file_identity: tuple[int, int] | None = None
         self.manifest_digest = manifest_digest
         self.mode = mode
@@ -1227,10 +1952,10 @@ class _ArtifactJournal:
         self._validate_records()
 
     def close(self):
-        if self.artifact_fd >= 0:
+        if getattr(self, "artifact_fd", -1) >= 0:
             os.close(self.artifact_fd)
             self.artifact_fd = -1
-        if self.parent_fd >= 0:
+        if getattr(self, "parent_fd", -1) >= 0:
             os.close(self.parent_fd)
             self.parent_fd = -1
 
@@ -1243,6 +1968,7 @@ class _ArtifactJournal:
     def _validate_records(self):
         seen = set()
         call_indexes = set()
+        stopped = False
         for row in self.records:
             if not isinstance(row, dict) or row.get("recordType") != "trial":
                 raise EvalError("artifact contains a non-trial row after its header")
@@ -1265,6 +1991,16 @@ class _ArtifactJournal:
                 "INFRASTRUCTURE_FAILURE", "NOT_RUN", "UNKNOWN",
             }:
                 raise EvalError("artifact contains an unknown trial status")
+            if stopped and status != "NOT_RUN":
+                raise EvalError("artifact dispatches a trial after a terminal trial")
+            if status == "NOT_RUN" and not stopped:
+                raise EvalError("artifact NOT_RUN precedes a terminal trial")
+            dispatch_started = row.get("dispatchStarted")
+            expected_dispatch = status not in {"NOT_RUN", "CANCELLED"} or (
+                status == "CANCELLED" and dispatch_started is True
+            )
+            if not isinstance(dispatch_started, bool) or dispatch_started != expected_dispatch:
+                raise EvalError("artifact dispatch state contradicts trial status")
             call_index_field = "providerCallIndex" if self.mode == "FAKE_SELF_CHECK" else "hostRunDispatchIndex"
             call_index = row.get(call_index_field)
             if status == "NOT_RUN":
@@ -1278,6 +2014,12 @@ class _ArtifactJournal:
                 raise EvalError("artifact provider call indexes must be unique bounded integers")
             else:
                 call_indexes.add(call_index)
+            if status in {"CANCELLED", "INFRASTRUCTURE_FAILURE", "UNKNOWN"}:
+                stopped = True
+            if self.mode == "HOST_RUN_PAIRED" and status in {
+                "PASS_VERIFIED", "FAIL_UNVERIFIED", "UNSUPPORTED_CAPABILITY"
+            }:
+                _validate_host_run_trial_evidence(row, require_complete=False)
             seen.add(key)
         if call_indexes != set(range(len(call_indexes))):
             raise EvalError("artifact provider call indexes are not a contiguous execution prefix")
@@ -1406,7 +2148,7 @@ def run_fake_selfcheck(manifest: Mapping, provider: Provider, artifact_path: Pat
                     or value > 2**63 - 1 for value in accounting)
                     or (response.cost_micros is not None and
                         (not isinstance(response.cost_micros, int) or isinstance(response.cost_micros, bool)
-                         or response.cost_micros < 0 or response.cost_micros > 2**63 - 1)):
+                         or response.cost_micros < 0 or response.cost_micros > 2**63 - 1))):
                 raise InfrastructureFailure("fake provider returned invalid accounting")
             if not isinstance(response.capability_complete, bool):
                 raise InfrastructureFailure("fake provider returned invalid capability status")
@@ -1513,12 +2255,12 @@ def selfcheck_manifest() -> dict:
         "benchmark": {"name": "horizoncode-hup005-fixture", "version": "1", "split": "selfcheck",
                       "splitDigest": digest(["fixture-1", "fixture-2"]), "scoringField": "passed",
                       "evaluatorDigest": digest("fixture-oracle-v1")},
-        "shared": {"providerRoute": "FAKE_ONLY", "modelRevision": "fake-v1",
+        "shared": {"providerRoute": "FAKE_ONLY", "modelRevision": "fake-v1", "modelClass": "small",
                    "repositoryImageDigest": digest("fixture-repo"), "promptDigest": digest("fixture-prompt"),
                    "oracleDigest": digest("fixture-oracle-v1"), "permissionProfileDigest": digest("no-effects"),
                    "sampling": {"seed": 23, "temperature": 0},
                    "budgets": {"tokenBudget": 1000, "wallTimeMs": 1000, "maxToolCalls": 4,
-                               "maxRetries": 0, "costMicros": 0},
+                               "maxRetries": 0, "costMicros": 64},
                    "toolAllowlist": []},
         "arms": [{"id": "minimal", "harnessDigest": digest("minimal-fixture"),
                   "harnessCommit": "fixture-source-v1", "declaredFactor": "minimal_single_turn"},

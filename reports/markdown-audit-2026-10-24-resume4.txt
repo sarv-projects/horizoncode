@@ -1,0 +1,17 @@
+TRACKED_MARKDOWN 293 LINES 84486 BYTES 7939473
+ACTIVE_BLOCKERS 0 REFERENCE_WARNINGS 62
+REFERENCE_ONLY {"path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/09-SOURCE-MAP.md", "line": 29, "kind": "missing-relative-link", "target": "opencode-b1fe25ab-path-inventory.jsonl"}
+REFERENCE_ONLY {"path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/09-SOURCE-MAP.md", "line": 305, "kind": "missing-relative-link", "target": "external-source-register.json"}
+REFERENCE_ONLY {"path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/19-OPENCODE-UPSTREAM-REUSE.md", "line": 66, "kind": "missing-relative-link", "target": "external-source-register.json"}
+REFERENCE_ONLY {"path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/34-DOCUMENT-LINE-AUDIT-LEDGER.md", "line": 275, "kind": "missing-relative-link", "target": "repo-file-line-audit-manifest.json"}
+REFERENCE_ONLY {"path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/38-OMP-SOURCE-COMPETITIVE-AUDIT.md", "line": 163, "kind": "missing-relative-link", "target": "omp-tui-command-settings-inventory.json"}
+REFERENCE_ONLY {"path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/38-OMP-SOURCE-COMPETITIVE-AUDIT.md", "line": 163, "kind": "missing-relative-link", "target": "omp-provider-source-roster.json"}
+REFERENCE_ONLY {"path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/39-OMP-TUI-SLASH-MODEL-SETTINGS-AUDIT.md", "line": 4, "kind": "missing-relative-link", "target": "omp-tui-command-settings-inventory.json"}
+REFERENCE_ONLY {"path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/39-OMP-TUI-SLASH-MODEL-SETTINGS-AUDIT.md", "line": 691, "kind": "missing-relative-link", "target": "omp-provider-source-roster.json"}
+REFERENCE_ONLY {"path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/40-HORIZONCODE-OMP-INSPIRED-UI-PROPOSAL.md", "line": 4, "kind": "missing-relative-link", "target": "omp-tui-command-settings-inventory.json"}
+REFERENCE_ONLY {"path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/40-HORIZONCODE-OMP-INSPIRED-UI-PROPOSAL.md", "line": 219, "kind": "missing-relative-link", "target": "omp-provider-source-roster.json"}
+REFERENCE_ONLY {"path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/42-EXTERNAL-SOURCE-PROVENANCE-REGISTER.md", "line": 3, "kind": "missing-relative-link", "target": "external-source-register.json"}
+REFERENCE_ONLY {"path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/42-EXTERNAL-SOURCE-PROVENANCE-REGISTER.md", "line": 317, "kind": "missing-relative-link", "target": "repo-file-line-audit-manifest.json"}
+REFERENCE_ONLY {"path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/42-EXTERNAL-SOURCE-PROVENANCE-REGISTER.md", "line": 325, "kind": "missing-relative-link", "target": "ignored-reference-source-manifest.json"}
+REFERENCE_ONLY {"path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/44-FINAL-REPO-AUDIT-LEDGER.md", "line": 3, "kind": "missing-relative-link", "target": "repo-file-line-audit-manifest.json"}
+REFERENCE_ONLY {"path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/44-FINAL-REPO-AUDIT-LEDGER.md", "line": 3, "kind": "missing-relative-link", "target": "ownership-phrase-audit-candidates.json"}

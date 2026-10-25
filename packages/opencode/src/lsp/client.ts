@@ -7,6 +7,7 @@ import { withTimeout } from "../util/timeout"
 import { Filesystem } from "@/util/filesystem"
 import type { InstanceContext } from "@/project/instance-context"
 import { makeRepoDocumentReader } from "./repo-document-reader"
+import type { RepoDocumentReadResponseV1 } from "@opencode-ai/schema/repo-intelligence-v1"
 import {
   validateExecutionLaunchProfileRef,
   validateHostProcessRef,
@@ -67,6 +68,11 @@ export type LspRequestParams = {
   "textDocument/rename": Record<string, unknown>
   "textDocument/documentSymbol": Record<string, unknown>
   "workspace/symbol": Record<string, unknown>
+  "textDocument/hover": Record<string, unknown>
+  "textDocument/implementation": Record<string, unknown>
+  "textDocument/prepareCallHierarchy": Record<string, unknown>
+  "callHierarchy/incomingCalls": Record<string, unknown>
+  "callHierarchy/outgoingCalls": Record<string, unknown>
 }
 
 export type LspNotificationParams = {
@@ -143,9 +149,9 @@ function repoDocumentUnavailableReason(error: unknown): DocumentUnavailableReaso
 export type GuardedDocumentSnapshot = {
   readonly text: string
   /** UTF-8 content digest returned by the authenticated HostKernel files.read path. */
-  readonly contentDigest: string
+  readonly contentDigest: RepoDocumentReadResponseV1["contentDigest"]
   /** Revision observed by the authenticated HostKernel files.read path. */
-  readonly observedWorkspaceRevision: string
+  readonly observedWorkspaceRevision: RepoDocumentReadResponseV1["observedWorkspaceRevision"]
 }
 
 type DocumentDiagnosticReport = {

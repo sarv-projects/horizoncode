@@ -20,7 +20,7 @@ export interface Info extends Schema.Schema.Type<typeof Info> {}
 export const HorizonDocsIdentityV1 = {
   id: "builtin.horizon-docs",
   alias: "horizon-docs",
-  revision: "sha256:83d9a8e079486da8b673158cf2c2527ddb690eb55e56147c75b4d6489b3bb74e",
+  revision: "sha256:28fb74ebf91729f5f62f6342bcd0c21f25fbb72487afdaba239317d215526fee",
 } as const
 
 export const HorizonCodeIdentityV1 = {
@@ -33,6 +33,22 @@ export const SealedBuiltinIdentitiesV1 = {
   [HorizonDocsIdentityV1.id]: HorizonDocsIdentityV1,
   [HorizonCodeIdentityV1.id]: HorizonCodeIdentityV1,
 } as const
+
+/**
+ * Registry entry for the cross-field skill identity filter below.
+ *
+ * Effect asks consumers to extend `Annotations.MetaDefinitions` rather than
+ * `BuiltInMetaDefinitions` when a custom filter needs portable metadata
+ * (httpapi-codegen's `checksPortable` requires `meta` plus
+ * `arbitrary.constraint` on every filter it reflects).
+ */
+declare module "effect/Schema" {
+  namespace Annotations {
+    interface MetaDefinitions {
+      readonly isSkillIdentity: { readonly _tag: "isSkillIdentity" }
+    }
+  }
+}
 
 export interface Identity extends Schema.Schema.Type<typeof Identity> {}
 export const Identity = Schema.Struct({
@@ -47,22 +63,31 @@ export const Identity = Schema.Struct({
 })
   .annotate({ identifier: "SkillV2.Identity" })
   .check(
-    Schema.makeFilter((identity) => {
-      if (identity.source === "builtin") {
-        const canonical = SealedBuiltinIdentitiesV1[identity.id as keyof typeof SealedBuiltinIdentitiesV1]
-        return canonical &&
-          identity.alias === canonical.alias &&
-          identity.trust === "sealed_builtin" &&
-          identity.revision === canonical.revision
-          ? undefined
-          : "the sealed builtin identity must match a canonical built-in skill"
-      }
-      if (identity.trust !== "untrusted" || identity.id.startsWith("builtin."))
-        return "project, user, and remote skills must be untrusted and cannot use reserved builtin IDs"
-      if (!identity.id.startsWith(`${identity.source}.`))
-        return "skill identity namespace must match its source"
-      return undefined
-    }),
+    Schema.makeFilter(
+      (identity) => {
+        if (identity.source === "builtin") {
+          const canonical = SealedBuiltinIdentitiesV1[identity.id as keyof typeof SealedBuiltinIdentitiesV1]
+          return canonical &&
+            identity.alias === canonical.alias &&
+            identity.trust === "sealed_builtin" &&
+            identity.revision === canonical.revision
+            ? undefined
+            : "the sealed builtin identity must match a canonical built-in skill"
+        }
+        if (identity.trust !== "untrusted" || identity.id.startsWith("builtin."))
+          return "project, user, and remote skills must be untrusted and cannot use reserved builtin IDs"
+        if (!identity.id.startsWith(`${identity.source}.`))
+          return "skill identity namespace must match its source"
+        return undefined
+      },
+      {
+        meta: { _tag: "isSkillIdentity" },
+        // Node-local generation hint: this cross-field predicate constrains no
+        // property of the object itself, so the constraint stays empty and
+        // generated values are still validated by the filter predicate.
+        arbitrary: { constraint: {} },
+      },
+    ),
   )
 
 export const Info = Schema.Struct({

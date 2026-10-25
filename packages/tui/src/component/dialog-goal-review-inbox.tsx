@@ -96,7 +96,7 @@ export function DialogGoalReviewInbox(props: { directory?: string; workspace?: s
   }
 
   return (
-    <DialogSelect
+    <DialogSelect<{ kind: "proposal"; proposal: GoalReviewProjection } | { kind: "next" }>
       title={`Managed Goal review inbox${truncated() ? " · more available" : ""}`}
       options={options()}
       emptyView={<text fg={theme.theme.textMuted}>{loading() ? "Loading proposals…" : "No pending proposals in this workspace."}</text>}

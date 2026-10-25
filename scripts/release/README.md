@@ -41,9 +41,9 @@ fail-fast entrypoint; it does not import the upstream publisher. The container
 builder keeps host-architecture local image builds but rejects `--push` and
 `PUSH=1` before any Docker command. The distribution audit treats missing or
 enabled workflow overlays and missing direct-entrypoint guards as release
-blockers. Do not restore publication jobs or push behavior until the
-distribution grant, signing policy, product target and release acceptance are
-explicitly approved.
+blockers. Do not restore publication jobs or push behavior: although first-party
+MIT is selected, exact third-party notice closure and candidate acceptance remain
+open, and signing/update policy is deferred beyond V1.
 
 Release source, candidate checkout, install fixtures, and JSON evidence outputs
 are constrained to paths inside this repository. The helpers reject external
@@ -58,6 +58,26 @@ The normal installer path intentionally accepts only a local executable via
 has an approved release signing trust policy. Automatic updates remain disabled;
 the CLI reports that state rather than starting a package-manager process.
 `horizoncode` and `hzcode` install from the same candidate entrypoint.
+`install --binary ... --dry-run` validates the candidate, destination, and
+planned aliases without creating directories, copying files, or editing shell
+profiles. `scripts/release/clean_install.py --dry-run` and
+`scripts/release/prepare_build.py --dry-run` provide the corresponding
+input/isolation and isolated-build validation only.
+
+Each built candidate carries the first-party MIT `LICENSE` and root `NOTICE`.
+The notice preserves the known OpenCode attribution and explicitly records
+that third-party dependency/native-asset notice closure still requires exact
+candidate inspection. The copyright holder/year for HorizonCode first-party
+work is not invented; the existing upstream statement is preserved. User
+decision 2026-10-25 resolves the first-party grant (DEC-V1-11), but does not
+clear incomplete third-party closure or authorize publication by itself.
+
+The manually dispatched qualification workflow first runs `bash -n install`,
+the synthetic release-tooling failure-path suite, and both dry runs on a read-only
+checkout. It then builds an isolated candidate, runs the real local installer and
+TUI smoke in a bubblewrap network-isolated home, and records the release gate.
+Without a previous release artifact, the install matrix is explicitly `PARTIAL`,
+not a release pass.
 
 ## Platform status
 
@@ -120,9 +140,9 @@ scripts can make:
 
 | Gate | Required decision/evidence | Current consequence |
 |---|---|---|
-| Distribution rights | Product owner/legal counsel selects and records the HorizonCode redistribution grant; complete first-party and transitive dependency/native-asset notices are assembled for the exact shipping artifact. Do not copy the vendor license as HorizonCode's license. | Distribution remains blocked; `UNLICENSED` metadata is retained. |
+| Distribution rights | User decision 2026-10-25 selects MIT for HorizonCode first-party distribution. Preserve upstream/vendor notices and inspect the exact transitive dependency/native-asset closure; do not invent copyright holder/year. | First-party grant is recorded; distribution remains blocked until exact artifact notice/license closure and candidate acceptance. |
 | Product/package identity | Confirm the Linux V1 artifact identity and publication target. Architecture §18.16 already specifies canonical `horizoncode`, with `hzcode` as its alias, and says to retain vendor package identifiers until dependency/build/license/migration checks pass. The workspace is `horizoncode-workspace`; the derived CLI package remains private `opencode`. | No npm/public package identity or rename is inferred. Local candidate commands remain `horizoncode` and `hzcode`. |
-| Signing and updates | Approve artifact-signing trust root, metadata format, key custody/rotation/revocation, channel and rollback/version/schema policy, plus staged activation and recovery behavior. | Remote install and automatic update stay unavailable. |
+| Signing and updates | User decision 2026-10-25 defers signing/update policy beyond V1. | Signing, remote install and automatic updates remain unavailable; no trust root or update rollback channel is configured. |
 | Platform claims | Decide claimed Linux distributions/architectures and separately qualify native Linux and each WSL lane. Native Windows support requires its own implementation and acceptance; WSL is not evidence for it. | Linux/WSL are not verified; native Windows is unavailable; macOS remains out of scope. |
 | Exact candidate acceptance | Produce a clean exact-revision candidate and separately run Linux and WSL clean install, config migration, TUI, upgrade, rollback, platform-capability, and full V1 gates. Bind evidence to source revision and artifact digest. | No release or supported-platform claim. |
 

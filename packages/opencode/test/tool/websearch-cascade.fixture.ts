@@ -149,7 +149,7 @@ export async function runSearchCascade(input: {
       .map((route) => ({ route, consent: "secret_broker_unknown_cost_v1" as const })),
   })
   const timeoutMs = Math.min(MAX_ROUTE_TIMEOUT_MS, Math.max(1, Math.floor(input.routeTimeoutMs ?? DEFAULT_ROUTE_TIMEOUT_MS)))
-  const byId = new Map(input.routes.map((route) => [route.id, route]))
+  const byId = new Map<SearchRouteID, CallbackSearchRoute>(input.routes.map((route) => [route.id, route]))
   const routeOrder = input.sessionProvider && settings.enabled.includes(input.sessionProvider)
     ? [input.sessionProvider, ...settings.order.filter((id) => id !== input.sessionProvider)]
     : settings.order
@@ -162,7 +162,7 @@ export async function runSearchCascade(input: {
       if (until !== undefined && until > now()) cooldownUntil.set(id, until)
     }))
   }
-  const configuredRoutes = routeOrder.map((id) => byId.get(id)).filter((route): route is SearchRoute => !!route?.configured)
+  const configuredRoutes = routeOrder.map((id) => byId.get(id)).filter((route): route is CallbackSearchRoute => !!route?.configured)
   const routes = configuredRoutes.filter((route) => !cooldownUntil.has(route.id))
   const attempts: SearchRouteAttempt[] = []
   const recordAttempt = async (attempt: SearchRouteAttempt) => {
@@ -262,5 +262,4 @@ export async function runSearchCascade(input: {
   }
   throw new SearchCascadeError(attempts)
 }
-
 

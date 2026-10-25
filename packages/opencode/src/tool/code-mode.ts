@@ -11,10 +11,29 @@ import {
   type CodeModeWaveRequestV1,
   type CodeModeWaveSettlementV1,
 } from "./code-mode-protocol"
+import { runCodeModeConversationEffectV1, type CodeModeHostAdapterV1, type CodeModeRunOutcomeV1 } from "./code-mode-run"
+
+/** Protocol tool-definition shape re-exported for SessionTools.resolve (P7). */
+export type { CodeModeToolV1 } from "./code-mode-protocol"
 
 export const CODE_MODE_TOOL = "execute"
 /** Enabled only after P1/P2's supervised helper and Guarded wave transport land. */
 export const CODE_MODE_HELPER_RUNTIME_READY = false
+
+/**
+ * Registry/UI gate for `codemode.execute`. Source presence, a runtime feature
+ * flag, a plugin or an MCP catalog can never enable CodeMode: the packaged
+ * helper acceptance flag and an exact host-authenticated enablement are both
+ * required. Callers pass `runtimeReady` only from the trusted packaged-helper
+ * readiness projection, never from model arguments.
+ */
+export function codeModeEnabled(input: {
+  readonly runtimeReady?: boolean
+  readonly enablement?: unknown
+} = {}): boolean {
+  return CODE_MODE_HELPER_RUNTIME_READY && input.runtimeReady === true &&
+    input.enablement !== undefined && input.enablement !== null
+}
 
 const DESCRIPTION = "Run a bounded orchestration script over tools available to the current session."
 
@@ -47,6 +66,16 @@ export type CodeModeDispatchWaveV1 = (input: {
 export type CodeModeToolContextV1 = {
   readonly tools: readonly CodeModeToolV1[]
   readonly dispatchWave: CodeModeDispatchWaveV1
+  /**
+   * Trusted adapter bound to the exact authenticated HostKernel operation
+   * surface. It is supplied outside model input; absent means CodeMode stays
+   * unavailable on this lane.
+   */
+  readonly host?: CodeModeHostAdapterV1
+  /** Exact host-authenticated lane binding captured at the request boundary. */
+  readonly lane?: CodeModeLaneBindingV1
+  /** Exact non-secret enablement reference resolved by the trusted caller. */
+  readonly enablementRef?: string
 }
 
 export const CODE_MODE_TOOL_CONTEXT_KEY_V1 = "horizonCodeModeV1"
@@ -202,6 +231,9 @@ function decodeHostState(value: unknown, expectedRequestID: string, expectedExec
   }
   if ((result.status === "UNKNOWN") !== (outerReceipt?.status === "unknown") ||
     ((result.status === "COMPLETE" || result.status === "CANCELLED") && outerReceipt?.status !== "settled") ||
+    // An active execution has no terminal outer receipt yet; a settled or
+    // UNKNOWN receipt on READY/WAVE_PENDING is a contradictory host state.
+    ((result.status === "READY" || result.status === "WAVE_PENDING") && outerReceipt !== null) ||
     (result.status === "WAVE_PENDING" && result.pendingBatchID === null) ||
     ((result.status === "READY" || result.status === "COMPLETE" || result.status === "CANCELLED" || result.status === "UNKNOWN") && result.pendingBatchID !== null)) {
     throw new TypeError("HostKernel CodeMode state conflicts with its receipt or pending wave")
@@ -415,21 +447,97 @@ export const Parameters = Schema.Struct({
     .annotate({ description: "Script body executed by the confined interpreter (maximum 65,536 UTF-8 bytes)." }),
 })
 
-type Metadata = { toolCalls: []; error?: boolean }
+type Metadata = {
+  toolCalls: []
+  status?: "completed" | "failed" | "cancelled" | "unknown" | "unavailable"
+  waves?: number
+  totalCalls?: number
+  truncated?: boolean
+  errorCode?: string
+  error?: boolean
+}
+
+function codeModeToolContext(value: unknown): CodeModeToolContextV1 | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined
+  const input = value as Record<string, unknown>
+  if (!Array.isArray(input.tools) || typeof input.dispatchWave !== "function") return undefined
+  return value as CodeModeToolContextV1
+}
+
+function outcomeMessage(outcome: CodeModeRunOutcomeV1): string {
+  switch (outcome.status) {
+    case "completed":
+      return outcome.output
+    case "cancelled":
+      return outcome.output || "Execution cancelled."
+    case "failed":
+      return outcome.output || "CodeMode execution failed."
+    case "unknown":
+      return outcome.output || "CodeMode outcome is unknown; no later wave was admitted."
+    case "unavailable":
+      return outcome.output || "CodeMode is unavailable."
+    default:
+      return "CodeMode is unavailable."
+  }
+}
 
 const init: Tool.DefWithoutID<typeof Parameters, Metadata> = {
   description: DESCRIPTION,
   parameters: Parameters,
   capability: { id: "codemode.execute", effectClass: "effect" },
-  execute: (_params, ctx) => Effect.succeed({
-    title: CODE_MODE_TOOL,
-    metadata: { toolCalls: [], error: true },
-    output: ctx.abort.aborted
-      ? "Execution cancelled."
-      : !CODE_MODE_HELPER_RUNTIME_READY
-        ? "CodeMode is unavailable until its supervised helper and authenticated Guarded wave transport are accepted."
-        : "CodeMode helper transport is unavailable.",
-  } satisfies Tool.ExecuteResult<Metadata>),
+  execute: (params, ctx) => {
+    if (ctx.abort.aborted) {
+      return Effect.succeed({
+        title: CODE_MODE_TOOL,
+        metadata: { toolCalls: [], status: "cancelled" as const, error: true },
+        output: "Execution cancelled.",
+      } satisfies Tool.ExecuteResult<Metadata>)
+    }
+    if (!CODE_MODE_HELPER_RUNTIME_READY) {
+      return Effect.succeed({
+        title: CODE_MODE_TOOL,
+        metadata: { toolCalls: [], status: "unavailable" as const, error: true },
+        output: "CodeMode is unavailable until its supervised helper and authenticated Guarded wave transport are accepted.",
+      } satisfies Tool.ExecuteResult<Metadata>)
+    }
+    const context = codeModeToolContext(ctx.extra?.[CODE_MODE_TOOL_CONTEXT_KEY_V1])
+    if (!context?.host || !context.lane || !context.enablementRef || !ctx.callID) {
+      return Effect.succeed({
+        title: CODE_MODE_TOOL,
+        metadata: { toolCalls: [], status: "unavailable" as const, error: true },
+        output: "CodeMode is unavailable for this request: no authenticated helper lane, enablement reference or bounded wave dispatcher was bound.",
+      } satisfies Tool.ExecuteResult<Metadata>)
+    }
+    if (context.lane.lane === "direct_session" && context.lane.sessionID !== ctx.sessionID) {
+      return Effect.succeed({
+        title: CODE_MODE_TOOL,
+        metadata: { toolCalls: [], status: "unavailable" as const, error: true },
+        output: "CodeMode lane binding does not match the authenticated Session.",
+      } satisfies Tool.ExecuteResult<Metadata>)
+    }
+    return runCodeModeConversationEffectV1({
+      requestID: ctx.callID,
+      code: params.code,
+      tools: context.tools,
+      binding: context.lane,
+      enablementRef: context.enablementRef,
+      host: context.host,
+      dispatchWave: context.dispatchWave,
+      signal: ctx.abort,
+    }).pipe(Effect.map((outcome) => ({
+      title: CODE_MODE_TOOL,
+      metadata: {
+        toolCalls: [] as [],
+        status: outcome.status,
+        waves: outcome.waves,
+        totalCalls: outcome.totalCalls,
+        ...("truncated" in outcome ? { truncated: outcome.truncated } : {}),
+        ...("errorCode" in outcome && outcome.errorCode ? { errorCode: outcome.errorCode } : {}),
+        error: outcome.status !== "completed",
+      } satisfies Metadata,
+      output: outcomeMessage(outcome),
+    })))
+  },
 }
 
 export const CodeModeTool = Tool.define(CODE_MODE_TOOL, Effect.succeed(init))

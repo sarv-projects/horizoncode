@@ -49,6 +49,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdir
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { testEffect } from "./lib/effect"
+import { configServiceMockDefaults } from "./lib/config"
 const describe = process.platform === "linux" ? bunDescribe : bunDescribe.skip
 
 const observerTestRoot = mkdtempSync(path.join(tmpdir(), "hc-recorded-session-observer-"))
@@ -95,7 +96,7 @@ const models = SessionRunnerModel.layerWith(() => modelResolveHook.pipe(Effect.a
 const systemContext = AppNodeBuilder.build(SystemContextRegistry.node)
 const skillGuidance = Layer.mock(SkillGuidance.Service, { load: () => Effect.succeed(SystemContext.empty) })
 const referenceGuidance = Layer.mock(ReferenceGuidance.Service, { load: () => Effect.succeed(SystemContext.empty) })
-const config = Layer.succeed(Config.Service, Config.Service.of({ entries: () => Effect.succeed([]) }))
+const config = Layer.succeed(Config.Service, Config.Service.of({ ...configServiceMockDefaults, entries: () => Effect.succeed([]) }))
 const emptyToolRegistry = Layer.succeed(
   ToolRegistry.Service,
   ToolRegistry.Service.of({

@@ -16,8 +16,14 @@ import {
   validateHostEventPageV1,
   validateHostOperationRequestV1,
   type Envelope,
+  type HostOperationRequestV1,
 } from "@/dap/protocol"
+import type { HostProtocolDispatchReceiptV1 } from "@/lsp/protocol"
 import type { HostProcessRefV1 } from "@/lsp/process-scope"
+
+/** The protocol validators reject mutated/copied requests structurally, so the
+ * fixtures stay mutable while their outbound shape remains exactly pinned. */
+type Mutable<T> = { -readonly [K in keyof T]: Mutable<T[K]> }
 
 const encoder = new TextEncoder()
 const digest = (digit: string) => `blake3:${digit.repeat(64)}`
@@ -49,7 +55,7 @@ const directAttempt = {
   capabilityDigest: digest("5"), permissionsDigest: digest("6"), budgetDigest: digest("7"), scopeDigest: digest("8"),
 }
 
-function hostOperationRequest() {
+function hostOperationRequest(): Mutable<HostOperationRequestV1> {
   return {
     hostProcessRef,
     sessionID: "session-1",
@@ -69,7 +75,7 @@ function hostOperationRequest() {
   }
 }
 
-function hostDispatchReceipt(requestSequence = "1") {
+function hostDispatchReceipt(requestSequence = "1"): HostProtocolDispatchReceiptV1 {
   return {
     schemaVersion: 1,
     hostProcessRef,
@@ -428,8 +434,7 @@ describe("DAP typed HostKernel protocol contract", () => {
   })
 
   test("rejects mismatched Attempt scope and page limits before projection", () => {
-    const scoped = hostOperationRequest() as ReturnType<typeof hostOperationRequest> & { directAttempt?: unknown }
-    scoped.directAttempt = {}
+    const scoped = { ...hostOperationRequest(), directAttempt: {} }
     expect(() => validateHostOperationRequestV1(scoped)).toThrow(ProtocolError)
 
     const cursor = new HostDapEventCursorV1(hostProcessRef, "session-1", "location-1", workspaceRevision, undefined, directAttempt)
@@ -455,7 +460,7 @@ describe("DAP typed HostKernel protocol contract", () => {
     const other = new HostDapProtocolJournalV1(hostProcessRef, workspaceRevision)
     other.acceptOperation(request, receipt)
     const conflicting = hostOperationRequest()
-    conflicting.operation = { ...conflicting.operation, arguments: { expression: "different" } }
+    conflicting.operation = { ...conflicting.operation, requestID: 2 }
     expect(() => other.acceptOperation(conflicting, receipt)).toThrow(ResnapshotRequiredError)
     expect(other.quarantined).toBe(true)
   })

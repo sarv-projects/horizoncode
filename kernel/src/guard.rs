@@ -317,12 +317,12 @@ pub const PROTOCOL_IO_CAPABILITY_IDS: &[&str] = &[
     DEBUG_SCOPES_ID,
 ];
 
-pub const fn is_automation_definition_action(action_id: &str) -> bool {
+pub fn is_automation_definition_action(action_id: &str) -> bool {
     matches!(action_id, AUTOMATION_CREATE_ID | AUTOMATION_UPDATE_ID | AUTOMATION_ENABLE_ID | AUTOMATION_DISABLE_ID)
 }
 
 /// Internal managed provider dispatch action. Deliberately not a model tool.
-pub const fn is_provider_inference_action(action_id: &str) -> bool {
+pub fn is_provider_inference_action(action_id: &str) -> bool {
     matches!(action_id, PROVIDERS_INFER_ID)
 }
 
@@ -1233,7 +1233,15 @@ pub fn approval_policy(action_id: &str) -> Option<(&'static str, String, Vec<&'s
 
 pub fn authorize(request: &AuthorizationRequestV1<'_>, decision_id: &str) -> GuardDecisionV1 {
     let protocol_io_action = is_protocol_io_action(request.action_id);
-    let broker_action = is_broker_process_action(request.action_id) && !protocol_io_action;
+    // Process-control capability IDs (language/debugger start-stop) legitimately
+    // appear in BOTH the protocol-IO set and the broker-process set: creating or
+    // stopping a supervised process is broker work that carries a host-resolved
+    // executable binding, even though the same IDs surface through the protocol
+    // classifier. Broker semantics therefore win here — the executable binding
+    // is required/validated and the §30.14 model-batch denial applies — rather
+    // than subtracting broker-ness away and letting the protocol-IO arm reject
+    // the executable as "unexpected".
+    let broker_action = is_broker_process_action(request.action_id);
     let code_mode_action = request.action_id == CODE_MODE_EXECUTE_ID;
     let editor_action = request.action_id == EDITOR_LAUNCH_ID;
     let http_action = request.action_id == WEB_SEARCH_ID;
@@ -1242,18 +1250,21 @@ pub fn authorize(request: &AuthorizationRequestV1<'_>, decision_id: &str) -> Gua
     let automation_action = is_automation_definition_action(request.action_id);
     let (policy_bytes, expected_policy_id, expected_guarantees) = if agent_message_action {
         (AGENT_MESSAGE_POLICY_BYTES, AGENT_MESSAGE_POLICY_ID, AGENT_MESSAGE_GUARANTEES)
-    } else if protocol_io_action {
-        (PROTOCOL_IO_POLICY_BYTES, PROTOCOL_IO_POLICY_ID, PROTOCOL_IO_GUARANTEES)
     } else if editor_action {
         (EDITOR_PROCESS_POLICY_BYTES, EDITOR_PROCESS_POLICY_ID, EDITOR_PROCESS_GUARANTEES)
     } else if code_mode_action {
         (CODE_MODE_POLICY_BYTES, CODE_MODE_POLICY_ID, CODE_MODE_GUARANTEES)
     } else if broker_action {
+        // Broker (process-control) policy outranks protocol-IO for the overlap
+        // IDs: language/debugger start-stop authorize against the executable-
+        // bound broker policy, not the read-only protocol-IO policy.
         (
             BROKER_POLICY_BYTES,
             BROKER_PROCESS_POLICY_ID,
             BROKER_GUARANTEES,
         )
+    } else if protocol_io_action {
+        (PROTOCOL_IO_POLICY_BYTES, PROTOCOL_IO_POLICY_ID, PROTOCOL_IO_GUARANTEES)
     } else if http_action {
         (HTTP_POLICY_BYTES, OUTBOUND_HTTP_POLICY_ID, HTTP_GUARANTEES)
     } else if provider_inference_action {
@@ -1341,7 +1352,12 @@ pub fn authorize(request: &AuthorizationRequestV1<'_>, decision_id: &str) -> Gua
                 || request.origin.scope_digest.is_none_or(|digest| !is_digest(digest))
         }
         EffectOriginKindV1::ManagedRun => {
-            !request.origin.session_id.is_empty() || !request.turn_context_digest.is_empty()
+            // A managed run carries Attempt/scope authority instead of a batch
+            // turn context, so only the turn context is disqualifying here. The
+            // origin session label is scope-dependent: Session-scoped managed
+            // runs (managed verifier, Session { session_id }) label it, while
+            // ProjectRead-scope runs leave it empty — both are legitimate.
+            !request.turn_context_digest.is_empty()
         }
         EffectOriginKindV1::ManagedRoot => {
             request.origin.session_id.is_empty()
@@ -1378,11 +1394,14 @@ pub fn authorize(request: &AuthorizationRequestV1<'_>, decision_id: &str) -> Gua
         Some("unsupported_managed_root_action")
     } else if automation_action && request.origin.kind != EffectOriginKindV1::UserAction {
         Some("automation_requires_authenticated_user_action")
-    } else if broker_action
-        && request.origin.kind == EffectOriginKindV1::SessionBatch
+    } else if request.origin.kind == EffectOriginKindV1::SessionBatch
         && is_model_control_denied(request.action_id)
     {
-        // §30.14: a model query never controls a language-service process.
+        // §30.14: a model query never controls a language-service or verifier
+        // process. This is gated on the capability ID alone, not on the
+        // broker/protocol-IO overlap resolution, because language-service
+        // start/stop capability IDs also appear in the protocol-IO read set;
+        // the model-batch denial must still win for those process-control IDs.
         Some("model_process_control_denied")
     } else if let Some(reason) = executable_reason {
         Some(reason)
@@ -1612,6 +1631,18 @@ fn is_digest(value: &str) -> bool {
 }
 pub(crate) fn is_sha256_digest(value: &str) -> bool {
     value.strip_prefix("sha256:").is_some_and(|hex| {
+        hex.len() == 64
+            && hex
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    })
+}
+
+/// Canonical `blake3:<64 lowercase hex>` content-identity check. Bounds and
+/// lowercase-hex enforcement are identical to `is_sha256_digest`; the algorithm
+/// tag differs because EffectHost pins content, not request signatures.
+pub(crate) fn is_blake3_digest(value: &str) -> bool {
+    value.strip_prefix("blake3:").is_some_and(|hex| {
         hex.len() == 64
             && hex
                 .bytes()
@@ -1879,6 +1910,44 @@ mod tests {
     }
 
     #[test]
+    fn managed_run_origin_labels_its_scope_session_but_never_carries_a_turn_context() {
+        // Session-scoped managed runs (the managed verifier) label their Session in
+        // the origin; ProjectRead-scope runs leave it empty. Both are legitimate —
+        // only a batch turn context disqualifies a managed run.
+        let root = Path::new("/workspace");
+        let mut session_labelled = broker_request(
+            root,
+            BUILTIN_VERIFIER_ID,
+            Some(trusted_executable("/usr/bin/verifier")),
+        );
+        session_labelled.principal = "server_auth:reviewer";
+        session_labelled.origin.kind = EffectOriginKindV1::ManagedRun;
+        session_labelled.turn_context_digest = "";
+        let decision = authorize(&session_labelled, "managed_verifier_session_scope");
+        assert_eq!(decision.decision, DecisionKind::Ask, "reason={:?}", decision.reason_code);
+        assert_eq!(decision.reason_code, None);
+
+        let mut project_scope = broker_request(
+            root,
+            BUILTIN_VERIFIER_ID,
+            Some(trusted_executable("/usr/bin/verifier")),
+        );
+        project_scope.principal = "server_auth:reviewer";
+        project_scope.origin.kind = EffectOriginKindV1::ManagedRun;
+        project_scope.origin.session_id = "";
+        project_scope.turn_context_digest = "";
+        let decision = authorize(&project_scope, "managed_project_scope");
+        assert_eq!(decision.decision, DecisionKind::Ask);
+        assert_eq!(decision.reason_code, None);
+
+        let mut turn_carried = session_labelled;
+        turn_carried.turn_context_digest = TURN_CONTEXT_DIGEST;
+        let decision = authorize(&turn_carried, "managed_turn_context");
+        assert_eq!(decision.decision, DecisionKind::Deny);
+        assert_eq!(decision.reason_code, Some("invalid_principal_or_origin"));
+    }
+
+    #[test]
     fn user_action_origin_needs_only_the_principal_and_cannot_claim_a_batch_or_write() {
         let root = Path::new("/workspace");
         let mut user = request(root, root, ".");
@@ -2030,6 +2099,30 @@ mod tests {
             first_digest,
             intent_digest(&without, &authorize(&without, "challenge_1"))
         );
+    }
+
+    #[test]
+    fn model_process_control_denial_precedes_the_protocol_io_executable_overlap() {
+        // §30.14: language-service *process control* (start/stop) is a broker
+        // action even though its capability ID also appears in the protocol-IO
+        // read set. The model-batch denial must win over the protocol-IO
+        // "unexpected executable binding" rule, so a model batch is refused for
+        // controlling the process rather than for the incidental executable.
+        let root = Path::new("/workspace");
+        for action_id in [LANGUAGE_SERVER_START_ID, LANGUAGE_SERVER_STOP_ID] {
+            let model = broker_request(
+                root,
+                action_id,
+                Some(trusted_executable("/usr/bin/rust-analyzer")),
+            );
+            let decision = authorize(&model, "challenge_overlap");
+            assert_eq!(decision.decision, DecisionKind::Deny, "{action_id}");
+            assert_eq!(
+                decision.reason_code,
+                Some("model_process_control_denied"),
+                "{action_id}"
+            );
+        }
     }
 
     #[test]
@@ -2186,6 +2279,7 @@ mod tests {
             session_id: "ses_1".to_owned(),
             workspace_revision: format!("blake3:{}", "a".repeat(64)),
             delegation_binding_digest: format!("blake3:{}", "b".repeat(64)),
+            permission_scope_digest: format!("blake3:{}", "c".repeat(64)),
             effective_max_tokens: 100,
             remaining_tokens: 100,
             request_id: None, request_sequence: None, context_selection_digest: None,

@@ -67,7 +67,7 @@ export interface Interface {
   readonly list: () => Effect.Effect<ReadonlyArray<Request>>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/Question") {}
+export class Service extends Context.Service<Service, Interface>()("@horizoncode/Question") {}
 
 /** The event log must never retain free-form answer contents. */
 export function replyLogSummary(answers: ReadonlyArray<Answer>) {

@@ -146,7 +146,7 @@ impl DirectTurnJournalV1 {
         self.append(&format!("turn:{}:begin", turn.runner_cycle_id), "direct_turn_started", json!({
             "childSessionID": self.child_session_id, "ownerEpoch": self.owner_epoch,
             "processIncarnation": self.process_incarnation,
-            "turnScope": turn.to_value(), "status": "ACTIVE"
+            "turnScope": durable_turn_scope(&turn)?, "status": "ACTIVE"
         }))?;
         self.cycles.insert(next_sequence, TurnCycle { scope: turn.clone(), process_incarnation: self.process_incarnation.clone(), result_digest: None,
             receipt_digest: String::new(), state: TurnState::Active, batches: BTreeMap::new(), active_batch_id: None });
@@ -206,7 +206,7 @@ impl DirectTurnJournalV1 {
         self.append(&format!("turn:{}:batch:{}:bind", admitted.turn_sequence, batch_id), "direct_turn_batch_bound", json!({
             "childSessionID": self.child_session_id, "ownerEpoch": self.owner_epoch,
             "processIncarnation": self.process_incarnation, "batchID": batch_id,
-            "admittedScope": admitted.to_value(), "refreshedScope": refreshed.to_value(),
+            "admittedScope": durable_turn_scope(admitted)?, "refreshedScope": durable_turn_scope(refreshed)?,
             "effectIDs": effect_ids, "status": "BOUND"
         }))?;
         let cycle = self.cycles.get_mut(&admitted.turn_sequence).expect("validated cycle");
@@ -248,7 +248,7 @@ impl DirectTurnJournalV1 {
             "childSessionID": self.child_session_id, "ownerEpoch": self.owner_epoch,
             "processIncarnation": self.process_incarnation, "turnSequence": sequence.to_string(),
             "batchID": batch_id, "effectID": effect_id, "receiptDigest": receipt_digest,
-            "refreshedAttempt": refreshed.direct_attempt.to_value(), "status": "TERMINAL"
+            "refreshedAttempt": durable_attempt_scope(&refreshed.direct_attempt)?, "status": "TERMINAL"
         }))?;
         let cycle = self.cycles.get_mut(&sequence).expect("validated cycle");
         let batch = cycle.batches.get_mut(batch_id).expect("validated batch");
@@ -259,7 +259,7 @@ impl DirectTurnJournalV1 {
         self.append(&format!("turn:{}:batch:{}:complete", sequence, batch_id), "direct_turn_batch_completed", json!({
             "childSessionID": self.child_session_id, "ownerEpoch": self.owner_epoch,
             "processIncarnation": self.process_incarnation, "turnSequence": sequence.to_string(),
-            "batchID": batch_id, "finalScope": refreshed.to_value(),
+            "batchID": batch_id, "finalScope": durable_turn_scope(refreshed)?,
             "effectIDs": completed_effect_ids, "status": "COMPLETED"
         }))?;
         let cycle = self.cycles.get_mut(&sequence).expect("validated cycle");
@@ -286,7 +286,7 @@ impl DirectTurnJournalV1 {
         let receipt = self.append(&format!("turn:{}:complete", scope.runner_cycle_id), "direct_turn_completed", json!({
             "childSessionID": self.child_session_id, "ownerEpoch": self.owner_epoch,
             "processIncarnation": self.process_incarnation,
-            "turnScope": scope.to_value(), "resultDigest": result_digest, "status": "COMPLETED"
+            "turnScope": durable_turn_scope(scope)?, "resultDigest": result_digest, "status": "COMPLETED"
         }))?;
         let cycle = self.cycles.get_mut(&scope.turn_sequence).expect("validated cycle");
         cycle.result_digest = Some(result_digest.to_owned());
@@ -321,7 +321,7 @@ impl DirectTurnJournalV1 {
         self.append(&format!("turn:auth:{}:issue", proof.issuance_id), "direct_turn_authorization_issued", json!({
             "childSessionID": self.child_session_id, "ownerEpoch": self.owner_epoch,
             "processIncarnation": self.process_incarnation,
-            "authorization": proof.to_value(), "status": "ISSUED"
+            "authorization": durable_authorization(&proof)?, "status": "ISSUED"
         }))?;
         self.authorizations.insert(proof.issuance_id.clone(), AuthorizationEntry { proof: proof.clone(), process_incarnation: self.process_incarnation.clone(), state: AuthorizationState::Issued });
         self.reserved_sequences.insert(next);
@@ -390,7 +390,7 @@ impl DirectTurnJournalV1 {
                 let payload = envelope.get("payload").and_then(Value::as_object).ok_or(OwnerLogError::InvalidRecord("direct turn event payload is invalid"))?;
                 match event.kind.as_str() {
                     "direct_turn_started" => {
-                        let scope = DirectTurnScopeV1::from_value(payload.get("turnScope").ok_or(OwnerLogError::InvalidRecord("turn scope missing"))?).ok_or(OwnerLogError::InvalidRecord("turn scope invalid"))?;
+                        let scope = DirectTurnScopeV1::from_value(&wire_from_durable(payload.get("turnScope").ok_or(OwnerLogError::InvalidRecord("turn scope missing"))?)?).ok_or(OwnerLogError::InvalidRecord("turn scope invalid"))?;
                         if string(payload, "childSessionID")? != self.child_session_id || scope.turn_sequence != self.cycles.keys().next_back().copied().unwrap_or(0).checked_add(1).ok_or(OwnerLogError::ReplayConflict)? || self.cycles.len() >= MAX_TURNS_PER_CHILD { return Err(OwnerLogError::ReplayConflict); }
                         // Replay validates the event against the authority that
                         // originally owned this cycle. The journal is opened
@@ -405,7 +405,7 @@ impl DirectTurnJournalV1 {
                         self.cycles.insert(scope.turn_sequence, TurnCycle { scope, process_incarnation, result_digest: None, receipt_digest: String::new(), state: TurnState::Active, batches: BTreeMap::new(), active_batch_id: None });
                     }
                     "direct_turn_completed" => {
-                        let scope = DirectTurnScopeV1::from_value(payload.get("turnScope").ok_or(OwnerLogError::InvalidRecord("turn scope missing"))?).ok_or(OwnerLogError::InvalidRecord("turn scope invalid"))?;
+                        let scope = DirectTurnScopeV1::from_value(&wire_from_durable(payload.get("turnScope").ok_or(OwnerLogError::InvalidRecord("turn scope missing"))?)?).ok_or(OwnerLogError::InvalidRecord("turn scope invalid"))?;
                         let result_digest = string(payload, "resultDigest")?.to_owned();
                         let cycle = self.cycles.get_mut(&scope.turn_sequence).ok_or(OwnerLogError::ReplayConflict)?;
                         if cycle.scope != scope || cycle.state != TurnState::Active || cycle.active_batch_id.is_some()
@@ -425,8 +425,8 @@ impl DirectTurnJournalV1 {
                         cycle.state = TurnState::Unknown;
                     }
                     "direct_turn_batch_bound" => {
-                        let admitted = DirectTurnScopeV1::from_value(payload.get("admittedScope").ok_or(OwnerLogError::InvalidRecord("admitted scope missing"))?).ok_or(OwnerLogError::InvalidRecord("admitted scope invalid"))?;
-                        let refreshed = DirectTurnScopeV1::from_value(payload.get("refreshedScope").ok_or(OwnerLogError::InvalidRecord("refreshed scope missing"))?).ok_or(OwnerLogError::InvalidRecord("refreshed scope invalid"))?;
+                        let admitted = DirectTurnScopeV1::from_value(&wire_from_durable(payload.get("admittedScope").ok_or(OwnerLogError::InvalidRecord("admitted scope missing"))?)?).ok_or(OwnerLogError::InvalidRecord("admitted scope invalid"))?;
+                        let refreshed = DirectTurnScopeV1::from_value(&wire_from_durable(payload.get("refreshedScope").ok_or(OwnerLogError::InvalidRecord("refreshed scope missing"))?)?).ok_or(OwnerLogError::InvalidRecord("refreshed scope invalid"))?;
                         let batch_id = string(payload, "batchID")?.to_owned();
                         let effect_ids = payload.get("effectIDs").and_then(Value::as_array).ok_or(OwnerLogError::InvalidRecord("batch effect IDs missing"))?.iter()
                             .map(|value| value.as_str().filter(|id| valid_id(id)).map(str::to_owned).ok_or(OwnerLogError::InvalidRecord("batch effect ID invalid"))).collect::<Result<Vec<_>, _>>()?;
@@ -448,7 +448,7 @@ impl DirectTurnJournalV1 {
                         let sequence = parse_u64(string(payload, "turnSequence")?).ok_or(OwnerLogError::InvalidRecord("turn sequence invalid"))?;
                         let effect_id = string(payload, "effectID")?;
                         let receipt_digest = string(payload, "receiptDigest")?;
-                        let refreshed_attempt = DirectAttemptScopeV1::from_value(payload.get("refreshedAttempt").ok_or(OwnerLogError::InvalidRecord("refreshed Attempt missing"))?).ok_or(OwnerLogError::InvalidRecord("refreshed Attempt invalid"))?;
+                        let refreshed_attempt = DirectAttemptScopeV1::from_value(&wire_from_durable(payload.get("refreshedAttempt").ok_or(OwnerLogError::InvalidRecord("refreshed Attempt missing"))?)?).ok_or(OwnerLogError::InvalidRecord("refreshed Attempt invalid"))?;
                         if !valid_digest(receipt_digest, "blake3:") { return Err(OwnerLogError::InvalidDigest); }
                         let cycle = self.cycles.get_mut(&sequence).ok_or(OwnerLogError::ReplayConflict)?;
                         let batch_id = string(payload, "batchID")?;
@@ -469,7 +469,7 @@ impl DirectTurnJournalV1 {
                     }
                     "direct_turn_batch_completed" => {
                         let sequence = parse_u64(string(payload, "turnSequence")?).ok_or(OwnerLogError::InvalidRecord("turn sequence invalid"))?;
-                        let final_scope = DirectTurnScopeV1::from_value(payload.get("finalScope").ok_or(OwnerLogError::InvalidRecord("final scope missing"))?).ok_or(OwnerLogError::InvalidRecord("final scope invalid"))?;
+                        let final_scope = DirectTurnScopeV1::from_value(&wire_from_durable(payload.get("finalScope").ok_or(OwnerLogError::InvalidRecord("final scope missing"))?)?).ok_or(OwnerLogError::InvalidRecord("final scope invalid"))?;
                         let cycle = self.cycles.get_mut(&sequence).ok_or(OwnerLogError::ReplayConflict)?;
                         let batch_id = string(payload, "batchID")?;
                         let batch = cycle.batches.get_mut(batch_id).ok_or(OwnerLogError::ReplayConflict)?;
@@ -491,7 +491,7 @@ impl DirectTurnJournalV1 {
                         cycle.active_batch_id = None;
                     }
                     "direct_turn_authorization_issued" => {
-                        let proof = FreshTurnAuthorizationV1::from_value(payload.get("authorization").ok_or(OwnerLogError::InvalidRecord("authorization missing"))?).ok_or(OwnerLogError::InvalidRecord("authorization invalid"))?;
+                        let proof = FreshTurnAuthorizationV1::from_value(&wire_from_durable(payload.get("authorization").ok_or(OwnerLogError::InvalidRecord("authorization missing"))?)?).ok_or(OwnerLogError::InvalidRecord("authorization invalid"))?;
                         if string(payload, "childSessionID")? != self.child_session_id
                             || number(payload, "ownerEpoch")? != proof.authority_pins.child_owner_epoch
                             || self.authorizations.len() >= MAX_AUTHORIZATIONS_PER_CHILD || self.authorizations.contains_key(&proof.issuance_id) || self.reserved_sequences.contains(&proof.next_turn_sequence) { return Err(OwnerLogError::ReplayConflict); }
@@ -536,6 +536,32 @@ impl DirectTurnJournalV1 {
         }
         Ok(())
     }
+}
+
+/// Durable journal payloads are `serde_json::Value`; MessagePack `Value` is only
+/// the private RPC wire shape. Convert exactly at this boundary so replay keeps
+/// validating against the canonical wire decoder.
+fn wire_from_durable(value: &Value) -> Result<crate::protocol::Value, OwnerLogError> {
+    crate::protocol_framing::json_to_wire(value.clone())
+        .map_err(|_| OwnerLogError::InvalidRecord("direct turn durable payload is not wire representable"))
+}
+
+fn durable_projection(value: crate::protocol::Value) -> Result<Value, OwnerLogError> {
+    value
+        .to_json_value()
+        .map_err(|_| OwnerLogError::InvalidRecord("direct turn journal payload is not JSON representable"))
+}
+
+fn durable_turn_scope(scope: &DirectTurnScopeV1) -> Result<Value, OwnerLogError> {
+    durable_projection(scope.to_value())
+}
+
+fn durable_attempt_scope(scope: &DirectAttemptScopeV1) -> Result<Value, OwnerLogError> {
+    durable_projection(scope.to_value())
+}
+
+fn durable_authorization(proof: &FreshTurnAuthorizationV1) -> Result<Value, OwnerLogError> {
+    durable_projection(proof.to_value())
 }
 
 fn same_direct_attempt_authority(before: &DirectAttemptScopeV1, after: &DirectAttemptScopeV1) -> bool {

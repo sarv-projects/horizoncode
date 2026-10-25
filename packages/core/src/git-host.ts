@@ -5,7 +5,7 @@
  */
 import { Effect } from "effect"
 import type { Location as LocationSchema } from "@opencode-ai/schema"
-import { Service as SessionSupervisor, type DirectSessionWorkspaceSnapshotV1 } from "./session/supervisor"
+import type { DirectSessionWorkspaceSnapshotV1 } from "./session/supervisor"
 import { TrustedPrincipalContext } from "./trusted-principal"
 
 const DIGEST = /^blake3:[0-9a-f]{64}$/
@@ -100,6 +100,11 @@ export const readGit = Effect.fn("GitHostRead.read")(function* (input: {
     (input.sessionID !== undefined && !/^ses_[A-Za-z0-9_-]{1,128}$/.test(input.sessionID))) {
     return yield* Effect.fail(new Error("Git read request is invalid or outside its bounds"))
   }
+  // git-host is re-exported by git.ts, which is also consumed by project.ts.
+  // Loading SessionSupervisor statically here creates a cycle through
+  // supervisor.ts -> event.ts -> location.ts -> project.ts -> git.ts.
+  // Resolve the service tag only when a guarded Git read is actually invoked.
+  const { Service: SessionSupervisor } = yield* Effect.promise(() => import("./session/supervisor"))
   const supervisor = yield* SessionSupervisor
   const trusted = yield* TrustedPrincipalContext
   if (trusted.principal.kind !== "server_auth") {

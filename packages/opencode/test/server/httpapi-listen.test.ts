@@ -329,6 +329,45 @@ describe("HttpApi Server.listen", () => {
     expect(output).not.toContain("Sent HTTP response")
   })
 
+  // Regression for the production `opencode serve` startup defect:
+  // `handlers/websearch.ts` yields `WebSearchRuntime.Service` while the instance
+  // handler groups build, but the production app LayerNode group never exposed
+  // `WebSearchRuntime.node`, so every listener died at build time with
+  // `Service not found: @horizoncode/WebSearchRuntime` before it could serve a
+  // single request. This test builds the real route tree through `Server.listen`
+  // with no route-boundary mock and asserts the honest gate-false answer: the
+  // service is genuinely present, and web search reports itself disabled rather
+  // than no-oping or crashing.
+  test("serves an honest web-search provider status from the real route tree without a boundary mock", async () => {
+    await using tmp = await tmpdir({ config: { formatter: false, lsp: false } })
+    const listener = await startListener()
+    try {
+      const response = await fetch(new URL("/websearch/providers", listener.url), {
+        headers: { authorization: authorization(), "x-opencode-directory": tmp.path },
+      })
+      expect(response.status).toBe(200)
+      const body = (await response.json()) as Array<{
+        provider: string
+        status: string
+        available: boolean
+        configured: boolean
+        unavailableReason?: string
+      }>
+      expect(body.length).toBeGreaterThan(0)
+      for (const entry of body) {
+        // Gate-false configuration: no consent, no Guarded runtime release, so
+        // no route may claim readiness or availability.
+        expect(entry.status).not.toBe("ready")
+        expect(["disabled", "unconfigured", "unavailable"]).toContain(entry.status)
+        expect(entry.available).toBe(false)
+        expect(typeof entry.unavailableReason).toBe("string")
+        expect(entry.unavailableReason!.length).toBeGreaterThan(0)
+      }
+    } finally {
+      await stop(listener, "timed out cleaning up web-search status listener")
+    }
+  })
+
   test("feature setting update and rollback preserve unrelated config and reject stale writes", async () => {
     await using tmp = await tmpdir({
       init: async (directory) => {

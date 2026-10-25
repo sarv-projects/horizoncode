@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": true },
+  "include": [],
+  "files": [
+    "test/repo-intel-live.test.ts",
+    "test/session-runner.test.ts",
+    "test/git.test.ts",
+    "test/session-prompt.test.ts",
+    "test/tool-write.test.ts",
+    "test/session-supervisor-batch.test.ts",
+    "test/terminal-run-live.test.ts"
+  ]
+}

@@ -11,7 +11,7 @@
 //! watcher events; the integrating owner remains responsible for OS watcher
 //! supervision, source reads, read-scope authorization and replacement bytes.
 
-use crate::{validate_path, BaseGeneration, Digest, IndexError, MAX_BASE_PATH_BYTES};
+use crate::{BaseGeneration, Digest, IndexError, MAX_BASE_PATH_BYTES, validate_path};
 use std::collections::BTreeMap;
 
 /// Maximum changes in one watcher batch.

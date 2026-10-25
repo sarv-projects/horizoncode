@@ -9,6 +9,22 @@ const Identifier = Schema.String.check(Schema.isNonEmpty())
 const Text = Schema.String.check(Schema.isMaxLength(65_536))
 const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))
 const PositiveInt = Schema.Int.check(Schema.isGreaterThan(0))
+declare module "effect/Schema" {
+  namespace Annotations {
+    interface MetaDefinitions {
+      readonly isPositiveDecimalU64: { readonly _tag: "isPositiveDecimalU64" }
+    }
+  }
+}
+export const PositiveDecimalU64 = Schema.String
+  .check(Schema.isPattern(/^[1-9][0-9]{0,19}$/))
+  .check(Schema.makeFilter(
+    (value) => BigInt(value) <= 0xffff_ffff_ffff_ffffn ? undefined : "value exceeds u64",
+    {
+    meta: { _tag: "isPositiveDecimalU64" },
+    arbitrary: { constraint: {} },
+    },
+  ))
 const BoundedList = <S extends Schema.Top>(item: S) => Schema.Array(item).check(Schema.isMaxLength(4096))
 const unique = <A>(values: readonly A[]) => new Set(values).size === values.length
 const CapabilityId = Identifier.check(Schema.isPattern(/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/))
@@ -25,7 +41,7 @@ export const ProfileId = Identifier.annotate({ identifier: "Horizon.AgentProfile
 )
 export type ProfileId = typeof ProfileId.Type
 
-export const Revision = PositiveInt.annotate({ identifier: "Horizon.AgentProfileV2.Revision" })
+export const Revision = PositiveDecimalU64.annotate({ identifier: "Horizon.AgentProfileV2.Revision" })
 export type Revision = typeof Revision.Type
 
 export const WireApi = Schema.Literals(["responses", "chat_completions", "anthropic_messages", "custom"])
@@ -90,8 +106,8 @@ export const Limits = Schema.Struct({
   maxTotalChildren: NonNegativeInt,
   maxPendingMessages: NonNegativeInt,
   maxMessageBytes: NonNegativeInt,
-  tokenBudget: Schema.optional(PositiveInt),
-  wallTimeMs: Schema.optional(PositiveInt),
+  tokenBudget: Schema.optional(PositiveDecimalU64),
+  wallTimeMs: Schema.optional(PositiveDecimalU64),
 }).annotate({ identifier: "Horizon.AgentProfileV2.Limits" })
 
 const AgentProfileDefinitionFields = {
@@ -113,7 +129,7 @@ const AgentProfileDefinitionFields = {
   instructions: Schema.Struct({
     baseRef: Schema.optional(Composition.ArtifactRef),
     extraRefs: BoundedList(Composition.ArtifactRef),
-    maxCompiledTokens: PositiveInt,
+    maxCompiledTokens: PositiveDecimalU64,
   }),
   tools: BoundedList(ToolRule),
   allowedSkillIds: BoundedList(Identifier),
@@ -125,7 +141,7 @@ const AgentProfileDefinitionFields = {
   pathRules: BoundedList(PathRule),
   context: Schema.Struct({
     isolation: Schema.Literals(["fresh", "conversation_slice", "fork"]),
-    maxParentHistoryTokens: Schema.optional(PositiveInt),
+    maxParentHistoryTokens: Schema.optional(PositiveDecimalU64),
     allowImages: Schema.Boolean,
     allowDocuments: Schema.Boolean,
     allowArtifacts: Schema.Boolean,
@@ -192,13 +208,30 @@ export const jsonSchemaDocument = () => {
   definitions.AgentProfileDefinitionV2 = definition.schema
   definitions.AgentProfileV2 = resolved.schema
   definitions.ProfileRevisionRef = revisionRef.schema
+  const canonicalizeDecimalU64 = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(canonicalizeDecimalU64)
+    if (typeof value !== "object" || value === null) return value
+    const object = value as Record<string, unknown>
+    const patterns = Array.isArray(object.allOf)
+      ? object.allOf.flatMap((constraint) =>
+          typeof constraint === "object" && constraint !== null && "pattern" in constraint
+            ? [String((constraint as { pattern: unknown }).pattern)]
+            : [],
+        )
+      : []
+    if (object.type === "string" && patterns.includes("^[1-9][0-9]{0,19}$")) {
+      return { $ref: "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64" }
+    }
+    return Object.fromEntries(Object.entries(object).map(([key, child]) => [key, canonicalizeDecimalU64(child)]))
+  }
+  const canonicalDefinitions = canonicalizeDecimalU64(definitions) as Record<string, unknown>
   return {
     $schema: "https://json-schema.org/draft/2020-12/schema",
     $id: "horizon://schemas/agent-profile-v2",
     title: "AgentProfileDefinitionV2",
     description: "Core-owned bounded definition. Both digest fields are forbidden in input; Rust computes resolved digests.",
     $ref: "#/$defs/AgentProfileDefinitionV2",
-    $defs: definitions,
+    $defs: canonicalDefinitions,
   }
 }
 

@@ -66,7 +66,7 @@
             }
           },
           "included": { "type": "boolean" },
-          "inclusionReason": { "type": "string", "maxLength": 256 },
+          "inclusionReason": { "type": "string", "minLength": 1, "maxLength": 256 },
           "protected": { "type": "boolean" },
           "cacheClass": { "enum": ["static", "history", "turn", "attachment", "none"] },
           "freshness": { "type": "string", "maxLength": 128 },

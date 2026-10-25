@@ -99,7 +99,7 @@ test("legacy questions hydrate and project callbacks through their separate lane
     await waitForState(() => !data!.session.question.prompts(sessionID).some((item) => item.request.id === asked.id))
     expect(data!.session.question.list(sessionID)).toEqual([legacy])
   } finally {
-    await app.cleanup()
+    app.renderer.destroy()
   }
 })
 

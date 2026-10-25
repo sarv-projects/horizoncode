@@ -18,9 +18,9 @@ import { testEffect } from "../lib/effect"
 
 const supervisor = LayerNode.make({
   service: SessionSupervisor.Service,
-  layer: Layer.succeed(
+  layer: Layer.mock(
     SessionSupervisor.Service,
-    SessionSupervisor.Service.of({
+    {
       open: () => Effect.die("unexpected supervisor open"),
       openForSession: () => Effect.die("unexpected supervisor open"),
       registerHostLocation: () => Effect.die("unexpected host location registration"),
@@ -35,7 +35,7 @@ const supervisor = LayerNode.make({
       hostOwnerEpoch: () => Effect.die("unexpected host owner epoch read"),
       subscribeHostKernelEvents: () => Stream.die("unexpected host kernel event subscription"),
       watchSession: () => Effect.die("unexpected session watch"),
-    }),
+    },
   ),
   deps: [],
 })

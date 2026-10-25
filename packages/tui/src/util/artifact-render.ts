@@ -217,11 +217,9 @@ export function createSvgRasterPort(options: SvgRasterPortOptionsV1 = {}): SvgRa
       if (cached?.generation === block.generation) return
       const requestKey = `${block.blockID}@${block.generation}`
       if (requested.has(requestKey)) return
-      const previousGeneration = currentRequestGeneration.get(block.blockID)
-      // A newer generation cannot supersede an old request in accounting:
-      // the worker still consumes a slot until its promise settles. Let that
-      // request finish, then the completion update retries the current block.
-      if (previousGeneration !== undefined) return
+      // A newer geometry/theme generation may start while an older one is still
+      // settling. Completion is fenced by the current generation below, and the
+      // global in-flight cap still bounds total worker work.
       if (inFlight >= MAX_IN_FLIGHT_RENDER_REQUESTS) {
         // Leave this generation pending. A completion from one of the bounded
         // workers triggers the next render pass, which can then admit it.

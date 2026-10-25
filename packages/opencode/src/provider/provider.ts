@@ -18,6 +18,7 @@ import { MANAGED_PROVIDER_CREDENTIAL_PLACEHOLDER } from "../auth/provider-transp
 import type { DirectProviderRouteV1 } from "../auth/provider-transport"
 import { Env } from "../env"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
+import { builtinHarnessProfileV1 } from "@opencode-ai/core/harness-profile"
 import { iife } from "@/util/iife"
 import { Global } from "@opencode-ai/core/global"
 import path from "path"
@@ -1201,6 +1202,12 @@ export const ListResult = Schema.Struct({
     source: Schema.Literals(["cache", "bundled", "override", "unavailable"]),
     freshness: Schema.Literals(["fresh", "stale", "unknown"]),
     updatedAt: optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+    /** Imported-snapshot provenance; absent means unknown, never current. */
+    sourceURL: optional(Schema.String),
+    retrievedAt: optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+    contentDigest: optional(Schema.String),
+    license: optional(Schema.String),
+    attribution: optional(Schema.String),
   }),
   /** Provider IDs with the explicit anonymous, active, fully zero-priced offer. */
   anonymousFreeProviders: Schema.optional(Schema.Array(ProviderV2.ID)),
@@ -2095,6 +2102,12 @@ const layer = Layer.effect(
       if (typeof input.fetch !== "function" || !Object.hasOwn(BUNDLED_PROVIDERS, model.api.npm) || s.modelLoaders[model.providerID]) {
         return yield* unavailable("managed inference requires a bundled first-party adapter with a request-local fetch")
       }
+      if (!builtinHarnessProfileV1(input.harnessID)) {
+        return yield* unavailable("managed inference requires a known built-in harness profile")
+      }
+      if (!model.capabilities.toolcall) {
+        return yield* unavailable("the selected model cannot use a native tool harness")
+      }
       if (model.api.url.includes("${") || typeof provider.options.baseURL === "string" ||
         typeof model.options.baseURL === "string" || provider.options.credentialProvider !== undefined ||
         model.options.credentialProvider !== undefined) {
@@ -2128,10 +2141,11 @@ const layer = Layer.effect(
         hasCredentialMaterial(model.headers)) {
         return yield* unavailable("managed inference cannot reuse resolved provider credentials or credential-bearing options")
       }
-      const target = yield* managedRouteTransportTarget({
+      const target = yield* managedRouteTransportTargetWithin({
         providerID: model.providerID,
         modelID: model.id,
         harnessID: input.harnessID,
+        context: { providers: { list, anonymousFreeModelRefs }, auth },
       })
       if (target.routeProjection.providerID !== model.providerID || target.routeProjection.modelID !== model.id ||
         target.activeEndpointRevision !== target.routeProjection.endpointRevision) {
@@ -2160,7 +2174,12 @@ const layer = Layer.effect(
           const sdk = factory({ name: model.providerID, ...options })
           // Keep the same adapter selection semantics as the normal Core path;
           // only its construction and fetch boundary differ for managed calls.
-          const language = sdk.languageModel(model.api.id)
+          // The mantle adapter needs the same model-class rule the bundled
+          // loader applies (Responses vs Chat per model), so the lane reuses
+          // the single selector instead of the factory default.
+          const language = model.api.npm === "@ai-sdk/amazon-bedrock/mantle"
+            ? selectBedrockMantleLanguageModel(sdk, model.api.id)
+            : sdk.languageModel(model.api.id)
           return language
         },
         (cause) => cause instanceof NoSuchModelError
@@ -2186,6 +2205,14 @@ const layer = Layer.effect(
       if (!input.harnessID || input.harnessID.length > 256 || typeof input.fetch !== "function" ||
         !Object.hasOwn(BUNDLED_PROVIDERS, model.api.npm) || providers.modelLoaders[model.providerID]) {
         return yield* unavailable("direct inference requires a fixed bundled adapter and request-local transport")
+      }
+      // Harness selection never changes silently. Only a built-in profile that
+      // the selected model can actually drive is a valid direct pairing.
+      if (!builtinHarnessProfileV1(input.harnessID)) {
+        return yield* unavailable("direct inference requires a known built-in harness profile")
+      }
+      if (!model.capabilities.toolcall) {
+        return yield* unavailable("the selected model cannot use a native tool harness")
       }
       if (!isAnonymousFreeModel(provider, model) || providerCredentialUnavailable(provider, model, false)) {
         return yield* new CredentialTransportUnavailableError({ providerID: model.providerID })
@@ -2216,6 +2243,11 @@ const layer = Layer.effect(
         endpointBase: endpoint.href,
         anonymousOpenCodeFree: true,
         credentialHeader: Object.freeze({ name: "authorization", prefix: "Bearer " }),
+        // §30.26.9 route capability: the route adapter is authoritative and
+        // this anonymous route has no §30.26.10 real-route validation evidence
+        // yet, so it projects the conservative "unknown" (never inherits
+        // cache pricing from advisory catalog rows; CX-017).
+        prefixCacheSupport: "unknown",
       })
       return yield* EffectPromise.refineRejection(
         async () => {
@@ -2331,6 +2363,13 @@ const layer = Layer.effect(
         return { providerID: entry.providerID, modelID: entry.modelID }
       }
 
+      // An allowlist that excludes every loaded provider is a distinct
+      // failure from "providers exist but none is eligible" (AN-002): report
+      // the empty registry instead of a model-level error.
+      if (Object.keys(s.providers).length === 0) {
+        return yield* new NoProvidersError()
+      }
+
       // HorizonCode's requested out-of-box route is the catalog-backed
       // OpenCode provider. Its keyless projection contains only active models
       // with explicit zero pricing; when a credential exposes paid catalog
@@ -2386,30 +2425,29 @@ const providerIdentifier = /^[^\s\u0000-\u001f\u007f]{1,256}$/
 const blake3Digest = (input: string) => `blake3:${bytesToHex(blake3(new TextEncoder().encode(input)))}`
 
 /**
- * Resolve one managed model route from Core's active provider registry and
- * Auth's metadata-only SecretBroker lookup. The endpoint itself stays inside
- * Core and is represented to HostKernel only by a revision digest. Guard facts
- * must come from the internal Guard/managed-control path, never HTTP or model
- * input. This projection does not dispatch a request or authorize a send.
- *
- * A null credential reference is emitted only if the canonical provider owner
- * independently proves this exact model is in its anonymous-free offer set.
- * Missing/ambiguous SecretBroker metadata does not otherwise become anonymous
- * eligibility. HostKernel still returns UNAVAILABLE for every provider request
- * until it can validate the complete route and authorize the guarded transport.
+ * Registry and credential context injected into the route derivations. The
+ * layer's own request-scoped builder re-derives its route through these exact
+ * cores, so it needs no self-referential `Provider.Service` requirement; the
+ * exported projections below yield the real services and delegate unchanged.
  */
-export const managedRouteProjection = Effect.fn("Provider.managedRouteProjection")(function* (input: {
+type ManagedRouteContextV1 = {
+  readonly providers: Pick<Interface, "list" | "anonymousFreeModelRefs">
+  readonly auth: Auth.Interface
+}
+
+const managedRouteProjectionWithin = Effect.fnUntraced(function* (input: {
   readonly providerID: ProviderV2.ID
   readonly modelID: ModelV2.ID
   /** Harness from the trusted, Task-pinned AgentProfileV2 definition. */
   readonly harnessID: string
+  readonly context: ManagedRouteContextV1
 }) {
   const invalid = (reason: string) => new ManagedProviderRouteUnavailableError({ reason })
   if (!providerIdentifier.test(input.providerID) || !providerIdentifier.test(input.modelID) ||
     !providerIdentifier.test(input.harnessID)) {
     return yield* Effect.fail(invalid("selected provider, model, or profile harness identity is malformed"))
   }
-  const providers = yield* Service
+  const { providers, auth } = input.context
   const active = yield* providers.list()
   const provider = active[input.providerID]
   const model = provider?.models[input.modelID]
@@ -2432,7 +2470,6 @@ export const managedRouteProjection = Effect.fn("Provider.managedRouteProjection
     return yield* Effect.fail(invalid("the registered endpoint is outside the supported HTTPS or loopback profile"))
   }
 
-  const auth = yield* Auth.Service
   const credentialRefs = yield* auth.credentialRefsForProviders([input.providerID]).pipe(
     Effect.catch(() => Effect.succeed({} as Partial<Record<string, string>>)),
   )
@@ -2469,19 +2506,44 @@ export const managedRouteProjection = Effect.fn("Provider.managedRouteProjection
 })
 
 /**
+ * Resolve one managed model route from Core's active provider registry and
+ * Auth's metadata-only SecretBroker lookup. The endpoint itself stays inside
+ * Core and is represented to HostKernel only by a revision digest. Guard facts
+ * must come from the internal Guard/managed-control path, never HTTP or model
+ * input. This projection does not dispatch a request or authorize a send.
+ *
+ * A null credential reference is emitted only if the canonical provider owner
+ * independently proves this exact model is in its anonymous-free offer set.
+ * Missing/ambiguous SecretBroker metadata does not otherwise become anonymous
+ * eligibility. HostKernel still returns UNAVAILABLE for every provider request
+ * until it can validate the complete route and authorize the guarded transport.
+ */
+export const managedRouteProjection = Effect.fn("Provider.managedRouteProjection")(function* (input: {
+  readonly providerID: ProviderV2.ID
+  readonly modelID: ModelV2.ID
+  /** Harness from the trusted, Task-pinned AgentProfileV2 definition. */
+  readonly harnessID: string
+}) {
+  return yield* managedRouteProjectionWithin({
+    ...input,
+    context: { providers: yield* Service, auth: yield* Auth.Service },
+  })
+})
+
+/**
  * Internal Core-only target for compiling a managed SDK request. The endpoint
  * is returned to the in-process P6 transport adapter and must never be copied
  * into a HostKernel/Core RPC projection. The revision is recomputed so a
  * registry change between selection and request preparation fails closed.
  */
-export const managedRouteTransportTarget = Effect.fn("Provider.managedRouteTransportTarget")(function* (input: {
+const managedRouteTransportTargetWithin = Effect.fnUntraced(function* (input: {
   readonly providerID: ProviderV2.ID
   readonly modelID: ModelV2.ID
   readonly harnessID: string
+  readonly context: ManagedRouteContextV1
 }) {
-  const projection = yield* managedRouteProjection(input)
-  const providers = yield* Service
-  const active = yield* providers.list()
+  const projection = yield* managedRouteProjectionWithin({ ...input })
+  const active = yield* input.context.providers.list()
   const model = active[input.providerID]?.models[input.modelID]
   if (!model || model.providerID !== input.providerID || model.id !== input.modelID || !Object.hasOwn(BUNDLED_PROVIDERS, model.api.npm)) {
     return yield* Effect.fail(new ManagedProviderRouteUnavailableError({ reason: "the selected provider adapter changed before request preparation" }))
@@ -2504,6 +2566,17 @@ export const managedRouteTransportTarget = Effect.fn("Provider.managedRouteTrans
     return yield* Effect.fail(new ManagedProviderRouteUnavailableError({ reason: "the selected endpoint revision changed during request preparation" }))
   }
   return { routeProjection: projection, endpointBase: endpoint.href, activeEndpointRevision: currentRevision }
+})
+
+export const managedRouteTransportTarget = Effect.fn("Provider.managedRouteTransportTarget")(function* (input: {
+  readonly providerID: ProviderV2.ID
+  readonly modelID: ModelV2.ID
+  readonly harnessID: string
+}) {
+  return yield* managedRouteTransportTargetWithin({
+    ...input,
+    context: { providers: yield* Service, auth: yield* Auth.Service },
+  })
 })
 
 export * as Provider from "./provider"

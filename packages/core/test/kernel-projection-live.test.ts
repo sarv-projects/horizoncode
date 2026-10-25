@@ -19,6 +19,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { Cause, DateTime, Deferred, Effect, Exit, Fiber, Layer, Option, Queue, Ref, Stream } from "effect"
 import { EventV2 } from "@opencode-ai/core/event"
+import { configServiceMockDefaults } from "./lib/config"
 import { Database } from "@opencode-ai/core/database/database"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { Project } from "@opencode-ai/core/project"
@@ -512,7 +513,7 @@ describe("OpenCode EventV2 -> Rust Session supervisor", () => {
       const referenceGuidance = Layer.mock(ReferenceGuidance.Service, {
         load: () => Effect.succeed(SystemContext.empty),
       })
-      const config = Layer.succeed(Config.Service, Config.Service.of({ entries: () => Effect.succeed([]) }))
+      const config = Layer.succeed(Config.Service, Config.Service.of({ ...configServiceMockDefaults, entries: () => Effect.succeed([]) }))
       const layer = AppNodeBuilder.build(
         LayerNode.group([
           Database.node,

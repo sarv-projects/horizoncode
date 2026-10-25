@@ -244,7 +244,10 @@ fn patch_call(call_id: &str, path: &Path, content: &str) -> Value {
 fn broker_call(call_id: &str, profile_id: &str) -> Value {
     value_map([
         ("callId", string(call_id)),
-        ("capabilityId", string("language.server.start")),
+        // Canonical registry capability (`language.start`); the pre-rename
+        // `language.server.start` string is not registered and must never gain
+        // broker authority through an alias (§17 single canonical registry).
+        ("capabilityId", string("language.start")),
         (
             "arguments",
             value_map([
@@ -263,6 +266,9 @@ fn terminal_call(call_id: &str, shell_profile_id: &str, workspace: &Path) -> Val
         (
             "arguments",
             value_map([
+                // Plain-shell launch contract: every terminal argument set is
+                // mode-typed (`shell` vs `workspace_profile`).
+                ("mode", string("shell")),
                 ("shellProfileID", string(shell_profile_id)),
                 ("command", string("true")),
                 ("cwd", string(cwd.to_str().unwrap())),
@@ -847,6 +853,9 @@ fn tampered_non_write_challenge_cannot_execute_through_the_write_path() {
             session_id: SESSION,
             batch_id,
             call_id: &call_id,
+            // scope_digest is required only for ManagedRoot origins; a
+            // SessionBatch carries no root lifecycle operation.
+            scope_digest: None,
         },
         action_id: "terminal.run",
         argument_digest: &argument_digest,

@@ -10,6 +10,7 @@ import { createSolidTransformPlugin } from "@opentui/solid/bun-plugin"
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const dir = path.resolve(__dirname, "..")
+const productName = "horizoncode"
 
 const clearBuildOutput = async (relative: string) => {
   const p9BuildRoot = process.env.HORIZONCODE_P9_BUILD_ROOT
@@ -89,6 +90,14 @@ const skipInstall = process.argv.includes("--skip-install")
 const sourcemapsFlag = process.argv.includes("--sourcemaps")
 const plugin = createSolidTransformPlugin()
 const skipEmbedWebUi = process.argv.includes("--skip-embed-web-ui")
+
+// P9 distribution evidence: carry the HorizonCode first-party license and its
+// separate attribution/third-party-closure notice into every candidate.
+const candidateLicense = await Bun.file(path.resolve(dir, "../../LICENSE")).text()
+const candidateNotice = await Bun.file(path.resolve(dir, "../../NOTICE")).text()
+if (candidateLicense.trim().length === 0 || candidateNotice.trim().length === 0) {
+  throw new Error("HorizonCode LICENSE or NOTICE is empty; refusing to package an unlicensed candidate")
+}
 
 const createEmbeddedWebUIBundle = async () => {
   console.log(`Building Web UI to embed in the binary`)
@@ -279,7 +288,7 @@ if (!skipInstall) {
 }
 for (const item of targets) {
   const name = [
-    pkg.name,
+    productName,
     // changing to win32 flags npm for some reason
     item.os === "win32" ? "windows" : item.os,
     item.arch,
@@ -404,7 +413,7 @@ for (const item of targets) {
       autoloadDotenv: false,
       autoloadTsconfig: true,
       autoloadPackageJson: true,
-      target: name.replace(pkg.name, "bun") as any,
+      target: name.replace(productName, "bun") as any,
       ...(includeObserver || includeHostKernel
         ? {
             assets: [
@@ -414,8 +423,8 @@ for (const item of targets) {
             ],
           }
         : {}),
-      outfile: `dist/${name}/bin/opencode`,
-      execArgv: [`--user-agent=opencode/${Script.version}`, "--use-system-ca", "--"],
+      outfile: `dist/${name}/bin/horizoncode`,
+      execArgv: [`--user-agent=horizoncode/${Script.version}`, "--use-system-ca", "--"],
       windows: {},
     },
     files: {
@@ -446,15 +455,20 @@ for (const item of targets) {
     },
   })
 
+  // Attribution/notice files must be part of the inspected artifact inventory,
+  // not only the source checkout. The distribution audit requires both.
+  await Bun.write(`dist/${name}/bin/LICENSE`, candidateLicense)
+  await Bun.write(`dist/${name}/bin/NOTICE`, candidateNotice)
+
   // Embedding the bundle invalidates the linker's ad-hoc signature, and macOS 27+
   // SIGKILLs binaries with invalid pages. Re-sign ad-hoc; release CI re-signs with Developer ID.
   if (item.os === "darwin" && process.platform === "darwin") {
-    await $`codesign --force --sign - dist/${name}/bin/opencode`
+    await $`codesign --force --sign - dist/${name}/bin/horizoncode`
   }
 
   // Smoke test: only run if binary is for current platform
   if (item.os === process.platform && item.arch === process.arch && !item.abi) {
-    const binaryPath = `dist/${name}/bin/opencode`
+    const binaryPath = `dist/${name}/bin/horizoncode`
     console.log(`Running smoke test: ${binaryPath} --version`)
     try {
       const versionOutput = await $`${binaryPath} --version`.text()
@@ -492,7 +506,7 @@ if (Script.release) {
     }
   }
   throw new Error(
-    "HorizonCode release upload is unavailable until distribution rights, signing trust, and release approval are resolved. Local archives were prepared without publication.",
+    "HorizonCode release upload is unavailable while exact third-party notices, signing/update policy, and release acceptance remain incomplete. Local archives were prepared without publication.",
   )
 }
 

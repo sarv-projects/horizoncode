@@ -159,11 +159,11 @@ def _guard_build_script(destination: Path) -> None:
     """Require cleanup confinement in source instead of mutating the candidate."""
     script = destination.joinpath(*BUILD_SCRIPT.parts)
     build_root = destination.resolve(strict=True)
+    if script.is_symlink() or not script.is_file():
+        raise ValueError("isolated build script must be a regular, non-symlink file")
     if not _inside(script.parent, build_root):
         raise ValueError("isolated build script parent escaped the candidate checkout")
     _reject_symlink_components(script, build_root, "isolated build script")
-    if script.is_symlink() or not script.is_file():
-        raise ValueError("isolated build script must be a regular, non-symlink file")
     descriptor = os.open(script, os.O_RDONLY | os.O_NOFOLLOW)
     with os.fdopen(descriptor, "r", encoding="utf-8") as source_file:
         if not stat.S_ISREG(os.fstat(source_file.fileno()).st_mode):
@@ -232,6 +232,48 @@ def _required_digest(path: Path) -> str:
     if path.is_symlink() or not path.is_file():
         raise ValueError(f"required release input is missing or is a symlink: {path}")
     return _sha256(path)
+
+
+def plan_isolated_build(source: Path, destination: Path) -> dict:
+    """Validate an isolated build request without copying or building anything."""
+    source = _validate_source(source)
+    destination = _validate_destination(destination, source)
+    paths = _included_paths(source)
+    _validate_symlinks(source, paths)
+    source_facts = _git_source_facts(source)
+    source_digest = _source_tree_sha256(source, paths)
+    if not source_facts.get("revision") or not source_digest:
+        raise ValueError("could not bind the isolated build copy to a source revision and SHA-256 state digest")
+    models_fixture = source.joinpath(*MODELS_FIXTURE.parts)
+    if models_fixture.is_symlink() or not models_fixture.is_file():
+        raise ValueError(f"local MODELS_DEV_API_JSON fixture is missing or not a regular file: {models_fixture}")
+    _guard_build_script(source)
+    missing = [tool for tool in ("bun", "cargo", "rustup") if shutil.which(tool) is None]
+    if missing:
+        raise ValueError(f"the isolated Linux build requires on PATH: {', '.join(missing)}")
+    return {
+        "schema_version": 1,
+        "qualification_status": "DRY_RUN_ONLY",
+        "dry_run": True,
+        "source": {
+            "status": source_facts["status"],
+            "revision": source_facts["revision"],
+            "source_state_sha256": source_digest,
+        },
+        "build_copy": {
+            "path": str(destination),
+            "status": "NOT_CREATED",
+            "source_state_sha256": source_digest,
+            "models_dev_api_json": str(models_fixture),
+            "source_bootstrap": {"status": "NOT_APPLIED", "output": ""},
+            "build_marker": str(destination.parent / f".{destination.name}.p9-build-marker.json"),
+        },
+        "build": {"status": "DRY_RUN", "product_binary": None, "artifact_directory": None},
+        "limitations": [
+            "Dry run validates source, destination, guard, and tool availability only.",
+            "No source copy, dependency install, compilation, manifest, or evidence file was created.",
+        ],
+    }
 
 
 def prepare_isolated_build(source: Path, destination: Path) -> dict:
@@ -416,7 +458,9 @@ def build_candidate(report: dict) -> dict:
         timeout=3600,
     )
 
-    candidates = sorted((build_root / "packages" / "opencode" / "dist").glob("opencode-linux-*/bin/opencode"))
+    candidates = sorted(
+        (build_root / "packages" / "opencode" / "dist").glob("horizoncode-linux-*/bin/horizoncode")
+    )
     if len(candidates) != 1 or candidates[0].is_symlink() or not candidates[0].is_file():
         raise ValueError(f"expected exactly one regular Linux CLI candidate, found {len(candidates)}")
     binary = candidates[0]
@@ -497,12 +541,20 @@ def main() -> int:
     parser.add_argument("--source", required=True, type=Path, help="root of the Git source checkout to snapshot")
     parser.add_argument("--destination", required=True, type=Path, help="new child path under kernel/target/horizoncode-release")
     parser.add_argument("--build", action="store_true", help="install locked dependencies and build the Linux CLI candidate")
+    parser.add_argument("--dry-run", action="store_true", help="validate source, destination, guard, and tools without copying or building")
     parser.add_argument("--output", type=Path, help="write the JSON report to this path instead of stdout")
     args = parser.parse_args()
 
+    if args.dry_run and args.build:
+        parser.error("--dry-run cannot be combined with --build")
+
     try:
         output_path = _validated_output_path(args.output) if args.output else None
-        report = prepare_isolated_build(args.source, args.destination)
+        report = (
+            plan_isolated_build(args.source, args.destination)
+            if args.dry_run
+            else prepare_isolated_build(args.source, args.destination)
+        )
         if args.build:
             report = build_candidate(report)
     except (OSError, ValueError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
@@ -515,7 +567,7 @@ def main() -> int:
         print(f"isolated P9 build: {report['build']['status']}; report={output_path}")
     else:
         print(encoded, end="")
-    return 0 if report["build"]["status"] in {"PREPARED", "BUILT"} else 1
+    return 0 if report["build"]["status"] in {"PREPARED", "BUILT", "DRY_RUN"} else 1
 
 
 if __name__ == "__main__":

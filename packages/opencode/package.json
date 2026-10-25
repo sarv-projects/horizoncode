@@ -16,8 +16,8 @@
     "dev:temporary": "bun run ./src/temporary.ts"
   },
   "bin": {
-    "horizoncode": "./bin/opencode",
-    "hzcode": "./bin/opencode"
+    "horizoncode": "./bin/horizoncode",
+    "hzcode": "./bin/horizoncode"
   },
   "exports": {
     "./*": "./src/*.ts"

@@ -2,6 +2,7 @@
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 import eval_harness as evaluation
@@ -115,6 +116,24 @@ class EvaluationManifestTests(unittest.TestCase):
             manifest["shared"]["budgets"]["costMicros"] = invalid
             with self.subTest(invalid=invalid), self.assertRaises(evaluation.EvalError):
                 evaluation.validate_manifest(manifest)
+
+    def test_model_class_is_required_and_reported_for_each_frozen_bundle(self):
+        for model_class in evaluation.MODEL_CLASSES:
+            manifest = evaluation.selfcheck_manifest()
+            manifest["shared"]["modelClass"] = model_class
+            manifest["shared"]["providerRoute"] = (
+                "local/llama" if model_class == "local" else f"fixture/{model_class}")
+            evaluation.validate_manifest(manifest)
+            self.assertEqual(manifest["shared"]["modelClass"], model_class)
+        for invalid in (None, "", "SMALL", "frontier", 1, True):
+            manifest = evaluation.selfcheck_manifest()
+            manifest["shared"]["modelClass"] = invalid
+            with self.subTest(invalid=invalid), self.assertRaises(evaluation.EvalError):
+                evaluation.validate_manifest(manifest)
+        missing = evaluation.selfcheck_manifest()
+        del missing["shared"]["modelClass"]
+        with self.assertRaises(evaluation.EvalError):
+            evaluation.validate_manifest(missing)
 
     def test_analysis_rejects_nonfinite_values(self):
         manifest = evaluation.selfcheck_manifest()
@@ -232,6 +251,7 @@ class FakeEvaluationTests(unittest.TestCase):
         self.assertEqual(report["rawArtifactDigest"], result.artifact_digest)
         self.assertEqual(report["taskIds"], ["fixture-1", "fixture-2"])
         self.assertEqual(report["arms"][0]["harnessCommit"], "fixture-source-v1")
+        self.assertEqual(report["sharedConfiguration"]["modelClass"], "small")
         self.assertEqual(report["summary"]["resourceUse"]["status"], "UNKNOWN")
         self.assertEqual(report["summary"]["statusCounts"]["PASS_VERIFIED"], 4)
         self.assertEqual(report["summary"]["costProvenance"], "FIXTURE_REPORTED")
@@ -296,7 +316,8 @@ class FakeEvaluationTests(unittest.TestCase):
         journal = evaluation._ArtifactJournal(self.artifact, self.manifest, frozen_digest)
         journal.append({"taskId": first_task, "taskGroup": task_group, "armId": first_arm,
                         "manifestDigest": frozen_digest, "providerCallIndex": 0,
-                        "status": "PASS_VERIFIED", "failureClass": "none", "mode": "FAKE_SELF_CHECK"})
+                        "status": "PASS_VERIFIED", "failureClass": "none",
+                        "dispatchStarted": True, "mode": "FAKE_SELF_CHECK"})
         journal.close()
         provider = provider_for(self.manifest)
         result = evaluation.run_fake_selfcheck(self.manifest, provider, self.artifact)
@@ -460,6 +481,324 @@ class HostRunBoundaryTests(unittest.TestCase):
         self.assertFalse(summary["officialScoreEligible"])
         self.assertFalse(summary["hup001Complete"])
 
+    def test_unattested_resource_claim_is_unknown_and_stops_without_replay(self):
+        outer = self
+
+        class Bridge:
+            def __init__(self):
+                self.calls = 0
+
+            def dispatch_guarded_trial(self, invocation):
+                self.calls += 1
+                return replace(
+                    outer.outcome_for(invocation),
+                    resource_use={"status": "UNKNOWN", "rssBytes": 1, "pssBytes": 0},
+                )
+
+        class Resolver:
+            def resolve_task(self, task_id):
+                return outer.tasks[task_id]
+
+        bridge = Bridge()
+        result = evaluation.run_host_paired_evaluation(
+            self.manifest, bridge, Resolver(), self.artifact)
+        self.assertEqual(bridge.calls, 1)
+        self.assertEqual(result.records[0]["status"], "UNKNOWN")
+        self.assertTrue(result.records[0]["dispatchStarted"])
+        self.assertTrue(all(row["status"] == "NOT_RUN" for row in result.records[1:]))
+        self.assertNotIn("rssBytes", result.records[0].get("resourceUse", {}))
+
+        resumed = evaluation.run_host_paired_evaluation(
+            self.manifest, bridge, Resolver(), self.artifact)
+        self.assertEqual(bridge.calls, 1)
+        self.assertEqual(resumed.records, result.records)
+
+    def test_foreign_run_outcome_is_unknown_and_never_replayed(self):
+        outer = self
+
+        class Bridge:
+            def __init__(self):
+                self.calls = 0
+
+            def dispatch_guarded_trial(self, invocation):
+                self.calls += 1
+                return replace(outer.outcome_for(invocation), run_id='foreign-run')
+
+        class Resolver:
+            def resolve_task(self, task_id):
+                return outer.tasks[task_id]
+
+        bridge = Bridge()
+        result = evaluation.run_host_paired_evaluation(
+            self.manifest, bridge, Resolver(), self.artifact)
+        self.assertEqual(bridge.calls, 1)
+        self.assertEqual(result.records[0]['status'], 'UNKNOWN')
+        self.assertTrue(result.records[0]['dispatchStarted'])
+        self.assertTrue(all(row['status'] == 'NOT_RUN' for row in result.records[1:]))
+
+        resumed = evaluation.run_host_paired_evaluation(
+            self.manifest, bridge, Resolver(), self.artifact)
+        self.assertEqual(bridge.calls, 1)
+        self.assertEqual(resumed.records, result.records)
+
+    def test_host_run_receipt_and_verifier_evidence_must_be_distinct(self):
+        outer = self
+
+        class Bridge:
+            def __init__(self):
+                self.calls = 0
+
+            def dispatch_guarded_trial(self, invocation):
+                self.calls += 1
+                same = f"same-ref-{invocation.call_index}"
+                return replace(outer.outcome_for(invocation),
+                               host_run_receipt_ref=same, verifier_evidence_ref=same)
+
+        class Resolver:
+            def resolve_task(self, task_id):
+                return outer.tasks[task_id]
+
+        bridge = Bridge()
+        result = evaluation.run_host_paired_evaluation(
+            self.manifest, bridge, Resolver(), self.artifact)
+        self.assertEqual(bridge.calls, 1)
+        self.assertEqual(result.records[0]["status"], "UNKNOWN")
+        self.assertTrue(all(row["status"] == "NOT_RUN" for row in result.records[1:]))
+
+    def test_summary_rejects_contradictory_or_unattested_host_run_evidence(self):
+        outer = self
+
+        class Bridge:
+            def dispatch_guarded_trial(self, invocation):
+                return outer.outcome_for(invocation)
+
+        class Resolver:
+            def resolve_task(self, task_id):
+                return outer.tasks[task_id]
+
+        result = evaluation.run_host_paired_evaluation(
+            self.manifest, Bridge(), Resolver(), self.artifact)
+        row = dict(result.records[0])
+        self.assertEqual(row["status"], "PASS_VERIFIED")
+        contradictions = (
+            ({"securityFailure": True, "failureClass": "security_failure"},
+             "contradicts its verifier/security evidence"),
+            ({"verifierVerdict": "FAIL", "falseCompletion": True},
+             "contradicts its verifier/security evidence"),
+            ({"resourceUse": {"status": "MEASURED", "pssBytes": 1}},
+             "must stay UNKNOWN"),
+            ({"resourceUse": {"status": "UNKNOWN", "pssBytes": 1}},
+             "must stay UNKNOWN"),
+            ({"verifierVerdict": "ed25519"},
+             "missing a valid verifier verdict"),
+        )
+        for overrides, message in contradictions:
+            with self.subTest(overrides=sorted(overrides)):
+                with self.assertRaisesRegex(evaluation.EvalError, message):
+                    evaluation.summarize_pairs(({**row, **overrides},), self.manifest)
+        incomplete = {key: value for key, value in row.items() if key != "verifierVerdict"}
+        with self.assertRaisesRegex(evaluation.EvalError, "missing a valid verifier verdict"):
+            evaluation.summarize_pairs((incomplete,), self.manifest)
+
+    def test_journal_rejects_persisted_contradictory_host_run_pass(self):
+        task_id, arm_id = evaluation.paired_call_plan(self.manifest)[0]
+        task = next(item for item in self.manifest["tasks"] if item["taskId"] == task_id)
+        self._write_host_journal_rows([
+            {"taskId": task_id, "taskGroup": task["taskGroup"], "armId": arm_id,
+             "manifestDigest": evaluation.digest(self.manifest),
+             "hostRunDispatchIndex": 0, "dispatchStarted": True,
+             "status": "PASS_VERIFIED", "verifierVerdict": "FAIL",
+             "securityFailure": True, "falseCompletion": True, "failureClass": "security_failure",
+             "resourceUse": {"status": "UNKNOWN"}, "mode": "HOST_RUN_PAIRED"},
+        ])
+
+        class Bridge:
+            def __init__(self):
+                self.calls = 0
+
+            def dispatch_guarded_trial(self, invocation):
+                self.calls += 1
+                return None
+
+        class Resolver:
+            def resolve_task(self, task_id):
+                return {}
+
+        bridge = Bridge()
+        with self.assertRaisesRegex(evaluation.EvalError, "contradicts its verifier/security"):
+            evaluation.run_host_paired_evaluation(
+                self.manifest, bridge, Resolver(), self.artifact)
+        self.assertEqual(bridge.calls, 0)
+
+    def _write_host_journal_rows(self, rows, path=None):
+        frozen_digest = evaluation.digest(self.manifest)
+        journal = evaluation._ArtifactJournal(
+            path or self.artifact, self.manifest, frozen_digest, mode="HOST_RUN_PAIRED")
+        try:
+            for row in rows:
+                journal.append(row)
+        finally:
+            journal.close()
+
+    def test_resume_rejects_dispatch_after_unknown_terminal(self):
+        plan = evaluation.paired_call_plan(self.manifest)
+        tasks = {task["taskId"]: task for task in self.manifest["tasks"]}
+        first_task, first_arm = plan[0]
+        second_task, second_arm = plan[1]
+        frozen_digest = evaluation.digest(self.manifest)
+        self._write_host_journal_rows([
+            {"taskId": first_task, "taskGroup": tasks[first_task]["taskGroup"],
+             "armId": first_arm, "manifestDigest": frozen_digest,
+             "hostRunDispatchIndex": 0, "dispatchStarted": True,
+             "status": "UNKNOWN", "mode": "HOST_RUN_PAIRED"},
+            {"taskId": second_task, "taskGroup": tasks[second_task]["taskGroup"],
+             "armId": second_arm, "manifestDigest": frozen_digest,
+             "hostRunDispatchIndex": 1, "dispatchStarted": True,
+             "status": "PASS_VERIFIED", "mode": "HOST_RUN_PAIRED"},
+        ])
+
+        class Bridge:
+            def __init__(self):
+                self.calls = 0
+
+            def dispatch_guarded_trial(self, invocation):
+                self.calls += 1
+                return outer.outcome_for(invocation)
+
+        outer = self
+
+        class Resolver:
+            def resolve_task(self, task_id):
+                return outer.tasks[task_id]
+
+        bridge = Bridge()
+        with self.assertRaisesRegex(evaluation.EvalError, "after a terminal trial"):
+            evaluation.run_host_paired_evaluation(
+                self.manifest, bridge, Resolver(), self.artifact)
+        self.assertEqual(bridge.calls, 0)
+
+    def test_resume_rejects_not_run_before_terminal_trial(self):
+        plan = evaluation.paired_call_plan(self.manifest)
+        tasks = {task["taskId"]: task for task in self.manifest["tasks"]}
+        first_task, first_arm = plan[0]
+        second_task, second_arm = plan[1]
+        frozen_digest = evaluation.digest(self.manifest)
+        self._write_host_journal_rows([
+            {"taskId": first_task, "taskGroup": tasks[first_task]["taskGroup"],
+             "armId": first_arm, "manifestDigest": frozen_digest, "dispatchStarted": True,
+             "status": "NOT_RUN", "mode": "HOST_RUN_PAIRED"},
+            {"taskId": second_task, "taskGroup": tasks[second_task]["taskGroup"],
+             "armId": second_arm, "manifestDigest": frozen_digest,
+             "hostRunDispatchIndex": 0, "dispatchStarted": True,
+             "status": "PASS_VERIFIED", "mode": "HOST_RUN_PAIRED"},
+        ])
+
+        class Bridge:
+            def dispatch_guarded_trial(self, invocation):
+                return outer.outcome_for(invocation)
+
+        outer = self
+
+        class Resolver:
+            def resolve_task(self, task_id):
+                return outer.tasks[task_id]
+
+        with self.assertRaisesRegex(evaluation.EvalError, "NOT_RUN precedes a terminal trial"):
+            evaluation.run_host_paired_evaluation(
+                self.manifest, Bridge(), Resolver(), self.artifact)
+
+    def test_resume_rejects_pass_marked_as_not_dispatched(self):
+        task_id, arm_id = evaluation.paired_call_plan(self.manifest)[0]
+        task = next(item for item in self.manifest["tasks"] if item["taskId"] == task_id)
+        self._write_host_journal_rows([
+            {"taskId": task_id, "taskGroup": task["taskGroup"], "armId": arm_id,
+             "manifestDigest": evaluation.digest(self.manifest),
+             "hostRunDispatchIndex": 0, "dispatchStarted": False,
+             "status": "PASS_VERIFIED", "mode": "HOST_RUN_PAIRED"},
+        ])
+
+        class Bridge:
+            def __init__(self):
+                self.calls = 0
+
+            def dispatch_guarded_trial(self, invocation):
+                self.calls += 1
+                return outer.outcome_for(invocation)
+
+        outer = self
+
+        class Resolver:
+            def resolve_task(self, task_id):
+                return outer.tasks[task_id]
+
+        bridge = Bridge()
+        with self.assertRaisesRegex(evaluation.EvalError, "dispatch state contradicts trial status"):
+            evaluation.run_host_paired_evaluation(
+                self.manifest, bridge, Resolver(), self.artifact)
+        self.assertEqual(bridge.calls, 0)
+
+    def test_resume_does_not_trust_or_skip_persisted_host_run_pass(self):
+        task_id, arm_id = evaluation.paired_call_plan(self.manifest)[0]
+        task = next(item for item in self.manifest["tasks"] if item["taskId"] == task_id)
+        self._write_host_journal_rows([
+            {"taskId": task_id, "taskGroup": task["taskGroup"], "armId": arm_id,
+             "manifestDigest": evaluation.digest(self.manifest),
+             "hostRunDispatchIndex": 0, "dispatchStarted": True,
+             "status": "PASS_VERIFIED", "mode": "HOST_RUN_PAIRED"},
+        ])
+
+        class Bridge:
+            def __init__(self):
+                self.calls = 0
+
+            def dispatch_guarded_trial(self, invocation):
+                self.calls += 1
+                return outer.outcome_for(invocation)
+
+        outer = self
+
+        class Resolver:
+            def resolve_task(self, task_id):
+                return outer.tasks[task_id]
+
+        bridge = Bridge()
+        with self.assertRaisesRegex(evaluation.EvalError, "requires authenticated reconciliation"):
+            evaluation.run_host_paired_evaluation(
+                self.manifest, bridge, Resolver(), self.artifact)
+        self.assertEqual(bridge.calls, 0)
+
+    def test_resume_does_not_trust_persisted_host_run_nonpass_outcomes(self):
+        plan = evaluation.paired_call_plan(self.manifest)
+        tasks = {task["taskId"]: task for task in self.manifest["tasks"]}
+        statuses = ("FAIL_UNVERIFIED", "UNSUPPORTED_CAPABILITY")
+        rows = []
+        for index, (task_id, arm_id) in enumerate(plan[:len(statuses)]):
+            rows.append({"taskId": task_id, "taskGroup": tasks[task_id]["taskGroup"],
+                         "armId": arm_id, "manifestDigest": evaluation.digest(self.manifest),
+                         "hostRunDispatchIndex": index, "dispatchStarted": True,
+                         "status": statuses[index], "mode": "HOST_RUN_PAIRED"})
+        self._write_host_journal_rows(rows)
+
+        class Bridge:
+            def __init__(self):
+                self.calls = 0
+
+            def dispatch_guarded_trial(self, invocation):
+                self.calls += 1
+                return outer.outcome_for(invocation)
+
+        outer = self
+
+        class Resolver:
+            def resolve_task(self, task_id):
+                return outer.tasks[task_id]
+
+        bridge = Bridge()
+        with self.assertRaisesRegex(evaluation.EvalError, "requires authenticated reconciliation"):
+            evaluation.run_host_paired_evaluation(
+                self.manifest, bridge, Resolver(), self.artifact)
+        self.assertEqual(bridge.calls, 0)
+
     def test_ambiguous_host_dispatch_is_unknown_and_never_replayed(self):
         class Bridge:
             def __init__(self):
@@ -512,6 +851,749 @@ class HostRunBoundaryTests(unittest.TestCase):
         self.assertEqual(bridge.calls, 1)
         self.assertTrue(all(row["status"] == "NOT_RUN" for row in result.records[
             result.records.index(cancellation) + 1:]))
+
+
+def _b3(text: str) -> str:
+    """Canonical blake3 digest of a text value (local helper for fixtures)."""
+    return "blake3:" + evaluation.blake3.blake3(text.encode("utf-8")).hex()
+
+
+def host_outcome(manifest, invocation, **overrides):
+    """A structurally valid HostRun outcome for a fixture invocation."""
+    values = {
+        "run_id": manifest["runId"], "attempt_id": f"attempt-{invocation.call_index}",
+        "task_id": invocation.task["taskId"],
+        "dispatch_idempotency_key": invocation.dispatch_idempotency_key,
+        "arm_id": invocation.arm["id"],
+        "provider_route": manifest["shared"]["providerRoute"],
+        "model_revision": manifest["shared"]["modelRevision"],
+        "harness_digest": invocation.arm["harnessDigest"],
+        "workspace_revision": "blake3:" + "a" * 64,
+        "verifier_digest": manifest["benchmark"]["evaluatorDigest"],
+        "verifier_verdict": "PASS",
+        "host_run_receipt_ref": f"receipt-{invocation.call_index}",
+        "verifier_evidence_ref": f"evidence-{invocation.call_index}",
+        "owner_log_event_digest": "blake3:" + "b" * 64,
+        "elapsed_ms": 5, "input_tokens": 10, "output_tokens": 4, "cost_micros": None,
+        "cost_provenance": "UNKNOWN", "tool_calls": 1, "retries": 0, "interventions": 0,
+        "resource_use": {"status": "UNKNOWN"},
+    }
+    values.update(overrides)
+    return evaluation.HostRunOutcomeV1(**values)
+
+
+class FakeHostRunTransport:
+    """Local model of P2's three published HostRun routes — a **test double**.
+
+    This is not HostKernel and confers no authority: it derives nothing from an
+    authenticated peer/fence, Stage-A/B admission facts, Guarded Create/Inspect
+    receipts or the P1 effect projection. It exists so the P8 consumer's
+    sequencing, strict bodies/replies and fail-closed decisions can be exercised
+    offline. Authentic evidence stays BLOCKED (see
+    `AuthenticHostRunPositiveFixtureTests`).
+    """
+
+    def __init__(self, *, verified_revision="blake3:" + "a" * 64):
+        self.verified_revision = verified_revision
+        self.operations = []
+        self.bindings = {}
+        self.p2_receipts = {}
+        self.owner_receipts = {}
+        self.forced_reason = None
+        self.forced_post_dispatch_reason = None
+        self.fail_operation = None
+        self.terminal_status = "SUCCEEDED"
+        self.inspect_counts = {}
+
+    def call(self, service, operation, body):
+        self.operations.append((operation, dict(body)))
+        if service != evaluation.MANAGED_SERVICE_ID:
+            raise evaluation.EvalError("unexpected service id")
+        if self.fail_operation == operation:
+            raise ConnectionError(f"simulated {operation} transport failure")
+        if operation == evaluation.HOST_RUN_BIND_OPERATION:
+            return self._bind(body)
+        if operation == evaluation.HOST_RUN_BIND_RECEIPT_OPERATION:
+            return self._bind_receipt(body)
+        if operation == evaluation.HOST_RUN_INSPECT_OPERATION:
+            return self._inspect(body)
+        raise evaluation.EvalError(f"unexpected operation {operation}")
+
+    def seed_completed_sibling(self, *, dispatch_key_digest, manifest_digest,
+                               evaluator_task_id, arm_id, task_group,
+                               attempt_id="attempt-seed", owner_receipt=None):
+        """Model a sibling process that already completed append + post-commit.
+
+        Used only to give the fake host a bound key so it can answer with a
+        terminal status; it records no RPC operation, because no consumer call
+        took place.
+        """
+        self._bind(evaluation.host_run_bind_body(
+            goal_id="goal-fixture", attempt_id=attempt_id,
+            dispatch_key_digest=dispatch_key_digest,
+            manifest_digest=manifest_digest, evaluator_task_id=evaluator_task_id,
+            arm_id=arm_id, task_group=task_group))
+        if owner_receipt is None:
+            owner_receipt = {
+                "ownerLogID": f"owner-log-fixture-{len(self.owner_receipts) + 1}",
+                "ownerLogSequence": str(len(self.owner_receipts) + 1),
+                "ownerLogEventDigest": _b3(f"p8-event-{dispatch_key_digest}"),
+            }
+        self._bind_receipt({
+            "goalID": "goal-fixture",
+            "dispatchKeyDigest": dispatch_key_digest,
+            "bindingDigest": self.bindings[dispatch_key_digest]["bindingDigest"],
+            **owner_receipt,
+        })
+        return self.bindings[dispatch_key_digest]
+
+    def _bind(self, body):
+        if set(body) != set(evaluation.HOST_RUN_BIND_BODY_FIELDS):
+            raise evaluation.EvalError("bind body is not the frozen seven-field contract")
+        key = body["dispatchKeyDigest"]
+        binding = {
+            "schemaVersion": 1,
+            "dispatchKeyDigest": key,
+            "manifestDigest": body["manifestDigest"],
+            "evaluatorTaskId": body["evaluatorTaskId"],
+            "armId": body["armId"],
+            "taskGroup": body["taskGroup"],
+            "runId": "run-fixture",
+            "managedTaskId": body["evaluatorTaskId"],
+            "attemptId": body["attemptID"],
+            "evaluationSessionId": "session-fixture",
+            "coreProcessGeneration": "4242",
+            "ownerId": "owner-fixture",
+            "ownerEpoch": "7",
+            "workerExecutionId": "worker-fixture",
+            "delegationBindingDigest": _b3("delegation-fixture"),
+            "acceptedSpecDigest": _b3("spec-fixture"),
+            "providerSelectionDigest": _b3("provider-fixture"),
+            "workspaceBindingDigest": _b3("workspace-fixture"),
+            "admittedWorkspaceRevision": self.verified_revision,
+            "attemptScopeDigest": _b3("scope-fixture"),
+            "ownerPrincipalBindingDigest": _b3("principal-fixture"),
+        }
+        binding["bindingDigest"] = "blake3:" + evaluation.blake3.blake3(
+            evaluation.canonical_json(binding)).hex()
+        existing = self.bindings.get(key)
+        if existing is not None and existing != binding:
+            raise evaluation.EvalError("conflicting binding for one dispatch key")
+        self.bindings[key] = binding
+        receipt = {
+            "schemaVersion": 1,
+            "dispatchKeyDigest": key,
+            "bindingDigest": binding["bindingDigest"],
+            "ownerLogSequence": str(len(self.p2_receipts) + 1),
+            "ownerLogEventDigest": _b3(f"p2-receipt-{key}"),
+            "bindingManagedRevision": "11",
+        }
+        self.p2_receipts[key] = receipt
+        return {"schemaVersion": 1, "binding": binding, "receipt": receipt}
+
+    def _bind_receipt(self, body):
+        if set(body) != set(evaluation.HOST_RUN_BIND_RECEIPT_BODY_FIELDS):
+            raise evaluation.EvalError(
+                "bind_receipt body is not the frozen six-field contract")
+        key = body["dispatchKeyDigest"]
+        if key not in self.bindings:
+            raise evaluation.EvalError("post-commit receipt names an unbound key")
+        if body["bindingDigest"] != self.bindings[key]["bindingDigest"]:
+            raise evaluation.EvalError("post-commit receipt names a foreign binding")
+        if any(receipt["ownerLogID"] == body["ownerLogID"]
+               for receipt in self.owner_receipts.values()):
+            raise evaluation.EvalError("replayed OwnerLog cursor")
+        self.owner_receipts[key] = {
+            "ownerLogID": body["ownerLogID"],
+            "ownerLogSequence": body["ownerLogSequence"],
+            "ownerLogEventDigest": body["ownerLogEventDigest"],
+            "bindingDigest": body["bindingDigest"],
+            "dispatchKeyDigest": key,
+        }
+        return {
+            "schemaVersion": 1,
+            "status": "RECORDED",
+            "receipt": {
+                "schemaVersion": 1,
+                "dispatchKeyDigest": key,
+                "bindingDigest": body["bindingDigest"],
+                "ownerLogID": body["ownerLogID"],
+                "ownerLogSequence": body["ownerLogSequence"],
+                "ownerLogEventDigest": body["ownerLogEventDigest"],
+            },
+        }
+
+    def _inspect(self, body):
+        if set(body) != set(evaluation.HOST_RUN_INSPECT_BODY_FIELDS):
+            raise evaluation.EvalError("inspect body is not the frozen two-field contract")
+        key = body["dispatchKeyDigest"]
+        count = self.inspect_counts.get(key, 0) + 1
+        self.inspect_counts[key] = count
+        reason = self.forced_reason
+        if count > 1 and self.forced_post_dispatch_reason is not None:
+            reason = self.forced_post_dispatch_reason
+        if reason is None:
+            if key not in self.bindings:
+                reason = evaluation.HOST_RUN_BINDING_ABSENT
+            elif key not in self.p2_receipts:
+                reason = "host_run_binding_receipt_missing"
+            elif key not in self.owner_receipts:
+                reason = "host_run_p8_owner_receipt_missing"
+        if reason is not None:
+            response = {"schemaVersion": 1, "dispatchKeyDigest": key,
+                        "status": "UNKNOWN", "unknownReason": reason}
+            if reason != evaluation.HOST_RUN_BINDING_ABSENT and key in self.bindings:
+                response["binding"] = self.bindings[key]
+                response["bindingDigest"] = self.bindings[key]["bindingDigest"]
+            return response
+        binding = self.bindings[key]
+        response = {"schemaVersion": 1, "dispatchKeyDigest": key,
+                    "status": self.terminal_status, "binding": binding,
+                    "bindingDigest": binding["bindingDigest"],
+                    "attemptReceiptDigest": f"attempt-receipt-{binding['attemptId']}"}
+        if self.terminal_status == "SUCCEEDED":
+            response["verifiedRevision"] = self.verified_revision
+        return response
+
+
+class FakeOwnerLog:
+    """P8 OwnerLog seam double; returns cursor facts like a real append would."""
+
+    def __init__(self, *, fail=False):
+        self.fail = fail
+        self.appended = []
+
+    def append_dispatch_bound(self, binding, binding_digest):
+        if self.fail:
+            raise ConnectionError("simulated OwnerLog append failure")
+        if binding_digest != binding["bindingDigest"]:
+            raise evaluation.EvalError("OwnerLog mirror names a foreign binding")
+        index = len(self.appended) + 1
+        self.appended.append(binding["dispatchKeyDigest"])
+        return {"ownerLogID": f"owner-log-fixture-{index}",
+                "ownerLogSequence": str(index),
+                "ownerLogEventDigest": _b3(f"p8-event-{index}")}
+
+
+class HostRunControlPlaneTests(unittest.TestCase):
+    """P8 consumer: append → post-commit receipt → resolve, fail-closed."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent)
+        self.artifact = Path(self.directory.name) / "host-run-control-plane.jsonl"
+        self.manifest = evaluation.selfcheck_manifest()
+        self.manifest.pop("fakeSelfcheck")
+        self.manifest["runId"] = "hup001-host-control-plane-fixture"
+        self.manifest["shared"]["providerRoute"] = "explicit-selected-route"
+        self.manifest["shared"]["modelRevision"] = "selected-model-revision"
+        self.tasks = {}
+        for task in self.manifest["tasks"]:
+            local = {"taskId": task["taskId"], "taskGroup": task["taskGroup"],
+                     "input": {"prompt": "bounded fixture task"}}
+            task["inputDigest"] = evaluation.digest(local)
+            self.tasks[task["taskId"]] = local
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    class _Resolver:
+        def __init__(self, tasks):
+            self.tasks = tasks
+
+        def resolve_task(self, task_id):
+            return self.tasks[task_id]
+
+    class _Bridge:
+        def __init__(self, manifest):
+            self.manifest = manifest
+            self.dispatches = 0
+            self.handles = 0
+
+        def prepare_dispatch(self, invocation):
+            self.handles += 1
+            return evaluation.HostRunDispatchHandleV1(
+                "goal-fixture", f"attempt-{invocation.call_index}")
+
+        def dispatch_guarded_trial(self, invocation):
+            self.dispatches += 1
+            return host_outcome(self.manifest, invocation)
+
+    def run_pair(self, artifact, *, control, owner_log, bridge):
+        return evaluation.run_host_paired_evaluation(
+            self.manifest, bridge, self._Resolver(self.tasks), artifact,
+            control_plane=control, owner_log=owner_log)
+
+    def fixture(self, **transport_kwargs):
+        transport = FakeHostRunTransport(**transport_kwargs)
+        control = evaluation.HostRunControlPlaneClient(transport, "goal-fixture")
+        owner_log = FakeOwnerLog()
+        bridge = self._Bridge(self.manifest)
+        return transport, control, owner_log, bridge
+
+    # --- strict bodies and replies ------------------------------------
+
+    def test_bind_body_is_exactly_the_published_seven_field_contract(self):
+        body = evaluation.host_run_bind_body(
+            goal_id="goal-1", attempt_id="attempt-1",
+            dispatch_key_digest=_b3("key"), manifest_digest=_b3("manifest"),
+            evaluator_task_id="task-1", arm_id="minimal", task_group="development")
+        self.assertEqual(set(body), set(evaluation.HOST_RUN_BIND_BODY_FIELDS))
+        self.assertEqual(len(body), 7)
+        self.assertNotIn("ownerEpoch", body)
+        self.assertNotIn("workerExecutionId", body)
+        with self.assertRaisesRegex(evaluation.EvalError, "blake3"):
+            evaluation.host_run_bind_body(
+                goal_id="goal-1", attempt_id="attempt-1",
+                dispatch_key_digest="sha256:" + "a" * 64,
+                manifest_digest=_b3("manifest"), evaluator_task_id="task-1",
+                arm_id="minimal", task_group="development")
+
+    def test_bind_receipt_and_inspect_bodies_are_exactly_six_and_two_fields(self):
+        receipt_body = evaluation.host_run_bind_receipt_body(
+            goal_id="goal-1", dispatch_key_digest=_b3("key"),
+            binding_digest=_b3("binding"), owner_log_id="owner-log-1",
+            owner_log_sequence="12", owner_log_event_digest=_b3("event"))
+        self.assertEqual(len(receipt_body), 6)
+        self.assertEqual(set(receipt_body),
+                         set(evaluation.HOST_RUN_BIND_RECEIPT_BODY_FIELDS))
+        inspect_body = evaluation.host_run_inspect_body(
+            goal_id="goal-1", dispatch_key_digest=_b3("key"))
+        self.assertEqual(len(inspect_body), 2)
+        self.assertEqual(set(inspect_body), set(evaluation.HOST_RUN_INSPECT_BODY_FIELDS))
+        with self.assertRaisesRegex(evaluation.EvalError, "decimal"):
+            evaluation.host_run_bind_receipt_body(
+                goal_id="goal-1", dispatch_key_digest=_b3("key"),
+                binding_digest=_b3("binding"), owner_log_id="owner-log-1",
+                owner_log_sequence="12x", owner_log_event_digest=_b3("event"))
+        with self.assertRaisesRegex(evaluation.EvalError, "OwnerLog event digest"):
+            evaluation.host_run_bind_receipt_body(
+                goal_id="goal-1", dispatch_key_digest=_b3("key"),
+                binding_digest=_b3("binding"), owner_log_id="owner-log-1",
+                owner_log_sequence="12", owner_log_event_digest="blake3:" + "A" * 64)
+
+    def test_bind_response_parser_rejects_tampered_and_foreign_records(self):
+        transport = FakeHostRunTransport()
+        key, manifest_digest = _b3("key"), _b3("manifest")
+        response = transport.call(
+            evaluation.MANAGED_SERVICE_ID, evaluation.HOST_RUN_BIND_OPERATION,
+            evaluation.host_run_bind_body(
+                goal_id="goal-1", attempt_id="attempt-1", dispatch_key_digest=key,
+                manifest_digest=manifest_digest, evaluator_task_id="task-1",
+                arm_id="minimal", task_group="development"))
+        binding = response["binding"]
+        parsed = evaluation.parse_host_run_bind_response(
+            response, dispatch_key_digest=key, manifest_digest=manifest_digest)
+        self.assertEqual(parsed[0]["bindingDigest"], binding["bindingDigest"])
+        for broken in (
+            {**response, "extra": 1},
+            {**response, "schemaVersion": 2},
+            {**response, "binding": {**binding, "dispatchKeyDigest": _b3("other")}},
+            {**response, "binding": {**binding, "ownerEpoch": "0"}},
+            {**response, "receipt": {**transport.p2_receipts[key],
+                                     "bindingDigest": _b3("other")}},
+            {**response, "binding": {k: v for k, v in binding.items()
+                                     if k != "attemptScopeDigest"}},
+        ):
+            with self.assertRaises(evaluation.EvalError):
+                evaluation.parse_host_run_bind_response(
+                    dict(broken), dispatch_key_digest=key,
+                    manifest_digest=manifest_digest)
+        with self.assertRaisesRegex(evaluation.EvalError, "different manifest"):
+            evaluation.parse_host_run_bind_response(
+                response, dispatch_key_digest=key, manifest_digest=_b3("other-manifest"))
+
+    def test_bind_receipt_response_parser_requires_recorded_status_and_exact_pins(self):
+        key, binding_digest = _b3("key"), _b3("binding")
+        receipt = {"schemaVersion": 1, "dispatchKeyDigest": key,
+                   "bindingDigest": binding_digest, "ownerLogID": "owner-log-1",
+                   "ownerLogSequence": "4", "ownerLogEventDigest": _b3("event")}
+        response = {"schemaVersion": 1, "status": "RECORDED", "receipt": receipt}
+        parsed = evaluation.parse_host_run_bind_receipt_response(
+            response, dispatch_key_digest=key, binding_digest=binding_digest)
+        self.assertEqual(parsed["ownerLogID"], "owner-log-1")
+        for broken in (
+            {**response, "status": "PENDING"},
+            {**response, "receipt": {**receipt, "ownerLogSequence": "0"}},
+            {**response, "receipt": {**receipt, "bindingDigest": _b3("other")}},
+            {**response, "receipt": {**receipt, "ownerLogEventDigest": "not-a-digest"}},
+            {**response, "receipt": {k: v for k, v in receipt.items()
+                                     if k != "ownerLogID"}},
+        ):
+            with self.assertRaises(evaluation.EvalError):
+                evaluation.parse_host_run_bind_receipt_response(
+                    dict(broken), dispatch_key_digest=key,
+                    binding_digest=binding_digest)
+
+    def test_inspect_response_parser_freezes_the_typed_unknown_catalog(self):
+        key = _b3("key")
+        self.assertEqual(len(evaluation.HOST_RUN_UNKNOWN_REASONS), 15)
+        for reason in evaluation.HOST_RUN_UNKNOWN_REASONS:
+            with self.subTest(reason=reason):
+                parsed = evaluation.parse_host_run_inspect_response(
+                    {"schemaVersion": 1, "dispatchKeyDigest": key,
+                     "status": "UNKNOWN", "unknownReason": reason},
+                    dispatch_key_digest=key)
+                self.assertEqual(parsed["unknownReason"], reason)
+        for broken in (
+            {"schemaVersion": 1, "dispatchKeyDigest": key, "status": "UNKNOWN"},
+            {"schemaVersion": 1, "dispatchKeyDigest": key, "status": "UNKNOWN",
+             "unknownReason": "host_run_made_up"},
+            {"schemaVersion": 1, "dispatchKeyDigest": key, "status": "SUCCEEDED",
+             "unknownReason": "host_run_binding_absent"},
+            {"schemaVersion": 1, "dispatchKeyDigest": _b3("other"),
+             "status": "SUCCEEDED"},
+            {"schemaVersion": 1, "dispatchKeyDigest": key, "status": "MAYBE"},
+            {"schemaVersion": 1, "dispatchKeyDigest": key, "status": "SUCCEEDED",
+             "resourceUse": {"status": "MEASURED"}},
+        ):
+            with self.assertRaises(evaluation.EvalError):
+                evaluation.parse_host_run_inspect_response(dict(broken),
+                                                           dispatch_key_digest=key)
+
+    def test_dispatch_and_manifest_digests_are_canonical_blake3(self):
+        manifest_digest = evaluation.host_run_manifest_digest(self.manifest)
+        self.assertRegex(manifest_digest, r"^blake3:[0-9a-f]{64}$")
+        key = evaluation.host_run_dispatch_key(
+            evaluation.digest(self.manifest), "task-1", "minimal")
+        key_digest = evaluation.host_run_dispatch_key_digest(key)
+        self.assertRegex(key_digest, r"^blake3:[0-9a-f]{64}$")
+        self.assertEqual(key_digest, evaluation.host_run_dispatch_key_digest(key))
+        self.assertNotEqual(key_digest, key)
+        # The raw dispatch key is never the digest: only its BLAKE3 travels.
+        self.assertNotIn(key, key_digest)
+
+    # --- consumer sequencing ------------------------------------------
+
+    def test_each_pair_runs_inspect_bind_ownerlog_commit_dispatch_resolve(self):
+        transport, control, owner_log, bridge = self.fixture()
+        result = self.run_pair(self.artifact, control=control, owner_log=owner_log,
+                               bridge=bridge)
+        operations = [name for name, _ in transport.operations]
+        self.assertEqual(operations, [
+            "host_run.inspect", "host_run.bind", "host_run.bind_receipt",
+            "host_run.inspect"] * 4)
+        self.assertEqual(bridge.dispatches, 4)
+        self.assertEqual(len(owner_log.appended), 4)
+        self.assertEqual([row["status"] for row in result.records], ["PASS_VERIFIED"] * 4)
+        for row in result.records:
+            self.assertEqual(row["hostRunDispatchKeyDigest"],
+                             evaluation.host_run_dispatch_key_digest(
+                                 row["dispatchIdempotencyKey"]))
+        self.assertFalse(result.official_score_eligible)
+        summary = evaluation.summarize_pairs(result.records, self.manifest)
+        self.assertEqual(summary["resourceUse"]["status"], "UNKNOWN")
+
+    def test_completed_run_resumes_by_reuse_only_after_exact_terminal_resolution(self):
+        transport, control, owner_log, bridge = self.fixture()
+        first = self.run_pair(self.artifact, control=control, owner_log=owner_log,
+                              bridge=bridge)
+        self.assertEqual(bridge.dispatches, 4)
+        resumed_transport, resumed_control, resumed_owner_log, resumed_bridge = (
+            self.fixture())
+        resumed_transport.bindings = transport.bindings
+        resumed_transport.p2_receipts = transport.p2_receipts
+        resumed_transport.owner_receipts = transport.owner_receipts
+        resumed = self.run_pair(self.artifact, control=resumed_control,
+                                owner_log=resumed_owner_log, bridge=resumed_bridge)
+        self.assertEqual(resumed.records, first.records)
+        # Four reconciliations, zero dispatches: the persisted rows were reused.
+        self.assertEqual(
+            [name for name, _ in resumed_transport.operations],
+            ["host_run.inspect"] * 4)
+        self.assertEqual(resumed_bridge.dispatches, 0)
+
+    def test_persisted_row_without_a_host_run_binding_stays_blocked(self):
+        task_id, arm_id = evaluation.paired_call_plan(self.manifest)[0]
+        task = next(item for item in self.manifest["tasks"] if item["taskId"] == task_id)
+        frozen_digest = evaluation.digest(self.manifest)
+        dispatch_key = evaluation.host_run_dispatch_key(frozen_digest, task_id, arm_id)
+        journal = evaluation._ArtifactJournal(
+            self.artifact, self.manifest, frozen_digest, mode="HOST_RUN_PAIRED")
+        try:
+            journal.append({
+                "taskId": task_id, "taskGroup": task["taskGroup"], "armId": arm_id,
+                "manifestDigest": frozen_digest, "hostRunDispatchIndex": 0,
+                "dispatchStarted": True, "status": "PASS_VERIFIED",
+                "dispatchIdempotencyKey": dispatch_key,
+                "workspaceRevision": "blake3:" + "a" * 64,
+                "mode": "HOST_RUN_PAIRED"})
+        finally:
+            journal.close()
+        transport, control, owner_log, bridge = self.fixture()
+        with self.assertRaisesRegex(
+                evaluation.HostRunReconciliationBlocked,
+                "requires authenticated reconciliation"):
+            self.run_pair(self.artifact, control=control, owner_log=owner_log,
+                          bridge=bridge)
+        # A journal PASS without an authenticated HostRun binding cannot be
+        # reused, and the ambiguous key is never dispatched again.
+        self.assertEqual(bridge.dispatches, 0)
+
+    # --- negative matrix ------------------------------------------------
+
+    def test_every_typed_unknown_reason_blocks_a_persisted_row_without_redispatch(self):
+        task_id, arm_id = evaluation.paired_call_plan(self.manifest)[0]
+        task = next(item for item in self.manifest["tasks"] if item["taskId"] == task_id)
+        frozen_digest = evaluation.digest(self.manifest)
+        dispatch_key = evaluation.host_run_dispatch_key(frozen_digest, task_id, arm_id)
+        for index, reason in enumerate(evaluation.HOST_RUN_UNKNOWN_REASONS):
+            with self.subTest(reason=reason):
+                artifact = Path(self.directory.name) / f"blocked-{index}.jsonl"
+                journal = evaluation._ArtifactJournal(
+                    artifact, self.manifest, frozen_digest, mode="HOST_RUN_PAIRED")
+                try:
+                    journal.append({
+                        "taskId": task_id, "taskGroup": task["taskGroup"],
+                        "armId": arm_id, "manifestDigest": frozen_digest,
+                        "hostRunDispatchIndex": 0, "dispatchStarted": True,
+                        "status": "PASS_VERIFIED",
+                        "dispatchIdempotencyKey": dispatch_key,
+                        "workspaceRevision": "blake3:" + "a" * 64,
+                        "mode": "HOST_RUN_PAIRED"})
+                finally:
+                    journal.close()
+                transport, control, owner_log, bridge = self.fixture()
+                transport.forced_reason = reason
+                with self.assertRaisesRegex(
+                        evaluation.EvalError,
+                        "requires authenticated reconciliation"):
+                    self.run_pair(artifact, control=control, owner_log=owner_log,
+                                  bridge=bridge)
+                self.assertEqual(bridge.dispatches, 0)
+                self.assertEqual(bridge.handles, 0)
+
+    def test_foreign_or_contradictory_dispatch_key_stays_blocked(self):
+        task_id, arm_id = evaluation.paired_call_plan(self.manifest)[0]
+        task = next(item for item in self.manifest["tasks"] if item["taskId"] == task_id)
+        frozen_digest = evaluation.digest(self.manifest)
+        journal = evaluation._ArtifactJournal(
+            self.artifact, self.manifest, frozen_digest, mode="HOST_RUN_PAIRED")
+        try:
+            journal.append({
+                "taskId": task_id, "taskGroup": task["taskGroup"], "armId": arm_id,
+                "manifestDigest": frozen_digest, "hostRunDispatchIndex": 0,
+                "dispatchStarted": True, "status": "PASS_VERIFIED",
+                "dispatchIdempotencyKey": "sha256:" + "c" * 64,
+                "workspaceRevision": "blake3:" + "a" * 64,
+                "mode": "HOST_RUN_PAIRED"})
+        finally:
+            journal.close()
+        transport, control, owner_log, bridge = self.fixture()
+        with self.assertRaisesRegex(evaluation.EvalError,
+                                    "differs from the frozen pair identity"):
+            self.run_pair(self.artifact, control=control, owner_log=owner_log,
+                          bridge=bridge)
+        self.assertEqual(bridge.dispatches, 0)
+
+    def test_terminal_status_mismatch_or_missing_revision_stays_blocked(self):
+        cases = (
+            ("FAILED resolves a PASS row", "FAILED", "blake3:" + "a" * 64),
+            ("verified revision differs", "SUCCEEDED", "blake3:" + "d" * 64),
+        )
+        for label, status, revision in cases:
+            with self.subTest(case=label):
+                artifact = Path(self.directory.name) / f"mismatch-{status}-{revision[-4:]}.jsonl"
+                task_id, arm_id = evaluation.paired_call_plan(self.manifest)[0]
+                task = next(item for item in self.manifest["tasks"]
+                            if item["taskId"] == task_id)
+                frozen_digest = evaluation.digest(self.manifest)
+                journal = evaluation._ArtifactJournal(
+                    artifact, self.manifest, frozen_digest, mode="HOST_RUN_PAIRED")
+                try:
+                    journal.append({
+                        "taskId": task_id, "taskGroup": task["taskGroup"],
+                        "armId": arm_id, "manifestDigest": frozen_digest,
+                        "hostRunDispatchIndex": 0, "dispatchStarted": True,
+                        "status": "PASS_VERIFIED",
+                        "dispatchIdempotencyKey": evaluation.host_run_dispatch_key(
+                            frozen_digest, task_id, arm_id),
+                        "workspaceRevision": "blake3:" + "a" * 64,
+                        "mode": "HOST_RUN_PAIRED"})
+                finally:
+                    journal.close()
+                transport, control, owner_log, bridge = self.fixture(
+                    verified_revision=revision)
+                transport.forced_reason = None
+                transport.terminal_status = status
+                # Bind the key so the fake host can answer with a terminal status.
+                transport.call(evaluation.MANAGED_SERVICE_ID,
+                               evaluation.HOST_RUN_BIND_OPERATION,
+                               evaluation.host_run_bind_body(
+                                   goal_id="goal-fixture", attempt_id="attempt-0",
+                                   dispatch_key_digest=evaluation.host_run_dispatch_key_digest(
+                                       evaluation.host_run_dispatch_key(
+                                           frozen_digest, task_id, arm_id)),
+                                   manifest_digest=evaluation.host_run_manifest_digest(
+                                       self.manifest),
+                                   evaluator_task_id=task_id, arm_id=arm_id,
+                                   task_group=task["taskGroup"]))
+                transport.owner_receipts[
+                    evaluation.host_run_dispatch_key_digest(
+                        evaluation.host_run_dispatch_key(
+                            frozen_digest, task_id, arm_id))] = "owner-log-fixture"
+                with self.assertRaisesRegex(evaluation.EvalError,
+                                            "requires authenticated reconciliation"):
+                    self.run_pair(artifact, control=control, owner_log=owner_log,
+                                  bridge=bridge)
+                self.assertEqual(bridge.dispatches, 0)
+
+    def test_pre_dispatch_binding_from_a_sibling_blocks_and_never_redispatches(self):
+        transport, control, owner_log, bridge = self.fixture()
+        task_id, arm_id = evaluation.paired_call_plan(self.manifest)[0]
+        key_digest = evaluation.host_run_dispatch_key_digest(
+            evaluation.host_run_dispatch_key(evaluation.digest(self.manifest),
+                                             task_id, arm_id))
+        transport.bindings[key_digest] = {
+            "schemaVersion": 1, "dispatchKeyDigest": key_digest,
+            "manifestDigest": evaluation.host_run_manifest_digest(self.manifest),
+            "evaluatorTaskId": task_id, "armId": arm_id,
+            "taskGroup": next(t["taskGroup"] for t in self.manifest["tasks"]
+                              if t["taskId"] == task_id),
+            "runId": "run-fixture", "managedTaskId": task_id,
+            "attemptId": "attempt-sibling", "evaluationSessionId": "session-fixture",
+            "coreProcessGeneration": "4242", "ownerId": "owner-fixture",
+            "ownerEpoch": "7", "workerExecutionId": "worker-fixture",
+            "delegationBindingDigest": _b3("delegation-fixture"),
+            "acceptedSpecDigest": _b3("spec-fixture"),
+            "providerSelectionDigest": _b3("provider-fixture"),
+            "workspaceBindingDigest": _b3("workspace-fixture"),
+            "admittedWorkspaceRevision": "blake3:" + "a" * 64,
+            "attemptScopeDigest": _b3("scope-fixture"),
+            "ownerPrincipalBindingDigest": _b3("principal-fixture"),
+        }
+        transport.bindings[key_digest]["bindingDigest"] = _b3("sibling-binding")
+        transport.p2_receipts[key_digest] = {
+            "schemaVersion": 1,
+            "dispatchKeyDigest": key_digest,
+            "bindingDigest": transport.bindings[key_digest]["bindingDigest"],
+            "ownerLogSequence": "1",
+            "ownerLogEventDigest": _b3("sibling-p2-receipt"),
+            "bindingManagedRevision": "11",
+        }
+        result = self.run_pair(self.artifact, control=control, owner_log=owner_log,
+                               bridge=bridge)
+        self.assertEqual(bridge.dispatches, 0)
+        self.assertEqual(result.records[0]["status"], "UNKNOWN")
+        self.assertTrue(result.records[0]["dispatchStarted"])
+        self.assertEqual(result.records[0].get("hostRunUnknownReason"),
+                         "host_run_p8_owner_receipt_missing")
+        self.assertTrue(all(row["status"] == "NOT_RUN" for row in result.records[1:]))
+        resumed_transport, resumed_control, resumed_owner_log, resumed_bridge = (
+            self.fixture())
+        resumed = self.run_pair(self.artifact, control=resumed_control,
+                                owner_log=resumed_owner_log, bridge=resumed_bridge)
+        self.assertEqual(resumed_bridge.dispatches, 0)
+        self.assertEqual(resumed.records, result.records)
+
+    def test_ownerlog_or_receipt_failure_is_unknown_and_never_replayed(self):
+        for label, kwargs in (("OwnerLog append failed", {"owner_log_fail": True}),
+                              ("bind_receipt transport failed",
+                               {"fail_operation": evaluation.HOST_RUN_BIND_RECEIPT_OPERATION}),
+                              ("bind transport failed",
+                               {"fail_operation": evaluation.HOST_RUN_BIND_OPERATION})):
+            with self.subTest(case=label):
+                artifact = Path(self.directory.name) / f"preflight-{label[:6]}.jsonl"
+                transport, control, owner_log, bridge = self.fixture()
+                if kwargs.get("owner_log_fail"):
+                    owner_log = FakeOwnerLog(fail=True)
+                if kwargs.get("fail_operation"):
+                    transport.fail_operation = kwargs["fail_operation"]
+                result = self.run_pair(artifact, control=control, owner_log=owner_log,
+                                       bridge=bridge)
+                self.assertEqual(bridge.dispatches, 0)
+                self.assertEqual(result.records[0]["status"], "UNKNOWN")
+                self.assertTrue(result.records[0]["dispatchStarted"])
+                resumed_transport, resumed_control, resumed_owner_log, resumed_bridge = (
+                    self.fixture())
+                resumed = self.run_pair(artifact, control=resumed_control,
+                                        owner_log=resumed_owner_log,
+                                        bridge=resumed_bridge)
+                self.assertEqual(resumed_bridge.dispatches, 0)
+                self.assertEqual(resumed.records, result.records)
+
+    def test_non_terminal_post_dispatch_resolution_demotes_the_row_to_unknown(self):
+        transport, control, owner_log, bridge = self.fixture(
+            # Today's real answer until P1 installs its projection source.
+        )
+        transport.forced_post_dispatch_reason = "host_run_effect_projection_unavailable"
+        result = self.run_pair(self.artifact, control=control, owner_log=owner_log,
+                               bridge=bridge)
+        self.assertEqual(bridge.dispatches, 1)
+        self.assertEqual(result.records[0]["status"], "UNKNOWN")
+        self.assertEqual(result.records[0]["hostRunUnknownReason"],
+                         "host_run_effect_projection_unavailable")
+        self.assertTrue(all(row["status"] == "NOT_RUN" for row in result.records[1:]))
+        resumed_transport, resumed_control, resumed_owner_log, resumed_bridge = (
+            self.fixture())
+        resumed = self.run_pair(self.artifact, control=resumed_control,
+                                owner_log=resumed_owner_log, bridge=resumed_bridge)
+        self.assertEqual(resumed_bridge.dispatches, 0)
+        self.assertEqual(resumed.records, result.records)
+
+    def test_control_plane_without_owner_log_seam_fails_before_any_dispatch(self):
+        transport, control, owner_log, bridge = self.fixture()
+        with self.assertRaisesRegex(evaluation.EvalError,
+                                    "OwnerLog append seam.*unavailable"):
+            evaluation.run_host_paired_evaluation(
+                self.manifest, bridge, self._Resolver(self.tasks), self.artifact,
+                control_plane=control, owner_log=None)
+        self.assertEqual(bridge.dispatches, 0)
+
+    def test_control_plane_without_dispatch_handle_fails_before_any_dispatch(self):
+        transport, control, owner_log, bridge = self.fixture()
+        bridge.prepare_dispatch = None
+        with self.assertRaisesRegex(evaluation.EvalError, "dispatch handle"):
+            evaluation.run_host_paired_evaluation(
+                self.manifest, bridge, self._Resolver(self.tasks), self.artifact,
+                control_plane=control, owner_log=owner_log)
+        self.assertEqual(bridge.dispatches, 0)
+
+    def test_unrecognised_inspect_reason_is_ambiguous_not_trusted(self):
+        transport, control, owner_log, bridge = self.fixture()
+        transport.forced_reason = "host_run_totally_new_reason"
+        result = self.run_pair(self.artifact, control=control, owner_log=owner_log,
+                               bridge=bridge)
+        self.assertEqual(bridge.dispatches, 0)
+        self.assertEqual(result.records[0]["status"], "UNKNOWN")
+        self.assertEqual(result.records[0]["errorType"], "EvalError")
+
+
+class AuthenticHostRunPositiveFixtureTests(unittest.TestCase):
+    """The authentic positive fixture: Stage-A/B + Guarded Create/Inspect facts.
+
+    These assertions are *not* fabricated. Each one depends on evidence this
+    repository cannot currently produce offline, so it is marked BLOCKED with
+    the exact reason instead of being asserted against a double. The offline
+    doubles in `HostRunControlPlaneTests` exercise only P8's local consumer
+    logic and are never counted as admission or reconciliation evidence.
+    """
+
+    def test_stage_ab_and_guarded_create_inspect_admission_facts(self):
+        self.skipTest(
+            "BLOCKED_P2: the authentic `host_run.bind` positive needs P2's managed "
+            "admission fixture built from a verified Core peer/fence, actual Guarded "
+            "Create+Inspect journal receipts, persisted Stage-A reservation + Stage-B "
+            "ContextSelection bind, and the real ContextSelection digest. P2's managed "
+            "admission positives are still 1/3 and P8 may not edit P2-owned "
+            "managed_control.rs/host_kernel.rs, so no authentic Stage-A/B fact exists "
+            "for this fixture yet.")
+
+    def test_full_inspect_terminal_resolution(self):
+        self.skipTest(
+            "BLOCKED_P1: `host_run.inspect` cannot resolve a terminal status because "
+            "P1 has not installed `HostRunEffectProjectionSourceV1` "
+            "(HostKernel::install_host_run_effect_projection_source). The route "
+            "currently answers `host_run_effect_projection_unavailable` for every "
+            "bound key, so a full SUCCEEDED/FAILED resolution — and therefore the "
+            "authentic release of a persisted row — cannot be asserted here.")
+
+    def test_p8_owner_log_mirrored_append(self):
+        self.skipTest(
+            "BLOCKED_P8_RUST: P8's mirrored `HostRunDispatchBoundV1` OwnerLog event "
+            "and its post-commit receipt do not exist in kernel/src/worker_durable.rs "
+            "yet, and Cargo is held by P1 for the projection work. Writing that Rust "
+            "append unverified would risk breaking the held build, so the seam is "
+            "wired behind a protocol here and the Rust append is not claimed.")
 
 
 if __name__ == "__main__":

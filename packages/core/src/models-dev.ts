@@ -21,6 +21,19 @@ const InterleavedField = Schema.Union([
 ])
 
 const USER_AGENT = `opencode/${InstallationChannel}/${InstallationVersion}/${Flag.OPENCODE_CLIENT}`
+const DEFAULT_SOURCE = "https://models.opencode.ai"
+const MAX_CATALOG_BYTES = 16 * 1024 * 1024
+
+const SnapshotMetadata = Schema.Struct({
+  schemaVersion: Schema.Literal(1),
+  sourceURL: Schema.String,
+  retrievedAt: Schema.Finite,
+  contentDigest: Schema.String,
+  license: Schema.optional(Schema.String),
+  attribution: Schema.optional(Schema.String),
+})
+type SnapshotMetadata = Schema.Schema.Type<typeof SnapshotMetadata>
+const decodeMetadata = Schema.decodeUnknownOption(SnapshotMetadata)
 
 const CostTier = Schema.Struct({
   input: Schema.Finite,
@@ -135,15 +148,26 @@ export const Event = ModelsDev.Event
 
 declare const OPENCODE_MODELS_DEV: Record<string, Provider> | undefined
 
+export interface CatalogSnapshotV1 {
+  providers: Record<string, Provider>
+  source: "cache" | "bundled" | "override" | "unavailable"
+  freshness: "fresh" | "stale" | "unknown"
+  updatedAt?: number
+  /** Bound provenance for imported catalog data; absence is UNKNOWN, never "current". */
+  provenance?: {
+    sourceURL?: string
+    project: "models.dev" | "custom"
+    retrievedAt?: number
+    contentDigest?: string
+    license?: string
+    attribution?: string
+  }
+}
+
 export interface Interface {
   readonly get: () => Effect.Effect<Record<string, Provider>>
-  /** Read-only source/freshness provenance for consumers that must not guess from stale rows. */
-  readonly getSnapshot: () => Effect.Effect<{
-    providers: Record<string, Provider>
-    source: "cache" | "bundled" | "override" | "unavailable"
-    freshness: "fresh" | "stale" | "unknown"
-    updatedAt?: number
-  }>
+  /** Read-only source/freshness/provenance for consumers that must not guess from stale rows. */
+  readonly getSnapshot: () => Effect.Effect<CatalogSnapshotV1>
   /** Fetches only when an explicit refresh action invokes it. */
   readonly refresh: (force?: boolean) => Effect.Effect<void>
 }
@@ -166,13 +190,32 @@ const layer = Layer.effect(
       ),
     )
 
-    const source = Flag.OPENCODE_MODELS_URL || "https://models.opencode.ai"
+    const source = Flag.OPENCODE_MODELS_URL || DEFAULT_SOURCE
     const filepath = path.join(
       global.cache,
-      source === "https://models.opencode.ai" ? "models.json" : `models-${Hash.fast(source)}.json`,
+      source === DEFAULT_SOURCE ? "models.json" : `models-${Hash.fast(source)}.json`,
     )
+    const metadataPath = `${filepath}.meta.json`
+    const provenanceProject = source === DEFAULT_SOURCE ? "models.dev" : "custom"
+    const defaultProvenance: {
+      project: "models.dev" | "custom"
+      license?: string
+      attribution?: string
+    } = {
+      project: provenanceProject,
+      ...(source === DEFAULT_SOURCE
+        ? { license: "MIT", attribution: "Models.dev (https://models.dev)" }
+        : {}),
+    }
     const ttl = Duration.minutes(5)
     const lockKey = `models-dev:${filepath}`
+    const loadMetadata = fs.readJson(metadataPath).pipe(
+      Effect.catch(() => Effect.succeed(undefined)),
+      Effect.map((value) => {
+        if (value === undefined) return undefined
+        return Option.getOrUndefined(decodeMetadata(value))
+      }),
+    )
 
     const fresh = Effect.fnUntraced(function* () {
       const stat = yield* fs.stat(filepath).pipe(Effect.catch(() => Effect.succeed(undefined)))
@@ -190,12 +233,21 @@ const layer = Layer.effect(
       )
     })
 
-    const loadFromDisk = fs.readJson(Flag.OPENCODE_MODELS_PATH ?? filepath).pipe(
+    const readCatalogText = fs.readFileStringSafe(Flag.OPENCODE_MODELS_PATH ?? filepath).pipe(
       Effect.catch(() => {
         // Reads never delete cache state. Repair and refresh remain explicit.
         return Effect.succeed(undefined)
       }),
-      Effect.map((v) => v as Record<string, Provider> | undefined),
+    )
+    const loadFromDisk = readCatalogText.pipe(
+      Effect.flatMap((text) => {
+        if (text === undefined) return Effect.succeed(undefined)
+        return Effect.try({
+          try: () => JSON.parse(text) as Record<string, Provider>,
+          catch: () => undefined,
+        })
+      }),
+      Effect.catch(() => Effect.succeed(undefined)),
     )
 
     const loadSnapshot = Effect.sync(() =>
@@ -204,14 +256,37 @@ const layer = Layer.effect(
 
     const fetchAndWrite = Effect.fn("ModelsDev.fetchAndWrite")(function* () {
       const text = yield* fetchApi()
-      const tempfile = `${filepath}.${process.pid}.${Date.now()}.tmp`
-      yield* fs.writeWithDirs(tempfile, text).pipe(
-        Effect.andThen(fs.rename(tempfile, filepath)),
+      if (Buffer.byteLength(text, "utf8") > MAX_CATALOG_BYTES) {
+        return yield* Effect.fail(new Error("Models.dev catalog response exceeds the bounded snapshot size"))
+      }
+      const retrievedAt = Date.now()
+      const contentDigest = `sha256:${Hash.sha256(text)}`
+      const atomicWrite = (target: string, body: string) => {
+        const temporary = `${target}.${process.pid}.${Date.now()}.tmp`
+        return fs.writeWithDirs(temporary, body).pipe(
+          Effect.andThen(fs.rename(temporary, target)),
+          Effect.catch((error) =>
+            Effect.gen(function* () {
+              yield* fs.remove(temporary, { force: true }).pipe(Effect.ignore)
+              return yield* Effect.fail(error)
+            }),
+          ),
+        )
+      }
+      yield* atomicWrite(filepath, text)
+      // Provenance is written separately and must never make a successfully
+      // fetched catalog unusable. A missing/corrupt sidecar stays UNKNOWN.
+      yield* atomicWrite(metadataPath, JSON.stringify({
+        schemaVersion: 1,
+        sourceURL: source,
+        retrievedAt,
+        contentDigest,
+        ...(source === DEFAULT_SOURCE
+          ? { license: "MIT", attribution: "Models.dev (https://models.dev)" }
+          : {}),
+      } satisfies SnapshotMetadata)).pipe(
         Effect.catch((error) =>
-          Effect.gen(function* () {
-            yield* fs.remove(tempfile, { force: true }).pipe(Effect.ignore)
-            return yield* Effect.fail(error)
-          }),
+          Effect.logWarning("Failed to persist Models.dev provenance", { error }),
         ),
       )
       return text
@@ -230,19 +305,47 @@ const layer = Layer.effect(
     const get = (): Effect.Effect<Record<string, Provider>> => cachedGet
 
     const getSnapshot = Effect.fn("ModelsDev.getSnapshot")(function* () {
-      const fromDisk = yield* loadFromDisk
+      const metadata = yield* loadMetadata
+      const text = yield* readCatalogText
+      const fromDisk = text === undefined
+        ? undefined
+        : yield* Effect.try({
+            try: () => JSON.parse(text) as Record<string, Provider>,
+            catch: () => undefined,
+          }).pipe(Effect.catch(() => Effect.succeed(undefined)))
+      const contentDigest = text === undefined ? undefined : `sha256:${Hash.sha256(text)}`
+      const verifiedMetadata = metadata !== undefined && contentDigest !== undefined && metadata.contentDigest === contentDigest
+        ? metadata
+        : undefined
+      const provenance = (allowRetrieval: boolean) => ({
+        ...defaultProvenance,
+        ...(contentDigest !== undefined ? { contentDigest } : {}),
+        ...(allowRetrieval && verifiedMetadata?.sourceURL !== undefined ? { sourceURL: verifiedMetadata.sourceURL } : {}),
+        ...(allowRetrieval && verifiedMetadata?.retrievedAt !== undefined ? { retrievedAt: verifiedMetadata.retrievedAt } : {}),
+        ...(verifiedMetadata?.license !== undefined ? { license: verifiedMetadata.license } : {}),
+        ...(verifiedMetadata?.attribution !== undefined ? { attribution: verifiedMetadata.attribution } : {}),
+      })
       if (fromDisk) {
         if (Flag.OPENCODE_MODELS_PATH) {
-          return { providers: fromDisk, source: "override" as const, freshness: "unknown" as const }
+          return { providers: fromDisk, source: "override" as const, freshness: "unknown" as const, provenance: provenance(false) }
         }
         const stat = yield* fs.stat(filepath).pipe(Effect.catch(() => Effect.succeed(undefined)))
-        if (!stat) return { providers: fromDisk, source: "cache" as const, freshness: "unknown" as const }
-        const updatedAt = Option.getOrElse(stat.mtime, () => new Date(0)).getTime()
+        if (!stat) {
+          return { providers: fromDisk, source: "cache" as const, freshness: "unknown" as const, provenance: provenance(false) }
+        }
+        const mtime = Option.getOrElse(stat.mtime, () => new Date(0)).getTime()
+        // Provenance is usable only when the sidecar digest matches the bytes
+        // actually read. A hand-edited or replaced cache file must not inherit
+        // an older snapshot's retrieval time.
+        const updatedAt = verifiedMetadata ? Math.min(verifiedMetadata.retrievedAt, mtime) : mtime
         return {
           providers: fromDisk,
           source: "cache" as const,
-          freshness: Date.now() - updatedAt < Duration.toMillis(ttl) ? ("fresh" as const) : ("stale" as const),
+          freshness: verifiedMetadata
+            ? Date.now() - updatedAt < Duration.toMillis(ttl) ? ("fresh" as const) : ("stale" as const)
+            : ("unknown" as const),
           updatedAt,
+          provenance: provenance(true),
         }
       }
       const bundled = yield* loadSnapshot
@@ -250,8 +353,10 @@ const layer = Layer.effect(
       // retrieval timestamp in this contract. Its availability is known, but
       // catalog and pricing freshness are not. Do not turn "bundled" into a
       // false assertion that the provider metadata is current.
-      if (bundled) return { providers: bundled, source: "bundled" as const, freshness: "unknown" as const }
-      return { providers: {}, source: "unavailable" as const, freshness: "unknown" as const }
+      if (bundled) {
+        return { providers: bundled, source: "bundled" as const, freshness: "unknown" as const, provenance: provenance(false) }
+      }
+      return { providers: {}, source: "unavailable" as const, freshness: "unknown" as const, provenance: provenance(false) }
     })
 
     const refresh = Effect.fn("ModelsDev.refresh")(function* (force = false) {

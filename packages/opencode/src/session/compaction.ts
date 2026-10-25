@@ -185,7 +185,7 @@ export interface Interface {
   }) => Effect.Effect<void, SessionSupervisorError>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/SessionCompaction") {}
+export class Service extends Context.Service<Service, Interface>()("@horizoncode/SessionCompaction") {}
 
 export const use = serviceUse(Service)
 

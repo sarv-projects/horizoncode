@@ -58,6 +58,7 @@ import { DialogGoalProposal } from "../../component/dialog-goal-proposal"
 import { DialogGoalRunPlan } from "../../component/dialog-goal-run-plan"
 import { Sidebar } from "./sidebar"
 import { DialogEditorExplorer, EditorExplorerPane } from "../../component/dialog-editor-explorer"
+import { workspaceEditorOpenRequest } from "../../editor"
 import { DialogPermissions } from "../../component/dialog-permissions"
 import { DialogSessionSettings } from "./dialog-settings"
 import { SubagentFooter } from "./subagent-footer.tsx"
@@ -368,6 +369,29 @@ export function Session() {
   const sdk = useSDK()
   const editor = useEditorContext()
 
+  // `/editor` is the only workspace-browsing entry point. Opening a file is an
+  // explicit user action; the request is validated here and stays fail-closed
+  // until the P1/P2 HostKernel editor launch route is accepted. No argv or
+  // process is constructed in the TUI.
+  const openWorkspaceEditor = async (pathRef: string, sourceRevision: string, contentDigest: string) => {
+    let selection: Parameters<typeof workspaceEditorOpenRequest>[0]["selection"] = null
+    let profiles: Parameters<typeof workspaceEditorOpenRequest>[0]["profiles"] = []
+    try {
+      const result = await sdk.client.config.externalEditorProfiles(
+        { workspace: project.workspace.current() },
+        { throwOnError: true },
+      )
+      selection = result.data.selected
+      profiles = result.data.profiles.map((profile) => profile.profileRef)
+    } catch {}
+    const outcome = workspaceEditorOpenRequest({ selection, profiles, pathRef, sourceRevision, contentDigest })
+    toast.show({
+      title: outcome.status === "unavailable" ? "External editor unavailable" : "Editor request rejected",
+      message: outcome.message,
+      variant: outcome.status === "unavailable" ? "warning" : "error",
+    })
+  }
+
   createEffect(() => {
     const sessionID = route.sessionID
     void (async () => {
@@ -630,7 +654,7 @@ export function Session() {
       hidden: true,
       run: () => {
         setEditorSideOpen(false)
-        dialog.replace(() => <DialogEditorExplorer />)
+        dialog.replace(() => <DialogEditorExplorer onOpenFile={openWorkspaceEditor} />)
       },
     },
     {
@@ -1598,7 +1622,7 @@ export function Session() {
             </Switch>
           </Show>
           <Show when={editorSideOpen()}>
-            <EditorExplorerPane onClose={() => setEditorSideOpen(false)} />
+            <EditorExplorerPane onClose={() => setEditorSideOpen(false)} onOpenFile={openWorkspaceEditor} />
           </Show>
         </box>
       </context.Provider>
@@ -1737,22 +1761,25 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
 
   const childShortcut = useCommandShortcut("session.child.first")
   const backgroundShortcut = useCommandShortcut("session.background")
+  const kv = useKV()
 
   return (
     <>
-      <ActivityStream
-        parts={props.parts}
-        complete={Boolean(final())}
-        width={ctx.width}
-        renderText={(part) => <TextPart last={false} part={part} message={props.message} />}
-        renderToolDetails={(part) => (
-          <ToolPart
-            last={false}
-            part={part}
-            message={props.message}
-          />
-        )}
-      />
+      <Show when={kv.get("session_activity_visible", true)}>
+        <ActivityStream
+          parts={props.parts}
+          complete={Boolean(final())}
+          width={ctx.width}
+          renderText={(part) => <TextPart last={false} part={part} message={props.message} />}
+          renderToolDetails={(part) => (
+            <ToolPart
+              last={false}
+              part={part}
+              message={props.message}
+            />
+          )}
+        />
+      </Show>
       <Show when={props.parts.some((x) => x.type === "tool" && x.tool === "task")}>
         <box paddingTop={1} paddingLeft={3}>
           <text fg={theme.text}>

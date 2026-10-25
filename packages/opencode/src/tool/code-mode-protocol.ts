@@ -116,7 +116,7 @@ function isUnicodeScalarString(value: string): boolean {
     const unit = value.charCodeAt(index)
     if (unit >= 0xd800 && unit <= 0xdbff) {
       const next = value.charCodeAt(index + 1)
-      if (next < 0xdc00 || next > 0xdfff) return false
+      if (!Number.isInteger(next) || next < 0xdc00 || next > 0xdfff) return false
       index++
     } else if (unit >= 0xdc00 && unit <= 0xdfff) {
       return false
@@ -217,10 +217,14 @@ function validCall(value: unknown): value is CodeModeCallV1 {
 }
 
 function validCallResult(value: unknown): value is CodeModeCallResultV1 {
-  if (!isRecord(value) || !exactKeys(value, ["callId", "status", "receiptKind"], ["output", "resultDigest", "outputBytes", "receiptRef", "receiptDigest", "errorCode"])) return false
+  // Rust serializes `receiptKind` with skip_serializing_if, so UNKNOWN rows are
+  // emitted without any receipt field; the internal projection still models the
+  // omission as an explicit null. `receiptKind` therefore validates as optional
+  // here and is normalized back to null by the decoder.
+  if (!isRecord(value) || !exactKeys(value, ["callId", "status"], ["receiptKind", "output", "resultDigest", "outputBytes", "receiptRef", "receiptDigest", "errorCode"])) return false
   const valid = typeof value.callId === "string" && ID.test(value.callId) &&
     ["settled", "rejected", "cancelled", "unknown"].includes(String(value.status)) &&
-    (value.receiptKind === null || value.receiptKind === "effect_receipt" || value.receiptKind === "host_decision" || value.receiptKind === "tool_result") &&
+    (value.receiptKind === undefined || value.receiptKind === null || value.receiptKind === "effect_receipt" || value.receiptKind === "host_decision" || value.receiptKind === "tool_result") &&
     (value.output === undefined || (typeof value.output === "string" && isUnicodeScalarString(value.output) && encoder.encode(value.output).byteLength <= CODE_MODE_FRAME_LIMITS_V1.maxOutputBytes)) &&
     (value.resultDigest === undefined || (typeof value.resultDigest === "string" && /^blake3:[a-f0-9]{64}$/.test(value.resultDigest))) &&
     (value.outputBytes === undefined || (Number.isSafeInteger(value.outputBytes) && (value.outputBytes as number) >= 0 && (value.outputBytes as number) <= CODE_MODE_FRAME_LIMITS_V1.maxOutputBytes)) &&
@@ -228,16 +232,86 @@ function validCallResult(value: unknown): value is CodeModeCallResultV1 {
     (value.receiptDigest === undefined || (typeof value.receiptDigest === "string" && DIGEST.test(value.receiptDigest))) &&
     (value.errorCode === undefined || (typeof value.errorCode === "string" && isUnicodeScalarString(value.errorCode) && encoder.encode(value.errorCode).byteLength <= 128))
   if (!valid) return false
-  if (value.status === "unknown") return value.receiptKind === null && value.receiptRef === undefined && value.receiptDigest === undefined && value.output === undefined && value.resultDigest === undefined && value.outputBytes === undefined && value.errorCode === undefined
-  if (value.receiptKind === null || typeof value.receiptRef !== "string" || typeof value.receiptDigest !== "string") return false
+  if (value.status === "unknown") return (value.receiptKind === undefined || value.receiptKind === null) && value.receiptRef === undefined && value.receiptDigest === undefined && value.output === undefined && value.resultDigest === undefined && value.outputBytes === undefined && value.errorCode === undefined
+  if (value.receiptKind === undefined || value.receiptKind === null || typeof value.receiptRef !== "string" || typeof value.receiptDigest !== "string") return false
   if ((value.receiptKind === "effect_receipt" || value.receiptKind === "host_decision") && (value.resultDigest !== undefined || value.outputBytes !== undefined)) return false
   if (value.receiptKind === "effect_receipt" && value.status !== "settled") return false
   if (value.receiptKind === "host_decision" && (value.status === "settled" || value.output !== undefined || value.resultDigest !== undefined || value.outputBytes !== undefined)) return false
-  if (value.receiptKind === "tool_result" && value.status === "settled" && (typeof value.resultDigest !== "string" || typeof value.outputBytes !== "number")) return false
+  if (value.receiptKind === "tool_result" && value.status === "settled") {
+    // A settled host callback claims bounded Core-reported output, so its
+    // provenance must be the exact output: recompute the tool-result digest
+    // and the UTF-8 byte count instead of trusting their advertised shape.
+    if (typeof value.output !== "string" || typeof value.resultDigest !== "string" || typeof value.outputBytes !== "number") return false
+    return value.resultDigest === codeModeToolResultDigestV1(value.output) &&
+      value.outputBytes === encoder.encode(value.output).byteLength
+  }
   if (value.receiptKind === "tool_result" && value.status !== "settled" && (value.resultDigest !== undefined || value.outputBytes !== undefined || typeof value.errorCode !== "string")) return false
   return true
 }
 
+/**
+ * Authoritative v2 public wave digest. It binds the exact wave index and the
+ * ordered settled/rejected/cancelled receipt rows. UNKNOWN rows have no digest.
+ * This must match kernel/src/codemode_protocol.rs exactly.
+ */
+export function codeModeWaveReceiptDigestV2(waveIndex: number, rows: readonly CodeModeCallResultV1[]): string {
+  if (!Number.isSafeInteger(waveIndex) || waveIndex < 0 || waveIndex >= CODE_MODE_FRAME_LIMITS_V1.maxWaves) {
+    throw new RangeError("CodeMode wave index is outside its bound")
+  }
+  if (rows.length === 0 || rows.length > CODE_MODE_FRAME_LIMITS_V1.maxCallsPerWave) {
+    throw new RangeError("CodeMode wave receipt digest requires a bounded nonempty result array")
+  }
+  const tuples = rows.map((row, callIndex) => {
+    if (row.receiptKind === null || row.receiptRef === undefined || row.receiptDigest === undefined ||
+      row.status === "unknown") {
+      throw new TypeError("CodeMode UNKNOWN or receiptless row has no public wave digest")
+    }
+    return [waveIndex, callIndex, row.callId, row.status, row.receiptKind, row.receiptRef, row.receiptDigest] as const
+  })
+  return digestBytes("horizoncode.codemode-wave-receipts.v2", encodeCanonicalMessagePackV1(tuples))
+}
+
+/**
+ * Authoritative v2 run digest over ascending waves and ordered call tuples.
+ * Returns undefined when there are no nested calls or any UNKNOWN row, matching
+ * the DEC-V1-29 zero-call and UNKNOWN rules.
+ */
+export function codeModeRunReceiptDigestV2(
+  waves: readonly { readonly waveIndex: number; readonly rows: readonly CodeModeCallResultV1[] }[],
+): string | undefined {
+  if (waves.length === 0) return undefined
+  if (waves.length > CODE_MODE_FRAME_LIMITS_V1.maxWaves) {
+    throw new RangeError("CodeMode run digest exceeds the script-wide wave bound")
+  }
+  const tuples: (readonly [number, number, string, string, string, string, string])[] = []
+  let expectedWave = 0
+  let totalCalls = 0
+  for (const wave of waves) {
+    if (wave.waveIndex !== expectedWave || wave.rows.length === 0 ||
+      wave.rows.length > CODE_MODE_FRAME_LIMITS_V1.maxCallsPerWave) {
+      throw new TypeError("CodeMode run digest waves are missing, duplicated or out of order")
+    }
+    expectedWave += 1
+    totalCalls += wave.rows.length
+    if (totalCalls > CODE_MODE_FRAME_LIMITS_V1.maxTotalCalls) {
+      throw new RangeError("CodeMode run digest exceeds the script-wide call bound")
+    }
+    for (const [callIndex, row] of wave.rows.entries()) {
+      if (row.status === "unknown") return undefined
+      if (row.receiptKind === null || row.receiptRef === undefined || row.receiptDigest === undefined) {
+        throw new TypeError("CodeMode run digest row lacks its terminal receipt")
+      }
+      tuples.push([wave.waveIndex, callIndex, row.callId, row.status, row.receiptKind, row.receiptRef, row.receiptDigest])
+    }
+  }
+  return digestBytes("horizoncode.codemode-receipts.v2", encodeCanonicalMessagePackV1(tuples))
+}
+
+/**
+ * Legacy pre-v2 helper retained only for source compatibility. New frames and
+ * receipts MUST use codeModeWaveReceiptDigestV2 / codeModeRunReceiptDigestV2;
+ * this value is not accepted by the current Rust frame codec.
+ */
 export function codeModeReceiptDigestV1(entries: readonly (readonly [number, string, "settled" | "rejected" | "cancelled", "effect_receipt" | "host_decision" | "tool_result", string, string])[]): string {
   return digestBytes("horizoncode.codemode-receipts.v1", encodeCanonicalMessagePackV1(entries))
 }
@@ -295,6 +369,13 @@ export function decodeCodeModeFrameV1(bytes: Uint8Array): CodeModeFrameV1 {
         !Array.isArray(f.results) || f.results.length < 1 || f.results.length > limits.maxCallsPerWave || !f.results.every(validCallResult) ||
         new Set(f.results.map((result) => result.callId)).size !== f.results.length ||
         (f.receiptDigest !== undefined && (typeof f.receiptDigest !== "string" || !DIGEST.test(f.receiptDigest)))) throw new TypeError("Invalid CodeMode wave result")
+      // Rust serializes UNKNOWN receipt fields by omission
+      // (skip_serializing_if); the canonical wire form never carries an
+      // explicit null there. Only the internal projection uses null.
+      if ((f.results as readonly Record<string, unknown>[]).some((row) =>
+        row.status === "unknown" && Object.hasOwn(row, "receiptKind"))) {
+        throw new TypeError("CodeMode UNKNOWN row must omit its receipt fields")
+      }
       if (f.status === "unknown") {
         if (f.receiptDigest !== undefined || !f.results.some((result) => result.status === "unknown") ||
           f.results.some((result) => result.status !== "unknown" && result.status !== "settled")) {
@@ -310,9 +391,13 @@ export function decodeCodeModeFrameV1(bytes: Uint8Array): CodeModeFrameV1 {
             f.results.some((result) => result.status !== "settled" && result.status !== "cancelled")))) {
           throw new TypeError("CodeMode wave status conflicts with its exact per-call outcome rows")
         }
-        const expectedDigest = codeModeReceiptDigestV1((f.results as CodeModeCallResultV1[]).map((result) => [result.callId, result.receiptRef!, result.receiptDigest!] as const))
+        const expectedDigest = codeModeWaveReceiptDigestV2(f.waveIndex as number, f.results as CodeModeCallResultV1[])
         if (f.receiptDigest !== expectedDigest) throw new TypeError("CodeMode wave digest does not match the ordered public call receipt tuples")
       }
+      // Normalize omitted UNKNOWN receipt fields back to the internal null
+      // projection so every caller sees one shape regardless of wire form.
+      f.results = (f.results as readonly Record<string, unknown>[]).map((row) =>
+        row.status === "unknown" && !Object.hasOwn(row, "receiptKind") ? { ...row, receiptKind: null } : row)
       break
     }
     case "cancel":
@@ -333,7 +418,18 @@ export function decodeCodeModeFrameV1(bytes: Uint8Array): CodeModeFrameV1 {
 }
 
 export function encodeCodeModeFrameV1(frame: CodeModeFrameV1): Uint8Array {
-  const json = JSON.stringify(frame)
+  // Rust omits null optional receipt fields when serializing, so the wire form
+  // of an UNKNOWN row carries no receipt key even though the internal
+  // projection models the omission as an explicit null.
+  const wire = frame.frameType === "wave_result"
+    ? {
+        ...frame,
+        results: frame.results.map((row) => Object.fromEntries(
+          Object.entries(row).filter(([, value]) => value !== null && value !== undefined),
+        )) as CodeModeCallResultV1[],
+      }
+    : frame
+  const json = JSON.stringify(wire)
   const bytes = encoder.encode(`${json}\n`)
   if (bytes.byteLength > CODE_MODE_FRAME_LIMITS_V1.maxFrameBytes) throw new RangeError("CodeMode frame exceeds its byte bound")
   // Round-trip through the strict decoder so host-authored frames obey the
@@ -377,7 +473,7 @@ export function makeCodeModeStartFrameV1(input: {
     toolDefinitionsBytes,
     tools,
   }
-  decodeCodeModeFrameV1(encoder.encode(`${JSON.stringify(frame)}${String.fromCharCode(10)}`))
+  encodeCodeModeFrameV1(frame)
   return frame
 }
 
@@ -392,7 +488,10 @@ export class CodeModeConversationV1 {
   #totalOutputBytes = 0
   #seenCalls = new Set<string>()
   #pending?: { waveIndex: number; callIds: string[]; batchId?: string }
-  #receiptTuples: (readonly [string, string, string])[] = []
+  #receiptTuples: { waveIndex: number; rows: CodeModeCallResultV1[] }[] = []
+  /** Durable bindings are one-shot: a wave cannot reuse another wave's id or receipt. */
+  #batchIds = new Set<string>()
+  #receiptRefs = new Set<string>()
   #helperOutcome?: CodeModeCompletedV1["status"] | "unknown"
   #hasUnknown = false
   #helperCompletionAllowed = false
@@ -407,7 +506,7 @@ export class CodeModeConversationV1 {
   }
 
   acceptHelperFrame(frame: CodeModeWaveRequestV1 | CodeModeCompletedV1): void {
-    decodeCodeModeFrameV1(encoder.encode(`${JSON.stringify(frame)}\n`))
+    encodeCodeModeFrameV1(frame)
     if (this.#terminal || this.#pending || (this.#helperOutcome !== undefined && !this.#helperCompletionAllowed)) throw new TypeError("CodeMode helper sent a frame while a wave is pending or after a terminal outcome")
     if (frame.requestId !== this.requestId || BigInt(frame.sequence) !== this.#nextSequence) throw new TypeError("CodeMode helper frame has stale or out-of-order correlation")
     if (this.#helperCompletionAllowed && frame.frameType !== "completed") throw new TypeError("CodeMode helper may only complete after a known terminal wave")
@@ -442,21 +541,29 @@ export class CodeModeConversationV1 {
   }
 
   acceptHostWaveResult(frame: CodeModeWaveResultV1): void {
-    decodeCodeModeFrameV1(encoder.encode(`${JSON.stringify(frame)}\n`))
+    encodeCodeModeFrameV1(frame)
     const pending = this.#pending
     if (this.#terminal || !pending || frame.requestId !== this.requestId || BigInt(frame.sequence) !== this.#nextSequence ||
       frame.waveIndex !== pending.waveIndex || pending.batchId !== frame.batchId || frame.results.length !== pending.callIds.length ||
       frame.results.some((result, index) => result.callId !== pending.callIds[index])) throw new TypeError("CodeMode host wave result does not match the pending helper request")
     const waveOutputBytes = frame.results.reduce((sum, result) => sum + (result.output ? encoder.encode(result.output).byteLength : 0), 0)
     if (this.#totalOutputBytes + waveOutputBytes > CODE_MODE_FRAME_LIMITS_V1.maxOutputBytes) throw new RangeError("CodeMode script-wide output budget exceeded")
+    // A durable receipt may not stand in for a second call or wave. Reject the
+    // substitution before any correlation/budget state is committed.
+    const waveReceiptRefs = frame.results.flatMap((result) => result.receiptRef === undefined ? [] : [result.receiptRef])
+    if (new Set(waveReceiptRefs).size !== waveReceiptRefs.length ||
+      waveReceiptRefs.some((receiptRef) => this.#receiptRefs.has(receiptRef))) {
+      throw new TypeError("CodeMode wave reuses a durable receipt reference")
+    }
     if (frame.status !== "unknown") {
-      this.#receiptTuples.push(...frame.results.map((result) => [result.callId, result.receiptRef!, result.receiptDigest!] as const))
+      this.#receiptTuples.push({ waveIndex: frame.waveIndex, rows: frame.results })
     } else {
       this.#helperOutcome = "unknown"
       this.#hasUnknown = true
     }
     this.#totalOutputBytes += waveOutputBytes
     this.#pending = undefined
+    for (const receiptRef of waveReceiptRefs) this.#receiptRefs.add(receiptRef)
     if (frame.status !== "unknown") this.#nextWave += 1
     if (frame.status === "cancelled") {
       this.#helperOutcome = "cancelled"
@@ -470,9 +577,10 @@ export class CodeModeConversationV1 {
 
   /** Pin the fresh ordinary ToolBatch admitted for the pending complete wave. */
   bindPreparedBatch(batchId: string): void {
-    if (!this.#pending || this.#pending.batchId !== undefined || !ID.test(batchId)) {
+    if (!this.#pending || this.#pending.batchId !== undefined || !ID.test(batchId) || this.#batchIds.has(batchId)) {
       throw new TypeError("CodeMode batch binding is missing, duplicated, or malformed")
     }
+    this.#batchIds.add(batchId)
     this.#pending.batchId = batchId
   }
 
@@ -492,7 +600,7 @@ export class CodeModeConversationV1 {
     }
     const receiptDigest = settlement.status === "unknown"
       ? undefined
-      : codeModeReceiptDigestV1(settlement.results.map((result, callIndex) => [callIndex, result.callId, result.status, result.receiptKind!, result.receiptRef!, result.receiptDigest!] as const))
+      : codeModeWaveReceiptDigestV2(settlement.waveIndex, settlement.results)
     if (receiptDigest !== settlement.receiptDigest) {
       throw new TypeError("HostKernel CodeMode settlement digest differs from its exact ordered receipt rows")
     }
@@ -547,7 +655,10 @@ export class CodeModeConversationV1 {
   get helperOutcome() { return this.#helperOutcome }
   get outerReceipt() { return this.#outerReceipt }
   get pendingWave() { return this.#pending?.waveIndex }
-  get nestedReceiptDigest() { return this.#receiptTuples.length && !this.#hasUnknown ? codeModeReceiptDigestV1(this.#receiptTuples) : undefined }
+  get nestedReceiptDigest(): string | undefined {
+    if (!this.#receiptTuples.length || this.#hasUnknown) return undefined
+    return codeModeRunReceiptDigestV2(this.#receiptTuples)
+  }
   get totalCalls() { return this.#totalCalls }
   get totalArgumentBytes() { return this.#totalArgsBytes }
   get totalOutputBytes() { return this.#totalOutputBytes }

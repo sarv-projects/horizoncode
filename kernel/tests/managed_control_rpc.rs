@@ -356,6 +356,8 @@ fn assert_nil(value: &Value, key: &str) {
 }
 
 fn ok_body(response: RpcResponseV1) -> Value {
+    // Even a forged or cross-Task Attempt cannot be resolved before the
+    // authenticated ServerAuth identity is present on settlement.
     assert_eq!(
         response.outcome,
         RpcOutcomeV1::Ok,
@@ -423,7 +425,7 @@ fn managed_rpc_admission_without_typed_owner_proofs_has_zero_owner_or_effect_mut
             fixture.admit_body("attempt-without-proof", 7),
             Some("delivery-admit-without-proof"),
         )),
-        "capability_unavailable"
+        "invalid_effect_request"
     );
 
     let after = ok_body(fixture.send("snapshot", snapshot_body(), None));
@@ -625,7 +627,7 @@ fn managed_rpc_retry_admission_stays_fail_closed_without_owner_mutation() {
                 fixture.admit_body(attempt_id, expected_revision),
                 Some(delivery_id),
             )),
-            "capability_unavailable"
+            "invalid_effect_request"
         );
     }
     let snapshot = ok_body(fixture.send("snapshot", snapshot_body(), None));
@@ -654,7 +656,7 @@ fn managed_rpc_rejects_unknown_goals_and_forged_attempt_ids() {
         ]),
         Some("delivery-forged"),
     );
-    assert_eq!(error_code(&unknown), "capability_unavailable");
+    assert_eq!(error_code(&unknown), "invalid_effect_request");
     let owner_key = OwnerIdentity::new("managed_goal".to_owned(), "goal-forged".to_owned())
         .unwrap()
         .directory_key();
@@ -672,7 +674,8 @@ fn managed_rpc_rejects_unknown_goals_and_forged_attempt_ids() {
         "managed_not_found"
     );
 
-    // A forged Attempt id inside an existing Goal is a typed conflict.
+    // Settlement requires the typed authenticated ServerAuth principal before
+    // attempting a managed Attempt lookup; a body cannot manufacture it.
     assert_eq!(
         error_code(&fixture.send(
             "settle",
@@ -686,7 +689,7 @@ fn managed_rpc_rejects_unknown_goals_and_forged_attempt_ids() {
             ]),
             Some("delivery-forged-attempt"),
         )),
-        "managed_conflict"
+        "missing_principal"
     );
 
     // A shaped admission for the real Goal is also unavailable until the
@@ -697,7 +700,7 @@ fn managed_rpc_rejects_unknown_goals_and_forged_attempt_ids() {
             fixture.admit_body("attempt-v1", 7),
             Some("delivery-admit-1"),
         )),
-        "capability_unavailable"
+        "invalid_effect_request"
     );
     assert_eq!(
         error_code(&fixture.send(
@@ -712,7 +715,7 @@ fn managed_rpc_rejects_unknown_goals_and_forged_attempt_ids() {
             ]),
             Some("delivery-mismatched-task"),
         )),
-        "managed_conflict"
+        "missing_principal"
     );
     assert_eq!(
         error_code(&fixture.send(
@@ -724,7 +727,7 @@ fn managed_rpc_rejects_unknown_goals_and_forged_attempt_ids() {
             ]),
             Some("delivery-cancel-missing-run"),
         )),
-        "managed_conflict"
+        "missing_principal"
     );
 
     // No partial Attempt was written, and malformed calls changed no revision.
@@ -833,7 +836,7 @@ fn managed_rpc_rejects_unauthorized_operations_and_stale_fences() {
             fixture.admit_body("attempt-v1", 7),
             Some("delivery-7"),
         )),
-        "capability_unavailable"
+        "invalid_effect_request"
     );
     let snapshot = ok_body(fixture.send("snapshot", snapshot_body(), None));
     assert_eq!(field_unsigned(&snapshot, "revision"), 7);
@@ -971,7 +974,7 @@ fn managed_rpc_rejects_missing_keys_malformed_and_oversized_bodies() {
 
     assert_eq!(
         error_code(&fixture.send("admit", fixture.admit_body("attempt-v1", 7), None)),
-        "capability_unavailable"
+        "invalid_effect_request"
     );
     assert_eq!(
         error_code(&fixture.send(
@@ -979,7 +982,7 @@ fn managed_rpc_rejects_missing_keys_malformed_and_oversized_bodies() {
             fixture.admit_body("attempt-v1", 7),
             Some(&"d".repeat(230))
         )),
-        "capability_unavailable"
+        "invalid_effect_request"
     );
     // The unsupported admission route denies before interpreting identifiers or
     // opening any Goal state.
@@ -989,7 +992,7 @@ fn managed_rpc_rejects_missing_keys_malformed_and_oversized_bodies() {
             fixture.admit_body("attempt-v1", 7),
             Some("delivery:with:colons")
         )),
-        "capability_unavailable"
+        "invalid_effect_request"
     );
     assert_eq!(
         error_code(&fixture.send(
@@ -1068,7 +1071,7 @@ fn managed_rpc_admission_does_not_claim_delivery_or_attempt_ids_without_proofs()
                 fixture.admit_body(attempt_id, expected_revision),
                 Some(delivery_id),
             )),
-            "capability_unavailable"
+            "invalid_effect_request"
         );
     }
 
@@ -1093,7 +1096,7 @@ fn managed_rpc_cannot_manufacture_unknown_without_an_admitted_attempt() {
             ]),
             Some("delivery-launder"),
         )),
-        "managed_conflict"
+        "missing_principal"
     );
     let unchanged = ok_body(fixture.send("snapshot", snapshot_body(), None));
     assert_eq!(field_unsigned(&unchanged, "revision"), 7);
@@ -1109,7 +1112,7 @@ fn managed_rpc_restart_does_not_recover_an_attempt_that_was_never_admitted() {
             fixture.admit_body("attempt-v1", 7),
             Some("delivery-admit-1"),
         )),
-        "capability_unavailable"
+        "invalid_effect_request"
     );
 
     // No partial Attempt exists for startup recovery to misclassify.
@@ -1125,7 +1128,7 @@ fn managed_rpc_restart_does_not_recover_an_attempt_that_was_never_admitted() {
             fixture.admit_body("attempt-v1", 7),
             Some("delivery-admit-1")
         )),
-        "capability_unavailable"
+        "invalid_effect_request"
     );
 }
 
@@ -1171,7 +1174,7 @@ fn managed_rpc_goal_bindings_stay_isolated() {
             fixture.admit_body("attempt-v1", 7),
             Some("delivery-admit-1"),
         )),
-        "capability_unavailable"
+        "invalid_effect_request"
     );
 
     let other = ok_body(fixture.send("snapshot", map([("goalID", string(OTHER_GOAL))]), None));

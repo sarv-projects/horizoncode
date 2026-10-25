@@ -31,13 +31,14 @@ struct TestDir(PathBuf);
 
 impl TestDir {
     fn new() -> Self {
+        // Keep the Unix socket path below sockaddr_un's SUN_LEN limit even when
+        // the repository itself lives under a long checkout path. Process ID
+        // plus an in-process counter is unique for this test process; a wall
+        // clock timestamp only made the private path longer without adding a
+        // useful collision guarantee.
         let path = std::env::temp_dir().join(format!(
-            "hz-kernel-process-{}-{}-{}",
+            "hkp-{}-{}",
             std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
             NEXT.fetch_add(1, Ordering::Relaxed),
         ));
         fs::create_dir(&path).unwrap();

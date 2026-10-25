@@ -16,6 +16,9 @@ const testStateLayer = Layer.effectDiscard(
     yield* Effect.addFinalizer(() => Effect.promise(() => resetDatabase()))
   }),
 )
+// The production app LayerNode group exposes `WebSearchRuntime.node`, so
+// `createRoutes()` builds with the real guarded service and needs no boundary
+// stub; these Doctor tests never exercise websearch and assert zero network.
 const testRoutes = HttpApiApp.createRoutes().pipe(
   Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ OPENCODE_SERVER_PASSWORD: "doctor-test-secret" }))),
 )

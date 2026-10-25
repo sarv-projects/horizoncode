@@ -71,7 +71,6 @@ function input(over: Partial<SnapshotInput> = {}): SnapshotInput {
   return {
     source: supervised(),
     workspaceId: "ws-1",
-    workspaceRevision: "blake3:" + "1".repeat(64),
     languageId: "typescript",
     rootUri: "file:///workspace",
     configurationDigest: "cfg-1",
@@ -150,8 +149,22 @@ describe("lsp.broker identity", () => {
     })
     expect(identityKey(editorOwned)).not.toBe(identityKey(base))
 
-    expect(identityKey(identityOf({ ...base, sessionID: "session-2" }))).not.toBe(identityKey(base))
-    expect(identityKey(identityOf({ ...base, locationID: "location-2" }))).not.toBe(identityKey(base))
+    expect(identityKey(identityOf({
+      source: supervised(),
+      workspaceId: "ws-1",
+      languageId: "typescript",
+      rootUri: "file:///a",
+      configurationDigest: "cfg-1",
+      sessionID: "session-2",
+    }))).not.toBe(identityKey(base))
+    expect(identityKey(identityOf({
+      source: supervised(),
+      workspaceId: "ws-1",
+      languageId: "typescript",
+      rootUri: "file:///a",
+      configurationDigest: "cfg-1",
+      locationID: "location-2",
+    }))).not.toBe(identityKey(base))
   })
 
   test("identityKey keeps distinct editor client IDs isolated", () => {
@@ -340,12 +353,26 @@ describe("lsp.broker generation ledger", () => {
       attemptID: "attempt-1",
       ownerEpoch: "7",
       expectedManagedRevision: "9",
+      requestSequence: "1",
+      requestID: "request-1",
+      contextSelectionDigest: "blake3:" + "9".repeat(64),
       locationID: "location-1",
       sessionID: "session-1",
       workspaceRevision: "blake3:" + "1".repeat(64),
       effectiveMaxTokens: "100000",
       remainingTokens: "100000",
       delegationBindingDigest: "blake3:" + "e".repeat(64),
+      permissionScopeDigest: "blake3:" + "a".repeat(64),
+      worktreeTarget: {
+        worktreeID: "worktree-1",
+        worktreeBaseRevision: "blake3:" + "5".repeat(64),
+        worktreePoolRevision: "3",
+        locationID: "location-1",
+        workspaceID: "ws-1",
+        workspaceRef: "worktree-1",
+        canonicalRoot: "/workspace/ws-1",
+        workspaceRevision: "blake3:" + "1".repeat(64),
+      },
     }
     const snapshot = ledger.register(input({ managedAttemptScope }))
     expect(snapshot.managedAttemptScope).toEqual(managedAttemptScope)

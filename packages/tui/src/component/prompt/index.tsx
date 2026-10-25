@@ -24,6 +24,7 @@ import { useSDK } from "../../context/sdk"
 import { useRoute } from "../../context/route"
 import { useProject } from "../../context/project"
 import { useSync } from "../../context/sync"
+import { useData } from "../../context/data"
 import { useEvent } from "../../context/event"
 import { editorSelectionKey, useEditorContext, type EditorSelection } from "../../context/editor"
 import { useExit } from "../../context/exit"
@@ -151,6 +152,7 @@ export function Prompt(props: PromptProps) {
   const route = useRoute()
   const project = useProject()
   const sync = useSync()
+  const data = useData()
   const tuiConfig = useTuiConfig()
   const dialog = useDialog()
   const toast = useToast()
@@ -288,7 +290,7 @@ export function Prompt(props: PromptProps) {
 
   const contextLedgerSummary = createMemo(() => {
     if (!props.sessionID) return "context unavailable"
-    const snapshot = sync.data.session.contextLedger[props.sessionID]
+    const snapshot = data.session.contextLedger(props.sessionID)
     if (!snapshot) return "context unavailable"
     const entries = Array.isArray(snapshot.ledger.entries) ? snapshot.ledger.entries : []
     const numericTokens = entries.map((entry) => {
@@ -473,6 +475,49 @@ export function Prompt(props: PromptProps) {
           input.setText("")
           setStore("prompt", { input: "", parts: [] })
           keymap.dispatchCommand(side ? "session.editor.open.side" : close ? "session.editor.close" : "session.editor.open")
+        },
+      },
+      {
+        title: "View activity digest",
+        name: "session.view.activity",
+        category: "View",
+        hidden: true,
+        slashName: "view",
+        run: () => {
+          const command = store.prompt.input.trim()
+          const match = /^\/view\s+activity(?:\s+(on|off))?$/i.exec(command)
+          if (!match) {
+            toast.show({ title: "Usage", message: "Use /view activity on or /view activity off.", variant: "info" })
+            return
+          }
+          const visible = match[1]?.toLowerCase() !== "off"
+          kv.set("session_activity_visible", visible)
+          input.setText("")
+          setStore("prompt", { input: "", parts: [] })
+          toast.show({ message: `Activity digest ${visible ? "shown" : "hidden"}.`, variant: "info" })
+        },
+      },
+      {
+        title: "Debug diagnostics",
+        name: "session.debug",
+        category: "System",
+        hidden: true,
+        slashName: "debug",
+        run: () => {
+          const command = store.prompt.input.trim()
+          if (command === "/debug" || command === "/debug ui") {
+            input.setText("")
+            setStore("prompt", { input: "", parts: [] })
+            keymap.dispatchCommand("opencode.debug")
+            return
+          }
+          if (command === "/debug effects") {
+            input.setText("")
+            setStore("prompt", { input: "", parts: [] })
+            keymap.dispatchCommand("horizon.debug.effects")
+            return
+          }
+          toast.show({ title: "Usage", message: "Use /debug ui or /debug effects.", variant: "info" })
         },
       },
       {

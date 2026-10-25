@@ -120,7 +120,7 @@
       },
     },
     "packages/client": {
-      "name": "@opencode-ai/client",
+      "name": "@horizoncode/client",
       "dependencies": {
         "@opencode-ai/protocol": "workspace:*",
         "@opencode-ai/schema": "workspace:*",
@@ -563,8 +563,8 @@
       "name": "opencode",
       "version": "1.18.35",
       "bin": {
-        "horizoncode": "./bin/opencode",
-        "hzcode": "./bin/opencode",
+        "horizoncode": "./bin/horizoncode",
+        "hzcode": "./bin/horizoncode",
       },
       "dependencies": {
         "@noble/hashes": "2.2.0",
@@ -755,9 +755,9 @@
       },
     },
     "packages/sdk-next": {
-      "name": "@opencode-ai/sdk-next",
+      "name": "@horizoncode/sdk-next",
       "dependencies": {
-        "@opencode-ai/client": "workspace:*",
+        "@horizoncode/client": "workspace:*",
         "@opencode-ai/core": "workspace:*",
         "@opencode-ai/server": "workspace:*",
         "effect": "catalog:",
@@ -1940,7 +1940,7 @@
 
     "@opencode-ai/cli": ["@opencode-ai/cli@workspace:packages/cli"],
 
-    "@opencode-ai/client": ["@opencode-ai/client@workspace:packages/client"],
+    "@horizoncode/client": ["@horizoncode/client@workspace:packages/client"],
 
     "@opencode-ai/codemode": ["@opencode-ai/codemode@workspace:packages/codemode"],
 
@@ -1984,7 +1984,7 @@
 
     "@opencode-ai/sdk": ["@opencode-ai/sdk@workspace:packages/sdk/js"],
 
-    "@opencode-ai/sdk-next": ["@opencode-ai/sdk-next@workspace:packages/sdk-next"],
+    "@horizoncode/sdk-next": ["@horizoncode/sdk-next@workspace:packages/sdk-next"],
 
     "@opencode-ai/server": ["@opencode-ai/server@workspace:packages/server"],
 

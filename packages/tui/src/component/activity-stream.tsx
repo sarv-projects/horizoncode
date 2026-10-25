@@ -1,6 +1,7 @@
 import { createMemo, createSignal, For, Show } from "solid-js"
 import type { Part } from "@opencode-ai/sdk/v2"
 import { useTheme } from "../context/theme"
+import { projectActivityCards, projectProgressCard, formatActivityDuration, type ActivityCardV1 } from "./activity-cards"
 import {
   boundToolOutput,
   collapseToolOutput,
@@ -18,7 +19,9 @@ type ToolPart = Extract<Part, { type: "tool" }>
 
 type ActivityEntry = { kind: "part"; part: Part } | { kind: "limit"; omitted: number }
 
-const MAX_ACTIVITY_NODES = 256
+// §31.22: at most 64 cards per assistant turn in the activity digest, while
+// up to 256 cards may be retained in the sliding transcript window.
+const MAX_ACTIVITY_NODES = 64
 const MAX_ACTIVITY_BYTES = 256 * 1024
 const MAX_FINAL_TEXT_BYTES = 64 * 1024
 const MAX_TOOL_DETAILS_BYTES = 64 * 1024
@@ -83,7 +86,7 @@ function boundedFinalText(part: TextPart) {
 
 function activityPartBytes(part: Part) {
   if (part.type === "text") return utf8Size(part.text, MAX_ACTIVITY_BYTES)
-  if (part.type === "reasoning") return utf8Size("Progress summary unavailable")
+  if (part.type === "reasoning") return utf8Size(projectProgressCard(part).titleLine)
   if (part.type === "tool") {
     const output = boundToolOutput(toolOutput(part)).output
     return utf8Size(output) + utf8Size(toolArgumentPreview(part.state.input)) + MAX_TOOL_ACTIVITY_CHROME_BYTES
@@ -163,6 +166,10 @@ export function ActivityStream(props: {
   const [expandedPartID, setExpandedPartID] = createSignal<string>()
   const finalTextID = createMemo(() => props.parts.slice(-MAX_ACTIVITY_NODES).findLast((part) => part.type === "text")?.id)
   const entries = createMemo(() => activityProjection(props.parts, Boolean(props.renderToolDetails)))
+  const cards = createMemo(() => {
+    const visibleTools = entries().flatMap((entry) => entry.kind === "part" && entry.part.type === "tool" ? [entry.part] : [])
+    return new Map(projectActivityCards(visibleTools).flatMap((card) => card.sourcePartIds.map((id) => [id, card] as const)))
+  })
 
   return (
     <For each={entries()}>
@@ -177,9 +184,12 @@ export function ActivityStream(props: {
         const part = entry.part
         if (part.type === "reasoning") return <ProgressSummary part={part} />
         if (part.type === "tool") {
+          const card = cards().get(part.id)
+          if (card?.sourcePartIds[0] !== undefined && card.sourcePartIds[0] !== part.id) return null
           return (
             <ToolActivity
               part={part}
+              card={card}
               width={props.width ?? 80}
               renderDetails={props.renderToolDetails}
               expanded={expandedPartID() === part.id}
@@ -203,17 +213,19 @@ export function ActivityStream(props: {
   )
 }
 
-function ProgressSummary(_props: { part: ReasoningPart }) {
+function ProgressSummary(props: { part: ReasoningPart }) {
   const { theme } = useTheme()
+  const card = createMemo(() => projectProgressCard(props.part))
   return (
     <box paddingLeft={3} marginTop={1}>
-      <text fg={theme.textMuted}>Progress summary unavailable</text>
+      <text fg={theme.textMuted}>{card().titleLine}</text>
     </box>
   )
 }
 
 function ToolActivity(props: {
   part: ToolPart
+  card?: ActivityCardV1
   width: number
   renderDetails?: (part: ToolPart) => JSX.Element
   expanded: boolean
@@ -225,7 +237,7 @@ function ToolActivity(props: {
   const collapsed = createMemo(() =>
     collapseToolOutput(bounded().output, 3, Math.max(80, props.width * 3)),
   )
-  const status = createMemo(() => toolStatus(props.part))
+  const status = createMemo(() => props.card ? { label: props.card.state === "unknown" ? "UNKNOWN" : props.card.state[0]!.toUpperCase() + props.card.state.slice(1) } : toolStatus(props.part))
   const toolName = createMemo(() => safeToolName(props.part.tool))
   const statusColor = createMemo(() => {
     if (props.part.state.status === "error") return theme.error
@@ -243,7 +255,7 @@ function ToolActivity(props: {
   const artifact = createMemo(() =>
     toolArtifactFidelity("metadata" in props.part.state ? props.part.state.metadata : undefined),
   )
-  const canExpand = createMemo(() => Boolean(output()) && (bounded().truncated || collapsed().overflow || Boolean(props.renderDetails && details())))
+  const canExpand = createMemo(() => Boolean(output()) || Boolean(props.renderDetails && details()))
   const visibleOutput = createMemo(() => (props.expanded ? bounded().output : collapsed().output))
   const handleToggleKey = (event: KeyEvent) => {
     const key = event.name.toLowerCase()
@@ -255,18 +267,21 @@ function ToolActivity(props: {
   return (
     <box paddingLeft={3} marginTop={1} flexDirection="column" flexShrink={0}>
       <text fg={statusColor()}>
-        {status().label} {toolName()}
-        <Show when={args()}>
-          {(value) => <span style={{ fg: theme.textMuted }}> {value()}</span>}
+        {props.card?.titleLine ?? `${status().label} ${toolName()}${args() ? ` ${args()}` : ""}`}
+        <Show when={props.card && props.card.kind !== "shell"}>
+          <span style={{ fg: theme.textMuted }}> · {status().label}</span>
+        </Show>
+        <Show when={props.card?.durationMs !== undefined}>
+          <span style={{ fg: theme.textMuted }}> · {formatActivityDuration(props.card!.durationMs!)}</span>
         </Show>
       </text>
       <Show when={artifact().visible}>
         <text fg={theme.textMuted}>{`Output artifact: ${artifact().fidelity}`}</text>
       </Show>
-      <Show when={output()}>
+      <Show when={output() && props.expanded}>
         <text fg={theme.text}>{visibleOutput()}</text>
       </Show>
-      <Show when={bounded().truncated}>
+      <Show when={bounded().truncated && props.expanded}>
         <text fg={theme.textMuted}>
           Output limited ({bounded().limitedBy === "lines" ? "200 lines" : "64 KiB"})
         </text>
@@ -294,6 +309,7 @@ function toolStatus(part: ToolPart) {
   if (part.state.status === "pending") return { label: "Starting" }
   if (part.state.status === "running") return { label: "Running" }
   if (part.state.status === "completed") return { label: "Succeeded" }
+  if ("metadata" in part.state && part.state.metadata?.receiptState === "unknown") return { label: "UNKNOWN" }
   return { label: "Failed" }
 }
 

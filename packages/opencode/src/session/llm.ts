@@ -9,9 +9,10 @@ import { Provider } from "@/provider/provider"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { WorkspaceV2 } from "@opencode-ai/core/workspace"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
-import { Context, Effect, Layer } from "effect"
+import { Context, DateTime, Effect, Layer, Schema } from "effect"
 import * as Stream from "effect/Stream"
 import { streamText, wrapLanguageModel, type ModelMessage, type Tool } from "ai"
+import { isJSONObject, type SharedV3ProviderOptions } from "@ai-sdk/provider"
 import type { LLMEvent } from "@opencode-ai/llm"
 import { Usage } from "@opencode-ai/llm"
 import { LLMClient } from "@opencode-ai/llm/route"
@@ -28,6 +29,8 @@ import { ContextSelectionV1 as ContextSelectionSchemaV1 } from "@opencode-ai/sch
 import type { ContextLedgerEntryV2 } from "@opencode-ai/schema/context-ledger-v2"
 import { compileContextLedgerV2, type CompiledContextLedgerV2 } from "@opencode-ai/core/session"
 import { builtinHarnessProfileV1 } from "@opencode-ai/core/harness-profile"
+import { AgentProfileService } from "@opencode-ai/core/config"
+import { agentProfileDefinitionDigest } from "@opencode-ai/core/session/context-selection"
 import { Plugin } from "@/plugin"
 import { Permission } from "@/permission"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -47,7 +50,12 @@ import * as OtelTracer from "@effect/opentelemetry/Tracer"
 import { LLMAISDK } from "./llm/ai-sdk"
 import { LLMNativeRuntime } from "./llm/native-runtime"
 import { LLMRequestPrep } from "./llm/request"
-import { SessionSupervisor, SessionSupervisorError, Service as SessionSupervisorService } from "@opencode-ai/core/session/supervisor"
+import {
+  SessionSupervisor,
+  SessionSupervisorError,
+  Service as SessionSupervisorService,
+  type Interface as SessionSupervisorInterface,
+} from "@opencode-ai/core/session/supervisor"
 import { SessionEvent } from "@opencode-ai/core/session/event"
 import { TrustedPrincipalContext } from "@opencode-ai/core/trusted-principal"
 import { requireMediatedWorkflowProvider } from "./hosted-tools"
@@ -216,6 +224,173 @@ export function validateDirectProviderAuthorityV1(
   return value as unknown as DirectProviderAuthorityV1
 }
 
+/**
+ * §15.2 direct-turn pins, resolved only from the authenticated Core Config
+ * profile, the HostKernel-authored direct permission-mode snapshot and the
+ * trusted harness profile. Model fields, request JSON and user input never
+ * contribute to these pins, and no route/endpoint value is derived here: the
+ * route is pinned separately from the transport object that actually sends.
+ */
+export type DirectProviderAuthorityPinsV1 = {
+  readonly profileID: string
+  readonly revision: string
+  readonly profileDigest: string
+  readonly trust: "system" | "user"
+  readonly permissionScopeDigest: string
+  readonly policyRevision: string
+  readonly policyDigest: string
+  readonly harnessID: string
+  readonly harnessRevision: string
+}
+
+export const resolveDirectProviderAuthorityPinsV1 = Effect.fn(
+  "LLM.resolveDirectProviderAuthorityPinsV1",
+)(function* (input: {
+  readonly sessionID: string
+  readonly model: { readonly providerID: string; readonly id: string }
+  readonly locationRef: typeof Location.Ref.Type
+  readonly supervisor: Pick<SessionSupervisorInterface, "directSessionPermissionModeSnapshot">
+}) {
+  const principal = yield* Effect.serviceOption(TrustedPrincipalContext)
+  if (Option.isNone(principal) || principal.value.principal.kind !== "server_auth" || !principal.value.principal.subject) {
+    return yield* new SessionSupervisorError({
+      stage: "direct_provider_authority",
+      reason: "direct provider pins require an authenticated ServerAuth principal",
+    })
+  }
+  const profiles = yield* Effect.serviceOption(AgentProfileService)
+  if (Option.isNone(profiles)) {
+    return yield* new SessionSupervisorError({
+      stage: "direct_provider_authority",
+      reason: "direct provider pins require the authenticated Core AgentProfileV2 service",
+    })
+  }
+  const profile = yield* profiles.value.primaryAgentProfile().pipe(Effect.catch(() => Effect.succeed(undefined)))
+  if (!profile) {
+    return yield* new SessionSupervisorError({
+      stage: "direct_provider_authority",
+      reason: "direct provider pins require the configured primary AgentProfileV2",
+    })
+  }
+  if (profile.source === "plugin" || profile.source === "external") {
+    return yield* new SessionSupervisorError({
+      stage: "direct_provider_authority",
+      reason: "only Core Config AgentProfileV2 sources can pin a direct provider turn",
+    })
+  }
+  if (profile.model.providerId !== input.model.providerID || profile.model.modelId !== input.model.id) {
+    return yield* new SessionSupervisorError({
+      stage: "direct_provider_authority",
+      reason: "the selected provider/model is not the authenticated AgentProfileV2 selection",
+    })
+  }
+  const harness = builtinHarnessProfileV1(profile.harness)
+  if (!harness) {
+    return yield* new SessionSupervisorError({
+      stage: "direct_provider_authority",
+      reason: "the authenticated AgentProfileV2 harness profile is unavailable",
+    })
+  }
+  const mode = yield* input.supervisor
+    .directSessionPermissionModeSnapshot({ sessionID: input.sessionID, locationRef: input.locationRef })
+    .pipe(
+      Effect.provideService(TrustedPrincipalContext, principal.value),
+      Effect.catch((error) =>
+        Effect.fail(
+          new SessionSupervisorError({
+            stage: "direct_provider_authority",
+            reason: `the HostKernel direct permission-mode snapshot is unavailable: ${error.reason}`,
+          }),
+        ),
+      ),
+    )
+  if (mode.sessionId !== input.sessionID) {
+    return yield* new SessionSupervisorError({
+      stage: "direct_provider_authority",
+      reason: "the HostKernel permission-mode snapshot belongs to a different Session",
+    })
+  }
+  // Widened to the public pin type: callers and validators must see exactly
+  // DirectProviderAuthorityPinsV1, never the narrower branded source aliases.
+  const pins: DirectProviderAuthorityPinsV1 = {
+    profileID: profile.profileId,
+    revision: String(profile.revision),
+    profileDigest: agentProfileDefinitionDigest(profile),
+    trust: profile.source === "builtin" ? ("system" as const) : ("user" as const),
+    permissionScopeDigest: mode.digest,
+    policyRevision: mode.revision,
+    policyDigest: mode.policyDigest,
+    harnessID: harness.harnessId,
+    harnessRevision: String(harness.revision),
+  }
+  return pins
+})
+
+/**
+ * Combine the authenticated pins with the exact route projection of the
+ * transport that will send this turn. Any caller-supplied authority must equal
+ * the authenticated projection field-for-field; a stale or divergent caller
+ * projection fails closed before bytes are prepared.
+ */
+export function finalizeDirectProviderAuthorityV1(input: {
+  readonly pins: DirectProviderAuthorityPinsV1
+  readonly route: {
+    readonly providerID: string
+    readonly modelID: string
+    readonly harnessID: string
+    readonly routeRevision: string
+    readonly endpointRevision: string
+  }
+  readonly expected: { readonly providerID: string; readonly modelID: string }
+  readonly provided?: DirectProviderAuthorityV1
+}): DirectProviderAuthorityV1 {
+  if (input.route.harnessID !== input.pins.harnessID) {
+    throw new TypeError("direct provider route harness differs from the authenticated harness pin")
+  }
+  const authority: DirectProviderAuthorityV1 = {
+    profile: {
+      profileID: input.pins.profileID,
+      revision: input.pins.revision,
+      profileDigest: input.pins.profileDigest,
+      trust: input.pins.trust,
+    },
+    permissionScopeDigest: input.pins.permissionScopeDigest,
+    policyRevision: input.pins.policyRevision,
+    policyDigest: input.pins.policyDigest,
+    harnessID: input.pins.harnessID,
+    harnessRevision: input.pins.harnessRevision,
+    route: {
+      providerID: input.route.providerID,
+      modelID: input.route.modelID,
+      routeRevision: input.route.routeRevision,
+      endpointRevision: input.route.endpointRevision,
+    },
+  }
+  const validated = validateDirectProviderAuthorityV1(authority, input.expected)
+  if (input.provided !== undefined) {
+    const caller = validateDirectProviderAuthorityV1(input.provided, input.expected)
+    const equal =
+      caller.profile.profileID === validated.profile.profileID &&
+      caller.profile.revision === validated.profile.revision &&
+      caller.profile.profileDigest === validated.profile.profileDigest &&
+      caller.profile.trust === validated.profile.trust &&
+      caller.permissionScopeDigest === validated.permissionScopeDigest &&
+      caller.policyRevision === validated.policyRevision &&
+      caller.policyDigest === validated.policyDigest &&
+      caller.harnessID === validated.harnessID &&
+      caller.harnessRevision === validated.harnessRevision &&
+      caller.route.providerID === validated.route.providerID &&
+      caller.route.modelID === validated.route.modelID &&
+      caller.route.routeRevision === validated.route.routeRevision &&
+      caller.route.endpointRevision === validated.route.endpointRevision &&
+      caller.route.accountRef === validated.route.accountRef
+    if (!equal) {
+      throw new TypeError("caller-supplied direct provider pins differ from the authenticated projection")
+    }
+  }
+  return validated
+}
+
 export type ManagedProviderContextV1 = {
   readonly attemptID: string
   readonly taskID: string
@@ -374,6 +549,22 @@ function freezeProviderValue<T>(value: T, seen = new WeakSet<object>()): T {
   seen.add(value)
   for (const item of Object.values(value as Record<string, unknown>)) freezeProviderValue(item, seen)
   return Object.freeze(value)
+}
+
+/**
+ * Narrow frozen managed provider options to the adapter's JSON record shape.
+ * A frozen value that is not a namespace/object record falls back to the same
+ * transform the request digest validates, so an unexpected shape never reaches
+ * the provider adapter as-is.
+ */
+function sharedProviderOptions(value: unknown): SharedV3ProviderOptions | undefined {
+  if (!isJSONObject(value)) return undefined
+  const result: SharedV3ProviderOptions = {}
+  for (const [key, item] of Object.entries(value)) {
+    if (!isJSONObject(item)) return undefined
+    result[key] = item
+  }
+  return result
 }
 
 /** Hashes the exact normalized inputs supplied to the provider adapter; never a legacy/session scalar. */
@@ -561,22 +752,11 @@ const live: Layer.Layer<
       // prepared the exact request, routed its host-created Guard challenge
       // through authenticated approval, issued and consumed the one-use send
       // authorization, and exposed settlement/UNKNOWN recovery end to end.
-      if (input.managedAttempt) {
+      const gatedManagedAttempt = input.managedAttempt
+      if (gatedManagedAttempt) {
         return yield* Effect.fail(new SessionSupervisorError({
           stage: "managed_provider_transport",
           reason: "managed provider requests remain unavailable until Guard approval, one-use HostKernel authorization, bounded SecretBroker transport, and settlement recovery are integrated",
-        }))
-      }
-      let directProviderAuthority: DirectProviderAuthorityV1
-      try {
-        directProviderAuthority = validateDirectProviderAuthorityV1(input.directProviderAuthority, {
-          providerID: input.model.providerID,
-          modelID: input.model.id,
-        })
-      } catch {
-        return yield* Effect.fail(new SessionSupervisorError({
-          stage: "direct_provider_authority",
-          reason: "direct provider request is unavailable without the authenticated AgentProfileV2, effective permission scope, policy, harness, and selected route pins",
         }))
       }
       const trustedPrincipal = yield* Effect.serviceOption(TrustedPrincipalContext)
@@ -590,6 +770,15 @@ const live: Layer.Layer<
         ? WorkspaceV2.ID.make(managedTarget.workspaceID)
         : yield* InstanceState.workspaceID
       const locationRef = Location.Ref.make({ directory: AbsolutePath.make(instance.directory), workspaceID })
+      // §15.2 pins are resolved from Core Config + HostKernel only, before any
+      // provider/plugin hook runs; the route pin is finalized with the exact
+      // transport route where the language model is constructed.
+      const authorityPins = yield* resolveDirectProviderAuthorityPinsV1({
+        sessionID: input.sessionID,
+        model: { providerID: input.model.providerID, id: input.model.id },
+        locationRef,
+        supervisor,
+      })
       if (managedTarget) {
         if (Option.isNone(trustedPrincipal)) {
           return yield* Effect.fail(new SessionSupervisorError({ stage: "managed_worktree", reason: "managed prompt has no authenticated Core principal" }))
@@ -666,7 +855,41 @@ const live: Layer.Layer<
         )
       }
 
-      const language = yield* provider.getLanguage(input.model)
+      // The direct lane pins the route it actually uses: only the catalog-backed
+      // anonymous-free route resolves a language model here, so the pinned
+      // routeRevision/endpointRevision cannot diverge from the sending adapter.
+      const directTransport = yield* provider.getDirectLanguage({
+        model: input.model,
+        harnessID: authorityPins.harnessID,
+        fetch,
+      })
+      const directProviderAuthority = yield* Effect.try({
+        try: () =>
+          finalizeDirectProviderAuthorityV1({
+            pins: authorityPins,
+            route: directTransport.route,
+            expected: { providerID: input.model.providerID, modelID: input.model.id },
+            ...(input.directProviderAuthority === undefined ? {} : { provided: input.directProviderAuthority }),
+          }),
+        catch: (error) =>
+          new SessionSupervisorError({
+            stage: "direct_provider_authority",
+            reason: error instanceof Error ? error.message : "direct provider authority pins are invalid",
+          }),
+      })
+      yield* Effect.logInfo("direct provider authority resolved", {
+        "session.id": input.sessionID,
+        profileID: directProviderAuthority.profile.profileID,
+        profileRevision: directProviderAuthority.profile.revision,
+        trust: directProviderAuthority.profile.trust,
+        harnessID: directProviderAuthority.harnessID,
+        harnessRevision: directProviderAuthority.harnessRevision,
+        routeRevision: directProviderAuthority.route.routeRevision,
+        endpointRevision: directProviderAuthority.route.endpointRevision,
+        permissionScopeDigest: directProviderAuthority.permissionScopeDigest,
+        policyRevision: directProviderAuthority.policyRevision,
+      })
+      const language = directTransport.language
 
       const isWorkflow = language instanceof GitLabWorkflowLanguageModel
       // This provider may execute tools server-side before our callbacks run.
@@ -811,7 +1034,7 @@ const live: Layer.Layer<
                   usage: new Usage(normalized.usage ?? {}),
                   metadata: normalized.providerMetadata,
                 })
-                const reason = LLMAISDK.finishReason(finish.finishReason)
+                const reason = LLMAISDK.finishReason(finish.finishReason.unified)
                 return bridge.promise(
                   input.beforeManagedEffects!({
                     stepFinishIndex,
@@ -862,6 +1085,8 @@ const live: Layer.Layer<
             },
             settleResults: ({ callID, requestID, waveIndex, results }) => {
               if (Option.isNone(trustedPrincipal)) return Promise.reject(new Error("Authenticated principal is unavailable for CodeMode callback settlement"))
+              // The host settlement projection is consumed by the wave receipt
+              // path; this callback's contract is Promise<void>.
               return bridge.promise(supervisor.settleCodeModeToolResults({
                 sessionID: input.sessionID,
                 locationRef,
@@ -872,6 +1097,7 @@ const live: Layer.Layer<
                 waveIndex,
                 results,
               }).pipe(Effect.provideService(TrustedPrincipalContext, trustedPrincipal.value)), { signal: input.abort })
+                .then(() => undefined)
             },
             cancel: ({ callID, requestID, waveIndex, reason }) => {
               if (Option.isNone(trustedPrincipal) || !supervisor.cancelCodeModeWave) {
@@ -1140,7 +1366,8 @@ const live: Layer.Layer<
           temperature: managedInitial?.temperature ?? prepared.params.temperature,
           topP: managedInitial?.topP ?? prepared.params.topP,
           topK: managedInitial?.topK ?? prepared.params.topK,
-          providerOptions: managedInitial?.providerOptions ?? ProviderTransform.providerOptions(input.model, prepared.params.options),
+          providerOptions: sharedProviderOptions(managedInitial?.providerOptions) ??
+            ProviderTransform.providerOptions(input.model, prepared.params.options),
           activeTools: Object.keys(runtimeTools).filter((x) => x !== "invalid"),
           tools: runtimeTools,
           experimental_context: batchContext,
@@ -1209,7 +1436,8 @@ const live: Layer.Layer<
                       ? context.initialProviderInput!.topK
                       : prepared.params.topK,
                     providerOptions: nextSequence === BigInt(context.requestSequence)
-                      ? context.initialProviderInput!.providerOptions
+                      ? sharedProviderOptions(context.initialProviderInput!.providerOptions) ??
+                        ProviderTransform.providerOptions(input.model, prepared.params.options)
                       : ProviderTransform.providerOptions(input.model, prepared.params.options),
                   })
                   const requestID = nextSequence === BigInt(context.requestSequence)
@@ -1321,8 +1549,8 @@ const live: Layer.Layer<
                           entries: contextLedgerEntries(selection),
                         })
                         const ledgerEvent = {
-                          timestamp: Date.now(),
-                          sessionID: input.sessionID,
+                          timestamp: DateTime.makeUnsafe(Date.now()),
+                          sessionID: SessionID.make(input.sessionID),
                           requestID: selection.requestID,
                           sourceRevision: selection.sourceRevision,
                           // The Core prompt admission owns the source generation.
@@ -1365,7 +1593,7 @@ const live: Layer.Layer<
       }
     })
 
-    const prepareManagedRequest: Interface["prepareManagedRequest"] = Effect.fn("LLM.prepareManagedRequest")(function* (input) {
+    const prepareManagedRequest__inferred = Effect.fn("LLM.prepareManagedRequest")(function* (input) {
       if (input.directAttempt || input.directTurn || !input.managedRemainingTokens ||
         !/^(0|[1-9][0-9]{0,19})$/.test(input.managedRemainingTokens) || BigInt(input.managedRemainingTokens) < 1n) {
         return yield* new SessionSupervisorError({
@@ -1388,7 +1616,7 @@ const live: Layer.Layer<
           : false
       if (hasCredentialValue(input.model.options.apiKey) || sensitiveHeaders(input.model.options.headers) ||
         sensitiveHeaders(input.model.headers) || hasCredentialValue(configured?.options?.apiKey) ||
-        sensitiveHeaders(configured?.options?.headers) || hasCredentialValue(authInfo?.key)) {
+        sensitiveHeaders(configured?.options?.headers) || authInfo !== undefined) {
         return yield* new SessionSupervisorError({
           stage: "managed_context",
           reason: "managed provider preflight cannot resolve credentials outside the guarded request transport",
@@ -1459,6 +1687,7 @@ const live: Layer.Layer<
         providerOptions: freezeProviderValue(structuredClone(providerOptions)),
       })
     })
+    const prepareManagedRequest: Interface["prepareManagedRequest"] = prepareManagedRequest__inferred
 
     const stream: Interface["stream"] = (input) =>
       Stream.scoped(

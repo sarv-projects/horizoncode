@@ -215,6 +215,13 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       }
       return yield* new ForbiddenError({ message: "Question access is outside the authenticated Session owner scope" })
     })
+    const todo = Effect.fn("SessionHttpApi.todo")(function* (ctx: { params: { sessionID: SessionID } }) {
+      const owner = yield* requireSession(ctx.params.sessionID)
+      yield* requireQuestionOwner(owner.id)
+      // Project the authenticated Session owner's durable todo list.
+      return yield* todoSvc.get(owner.id)
+    })
+
     const questions = Effect.fn("SessionHttpApi.questions")(function* (ctx: { params: { sessionID: SessionID } }) {
       const owner = yield* requireSession(ctx.params.sessionID)
       yield* requireQuestionOwner(owner.id)
@@ -222,6 +229,11 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       // this projection scoped to the exact authenticated Session owner.
       return yield* withLocationQuestions(
         QuestionV2.Service.use((service) => service.list(owner.id)),
+      ).pipe(
+        Effect.mapError((error) =>
+          error instanceof SessionSupervisorError
+            ? new ServiceUnavailableError({ message: error.reason, service: "question" })
+            : error),
       )
     })
     const questionReply = Effect.fn("SessionHttpApi.questionReply")(function* (ctx: {
@@ -242,6 +254,10 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
           data: { message: "Pending question not found" },
         }))),
         Effect.catchTag("QuestionV2.InvalidReplyError", () => Effect.fail(new HttpApiError.BadRequest({}))),
+        Effect.mapError((error) =>
+          error instanceof SessionSupervisorError
+            ? new ServiceUnavailableError({ message: error.reason, service: "question" })
+            : error),
       )
       return undefined
     })
@@ -260,6 +276,10 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
           name: "NotFoundError",
           data: { message: "Pending question not found" },
         }))),
+        Effect.mapError((error) =>
+          error instanceof SessionSupervisorError
+            ? new ServiceUnavailableError({ message: error.reason, service: "question" })
+            : error),
       )
       return undefined
     })
@@ -609,7 +629,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
           return { status: managedDeliveryMode === "queued" ? "QUEUED" as const : "FOLLOW_UP_SCHEDULED" as const, messageId: prior.message_id, mailboxSequence: prior.mailbox_sequence,
             reason: null, challengeId: null, effectId: null }
         }
-        const pinnedAgent = yield* agentSvc.getProfile(String(managed.profileID ?? profileMetadata.profileID), Number(profileMetadata.profileRevision)).pipe(
+        const pinnedAgent = yield* agentSvc.getProfile(String(managed.profileID ?? profileMetadata.profileID), String(profileMetadata.profileRevision)).pipe(
           Effect.catch(() => Effect.fail(new ServiceUnavailableError({ message: "Pinned managed AgentProfileV2 is unavailable", service: "agent-profile" }))),
         )
         const profileProjection = pinnedAgent.options.horizonAgentProfile
@@ -637,7 +657,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
           permissionScopeDigest: scope.permissionScopeDigest,
           payload: ctx.payload.content, payloadDigest, payloadBytes: encoded.byteLength,
           deliveryMode: managedDeliveryMode, mailboxCapacity: Math.min(32, maxPendingMessages),
-        })).row)
+        })).row
         let completedTurnReceiptDigest: string | undefined
         if (managedDeliveryMode === "follow_up") {
           completedTurnReceiptDigest = draft.completed_turn_receipt_digest ?? undefined
@@ -696,25 +716,25 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
             challengeId: null, effectId: null }
         }
         const coreReceipt = draft.inbox_receipt_digest
-        const prepared = yield* ManagedControl.prepareManagedMessage({ scope, pins, content: draft.payload }).pipe(Effect.either)
-        if (prepared._tag === "Left") {
+        const prepared = yield* ManagedControl.prepareManagedMessage({ scope, pins, content: draft.payload }).pipe(Effect.result)
+        if (prepared._tag === "Failure") {
           return { status: "UNKNOWN" as const, messageId: draft.message_id, mailboxSequence: draft.mailbox_sequence,
             reason: "exact managed Guard prepare is unresolved; the durable Core request identity is retained", challengeId: draft.challenge_id, effectId: draft.effect_id }
         }
-        if (prepared.right.status === "DENIED") {
-          yield* session.managedInboxTransition({ messageID: draft.message_id, expected: [draft.state as ManagedSubagentInboxStateV1], state: "denied", pinsDigest: prepared.right.pinsDigest })
-          return { status: "DENIED" as const, messageId: draft.message_id, mailboxSequence: draft.mailbox_sequence, reason: prepared.right.reasonCode, challengeId: null, effectId: null }
+        if (prepared.success.status === "DENIED") {
+          yield* session.managedInboxTransition({ messageID: draft.message_id, expected: [draft.state as ManagedSubagentInboxStateV1], state: "denied", pinsDigest: prepared.success.pinsDigest })
+          return { status: "DENIED" as const, messageId: draft.message_id, mailboxSequence: draft.mailbox_sequence, reason: prepared.success.reasonCode, challengeId: null, effectId: null }
         }
-        if (prepared.right.status === "NEEDS_APPROVAL") {
+        if (prepared.success.status === "NEEDS_APPROVAL") {
           yield* session.managedInboxTransition({ messageID: draft.message_id, expected: [draft.state as ManagedSubagentInboxStateV1], state: "approval_required",
-            challengeID: prepared.right.challengeID, effectID: prepared.right.effectID, pinsDigest: prepared.right.inputDigest })
+            challengeID: prepared.success.challengeID, effectID: prepared.success.effectID, pinsDigest: prepared.success.inputDigest })
           return { status: "NEEDS_APPROVAL" as const, messageId: draft.message_id, mailboxSequence: draft.mailbox_sequence,
-            reason: prepared.right.policySummary, challengeId: prepared.right.challengeID, effectId: prepared.right.effectID }
+            reason: prepared.success.policySummary, challengeId: prepared.success.challengeID, effectId: prepared.success.effectID }
         }
         let admitted = draft
         if (draft.state !== "admitted" && draft.state !== "appended") admitted = yield* session.managedInboxTransition({
           messageID: draft.message_id, expected: [draft.state as ManagedSubagentInboxStateV1], state: "admitted",
-          pinsDigest: prepared.right.pinsDigest, capabilityLeaseDigest: prepared.right.capabilityLeaseDigest,
+          pinsDigest: prepared.success.pinsDigest, capabilityLeaseDigest: prepared.success.capabilityLeaseDigest,
         })
         if (admitted.state === "admitted") admitted = yield* session.managedInboxTransition({ messageID: draft.message_id, expected: ["admitted"], state: "appended", ...(managedDeliveryMode === "follow_up" ? { completedTurnReceiptDigest } : {}) })
         const committed = yield* ManagedControl.commitManagedMessage({ scope, pins,
@@ -740,8 +760,8 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
         return yield* new ApiNotFoundError({ name: "NotFoundError", data: { message: "Direct child Session not found" } })
       }
       if (ctx.payload.mode === "follow_up") {
-        const turnGate = yield* ManagedControl.requireDirectTurnLifecycle().pipe(Effect.either)
-        if (turnGate._tag === "Left") {
+        const turnGate = yield* ManagedControl.requireDirectTurnLifecycle().pipe(Effect.result)
+        if (turnGate._tag === "Failure") {
           return { status: "UNAVAILABLE" as const, messageId: null, mailboxSequence: null,
             reason: "HostKernel direct-turn recovery and P1/P8 acceptance have not enabled follow-up dispatch", challengeId: null, effectId: null }
         }
@@ -756,7 +776,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
           Effect.catch(() => Effect.fail(new ServiceUnavailableError({ message: "HostKernel child Attempt cannot be inspected", service: "host-kernel" }))),
         )
         const directAttempt = attempt.directAttempt
-        const pinnedAgent = yield* agentSvc.getProfile(profile.profileID, Number(profile.profileRevision)).pipe(
+        const pinnedAgent = yield* agentSvc.getProfile(profile.profileID, String(profile.profileRevision)).pipe(
           Effect.catch(() => Effect.fail(new ServiceUnavailableError({ message: "Pinned AgentProfileV2 revision is unavailable", service: "agent-profile" }))),
         )
         const profileProjection = pinnedAgent.options.horizonAgentProfile
@@ -796,8 +816,8 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
         if (previous?.state === "denied") return { status: "DENIED" as const, messageId: previous.message_id, mailboxSequence: previous.mailbox_sequence, reason: "HostKernel denied this direct follow-up", challengeId: null, effectId: null }
         if (previous?.state === "consumed") {
           if (previous.host_consumed_ack_digest) return { status: "FOLLOW_UP_SCHEDULED" as const, messageId: previous.message_id, mailboxSequence: previous.mailbox_sequence, reason: null, challengeId: null, effectId: null }
-          const reconciled = yield* promptSvc.followUpDirectChild({ parentSessionID: parent.id, childSessionID: child.id, messageID: previous.message_id }).pipe(Effect.either)
-          return reconciled._tag === "Right"
+          const reconciled = yield* promptSvc.followUpDirectChild({ parentSessionID: parent.id, childSessionID: child.id, messageID: previous.message_id }).pipe(Effect.result)
+          return reconciled._tag === "Success"
             ? { status: "FOLLOW_UP_SCHEDULED" as const, messageId: previous.message_id, mailboxSequence: previous.mailbox_sequence, reason: null, challengeId: null, effectId: null }
             : { status: "UNKNOWN" as const, messageId: previous.message_id, mailboxSequence: previous.mailbox_sequence, reason: "follow-up was consumed but its HostKernel capacity acknowledgement is unresolved", challengeId: null, effectId: null }
         }
@@ -853,26 +873,26 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
         })
         if (draft.state === "preparing" || draft.state === "approval_required") {
           const prepared = yield* ManagedControl.prepareDirectMessage({ pins, content: draft.payload, mailboxCapacity: draft.mailbox_capacity, freshTurnAuthorization })
-            .pipe(Effect.either)
-          if (prepared._tag === "Left") return { status: "UNKNOWN" as const, messageId: draft.message_id, mailboxSequence: draft.mailbox_sequence, reason: "exact follow-up prepare is unresolved; the original inbox identity is retained", challengeId: draft.challenge_id, effectId: draft.effect_id }
-          if (prepared.right.status === "DENIED") {
-            yield* session.directInboxTransition({ messageID: draft.message_id, expected: [draft.state], state: "denied", pinsDigest: prepared.right.pinsDigest })
-            return { status: "DENIED" as const, messageId: draft.message_id, mailboxSequence: draft.mailbox_sequence, reason: prepared.right.reasonCode, challengeId: null, effectId: null }
+            .pipe(Effect.result)
+          if (prepared._tag === "Failure") return { status: "UNKNOWN" as const, messageId: draft.message_id, mailboxSequence: draft.mailbox_sequence, reason: "exact follow-up prepare is unresolved; the original inbox identity is retained", challengeId: draft.challenge_id, effectId: draft.effect_id }
+          if (prepared.success.status === "DENIED") {
+            yield* session.directInboxTransition({ messageID: draft.message_id, expected: [draft.state], state: "denied", pinsDigest: prepared.success.pinsDigest })
+            return { status: "DENIED" as const, messageId: draft.message_id, mailboxSequence: draft.mailbox_sequence, reason: prepared.success.reasonCode, challengeId: null, effectId: null }
           }
-          if (prepared.right.status === "NEEDS_APPROVAL") {
+          if (prepared.success.status === "NEEDS_APPROVAL") {
             yield* session.directInboxTransition({
               messageID: draft.message_id, expected: [draft.state], state: "approval_required",
-              challengeID: prepared.right.challengeID, effectID: prepared.right.effectID,
-              approvalExpiresAtUnixMs: prepared.right.expiresAtUnixMs,
-              approvalArgumentSummary: JSON.stringify(prepared.right.argumentSummary),
-              approvalPolicySummary: prepared.right.policySummary, pinsDigest: prepared.right.inputDigest,
+              challengeID: prepared.success.challengeID, effectID: prepared.success.effectID,
+              approvalExpiresAtUnixMs: prepared.success.expiresAtUnixMs,
+              approvalArgumentSummary: JSON.stringify(prepared.success.argumentSummary),
+              approvalPolicySummary: prepared.success.policySummary, pinsDigest: prepared.success.inputDigest,
               inboxReceiptDigest: inboxDigest,
             })
-            return { status: "NEEDS_APPROVAL" as const, messageId: draft.message_id, mailboxSequence: draft.mailbox_sequence, reason: prepared.right.policySummary, challengeId: prepared.right.challengeID, effectId: prepared.right.effectID }
+            return { status: "NEEDS_APPROVAL" as const, messageId: draft.message_id, mailboxSequence: draft.mailbox_sequence, reason: prepared.success.policySummary, challengeId: prepared.success.challengeID, effectId: prepared.success.effectID }
           }
           draft = yield* session.directInboxTransition({
             messageID: draft.message_id, expected: [draft.state], state: "admitted",
-            capabilityLeaseDigest: prepared.right.capabilityLeaseDigest, pinsDigest: prepared.right.pinsDigest,
+            capabilityLeaseDigest: prepared.success.capabilityLeaseDigest, pinsDigest: prepared.success.pinsDigest,
             inboxReceiptDigest: inboxDigest,
           })
         }
@@ -898,8 +918,8 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
           return { status: "UNKNOWN" as const, messageId: draft.message_id, mailboxSequence: draft.mailbox_sequence, reason: "the follow-up commit receipt is unresolved; the child was not woken", challengeId: null, effectId: null }
         }
         const wake = yield* promptSvc.followUpDirectChild({ parentSessionID: parent.id, childSessionID: child.id,
-          messageID: draft.message_id, freshTurnAuthorization }).pipe(Effect.either)
-        if (wake._tag === "Left") {
+          messageID: draft.message_id, freshTurnAuthorization }).pipe(Effect.result)
+        if (wake._tag === "Failure") {
           yield* session.directInboxTransition({ messageID: draft.message_id, expected: ["delivering"], state: "unknown" }).pipe(Effect.ignore)
           return { status: "UNKNOWN" as const, messageId: draft.message_id, mailboxSequence: draft.mailbox_sequence, reason: "the exact committed follow-up was not confirmed through the serialized child runner", challengeId: null, effectId: null }
         }
@@ -960,13 +980,13 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
             yield* session.directInboxTransition({ messageID: previous.message_id, expected: ["preparing"], state: "unknown" })
             return { status: "UNKNOWN" as const, messageId: previous.message_id, mailboxSequence: previous.mailbox_sequence, reason: "the original child Attempt is no longer live; prepare cannot be replayed", challengeId: null, effectId: null }
           }
-          const retry = yield* ManagedControl.prepareDirectMessage({ pins, content: previous.payload, mailboxCapacity: previous.mailbox_capacity }).pipe(Effect.either)
-          if (retry._tag === "Left") {
+          const retry = yield* ManagedControl.prepareDirectMessage({ pins, content: previous.payload, mailboxCapacity: previous.mailbox_capacity }).pipe(Effect.result)
+          if (retry._tag === "Failure") {
             // Leave PREPARING durable: a same-epoch exact retry can reconcile a
             // lost reply. A restart changes epoch and takes the fail-closed path.
             return { status: "UNKNOWN" as const, messageId: previous.message_id, mailboxSequence: previous.mailbox_sequence, reason: "exact same-epoch HostKernel prepare replay is unresolved; the immutable Core reservation is retained", challengeId: null, effectId: null }
           }
-          const result = retry.right
+          const result = retry.success
           if (result.status === "DENIED") {
             yield* session.directInboxTransition({ messageID: previous.message_id, expected: ["preparing"], state: "denied", pinsDigest: result.pinsDigest })
             return { status: "DENIED" as const, messageId: previous.message_id, mailboxSequence: previous.mailbox_sequence, reason: result.reasonCode, challengeId: null, effectId: null }
@@ -1035,12 +1055,12 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
             pins,
             content: previous.payload,
             mailboxCapacity: previous.mailbox_capacity,
-          }).pipe(Effect.either)
-          if (approvalRetry._tag === "Left") {
+          }).pipe(Effect.result)
+          if (approvalRetry._tag === "Failure") {
             yield* session.directInboxTransition({ messageID: previous.message_id, expected: ["approval_required"], state: "unknown" })
             return { status: "UNKNOWN" as const, messageId: previous.message_id, mailboxSequence: previous.mailbox_sequence, reason: "Guard approval outcome could not be reconciled through the exact message prepare; inspect before retrying", challengeId: null, effectId: null }
           }
-          const approvedPrepare = approvalRetry.right
+          const approvedPrepare = approvalRetry.success
           if (approvedPrepare.status === "NEEDS_APPROVAL") {
             yield* session.directInboxTransition({
               messageID: previous.message_id,
@@ -1171,8 +1191,8 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
         mailboxSequence: draft.mailbox_sequence,
         mailboxCapacity: draft.mailbox_capacity,
       })
-      const prepared = yield* ManagedControl.prepareDirectMessage({ pins, content: ctx.payload.content, mailboxCapacity: draft.mailbox_capacity }).pipe(Effect.either)
-      if (prepared._tag === "Left") {
+      const prepared = yield* ManagedControl.prepareDirectMessage({ pins, content: ctx.payload.content, mailboxCapacity: draft.mailbox_capacity }).pipe(Effect.result)
+      if (prepared._tag === "Failure") {
         return {
           status: "UNKNOWN" as const,
           messageId: messageID,
@@ -1182,7 +1202,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
           effectId: null,
         }
       }
-      const preparedResult = prepared.right
+      const preparedResult = prepared.success
       if (preparedResult.status === "DENIED") {
         yield* session.directInboxTransition({ messageID, expected: ["preparing"], state: "denied", pinsDigest: preparedResult.pinsDigest })
         return { status: "DENIED" as const, messageId: messageID, mailboxSequence: draft.mailbox_sequence, reason: preparedResult.reasonCode, challengeId: null, effectId: null }
@@ -1601,9 +1621,21 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       const principal = yield* Effect.serviceOption(TrustedPrincipalContext)
       if (Option.isNone(principal))
         return yield* new ForbiddenError({ message: "Guard approval requires a trusted principal" })
+      if (ctx.payload.decision === "grant_session" || ctx.payload.decision === "grant_workspace") {
+        // The PTY Guard reply boundary only accepts allow_once|deny; anything
+        // else previously collapsed into a silent deny. Grant decisions fail
+        // closed here instead — they require the direct-session grant endpoint.
+        return yield* new ServiceUnavailableError({
+          message: "Direct-session grant decisions are unavailable at this boundary",
+          service: "guard-approval",
+        })
+      }
+      // Bound after the grant guard: narrowing does not survive the callback
+      // below, and replyGuardApproval only accepts allow_once|deny.
+      const decision = ctx.payload.decision
       yield* withLocationPty(
         Pty.Service.use((service) =>
-          service.replyGuardApproval({ approvalID: ctx.params.approvalID, decision: ctx.payload.decision }),
+          service.replyGuardApproval({ approvalID: ctx.params.approvalID, decision }),
         ),
       ).pipe(
         Effect.provideService(TrustedPrincipalContext, principal.value),
@@ -1652,7 +1684,27 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("children", children)
       .handle("subagents", subagents)
       .handle("subagentWait", subagentWait)
-      .handle("subagentMessage", subagentMessage)
+      .handle("subagentMessage", (ctx) =>
+        subagentMessage(ctx).pipe(
+          Effect.mapError((error) => {
+            if (error instanceof SessionSupervisorError) {
+              return new ServiceUnavailableError({ message: error.reason, service: "host-kernel" })
+            }
+            if (error instanceof ManagedControl.ManagedControlError) {
+              if (error.code === "managed_conflict") return new ConflictError({ message: error.reason })
+              if (error.code === "authorization") return new ForbiddenError({ message: error.reason })
+              if (error.code === "managed_not_found") {
+                return new ApiNotFoundError({ name: "NotFoundError", data: { message: error.reason } })
+              }
+              return new ServiceUnavailableError({ message: error.reason, service: "managed-control" })
+            }
+            return new ServiceUnavailableError({
+              message: error instanceof Error ? error.message : String(error),
+              service: "session",
+            })
+          }),
+        ),
+      )
       .handle("todo", todo)
       .handle("questions", questions)
       .handle("questionReply", questionReply)

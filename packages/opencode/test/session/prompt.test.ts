@@ -12,7 +12,7 @@ import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { eq } from "drizzle-orm"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { afterAll, expect, test } from "bun:test"
-import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer, Option, Queue, Ref, Stream } from "effect"
+import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer, Option, Queue, Ref, Schema, Stream } from "effect"
 import path from "path"
 import { tmpdir } from "node:os"
 import { fileURLToPath } from "url"
@@ -26,6 +26,11 @@ import { MCP } from "../../src/mcp"
 import { Permission } from "../../src/permission"
 import { Plugin } from "../../src/plugin"
 import { Provider as ProviderSvc } from "@/provider/provider"
+import type { DirectProviderRouteV1 } from "@/auth/provider-transport"
+import { AgentProfileService } from "@opencode-ai/core/config"
+import * as AgentProfileV2 from "@opencode-ai/schema/agent-profile-v2"
+import { ProviderTest } from "../fake/provider"
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
 import { Env } from "../../src/env"
 import { Git } from "../../src/git"
 import { Image } from "../../src/image/image"
@@ -52,6 +57,7 @@ import { SessionExecution } from "@opencode-ai/core/session/execution"
 import {
   GuardApprovalRequested,
   SessionSupervisor,
+  SessionSupervisorError,
   type GuardApprovalRequest,
 } from "@opencode-ai/core/session/supervisor"
 import { TrustedPrincipalContext } from "@opencode-ai/core/trusted-principal"
@@ -59,12 +65,15 @@ import { Skill } from "../../src/skill"
 import { SystemPrompt } from "../../src/session/system"
 import { Snapshot } from "../../src/snapshot"
 import { ToolRegistry } from "@/tool/registry"
+import { WebSearchRuntime } from "@/tool/websearch-runtime"
 import { Truncate } from "@/tool/truncate"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { Format } from "../../src/format"
 import { TestInstance } from "../fixture/fixture"
-import { awaitWithTimeout, pollWithTimeout, testEffect } from "../lib/effect"
+import { awaitWithTimeout, pollWithTimeout, testEffect, testEffectShared } from "../lib/effect"
+import { InstanceRef } from "@/effect/instance-ref"
+import { ProjectV2 } from "@opencode-ai/core/project"
 import { reply, TestLLMServer } from "../lib/llm-server"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -144,6 +153,12 @@ const lsp = Layer.succeed(
     implementation: () => Effect.succeed([]),
     documentSymbol: () => Effect.succeed([]),
     workspaceSymbol: () => Effect.succeed([]),
+    // Prompt tests never enter a workspace-bound execution scope; the mock
+    // passes the effect through unchanged and fails closed for proposals.
+    withExecutionScope: (_input, effect) => effect,
+    postPatchDiagnostics: () => Effect.die("unexpected post-patch diagnostics"),
+    codeAction: () => Effect.die("unexpected code action"),
+    rename: () => Effect.die("unexpected rename proposal"),
     prepareCallHierarchy: () => Effect.succeed([]),
     incomingCalls: () => Effect.succeed([]),
     outgoingCalls: () => Effect.succeed([]),
@@ -179,6 +194,61 @@ const testSupervisorLayer = Layer.succeed(
     runPatch: () => Effect.die("unexpected patch execution"),
     requestHostKernel: () => Effect.die("unexpected host kernel request"),
     hostOwnerEpoch: () => Effect.die("unexpected host owner epoch read"),
+    directSessionPermissionModeSnapshot: (input: { sessionID: string }) =>
+      Effect.succeed({
+        schemaVersion: 1 as const,
+        sessionId: input.sessionID,
+        ownerEpoch: "1",
+        locationId: "loc_prompt_test",
+        workspaceId: "wrk_prompt_test",
+        workspaceRootDigest: `blake3:${"a".repeat(64)}`,
+        executionBackendId: "horizon.host",
+        policyDigest: `sha256:${"c".repeat(64)}`,
+        sandboxMode: "read-only" as const,
+        approvalPolicy: "on-request" as const,
+        source: "default" as const,
+        revision: "7",
+        digest: `blake3:${"b".repeat(64)}`,
+      }),
+    // Host features stay closed in these prompt tests (fail-closed projection).
+    hostFeatureEnabled: () => Effect.succeed(false),
+    // Root direct turns treat a typed projection failure as "no trusted
+    // workspace snapshot": the optional LSP/repo-intel context is withheld and
+    // the ordinary direct model turn continues.
+    directSessionWorkspaceSnapshot: () =>
+      Effect.fail(
+        new SessionSupervisorError({
+          stage: "host-kernel",
+          reason: "workspace snapshot unavailable in prompt tests",
+        }),
+      ),
+    directProviderPermissionScope: () => Effect.die("unexpected direct provider permission scope"),
+    setDirectSessionPermissionMode: () => Effect.die("unexpected direct permission mode write"),
+    issueDirectSessionGrant: () => Effect.die("unexpected direct session grant"),
+    revokeDirectSessionGrant: () => Effect.die("unexpected direct session grant revocation"),
+    resolveEditorProcessApproval: () => Effect.die("unexpected editor process approval"),
+    authorizeEditorProtocolOperation: () => Effect.die("unexpected editor protocol authorization"),
+    authorizeReplOperation: () => Effect.die("unexpected repl authorization"),
+    awaitManagedProviderApproval: () => Effect.die("unexpected managed provider approval"),
+    awaitManagedRootApproval: () => Effect.die("unexpected managed root approval"),
+    managedEffectWaveReceipts: () => Effect.die("unexpected managed effect wave receipts"),
+    managedCurrentEpochRecoveryQuiescence: () => Effect.die("unexpected managed epoch recovery quiescence"),
+    directCodeModeWaveReceipts: () => Effect.die("unexpected direct code mode wave receipts"),
+    codeModeHostRequest: () => Effect.die("unexpected code mode host request"),
+    settleCodeModeToolResults: () => Effect.die("unexpected code mode tool result settlement"),
+    prepareCodeModeToolBatch: () => Effect.die("unexpected code mode tool batch preparation"),
+    codeModeWaveReceipts: () => Effect.die("unexpected code mode wave receipts"),
+    listDirectAttemptArtifacts: () => Effect.die("unexpected direct attempt artifact listing"),
+    listDirectSessionArtifacts: () => Effect.die("unexpected direct session artifact listing"),
+    inspectDirectSessionArtifact: () => Effect.die("unexpected direct session artifact inspection"),
+    readDirectSessionArtifactRange: () => Effect.die("unexpected direct session artifact range read"),
+    sessionProjectionCursor: () =>
+      Effect.fail(
+        new SessionSupervisorError({
+          stage: "host-kernel",
+          reason: "session projection cursor unavailable in prompt tests",
+        }),
+      ),
     subscribeHostKernelEvents: () => Stream.die("unexpected host kernel event subscription"),
     watchSession: (sessionID, source, workspaceRoot, turnComplete, ready) =>
       Effect.gen(function* () {
@@ -202,7 +272,9 @@ const testSupervisorNode = LayerNode.make({
 // Direct-session prompt tests act as the local host owner; Guard/effect
 // boundaries require an explicit trusted principal context.
 const trustedPrincipalLayer = Layer.succeed(TrustedPrincipalContext, {
-  principal: { kind: "host_os" as const },
+  // The direct-provider authority pins require an authenticated ServerAuth
+  // principal; host-os callers stay fail-closed in the resolver itself.
+  principal: { kind: "server_auth" as const, subject: "core-prompt-test" },
 })
 
 // Rust needs an owner-only parent for its pinned executable and observer state.
@@ -261,6 +333,101 @@ const rustSessionDatabaseNode = makeGlobalNode({
   deps: [],
 })
 
+const promptTestProfile = Schema.decodeUnknownSync(AgentProfileV2.AgentProfileDefinitionV2)({
+  schemaVersion: 2,
+  profileId: "prompt.direct",
+  revision: 1,
+  name: "Prompt Direct",
+  description: "Direct prompt test profile",
+  source: "user",
+  roles: ["main"],
+  purpose: "Exercise the direct prompt path",
+  whenToUse: "In prompt tests",
+  whenNotToUse: "Never",
+  adapter: { kind: "native", adapterId: "horizon.native" },
+  model: { providerId: "test", modelId: "test-model" },
+  harness: "native-minimal",
+  reasoning: "low",
+  variants: [],
+  instructions: { extraRefs: [], maxCompiledTokens: 4096 },
+  tools: [],
+  allowedSkillIds: [],
+  deniedSkillIds: [],
+  allowedMcpServers: [],
+  allowedMcpToolPatterns: [],
+  allowedSubagentIds: [],
+  deniedSubagentIds: [],
+  pathRules: [],
+  context: { isolation: "fresh", allowImages: false, allowDocuments: false, allowArtifacts: false },
+  inputMode: "read_only",
+  memoryPolicy: "none",
+  isolation: "workspace",
+  lifecycleHooks: [],
+  capabilityCeiling: [],
+  limits: { maxDepth: 4, maxActiveChildren: 4, maxTotalChildren: 8, maxPendingMessages: 16, maxMessageBytes: 32768 },
+  maxParallelChildren: 2,
+  enabled: true,
+})
+
+const agentProfileNode = LayerNode.make({
+  service: AgentProfileService,
+  layer: Layer.succeed(
+    AgentProfileService,
+    AgentProfileService.of({
+      agentProfiles: () => Effect.succeed([promptTestProfile]),
+      agentProfileSelectors: () => Effect.succeed([]),
+      agentProfile: () => Effect.die("prompt tests resolve the primary profile only"),
+      agentProfileSelector: () => Effect.die("prompt tests resolve the primary profile only"),
+      primaryAgentProfile: () => Effect.succeed(promptTestProfile),
+    }),
+  ),
+  deps: [],
+})
+
+/**
+ * Typed direct-transport double at the Provider seam: llm.run resolves the real
+ * §15.2 authority pins and then builds the language model through
+ * `getDirectLanguage`. The double returns a loopback language model for the
+ * primed TestLLMServer plus an exact route projection; no production check is
+ * weakened and no external route is contacted.
+ */
+const directModel = ProviderTest.model({
+  providerID: ProviderV2.ID.make("test"),
+  id: ModelV2.ID.make("test-model"),
+  api: { id: ModelV2.ID.make("test-model"), url: "http://127.0.0.1:1/v1", npm: "@ai-sdk/openai-compatible" },
+  // Reasoning-effort variants the config-loaded model advertises; agent-variant
+  // selection checks `model.variants[ag.variant]` before applying it.
+  variants: { xhigh: {}, high: {} },
+})
+const directInfo = ProviderTest.info({ id: ProviderV2.ID.make("test") }, directModel)
+
+const directLanguage = (model: { readonly api: { readonly id: string } }) => {
+  const baseURL = directTestServerURL
+  if (!baseURL) throw new Error("TestLLMServer is not primed for the direct provider transport double")
+  return createOpenAICompatible({ name: "test-direct", baseURL, apiKey: "public" }).languageModel(model.api.id)
+}
+
+const directRoute = (harnessID: string): DirectProviderRouteV1 => ({
+  providerID: directModel.providerID,
+  modelID: directModel.id,
+  harnessID,
+  routeID: "llm_p7_prompt_direct",
+  routeRevision: "llm_p7_prompt_direct",
+  endpointRevision: `blake3:${"d".repeat(64)}`,
+  endpointBase: directTestServerURL ?? "http://127.0.0.1:1/v1",
+  anonymousOpenCodeFree: false,
+  credentialHeader: { name: "authorization", prefix: "Bearer " },
+})
+
+const providerDouble = ProviderTest.fake({
+  model: directModel,
+  info: directInfo,
+  getDirectLanguage: Effect.fn("PromptTest.getDirectLanguage")((input) =>
+    Effect.succeed({ language: directLanguage(input.model), route: directRoute(input.harnessID) })),
+  getLanguage: Effect.fn("PromptTest.getLanguage")(() => Effect.succeed(directLanguage(directModel))),
+  getManagedLanguage: Effect.fn("PromptTest.getManagedLanguage")(() => Effect.succeed(directLanguage(directModel))),
+})
+
 const promptRoot = LayerNode.group([
   SessionPrompt.node,
   Session.node,
@@ -280,6 +447,7 @@ const promptRoot = LayerNode.group([
   FSUtil.node,
   BackgroundJob.node,
   SessionStatus.node,
+  agentProfileNode,
   SessionRunState.node,
   SessionSupervisor.node,
   Database.node,
@@ -287,6 +455,9 @@ const promptRoot = LayerNode.group([
   Question.node,
   Todo.node,
   ToolRegistry.node,
+  // SessionTools.resolve requires WebSearchRuntime in the caller's context, so
+  // the prompt test graph must expose it as a member (not only as a dep).
+  WebSearchRuntime.node,
   Skill.node,
   Git.node,
   Ripgrep.node,
@@ -309,6 +480,7 @@ function makePrompt(input?: { mcpInstructions?: MCP.ServerInstructions[]; proces
     [MCP.node, makeMcp(input?.mcpInstructions)],
     [RuntimeFlags.node, runtimeFlags],
     [SessionSupervisor.node, testSupervisorNode],
+    [ProviderSvc.node, providerDouble.layer],
   ] as const
   if (input?.processor === "blocking") {
     return LayerNode.compile(promptRoot, [...replacements, [SessionProcessor.node, blockingProcessor]]).pipe(
@@ -333,6 +505,7 @@ function makeHttp(input?: {
       [RuntimeFlags.node, runtimeFlags],
       [SessionSupervisor.runtimeConfigNode, rustSupervisorRuntimeNode],
       [locationServiceMapNode, rustLocationServiceMapNode],
+    [ProviderSvc.node, providerDouble.layer],
     ] as const
     if (input.processor === "blocking") {
       return LayerNode.compile(root, [...replacements, [SessionProcessor.node, blockingProcessor]]).pipe(
@@ -347,6 +520,7 @@ function makeHttp(input?: {
     [MCP.node, makeMcp(input?.mcpInstructions)],
     [RuntimeFlags.node, runtimeFlags],
     [SessionSupervisor.node, testSupervisorNode],
+    [ProviderSvc.node, providerDouble.layer],
   ] as const
   if (input?.processor === "blocking") {
     return LayerNode.compile(root, [...replacements, [SessionProcessor.node, blockingProcessor]]).pipe(
@@ -360,13 +534,29 @@ function makeHttpNoLLMServer(input?: { mcpInstructions?: MCP.ServerInstructions[
   return makePrompt(input)
 }
 
-const it = testEffect(makeHttp())
-const noLLMServer = testEffect(makeHttpNoLLMServer())
-const raceNoLLMServer = testEffect(makeHttpNoLLMServer({ processor: "blocking" }))
+// The prompt graph consumes SessionStatus (and other member services) through
+// dependency chains; the shared memoMap build keeps the dep-consumed and
+// member-exposed instances identical, so bodies observe the same SessionStatus
+// the prompt path mutates. ToolRegistry/TaskTool init also reads the instance
+// context at layer build, so the graph gets a build-scope InstanceRef (the same
+// recipe P3 used for repo-tools); it is never used for filesystem access here.
+const fixtureInstanceRef = Layer.succeed(InstanceRef, {
+  directory: "/home/sarvesh/business_Dev/agentx/.p7-fixture",
+  worktree: "/home/sarvesh/business_Dev/agentx/.p7-fixture",
+  project: {
+    id: ProjectV2.ID.make("proj-p7-prompt-fixture"),
+    worktree: "/home/sarvesh/business_Dev/agentx/.p7-fixture",
+    time: { created: 0, updated: 0 },
+    sandboxes: [],
+  },
+})
+const it = testEffectShared(makeHttp().pipe(Layer.provide(fixtureInstanceRef)))
+const noLLMServer = testEffectShared(makeHttpNoLLMServer().pipe(Layer.provide(fixtureInstanceRef)))
+const raceNoLLMServer = testEffectShared(makeHttpNoLLMServer({ processor: "blocking" }).pipe(Layer.provide(fixtureInstanceRef)))
 
-const liveRustSupervisor = testEffect(makeHttp({ rustSupervisor: true }))
+const liveRustSupervisor = testEffectShared(makeHttp({ rustSupervisor: true }).pipe(Layer.provide(fixtureInstanceRef)))
 const withRustSupervisor = rustSupervisorAvailable ? liveRustSupervisor.instance : liveRustSupervisor.instance.skip
-const withMcpInstructions = testEffect(
+const withMcpInstructions = testEffectShared(
   makeHttp({
     mcpInstructions: [
       {
@@ -375,7 +565,7 @@ const withMcpInstructions = testEffect(
         tools: ["guide-server_lookup"],
       },
     ],
-  }),
+  }).pipe(Layer.provide(fixtureInstanceRef)),
 )
 
 test("pending feature settings apply only at root turn boundaries", () => {
@@ -407,7 +597,8 @@ const cfg = {
         },
       },
       options: {
-        apiKey: "test-key",
+        // No user credential: Auth owns credentials and the direct lane only
+        // admits the credential-free route.
         baseURL: "http://localhost:1/v1",
       },
     },
@@ -442,9 +633,13 @@ const writeConfig = Effect.fn("test.writeConfig")(function* (dir: string, config
   )
 })
 
+/** Set whenever a test primes its loopback TestLLMServer; the transport double targets it. */
+let directTestServerURL: string | undefined
+
 const useServerConfig = Effect.fn("test.useServerConfig")(function* (config: (url: string) => Partial<ConfigV1.Info>) {
   const { directory: dir } = yield* TestInstance
   const llm = yield* TestLLMServer
+  directTestServerURL = llm.url
   yield* writeConfig(dir, config(llm.url))
   return { dir, llm }
 })

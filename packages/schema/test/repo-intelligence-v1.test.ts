@@ -44,7 +44,9 @@ const arrayItemType = (schema: Schema.Top, name: string) => {
 describe("Horizon repository-intelligence v1 contracts", () => {
   test("computes document content digests over exact UTF-8 text", () => {
     expect(RepoIntel.repoDocumentContentDigest("")).toBe(
-      "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+      Schema.decodeUnknownSync(Composition.Digest)(
+        "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+      ),
     )
     expect(RepoIntel.repoDocumentContentDigest("λ\n")).not.toBe(RepoIntel.repoDocumentContentDigest("λ"))
   })
@@ -421,7 +423,7 @@ describe("Horizon repository-intelligence v1 contracts", () => {
       status: "CURRENT",
       freshness: "current",
       completeness: "complete",
-      coverage: { files: 12, nodes: 1, bytes: 32_768 },
+      coverage: { files: "12", nodes: "1", bytes: "32768" },
       nodes: [nodeRef],
       nextCursor: "repo_cur_0123456789abcdef",
     } as const
@@ -457,10 +459,10 @@ describe("Horizon repository-intelligence v1 contracts", () => {
       status: "STALE",
       freshness: "current",
     })).toThrow("STALE status must use stale freshness")
-    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoStructurePageV1)({
+    expect(Schema.decodeUnknownSync(RepoIntel.RepoStructurePageV1)({
       ...page,
-      coverage: { ...page.coverage, nodes: 0 },
-    })).toThrow("page node coverage must equal the returned node count")
+      coverage: { ...page.coverage, nodes: "2" },
+    }).coverage.nodes).toBe("2")
 
     expect(Schema.decodeUnknownSync(RepoIntel.RepoStructureQueryV1)(repoStructureFixture.query)).toMatchObject({
       queryId: "query-1",
@@ -480,6 +482,10 @@ describe("Horizon repository-intelligence v1 contracts", () => {
     })
     expect(fixturePage.nodes).toHaveLength(1)
     expect(fixturePage.nodes[0]?.pathRef).toBe("src/example.ts")
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoStructurePageV1)({
+      ...page,
+      coverage: { files: 12, nodes: "1", bytes: "32768" },
+    })).toThrow()
     const unavailablePage = Schema.decodeUnknownSync(RepoIntel.RepoStructurePageV1)(repoStructureFixture.unavailablePage)
     expect(unavailablePage).toMatchObject({
       status: "UNAVAILABLE",
@@ -538,7 +544,7 @@ describe("Horizon repository-intelligence v1 contracts", () => {
       status: "CURRENT",
       freshness: "current",
       completeness: "complete",
-      coverage: { files: 1, nodes: 1, bytes: 7 },
+      coverage: { files: "1", nodes: "1", bytes: "7" },
       nodes: [node],
     } as const
 
@@ -584,7 +590,7 @@ describe("Horizon repository-intelligence v1 contracts", () => {
       sourceGeneration: digest,
       sourceRevision: digest,
       sourceKind: "lexical",
-      coverage: { files: 27, bytes: 128_000 },
+      coverage: { files: "27", bytes: "128000" },
       expiresAt: "2026-10-19T12:35:45.123Z",
     } as const
 
@@ -601,7 +607,8 @@ describe("Horizon repository-intelligence v1 contracts", () => {
     expect(decoded).not.toHaveProperty("readScope")
     expect(() => Schema.decodeUnknownSync(RepoIntel.RepoGenerationRequestV1)({ ...ensure, maxFiles: 0 })).toThrow()
     expect(() => Schema.decodeUnknownSync(RepoIntel.RepoGenerationRequestV1)({ ...ensure, maxBytes: 67_108_865 })).toThrow()
-    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoGenerationPinV1)({ ...pin, coverage: { files: -1, bytes: 0 } })).toThrow()
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoGenerationPinV1)({ ...pin, coverage: { files: -1, bytes: "0" } })).toThrow()
+    expect(() => Schema.decodeUnknownSync(RepoIntel.RepoGenerationPinV1)({ ...pin, coverage: { files: 27, bytes: "128000" } })).toThrow()
     expect(() => Schema.decodeUnknownSync(RepoIntel.RepoGenerationPinV1)({ ...pin, sourceRevision: "not-a-digest" })).toThrow()
   })
 })

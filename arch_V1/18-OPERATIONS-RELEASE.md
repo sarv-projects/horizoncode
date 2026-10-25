@@ -146,6 +146,17 @@ Before distribution:
 - imported provider/model metadata source, upstream revision/content digest, retrieval time,
   freshness, redistribution license and required attribution/notice text.
 
+**DEC-V1-11 / DEC-V1-12 user decisions (2026-10-25):** HorizonCode first-party
+distribution is selected as MIT. Preserve the pinned OpenCode LICENSE and its
+copyright/permission notices as upstream attribution; the HorizonCode root
+LICENSE and NOTICE must not imply that OpenCode authored HorizonCode. The
+selected first-party grant does not clear third-party dependency/native-asset
+obligations: inspect the exact candidate closure and include required notices;
+missing or indeterminate licenses remain release blockers. Copyright-holder or
+year uncertainty is not resolved by inventing a name/date. Signing policy is
+deferred beyond V1; signing, remote installation and automatic updates stay
+UNAVAILABLE. Local installer recovery is not a signed update/rollback channel.
+
 Source readability or a top-level MIT/Apache marker is not full redistribution clearance.
 Catalog metadata is advisory: release acceptance proves its provenance and honest staleness
 projection, not that pricing, model capabilities or endpoints remain current.

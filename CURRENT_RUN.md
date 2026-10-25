@@ -1,5 +1,293 @@
 # CURRENT_RUN — HorizonCode engineering activity and evidence log
 
+## 2026-10-24 — parent continuation: activity progress, selector projection, read-batch context
+
+Implemented three bounded gaps from the capability audit, all test-first:
+
+1. **Activity digest fidelity (§31.22).** `packages/tui/src/component/activity-cards.ts` now projects
+   `progress` cards for reasoning without exposing text, plus `pathRef`, `lineStats`, `durationMs`,
+   `receiptState`, `fidelity`, and `artifactRef`; edit/read/subagent titles follow the canonical
+   patterns. `activity-stream.tsx` renders redacted `Reasoning · 1.2s` instead of the former
+   `Progress summary unavailable`, and appends settled durations. Focused TUI tests:
+   **9 pass / 0 fail / 73 expectations**. TUI `tsgo --noEmit` is **exit 0** after fixing three
+   stale editor/event test-fixture type defects.
+2. **Delegation selector truthfulness.** `packages/opencode/src/tool/registry.ts` now advertises
+   only immutable `AgentProfileV2` task selectors; legacy built-ins are not implicit aliases
+   (§17.14). When none are configured, the Task description says so instead of listing
+   undispatable agents. New pure test **2 pass / 0 fail / 6 expectations**; existing registry
+   suite **13 pass / 0 fail / 42 expectations**. Task metadata now carries `agent`, `profileID`
+   and `profileRevision` for the subagent card.
+3. **P1-10 read-admission context boundary.** `packages/core/src/session/supervisor.ts` permits
+   private `repo_read` context for exactly `effects.v2/prepare_tool_batch_read`, with body
+   Session/Location equality and 1–8 calls; no other effects.v2 operation is widened. New focused
+   test **3 pass / 0 fail / 10 expectations**. Core `tsgo --noEmit` is **exit 0** (also converted
+   the stale P3 RepoIntel cache-coverage decimal strings to bounded numbers; focused test
+   **2 pass / 0 fail / 5 expectations**).
+
+Delegation remains read-only and gated: `DIRECT_CHILD_TURN_RPC_ENABLED=false`, child effects are
+withheld without `DirectTurnScope`, resume/follow-up and managed Task dispatch remain closed, and
+background subagents remain opt-in. P7's TypeScript P1-10 caller/DTO is still absent. P7 AppRuntime,
+P2 HostRun reconciliation, P8 trusted measurements, provider E2E, candidate/legal/signing gates
+remain open. V1 **PARTIAL / NOT VERIFIED / NOT RELEASED**.
+
+## 2026-10-24 — P7 cold AppRuntime regression
+
+Added a P7-owned cold-composition RED test at
+`packages/opencode/test/effect/instance-state.test.ts`:
+`bun test test/effect/instance-state.test.ts --test-name-pattern 'cold AppRuntime'`
+→ **0 pass / 1 fail**, `InstanceRef not provided` at `instance-state.ts:16`, with
+the same beta.83 `forkUnsafe` / concurrent `Effect.forEach` stack. The test calls
+`InstanceRuntime.disposeAllInstances()` directly and proves the TaskTool body and
+`it.instance` are unnecessary. Failure occurs before the added probe could
+establish whether the registered cache disposer is responsible. A test-only
+finalizer experiment and an attempted disposer-context injection did not isolate
+or fix it; the production attempt was reverted. No production fix yet. Exact
+P7-owned `InstanceState.context` consumer/callback remains unknown; next is
+AppLayer node/callback bisection, then narrow fix and owner-routed P2/P6 reruns.
+No P2/P6 files, HostKernel, Cargo, provider/network, Git/publication, or gated
+routes touched. Repo-local test environment stayed in `packages/opencode/.p7-sandbox/`.
+P7 remains PARTIAL / NOT VERIFIED / NOT RELEASED; see continuation 16 in
+`reports/phases/P7.md`.
+
+## 2026-10-24 — P7 InstanceRef lifecycle localization
+
+Ran the exact P2 TaskTool failure in a repo-confined environment, then an isolated
+control in the same test file: `bun test test/tool/task.test.ts --test-name-pattern
+'accepts Rust remainder'`. The pure token-budget test (no TaskTool and no `it.instance`)
+also fails with `InstanceRef not provided`; its stack reaches `forkUnsafe` through
+Effect `forEach` concurrency. `task.test.ts` has a module-level `afterEach` calling
+`disposeAllInstances()`, so TaskTool execution is not necessary and the earlier
+attribution to `task.ts:278` is not proven. Likely path is test lifecycle/cleanup or
+the runtime it initializes. A standalone cold-runtime probe (`await
+InstanceRuntime.disposeAllInstances()` using the repo-local sandbox environment)
+also exits 1 with the same defect, confirming reproduction through the canonical
+AppRuntime bridge without Bun or TaskTool. The exact app-layer initialization/
+disposal callback remains unidentified.
+No production or P2/P6 test source changed. P7 report continuation 15 records exact
+result and next diagnostic: trace registered `InstanceState` disposers and runtime
+callback to the contextless fork, then test canonical P7 app/runtime composition.
+P2/P6 reruns remain required after an evidence-backed fix. All test homes, XDG,
+TMPDIR and DB paths were confined to `packages/opencode/.p7-sandbox/`; no Cargo,
+provider/network, Git or publication operations. P7 remains PARTIAL / NOT VERIFIED /
+NOT RELEASED.
+
+## 2026-10-24 — P7 InstanceRef fork-boundary continuation
+
+P7 re-ran the repository-contained TaskTool failure with HOME, OPENCODE_TEST_HOME,
+OPENCODE_CONFIG_DIR, XDG paths, TMPDIR and `OPENCODE_DB=:memory:` inside
+`packages/opencode/.p7-sandbox/`: `bun test test/tool/task.test.ts --test-name-pattern
+'an unavailable host kernel refuses dispatch'` → **0/1**, `InstanceRef not provided`
+at `instance-state.ts:16`, stack includes Effect `forkUnsafe`. Inspected `AppLayer`,
+`testEffect`, `InstanceStore.provide` and the TaskTool site. The fixture does provide
+InstanceRef around the test body, but the current evidence does not pinpoint which
+P7-owned fork caller strips it. No production fix or false RED regression was added;
+existing nested-cache test passes and is not representative. Exact diagnosis and
+next requirement (identify the context-stripping boundary, then test-first there;
+P2/P6 reruns required) are in `reports/phases/P7.md` Continuation 14. No P2/P6 tests,
+P2 Rust/HostKernel files, gated effect paths, Cargo, provider/network, Git, or
+publication were touched. P7 remains **PARTIAL / NOT VERIFIED / NOT RELEASED**.
+
+## 2026-10-24 — P2 deferred-Location fixture correction
+
+Reproduced `host_kernel::tests::deferred_location_re_registration_recovers_prepared_effect_before_authorization`
+and traced `location_owner_conflict` to the fixture's empty `workspaceID`: direct
+Session permission-mode validation correctly rejects a Location without a
+workspace ID. Updated only that test to register/re-register `recovery-workspace`;
+focused test **1/1**. Re-ran `direct_attempt_rpc` **10/10** and `managed_control`
+**39/39** with `CARGO_TARGET_DIR=../target-p2`. No production authorization
+checks changed. P2 still owns Cargo and has not released the slot. Two managed
+delegation admission tests remain blocked on current P8 pre-admission lease
+fixture alignment; preserve P2 proof validation. P2 phase remains partial; see
+`reports/phases/P2.md` continuation 10. No Git/provider/network/publication
+actions. Disk at check: 830 GB free; `kernel/target` 1.8 GB and `target-p2` 4.2 GB;
+both retained.
+
+## 2026-10-24 — P2 combined Rust wave: failed, routed for repair
+
+P2's combined `target-p2/p2-wave-final.log` run exited **101**. Exact per-target results: lib 477 pass /
+7 fail; `direct_attempt_rpc` 5 pass / 5 fail; `effect_host_principal` 2 pass / 9 fail;
+`effects_host_process` 2 pass / 8 fail; `host_terminal_events_process` 0/1; `host_terminal_process`
+2 pass / 1 fail; `tool_batch_guard_matrix` 1 pass / 8 fail. This is not a blanket phase failure:
+the failure log mixes owner domains. P2 received the exact log and was directed to classify/fix only its
+owned regressions; P1 readiness-false PTY cases remain intentionally unavailable and must not be made
+green by opening the gate. Cargo slot remains P2-owned until its repair wave is complete and explicitly
+released, after which P1/P8 acceptance runs. Snapshot after completion: no repo-owned Cargo/rustc/tsgo/
+bun-test process; 829 GB free, `kernel/target` 1.8 GB and `target-p2` 4.4 GB retained. No cleanup.
+
+P9's latest independent run confirms `bash -n install` and three focused installer tests pass (dual
+`horizoncode`/`hzcode` install/upgrade, dry-run, alias refusal), with no source edits. Nix evaluation is
+unavailable because `nix` is not installed. Candidate install/upgrade/rollback awaits integrated P1–P8;
+Stage-2 package migration remains behind P7's package inputs and a deliberate local-vs-vendored
+`@opencode-ai/client` collision resolution. Publication remains unauthorized by the open license/signing
+decisions.
+
+P1's whole-phase continuation returned with the A1 bash error fixed test-first: absent trusted principal
+fails closed, while present principal is explicitly provided to `Pty.runTool`; `Tool.make` remains
+service-free. `tool-bash.test.ts` is 3/3. P1 also re-based `terminal-run-live.test.ts` from invalid
+`prepare_tool_batch.directAttempt` to canonical `bind_direct_attempt_effects`, retaining the expected
+revision mismatch + no-write assertions; runtime remains gated on P2's built binary. P1 did not run Cargo.
+
+P7 fixed the three fresh Core type errors caused by its durable transfer append (`Imported` now appears
+in both definition unions; transfer captures Database/EventV2 services at layer construction), plus all
+previous P7-owned OpenCode residuals; latest OpenCode-wide tsgo is 65 total / 0 P7-owned. Combined Core
+runner/projector/transfer/compile-boundary tests: 125/0; OpenCode focused P7 group 168 pass / 7 skip / 0
+fail. A1 is now serializing fresh Core/TUI typechecks; TUI tsgo was active at last snapshot. P7 waits for
+A1's exact result before touching those three source files again.
+
+P2 was handed P1's exact classification of the failed Rust wave: B1 source now allows prepare; five
+`direct_attempt_rpc` assertions expect the obsolete `needs_approval + challengeID` instead of the current
+quiet candidate result `prepared + capabilityLeaseDigest`; P1 false-gated PTY denials are intentional.
+P2 retains Cargo for test/contract repair and has not released it yet.
+
+P9 returned without edits: installer syntax and three focused install/upgrade/dry-run/alias-refusal tests
+pass; Nix is unavailable, candidate qualification waits P1–P8 integration, identity migration waits P7
+and local-vs-vendored package-ID resolution. Licensing/signing still block publication.
+
+Overlay audit initially flagged generated `packages/tui/.tmp/p7/**/state/kv.json` as source and correctly
+flagged P7's new compile-boundary test. Added test-first exact `.tmp` classifier behavior and exact source
+unignores; Python regression **1/1** and overlay audit now **hidden_changed=0 / hidden_new_source=0 /
+stale_unignore=0**. Latest structural gates: Markdown **0 blockers**, convergence **1300 checks / 0
+failures**.
+
+## 2026-10-24 — P6 acceptance handoff and competitive recommendations
+
+P6 returned PHASE_PARTIAL: S1's five-module QA set passed **9/0, 41 expectations** (including owner,
+foreign-session, invalid reply, exactly-once continuation/rejection, configured-auth-before-stream/PTY
+checks). Focused phase suites passed: auth 58, provider 797, question/skill/config/v2-compat/tool-question
+167, direct-provider/S1 21, core models-dev/plugin/config 87, core question/skill/context 37, Core
+session-runner 102, schema 10, LLM 15; P6-focused tsgo reported 0 in-scope diagnostics. Remaining gates
+are credentialed SecretBroker/live Doctor (P1), managed-profile consumption (P2), integrated exposure
+and the already-authorized free-model E2E; no live/paid/network/provider calls occurred. Exact source/tests
+and blockers are in `reports/phases/P6.md`.
+
+Surfaced the requested R3 comparison from `reports/research/competitors-cursor-devin.md` §§11–13:
+HorizonCode's differentiators to preserve are one Guard/ExecutionHost, current per-effect policy binding,
+durable one-use leases/receipts/UNKNOWN, owner-leased worktrees, and truthful usage provenance. Highest
+leverage V1 improvement candidates (research-only; no scope adoption): publish the headless NDJSON turn
+protocol with terminal receipt; freeze worker claim/queue schema; specify restrictive-wins sandbox merge
+algebra; default-off trusted ingestion for `.cursor/rules/*.mdc`/`.cursorrules`; declare machine-checkable
+Run output schema; then hook failure matrix and machine-readable session reason codes. The broad gap is
+publicly implementable contracts more than missing architecture. Reject auto-approval by LLM, fail-open
+security hooks, remote local-feature gates, stale boot-time policy, and non-idempotent at-least-once prompt
+delivery. Details/owners/effort are in report §12; rejects in §13. No competitor recommendations have
+been promoted into product scope.
+
+## 2026-10-24 — owner returns, B1 source correction, and live slot state
+
+R3 returned its completed Cursor CLI + Devin report (`reports/research/competitors-cursor-devin.md`,
+1,713 lines; 19 Cursor help surfaces observed; Devin documented/OpenAPI-only; 39 tables structurally
+checked). All four research reports are complete and observational-only. P9 returned **PHASE_PARTIAL**
+after a read-only Stage-2 identity dependency map; no product files changed. It identified the collision
+between the local generated `@opencode-ai/client` package and a vendored tarball consumed by
+app/session-ui. Atomic migration remains queued until P6/P7/A1 release the package/typecheck inputs.
+
+A1 re-derived exact diagnostics twice: Core 6→4, TUI 1→1; its own scope is at zero. P1 owns
+`packages/core/src/tool/bash.ts:68` (one Core + sole TUI diagnostic); P7 owns
+`packages/opencode/src/agent/agent.ts:512,552` and, by parent assignment, the removed Effect beta.83
+option at `packages/opencode/src/effect/instance-state.ts:35`. P1/P2 own the raw `prepare_tool_batch`
+negative at `terminal-run-live.test.ts:396`; its strict-fields denial still holds but the expected
+revision-specific string is not runtime verified without `hz-kernel`.
+
+B1 has a **source-level correction** in `kernel/src/host_kernel.rs`: producer and both admission/persist
+consumers now use SHA-256 for `turnContextDigest`; kernel-produced `call_manifest_digest` remains
+BLAKE3. The stale report is not proof of acceptance: one P2 Cargo job is currently running
+`cargo test --lib unavailable_registered_location_is_deferred` in `target-p2`. At the same check, P6's
+focused tsgo (`tsconfig.p6-focus.json`) and P7's focused compile-boundary test were active. No duplicate
+heavy job was started. Disk: 830 GB free; shared `kernel/target` 1.8 GB and `target-p2` 3.6 GB retained.
+
+After exact `.gitignore` exceptions (including nested filesystem directory visibility), overlay audit is
+**hidden_changed=0 / hidden_new_source=0 / stale_unignore=0**; Markdown has **0 active blockers**;
+convergence is **1300/0**. These are structural gates only. V1 remains PARTIAL / NOT VERIFIED / NOT
+RELEASED; identity Stage 2, P1/P2/P6/P7/P8 acceptance, candidate/install qualification, free-model E2E,
+and final integration remain. License/notice decision remains deferred.
+
+## 2026-10-24 — second restart recovery and owner handoff
+
+Re-read root AGENTS.md, CURRENT_RUN.md, HANDOFF.md, arch_V1 README/governance and the operative V1
+plan in the required order; reloaded Engram context and searched the active B1 blocker. The workspace
+remains on `main` at `44f8b5f2a`, 17 ahead of origin, 296 dirty/untracked paths, none staged, no conflicts.
+Disk: 830 GB free; keep shared `kernel/target` (1.8 GB) and `target-p2` (3.9 GB). No generated output
+was removed. A process snapshot showed P6 auth tests, P7's filename-`#` test, and a tsgo; a subsequent
+snapshot showed these had ended, so no test result is inferred from disappearance.
+
+A1 completed as **PHASE_PARTIAL**: exact logs at `reports/typecheck-core-a1.txt` and
+`reports/typecheck-tui-a1.txt`, root cause table at `reports/a1-core-tui-convergence.md`; Core 6→4,
+TUI 1→1. A1 fixed two test type defects but did not execute them to completion because `hz-kernel`
+was absent and P2 owns Cargo. Five remaining diagnostics route to P1 (`core/src/tool/bash.ts:68`,
+the only TUI row) and P7 (`opencode/src/agent/agent.ts:512,552`, `effect/instance-state.ts:35`). A1 also
+found the test at `terminal-run-live.test.ts:396` sends an unknown `directAttempt` field to strict
+`prepare_tool_batch`; P1/P2 must rebase the negative onto the canonical batch-bind API when the kernel
+binary is available. Security remains deny-by-default; test assertion semantics are NOT VERIFIED.
+
+R3 Cursor CLI + Devin research is now landed at `reports/research/competitors-cursor-devin.md`; exact
+ignore exception added, no product code or auth used. P1/P2/P6/P7/P8 owners were resumed; P9 was
+freshly dispatched because its earlier placeholder session ID did not exist. Evidence is attached to
+the phase ledger. P2 alone owns the Cargo slot; no one else may start Cargo until P2 announces the
+exact test-target release revision. No new feature exposure, paid/provider calls, Git writes or
+publication. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## 2026-10-23 — provider-source wave + three-owner parallel build
+
+Parent completed the provider-source direction as implementation + authority updates: A-V2-27
+provider-source amendment (`arch_V1/17`), new `§20.16` standalone provider-SDK boundary with a
+pinned-update procedure (`arch_V1/20`), SRC-027 (OpenCode provider layer) + SRC-028 (models.dev
+advisory metadata) in `arch_V1/42`, a `§16` provider-source note, a new P6-PROVIDER-004 acceptance
+row and dated evidence note in `arch_V1/32`, a provider take-map in `repo_take/NOTES.md`, and a new
+`packages/opencode/src/provider/UPSTREAM.md` file map. Startup now calls `ModelsDev.refresh(true)` once
+in a scoped background fiber after the Refreshed subscription, forcing one bounded attempt per
+enabled process start; fresh cache no longer suppresses it and failures preserve last-good data.
+Test-first: force-argument assertion red on `undefined`; a 503 test confirms failed refresh retains
+last-good data/provenance through bounded transient retries. Core ModelsDev/plugin suites pass 6/6,
+33 expectations. Three active whole-phase owners: P2 (single Cargo slot), P7 (session/typecheck), and
+resumed P1 Guard/ExecutionHost in the background. P6 returned PHASE_PARTIAL: its typecheck share is 0;
+broad package check is 342 errors/86 files with 0 in P6 scope; offline suites are mostly green, with
+14 legacy provider tests and S1/control-plane/question-route blockers queued for P6/cross-phase
+resumption. Full first-party identity migration is V1, staged after P6/P7 package inputs release.
+Docs gates: Markdown 0 blockers, convergence 1300/0. Git remains unstaged; no commit/push. V1 PARTIAL /
+NOT VERIFIED / NOT RELEASED.
+
+**P5 AppRuntime unblock (2026-10-23, returned PHASE_PARTIAL):** P5 moved `websearch.ts`'s
+`InstanceState.context` capture out of the eager `Tool.define` init into the deferred `execute`
+closure. RED was `config.test` 0/112 + registry 0/12 with `InstanceRef not provided at
+instance-state.ts:16:42`; GREEN is config **111/112** (residual is P6-owned), registry **12/12**,
+codemode **263/0** + typecheck exit 0, P5 10-file suite **179/0**. AppRuntime is now VERIFIED in-repo
+(all config/registry tests build the full `AppLayer` with no `InstanceRef`). P5 also closed four
+coverage gaps: configured-but-unenabled paid routes are never called when free routes fail, explicit
+Retry-After bounds the 429 cooldown, rate-limited receipts are 429-only failover, and bounded transient
+retries accept 503 but reject 400/408. Route/search/CodeMode gates remain false.
+
+**Parallel wave now running (three child slots):** P1 holds the freed Cargo slot running its
+Guard/EffectHost/cgroup/terminal suites; P2 does source work (7 `direct_attempt_rpc` drifts +
+`managed-control.ts:7939` status narrowing behind ~44 of P7's handler errors) until P1 releases it;
+P6 was resumed on its independent work now that AppRuntime runs (last `config.test` permission
+residual, 14 legacy `getLanguage` provider tests, and the single `Schema.Union` array fix in
+`groups/control-plane.ts` blocking S1 HTTP QA). P7 is queued for the next free slot.
+
+**Parent doc work this wave:** added `arch_V1/42` **SRC-029** for the P3-11 session transfer/export
+seam — honestly recording that the transfer paths are ABSENT at the primary pin `b1fe25a` but present
+at fetched candidate `4386838`, MIT `Copyright (c) 2025 opencode`, with bounds (no URL import in V1,
+extended sanitizer, no credential copy, no second Session writer). This is P7's write grant for
+`packages/core/src/session/transfer.ts`. Gates after the edit: Markdown **0 blockers**, convergence
+**1300/0**.
+
+Parent continued P9 artifact naming independently: package `bin` aliases now target the canonical
+`bin/horizoncode`; `build.ts` and release candidate discovery produce/consume
+`horizoncode-<target>/bin/horizoncode`; Nix install path follows the product name and retains one
+`opencode` compatibility symlink. The launcher uses `HORIZONCODE_BIN_PATH` first and preserves
+`OPENCODE_BIN_PATH` fallback. Container artifacts and entrypoint follow the new name with compatibility
+symlinks; compiled user-agent is now `horizoncode/<version>`. TDD RED exposed stale manifest/build/
+candidate/container paths and override priority; latest complete release-readiness suite **78/78**, installer syntax/Python
+compile/diff checks pass. Architecture
+gates re-pass: Markdown 0 blockers, convergence 1300/0. Nix evaluation and a current candidate
+build/install remain NOT RUN; P9 remains PARTIAL. Detailed evidence in P9.md §8.
+
+The full HorizonCode-owned package/import/generated/build/typecheck/first-party prose migration was
+promoted into V1 by the user and recorded in §17.7/§10.12/§20.17/§32.53 and root AGENTS.md. Its
+read-only dependency map is in P9.md: `packages/opencode` is still privately `opencode`,
+`packages/web` has a corresponding workspace edge in `bun.lock`, and many local packages retain
+`@opencode-ai/*` IDs. No manifest/lockfile edits will overlap P6/P7's active package/typecheck work;
+the parent starts the staged identity migration as soon as those inputs are released.
+
 ## 2026-10-22 — current implementation checkpoint
 
 Active whole-phase owners: P1 Guard/ExecutionHost, P2 managed lifecycle/HostKernel, and P7 streams/context/artifacts/analytics/automation/rewind. P8 has handed off SOURCE-COMPLETE FOR CURRENTLY UNBLOCKED WORK (NOT PHASE-ACCEPTED) after adding a bounded repository-local task-catalog resolver and paired HostRun evaluator seam. P2 was immediately refilled and owns the whole unfinished managed phase, including distinct-Location DAG/per-Task verifier, authenticated HostKernel CodeMode lifecycle and root artifact inspect/range, with shared-file changes coordinated around P1/P7. P1 source now strictly projects trusted workspace command-profile rows Core→HostKernel, wraps shell-mode calls with the required discriminator, and binds terminal arguments to a v2 digest; the fixed-argv profile Guard/EffectHost/ExecutionHost chain and exact profile-grant admission remain incomplete and gated. The cgroup janitor is wired at startup recovery and terminal settlement: it reaps only hidden-hierarchy groups with persisted quiescence and exact owner/device/inode/path proof under exclusive locking. The 256 count is a bounded quarantine ceiling for UNKNOWN, Full Access, legacy, or unproven groups; eligible groups are reclaimed so it is not a lifetime launch cap.

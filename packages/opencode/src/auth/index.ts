@@ -13,12 +13,14 @@ import type {
 import { createLazyProductionCredentialBroker, CredentialStoreError } from "./credential-broker-runtime"
 import { SecureInputVault } from "./secure-input"
 import type { TrustedSecretUseContext } from "./secret-broker"
+import { SecretBrokerError } from "./secret-broker"
 import {
   decodeSearchSecretAuthorization,
   decodeSearchDispatchPermit,
   dispatchAuthorizedSearchRequest,
   dispatchAuthorizedManagedProviderRequest as dispatchManagedProviderTransport,
   type AuthorizedSearchProviderResponseV1,
+  type DirectProviderRouteV1,
   type ManagedProviderAuthorizationHandleV1,
   type ManagedProviderRouteV1,
   type ManagedProviderSendPinsV1,
@@ -26,6 +28,7 @@ import {
   type PreparedManagedProviderTransportV1,
   type PreparedDirectProviderTransportV1,
   createPinnedDirectProviderFetch,
+  prepareDirectProviderTransportRequest,
 } from "./provider-transport"
 
 export const OAUTH_DUMMY_KEY = "opencode-oauth-dummy-key"
@@ -298,12 +301,12 @@ export function makeService(
     ),
     searchCredentialRefs: Effect.fn("Auth.searchCredentialRefs")(() =>
       wrap(() => projectSearchCredentialRefs(credentialBroker)).pipe(
-        Effect.catchAll(() => Effect.succeed({} as Partial<Record<SearchCredentialRoute, SecretBrokerV1.SecretRef>>)),
+        Effect.catch(() => Effect.succeed({} as Partial<Record<SearchCredentialRoute, SecretBrokerV1.SecretRef>>)),
       ),
     ),
     credentialRefsForProviders: Effect.fn("Auth.credentialRefsForProviders")((providerIDs: readonly string[]) =>
       wrap(() => projectCredentialRefs(credentialBroker, providerIDs)).pipe(
-        Effect.catchAll(() => Effect.succeed({} as Partial<Record<string, SecretBrokerV1.SecretRef>>)),
+        Effect.catch(() => Effect.succeed({} as Partial<Record<string, SecretBrokerV1.SecretRef>>)),
       ),
     ),
     revokeCredential: Effect.fn("Auth.revokeCredential")(
@@ -538,7 +541,7 @@ export function makeService(
         catch: () => new AuthError({ message: "Guarded managed provider request is unavailable" }),
       })
     }),
-    createPinnedDirectProviderFetch: Effect.fn("Auth.createPinnedDirectProviderFetch")((input: {
+    createPinnedDirectProviderFetch: Effect.fn("Auth.createPinnedDirectProviderFetch")(function* (input: {
       prepared: PreparedDirectProviderTransportV1
       journal: {
         sessionID: string
@@ -555,7 +558,7 @@ export function makeService(
       beginDispatch: () => Effect.Effect<{ state: "DISPATCHING"; pinDigest: string; transportRequestDigest: string }>
       markUnknown: (reason: string) => Effect.Effect<void>
       signal?: AbortSignal
-    }) => {
+    }) {
       const route = input.prepared.route
       const journal = input.journal
       if (journal.state !== "PINNED" || !/^blake3:[a-f0-9]{64}$/.test(journal.pinDigest) ||
@@ -563,9 +566,9 @@ export function makeService(
         journal.providerID !== route.providerID || journal.modelID !== route.modelID || journal.harnessID !== route.harnessID ||
         journal.routeRevision !== route.routeRevision || journal.endpointRevision !== route.endpointRevision ||
         journal.transportRequestDigest !== input.prepared.transportRequestDigest) {
-        return Effect.fail(new AuthError({ message: "Direct provider request differs from its immutable SessionStore pin" }))
+        return yield* Effect.fail(new AuthError({ message: "Direct provider request differs from its immutable SessionStore pin" }))
       }
-      return Effect.succeed(createPinnedDirectProviderFetch({
+      return createPinnedDirectProviderFetch({
         prepared: input.prepared,
         expectedPinDigest: journal.pinDigest,
         expectedTransportDigest: journal.transportRequestDigest,
@@ -580,7 +583,7 @@ export function makeService(
           redirect: "error",
         }),
         ...(input.signal === undefined ? {} : { signal: input.signal }),
-      }))
+      })
     }),
     dispatchPinnedDirectProviderRequest: Effect.fn("Auth.dispatchPinnedDirectProviderRequest")((input: {
       route: DirectProviderTransport.DirectProviderRouteV1

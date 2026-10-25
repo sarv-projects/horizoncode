@@ -1,4 +1,4 @@
-import { Agent } from "@/agent/agent"
+import { Agent, isAgentProfileDirectoryError } from "@/agent/agent"
 import { Command } from "@/command"
 import * as InstanceState from "@/effect/instance-state"
 import { Format } from "@/format"
@@ -79,6 +79,13 @@ export const instanceHandlers = HttpApiBuilder.group(InstanceHttpApi, "instance"
         Effect.catchTag(
           "SessionSupervisorError",
           (error) => new ServiceUnavailableError({ message: error.message, service: "host-kernel" }),
+        ),
+        // AgentProfileV2 directory conflicts are operator configuration
+        // failures, not a missing host kernel. Keep the typed 503 boundary but
+        // name the failing subsystem accurately.
+        Effect.catchIf(
+          isAgentProfileDirectoryError,
+          (error) => new ServiceUnavailableError({ message: error.message, service: "agent-profiles" }),
         ),
       )
     })

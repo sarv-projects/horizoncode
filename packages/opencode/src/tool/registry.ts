@@ -3,6 +3,7 @@ import { httpClient } from "@opencode-ai/core/effect/app-node-platform"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { PlanExitTool } from "./plan"
 import { Session } from "@/session/session"
+import { SessionStatus } from "@/session/status"
 import { QuestionTool } from "./question"
 import { ShellTool } from "./shell"
 import { EditTool } from "./edit"
@@ -19,6 +20,7 @@ import { SkillTool } from "./skill"
 import * as Tool from "./tool"
 import { Truncate } from "./truncate"
 import { Config } from "@/config/config"
+import { MCP } from "@/mcp"
 import { Effect, Layer, Context } from "effect"
 import { Plugin } from "../plugin"
 import { Provider } from "@/provider/provider"
@@ -46,7 +48,7 @@ import { Instruction } from "../session/instruction"
 import { REPO_INTEL_READ_CONTEXT_FEATURE, WEB_SEARCH_CASCADE_FEATURE, SessionSupervisorError } from "@opencode-ai/core/session/supervisor"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { EventV2Bridge } from "@/event-v2-bridge"
-import { Agent } from "../agent/agent"
+import { Agent, agentProfileDirectoryFailure, isAgentProfileDirectoryError } from "../agent/agent"
 import { Skill } from "../skill"
 import { Permission } from "@/permission"
 import { BackgroundJob } from "@/background/job"
@@ -98,7 +100,20 @@ export interface Interface {
   }) => Effect.Effect<Tool.Def[], SessionSupervisorError>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/ToolRegistry") {}
+export class Service extends Context.Service<Service, Interface>()("@horizoncode/ToolRegistry") {}
+
+/**
+ * A Task selector is advertised only when it resolves to an immutable
+ * AgentProfileV2 projection. Legacy built-in agent names are not implicit
+ * selectors (§17.14), so they must never appear as dispatchable choices.
+ */
+export function isConfiguredTaskSelectorAgent(item: Pick<Agent.Info, "mode" | "options">): boolean {
+  if (item.mode === "primary") return false
+  const profile = item.options?.horizonAgentProfile
+  return typeof profile === "object" && profile !== null &&
+    typeof (profile as Record<string, unknown>).profileId === "string" &&
+    typeof (profile as Record<string, unknown>).revision === "number"
+}
 
 const layer = Layer.effect(
   Service,
@@ -225,7 +240,8 @@ const layer = Layer.effect(
             tool.historyReadRange,
             tool.skill,
             tool.patch,
-            ...(tool.execute ? [tool.execute] : []),
+            // Project/plugin tool modules are intentionally not materialized
+            // (no Guard-compatible executor), so there is no execute member.
             ...(flags.experimentalLspTool && languageServiceProcessRouteAvailable() && hostProtocolRouteAvailable()
               ? [tool.lsp]
               : []),
@@ -258,11 +274,18 @@ const layer = Layer.effect(
     })
 
     const describeTask = Effect.fn("ToolRegistry.describeTask")(function* (agent: Agent.Info) {
-      const items = (yield* agents.list()).filter((item) => item.mode !== "primary")
+      const items = (yield* agents.list().pipe(
+        Effect.catchIf(isAgentProfileDirectoryError, agentProfileDirectoryFailure),
+      )).filter((item) => {
+        return isConfiguredTaskSelectorAgent(item)
+      })
       const filtered = items.filter(
         (item) => Permission.evaluate("task", item.name, agent.permission).action !== "deny",
       )
       const list = filtered.toSorted((a, b) => a.name.localeCompare(b.name))
+      if (list.length === 0) {
+        return "No subagent selector is configured. Configure agent_profiles and agent_profile_selectors in the global user config before delegating to a child Session."
+      }
       const description = list
         .map(
           (item) =>
@@ -349,6 +372,9 @@ export const node = LayerNode.make({
     Agent.node,
     Skill.node,
     Session.node,
+    // TaskTool's init effect reads SessionStatus; the tool registry layer must
+    // own that dependency instead of inheriting an ancestor's provided context.
+    SessionStatus.node,
     BackgroundJob.node,
     Provider.node,
     LSP.node,

@@ -1,11 +1,11 @@
-import { afterEach, expect } from "bun:test"
+import { expect } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Cause, Effect, Exit, Fiber, Layer, Queue } from "effect"
 import { Question } from "../../src/question"
 import { InstanceRef } from "../../src/effect/instance-ref"
 import { InstanceStore } from "../../src/project/instance-store"
 import { QuestionID } from "../../src/question/schema"
-import { disposeAllInstances, provideInstance, testInstanceStoreLayer, tmpdirScoped } from "../fixture/fixture"
+import { provideInstance, testInstanceStoreLayer, tmpdirScoped } from "../fixture/fixture"
 import { SessionID } from "../../src/session/schema"
 import { testEffect } from "../lib/effect"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
@@ -37,10 +37,6 @@ const replyEffect = Effect.fn("QuestionTest.reply")(function* (input: {
 const rejectEffect = Effect.fn("QuestionTest.reject")(function* (id: QuestionID) {
   const question = yield* Question.Service
   yield* question.reject(id)
-})
-
-afterEach(async () => {
-  await disposeAllInstances()
 })
 
 /** Reject all pending questions so dangling Deferred fibers don't hang the test. */
@@ -160,7 +156,7 @@ it.instance(
     Effect.gen(function* () {
       const fiber = yield* askEffect({
         sessionID: SessionID.make("ses_test"),
-        questions: [{ question: "Which build?", header: "Build", options: [{ label: "Fast", description: "Fast build" }] }],
+        questions: [{ question: "Which build?", header: "Build", custom: false, options: [{ label: "Fast", description: "Fast build" }] }],
       }).pipe(Effect.forkScoped)
       const [pending] = yield* waitForPending(1)
 

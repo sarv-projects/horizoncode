@@ -106,3 +106,66 @@ export function DialogDebug() {
     </box>
   )
 }
+
+/**
+ * `/debug effects` diagnostics. Only measured values are shown; the direct
+ * read-fast-path/Guard latency counters are not instrumented yet, so they stay
+ * explicitly unavailable instead of being rendered as zero.
+ */
+export function DialogDebugEffects() {
+  const { theme } = useTheme()
+  const dialog = useDialog()
+  const route = useRoute()
+  const sync = useSync()
+
+  dialog.setSize("large")
+
+  const entries = createMemo(() => {
+    const session = route.data.type === "session" ? route.data.sessionID : undefined
+    const status = session ? sync.session.status(session) : "n/a"
+    const pending = sync.guardApproval.pending().length
+    return [
+      { label: "Session", value: session ?? "n/a" },
+      { label: "Status", value: String(status) },
+      { label: "Guard asks", value: `${pending} pending` },
+      { label: "kernelRpcMs", value: "unavailable · not instrumented" },
+      { label: "readFastPathCount", value: "unavailable · not instrumented" },
+      { label: "batchReadCoalesced", value: "unavailable · not instrumented" },
+      { label: "guardDecisionMs", value: "unavailable · not instrumented" },
+      { label: "Effect dispatch", value: "fail-closed unless the Rust Guard/ExecutionHost path accepted it" },
+      { label: "UNKNOWN outcomes", value: "never replayed; submit a new explicit continuation" },
+    ]
+  })
+
+  useBindings(() => ({
+    bindings: [{ key: "escape", desc: "Close effect diagnostics", group: "Dialog", cmd: () => dialog.clear() }],
+  }))
+
+  return (
+    <box paddingLeft={2} paddingRight={2} gap={1} paddingBottom={1}>
+      <box flexDirection="row" justifyContent="space-between">
+        <text fg={theme.text} attributes={TextAttributes.BOLD}>
+          Debug · effects
+        </text>
+        <text fg={theme.textMuted} onMouseUp={() => dialog.clear()}>
+          esc
+        </text>
+      </box>
+      <box>
+        <For each={entries()}>
+          {(entry) => (
+            <box flexDirection="row" gap={1}>
+              <text flexShrink={0} fg={theme.textMuted}>
+                {entry.label.padEnd(20)}
+              </text>
+              <text fg={theme.text} wrapMode="word">
+                {entry.value}
+              </text>
+            </box>
+          )}
+        </For>
+      </box>
+      <text fg={theme.textMuted}>No paths, credentials, or effect payloads are logged here.</text>
+    </box>
+  )
+}

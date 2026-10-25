@@ -4,19 +4,33 @@
 //! that the operating-system peer was authenticated; callers must first enforce the
 //! platform-specific inherited-handle/socket/named-pipe checks from §13.3.
 
-use crate::messagepack::{self, FRAME_LIMITS, Limits, Value};
+use crate::messagepack::{self, FRAME_LIMITS, Limits};
+pub(crate) use crate::messagepack::Value;
 use crate::transport::{self, FrameError, MAX_FRAME_SIZE, MAX_PAYLOAD_SIZE};
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 use std::io::{Read, Write};
 
-fn is_sha256_digest(value: &str) -> bool {
+pub(crate) fn is_sha256_digest(value: &str) -> bool {
     value.len() == 71
         && value.starts_with("sha256:")
         && value[7..]
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+pub(crate) const MAX_DIRECT_READ_BATCH_CALLS: usize = 8;
+pub(crate) const DIRECT_READ_RESULT_BUDGET_BYTES: usize = 50 * 1024;
+
+/// Domain-separated canonical binding digest for one private direct-read lease.
+/// The binding supplied here is assembled only after HostKernel has re-resolved
+/// the authenticated Session, Location, policy, workspace revision and target.
+pub(crate) fn direct_read_lease_digest_v1(binding: &Value) -> Option<String> {
+    let encoded = messagepack::encode(binding, FRAME_LIMITS).ok()?;
+    let mut preimage = b"horizoncode.direct-read-lease.v1\0".to_vec();
+    preimage.extend_from_slice(&encoded);
+    Some(format!("blake3:{}", blake3::hash(&preimage).to_hex()))
 }
 
 fn is_blake3_digest(value: &str) -> bool {
@@ -469,7 +483,7 @@ impl DelegationBindingV1 {
     pub fn from_json_value(value: &serde_json::Value) -> Option<Self> {
         fn convert(value: &serde_json::Value) -> Option<Value> {
             Some(match value {
-                serde_json::Value::Null => Value::Nil,
+                serde_json::Value::Null => Value::Null,
                 serde_json::Value::Bool(value) => Value::Bool(*value),
                 serde_json::Value::Number(value) => {
                     if let Some(value) = value.as_u64() {
@@ -498,7 +512,7 @@ impl DelegationBindingV1 {
     pub fn to_json_value(&self) -> Result<serde_json::Value, messagepack::MessagePackError> {
         fn convert(value: Value) -> serde_json::Value {
             match value {
-                Value::Nil => serde_json::Value::Null,
+                Value::Null => serde_json::Value::Null,
                 Value::Bool(value) => serde_json::Value::Bool(value),
                 Value::Unsigned(value) => serde_json::Value::Number(value.into()),
                 Value::Signed(value) => serde_json::Value::Number(value.into()),
@@ -532,7 +546,7 @@ impl DelegationBindingV1 {
     }
 }
 
-fn valid_binding_id(value: &str) -> bool {
+pub(crate) fn valid_binding_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_IDENTIFIER_BYTES
         && value
@@ -1808,7 +1822,7 @@ impl ManagedMessageWakeClaimRequestV1 {
     pub fn from_json_value(value: &serde_json::Value) -> Option<Self> {
         fn convert(value: &serde_json::Value) -> Option<Value> {
             Some(match value {
-                serde_json::Value::Null => Value::Nil,
+                serde_json::Value::Null => Value::Null,
                 serde_json::Value::Bool(value) => Value::Bool(*value),
                 serde_json::Value::Number(value) if value.is_u64() => Value::Unsigned(value.as_u64()?),
                 serde_json::Value::Number(value) if value.is_i64() => Value::Signed(value.as_i64()?),
@@ -1828,7 +1842,7 @@ impl ManagedMessageWakeClaimRequestV1 {
     pub fn to_json_value(&self) -> Result<serde_json::Value, messagepack::MessagePackError> {
         fn convert(value: Value) -> serde_json::Value {
             match value {
-                Value::Nil => serde_json::Value::Null,
+                Value::Null => serde_json::Value::Null,
                 Value::Bool(value) => serde_json::Value::Bool(value),
                 Value::Unsigned(value) => serde_json::Value::Number(value.into()),
                 Value::Signed(value) => serde_json::Value::Number(value.into()),
@@ -5225,6 +5239,24 @@ fn text(field: &'static str, value: &str, max_bytes: usize) -> Result<(), Protoc
     Ok(())
 }
 
+/// Canonical identifier validator shared by wire decoding and HostKernel
+/// request correlation. Identifiers are bounded, nonempty and restricted to a
+/// conservative ASCII set so they cannot smuggle path or frame separators.
+pub(crate) fn validate_identifier(value: &str) -> Result<(), ProtocolError> {
+    if value.is_empty()
+        || value.len() > MAX_IDENTIFIER_BYTES
+        || !value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b':')
+        })
+    {
+        return Err(invalid(
+            "identifier",
+            "must be a bounded ASCII identifier",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_safe_integer(field: &'static str, value: u64) -> Result<(), ProtocolError> {
     if value > MAX_SAFE_INTEGER {
         return Err(invalid(
@@ -6414,27 +6446,7 @@ mod tests {
     use std::io::Cursor;
 
     fn json_to_value(value: serde_json::Value) -> Value {
-        match value {
-            serde_json::Value::Null => Value::Nil,
-            serde_json::Value::Bool(value) => Value::Bool(value),
-            serde_json::Value::Number(value) if value.is_u64() => {
-                Value::Unsigned(value.as_u64().unwrap())
-            }
-            serde_json::Value::Number(value) if value.is_i64() => {
-                Value::Signed(value.as_i64().unwrap())
-            }
-            serde_json::Value::Number(value) => Value::Float(value.as_f64().unwrap().to_bits()),
-            serde_json::Value::String(value) => Value::String(value),
-            serde_json::Value::Array(values) => {
-                Value::Array(values.into_iter().map(json_to_value).collect())
-            }
-            serde_json::Value::Object(values) => Value::Map(
-                values
-                    .into_iter()
-                    .map(|(key, value)| (key, json_to_value(value)))
-                    .collect(),
-            ),
-        }
+        Value::from_json_value(&value).expect("test JSON has a MessagePack projection")
     }
 
     const DIGEST: &str = "blake3:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";

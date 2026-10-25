@@ -263,9 +263,10 @@ const AgentListCommand = effectCmd({
   command: "list",
   describe: "list all available agents",
   handler: Effect.fn("Cli.agent.list")(function* () {
-    const { Agent } = yield* Effect.promise(() => import("../../agent/agent"))
+    const { Agent, isAgentProfileDirectoryError } = yield* Effect.promise(() => import("../../agent/agent"))
     const agents = yield* Agent.Service.use((svc) => svc.list()).pipe(
       Effect.catchTag("SessionSupervisorError", (error) => fail(error.message)),
+      Effect.catchIf(isAgentProfileDirectoryError, (error) => fail(error.message)),
     )
     const sortedAgents = agents.sort((a, b) => {
       if (a.native !== b.native) {

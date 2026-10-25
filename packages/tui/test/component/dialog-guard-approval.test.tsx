@@ -6,6 +6,7 @@ import { mkdir } from "node:fs/promises"
 import path from "node:path"
 import { onCleanup, onMount } from "solid-js"
 import { DialogGuardApproval, type GuardApprovalRequestView } from "../../src/component/dialog-guard-approval"
+import type { GuardApprovalDecision } from "../../src/context/sync"
 import { TuiConfigProvider } from "../../src/config"
 import { KVProvider } from "../../src/context/kv"
 import { ThemeProvider } from "../../src/context/theme"
@@ -67,7 +68,7 @@ const request: GuardApprovalRequestView = {
 async function mountApproval(
   directory: string,
   state: string,
-  onDecision: (decision: "allow_once" | "deny") => Promise<boolean>,
+  onDecision: (decision: GuardApprovalDecision) => Promise<boolean>,
   approvalRequest: GuardApprovalRequestView = request,
 ) {
   let dialog: { stack: unknown[]; replace: (element: unknown, onClose?: () => void) => void } | undefined
@@ -100,7 +101,7 @@ async function mountApproval(
     dialog = current
     onMount(() => {
       let replied = false
-      const reply = async (decision: "allow_once" | "deny") => {
+      const reply = async (decision: GuardApprovalDecision) => {
         replied = true
         await onDecision(decision)
       }
@@ -251,8 +252,32 @@ test("managed provider inference allows only the exact host-issued consent polic
     return true
   }, providerRequest)
   try {
-    const frame = await waitForFrame(app, (value) => value.includes("Allow this effect once"))
-    expect(frame).toContain("provider-inference.managed.v1")
+    const firstPage = await waitForFrame(app, (value) => value.includes("Allow this effect once"))
+    expect(firstPage).toContain("Review request details · page 1 of")
+    expect(firstPage).not.toContain("provider-inference.managed.v1")
+
+    // The policy detail follows the resource/consent summary on later pages.
+    // Exercise the rendered pagination instead of assuming every detail fits
+    // on page one; the approval option remains available throughout review.
+    let frame = firstPage
+    let reviewedDetails = firstPage.replace(/\s+/g, "")
+    while (Number(frame.match(/page (\d+) of (\d+)/)?.[1] ?? 0) <
+      Number(frame.match(/page (\d+) of (\d+)/)?.[2] ?? 0)) {
+      const lines = app.captureCharFrame().split("\n")
+      const nextRow = lines.findIndex((line) => line.includes("Next details page"))
+      expect(nextRow).toBeGreaterThanOrEqual(0)
+      const nextColumn = lines[nextRow].indexOf("Next details page")
+      expect(nextColumn).toBeGreaterThanOrEqual(0)
+      await app.mockMouse.click(nextColumn, nextRow)
+      const currentPage = Number(frame.match(/page (\d+) of/)?.[1] ?? 0)
+      frame = await waitForFrame(app, (value) => value.includes(`page ${currentPage + 1} of`))
+      reviewedDetails += frame.replace(/\s+/g, "")
+    }
+    // Detail lines are fixed-width and pagination is line-based, so the
+    // policy identifier's continuation may land on the following page.
+    expect(reviewedDetails).toContain("Policy:provider-inferen")
+    expect(reviewedDetails).toContain("ce.managed.v1")
+
     const lines = app.captureCharFrame().split("\n")
     const row = lines.findIndex((line) => line.includes("Allow this effect once"))
     expect(row).toBeGreaterThanOrEqual(0)
@@ -289,7 +314,9 @@ test("managed provider inference denies incomplete consent guarantees", async ()
   }, providerRequest)
   try {
     const frame = await waitForFrame(app, (value) => value.includes("Deny (default)"))
-    expect(frame).toContain("consent context incomplete")
+    // The fixed-width details renderer can wrap a word across visual rows;
+    // compare the logical label without whitespace introduced by the frame.
+    expect(frame.replace(/\s+/g, "")).toContain("consentcontextincomplete")
     app.mockInput.pressEnter()
     await waitFor(() => decisions.length === 1)
     expect(decisions).toEqual(["deny"])

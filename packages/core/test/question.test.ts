@@ -15,6 +15,9 @@ const question: QuestionV2.Info = {
   question: "Which option?",
   header: "Option",
   options: [{ label: "One", description: "First option" }],
+  // Free-form custom answers default to enabled; pin option-only so a non-option
+  // label is an invalid reply rather than a valid custom answer.
+  custom: false,
 }
 
 const waitForAsk = Effect.fn("QuestionV2Test.waitForAsk")(function* (
@@ -123,7 +126,7 @@ describe("QuestionV2", () => {
       ).toEqual(new QuestionV2.NotFoundError({ requestID: request.id }))
       expect(
         yield* service.reply({ sessionID, requestID: request.id, answers: [["Unknown"]] }).pipe(Effect.flip),
-      ).toEqual(new QuestionV2.InvalidReplyError({ requestID: request.id, reason: "unknown-option" }))
+      ).toEqual(new QuestionV2.InvalidReplyError({ requestID: request.id, reason: "custom-disabled" }))
       expect(
         yield* service.reply({
           sessionID,

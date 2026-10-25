@@ -209,7 +209,69 @@ impl fmt::Display for RepoStructureError {
 
 impl std::error::Error for RepoStructureError {}
 
+/// Preconditions for a later query-to-patch admission. This library owns no
+/// mutation authority; it only refuses a stale target before the ordinary
+/// Guarded `files.patch` path resolves/revalidates the current file.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RepoWriteTargetV1 {
+    pub path_ref: String,
+    pub source_generation: String,
+    pub source_revision: String,
+    pub file_digest: String,
+    pub byte_start: u64,
+    pub byte_end: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RepoWriteRefusalV1 {
+    StaleGeneration,
+    StaleRevision,
+    UnknownPath,
+    FileDigestMismatch,
+    InvalidRange,
+}
+
+impl fmt::Display for RepoWriteRefusalV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::StaleGeneration => "the requested generation is no longer current",
+            Self::StaleRevision => "the workspace source revision has advanced",
+            Self::UnknownPath => "the target path is not part of this generation",
+            Self::FileDigestMismatch => "the target file content digest differs",
+            Self::InvalidRange => "the target byte range is invalid",
+        })
+    }
+}
+
+impl std::error::Error for RepoWriteRefusalV1 {}
+
 impl RepoIntelGeneration {
+    /// Refuse a stale query-to-patch target without modifying source. The caller
+    /// supplies the host-observed current source revision; Guard and the files
+    /// patch path remain the mutation authority.
+    pub fn validate_write_target(
+        &self,
+        target: &RepoWriteTargetV1,
+        current_source_revision: &str,
+    ) -> Result<(), RepoWriteRefusalV1> {
+        if target.source_generation != self.id().to_string() {
+            return Err(RepoWriteRefusalV1::StaleGeneration);
+        }
+        if target.source_revision != current_source_revision {
+            return Err(RepoWriteRefusalV1::StaleRevision);
+        }
+        let Some((digest, size)) = self.base().file_observation(target.path_ref.as_str()) else {
+            return Err(RepoWriteRefusalV1::UnknownPath);
+        };
+        if target.file_digest != digest.to_string() {
+            return Err(RepoWriteRefusalV1::FileDigestMismatch);
+        }
+        if target.byte_start >= target.byte_end || target.byte_end > size as u64 {
+            return Err(RepoWriteRefusalV1::InvalidRange);
+        }
+        Ok(())
+    }
+
     /// Validate the wire query and return bounded lexical candidates from the
     /// immutable generation. Guard and host freshness checks happen before this
     /// method; expected-generation mismatch is checked again to fence stale callers.
@@ -251,7 +313,7 @@ impl RepoIntelGeneration {
         validate_node_refs(self, query, provenance, overlay)?;
 
         let base = self.base();
-        validate_resume_position(base, query, resume_after)?;
+        validate_resume_position(self, query, overlay, resume_after)?;
         let mut nodes = Vec::new();
         let mut files_scanned = 0usize;
         let mut bytes_scanned = 0usize;
@@ -265,134 +327,157 @@ impl RepoIntelGeneration {
         // A structure request may return only evidence derived from the exact
         // immutable snapshot. We bound both bytes scanned and node count, and do
         // not claim parser-backed declarations or reference edges.
-        'files: if overlay.is_none() && !symbols.is_empty() {
-            for (path, contents, file_digest) in base.file_entries() {
-                if resume_after.is_some_and(|position| path < position.path_ref.as_str()) {
-                    continue;
-                }
-                if query.root_ref != "."
-                    && path != query.root_ref
-                    && !path
-                        .strip_prefix(query.root_ref.as_str())
-                        .is_some_and(|tail| tail.starts_with('/'))
-                {
-                    continue;
-                }
-                let depth = if query.root_ref == "." {
-                    path.split('/').count()
-                } else {
-                    path.strip_prefix(query.root_ref.as_str())
-                        .unwrap_or("")
-                        .trim_start_matches('/')
-                        .split('/')
-                        .count()
-                };
-                if depth > query.max_depth {
-                    continue;
-                }
-                // A continuation resumes after its exact emitted occurrence. Do
-                // not charge immutable files before that anchor against every
-                // page's independent byte budget.
-                let file_scan_start = match resume_after {
-                    Some(position) if path == position.path_ref => {
-                        let symbol = &symbols[position.symbol_index];
-                        usize::try_from(position.byte_offset)
-                            .ok()
-                            .and_then(|offset| offset.checked_add(symbol.len()))
-                            .ok_or(RepoStructureError::InvalidQuery("resume position overflows"))?
+        'files: {
+            if !symbols.is_empty() {
+                for (path, contents, file_digest) in base.file_entries() {
+                    let (contents, file_digest) = overlay
+                        .and_then(|snapshot| snapshot.file_override(path))
+                        .unwrap_or((contents, file_digest));
+                    if resume_after.is_some_and(|position| path < position.path_ref.as_str()) {
+                        continue;
                     }
-                    _ => 0,
-                };
-                let scan_bytes = contents.len().saturating_sub(file_scan_start);
-                let Some(next_bytes) = bytes_scanned.checked_add(scan_bytes) else {
-                    truncated = true;
-                    continue;
-                };
-                if next_bytes > query.max_bytes {
-                    // This immutable file suffix cannot fit in the remaining page
-                    // scan budget. Report partial coverage and skip it so a later,
-                    // smaller file can still make forward progress. A cursor is
-                    // emitted only from a real extra match beyond the node cap.
-                    truncated = true;
-                    continue;
-                }
-                bytes_scanned = next_bytes;
-                files_scanned = files_scanned.saturating_add(1);
-
-                for (symbol_index, symbol) in symbols.iter().enumerate() {
-                    let start_offset = match resume_after {
-                        Some(position) if path == position.path_ref && symbol_index < position.symbol_index => continue,
-                        Some(position) if path == position.path_ref && symbol_index == position.symbol_index => {
+                    if query.root_ref != "."
+                        && path != query.root_ref
+                        && !path
+                            .strip_prefix(query.root_ref.as_str())
+                            .is_some_and(|tail| tail.starts_with('/'))
+                    {
+                        continue;
+                    }
+                    let depth = if query.root_ref == "." {
+                        path.split('/').count()
+                    } else {
+                        path.strip_prefix(query.root_ref.as_str())
+                            .unwrap_or("")
+                            .trim_start_matches('/')
+                            .split('/')
+                            .count()
+                    };
+                    if depth > query.max_depth {
+                        continue;
+                    }
+                    // A continuation resumes after its exact emitted occurrence. Do
+                    // not charge immutable files before that anchor against every
+                    // page's independent byte budget.
+                    let file_scan_start = match resume_after {
+                        Some(position) if path == position.path_ref => {
+                            let symbol = &symbols[position.symbol_index];
                             usize::try_from(position.byte_offset)
                                 .ok()
                                 .and_then(|offset| offset.checked_add(symbol.len()))
-                                .ok_or(RepoStructureError::InvalidQuery("resume position overflows"))?
+                                .ok_or(RepoStructureError::InvalidQuery(
+                                    "resume position overflows",
+                                ))?
                         }
                         _ => 0,
                     };
-                    let Some(next_work_units) = work_units.checked_add(contents.len().saturating_sub(start_offset)) else {
+                    let scan_bytes = contents.len().saturating_sub(file_scan_start);
+                    let Some(next_bytes) = bytes_scanned.checked_add(scan_bytes) else {
                         truncated = true;
-                        resource_limited = true;
-                        break 'files;
+                        continue;
                     };
-                    if next_work_units > MAX_STRUCTURE_WORK_UNITS {
-                        // `maxBytes` counts unique source bytes. Bound the
-                        // repeated selector scans separately and report the
-                        // omitted work as resource-limited partial coverage.
+                    if next_bytes > query.max_bytes {
+                        // This immutable file suffix cannot fit in the remaining page
+                        // scan budget. Report partial coverage and skip it so a later,
+                        // smaller file can still make forward progress. A cursor is
+                        // emitted only from a real extra match beyond the node cap.
                         truncated = true;
-                        resource_limited = true;
-                        break 'files;
+                        continue;
                     }
-                    work_units = next_work_units;
-                    let remaining = contents
-                        .get(start_offset..)
-                        .ok_or(RepoStructureError::InvalidQuery("resume position is not a UTF-8 boundary"))?;
-                    for (relative_offset, _) in remaining.match_indices(symbol.as_str()) {
-                        let offset = start_offset + relative_offset;
-                        if nodes.len() == query.max_nodes {
-                            // This extra occurrence proves more results remain.
-                            // Reuse the last emitted node as an exclusive anchor.
-                            next_position = last_position.clone();
+                    bytes_scanned = next_bytes;
+                    files_scanned = files_scanned.saturating_add(1);
+
+                    for (symbol_index, symbol) in symbols.iter().enumerate() {
+                        let start_offset = match resume_after {
+                            Some(position)
+                                if path == position.path_ref
+                                    && symbol_index < position.symbol_index =>
+                            {
+                                continue;
+                            }
+                            Some(position)
+                                if path == position.path_ref
+                                    && symbol_index == position.symbol_index =>
+                            {
+                                usize::try_from(position.byte_offset)
+                                    .ok()
+                                    .and_then(|offset| offset.checked_add(symbol.len()))
+                                    .ok_or(RepoStructureError::InvalidQuery(
+                                        "resume position overflows",
+                                    ))?
+                            }
+                            _ => 0,
+                        };
+                        let Some(next_work_units) =
+                            work_units.checked_add(contents.len().saturating_sub(start_offset))
+                        else {
                             truncated = true;
+                            resource_limited = true;
+                            break 'files;
+                        };
+                        if next_work_units > MAX_STRUCTURE_WORK_UNITS {
+                            // `maxBytes` counts unique source bytes. Bound the
+                            // repeated selector scans separately and report the
+                            // omitted work as resource-limited partial coverage.
+                            truncated = true;
+                            resource_limited = true;
                             break 'files;
                         }
-                        let end = offset.saturating_add(symbol.len());
-                        let mut hasher = blake3::Hasher::new();
-                        hasher.update(b"horizon.repo-intel.lexical-node.v1\0");
-                        hasher.update(query.source_generation.as_bytes());
-                        hasher.update(path.as_bytes());
-                        hasher.update(&(offset as u64).to_le_bytes());
-                        hasher.update(&(end as u64).to_le_bytes());
-                        hasher.update(symbol.as_bytes());
-                        let node_id = format!("lex_{}", hex_digest(hasher.finalize().as_bytes()));
-                        nodes.push(RepoNodeRefV1 {
-                            workspace_binding: provenance.workspace_binding.clone(),
-                            source_generation: query.source_generation.clone(),
-                            source_revision: provenance.source_revision.clone(),
-                            overlay_digest: None,
-                            path_ref: path.to_owned(),
-                            file_digest: file_digest.to_string(),
-                            node_id,
-                            node_kind: "text_occurrence".to_owned(),
-                            symbol: symbol.clone(),
-                            byte_range: StructureByteRangeV1 {
-                                start: offset as u64,
-                                end: end as u64,
-                            },
-                            parser_id: "horizoncode.lexical".to_owned(),
-                            parser_version: "1".to_owned(),
-                        });
-                        last_position = Some(RepoStructurePositionV1 {
-                            path_ref: path.to_owned(),
-                            symbol_index,
-                            byte_offset: offset as u64,
-                        });
+                        work_units = next_work_units;
+                        let remaining = contents.get(start_offset..).ok_or(
+                            RepoStructureError::InvalidQuery(
+                                "resume position is not a UTF-8 boundary",
+                            ),
+                        )?;
+                        for (relative_offset, _) in remaining.match_indices(symbol.as_str()) {
+                            let offset = start_offset + relative_offset;
+                            if nodes.len() == query.max_nodes {
+                                // This extra occurrence proves more results remain.
+                                // Reuse the last emitted node as an exclusive anchor.
+                                next_position = last_position.clone();
+                                truncated = true;
+                                break 'files;
+                            }
+                            let end = offset.saturating_add(symbol.len());
+                            let mut hasher = blake3::Hasher::new();
+                            hasher.update(b"horizon.repo-intel.lexical-node.v1\0");
+                            hasher.update(query.source_generation.as_bytes());
+                            hasher.update(path.as_bytes());
+                            hasher.update(&(offset as u64).to_le_bytes());
+                            hasher.update(&(end as u64).to_le_bytes());
+                            hasher.update(symbol.as_bytes());
+                            let node_id =
+                                format!("lex_{}", hex_digest(hasher.finalize().as_bytes()));
+                            nodes.push(RepoNodeRefV1 {
+                                workspace_binding: provenance.workspace_binding.clone(),
+                                source_generation: query.source_generation.clone(),
+                                source_revision: provenance.source_revision.clone(),
+                                overlay_digest: overlay
+                                    .map(|snapshot| snapshot.digest().to_string()),
+                                path_ref: path.to_owned(),
+                                file_digest: file_digest.to_string(),
+                                node_id,
+                                node_kind: "text_occurrence".to_owned(),
+                                symbol: symbol.clone(),
+                                byte_range: StructureByteRangeV1 {
+                                    start: offset as u64,
+                                    end: end as u64,
+                                },
+                                parser_id: "horizoncode.lexical".to_owned(),
+                                parser_version: "1".to_owned(),
+                            });
+                            last_position = Some(RepoStructurePositionV1 {
+                                path_ref: path.to_owned(),
+                                symbol_index,
+                                byte_offset: offset as u64,
+                            });
+                        }
                     }
                 }
             }
         }
 
-        let has_lexical_source = overlay.is_none() && !symbols.is_empty();
+        let has_lexical_source = !symbols.is_empty();
         Ok(RepoStructurePageV1 {
             schema_version: 1,
             message_type: "page".to_owned(),
@@ -452,8 +537,9 @@ impl RepoIntelGeneration {
 }
 
 fn validate_resume_position(
-    generation: &crate::BaseGeneration,
+    generation: &RepoIntelGeneration,
     query: &RepoStructureQueryV1,
+    overlay: Option<&BufferOverlay>,
     position: Option<&RepoStructurePositionV1>,
 ) -> Result<(), RepoStructureError> {
     let Some(position) = position else {
@@ -475,17 +561,25 @@ fn validate_resume_position(
     let symbol = &query.selector.symbols[position.symbol_index];
     let offset = usize::try_from(position.byte_offset)
         .map_err(|_| RepoStructureError::InvalidQuery("resume byte offset overflows"))?;
-    let (path, contents, _) = generation
+    let (path, base_contents, _) = generation
+        .base()
         .file_entries()
         .find(|(path, _, _)| *path == position.path_ref)
-        .ok_or(RepoStructureError::InvalidQuery("resume path is absent from generation"))?;
+        .ok_or(RepoStructureError::InvalidQuery(
+            "resume path is absent from generation",
+        ))?;
+    let contents = overlay
+        .and_then(|snapshot| snapshot.file_override(path).map(|(contents, _)| contents))
+        .unwrap_or(base_contents);
     if query.root_ref != "."
         && path != query.root_ref
         && !path
             .strip_prefix(query.root_ref.as_str())
             .is_some_and(|tail| tail.starts_with('/'))
     {
-        return Err(RepoStructureError::InvalidQuery("resume path is outside rootRef"));
+        return Err(RepoStructureError::InvalidQuery(
+            "resume path is outside rootRef",
+        ));
     }
     let depth = if query.root_ref == "." {
         path.split('/').count()
@@ -498,7 +592,9 @@ fn validate_resume_position(
     };
     let end = offset
         .checked_add(symbol.len())
-        .ok_or(RepoStructureError::InvalidQuery("resume match range overflows"))?;
+        .ok_or(RepoStructureError::InvalidQuery(
+            "resume match range overflows",
+        ))?;
     if depth > query.max_depth || contents.get(offset..end) != Some(symbol.as_str()) {
         return Err(RepoStructureError::InvalidQuery(
             "resume position is not an exact in-scope selector match",
@@ -541,9 +637,9 @@ fn validate_query(query: &RepoStructureQueryV1) -> Result<(), RepoStructureError
     if query.overlay_ref.as_ref().is_some_and(|reference| {
         !(reference.starts_with("ovl_")
             && (20..=132).contains(&reference.len())
-            && reference[4..].bytes().all(|byte| {
-                byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'
-            }))
+            && reference[4..]
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'))
     }) {
         return Err(RepoStructureError::InvalidQuery(
             "overlayRef is not a bounded host-issued opaque reference",
@@ -635,8 +731,7 @@ fn validate_node_refs(
             Some(overlay) => overlay.file_observation(generation.base(), &node.path_ref),
             None => generation.base().file_observation(&node.path_ref),
         };
-        let Some((expected_file_digest, file_bytes)) = observed
-        else {
+        let Some((expected_file_digest, file_bytes)) = observed else {
             return Err(RepoStructureError::InvalidQuery(
                 "node reference path is absent from the pinned generation",
             ));

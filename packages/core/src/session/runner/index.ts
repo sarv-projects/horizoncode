@@ -8,10 +8,13 @@ import { SessionRunnerModel } from "./model"
 import type { SystemContext } from "../../system-context/index"
 import type { ToolOutputStore } from "../../tool-output-store"
 import type { TrustedPrincipalContext } from "../../trusted-principal"
+import type { SessionSupervisorError } from "../supervisor"
 
 export type RunError =
+  | Error
   | LLMError
   | SessionRunnerModel.Error
+  | SessionSupervisorError
   | MessageDecodeError
   | ContextSnapshotDecodeError
   | SystemContext.InitializationBlocked

@@ -43,7 +43,7 @@ export interface Interface {
   readonly diffFull: (from: string, to: string) => Effect.Effect<FileDiff[], SnapshotUnavailableError>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/Snapshot") {}
+export class Service extends Context.Service<Service, Interface>()("@horizoncode/Snapshot") {}
 
 const unavailable = (operation: string) => Effect.fail(new SnapshotUnavailableError({ operation }))
 

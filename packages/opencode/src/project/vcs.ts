@@ -481,7 +481,7 @@ interface State {
   root: Git.Base | undefined
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/Vcs") {}
+export class Service extends Context.Service<Service, Interface>()("@horizoncode/Vcs") {}
 
 const layer: Layer.Layer<
   Service,

@@ -1,0 +1,333 @@
+/home/sarvesh/business_Dev/agentx/horizoncode-sandbox/src/lib.rs:1275:39: warning: unnecessary `unsafe` block: unnecessary `unsafe` block
+/home/sarvesh/business_Dev/agentx/horizoncode-sandbox/src/lib.rs:1288:40: warning: unnecessary `unsafe` block: unnecessary `unsafe` block
+warning: `horizoncode-sandbox` (lib) generated 2 warnings
+src/host_kernel.rs:14:52: warning: unused imports: `criterion_evidence_digest` and `task_verification_digest`
+src/managed_verifier.rs:9:5: warning: unused import: `std::path::PathBuf`
+src/http_execution.rs:854:10: warning: variable does not need to be mutable
+src/terminal_process.rs:14:27: warning: unused import: `Write`
+src/direct_session_grant.rs:86:31: warning: value assigned to `location_id` is never read: this value is reassigned later and never used
+src/direct_session_grant.rs:87:32: warning: value assigned to `workspace_id` is never read: this value is reassigned later and never used
+src/direct_session_grant.rs:88:41: warning: value assigned to `workspace_root_digest` is never read: this value is reassigned later and never used
+src/direct_session_grant.rs:89:40: warning: value assigned to `execution_backend_id` is never read: this value is reassigned later and never used
+src/direct_session_grant.rs:90:40: warning: value assigned to `guarantee_set_digest` is never read: this value is reassigned later and never used
+src/effect_host.rs:8296:56: warning: unused variable: `plan_digest`: help: if this is intentional, prefix it with an underscore: `_plan_digest`
+src/verifier_journal.rs:565:9: warning: variable does not need to be mutable
+src/host_kernel.rs:228:9: warning: variable does not need to be mutable
+src/host_kernel.rs:314:13: warning: variable does not need to be mutable
+src/host_kernel.rs:473:13: warning: variable does not need to be mutable
+src/host_kernel.rs:6069:9: warning: unused variable: `principal`: help: if this is intentional, prefix it with an underscore: `_principal`
+src/host_kernel.rs:6666:14: warning: unused variable: `snapshot`: help: if this is intentional, prefix it with an underscore: `_snapshot`
+src/host_kernel.rs:7406:13: warning: value assigned to `record` is never read
+src/host_kernel.rs:8811:17: warning: unused variable: `workspace_binding`: help: if this is intentional, prefix it with an underscore: `_workspace_binding`
+src/host_kernel.rs:9111:14: warning: unused variable: `snapshot`: help: if this is intentional, prefix it with an underscore: `_snapshot`
+src/host_kernel.rs:9214:13: warning: unused variable: `root`: help: if this is intentional, prefix it with an underscore: `_root`
+src/host_kernel.rs:9272:13: warning: unused variable: `host_quiescence_digest`: help: if this is intentional, prefix it with an underscore: `_host_quiescence_digest`
+src/host_kernel.rs:10301:24: warning: value assigned to `exit` is never read: this value is reassigned later and never used
+src/host_kernel.rs:10791:28: warning: value assigned to `observed` is never read: this value is reassigned later and never used
+src/host_kernel.rs:11144:13: warning: unused variable: `workspace_binding`: help: if this is intentional, prefix it with an underscore: `_workspace_binding`
+src/host_kernel.rs:12437:13: warning: unused variable: `workspace_binding`: help: if this is intentional, prefix it with an underscore: `_workspace_binding`
+src/host_kernel.rs:12776:13: warning: variable does not need to be mutable
+src/host_kernel.rs:18076:17: warning: variable does not need to be mutable
+src/host_kernel.rs:18314:13: warning: variable does not need to be mutable
+src/host_kernel.rs:20231:21: warning: unused variable: `old_digest`: help: if this is intentional, prefix it with an underscore: `_old_digest`
+src/host_kernel.rs:20315:21: warning: unused variable: `old_digest`: help: if this is intentional, prefix it with an underscore: `_old_digest`
+src/host_kernel.rs:21865:26: warning: variable does not need to be mutable
+src/host_kernel.rs:22059:21: warning: variable does not need to be mutable
+src/host_kernel.rs:23458:17: warning: variable does not need to be mutable
+src/host_kernel.rs:23653:13: warning: variable does not need to be mutable
+src/host_kernel.rs:24653:13: warning: variable does not need to be mutable
+src/host_kernel.rs:24953:9: warning: unused variable: `effect_id`: help: if this is intentional, prefix it with an underscore: `_effect_id`
+src/host_kernel.rs:24954:9: warning: unused variable: `challenge_id`: help: if this is intentional, prefix it with an underscore: `_challenge_id`
+src/host_kernel.rs:24955:9: warning: unused variable: `lease_digest`: help: if this is intentional, prefix it with an underscore: `_lease_digest`
+src/host_kernel.rs:24971:81: warning: unused variable: `failure`: help: try ignoring the field: `failure: _`
+src/host_kernel.rs:25234:17: warning: variable does not need to be mutable
+src/host_kernel.rs:25676:13: warning: variable does not need to be mutable
+src/host_kernel.rs:26043:112: warning: variable does not need to be mutable
+src/host_kernel.rs:31825:9: warning: variable does not need to be mutable
+src/host_kernel.rs:38689:9: warning: unused variable: `run`: help: if this is intentional, prefix it with an underscore: `_run`
+src/managed_control.rs:3622:22: warning: unused variable: `value`: help: if this is intentional, prefix it with an underscore: `_value`
+src/managed_control.rs:12450:13: warning: variable does not need to be mutable
+src/managed_control.rs:12450:13: warning: unused variable: `effects`: help: if this is intentional, prefix it with an underscore: `_effects`
+src/worker_durable.rs:6027:13: warning: unused variable: `old_owner_digest`: help: if this is intentional, prefix it with an underscore: `_old_owner_digest`
+src/worker_durable.rs:6070:13: warning: unused variable: `release_receipt_ref`: help: if this is intentional, prefix it with an underscore: `_release_receipt_ref`
+src/worker_durable.rs:6839:9: warning: unused variable: `now_ms`: help: if this is intentional, prefix it with an underscore: `_now_ms`
+src/worker_durable.rs:11261:29: warning: unused variable: `create`: help: if this is intentional, prefix it with an underscore: `_create`
+src/effect_host.rs:9483:5: warning: type `TerminalOutputCaptureV1` is more private than the item `EffectHost::settle_terminal_run`: method `EffectHost::settle_terminal_run` is reachable at visibility `pub`
+src/managed_control.rs:2519:9: warning: type `ManagedAttemptUsageProofV1` is more private than the item `ManagedCommand::RecordAttemptUsage::proof`: field `ManagedCommand::RecordAttemptUsage::proof` is reachable at visibility `pub`
+src/managed_control.rs:2560:9: warning: type `PlannedTaskV1` is more private than the item `ManagedCommand::PlanRun::tasks`: field `ManagedCommand::PlanRun::tasks` is reachable at visibility `pub`
+src/managed_control.rs:2617:9: warning: type `ManagedAttemptContextSelectionRecordV1` is more private than the item `ManagedCommand::AdmitAttemptWithDelegation::context_selection`: field `ManagedCommand::AdmitAttemptWithDelegation::context_selection` is reachable at visibility `pub`
+src/managed_control.rs:2620:9: warning: type `ManagedAttemptContextSelectionRecordV1` is more private than the item `ManagedCommand::AdvanceAttemptContextSelection::record`: field `ManagedCommand::AdvanceAttemptContextSelection::record` is reachable at visibility `pub`
+src/managed_control.rs:2623:9: warning: type `ManagedProviderRequestRecordV1` is more private than the item `ManagedCommand::SetManagedProviderRequest::record`: field `ManagedCommand::SetManagedProviderRequest::record` is reachable at visibility `pub`
+src/managed_control.rs:2662:9: warning: type `ManagedAttemptEffectWaveV1` is more private than the item `ManagedCommand::BindAttemptEffectWave::wave`: field `ManagedCommand::BindAttemptEffectWave::wave` is reachable at visibility `pub`
+src/managed_control.rs:2668:9: warning: type `ManagedAttemptVerifierIntentV1` is more private than the item `ManagedCommand::BindAttemptVerifierIntent::intent`: field `ManagedCommand::BindAttemptVerifierIntent::intent` is reachable at visibility `pub`
+src/managed_control.rs:2673:9: warning: type `ManagedAttemptEffectReceiptProofV1` is more private than the item `ManagedCommand::RecordAttemptEffectReceipt::proof`: field `ManagedCommand::RecordAttemptEffectReceipt::proof` is reachable at visibility `pub`
+src/managed_control.rs:2679:9: warning: type `ManagedAttemptEffectReceiptProofV1` is more private than the item `ManagedCommand::ReconcileAttemptEffectReceipt::proof`: field `ManagedCommand::ReconcileAttemptEffectReceipt::proof` is reachable at visibility `pub`
+src/managed_control.rs:2684:9: warning: type `ManagedDispatchConsumeRecordV1` is more private than the item `ManagedCommand::ConsumeManagedDispatch::record`: field `ManagedCommand::ConsumeManagedDispatch::record` is reachable at visibility `pub`
+src/managed_control.rs:2689:9: warning: type `ManagedDispatchQuiescenceProofV1` is more private than the item `ManagedCommand::DispatchQuiesced::proof`: field `ManagedCommand::DispatchQuiesced::proof` is reachable at visibility `pub`
+src/managed_control.rs:2692:9: warning: type `ManagedCandidateAbandonProofV1` is more private than the item `ManagedCommand::AbandonPreAdmissionCandidate::proof`: field `ManagedCommand::AbandonPreAdmissionCandidate::proof` is reachable at visibility `pub`
+src/managed_control.rs:14015:21: warning: type `DirectAttemptCancellationProofV1` is more private than the item `DirectAttemptCommand::CancelWithProof::0`: field `DirectAttemptCommand::CancelWithProof::0` is reachable at visibility `pub`
+src/worker_durable.rs:2211:9: warning: type `TrustedPreAdmissionPinsV1` is more private than the item `WorkerCommand::PreAdmissionReserved::pins`: field `WorkerCommand::PreAdmissionReserved::pins` is reachable at visibility `pub`
+src/worker_durable.rs:2222:9: warning: type `TrustedPreAdmissionPinsV1` is more private than the item `WorkerCommand::PreAdmissionContextBound::pins`: field `WorkerCommand::PreAdmissionContextBound::pins` is reachable at visibility `pub`
+src/worker_durable.rs:2227:9: warning: type `ManagedReservationReconciliationProofV1` is more private than the item `WorkerCommand::PreAdmissionReconciled::proof`: field `WorkerCommand::PreAdmissionReconciled::proof` is reachable at visibility `pub`
+src/worker_durable.rs:2229:58: warning: type `WorkerAdmissionPinsV1` is more private than the item `WorkerCommand::AdmissionPinsRecorded::pins`: field `WorkerCommand::AdmissionPinsRecorded::pins` is reachable at visibility `pub`
+src/worker_durable.rs:2230:52: warning: type `BoundWorkerDelegationV1` is more private than the item `WorkerCommand::DelegationBound::binding`: field `WorkerCommand::DelegationBound::binding` is reachable at visibility `pub`
+src/worker_durable.rs:2231:33: warning: type `RootCoordinatorExecutionV1` is more private than the item `WorkerCommand::RootCoordinatorRegistered::execution`: field `WorkerCommand::RootCoordinatorRegistered::execution` is reachable at visibility `pub`
+src/worker_durable.rs:2238:9: warning: type `RootCoordinatorExecutionV1` is more private than the item `WorkerCommand::RootCoordinatorReauthorized::execution`: field `WorkerCommand::RootCoordinatorReauthorized::execution` is reachable at visibility `pub`
+src/worker_durable.rs:2265:9: warning: type `WorktreeRootOwnerV1` is more private than the item `WorkerCommand::RegisterWorktree::owner`: field `WorkerCommand::RegisterWorktree::owner` is reachable at visibility `pub`
+src/worker_durable.rs:2266:9: warning: type `VerifiedWorktreeRegistrationV1` is more private than the item `WorkerCommand::RegisterWorktree::registration`: field `WorkerCommand::RegisterWorktree::registration` is reachable at visibility `pub`
+src/worker_durable.rs:2275:9: warning: type `WorktreeRootOwnerV1` is more private than the item `WorkerCommand::WorktreeRegistrationRemoved::owner`: field `WorkerCommand::WorktreeRegistrationRemoved::owner` is reachable at visibility `pub`
+src/worker_durable.rs:2280:9: warning: type `WorktreeRootOwnerV1` is more private than the item `WorkerCommand::WorktreeOperationRetiredNoDispatch::current_owner`: field `WorkerCommand::WorktreeOperationRetiredNoDispatch::current_owner` is reachable at visibility `pub`
+src/worker_durable.rs:2333:29: warning: type `ManagedLogicalSettlementEventV1` is more private than the item `WorkerCommand::ManagedLogicalSettled::event`: field `WorkerCommand::ManagedLogicalSettled::event` is reachable at visibility `pub`
+src/worker_durable.rs:2337:34: warning: type `ManagedWorktreeDispositionEventV1` is more private than the item `WorkerCommand::ManagedWorktreeDisposition::event`: field `WorkerCommand::ManagedWorktreeDisposition::event` is reachable at visibility `pub`
+src/worker_durable.rs:2340:34: warning: type `ManagedTerminalQuarantineEventV1` is more private than the item `WorkerCommand::ManagedTerminalQuarantined::event`: field `WorkerCommand::ManagedTerminalQuarantined::event` is reachable at visibility `pub`
+src/worker_durable.rs:2348:9: warning: type `WorktreeOperationIntentV1` is more private than the item `WorkerCommand::WorktreeOperationIntent::intent`: field `WorkerCommand::WorktreeOperationIntent::intent` is reachable at visibility `pub`
+src/worker_durable.rs:2353:42: warning: type `ManagedFinalInspectCandidatePinV1` is more private than the item `WorkerCommand::ManagedFinalInspectCandidatePinned::pin`: field `WorkerCommand::ManagedFinalInspectCandidatePinned::pin` is reachable at visibility `pub`
+src/worker_durable.rs:2355:9: warning: type `GuardedWorktreeReceiptV1` is more private than the item `WorkerCommand::WorktreeOperationReceipt::receipt`: field `WorkerCommand::WorktreeOperationReceipt::receipt` is reachable at visibility `pub`
+src/codemode_protocol.rs:295:19: warning: struct `CodeModeConversationV1` is never constructed
+src/codemode_protocol.rs:313:19: warning: associated items `start`, `accept_helper_frame`, and `accept_host_wave_result` are never used
+src/codemode_protocol.rs:475:4: warning: function `frame_identity_sequence` is never used
+src/codemode_protocol.rs:575:15: warning: function `codemode_public_run_receipt_digest` is never used
+src/codemode_protocol.rs:673:15: warning: function `authorized_tool_set_digest` is never used
+src/direct_message_journal.rs:107:19: warning: method `outstanding` is never used
+src/workspace_command_profile.rs:146:19: warning: method `immutable_digest` is never used
+src/effect_host.rs:87:19: warning: struct `CodeModeEnablementProjectionV1` is never constructed
+src/effect_host.rs:131:8: warning: struct `DirectCodeModeEnablementClaimsV1` is never constructed
+src/effect_host.rs:142:4: warning: function `sha256_principal_digest` is never used
+src/effect_host.rs:147:4: warning: function `parse_direct_code_mode_enablement` is never used
+src/effect_host.rs:211:4: warning: function `code_mode_enablement_event_digest` is never used
+src/effect_host.rs:224:4: warning: function `latest_code_mode_enablement_projection` is never used
+src/effect_host.rs:366:5: warning: field `receipt_digest` is never read
+src/effect_host.rs:457:19: warning: struct `ManagedVerifierPreflightReceiptV1` is never constructed
+src/effect_host.rs:465:19: warning: methods `challenge_id`, `binding_digest`, `launch_digest`, and `guarantee_digest` are never used
+src/effect_host.rs:553:9: warning: field `digest` is never read
+src/effect_host.rs:794:19: warning: struct `ActiveCodeModeOuterEffectV1` is never constructed
+src/effect_host.rs:927:19: warning: struct `CodeModeWaveCallOutcomeV1` is never constructed
+src/effect_host.rs:984:19: warning: struct `ExternalEditorExecutionOutcomeV1` is never constructed
+src/effect_host.rs:1001:6: warning: enum `CodeModeRunStateV1` is never used
+src/effect_host.rs:1020:17: warning: enum `ReplCallbackReplyBeginV1` is never used
+src/effect_host.rs:1267:8: warning: method `target_mode` is never used
+src/effect_host.rs:1357:4: warning: function `valid_next_http_route_attempt` is never used
+src/effect_host.rs:1369:4: warning: function `valid_next_http_route_attempt_with_proof` is never used
+src/effect_host.rs:2547:19: warning: multiple methods are never used
+src/effect_host.rs:14820:4: warning: function `repl_callback_dispatch_receipt_digest` is never used
+src/effect_host.rs:14842:4: warning: function `repl_callback_reply_receipt` is never used
+src/effect_host.rs:16228:4: warning: function `repl_callback_denial_receipt_digest` is never used
+src/effect_host.rs:16321:4: warning: function `editor_terminal_receipt_digest` is never used
+src/guard.rs:1090:19: warning: method `source_generation` is never used
+src/host_kernel.rs:1755:5: warning: field `host_quiescence_digest` is never read
+src/host_kernel.rs:1824:17: warning: enum `RepoGenerationRetirementErrorV1` is never used
+src/host_kernel.rs:1891:5: warning: field `ticket_id` is never read
+src/host_kernel.rs:1935:19: warning: methods `uid` and `gid` are never used
+src/host_kernel.rs:2509:19: warning: multiple methods are never used
+src/host_kernel.rs:29945:4: warning: function `validate_workspace_command_profile_projection` is never used
+src/host_kernel.rs:30018:5: warning: field `definition` is never read
+src/host_kernel.rs:31355:19: warning: method `snapshot_bundle` is never used
+src/host_kernel.rs:32950:4: warning: function `active_verification_attempt_id` is never used
+src/host_kernel.rs:33016:4: warning: function `snapshot_run_active_attempt` is never used
+src/host_kernel.rs:36361:4: warning: function `automation_registry_error` is never used
+src/host_kernel.rs:37745:7: warning: constant `VERIFIER_EXECUTION_MISSING` is never used
+src/host_kernel.rs:39040:4: warning: function `managed_task_state` is never used
+src/managed_verifier.rs:49:5: warning: fields `goal_id`, `run_id`, `spec_id`, `spec_digest`, `sandbox_policy_digest`, and `test_identity` are never read
+src/managed_verifier.rs:242:19: warning: multiple methods are never used
+src/managed_verifier.rs:351:9: warning: field `invocation_digest` is never read
+src/managed_verifier.rs:357:9: warning: fields `invocation_digest`, `execution_id`, `generation`, and `reason` are never read
+src/verifier_journal.rs:93:19: warning: method `requires_reconcile_only` is never used
+src/verifier_journal.rs:201:19: warning: method `remove` is never used
+src/http_execution.rs:323:15: warning: function `mint_managed_provider_send_authorization` is never used
+src/http_execution.rs:336:15: warning: function `validate_managed_provider_send_authorization` is never used
+src/http_execution.rs:1099:19: warning: methods `effect_id` and `challenge_id` are never used
+src/http_execution.rs:1604:15: warning: function `execute_pinned_with_pre_send_proof` is never used
+src/http_execution.rs:1861:10: warning: function `read_bounded_http_body` is never used
+src/managed_control.rs:209:19: warning: method `operation_key` is never used
+src/managed_control.rs:895:19: warning: multiple methods are never used
+src/managed_control.rs:1286:19: warning: methods `attempt_id`, `owner_epoch`, `process_incarnation`, `child_session_sequence`, and `child_session_event_digest` are never used
+src/managed_control.rs:1347:19: warning: multiple methods are never used
+src/managed_control.rs:1792:5: warning: variant `Worker` is never constructed
+src/managed_control.rs:1833:19: warning: associated items `from_active_attempt_owner` and `matches_worker_owner` are never used
+src/managed_control.rs:2252:19: warning: methods `provider_id`, `model_id`, and `token_budget` are never used
+src/managed_control.rs:2259:19: warning: methods `goal_id`, `location_id`, `workspace_binding`, and `session_id` are never used
+src/managed_control.rs:11908:19: warning: methods `candidate_generation` and `reconcile_attempt_effect_receipt` are never used
+src/protocol_io_journal.rs:11:7: warning: constant `FILE_NAME` is never used
+src/protocol_io_journal.rs:12:7: warning: constant `MAX_FILE_BYTES` is never used
+src/protocol_io_journal.rs:13:7: warning: constant `MAX_PROCESSES` is never used
+src/protocol_io_journal.rs:14:7: warning: constant `MAX_OPS_PER_PROCESS` is never used
+src/protocol_io_journal.rs:15:7: warning: constant `MAX_EVENTS_PER_PROCESS` is never used
+src/protocol_io_journal.rs:16:7: warning: constant `MAX_EVENT_BYTES` is never used
+src/protocol_io_journal.rs:17:7: warning: constant `MAX_EVENTS_BYTES` is never used
+src/protocol_io_journal.rs:19:8: warning: static `NEXT_TEMP_FILE_ID` is never used
+src/protocol_io_journal.rs:23:17: warning: enum `ProtocolIoStateV1` is never used
+src/protocol_io_journal.rs:27:19: warning: struct `ProtocolIoIntentV1` is never constructed
+src/protocol_io_journal.rs:45:19: warning: struct `ProtocolEventV1` is never constructed
+src/protocol_io_journal.rs:54:19: warning: struct `ProtocolProcessJournalV1` is never constructed
+src/protocol_io_journal.rs:78:8: warning: struct `ProtocolJournalFileV1` is never constructed
+src/protocol_io_journal.rs:80:19: warning: struct `ProtocolIoJournalV1` is never constructed
+src/protocol_io_journal.rs:87:19: warning: multiple associated items are never used
+src/protocol_io_journal.rs:252:17: warning: enum `EventCursorErrorV1` is never used
+src/protocol_io_journal.rs:254:4: warning: function `serialized_events_size` is never used
+src/protocol_io_journal.rs:259:4: warning: function `read_file` is never used
+src/search_secret_journal.rs:11:7: warning: constant `FILE_NAME` is never used
+src/search_secret_journal.rs:12:7: warning: constant `MAX_FILE_BYTES` is never used
+src/search_secret_journal.rs:13:7: warning: constant `MAX_ATTEMPTS` is never used
+src/search_secret_journal.rs:15:8: warning: static `NEXT_TEMP_FILE_ID` is never used
+src/search_secret_journal.rs:19:17: warning: enum `SearchSecretAttemptStateV1` is never used
+src/search_secret_journal.rs:23:19: warning: struct `SearchSecretAttemptV1` is never constructed
+src/search_secret_journal.rs:55:19: warning: struct `SearchCascadeProgressV1` is never constructed
+src/search_secret_journal.rs:104:17: warning: enum `SearchCascadeStateV1` is never used
+src/search_secret_journal.rs:108:8: warning: struct `JournalFileV1` is never constructed
+src/search_secret_journal.rs:115:19: warning: struct `SearchSecretAttemptJournalV1` is never constructed
+src/search_secret_journal.rs:123:19: warning: multiple associated items are never used
+src/search_secret_journal.rs:351:4: warning: function `read_file` is never used
+src/search_secret_journal.rs:372:4: warning: function `valid_attempt` is never used
+src/search_secret_journal.rs:393:4: warning: function `valid_cascade` is never used
+src/search_secret_journal.rs:428:4: warning: function `valid_search_domain` is never used
+src/resource_budget.rs:162:17: warning: enum `PressureControllerErrorV1` is never used
+src/resource_budget.rs:184:19: warning: associated items `new`, `observe`, `state`, `owner_epoch`, and `last_sample_sequence` are never used
+src/resource_budget.rs:593:19: warning: method `row` is never used
+src/resource_budget.rs:643:19: warning: associated items `from_authenticated_policy`, `matches_inputs`, `is_expired_at`, and `observe_verified_usage` are never used
+src/resource_budget.rs:761:19: warning: struct `AuthenticatedResourcePressureSignalV1` is never constructed
+src/resource_budget.rs:777:19: warning: multiple methods are never used
+src/resource_budget.rs:792:17: warning: enum `ResourcePressureConsumerErrorV1` is never used
+src/resource_sampler.rs:11:17: warning: enum `RepoIntelAnalysisProfileV1` is never used
+src/resource_sampler.rs:18:8: warning: method `wire_name` is never used
+src/resource_sampler.rs:28:17: warning: enum `RepoIntelConfigurationSourceV1` is never used
+src/resource_sampler.rs:37:8: warning: methods `wire_name` and `effective_source` are never used
+src/resource_sampler.rs:57:17: warning: enum `RepoIntelPolicyLockV1` is never used
+src/resource_sampler.rs:64:8: warning: method `wire_name` is never used
+src/resource_sampler.rs:74:17: warning: enum `RepoIntelEffectiveSourceV1` is never used
+src/resource_sampler.rs:83:8: warning: method `wire_name` is never used
+src/resource_sampler.rs:95:17: warning: enum `RepoIntelProjectionReasonV1` is never used
+src/resource_sampler.rs:100:8: warning: method `wire_name` is never used
+src/resource_sampler.rs:111:19: warning: struct `RepoIntelProfileProjectionV1` is never constructed
+src/resource_sampler.rs:122:19: warning: method `to_wire_value` is never used
+src/resource_sampler.rs:142:15: warning: function `repo_intel_profile_projection_under_pressure` is never used
+src/resource_sampler.rs:179:17: warning: enum `RepoIntelProjectionErrorV1` is never used
+src/resource_sampler.rs:186:7: warning: constant `MAX_CACHE_PINS_PER_ENTRY` is never used
+src/resource_sampler.rs:206:5: warning: variants `ReplaceableUiPaint`, `ImmutableIndex`, and `CanonicalState` are never constructed
+src/resource_sampler.rs:235:5: warning: variant `Measured` is never constructed
+src/resource_sampler.rs:289:19: warning: struct `CachePinV1` is never constructed
+src/resource_sampler.rs:296:19: warning: struct `CacheEvictionCandidateV1` is never constructed
+src/resource_sampler.rs:311:19: warning: struct `CacheRetirementAckV1` is never constructed
+src/resource_sampler.rs:317:19: warning: associated function `from_host_kernel_retirement` is never used
+src/resource_sampler.rs:329:19: warning: struct `CacheEvictionPlanV1` is never constructed
+src/resource_sampler.rs:337:19: warning: struct `CacheRegistryRowV1` is never constructed
+src/resource_sampler.rs:346:19: warning: struct `CacheRegistrySnapshotV1` is never constructed
+src/resource_sampler.rs:367:5: warning: variants `PinLimitExceeded` and `InvalidPin` are never constructed
+src/resource_sampler.rs:444:19: warning: multiple methods are never used
+src/resource_sampler.rs:823:19: warning: methods `worker_execution_id`, `owner`, `source_revision`, `process_identity`, and `state` are never used
+src/resource_sampler.rs:877:19: warning: methods `process_incarnation`, `executable_identity_digest`, and `matches_authenticated_peer` are never used
+src/resource_sampler.rs:932:19: warning: methods `owner_log_id`, `owner_log_sequence`, `owner_log_event_digest`, `worker_pool_revision`, and `leases` are never used
+src/resource_sampler.rs:1405:19: warning: methods `worker_execution_id`, `task_id`, `attempt_id`, `state`, and `sample` are never used
+src/resource_sampler.rs:1539:19: warning: methods `sample_sequence`, `attributed_memory_usage`, `trees`, and `aggregate` are never used
+src/terminal_process.rs:334:17: warning: enum `GitReadOperationV1` is never used
+src/terminal_process.rs:347:7: warning: constant `MAX_GIT_READ_PATHS` is never used
+src/terminal_process.rs:350:4: warning: function `valid_stdio_blake3` is never used
+src/terminal_process.rs:356:4: warning: function `invalid_stdio_launch` is never used
+src/terminal_process.rs:360:4: warning: function `valid_git_object_id` is never used
+src/terminal_process.rs:364:4: warning: function `valid_git_relative_path` is never used
+src/terminal_process.rs:377:15: warning: function `prepare_git_read_spec` is never used
+src/terminal_process.rs:497:5: warning: variant `GitWorktreeLifecycle` is never constructed
+src/terminal_process.rs:565:19: warning: struct `ExternalEditorLaunchBindingV1` is never constructed
+src/terminal_process.rs:588:19: warning: struct `ExternalEditorTargetBindingV1` is never constructed
+src/terminal_process.rs:768:15: warning: function `inspect_external_editor_scratch` is never used
+src/terminal_process.rs:776:15: warning: function `read_external_editor_scratch` is never used
+src/terminal_process.rs:844:4: warning: function `valid_editor_binding_id` is never used
+src/terminal_process.rs:848:15: warning: function `valid_editor_source_relative_path` is never used
+src/terminal_process.rs:858:4: warning: function `validate_editor_environment` is never used
+src/terminal_process.rs:1222:19: warning: associated items `allow_git_worktree_metadata` and `code_mode` are never used
+src/terminal_process.rs:1293:19: warning: method `guarantee_assessments` is never used
+src/terminal_process.rs:1311:19: warning: struct `StdioLaunchAssessmentV1` is never constructed
+src/terminal_process.rs:1321:19: warning: struct `StdioGuaranteeAssessmentProjectionV1` is never constructed
+src/terminal_process.rs:1329:19: warning: methods `execution_digest`, `guarantee_record`, `guarantees`, `guarantee_digest`, and `approval_projection` are never used
+src/terminal_process.rs:1381:4: warning: function `redact_sandbox_residual` is never used
+src/terminal_process.rs:1851:19: warning: struct `StdioGitReadReceiptV1` is never constructed
+src/terminal_process.rs:1861:19: warning: struct `StdioGitReadReplayV1` is never constructed
+src/terminal_process.rs:1942:19: warning: method `cgroup_identity` is never used
+src/terminal_process.rs:2626:19: warning: associated function `assess_launch` is never used
+src/terminal_process.rs:3311:19: warning: associated functions `prepared_launch_digest`, `prepared_executable_digest`, `prepare_confined_with_private_scratch`, and `prepare_external_editor` are never used
+src/worker_pool.rs:757:19: warning: struct `ActiveParentExecutionFactsV1` is never constructed
+src/worker_pool.rs:767:19: warning: methods `worker_execution_id`, `goal_id`, `owner`, `source_revision`, `accepted_spec_digest`, and `process_identity` are never used
+src/worker_pool.rs:871:19: warning: methods `budget_dimension`, `reserved_amount`, and `expires_at_ms` are never used
+src/worker_pool.rs:1016:19: warning: methods `update_capacity`, `advance_owner_epoch`, and `resolve_active_parent_execution_facts` are never used
+src/worker_durable.rs:121:19: warning: associated function `from_authenticated_host` is never used
+src/worker_durable.rs:285:19: warning: method `pins_digest` is never used
+src/worker_durable.rs:403:19: warning: methods `owner`, `expires_at_ms`, `worktree_id`, `worktree_base_revision`, `parent_execution_id`, and `worktree_pool_revision` are never used
+src/worker_durable.rs:448:19: warning: methods `pins`, `pre_context_pins`, `candidate_attempt_id`, `candidate_generation`, and `idempotency_key` are never used
+src/worker_durable.rs:498:5: warning: variant `ProcessBacked` is never constructed
+src/worker_durable.rs:747:19: warning: methods `execution_kind` and `idempotency_key` are never used
+src/worker_durable.rs:935:19: warning: struct `WorkerSettlementDispositionRecoveryProofV1` is never constructed
+src/worker_durable.rs:945:19: warning: associated function `from_host_kernel` is never used
+src/worker_durable.rs:1144:19: warning: method `host_quiescence_digest` is never used
+src/worker_durable.rs:1702:19: warning: methods `managed_owner_log_id`, `managed_owner_log_sequence`, `managed_owner_log_event_digest`, `managed_owner_revision`, `host_process_incarnation`, and `no_process_observation_digest` are never used
+src/worker_durable.rs:1945:19: warning: multiple methods are never used
+src/worker_durable.rs:2009:19: warning: multiple methods are never used
+src/worker_durable.rs:3413:5: warning: field `resource_pressure_trackers` is never read
+src/worker_durable.rs:3552:19: warning: struct `HostRunReceiptRefV1` is never constructed
+src/worker_durable.rs:3564:19: warning: multiple methods are never used
+src/worker_durable.rs:3658:19: warning: methods `evidence_digest`, `evidence_refs`, and `host_run_receipt_ref` are never used
+src/worker_durable.rs:3797:19: warning: method `reconciliation_owner_epoch` is never used
+src/worker_durable.rs:3857:19: warning: struct `SettledManagedWorktreeRecoveryTargetV1` is never constructed
+src/worker_durable.rs:3866:19: warning: methods `target`, `root`, `attempt_id`, `settlement_receipt_digest`, and `pool_revision` are never used
+src/worker_durable.rs:3876:19: warning: methods `worker_execution_id`, `reservation_id`, `worktree_lease_id`, `pool_revision`, and `reservation_proof_digest` are never used
+src/worker_durable.rs:3942:5: warning: variant `None` is never constructed
+src/worker_durable.rs:3950:17: warning: enum `WorktreeRetirementDispositionV1` is never used
+src/worker_durable.rs:3953:17: warning: enum `WorktreeOperationTerminalStateV1` is never used
+src/worker_durable.rs:3987:19: warning: multiple methods are never used
+src/worker_durable.rs:4045:19: warning: multiple methods are never used
+src/worker_durable.rs:4062:19: warning: method `verification_digest` is never used
+src/worker_durable.rs:4070:19: warning: methods `root`, `worktree_id`, `base_revision`, `relative_path`, and `expected_workspace_revision` are never used
+src/worker_durable.rs:4254:19: warning: multiple methods are never used
+src/worker_durable.rs:10641:4: warning: function `root_execution_from_pins` is never used
+src/worktree_pool.rs:1040:19: warning: method `mark_removed` is never used
+src/worktree_lifecycle.rs:536:19: warning: associated function `from_guarded_create_and_inspect` is never used
+src/worktree_lifecycle.rs:713:18: warning: trait `GuardedWorktreePortV1` is never used
+src/worktree_lifecycle.rs:720:19: warning: struct `UnavailableGuardedWorktreePortV1` is never constructed
+src/worktree_lifecycle.rs:758:19: warning: method `len` is never used
+src/worktree_lifecycle.rs:937:5: warning: variant `DriverUnavailable` is never constructed
+    Checking horizoncode-kernel v0.1.0 (/home/sarvesh/business_Dev/agentx/kernel)
+warning: `horizoncode-kernel` (lib) generated 282 warnings (run `cargo fix --lib -p horizoncode-kernel` to apply 42 suggestions)
+tests/../src/task_dag.rs:50:5: warning: variant `Sample` is never constructed
+tests/../src/task_dag.rs:54:12: warning: associated items `wire_name` and `parse_wire` are never used
+tests/../src/task_dag.rs:431:12: warning: methods `run_id`, `accepted_spec_digest`, `parent_scope_digest`, and `accepted_criteria` are never used
+tests/../src/task_dag.rs:862:5: warning: variant `Read` is never constructed
+warning: `horizoncode-kernel` (test "task_dag") generated 4 warnings
+tests/effects_host_process.rs:78:13: warning: variable does not need to be mutable
+tests/managed_settlement_provenance.rs:357:8: warning: method `execute_write` is never used
+tests/managed_settlement_provenance.rs:906:4: warning: function `assert_attempt_receipt_nil` is never used
+warning: `horizoncode-kernel` (test "effects_host_process") generated 1 warning (run `cargo fix --test "effects_host_process" -p horizoncode-kernel` to apply 1 suggestion)
+warning: `horizoncode-kernel` (test "managed_settlement_provenance") generated 2 warnings
+tests/session_supervisor_process.rs:6:5: warning: unused import: `RpcRequestV1`
+tests/session_supervisor_process.rs:189:4: warning: function `value_map` is never used
+warning: `horizoncode-kernel` (test "session_supervisor_process") generated 2 warnings (run `cargo fix --test "session_supervisor_process" -p horizoncode-kernel` to apply 1 suggestion)
+src/../tests/support/jc_res_012_wire_tests.rs:13:5: warning: unused import: `crate::resource_sampler`
+src/managed_control.rs:7106:13: warning: unused variable: `parent_attempt`: help: if this is intentional, prefix it with an underscore: `_parent_attempt`
+src/effect_host.rs:9483:5: warning: type `TerminalOutputCaptureV1` is more private than the item `effect_host::EffectHost::settle_terminal_run`: method `effect_host::EffectHost::settle_terminal_run` is reachable at visibility `pub`
+src/managed_control.rs:2519:9: warning: type `ManagedAttemptUsageProofV1` is more private than the item `managed_control::ManagedCommand::RecordAttemptUsage::proof`: field `managed_control::ManagedCommand::RecordAttemptUsage::proof` is reachable at visibility `pub`
+src/managed_control.rs:2560:9: warning: type `PlannedTaskV1` is more private than the item `managed_control::ManagedCommand::PlanRun::tasks`: field `managed_control::ManagedCommand::PlanRun::tasks` is reachable at visibility `pub`
+src/managed_control.rs:2617:9: warning: type `ManagedAttemptContextSelectionRecordV1` is more private than the item `managed_control::ManagedCommand::AdmitAttemptWithDelegation::context_selection`: field `managed_control::ManagedCommand::AdmitAttemptWithDelegation::context_selection` is reachable at visibility `pub`
+src/managed_control.rs:2620:9: warning: type `ManagedAttemptContextSelectionRecordV1` is more private than the item `managed_control::ManagedCommand::AdvanceAttemptContextSelection::record`: field `managed_control::ManagedCommand::AdvanceAttemptContextSelection::record` is reachable at visibility `pub`
+src/managed_control.rs:2623:9: warning: type `ManagedProviderRequestRecordV1` is more private than the item `managed_control::ManagedCommand::SetManagedProviderRequest::record`: field `managed_control::ManagedCommand::SetManagedProviderRequest::record` is reachable at visibility `pub`
+src/managed_control.rs:2662:9: warning: type `ManagedAttemptEffectWaveV1` is more private than the item `managed_control::ManagedCommand::BindAttemptEffectWave::wave`: field `managed_control::ManagedCommand::BindAttemptEffectWave::wave` is reachable at visibility `pub`
+src/managed_control.rs:2668:9: warning: type `managed_control::ManagedAttemptVerifierIntentV1` is more private than the item `managed_control::ManagedCommand::BindAttemptVerifierIntent::intent`: field `managed_control::ManagedCommand::BindAttemptVerifierIntent::intent` is reachable at visibility `pub`
+src/managed_control.rs:2673:9: warning: type `managed_control::ManagedAttemptEffectReceiptProofV1` is more private than the item `managed_control::ManagedCommand::RecordAttemptEffectReceipt::proof`: field `managed_control::ManagedCommand::RecordAttemptEffectReceipt::proof` is reachable at visibility `pub`
+src/managed_control.rs:2679:9: warning: type `managed_control::ManagedAttemptEffectReceiptProofV1` is more private than the item `managed_control::ManagedCommand::ReconcileAttemptEffectReceipt::proof`: field `managed_control::ManagedCommand::ReconcileAttemptEffectReceipt::proof` is reachable at visibility `pub`
+src/managed_control.rs:2684:9: warning: type `ManagedDispatchConsumeRecordV1` is more private than the item `managed_control::ManagedCommand::ConsumeManagedDispatch::record`: field `managed_control::ManagedCommand::ConsumeManagedDispatch::record` is reachable at visibility `pub`
+src/managed_control.rs:2689:9: warning: type `ManagedDispatchQuiescenceProofV1` is more private than the item `managed_control::ManagedCommand::DispatchQuiesced::proof`: field `managed_control::ManagedCommand::DispatchQuiesced::proof` is reachable at visibility `pub`
+src/managed_control.rs:2692:9: warning: type `ManagedCandidateAbandonProofV1` is more private than the item `managed_control::ManagedCommand::AbandonPreAdmissionCandidate::proof`: field `managed_control::ManagedCommand::AbandonPreAdmissionCandidate::proof` is reachable at visibility `pub`
+src/worker_durable.rs:2265:9: warning: type `worktree_lifecycle::WorktreeRootOwnerV1` is more private than the item `WorkerCommand::RegisterWorktree::owner`: field `WorkerCommand::RegisterWorktree::owner` is reachable at visibility `pub`
+src/worker_durable.rs:2266:9: warning: type `worktree_lifecycle::VerifiedWorktreeRegistrationV1` is more private than the item `WorkerCommand::RegisterWorktree::registration`: field `WorkerCommand::RegisterWorktree::registration` is reachable at visibility `pub`
+src/worker_durable.rs:2275:9: warning: type `worktree_lifecycle::WorktreeRootOwnerV1` is more private than the item `WorkerCommand::WorktreeRegistrationRemoved::owner`: field `WorkerCommand::WorktreeRegistrationRemoved::owner` is reachable at visibility `pub`
+src/worker_durable.rs:2280:9: warning: type `worktree_lifecycle::WorktreeRootOwnerV1` is more private than the item `WorkerCommand::WorktreeOperationRetiredNoDispatch::current_owner`: field `WorkerCommand::WorktreeOperationRetiredNoDispatch::current_owner` is reachable at visibility `pub`
+src/worker_durable.rs:2348:9: warning: type `worktree_lifecycle::WorktreeOperationIntentV1` is more private than the item `WorkerCommand::WorktreeOperationIntent::intent`: field `WorkerCommand::WorktreeOperationIntent::intent` is reachable at visibility `pub`
+src/worker_durable.rs:2355:9: warning: type `worktree_lifecycle::GuardedWorktreeReceiptV1` is more private than the item `WorkerCommand::WorktreeOperationReceipt::receipt`: field `WorkerCommand::WorktreeOperationReceipt::receipt` is reachable at visibility `pub`
+src/guard.rs:684:19: warning: associated function `test_fixture` is never used
+src/host_kernel.rs:1600:5: warning: variants `None`, `DigestMismatch`, and `LengthMismatch` are never constructed
+src/resource_budget.rs:265:19: warning: methods `state` and `last_sample_sequence` are never used
+src/resource_budget.rs:681:19: warning: method `matches_inputs` is never used
+src/resource_sampler.rs:29:5: warning: variants `Default`, `SystemPolicy`, and `Unknown` are never constructed
+src/resource_sampler.rs:58:5: warning: variant `Locked` is never constructed
+src/resource_sampler.rs:77:5: warning: variant `Platform` is never constructed
+src/resource_sampler.rs:491:8: warning: methods `unregister` and `finish_eviction_blocked` are never used
+src/worker_durable.rs:1948:19: warning: multiple methods are never used
+src/worker_durable.rs:4072:19: warning: methods `base_revision` and `expected_workspace_revision` are never used
+warning: `horizoncode-kernel` (lib test) generated 242 warnings (211 duplicates) (run `cargo fix --lib -p horizoncode-kernel --tests` to apply 2 suggestions)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.83s

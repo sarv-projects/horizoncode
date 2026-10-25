@@ -630,7 +630,7 @@ impl Capabilities {
 // ---------------------------------------------------------------------------
 
 /// One dimension of the sandbox guarantee vector.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum GuaranteeDimension {
     /// Filesystem reads limited to declared roots.
     FilesystemRead,

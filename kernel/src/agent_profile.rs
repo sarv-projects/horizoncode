@@ -130,10 +130,18 @@ impl AgentProfileDefinitionV2 {
             Value::String(value) if valid_id(value) => value.clone(),
             _ => return None,
         };
-        let revision = match fields.get("revision")? {
-            Value::Unsigned(value) if *value > 0 => *value,
-            _ => return None,
-        };
+        // `arch_V1/12-DOMAIN-SCHEMAS.md` line 28: an unsigned 64-bit counter
+        // crossing JSON is a canonical `DecimalU64` **string**, never a JSON
+        // number. A number fails closed instead of being coerced.
+        let revision = decimal_u64(fields.get("revision"), true)?;
+        let Value::Map(instructions) = fields.get("instructions")? else { return None };
+        decimal_u64(instructions.get("maxCompiledTokens"), false)?;
+        let Value::Map(context) = fields.get("context")? else { return None };
+        if let Some(parent_history) = context.get("maxParentHistoryTokens") {
+            if !matches!(parent_history, Value::Nil) {
+                decimal_u64(Some(parent_history), false)?;
+            }
+        }
         let source = match fields.get("source")? {
             Value::String(value) if matches!(value.as_str(), "builtin" | "user") => value.clone(),
             _ => return None,
@@ -170,10 +178,7 @@ impl AgentProfileDefinitionV2 {
     pub(crate) fn token_budget(&self) -> Option<u64> {
         let Value::Map(fields) = &self.value else { return None };
         let Value::Map(limits) = fields.get("limits")? else { return None };
-        match limits.get("tokenBudget") {
-            Some(Value::Unsigned(value)) if *value > 0 => Some(*value),
-            _ => None,
-        }
+        decimal_u64(limits.get("tokenBudget"), true)
     }
 
     /// This binds profile rules, role scope, source and enabled state. It is
@@ -217,10 +222,7 @@ impl AgentProfileDefinitionV2 {
     pub(crate) fn wall_time_ms(&self) -> Option<u64> {
         let Value::Map(fields) = &self.value else { return None };
         let Value::Map(limits) = fields.get("limits")? else { return None };
-        match limits.get("wallTimeMs")? {
-            Value::Unsigned(value) if *value > 0 => Some(*value),
-            _ => None,
-        }
+        decimal_u64(limits.get("wallTimeMs"), true)
     }
 }
 
@@ -235,6 +237,29 @@ fn canonical_digest(domain: &[u8], value: &Value) -> Result<String, messagepack:
 fn valid_id(value: &str) -> bool {
     !value.is_empty() && value.len() <= 256
         && !value.bytes().any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
+}
+
+/// Reads an unsigned 64-bit counter that crossed JSON as a `DecimalU64`
+/// (`arch_V1/contracts-v2/wire-primitives-v1.schema.json`): a base-10 string
+/// with no sign, no leading zero (except `"0"` itself) and a value inside
+/// `0..=18446744073709551615`. A JSON number, `null`, an empty or padded
+/// spelling, a non-digit or an overflowing value all fail closed — nothing is
+/// coerced or normalized onto the wire. `positive` additionally enforces the
+/// `PositiveDecimalU64` / `> 0` rule used by revision and budget counters.
+fn decimal_u64(value: Option<&Value>, positive: bool) -> Option<u64> {
+    let Value::String(text) = value? else { return None };
+    if text.is_empty()
+        || text.len() > 20
+        || !text.bytes().all(|byte| byte.is_ascii_digit())
+        || (text.len() > 1 && text.starts_with('0'))
+    {
+        return None;
+    }
+    let parsed = text.parse::<u64>().ok()?;
+    if parsed.to_string() != text.as_str() || (positive && parsed == 0) {
+        return None;
+    }
+    Some(parsed)
 }
 
 fn sorted_capabilities(value: &Value) -> Option<Vec<String>> {
@@ -321,5 +346,176 @@ mod tests {
             let profile = AgentProfileDefinitionV2::from_host_validated_value(&Value::Map(changed)).unwrap();
             assert_ne!(profile.permission_ceiling_digest().unwrap(), digest, "{field} must affect permission digest");
         }
+    }
+
+    /// `arch_V1/12-DOMAIN-SCHEMAS.md` line 28 and the canonical
+    /// `contracts-v2/agent-profile-v2.schema.json` contract: every unsigned
+    /// 64-bit counter or budget crossing JSON is a canonical `DecimalU64`
+    /// **string**, never a JSON number. A JSON number and every non-canonical
+    /// spelling must fail closed instead of being coerced or normalized.
+    #[test]
+    fn decimal_u64_revision_is_a_canonical_string_never_a_json_number() {
+        let definition = || {
+            let fixture: JsonValue =
+                serde_json::from_str(include_str!("../tests/fixtures/agent-profile-definition-v2.json")).unwrap();
+            match json_to_value(&fixture["definition"]) {
+                Value::Map(fields) => fields,
+                _ => unreachable!("fixture definition is an object"),
+            }
+        };
+
+        // A JSON number must not be accepted for `revision`.
+        let mut numeric = definition();
+        numeric.insert("revision".into(), Value::Unsigned(7));
+        assert!(
+            AgentProfileDefinitionV2::from_host_validated_value(&Value::Map(numeric)).is_none(),
+            "a JSON number revision must be rejected, never coerced into a u64"
+        );
+
+        // The canonical decimal string is the accepted wire spelling.
+        let mut canonical = definition();
+        canonical.insert("revision".into(), Value::String("7".into()));
+        let profile = AgentProfileDefinitionV2::from_host_validated_value(&Value::Map(canonical))
+            .expect("canonical decimal revision must be accepted");
+        assert_eq!(profile.revision, 7);
+
+        for rejected in [
+            "0", "00", "007", "+7", "-7", "7.0", " 7", "7 ", "", "7x",
+            "18446744073709551616",
+        ] {
+            let mut fields = definition();
+            fields.insert("revision".into(), Value::String(rejected.into()));
+            assert!(
+                AgentProfileDefinitionV2::from_host_validated_value(&Value::Map(fields)).is_none(),
+                "non-canonical revision {rejected:?} must be rejected"
+            );
+        }
+
+        // The full u64 range is representable precisely because the wire is a string.
+        let mut maximum = definition();
+        maximum.insert("revision".into(), Value::String("18446744073709551615".into()));
+        let profile = AgentProfileDefinitionV2::from_host_validated_value(&Value::Map(maximum))
+            .expect("u64::MAX is a valid PositiveDecimalU64");
+        assert_eq!(profile.revision, u64::MAX);
+    }
+
+    #[test]
+    fn decimal_u64_instruction_and_context_limits_reject_json_numbers() {
+        let fixture: JsonValue =
+            serde_json::from_str(include_str!("../tests/fixtures/agent-profile-definition-v2.json")).unwrap();
+        let base = json_to_value(&fixture["definition"]);
+        let Value::Map(base_fields) = base else { unreachable!() };
+
+        let with_limits = |max_compiled: Value, max_parent_history: Value| {
+            let mut fields = base_fields.clone();
+            let Value::Map(instructions) = fields.get_mut("instructions").unwrap() else {
+                unreachable!()
+            };
+            instructions.insert("maxCompiledTokens".into(), max_compiled);
+            let Value::Map(context) = fields.get_mut("context").unwrap() else { unreachable!() };
+            context.insert("maxParentHistoryTokens".into(), max_parent_history);
+            Value::Map(fields)
+        };
+
+        // The complete schema requires maxCompiledTokens and allows the context
+        // budget to be either null or a canonical DecimalU64 string.
+        for (field, value) in [
+            ("maxCompiledTokens", Value::Unsigned(4096)),
+            ("maxParentHistoryTokens", Value::Unsigned(2048)),
+        ] {
+            let (compiled, parent) = if field == "maxCompiledTokens" {
+                (value, Value::Nil)
+            } else {
+                (Value::String("4096".into()), value)
+            };
+            assert!(
+                AgentProfileDefinitionV2::from_host_validated_value(&with_limits(compiled, parent)).is_none(),
+                "JSON number {field} must be rejected"
+            );
+        }
+
+        let canonical = with_limits(Value::String("4096".into()), Value::String("2048".into()));
+        let profile = AgentProfileDefinitionV2::from_host_validated_value(&canonical)
+            .expect("canonical decimal limit strings must be accepted");
+        let Value::Map(fields) = profile.value else { unreachable!() };
+        let Value::Map(instructions) = &fields["instructions"] else { unreachable!() };
+        assert_eq!(decimal_u64(instructions.get("maxCompiledTokens"), false), Some(4096));
+        let Value::Map(context) = &fields["context"] else { unreachable!() };
+        assert_eq!(decimal_u64(context.get("maxParentHistoryTokens"), false), Some(2048));
+    }
+
+    /// Same contract for the two optional budget counters read by
+    /// `token_budget()` and `wall_time_ms()`: canonical decimal string, `> 0`,
+    /// fail closed on a JSON number, an empty/leading-zero/overflowing
+    /// spelling or an absent value.
+    #[test]
+    fn decimal_u64_budget_counters_are_positive_canonical_strings() {
+        fn with_limits(token_budget: Option<Value>, wall_time_ms: Option<Value>) -> Value {
+            let fixture: JsonValue =
+                serde_json::from_str(include_str!("../tests/fixtures/agent-profile-definition-v2.json")).unwrap();
+            let Value::Map(mut fields) = json_to_value(&fixture["definition"]) else {
+                unreachable!("fixture definition is an object")
+            };
+            {
+                let Some(Value::Map(limits)) = fields.get_mut("limits") else {
+                    unreachable!("fixture limits is an object")
+                };
+                if let Some(value) = token_budget {
+                    limits.insert("tokenBudget".into(), value);
+                }
+                if let Some(value) = wall_time_ms {
+                    limits.insert("wallTimeMs".into(), value);
+                }
+            }
+            Value::Map(fields)
+        }
+        let read = |value: Value| {
+            AgentProfileDefinitionV2::from_host_validated_value(&value)
+                .expect("profile definition must still validate")
+        };
+
+        // JSON numbers fail closed in both accessors.
+        let numeric = read(with_limits(Some(Value::Unsigned(8_192)), Some(Value::Unsigned(60_000))));
+        assert_eq!(numeric.token_budget(), None, "JSON number tokenBudget must be rejected");
+        assert_eq!(numeric.wall_time_ms(), None, "JSON number wallTimeMs must be rejected");
+
+        // Canonical decimal strings are the accepted spelling.
+        let canonical = read(with_limits(
+            Some(Value::String("8192".into())),
+            Some(Value::String("60000".into())),
+        ));
+        assert_eq!(canonical.token_budget(), Some(8_192));
+        assert_eq!(canonical.wall_time_ms(), Some(60_000));
+
+        // Absent optional counters stay unavailable rather than defaulting.
+        let absent = read(with_limits(None, None));
+        assert_eq!(absent.token_budget(), None);
+        assert_eq!(absent.wall_time_ms(), None);
+
+        // Non-canonical spellings and the required `> 0` rule fail closed.
+        for rejected in ["0", "00", "007", " 8192", "8192 ", "8192.0", "", "8192x"] {
+            let closed = read(with_limits(Some(Value::String(rejected.into())), None));
+            assert_eq!(
+                closed.token_budget(),
+                None,
+                "non-canonical tokenBudget {rejected:?} must be rejected"
+            );
+        }
+
+        // Out-of-u64-range decimal strings fail closed too.
+        let overflow = read(with_limits(
+            Some(Value::String("18446744073709551616".into())),
+            Some(Value::String("18446744073709551616".into())),
+        ));
+        assert_eq!(overflow.token_budget(), None);
+        assert_eq!(overflow.wall_time_ms(), None);
+
+        // The whole u64 range remains representable.
+        let maximum = read(with_limits(
+            Some(Value::String("18446744073709551615".into())),
+            Some(Value::String("18446744073709551615".into())),
+        ));
+        assert_eq!(maximum.token_budget(), Some(u64::MAX));
+        assert_eq!(maximum.wall_time_ms(), Some(u64::MAX));
     }
 }

@@ -106,7 +106,13 @@ export const WebSearchTool = Tool.define(
   Effect.gen(function* () {
     const config = yield* Config.Service
     const runtime = yield* WebSearchRuntime.Service
-    const instance = yield* InstanceState.context
+    // NOTE: `InstanceState.context` is deliberately NOT resolved here. This
+    // effect is the EAGER `Tool.define` init, and ToolRegistry layer
+    // construction runs it with no `InstanceRef` bound; resolving per-directory
+    // instance state here killed every `AppRuntime.runPromise` and every
+    // `test/config/config.test.ts` test with `InstanceRef not provided`.
+    // `InstanceState` is for per-directory state resolved at the point of use
+    // (see `websearch-inspect.ts`), never an ambient shim at layer build time.
     return {
     get description() {
       return DESCRIPTION.replace("{{year}}", new Date().getFullYear().toString())
@@ -166,6 +172,10 @@ export const WebSearchTool = Tool.define(
           failToolBatchLease(ctx.extra?.guardedLease, metadata.reason)
           return { output: metadata.reason, title: "Web Search unavailable", metadata }
         }
+        // Per-directory instance state is resolved here, inside the deferred
+        // execute path and only after every fail-closed gate above has passed,
+        // so ToolRegistry construction never depends on an InstanceRef.
+        const instance = yield* InstanceState.context
         const searched = yield* runtime.search({
           execution,
           signal: ctx.abort,
@@ -180,9 +190,9 @@ export const WebSearchTool = Tool.define(
           ...(managedAuthority ? { managedAuthority } : {}),
           ...(effect ? { challenge: effect } : {}),
           ...(lease ? { lease } : {}),
-        }).pipe(Effect.either)
-        if (searched._tag === "Left") {
-          const error = searched.left
+        }).pipe(Effect.result)
+        if (searched._tag === "Failure") {
+          const error = searched.failure
           const routeAttempts = error instanceof SearchCascadeError || error instanceof SearchRuntimeError ? error.attempts.slice(0, 20) : []
           // Runtime errors may contain transport/provider text. Never expose
           // them as the aggregate reason; safe route classifications are kept
@@ -220,6 +230,10 @@ export const WebSearchTool = Tool.define(
               : error instanceof SearchCascadeError ? routeAttempts.length ? "unknown" : "unavailable" : "unknown",
             reason: message.slice(0, 1_024),
             enabledRoutes: settings.enabled,
+            // A failed cascade never selected a provider; keep the same core
+            // provenance keys on every branch so the model-facing metadata
+            // contract stays one shape.
+            provider: undefined as SearchRouteID | undefined,
             routeAttempts: projectRouteAttempts(routeAttempts),
             ...(failure ? { failure } : {}),
           }
@@ -241,7 +255,7 @@ export const WebSearchTool = Tool.define(
           }
           return { title, metadata, output: metadata.reason }
         }
-        const outcome = searched.right
+        const outcome = searched.success
         const result = outcome.result
         if (lease) {
           yield* Effect.promise(() => settleToolBatchLease(lease, { effectID: lease.effectID }))
@@ -258,7 +272,7 @@ export const WebSearchTool = Tool.define(
           latencyMs: result.latencyMs,
           truncated: result.truncated,
           routeAttempts: projectRouteAttempts(outcome.attempts),
-          routePlanDigest: outcome.routePlanDigest,
+          routePlanDigest: result.routePlanDigest,
           results: result.results.slice(0, 10).map((item) => ({
             url: item.url.slice(0, 2_048),
             title: item.title.slice(0, 240),
@@ -267,6 +281,11 @@ export const WebSearchTool = Tool.define(
         })
         const metadata = {
           status: "succeeded",
+          // Every execution branch projects the same core provenance keys:
+          // outcome status/reason, the enabled route set, and the selected
+          // provider (undefined only before a route was chosen).
+          reason: "Web search completed on an approved route.",
+          enabledRoutes: settings.enabled,
           provider: result.provider,
           providerLabel: webSearchProviderLabel(result.provider),
           routeClass: result.routeClass,

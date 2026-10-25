@@ -2,7 +2,7 @@ import { createHash } from "node:crypto"
 import type { GlobalLaunchProfilesConfig } from "@/config/config"
 import type { DirectAttemptScopeV1, ManagedAttemptScopeV1 } from "@/session/managed-control"
 import type { GuardApprovalRequest } from "@opencode-ai/core/session/supervisor"
-import { validateExecutionLaunchProfileRef, type ExecutionLaunchProfileRefV1 } from "./process-scope"
+import { validateExecutionLaunchProfileRef, validateManagedAttemptScopeFieldsV1, type ExecutionLaunchProfileRefV1 } from "./process-scope"
 
 /**
  * Core Config's immutable projection accepted by HostKernel's single
@@ -152,7 +152,7 @@ export function validateExecutionLaunchProfileDefinitionV1(
     environmentPolicy: "sanitized_host",
     ...(input.dapPolicy === undefined
       ? {}
-      : { dapPolicy: Object.freeze({ allowEvaluate: input.dapPolicy.allowEvaluate }) }),
+      : { dapPolicy: Object.freeze({ allowEvaluate: input.dapPolicy.allowEvaluate as boolean }) }),
   })
 }
 
@@ -424,8 +424,8 @@ export async function resolveExecutionLaunchProfileV1(input: {
   })
   return Object.freeze({
     status: "needs_approval",
-    challengeID: raw.challengeID,
-    effectID: raw.effectID,
+    challengeID: raw.challengeID as string,
+    effectID: raw.effectID as string,
     capabilityID: expectedCapability,
     locationID: raw.locationID,
     sessionID: raw.sessionID,
@@ -504,17 +504,12 @@ function validateLaunchManagedAttempt(
   sessionID: string,
   locationID: string,
 ): ManagedAttemptScopeV1 {
-  if (!record(input) || !exactKeys(input as unknown as Record<string, unknown>, [
-    "goalID", "runID", "taskID", "attemptID", "ownerEpoch", "expectedManagedRevision",
-    "locationID", "sessionID", "workspaceRevision", "effectiveMaxTokens", "remainingTokens", "delegationBindingDigest",
-  ])) throw new TypeError("managed launch Attempt scope is malformed")
-  if (input.sessionID !== sessionID || input.locationID !== locationID ||
-    !/^[1-9][0-9]{0,19}$/.test(input.ownerEpoch) || BigInt(input.ownerEpoch) > MAX_U64 ||
-    !/^(0|[1-9][0-9]{0,19})$/.test(input.expectedManagedRevision) || BigInt(input.expectedManagedRevision) > MAX_U64 ||
-    !/^[1-9][0-9]{0,19}$/.test(input.effectiveMaxTokens) || BigInt(input.effectiveMaxTokens) > MAX_U64 ||
-    !/^[1-9][0-9]{0,19}$/.test(input.remainingTokens) || BigInt(input.remainingTokens) > BigInt(input.effectiveMaxTokens) ||
-    !/^blake3:[0-9a-f]{64}$/.test(input.workspaceRevision) ||
-    !/^blake3:[0-9a-f]{64}$/.test(input.delegationBindingDigest)) {
+  // Exact current ManagedAttemptScopeV1 contract (provider-request pin trio,
+  // permission-scope digest and leased worktree target) shared with HostKernel
+  // process-scope admission. A stale shorter key set here would reject every
+  // genuine managed Attempt at the launch boundary.
+  validateManagedAttemptScopeFieldsV1(input)
+  if (input.sessionID !== sessionID || input.locationID !== locationID) {
     throw new TypeError("managed launch Attempt scope does not match its authenticated Session/Location pins")
   }
   for (const value of [input.goalID, input.runID, input.taskID, input.attemptID, input.sessionID, input.locationID]) {
@@ -549,4 +544,3 @@ function validateLaunchDirectAttempt(
   }
   return Object.freeze({ ...input })
 }
-import { createHash } from "node:crypto"

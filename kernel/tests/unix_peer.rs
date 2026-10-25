@@ -56,8 +56,8 @@ fn authenticates_peer_credentials_and_executable_before_returning_channel() {
     });
 
     let (mut stream, peer) = listener.accept_authenticated().unwrap();
-    assert_eq!(peer.uid, policy.uid);
-    assert_eq!(peer.executable, policy.executable);
+    assert_eq!(peer.uid(), policy.uid);
+    assert_eq!(peer.executable(), policy.executable);
     let mut request = [0; 5];
     stream.read_exact(&mut request).unwrap();
     assert_eq!(&request, b"hello");

@@ -1,0 +1,364 @@
+A1 TYPECHECK INTEGRATION — RAW PER-PACKAGE RESULTS
+=================================================
+Repo:            /home/sarvesh/business_Dev/agentx
+Date:            2026-10-24
+Tool:            node_modules/.bin/tsgo --noEmit (TypeScript native preview 7.0.0-dev.20251207)
+TMPDIR:          $REPO/.tmp-a1/tmp   (repo-local, exported for every run)
+Config source:   existing packages/<pkg>/tsconfig.json only — NO tsconfig was created or edited
+Packages:        schema, core, tui, opencode, llm, server, protocol, sdk-next  (8/8)
+Slot protocol:   serialized; the runner waits while a foreign tsgo/tsc binary (detected via
+                 /proc/*/comm, not command-line text) is running, then runs exactly one package.
+Runner scripts:  .tmp-a1/run-a1-typechecks.sh   (Run A)
+                 .tmp-a1/run-a1-typechecks-c.sh  (Run C)
+Raw logs:        Run A  .tmp-a1/logs/*.log       (overwritten by the aborted Run B, see NOTE 3)
+                 Run C  .tmp-a1/logs-c/*.log     (intact)
+
+Per-package record format: PACKAGE | EXIT CODE | SECONDS | DIAGNOSTIC COUNT | file(line,col): error TSxxxx list
+
+
+RUN A — first serialized full run (2026-10-24 20:58–21:01 UTC)
+---------------------------------------------------------------
+packages/schema      EXIT 2 |   3s |  7 diagnostics
+  test/agent-profile-v2.test.ts(73,36): error TS2769
+  test/session-usage-provenance.test.ts(42,10): error TS18048
+  test/session-usage-provenance.test.ts(42,53): error TS2769
+  test/session-usage-provenance.test.ts(43,10): error TS18048
+  test/session-usage-provenance.test.ts(43,66): error TS2769
+  test/session-usage-provenance.test.ts(103,99): error TS2769
+  test/subagent-status-v1.test.ts(29,110): error TS2769
+
+packages/core       EXIT 0 |  29s |  0 diagnostics
+  (no diagnostics)
+
+packages/tui        EXIT 0 |  23s |  0 diagnostics
+  (no diagnostics)
+
+packages/opencode   EXIT 2 |  81s | 28 diagnostics
+  src/server/routes/instance/httpapi/handlers/checkpoint.ts(89,60): error TS2322
+  src/server/routes/instance/httpapi/handlers/checkpoint.ts(89,75): error TS2345
+  src/server/routes/instance/httpapi/server.ts(296,3): error TS2322
+  src/tool/managed-artifact-search.ts(248,126): error TS2322
+  src/tool/managed-artifact-search.ts(338,124): error TS2322
+  src/tool/repo-tools.ts(496,3): error TS2322
+  src/tool/task.ts(545,9): error TS2353
+  src/tool/task.ts(1877,95): error TS7053
+  src/tool/task.ts(1962,42): error TS2552
+  src/tool/task.ts(1962,88): error TS2552
+  test/cli/run/runtime.boot.test.ts(203,7): error TS2322
+  test/cli/run/runtime.boot.test.ts(266,7): error TS2322
+  test/fixture/config.ts(14,28): error TS2345
+  test/fixture/config.ts(30,5): error TS1117
+  test/fixture/config.ts(31,5): error TS1117
+  test/identity/runtime-service-identity.test.ts(79,34): error TS2769
+  test/server/httpapi-control-plane.test.ts(155,7): error TS2322
+  test/server/httpapi-control-plane.test.ts(361,104): error TS2345
+  test/server/httpapi-control-plane.test.ts(389,103): error TS2345
+  test/server/httpapi-control-plane.test.ts(446,103): error TS2345
+  test/server/httpapi-control-plane.test.ts(477,107): error TS2345
+  test/server/httpapi-control-plane.test.ts(504,111): error TS2345
+  test/server/httpapi-v2-question-live.test.ts(223,23): error TS2345
+  test/tool/task.test.ts(390,25): error TS7006
+  test/tool/task.test.ts(390,36): error TS7006
+  test/tool/task.test.ts(390,47): error TS7006
+  test/tool/task.test.ts(390,53): error TS7006
+  test/tool/task.test.ts(398,19): error TS2503
+
+packages/llm        EXIT 0 |   5s |  0 diagnostics
+  (no diagnostics)
+
+packages/sdk-next   EXIT 2 |  32s | 23 diagnostics
+  src/index.ts(4,29): error TS2307
+  src/index.ts(16,8): error TS2307
+  src/index.ts(17,36): error TS2307
+  src/opencode.ts(1,26): error TS2307
+  src/opencode.ts(32,85): error TS2554
+  test/embedded.test.ts(49,34): error TS18046
+  test/embedded.test.ts(49,76): error TS18046
+  test/embedded.test.ts(52,20): error TS2345
+  test/embedded.test.ts(57,58): error TS2345
+  test/embedded.test.ts(58,63): error TS7006
+  test/embedded.test.ts(85,30): error TS7006
+  test/embedded.test.ts(90,28): error TS7006
+  test/embedded.test.ts(93,37): error TS18046
+  test/embedded.test.ts(98,14): error TS18046
+  test/embedded.test.ts(100,29): error TS2345
+  test/embedded.test.ts(121,11): error TS18046
+  test/embedded.test.ts(123,15): error TS18046
+  test/embedded.test.ts(123,57): error TS18046
+  test/embedded.test.ts(139,29): error TS2345
+  test/embedded.test.ts(182,29): error TS2345
+  test/embedded.test.ts(198,7): error TS2345
+  ../server/src/routes.ts(42,39): error TS2739
+  ../server/src/routes.ts(48,51): error TS2739
+
+packages/server     EXIT 2 |  24s |  2 diagnostics
+  src/routes.ts(42,39): error TS2739
+  src/routes.ts(48,51): error TS2739
+
+packages/protocol   EXIT 0 |   3s |  0 diagnostics
+  (no diagnostics)
+
+RUN A TOTAL: exit-code failures 4/8 (schema, opencode, sdk-next, server); 60 diagnostics.
+
+
+A1 FIXES APPLIED BETWEEN RUN A AND RUN C (test-fixture/type only, product types untouched)
+-----------------------------------------------------------------------------------------
+packages/schema/test/agent-profile-v2.test.ts            assertion operand widened to string          (cleared 1)
+packages/schema/test/session-usage-provenance.test.ts    `as const` fixtures + optional chaining      (cleared 5)
+packages/schema/test/subagent-status-v1.test.ts          branded SessionID fixture values             (cleared 1; see NOTE 4)
+packages/opencode/test/fixture/config.ts                 removed 2 shadowed duplicate keys; added
+                                                         getRepoIntelProfile/updateRepoIntelProfile
+                                                         defaults (both required by Config.Interface) (cleared 3)
+packages/opencode/test/tool/task.test.ts                 explicit mock param types; replaced invalid
+                                                         `SessionSupervisor.Interface` type reference
+                                                         with imported `type Interface` alias         (cleared 5)
+
+Test-first / runtime evidence for the A1 edits:
+  packages/schema  test/session-usage-provenance+agent-profile-v2+subagent-status-v1:
+                   11 pass / 1 fail before, 11 pass / 1 fail after — the single fail
+                   ("publishes the definition and Rust-resolved projections in one strict JSON
+                   contract") is pre-existing product/schema-vs-Rust contract drift, unrelated
+                   to the A1 edits, and is routed in a1-ownership-triage.md.
+  packages/schema  typecheck after fixes: EXIT 0, 0 diagnostics.
+  packages/opencode test/session/instruction.test.ts: 9 pass / 1 todo / 0 fail
+  packages/opencode test/tool/repo-tools.test.ts:     13 pass / 0 fail
+  packages/opencode test/tool/task.test.ts:           4 pass / 14 fail — all 14 failures are
+                   `tool.task authenticated dispatch` product failures surfacing from
+                   src/tool/task.ts (which itself carries 4 diagnostics); the A1 hunks are
+                   type-level only (parameter annotations + type alias), so no runtime delta
+                   is possible from them. Routed to P2/P7.
+  packages/opencode typecheck after fixes: 28 -> 20 diagnostics (see RUN C NOTE 2).
+
+
+RUN C — final serialized full run (2026-10-24 ~21:5x–22:0x UTC)
+----------------------------------------------------------------
+packages/schema      EXIT 0 |  14s |  0 diagnostics
+  (no diagnostics)
+
+packages/core        EXIT 2 | 104s |  4 diagnostics
+  test/session-direct-read-batch.test.ts(569,25): error TS2345
+  test/session-direct-read-batch.test.ts(585,31): error TS2769
+  test/session-direct-read-batch.test.ts(623,47): error TS2345
+  test/session-direct-read-batch.test.ts(721,31): error TS2769
+
+packages/tui         EXIT 0 |  94s |  0 diagnostics
+  (no diagnostics)
+
+packages/opencode    EXIT 2 | 290s | 21 diagnostics
+  src/server/routes/instance/httpapi/handlers/checkpoint.ts(89,60): error TS2322
+  src/server/routes/instance/httpapi/handlers/checkpoint.ts(89,75): error TS2345
+  src/server/routes/instance/httpapi/server.ts(296,3): error TS2322
+  src/tool/managed-artifact-search.ts(248,126): error TS2322
+  src/tool/managed-artifact-search.ts(338,124): error TS2322
+  src/tool/repo-tools.ts(496,3): error TS2322
+  src/tool/task.ts(545,9): error TS2353
+  src/tool/task.ts(1877,95): error TS7053
+  src/tool/task.ts(1962,42): error TS2552
+  src/tool/task.ts(1962,88): error TS2552
+  test/cli/run/runtime.boot.test.ts(203,7): error TS2322
+  test/cli/run/runtime.boot.test.ts(266,7): error TS2322
+  test/effect/instance-state.test.ts(50,3): error TS2345          <- NEW since Run A
+  test/identity/runtime-service-identity.test.ts(79,34): error TS2769
+  test/server/httpapi-control-plane.test.ts(155,7): error TS2322
+  test/server/httpapi-control-plane.test.ts(361,104): error TS2345
+  test/server/httpapi-control-plane.test.ts(389,103): error TS2345
+  test/server/httpapi-control-plane.test.ts(446,103): error TS2345
+  test/server/httpapi-control-plane.test.ts(477,107): error TS2345
+  test/server/httpapi-control-plane.test.ts(504,111): error TS2345
+  test/server/httpapi-v2-question-live.test.ts(223,23): error TS2345
+
+packages/llm         EXIT 0 |  34s |  0 diagnostics
+  (no diagnostics)
+
+packages/server      EXIT 0 | 166s |  0 diagnostics
+  (no diagnostics)
+
+packages/protocol    EXIT 0 |  20s |  0 diagnostics
+  (no diagnostics)
+
+packages/sdk-next    EXIT 0 | 100s |  0 diagnostics
+  (no diagnostics)
+
+RUN C TOTAL: exit-code failures 2/8 (core, opencode); 25 diagnostics.
+Full raw messages for RUN C: .tmp-a1/logs-c/<package>.log
+
+NOTE 1 — packages/sdk-next went 23 -> 0 and packages/server 2 -> 0 during this session, without
+         any A1 edit: the `@horizoncode/client` module now resolves (the Run A TS2307 cascade and
+         the 16 test/embedded.test.ts unknown-cascades are gone) and src/routes.ts:42,48 no longer
+         reports the reviewer-field mismatch. Fixed by another owner between Run A and Run C; A1
+         does not claim credit or verification of that change beyond this typecheck observation.
+NOTE 2 — packages/opencode 28 -> 20 across Run A -> post-fix probes -> Run C; Run C shows 21
+         because test/effect/instance-state.test.ts(50,3) appeared while Run C ran (P7 owns
+         instance-state.ts). The 8 A1-cleared rows (3 fixture/config + 5 tool/task.test) are
+         absent from Run C.
+NOTE 3 — Run B (an intermediate full attempt) was killed by A1's own outer `timeout 1500` while
+         it waited for the slot, and its log directory .tmp-a1/logs/ was left inconsistent with
+         .tmp-a1/run-output-runB.txt. Run B's stdout is retained at .tmp-a1/run-output-runB.txt
+         and Run A's stdout at .tmp-a1/run-output-runA.txt. Run C is the authoritative final run
+         and uses its own untouched log directory.
+NOTE 4 — packages/schema went 7 -> 0 by A1 edits (see fix list). subagent-status-v1.test.ts(29,110)
+         was cleared by branded SessionID fixture values rather than by a cast.
+NOTE 5 — Concurrency observed, not touched: another session's slot-wait command
+         (PID 749727, `mkdir -p .tmp-a1/logs-a1v2 ...`) was waiting in a command-line `grep` loop
+         that matches its own command line, so it never starts a tsgo run. It was left alone;
+         A1's Run C uses /proc/*/comm detection and was unaffected.
+NOTE 6 — No Cargo, no Git writes, no provider/network calls, no release or verification claim.
+
+CHECKPOINT — 2026-10-25 A1 continuation
+--------------------------------------
+No new package-wide TypeScript run was started in this continuation. Run C above remains the
+last measured 8-package inventory (25 diagnostics), not a current diagnostic count: the live
+phase ledger and P6/P7/P9 reports document subsequent source/test changes, so carrying Run C
+rows forward as current would be misleading. No focused/package typecheck was started either;
+the remaining package-owned sources are still being changed by P2/P6/P7/P9, and the requested
+single heavyweight typecheck must wait until those inputs settle.
+
+Explicit dependency/exclusion: P6 owns the DecimalU64/AgentProfileV2 migration, including
+`packages/schema/src/agent-profile-v2.ts`, `packages/core/src/config.ts`, and associated profile
+fixtures. A1 made no edits to those paths. P6's current ledger entry says the schema-vs-Rust
+contract remains blocked on the Rust/Core/TS migration. Do not count or repair that finding as
+an A1 fixture-only typecheck fix.
+
+Slot check at checkpoint: the repository-local `/proc/*/comm` probe found no `tsgo`, `tsc`, or
+`bun` process. This only establishes that no such compiler was running at that instant; it does
+not establish that package sources have settled. No source or focused test change was safe to
+claim from the available current diagnostics, so the final `bun run horizoncode:typecheck` and
+exact diagnostic refresh remain pending source-owner settlement. No Cargo, Git write, provider,
+network, or live E2E operation was performed.
+
+CORRECTION — single integrated A1 command run after the checkpoint
+------------------------------------------------------------------
+After the user reiterated the A1 task, the compiler slot was checked again (no `tsgo`/`tsc` in
+`/proc/*/comm`) and exactly one `bun run horizoncode:typecheck` was run with repo-local TMPDIR.
+Command: `TMPDIR="$PWD/.tmp-a1/tmp" bun run horizoncode:typecheck`, from repo root.
+Output: `reports/typecheck-a1-current-2026-10-25.log`; **EXIT 2** in its first chained package,
+`packages/opencode`. Because the script uses `&&`, TUI and Core were **not run** in this command.
+Do not use Run C's 25 as today's count: this fresh OpenCode invocation reports **26 diagnostic
+locations** (several multiline diagnostics have nested explanation lines):
+
+  packages/opencode/src/server/routes/instance/httpapi/server.ts:364,365,366,367,368,369,370,371,373
+    TS2322; all are temporary `__p_*` layer-type probes assigning `true` to the displayed
+    `Layer.Services` types. No probe was removed because this is a shared P6/route-tree debugging
+    file, not an A1-exclusive edit.
+  packages/opencode/test/agent/agent-node-deps.test.ts:45,57 TS2739
+    `AgentProfileService` fixture is missing `AgentProfileInterface` members (P6 profile-fixture
+    exclusion; left to P6).
+  packages/opencode/test/server/httpapi-control-plane.test.ts:412,104; 440,103; 497,103;
+    530,107; 560,111 TS2345, and 622,623,624,626,627,630,632,633,634 TS2322/TS2503
+    The five route-test bodies expose an `AgentProfileService` requirement mismatch; the other
+    nine are temporary `__probe*` type probes. This is a P6-owned/profile-related test file and
+    was left untouched, per exclusion/ownership.
+  packages/opencode/test/server/httpapi-v2-question-live.test.ts:218,23 TS2345
+    `httpApiLayer` has `unknown` requirements where `testEffect` expects `never`; P6 owns this
+    route test and its report documents that the mismatch is not fixable inside the test alone.
+  packages/opencode/test/session/checkpoint-control.test.ts:79,28 TS2769
+    fixture's nested `classification` widened to `string`; routed to P7/checkpoint owner and
+    left untouched rather than racing its exclusive test scope.
+
+No other package's diagnostics are established by this command. The current A1 source task is
+therefore **PARTIAL/BLOCKED on owner handoffs**, not zero: P6 needs to finish its profile/service
+and question-route rows (including the prohibited DecimalU64/profile files); P7 needs to own the
+checkpoint fixture; the route-tree and control-plane `__p_*`/`__probe*` blocks need their owner to
+remove or replace temporary probes. Once these owners report their source settled, A1 must run the
+single integrated command again and record all three package outcomes (OpenCode, TUI, Core).
+
+This command did not run live E2E or any focused test, Cargo, provider/network call, or Git
+operation. No source files were edited in this continuation. The standalone log is retained for
+the exact compiler output; the interactive command exit was 2.
+
+
+CONTINUATION — OWNER STATUS AFTER A1 SERIAL CHECKS (2026-10-25)
+---------------------------------------------------------------
+Process inventory before this update:
+  `ps -eo pid=,args= | grep -E '[t]sgo|[b]un.*typecheck|[t]ypecheck.*bun'`
+  returned only the inspection shell and grep itself; no compiler/typecheck process was active.
+
+Source-owner updates (not independently rechecked by A1):
+  - P7 reports its three assigned OpenCode diagnostics absent after its correction:
+    `src/agent/agent.ts` at the former `(503,582)` rows and
+    `test/session/checkpoint-control.test.ts(79,28)` are reported cleared. P7's
+    focused rows run had earlier left `src/image/image.ts(5,24)` TS2307 (Photon
+    WASM module resolution) and `src/tool/managed-artifact-search.ts(378,124)`
+    TS2322 outside that assigned set. See `reports/phases/P7.md` §Continuation 26
+    and the earlier focused-row result; these are owner statements, not this
+    continuation's fresh compiler evidence.
+  - P6's DecimalU64 changes remain in progress. Its report/phase handoff still
+    identifies the cross-package decimal-string migration rows and two remaining
+    OpenCode diagnostics: Photon WASM resolution at `src/image/image.ts(5,24)`
+    and the existing live-test layer requirement at
+    `test/server/httpapi-v2-question-live.test.ts(218,23)` TS2345. The P6 report
+    additionally records unresolved `httpapi-control-plane` service-layer rows;
+    their exact locations may have shifted during edits, so the old 26-row
+    `reports/typecheck-a1-current-2026-10-25.log` must not be presented as their
+    current compiler output.
+  - The serial Core/TUI check recorded above saw P6-owned DecimalU64 rows in
+    `packages/core/src/config.ts` (9) and Core profile/context fixtures (7), plus
+    the P7-owned former `packages/opencode/src/agent/agent.ts(582,77)` boundary
+    row. These are observations from that check, not asserted as current after
+    subsequent owner edits. The P7 owner reports that former agent.ts row absent.
+
+No focused package check was started in this continuation: although the process
+slot was idle, P6's migration and the referenced OpenCode layer/WASM items are
+not yet reported settled. Do not overlap active source edits. Once P6 and P7
+explicitly confirm their source is settled, run only the affected focused package
+checks, record exact output/exit and refresh the current diagnostics. Run the
+single integrated `TMPDIR="$PWD/.tmp-a1/tmp" bun run horizoncode:typecheck`
+only after both owners confirm settlement; preserve its exact exit and route all
+failures. No green claim without exit 0. No Cargo, Git operation, provider,
+network, or live E2E was performed.
+
+
+CONTINUATION — TUI/CORE SERIAL PACKAGE CHECKS (2026-10-25)
+---------------------------------------------------------
+Before starting, a process-table query for `bun`, `tsgo`, or `node` commands matching
+`typecheck|tsgo|horizoncode` returned no output. TUI and Core were then checked serially; no
+integrated command was started. Both commands used the repository-local temporary directory:
+
+  TMPDIR="$PWD/.tmp-a1/tmp" bun run --cwd packages/tui typecheck
+  TMPDIR="$PWD/.tmp-a1/tmp" bun run --cwd packages/core typecheck
+
+packages/tui — EXIT 2, 9 diagnostic locations:
+  ../core/src/config.ts(466,99) TS2322 — string is not assignable to number
+  ../core/src/config.ts(470,110) TS2362 — arithmetic left operand is not numeric
+  ../core/src/config.ts(470,126) TS2363 — arithmetic right operand is not numeric
+  ../core/src/config.ts(488,68) TS2322 — string is not assignable to number
+  ../core/src/config.ts(500,75) TS2367 — string/number comparison has no overlap
+  ../core/src/config.ts(511,63) TS2367 — string/number comparison has no overlap
+  ../core/src/config.ts(520,73) TS2367 — string/number comparison has no overlap
+  ../core/src/config.ts(547,73) TS2367 — string/number comparison has no overlap
+  ../core/src/config.ts(555,13) TS2322 — string is not assignable to number
+
+packages/core — EXIT 2, 17 diagnostic locations:
+  src/config.ts(466,99) TS2322 — string is not assignable to number
+  src/config.ts(470,110) TS2362 — arithmetic left operand is not numeric
+  src/config.ts(470,126) TS2363 — arithmetic right operand is not numeric
+  src/config.ts(488,68) TS2322 — string is not assignable to number
+  src/config.ts(500,75) TS2367 — string/number comparison has no overlap
+  src/config.ts(511,63) TS2367 — string/number comparison has no overlap
+  src/config.ts(520,73) TS2367 — string/number comparison has no overlap
+  src/config.ts(547,73) TS2367 — string/number comparison has no overlap
+  src/config.ts(555,13) TS2322 — string is not assignable to number
+  test/config/agent-profiles.test.ts(93,29) TS2769 — number is not assignable to string
+  test/config/agent-profiles.test.ts(94,29) TS2769 — number is not assignable to string
+  test/config/agent-profiles.test.ts(102,40) TS2769 — number is not assignable to string
+  test/config/agent-profiles.test.ts(108,42) TS2769 — number is not assignable to string
+  test/config/agent-profiles.test.ts(114,42) TS2769 — number is not assignable to string
+  test/config/agent-profiles.test.ts(191,40) TS2769 — number is not assignable to string
+  test/session/context-selection.test.ts(11,27) TS2345 — number is not assignable to string
+  ../opencode/src/agent/agent.ts(582,77) TS2345 — string is not assignable to number
+
+Diagnostic fingerprint/routing:
+  - Shared 9-location fingerprint in both packages: `config.ts` locations above (9 total),
+    string/number mismatches from the P6 DecimalU64/AgentProfileV2 migration; route to P6.
+  - Core-only: `test/config/agent-profiles.test.ts` (6) and
+    `test/session/context-selection.test.ts` (1), number-to-string fixture/API mismatches from
+    that same profile migration; route to P6.
+  - Core-only: `packages/opencode/src/agent/agent.ts(582,77)` (1), string-to-number mismatch
+    at the P6 profile migration boundary in a P7-owned file; route to P7 for source-owner triage
+    coordinated with P6 (do not edit here).
+  - TUI has no TUI-local diagnostic; its 9 diagnostics are inherited from Core's config.
+
+These are current package-check observations only; no standalone output logs were created and no
+diagnostic was fixed or claimed resolved. The required integrated `bun run horizoncode:typecheck`
+remains withheld until P6/P7 sources settle and their owners report green. Never treat these
+package checks or the earlier OpenCode-only integrated exit 2 as green.

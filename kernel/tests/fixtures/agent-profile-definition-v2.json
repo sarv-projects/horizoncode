@@ -3,7 +3,7 @@
   "definition": {
     "schemaVersion": 2,
     "profileId": "specialist.reader",
-    "revision": 1,
+    "revision": "1",
     "name": "Reader",
     "description": "Read-only specialist",
     "source": "user",
@@ -16,7 +16,7 @@
     "harness": "native-minimal",
     "reasoning": "low",
     "variants": [],
-    "instructions": { "extraRefs": [], "maxCompiledTokens": 4096 },
+    "instructions": { "extraRefs": [], "maxCompiledTokens": "4096" },
     "tools": [{ "effect": "allow", "toolPattern": "files.read" }],
     "allowedSkillIds": [],
     "deniedSkillIds": [],
@@ -35,6 +35,6 @@
     "maxParallelChildren": 1,
     "enabled": true
   },
-  "definitionDigest": "blake3:00651d8a6a771b4e81272151cf93c9c16bbcf01b2c3be0aa05386a411437e3c2",
+  "definitionDigest": "blake3:5d8cf89d00954914704ae11bb687db2545685a8ba2dda641770ec20ff04525d6",
   "permissionCeilingDigest": "blake3:6c4e398e0fe5d4c90472db6d8db31992a2f1379fcbf688c8f3b6bb7213dd7e54"
 }

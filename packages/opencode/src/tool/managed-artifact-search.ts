@@ -1,9 +1,11 @@
 /** Bounded text search and line-range projection over verified HostKernel artifacts. */
-import { Effect, Schema, Scope } from "effect"
+import { Effect, Option, Schema, Scope } from "effect"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { Location as LocationSchema } from "@opencode-ai/schema"
 import { InstanceState } from "@/effect/instance-state"
 import type { ArtifactRefWireV1, DirectAttemptScopeV1 } from "@opencode-ai/core/session/supervisor"
+import { SessionSupervisor } from "@opencode-ai/core/session/supervisor"
+import { TrustedPrincipalContext } from "@opencode-ai/core/trusted-principal"
 import { sameManagedAttemptScope, type ManagedAttemptAuthority } from "@/session/managed-control"
 import * as ArtifactControl from "../session/artifact-control"
 import * as Tool from "./tool"
@@ -19,6 +21,68 @@ const MAX_RESULTS = 100
 const MAX_EXCERPT_BYTES = 2_048
 const MAX_SEARCH_OUTPUT_BYTES = 32 * 1024
 const MAX_RANGE_TEXT_BYTES = 60 * 1024
+
+type SearchMetadata = {
+  readonly status: string
+  readonly generation: string
+  readonly fidelity: "FAILED" | "FULL" | "SAMPLE"
+  readonly redaction: "APPLIED" | "NOT_NEEDED" | "UNKNOWN"
+  readonly classification: "public" | "sensitive" | "workspace"
+  readonly count: number
+  readonly scannedBytes: number
+} | {
+  readonly status: "UNAVAILABLE"
+  readonly reason: string
+}
+
+type RangeMetadata = {
+  readonly status: string
+  readonly generation: string
+  readonly lineStart: number
+  readonly lineEndExclusive: number
+  readonly bytes: number
+  readonly invalidUtf8LinesSkipped: number
+  readonly fidelity: "FAILED" | "FULL" | "SAMPLE"
+  readonly redaction: "APPLIED" | "NOT_NEEDED" | "UNKNOWN"
+  readonly classification: "public" | "sensitive" | "workspace"
+} | {
+  readonly status: "UNAVAILABLE"
+  readonly reason: string
+}
+
+/**
+ * Fail-closed results, typed once at their exact metadata shape so the
+ * `UNAVAILABLE` status stays the literal the API contract exposes.
+ */
+const SEARCH_READ_UNAVAILABLE: Tool.ExecuteResult<SearchMetadata> = {
+  title: "Artifact search unavailable",
+  metadata: { status: "UNAVAILABLE", reason: "authenticated_artifact_read_unavailable" },
+  output: "status: UNAVAILABLE\nreason: authenticated artifact read failed",
+}
+const RANGE_READ_UNAVAILABLE: Tool.ExecuteResult<RangeMetadata> = {
+  title: "Artifact range unavailable",
+  metadata: { status: "UNAVAILABLE", reason: "authenticated_artifact_read_unavailable" },
+  output: "status: UNAVAILABLE\nreason: authenticated artifact read failed",
+}
+const RANGE_ORDER_UNAVAILABLE: Tool.ExecuteResult<RangeMetadata> = {
+  title: "Artifact range unavailable",
+  metadata: { status: "UNAVAILABLE", reason: "lineEndExclusive must be greater than lineStart" },
+  output: "status: UNAVAILABLE\nreason: lineEndExclusive must be greater than lineStart",
+}
+
+/**
+ * The principal the HostKernel artifact reads must run under: the live
+ * `TrustedPrincipalContext` of the current execution when one is present,
+ * otherwise the per-call authenticated identity captured on the tool context.
+ * Neither source means the read cannot be authorized, so it stays unavailable
+ * instead of running without an authenticated principal.
+ */
+const authenticatedPrincipal = (ctx: Tool.Context) =>
+  Effect.gen(function* () {
+    const authenticated = yield* Effect.serviceOption(TrustedPrincipalContext)
+    if (Option.isSome(authenticated)) return authenticated.value
+    return ctx.trustedPrincipal === undefined ? undefined : { principal: ctx.trustedPrincipal }
+  })
 
 const ArtifactRef = Schema.Struct({
   artifactId: Schema.String.check(Schema.isMinLength(1)).check(Schema.isMaxLength(256)),
@@ -69,7 +133,7 @@ const asRef = (value: Ref): ArtifactRefWireV1 => ({
   classification: value.classification,
 })
 
-const authorizeArtifact = Effect.fn("ManagedArtifactSearch.authorize")(function* (ctx: Tool.Context, ref: Ref) {
+const authorizeArtifact = Effect.fn("ManagedArtifactSearch.authorize")(function* (ctx: Tool.Context, ref: Ref, locationRef: typeof LocationSchema.Ref.Type) {
   const directAuthority = ctx.extra?.directAttempt as { readonly currentScope?: () => DirectAttemptScopeV1 } | undefined
   const managedAuthority = ctx.extra?.managedAttempt as ManagedAttemptAuthority | undefined
   if (directAuthority && managedAuthority) {
@@ -86,8 +150,6 @@ const authorizeArtifact = Effect.fn("ManagedArtifactSearch.authorize")(function*
     if (current.sessionID !== ctx.sessionID) {
       return yield* Effect.fail(new Error("Artifact search denied: managed Attempt does not own the current Session"))
     }
-    const instance = yield* InstanceState.context
-    const locationRef = LocationSchema.Ref.make({ directory: AbsolutePath.make(instance.directory) })
     const resolved = yield* ArtifactControl.resolveVerifiedScope({
       sessionID: ctx.sessionID,
       locationRef,
@@ -98,8 +160,6 @@ const authorizeArtifact = Effect.fn("ManagedArtifactSearch.authorize")(function*
     }
     scope = resolved
   } else {
-    const instance = yield* InstanceState.context
-    const locationRef = LocationSchema.Ref.make({ directory: AbsolutePath.make(instance.directory) })
     const directSessionScope = yield* ArtifactControl.directSessionReadScope({
       sessionID: ctx.sessionID,
       locationRef,
@@ -214,14 +274,22 @@ const excerpt = (line: Buffer, index: number) => {
 
 const searchTool = (name: "artifacts_search_text" | "terminal_search", capabilityID: "artifacts.search_text" | "terminal.search") => Tool.define(
   name,
-  Effect.succeed({
+  Effect.gen(function* () {
+    const supervisor = yield* SessionSupervisor.Service
+    return {
     description: "Search a verified managed or direct-child terminal artifact using bounded HostKernel range reads. Sensitive or redaction-unknown artifacts are unavailable.",
     parameters: SearchParameters,
     capability: { id: capabilityID, effectClass: "read_only" },
-    execute: (params: typeof SearchParameters.Type, ctx: Tool.Context) => Effect.gen(function* () {
+    execute: (params: typeof SearchParameters.Type, ctx: Tool.Context): Effect.Effect<Tool.ExecuteResult<SearchMetadata>> => Effect.gen(function* () {
       yield* ctx.ask({ permission: "read", patterns: [`artifact:${params.artifactRef.artifactId}`], always: [], metadata: { artifactId: params.artifactRef.artifactId } })
+      const principal = yield* authenticatedPrincipal(ctx)
+      if (principal === undefined) return SEARCH_READ_UNAVAILABLE
       return yield* Effect.gen(function* () {
-      const authorized = yield* authorizeArtifact(ctx, params.artifactRef)
+      // Per-directory state is resolved here, inside the deferred execute path,
+      // so ToolRegistry materialization never depends on an InstanceRef.
+      const instance = yield* InstanceState.context
+      const locationRef = LocationSchema.Ref.make({ directory: AbsolutePath.make(instance.directory) })
+      const authorized = yield* authorizeArtifact(ctx, params.artifactRef, locationRef)
       const mode = params.mode ?? "literal"
       const flags = params.flags ?? ""
       const maxResults = Math.min(params.maxResults ?? 50, MAX_RESULTS)
@@ -287,8 +355,12 @@ const searchTool = (name: "artifacts_search_text" | "terminal_search", capabilit
         ...(scanStop !== "eof" ? [`truncatedBy: ${scanStop}`] : []),
       ].join("\n")
       return { title: `Artifact search: ${params.query}`, metadata: { status: freshness, generation: authorized.ref.digest, fidelity: authorized.metadata.fidelity, redaction: authorized.metadata.redaction, classification: authorized.metadata.artifactRef.classification, count: matches.length, scannedBytes: scan.scannedBytes }, output }
-      }).pipe(Effect.catch(() => Effect.succeed({ title: "Artifact search unavailable", metadata: { status: "UNAVAILABLE", reason: "authenticated_artifact_read_unavailable" }, output: "status: UNAVAILABLE\nreason: authenticated artifact read failed" })))
-    }),
+      }).pipe(
+        Effect.catch(() => Effect.succeed(SEARCH_READ_UNAVAILABLE)),
+        Effect.provideService(TrustedPrincipalContext, principal),
+      )
+      }).pipe(Effect.provideService(SessionSupervisor.Service, supervisor)),
+    }
   }),
 )
 
@@ -297,15 +369,23 @@ export const ManagedTerminalSearchTool = searchTool("terminal_search", "terminal
 
 export const ManagedTerminalOutputRangeTool = Tool.define(
   "terminal_output_range",
-  Effect.succeed({
+  Effect.gen(function* () {
+    const supervisor = yield* SessionSupervisor.Service
+    return {
     description: "Read a bounded zero-based half-open line range from a verified managed text artifact using HostKernel range reads.",
     parameters: RangeParameters,
     capability: { id: "terminal.output_range", effectClass: "read_only" },
-    execute: (params: typeof RangeParameters.Type, ctx: Tool.Context) => Effect.gen(function* () {
-      if (params.lineEndExclusive <= params.lineStart) return { title: "Artifact range unavailable", metadata: { status: "UNAVAILABLE" }, output: "status: UNAVAILABLE\nreason: lineEndExclusive must be greater than lineStart" }
+    execute: (params: typeof RangeParameters.Type, ctx: Tool.Context): Effect.Effect<Tool.ExecuteResult<RangeMetadata>> => Effect.gen(function* () {
+      if (params.lineEndExclusive <= params.lineStart) return RANGE_ORDER_UNAVAILABLE
       yield* ctx.ask({ permission: "read", patterns: [`artifact:${params.artifactRef.artifactId}`], always: [], metadata: { artifactId: params.artifactRef.artifactId, lineStart: params.lineStart, lineEndExclusive: params.lineEndExclusive } })
+      const principal = yield* authenticatedPrincipal(ctx)
+      if (principal === undefined) return RANGE_READ_UNAVAILABLE
       return yield* Effect.gen(function* () {
-      const authorized = yield* authorizeArtifact(ctx, params.artifactRef)
+      // Per-directory state is resolved here, inside the deferred execute path,
+      // so ToolRegistry materialization never depends on an InstanceRef.
+      const instance = yield* InstanceState.context
+      const locationRef = LocationSchema.Ref.make({ directory: AbsolutePath.make(instance.directory) })
+      const authorized = yield* authorizeArtifact(ctx, params.artifactRef, locationRef)
       const maxBytes = Math.min(params.maxBytes ?? MAX_RANGE_TEXT_BYTES, MAX_RANGE_TEXT_BYTES)
       const lines: string[] = []
       let bytes = 0
@@ -313,7 +393,7 @@ export const ManagedTerminalOutputRangeTool = Tool.define(
       let truncated = false
       let invalidUtf8LinesSkipped = 0
       const deadline = Date.now() + DEFAULT_DURATION_MS
-      const scan = yield* scanLines({
+      const scan = yield* Effect.scoped(scanLines({
         scope: authorized.scope, ref: authorized.ref, limitBytes: DEFAULT_SCAN_BYTES, deadline, signal: ctx.abort, onLongLine: () => {},
         onLine: (line) => {
           if (line.number < params.lineStart) return Effect.succeed(true)
@@ -336,7 +416,7 @@ export const ManagedTerminalOutputRangeTool = Tool.define(
             return line.number + 1 < params.lineEndExclusive
           })
         },
-      })
+      }))
       if (scan.stop === "cancelled") return yield* Effect.interrupt
       const status = scan.stop === "eof" || scan.stop === "result_limit" ? "COMPLETE" : "PARTIAL"
       return {
@@ -344,7 +424,11 @@ export const ManagedTerminalOutputRangeTool = Tool.define(
         metadata: { status: truncated || invalidUtf8LinesSkipped > 0 ? "PARTIAL" : status, generation: authorized.ref.digest, lineStart: params.lineStart, lineEndExclusive: effectiveEnd, bytes, invalidUtf8LinesSkipped, fidelity: authorized.metadata.fidelity, redaction: authorized.metadata.redaction, classification: authorized.metadata.artifactRef.classification },
         output: [`status: ${truncated || invalidUtf8LinesSkipped > 0 || status === "PARTIAL" ? "PARTIAL" : "COMPLETE"}`, `generation: ${authorized.ref.digest}`, `fidelity: ${authorized.metadata.fidelity}; redaction: ${authorized.metadata.redaction}; classification: ${authorized.metadata.artifactRef.classification}`, `lines: [${params.lineStart}, ${effectiveEnd})`, `invalidUtf8LinesSkipped: ${invalidUtf8LinesSkipped}`, ...lines.map((line) => safeDisplay(line.replace(/\n$/u, ""))), ...(truncated ? ["truncatedBy: bytes"] : scan.stop !== "eof" && scan.stop !== "result_limit" ? [`truncatedBy: ${scan.stop}`] : [])].join("\n"),
       }
-      }).pipe(Effect.catch(() => Effect.succeed({ title: "Artifact range unavailable", metadata: { status: "UNAVAILABLE", reason: "authenticated_artifact_read_unavailable" }, output: "status: UNAVAILABLE\nreason: authenticated artifact read failed" })))
-    }),
+      }).pipe(
+        Effect.catch(() => Effect.succeed(RANGE_READ_UNAVAILABLE)),
+        Effect.provideService(TrustedPrincipalContext, principal),
+      )
+      }).pipe(Effect.provideService(SessionSupervisor.Service, supervisor)),
+    }
   }),
 )

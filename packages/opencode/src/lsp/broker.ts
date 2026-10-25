@@ -220,6 +220,9 @@ export function identityOf(input: {
 
 function managedAttemptScopeKey(scope: ManagedAttemptScopeV1 | undefined): string {
   if (!scope) return "direct"
+  // Every authority field participates: two scopes that differ only in the
+  // provider-request pin or the leased worktree are different identities and
+  // must never share a supervised-process broker generation.
   return JSON.stringify([
     scope.goalID,
     scope.runID,
@@ -227,12 +230,24 @@ function managedAttemptScopeKey(scope: ManagedAttemptScopeV1 | undefined): strin
     scope.attemptID,
     scope.ownerEpoch,
     scope.expectedManagedRevision,
+    scope.requestSequence,
+    scope.requestID,
+    scope.contextSelectionDigest,
     scope.locationID,
     scope.sessionID,
     scope.workspaceRevision,
     scope.effectiveMaxTokens,
     scope.remainingTokens,
     scope.delegationBindingDigest,
+    scope.permissionScopeDigest,
+    scope.worktreeTarget.worktreeID,
+    scope.worktreeTarget.worktreeBaseRevision,
+    scope.worktreeTarget.worktreePoolRevision,
+    scope.worktreeTarget.locationID,
+    scope.worktreeTarget.workspaceID,
+    scope.worktreeTarget.workspaceRef,
+    scope.worktreeTarget.canonicalRoot,
+    scope.worktreeTarget.workspaceRevision,
   ])
 }
 

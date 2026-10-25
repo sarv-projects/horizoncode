@@ -148,7 +148,7 @@ export interface Interface {
   readonly readRange: (input: ReadRangeInput) => Effect.Effect<ReadRangeResult, ArtifactSearchError>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/ArtifactSearch") {}
+export class Service extends Context.Service<Service, Interface>()("@horizoncode/ArtifactSearch") {}
 
 export interface ArtifactStat {
   readonly type: string

@@ -53,7 +53,11 @@ export const ContextSelectionV1 = Schema.Struct({
 }).check(Schema.makeFilter((selection) => {
   const max = "18446744073709551615"
   const u64 = (value: string) => value.length < max.length || (value.length === max.length && value <= max)
+  const decimalU64 = (value: string) => /^(?:0|[1-9][0-9]{0,19})$/.test(value) && u64(value)
   if ((selection.lane === "managed") !== (selection.attemptID !== undefined)) return "lane must match managed Attempt authority"
+  if (selection.lane === "direct" && selection.sources.some((source) => source.kind === "managed-task" || source.kind === "accepted-spec")) {
+    return "direct selection cannot pin managed-lane sources"
+  }
   if (!u64(selection.sourceRevision)) return "sourceRevision exceeds u64"
   if ((selection.attemptID === undefined) !== (selection.requestSequence === undefined)) return "attemptID and requestSequence must be supplied together"
   if (selection.requestSequence !== undefined && (!u64(selection.requestSequence) || selection.requestSequence === "0" || Number(selection.requestSequence) > 1024)) return "requestSequence must be between 1 and 1024"
@@ -61,6 +65,17 @@ export const ContextSelectionV1 = Schema.Struct({
   if (selection.mode === "fresh" && selection.sources.some((source) => source.kind === "session-message")) return "fresh selection cannot include parent messages"
   if (selection.mode !== "fresh" && !selection.sources.some((source) => source.kind === "session-message")) return "non-fresh selection requires a session message source"
   if (selection.sources.some((source) => source.kind === "session-message" && !source.sourceID.startsWith("msg_"))) return "session message sourceID must use the canonical msg_ form"
+  for (const source of selection.sources) {
+    if (source.kind === "session-message" && !decimalU64(source.sourceRevision)) {
+      return "session-message sourceRevision must be a canonical DecimalU64 cursor"
+    }
+    if (source.kind === "tool" && source.sourceID.startsWith("toolset:") && source.harnessRevision === undefined) {
+      return "the toolset manifest must pin its harness revision"
+    }
+    if (!(source.kind === "tool" && source.sourceID.startsWith("toolset:")) && source.harnessRevision !== undefined) {
+      return "only the toolset manifest pins a harness revision"
+    }
+  }
   const ids = selection.sources.map((source) => `${source.kind}\0${source.sourceID}`)
   if (new Set(ids).size !== ids.length) return "context source references must be unique"
   const expectedAuthority: Record<typeof selection.sources[number]["kind"], typeof selection.sources[number]["sourceAuthority"]> = {
@@ -82,7 +97,7 @@ export const ContextSelectionV1 = Schema.Struct({
   if (selection.lane === "direct") {
     const profiles = selection.sources.filter((source) => source.kind === "agent-profile")
     const profile = profiles[0]
-    if (profiles.length !== 1 || !profile || profile.sourceAuthority !== "core-config" || !["system", "user"].includes(profile.trust) || profile.inclusionReason !== "profile" || !/^[1-9][0-9]*$/.test(profile.sourceRevision) || !/^blake3:[0-9a-f]{64}$/.test(profile.contentDigest)) {
+    if (profiles.length !== 1 || !profile || profile.sourceAuthority !== "core-config" || !["system", "user"].includes(profile.trust) || profile.inclusionReason !== "profile" || !decimalU64(profile.sourceRevision) || profile.sourceRevision === "0" || !/^blake3:[0-9a-f]{64}$/.test(profile.contentDigest)) {
       return "direct selection requires exactly one active Core Config profile ref with revision and digest"
     }
   }

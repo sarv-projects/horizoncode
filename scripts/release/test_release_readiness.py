@@ -714,6 +714,23 @@ class DistributionAuditTests(unittest.TestCase):
         )
         self.assertTrue(_container_builder_has_push_command('await $`docker buildx build --push .`\n'))
 
+    def test_distribution_audit_accepts_current_release_upload_unavailable_policy(self) -> None:
+        build_script = self.root / "packages" / "opencode" / "script" / "build.ts"
+        build_script.parent.mkdir(parents=True, exist_ok=True)
+        build_script.write_text(
+            'throw new Error("HorizonCode release upload is unavailable while exact third-party notices, '
+            'signing/update policy, and release acceptance remain incomplete.");\n',
+            encoding="utf-8",
+        )
+
+        report = audit_repository(self.root)
+
+        self.assertTrue(report["package_target"]["direct_package_release_upload_disabled"])
+        self.assertNotIn(
+            "the direct package build still permits or lacks a source guard for release upload",
+            report["blockers"],
+        )
+
     def test_release_audit_tracks_nix_packaging_inputs_for_git_visibility(self) -> None:
         self._commit_audit_fixture()
         nix_sources = (
@@ -891,19 +908,39 @@ class DistributionAuditTests(unittest.TestCase):
         )
         self.assertIn("no built package artifact was supplied or found", report["blockers"])
 
-    def test_first_party_mit_decision_requires_distinct_license_and_notice(self) -> None:
+    def test_first_party_mit_decision_requires_tracked_distinct_license_and_notice(self) -> None:
         (self.root / "package.json").write_text(
             json.dumps({"name": "horizoncode-workspace", "private": True, "license": "MIT"}),
             encoding="utf-8",
         )
         (self.root / "LICENSE").write_text("MIT License\nfirst-party grant\n", encoding="utf-8")
         (self.root / "NOTICE").write_text("OpenCode attribution; exact third-party closure pending\\n", encoding="utf-8")
+        self._commit_audit_fixture()
+        subprocess.run(["git", "add", "-f", "LICENSE", "NOTICE"], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "--quiet", "-m", "track legal artifacts"], cwd=self.root, check=True)
 
         report = audit_repository(self.root)
 
         self.assertTrue(report["distribution_license"]["legal_decision_made"])
+        self.assertTrue(report["distribution_license"]["root_license_tracked"])
+        self.assertTrue(report["distribution_license"]["root_notice_tracked"])
         self.assertFalse(report["distribution_license"]["root_license_matches_vendor"])
         self.assertIn("no built package artifact was supplied or found", report["blockers"])
+
+    def test_untracked_first_party_license_and_notice_are_not_authorization_evidence(self) -> None:
+        (self.root / "package.json").write_text(
+            json.dumps({"name": "horizoncode-workspace", "private": True, "license": "MIT"}),
+            encoding="utf-8",
+        )
+        (self.root / "LICENSE").write_text("MIT License\\nfirst-party grant\\n", encoding="utf-8")
+        (self.root / "NOTICE").write_text("OpenCode attribution\\n", encoding="utf-8")
+        self._commit_audit_fixture()
+
+        report = audit_repository(self.root)
+
+        self.assertFalse(report["distribution_license"]["legal_decision_made"])
+        self.assertFalse(report["distribution_license"]["root_license_tracked"])
+        self.assertFalse(report["distribution_license"]["root_notice_tracked"])
 
     def test_dependency_license_symlink_is_not_counted_as_direct_legal_file(self) -> None:
         package_license = self.root / "node_modules" / "first-party-runtime" / "LICENSE"

@@ -30,7 +30,15 @@ import { location } from "./fixture/location"
 // host-scoped kernel binary is packaged exactly like `packages/opencode/script/build.ts`
 // and the wider Core graph is assembled the same way `kernel-projection-live.test.ts`
 // assembles it, so these cases exercise the real Guard, effect and terminal process.
-const hostKernelRust = resolve(import.meta.dir, "../../../kernel/target/debug/hz-kernel")
+const hostKernelCandidates = [
+  ...(process.env.HZ_KERNEL_BIN ? [process.env.HZ_KERNEL_BIN] : []),
+  resolve(import.meta.dir, "../../../kernel/target/debug/hz-kernel"),
+  // Shared phase build cache: consume the already-built kernel binary from
+  // the single Cargo slot's target dir instead of triggering a duplicate
+  // heavy build.
+  resolve(import.meta.dir, "../../../target-p2/debug/hz-kernel"),
+]
+const hostKernelRust = hostKernelCandidates.find((path) => existsSync(path)) ?? hostKernelCandidates[0]
 const sessionID = "ses_terminal_run_live"
 const turnContextDigest = `sha256:${"d".repeat(64)}`
 const resolvedEnvironment: Record<string, string> = {}
@@ -238,7 +246,12 @@ const replyUserApproval = (
       .pipe(Effect.provideService(TrustedPrincipalContext, { principal: { kind: "server_auth", subject: "terminal-live-test" } }))
   })
 
-test("direct child Attempt scope survives Core prepare, atomic bind and consume as u64 MessagePack", async () => {
+// `prepare_tool_batch` does not carry an Attempt lane: the kernel's `strict_fields`
+// allowlist is `managedAttempt | directTurnScope | workspaceCommandProfiles`, and a
+// direct Attempt scope enters a prepared batch only through the atomic
+// `bind_direct_attempt_effects` transition. This case therefore prepares the batch
+// without an Attempt lane and proves the scope survives the bind and consume legs.
+test("direct child Attempt scope binds to a Core-prepared batch and is consumed as u64 MessagePack", async () => {
   await withLiveHostKernel(({ supervisor, workspace }) =>
     Effect.gen(function* () {
       const workspaceID = "wrk_live_direct_attempt"
@@ -308,7 +321,6 @@ test("direct child Attempt scope survives Core prepare, atomic bind and consume 
         locationRef,
         batchID,
         turnContextDigest: sha("f"),
-        directAttempt,
         calls: [{
           callID: "call_direct_attempt_wire",
           capabilityID: "files.write",
@@ -383,19 +395,55 @@ test("Core forwards stale direct Attempt revision and HostKernel denies before G
         ownerEpoch: String(fields.ownerEpoch),
         expectedRevision: "2",
       } as DirectAttemptScopeV1
-      const exit = yield* Effect.exit(
-        supervisor.requestHostKernel("effects.v2", "prepare_tool_batch", {
-          sessionID: childSessionID,
-          locationID,
-          batchID: "batch_direct_attempt_stale_revision",
-          turnContextDigest: sha("f"),
-          directAttempt: directAttemptScopeToWire(scope),
-          calls: [{
-            callID: "call_stale_scope",
-            capabilityID: "files.write",
-            arguments: { path: "must-not-write.txt", content: "denied" },
-          }],
+      // `prepare_tool_batch` carries no Attempt lane (`strict_fields` allows
+      // only `managedAttempt | directTurnScope | workspaceCommandProfiles`);
+      // a direct Attempt scope enters a prepared batch solely through the
+      // canonical `bind_direct_attempt_effects` transition. Prepare the real
+      // batch without an Attempt lane, then prove the kernel fences the stale
+      // revision on that bind before any Guard-admitted write can execute.
+      const approvals: Queue.Queue<GuardApprovalRequest> = yield* Queue.unbounded<GuardApprovalRequest>()
+      const listener = yield* Effect.forkScoped(
+        Effect.gen(function* () {
+          const events = yield* EventV2.Service
+          yield* events.listen((event) => {
+            if (event.type === GuardApprovalRequested.type) {
+              Queue.offerUnsafe(approvals, event.data as GuardApprovalRequest)
+            }
+            return Effect.void
+          })
         }),
+      )
+      const reply = yield* Effect.forkScoped(
+        Effect.gen(function* () {
+          const request = yield* Queue.take(approvals)
+          expect(request.capabilityID).toBe("files.write")
+          yield* supervisor
+            .replyGuardApproval({ approvalID: request.approvalID, decision: "allow_once" })
+            .pipe(Effect.provideService(TrustedPrincipalContext, { principal: { kind: "server_auth", subject: "terminal-live-test" } }))
+        }),
+      )
+      const admission = yield* supervisor.prepareToolBatch({
+        sessionID: childSessionID,
+        locationRef,
+        batchID: "batch_direct_attempt_stale_revision",
+        turnContextDigest: sha("f"),
+        calls: [{
+          callID: "call_stale_scope",
+          capabilityID: "files.write",
+          arguments: { path: "must-not-write.txt", content: "denied" },
+        }],
+      })
+      expect(admission.status).toBe("prepared")
+      if (admission.status !== "prepared") throw new Error("expected a prepared direct child write")
+      yield* Fiber.join(reply)
+      const exit = yield* Effect.exit(
+        supervisor.requestHostKernel("managed.v1", "bind_direct_attempt_effects", {
+          attemptID,
+          locationID,
+          sessionID: childSessionID,
+          effectIDs: [admission.lease.effectID],
+          directAttempt: directAttemptScopeToWire(scope),
+        }, { deliveryID: `${attemptID}.bind.stale` }),
       )
       expect(Exit.isFailure(exit)).toBe(true)
       if (Exit.isFailure(exit)) {
@@ -403,7 +451,9 @@ test("Core forwards stale direct Attempt revision and HostKernel denies before G
         expect(failure).toBeInstanceOf(Error)
         expect(String(failure)).toContain("Attempt revision changed")
       }
+      // The stale bind executed nothing: the guarded write must not exist.
       expect(existsSync(join(workspace, "must-not-write.txt"))).toBe(false)
+      yield* Fiber.interrupt(listener)
     }),
   )
 }, 30_000)
@@ -618,7 +668,8 @@ describe("guarded terminal.run through the real host kernel", () => {
     expect(typeof outcome.result.previewTruncated).toBe("boolean")
     expect(typeof outcome.result.artifactTruncated).toBe("boolean")
     expect(["FULL", "SAMPLE", "FAILED"]).toContain(outcome.result.artifactFidelity)
-    expect(outcome.result.artifactRef.length).toBeGreaterThan(0)
+    expect(outcome.result.artifactRef.artifactId.length).toBeGreaterThan(0)
+    expect(outcome.result.artifactRef.digest).toMatch(/^blake3:[0-9a-f]{64}$/)
     expect(outcome.result.receiptRef.length).toBeGreaterThan(0)
     expect(outcome.marker).toBe(true)
   }, 60000)

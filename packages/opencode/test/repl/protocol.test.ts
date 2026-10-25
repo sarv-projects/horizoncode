@@ -86,9 +86,10 @@ describe("repl.protocol start requests", () => {
   })
 
   test("callback capability declarations use unique canonical IDs only", () => {
-    expect(() => parseStartRequest(start({ callbackCapabilities: ["files.read", "files.read"] }))).toThrow(
-      "callback capability set contains duplicates",
+    const duplicate = capture<ProtocolError>(() =>
+      parseStartRequest(start({ callbackCapabilities: ["files.read", "files.read"] })),
     )
+    expect(duplicate.detail).toBe("callback capability set contains duplicates")
     expect(() => parseStartRequest(start({ callbackCapabilities: [" Files.Read "] }))).toThrow(ProtocolError)
     expect(() => parseStartRequest(start({ callbackCapabilities: ["*"] }))).toThrow(ProtocolError)
   })

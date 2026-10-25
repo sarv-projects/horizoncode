@@ -10,13 +10,39 @@ import { Location } from "@opencode-ai/core/location"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { AgentProfileService } from "@opencode-ai/core/config"
 import { Effect, Layer, Schema, Stream } from "effect"
-import { ManagedControl, ManagedControlError } from "@/session/managed-control"
+import { Info as ProviderInfoSchema, Service as ProviderService } from "@/provider/provider"
+import { Service as AuthService } from "@/auth"
+import { SecretBrokerV1 } from "@opencode-ai/schema/secret-broker-v1"
+import { blake3 } from "@noble/hashes/blake3.js"
+import { bytesToHex } from "@noble/hashes/utils.js"
+import { ManagedControl, ManagedControlError, type VerificationRunResult } from "@/session/managed-control"
 import * as AgentProfileV2 from "@opencode-ai/schema/agent-profile-v2"
 import { ContextSelectionV1 } from "@opencode-ai/schema/context-selection-v1"
 import { testEffect } from "../lib/effect"
 
 const RECEIPT = `blake3:${"a".repeat(64)}`
+// Derived from the stable ChallengeSet identity, as HostKernel requires.
+const VERIFICATION_RUN_ID = `verification_${"a".repeat(64)}`
+// Final-Inspect binds the exact canonical child identity patterns.
+const ATTEMPT_ID = `attempt_${"c".repeat(64)}`
+const LOCATION_ID = `loc_${"d".repeat(64)}`
 const SCOPE = `sha256:${"b".repeat(64)}`
+const CONTEXT_SELECTION_DIGEST = `blake3:${"c".repeat(64)}`
+// Exact deterministic route projection over the TEST_PROVIDER_INFO fixture,
+// mirroring provider.ts's managed route derivation byte-for-byte.
+const TEST_ROUTE_MATERIAL = JSON.stringify([
+  "horizoncode.managed-provider-route.v1",
+  "test",
+  "test-model",
+  "@ai-sdk/anthropic",
+  "anthropic",
+])
+const TEST_ROUTE_ID = `llm_${bytesToHex(blake3(new TextEncoder().encode(TEST_ROUTE_MATERIAL)))}`
+const TEST_ENDPOINT_REVISION = `blake3:${bytesToHex(blake3(new TextEncoder().encode(JSON.stringify([
+  "horizoncode.managed-provider-endpoint.v1",
+  TEST_ROUTE_MATERIAL,
+  "https://api.example.test/v1",
+]))))}`
 const DIRECT_FACTS = {
   locationID: "location-one",
   workspaceID: "workspace-one",
@@ -28,7 +54,7 @@ const DIRECT_FACTS = {
 const DIRECT_PROFILE = Schema.decodeUnknownSync(AgentProfileV2.AgentProfileDefinitionV2)({
   schemaVersion: 2,
   profileId: "specialist.reader",
-  revision: 1,
+  revision: "1",
   name: "Reader",
   description: "Read-only specialist",
   source: "user",
@@ -41,7 +67,7 @@ const DIRECT_PROFILE = Schema.decodeUnknownSync(AgentProfileV2.AgentProfileDefin
   harness: "native-rich",
   reasoning: "low",
   variants: [],
-  instructions: { extraRefs: [], maxCompiledTokens: 4096 },
+  instructions: { extraRefs: [], maxCompiledTokens: "4096" },
   tools: [{ effect: "allow", toolPattern: "files.read" }],
   allowedSkillIds: [],
   deniedSkillIds: [],
@@ -139,6 +165,8 @@ class FakeHostKernel {
       if (override) return override
       if (operation === "admit") {
         const selection = body.profileSelection as { profileId: string; revision: string }
+        const contextSelection = body.contextSelection as { requestID?: unknown }
+        const requestID = String(contextSelection.requestID ?? `req_managed_${String(body.attemptID)}_1`)
         const managedAttempt = {
           goalID: String(body.goalID),
           runID: String(body.runID),
@@ -146,12 +174,26 @@ class FakeHostKernel {
           attemptID: String(body.attemptID),
           ownerEpoch: "7",
           expectedManagedRevision: "5",
+          requestSequence: "1",
+          requestID,
+          contextSelectionDigest: CONTEXT_SELECTION_DIGEST,
           locationID: String(body.locationID),
           sessionID: String(body.sessionID),
           workspaceRevision: `blake3:${"f".repeat(64)}`,
           effectiveMaxTokens: "5000",
           remainingTokens: "5000",
           delegationBindingDigest: `blake3:${"a".repeat(64)}`,
+          permissionScopeDigest: `blake3:${"d".repeat(64)}`,
+          worktreeTarget: {
+            worktreeID: "worktree-1",
+            worktreeBaseRevision: "base-1",
+            worktreePoolRevision: "3",
+            locationID: String(body.locationID),
+            workspaceID: "workspace-1",
+            workspaceRef: "refs/heads/managed",
+            canonicalRoot: "/workspace/managed",
+            workspaceRevision: `blake3:${"f".repeat(64)}`,
+          },
         }
         return {
           status: "ADMITTED",
@@ -159,6 +201,7 @@ class FakeHostKernel {
           runID: String(body.runID),
           taskID: String(body.taskID),
           attemptID: String(body.attemptID),
+          parentSessionID: String(body.parentSessionID),
           ownerEpoch: 7n,
           locationID: String(body.locationID),
           sessionID: String(body.sessionID),
@@ -166,11 +209,15 @@ class FakeHostKernel {
           attemptPhase: "EXECUTING",
           runPhase: "RUNNING",
           revision: 5n,
+          requestSequence: 1,
+          requestID,
+          contextSelectionDigest: CONTEXT_SELECTION_DIGEST,
           profile: {
             profileID: selection.profileId,
-            profileRevision: selection.revision,
+            profileRevision: 1,
             profileDigest: DIRECT_PROFILE_DIGEST,
           },
+          managedProviderRoute: body.managedProviderRoute,
           managedAttempt,
         }
       }
@@ -231,11 +278,30 @@ class FakeHostKernel {
       if (operation === "begin_verification") {
         const started = {
           status: "NEEDS_APPROVAL",
+          schemaVersion: 1,
           goalID: String(body.goalID),
           runID: String(body.runID),
-          finalRevision: RECEIPT,
-          verificationRunID: "verification-run-client",
+          taskID: "task-client",
+          attemptID: ATTEMPT_ID,
+          ownerEpoch: "7",
+          specID: "spec-client",
+          specDigest: RECEIPT,
+          profileID: DIRECT_PROFILE.profileId,
+          profileRevision: "1",
+          profileDigest: DIRECT_PROFILE_DIGEST,
+          evidencePlanDigest: RECEIPT,
+          setIdentityDigest: RECEIPT,
+          verificationRunID: `verification_${"a".repeat(64)}`,
           challengeSetDigest: RECEIPT,
+          finalRevision: RECEIPT,
+          approvalLocation: {
+            locationID: LOCATION_ID,
+            workspaceID: "wrk_client_workspace",
+            canonicalRoot: "/workspace/client",
+            workspaceRevision: RECEIPT,
+          },
+          evidenceDigest: null,
+          artifactRefs: [],
           challenges: [
             {
               ...verifierGuardProjection(),
@@ -243,7 +309,7 @@ class FakeHostKernel {
               challengeID: "challenge-verifier-1",
               effectID: "effect-verifier-1",
               capabilityID: "builtin.verifier",
-              locationID: "location-client",
+              locationID: LOCATION_ID,
               inputDigest: RECEIPT,
               normalizedTargets: [{ criterionID: "tests-pass" }],
               expiresAtUnixMs: Date.now() + 60_000,
@@ -289,13 +355,161 @@ class FakeHostKernel {
         }
       }
       if (operation === "execute_verification") {
+        const begun = self.managedResponses.begin_verification as
+          | { challenges?: ReadonlyArray<Record<string, unknown>> }
+          | undefined
+        const artifactRefs = (begun?.challenges ?? []).map((challenge) => ({
+          criterionID: challenge.criterionID,
+          artifactRefs: [
+            {
+              artifactID: "artifact-verifier",
+              digest: RECEIPT,
+              byteLength: "12",
+              mediaType: "text/plain",
+              classification: "WORKSPACE",
+            },
+          ],
+        }))
         return {
-          status: "SUCCEEDED",
+          status: "SETTLING",
+          schemaVersion: 1,
           goalID: String(body.goalID),
           runID: String(body.runID),
-          verificationRunID: String(body.verificationRunID),
+          taskID: "task-client",
+          attemptID: ATTEMPT_ID,
+          ownerEpoch: "7",
+          specID: "spec-client",
+          specDigest: RECEIPT,
+          profileID: DIRECT_PROFILE.profileId,
+          profileRevision: "1",
+          profileDigest: DIRECT_PROFILE_DIGEST,
+          evidencePlanDigest: RECEIPT,
+          setIdentityDigest: RECEIPT,
+          verificationRunID: VERIFICATION_RUN_ID,
+          challengeSetDigest: RECEIPT,
           finalRevision: RECEIPT,
+          sourceRevision: RECEIPT,
+          approvalLocation: {
+            locationID: LOCATION_ID,
+            workspaceID: "wrk_client_workspace",
+            canonicalRoot: "/workspace/client",
+            workspaceRevision: RECEIPT,
+          },
+          evidenceDigest: RECEIPT,
+          artifactRefs,
+          settlementCandidate: {
+            goalID: String(body.goalID),
+            runID: String(body.runID),
+            taskID: "task-client",
+            attemptID: ATTEMPT_ID,
+            bindingDigest: RECEIPT,
+            specID: "spec-client",
+            specDigest: RECEIPT,
+            evidenceDigest: RECEIPT,
+            finalRevision: RECEIPT,
+            effectChainDigest: RECEIPT,
+            attemptStateDigest: RECEIPT,
+            ownerLogID: "owner-log-client",
+            ownerLogSequence: "42",
+            ownerLogEventDigest: RECEIPT,
+            managedRevision: "13",
+            usageAccounting: {
+              accountingCursor: "12",
+              tokenKnownSubtotal: "120",
+              costKnownSubtotalMicros: "45",
+              tokenRemainderStatus: "UNKNOWN",
+              costRemainderStatus: "KNOWN",
+              usageState: "UNKNOWN",
+              stopReason: "USAGE_UNCERTAIN",
+              ceilingDigest: RECEIPT,
+              costStatus: "provider-reported",
+              metricStatuses: {
+                input: "provider-reported",
+                output: "unknown",
+                reasoning: "unknown",
+                "cache.read": "unknown",
+                "cache.write": "unknown",
+              },
+              receiptCount: "2",
+              receiptChainDigest: RECEIPT,
+            },
+          },
           revision: 13n,
+        }
+      }
+      if (operation === "prepare_final_inspect") {
+        return {
+          status: "needs_approval",
+          challengeID: "challenge-root-inspect-1",
+          effectID: "effect-root-inspect-1",
+          capabilityID: "git.worktree.list",
+          locationID: LOCATION_ID,
+          inputDigest: RECEIPT,
+          targets: [{ path: "." }],
+          normalizedTargets: [{ path: "." }],
+          expiresAtUnixMs: Date.now() + 60_000,
+          policySummary: "List the final worktree state for the verified Run.",
+          origin: "managed_root",
+          source: "host.managed_worktree",
+          policyID: "broker-process.local.v1",
+          policyDigest: RECEIPT,
+          normalizedAction: "git.worktree.list",
+          argumentSummary: { status: "available", text: "git worktree list --porcelain ." },
+          requestedGuarantees: [
+            "configured_executable",
+            "bounded_argv_env",
+            "beneath_workspace_root",
+            "one_use",
+          ],
+          guaranteeAssessment: { status: "not_assessed", residual: null },
+        }
+      }
+      if (operation === "execute_final_inspect") {
+        return {
+          status: "INSPECTED",
+          operationID: "inspect-final-op-1",
+          hostReceiptRef: RECEIPT,
+          workspaceRevision: RECEIPT,
+          worktreeStatus: "CLEAN",
+          dirtyEntryCount: "0",
+          dirtyEntriesDigest: "",
+          containsUserOwnedChanges: false,
+          owned: true,
+          noFollow: true,
+        }
+      }
+      if (operation === "settle_dispatch") {
+        return {
+          status: "SETTLED",
+          goalID: String(body.goalID),
+          runID: String(body.runID),
+          verificationRunID: VERIFICATION_RUN_ID,
+          setIdentityDigest: RECEIPT,
+          challengeSetDigest: RECEIPT,
+          taskID: "task-client",
+          attemptID: ATTEMPT_ID,
+          workerExecutionID: "worker-client",
+          disposition: "RELEASED",
+          proofDigest: RECEIPT,
+          ownerLogID: "pool-log-client",
+          ownerLogSequence: "8",
+          ownerLogEventDigest: RECEIPT,
+          workerPoolRevision: "9",
+          receiptDigest: RECEIPT,
+          worktreeDisposition: {
+            ownerEpoch: "7",
+            disposition: "REUSABLE",
+            settlementReceiptDigest: RECEIPT,
+            finalWorktreeOperationID: "inspect-final-op-1",
+            finalWorktreeHostReceiptRef: RECEIPT,
+            observedWorkspaceRevision: RECEIPT,
+            inspectReceiptDigest: RECEIPT,
+            ownerLogID: "worktree-log-client",
+            ownerLogSequence: "27",
+            ownerLogEventDigest: RECEIPT,
+            workerPoolRevision: "10",
+            receiptDigest: RECEIPT,
+          },
         }
       }
       if (operation === "verify_task") {
@@ -456,6 +670,62 @@ class FakeHostKernel {
       }
       if (operation === "snapshot") {
         if (self.goalSnapshotResponse) return self.goalSnapshotResponse
+        // Default live Goal projection: one accepted SpecVersion and the
+        // active Run, so verifier pin cross-checks can pass without a seed.
+        return {
+          goalID: String(body.goalID ?? "goal-client"),
+          revision: 7n,
+          goal: {
+            objective: "Build a safe feature",
+            projectRef: "project-client",
+            workspaceRef: "workspace-client",
+            createdBy: "server_auth:author",
+            activeSpecVersionID: "spec-client",
+          },
+          specs: [
+            {
+              specID: "spec-client",
+              specDigest: RECEIPT,
+              accepted: true,
+              acceptedBy: "server_auth:reviewer",
+              acceptedAtMs: 123,
+              rejectedBy: null,
+              rejectedAtMs: null,
+              parentVersionID: null,
+              objective: "Build a safe feature",
+              projectRef: "project-client",
+              workspaceRef: "workspace-client",
+              capabilityScope: [],
+              scope: ["packages/opencode"],
+              constraints: ["No effect bypass"],
+              criteria: [{ id: "criterion-1", description: "The behavior is tested" }],
+              budget: {
+                maxTasks: 8,
+                maxAttemptsPerTask: 2,
+                maxRunDurationMs: 60_000,
+                maxMemoryBytes: null,
+                maxDiskBytes: null,
+                maxWorkers: 1,
+                maxTokens: null,
+                maxCostMicros: null,
+              },
+              sourceDigests: [SCOPE],
+              proposedBy: "server_auth:author",
+            },
+          ],
+          runs: [
+            { runID: String(body.runID ?? "run-client"), specID: "spec-client", phase: "RUNNING", sessionLink: null },
+          ],
+        }
+      }
+      if (operation === "settlement_recovery") {
+        // No durable terminal settlement is pending unless a test overrides it;
+        // runVerification then proceeds to the live verification path.
+        return {
+          status: "NO_SETTLEMENT_PENDING",
+          goalID: String(body.goalID),
+          runID: String(body.runID),
+        }
       }
       return yield* Effect.fail(
         new SessionSupervisorError({
@@ -511,6 +781,31 @@ const testSupervisorLayer = Layer.succeed(
         : Effect.fail(new SessionSupervisorError({ stage: "host-kernel", reason: "host kernel is unavailable" })),
     subscribeHostKernelEvents: () => Stream.die("unexpected host kernel event subscription"),
     watchSession: () => Effect.die("unexpected session watch"),
+    directSessionPermissionModeSnapshot: () => Effect.die("unexpected direct permission mode snapshot"),
+    directProviderPermissionScope: () => Effect.die("unexpected direct provider permission scope"),
+    setDirectSessionPermissionMode: () => Effect.die("unexpected direct permission mode write"),
+    issueDirectSessionGrant: () => Effect.die("unexpected direct session grant"),
+    revokeDirectSessionGrant: () => Effect.die("unexpected direct session grant revoke"),
+    resolveEditorProcessApproval: () => Effect.die("unexpected editor process approval"),
+    authorizeEditorProtocolOperation: () => Effect.die("unexpected editor protocol authorization"),
+    authorizeReplOperation: () => Effect.die("unexpected repl authorization"),
+    awaitManagedProviderApproval: () => Effect.die("unexpected managed provider approval"),
+    awaitManagedRootApproval: () =>
+      Effect.succeed({ effectID: "effect-root-inspect-1", capabilityLeaseDigest: RECEIPT, locationID: LOCATION_ID }),
+    hostFeatureEnabled: () => Effect.die("unexpected host feature probe"),
+    directSessionWorkspaceSnapshot: () => Effect.die("unexpected direct workspace snapshot"),
+    managedEffectWaveReceipts: () => Effect.die("unexpected managed wave receipts"),
+    managedCurrentEpochRecoveryQuiescence: () => Effect.die("unexpected managed epoch quiescence"),
+    directCodeModeWaveReceipts: () => Effect.die("unexpected direct codemode wave receipts"),
+    codeModeHostRequest: () => Effect.die("unexpected codemode host request"),
+    settleCodeModeToolResults: () => Effect.die("unexpected codemode tool result settlement"),
+    prepareCodeModeToolBatch: () => Effect.die("unexpected codemode tool batch preparation"),
+    codeModeWaveReceipts: () => Effect.die("unexpected codemode wave receipts"),
+    listDirectAttemptArtifacts: () => Effect.die("unexpected direct attempt artifact listing"),
+    listDirectSessionArtifacts: () => Effect.die("unexpected direct session artifact listing"),
+    inspectDirectSessionArtifact: () => Effect.die("unexpected direct session artifact inspect"),
+    readDirectSessionArtifactRange: () => Effect.die("unexpected direct session artifact range read"),
+    sessionProjectionCursor: () => Effect.die("unexpected session projection cursor"),
   }),
 )
 
@@ -536,12 +831,88 @@ const testAgentProfileNode = LayerNode.make({
       ? Effect.succeed(DIRECT_PROFILE)
       : Effect.die("AgentProfile not found"),
     agentProfileSelector: () => Effect.die("AgentProfile selector not found"),
+    primaryAgentProfile: () => Effect.die("unexpected primary AgentProfile resolution"),
   })),
   deps: [],
-  tag: AgentProfileService.node.tag,
 })
 
-const it = testEffect(LayerNode.compile(LayerNode.group([testSupervisorNode, testPrincipalNode, testAgentProfileNode])))
+// Trusted Core registry fixture for the route projection used by managed
+// admission: one bundled adapter with a fixed HTTPS endpoint and a stable
+// SecretBroker lease reference for the exact Task-pinned provider/model.
+const TEST_PROVIDER_INFO = Schema.decodeUnknownSync(ProviderInfoSchema)({
+  id: "test",
+  name: "Test Provider",
+  source: "api",
+  env: [],
+  options: {},
+  models: {
+    "test-model": {
+      id: "test-model",
+      providerID: "test",
+      api: { id: "anthropic", npm: "@ai-sdk/anthropic", url: "https://api.example.test/v1" },
+      name: "Test Model",
+      capabilities: {
+        temperature: false,
+        reasoning: false,
+        attachment: false,
+        toolcall: true,
+        input: { text: true, audio: false, image: false, video: false, pdf: false },
+        output: { text: true, audio: false, image: false, video: false, pdf: false },
+        interleaved: false,
+      },
+      cost: { cache: {} },
+      limit: { context: 200000, output: 64000 },
+      status: "active",
+      options: {},
+      headers: {},
+      release_date: "2025-01-01",
+    },
+  },
+})
+
+const testProviderNode = LayerNode.make({
+  service: ProviderService,
+  layer: Layer.succeed(ProviderService, ProviderService.of({
+    list: () => Effect.succeed({ test: TEST_PROVIDER_INFO } as never),
+    getProvider: () => Effect.die("unexpected provider lookup"),
+    getModel: () => Effect.die("unexpected model lookup"),
+    getLanguage: () => Effect.die("unexpected language lookup"),
+    getDirectLanguage: () => Effect.die("unexpected direct language lookup"),
+    getManagedLanguage: () => Effect.die("unexpected managed language lookup"),
+    closest: () => Effect.die("unexpected closest model lookup"),
+    getSmallModel: () => Effect.die("unexpected small model lookup"),
+    defaultModel: () => Effect.die("unexpected default model lookup"),
+  })),
+  deps: [],
+})
+
+const testAuthNode = LayerNode.make({
+  service: AuthService,
+  layer: Layer.succeed(AuthService, AuthService.of({
+    credentialRefsForProviders: (providerIDs) =>
+      Effect.succeed(
+        providerIDs.includes("test")
+          ? { test: SecretBrokerV1.SecretRef.make("lease-test-0001") }
+          : {},
+      ),
+    get: () => Effect.die("unexpected auth lookup"),
+    all: () => Effect.die("unexpected auth listing"),
+    set: () => Effect.die("unexpected auth write"),
+    remove: () => Effect.die("unexpected auth removal"),
+    putCredential: () => Effect.die("unexpected credential put"),
+    describeCredential: () => Effect.die("unexpected credential describe"),
+    searchCredentialRefs: () => Effect.die("unexpected search credential refs"),
+    revokeCredential: () => Effect.die("unexpected credential revoke"),
+    authorizeCredentialUse: () => Effect.die("unexpected credential use authorization"),
+    dispatchAuthorizedSearchRequest: () => Effect.die("unexpected authorized search dispatch"),
+    dispatchAuthorizedManagedProviderRequest: () => Effect.die("unexpected authorized managed provider dispatch"),
+    createPinnedDirectProviderFetch: () => Effect.die("unexpected pinned direct provider fetch"),
+    dispatchPinnedDirectProviderRequest: () => Effect.die("unexpected pinned direct provider dispatch"),
+  })),
+  deps: [],
+})
+
+const it = testEffect(LayerNode.compile(LayerNode.group([testSupervisorNode, testPrincipalNode, testAgentProfileNode, testProviderNode, testAuthNode])))
 
 const scopeFacts = {
   parentSessionID: "ses_parent00000000000000000000000",
@@ -612,6 +983,7 @@ describe("managed control client", () => {
         directAttemptID: "att_0123456789abcdef",
         messageID: "msg_0123456789abcdef",
         deliveryMode: "follow_up" as const,
+        mailboxSequence: "1",
       }
       const missingProof = yield* Effect.exit(ManagedControl.prepareDirectMessage({
         pins,
@@ -742,7 +1114,7 @@ describe("managed control client", () => {
         ...DIRECT_FACTS,
       })
       expect(admitted.phase).toBe("EXECUTING")
-      expect(admitted.revision).toBe(1)
+      expect(admitted.revision).toBe("1")
       const admit = kernel.calls[0]!
       expect(admit.operation).toBe("admit_direct_attempt")
       // The Attempt id itself is the one-use key, so a lost response can be retried
@@ -762,8 +1134,8 @@ describe("managed control client", () => {
       expect(kernel.calls[1]!.operation).toBe("bind_direct_attempt_effects")
       expect(kernel.calls[1]!.body.directAttempt).toEqual({
         ...admitted.directAttempt,
-        ownerEpoch: 7n,
-        expectedRevision: 1n,
+        ownerEpoch: "7",
+        expectedRevision: "1",
       })
       expect(kernel.calls[1]!.body.effectIDs).toEqual(["effect-child-write", "effect-child-read"])
 
@@ -783,7 +1155,7 @@ describe("managed control client", () => {
       expect(settled.receiptDigest).toBe(RECEIPT)
       const settle = kernel.calls[2]!
       expect(settle.deliveryID).toBe(`${attemptID}.settle`)
-      expect(settle.body.expectedRevision).toBe(2)
+      expect(settle.body.expectedRevision).toBe(2n)
 
       // A host refusal keeps the kernel's own code, never a generic failure.
       kernel.failingOperation = { operation: "cancel_direct_attempt", code: "managed_conflict", reason: "not executing" }
@@ -848,7 +1220,7 @@ describe("managed control client", () => {
       )
 
       expect(error).toBeInstanceOf(ManagedControlError)
-      expect(error.code).toBe("managed_protocol")
+      expect("code" in error ? error.code : undefined).toBe("managed_protocol")
     }),
   )
 
@@ -1096,7 +1468,7 @@ describe("managed control client", () => {
       )
 
       expect(error).toBeInstanceOf(ManagedControlError)
-      expect(error.code).toBe("managed_protocol")
+      expect("code" in error ? error.code : undefined).toBe("managed_protocol")
     }),
   )
 
@@ -1182,6 +1554,7 @@ describe("managed control client", () => {
             objective: "Already accepted",
             projectRef: "project-client",
             workspaceRef: "workspace-client",
+            capabilityScope: [],
             scope: [],
             constraints: [],
             criteria: [],
@@ -1244,7 +1617,29 @@ describe("managed control client", () => {
             sourceDigests: [SCOPE],
           },
         ],
-        acceptedSpecs: [{ specID: "spec-accepted", specDigest: RECEIPT }],
+        acceptedSpecs: [
+          {
+            specID: "spec-accepted",
+            specDigest: RECEIPT,
+            objective: "Already accepted",
+            scope: [],
+            capabilityScope: [],
+            constraints: [],
+            criteria: [],
+            budget: {
+              maxTasks: 1,
+              maxAttemptsPerTask: 1,
+              maxRunDurationMs: 60_000,
+              maxWorkers: 1,
+              maxMemoryBytes: null,
+              maxDiskBytes: null,
+              maxTokens: null,
+              maxCostMicros: null,
+            },
+          },
+        ],
+        eligibleProfiles: [],
+        eligibleProfilesTruncated: false,
         runs: [],
       })
       expect(selfReview.proposals[0]?.reviewAvailability).toEqual({
@@ -1361,16 +1756,74 @@ describe("managed control client", () => {
         runID: "run-client",
         taskID: "task-client",
         attemptID,
+        parentSessionID: "ses_parent00000000000000000000000",
         locationID: "location-1",
         sessionID: "ses_child",
+        preAdmissionProofDigest: `blake3:${"1".repeat(64)}`,
         expectedRevision: 4 as const,
         profileSelection: DIRECT_PROFILE_SELECTION,
         contextSelection: Schema.decodeUnknownSync(ContextSelectionV1)({
           schemaVersion: 1,
-          sessionID: "ses_parent00000000000000000000000",
+          lane: "managed",
+          sessionID: "ses_child",
           mode: "fresh",
+          attemptID,
+          requestSequence: "1",
+          requestID: `req_managed_${attemptID}_1`,
           sourceRevision: "0",
-          sources: [],
+          sources: [
+            {
+              kind: "managed-task",
+              sourceID: "task-client",
+              sourceRevision: "0",
+              contentDigest: SCOPE,
+              sourceAuthority: "managed-control",
+              trust: "user",
+              included: true,
+              inclusionReason: "required",
+            },
+            {
+              kind: "accepted-spec",
+              sourceID: "spec-client",
+              sourceRevision: "0",
+              contentDigest: RECEIPT,
+              sourceAuthority: "managed-control",
+              trust: "system",
+              included: true,
+              inclusionReason: "required",
+            },
+            {
+              kind: "agent-profile",
+              sourceID: "specialist.reader",
+              sourceRevision: "1",
+              contentDigest: DIRECT_PROFILE_DIGEST,
+              sourceAuthority: "core-config",
+              trust: "system",
+              included: true,
+              inclusionReason: "profile",
+            },
+            {
+              kind: "provider-input",
+              sourceID: `req_managed_${attemptID}_1`,
+              sourceRevision: "1",
+              contentDigest: SCOPE,
+              sourceAuthority: "core-prompt-compiler",
+              trust: "mixed",
+              included: true,
+              inclusionReason: "current_request",
+            },
+            {
+              kind: "tool",
+              sourceID: "toolset:native-rich",
+              sourceRevision: RECEIPT,
+              contentDigest: RECEIPT,
+              sourceAuthority: "tool-registry",
+              trust: "system",
+              included: true,
+              inclusionReason: "selected_tool",
+              harnessRevision: 1,
+            },
+          ],
         }),
       }
       const admitted = yield* ManagedControl.admitAttempt(input)
@@ -1379,16 +1832,28 @@ describe("managed control client", () => {
         runID: "run-client",
         taskID: "task-client",
         attemptID,
+        parentSessionID: "ses_parent00000000000000000000000",
         ownerEpoch: "7",
         locationID: "location-1",
         sessionID: "ses_child",
         attemptPhase: "EXECUTING",
         runPhase: "RUNNING",
         workspaceRevision: `blake3:${"f".repeat(64)}`,
+        requestSequence: "1",
+        requestID: `req_managed_${attemptID}_1`,
+        contextSelectionDigest: CONTEXT_SELECTION_DIGEST,
         profile: {
           profileID: DIRECT_PROFILE.profileId,
           profileRevision: "1",
           profileDigest: DIRECT_PROFILE_DIGEST,
+        },
+        managedProviderRoute: {
+          providerID: "test",
+          modelID: "test-model",
+          harnessID: "native-rich",
+          routeID: TEST_ROUTE_ID,
+          endpointRevision: TEST_ENDPOINT_REVISION,
+          credentialLeaseRef: "lease-test-0001",
         },
         managedAttempt: {
           goalID: "goal-client",
@@ -1397,12 +1862,26 @@ describe("managed control client", () => {
           attemptID,
           ownerEpoch: "7",
           expectedManagedRevision: "5",
+          requestSequence: "1",
+          requestID: `req_managed_${attemptID}_1`,
+          contextSelectionDigest: `blake3:${"c".repeat(64)}`,
           locationID: "location-1",
           sessionID: "ses_child",
           workspaceRevision: `blake3:${"f".repeat(64)}`,
           effectiveMaxTokens: "5000",
           remainingTokens: "5000",
           delegationBindingDigest: `blake3:${"a".repeat(64)}`,
+          permissionScopeDigest: `blake3:${"d".repeat(64)}`,
+          worktreeTarget: {
+            worktreeID: "worktree-1",
+            worktreeBaseRevision: "base-1",
+            worktreePoolRevision: "3",
+            locationID: "location-1",
+            workspaceID: "workspace-1",
+            workspaceRef: "refs/heads/managed",
+            canonicalRoot: "/workspace/managed",
+            workspaceRevision: `blake3:${"f".repeat(64)}`,
+          },
         },
         revision: "5",
       })
@@ -1412,8 +1891,18 @@ describe("managed control client", () => {
         runID: "run-client",
         taskID: "task-client",
         attemptID,
+        parentSessionID: "ses_parent00000000000000000000000",
         locationID: "location-1",
+        managedProviderRoute: {
+          providerID: "test",
+          modelID: "test-model",
+          harnessID: "native-rich",
+          routeID: TEST_ROUTE_ID,
+          endpointRevision: TEST_ENDPOINT_REVISION,
+          credentialLeaseRef: "lease-test-0001",
+        },
         sessionID: "ses_child",
+        preAdmissionProofDigest: `blake3:${"1".repeat(64)}`,
         expectedRevision: 4n,
         profileSelection: DIRECT_PROFILE_SELECTION,
         profileDefinition: DIRECT_PROFILE,
@@ -1428,6 +1917,7 @@ describe("managed control client", () => {
         runID: "run-client",
         taskID: "task-client",
         attemptID,
+        parentSessionID: "ses_parent00000000000000000000000",
         ownerEpoch: 9007199254740993n,
         locationID: "location-1",
         sessionID: "ses_child",
@@ -1435,10 +1925,21 @@ describe("managed control client", () => {
         attemptPhase: "EXECUTING",
         runPhase: "RUNNING",
         revision: 9007199254740993n,
+        requestSequence: 1,
+        requestID: `req_managed_${attemptID}_1`,
+        contextSelectionDigest: CONTEXT_SELECTION_DIGEST,
         profile: {
           profileID: DIRECT_PROFILE.profileId,
-          profileRevision: "1",
+          profileRevision: 1,
           profileDigest: DIRECT_PROFILE_DIGEST,
+        },
+        managedProviderRoute: {
+          providerID: "test",
+          modelID: "test-model",
+          harnessID: "native-rich",
+          routeID: TEST_ROUTE_ID,
+          endpointRevision: TEST_ENDPOINT_REVISION,
+          credentialLeaseRef: "lease-test-0001",
         },
         managedAttempt: {
           goalID: "goal-client",
@@ -1447,12 +1948,26 @@ describe("managed control client", () => {
           attemptID,
           ownerEpoch: "9007199254740993",
           expectedManagedRevision: "9007199254740993",
+          requestSequence: "1",
+          requestID: `req_managed_${attemptID}_1`,
+          contextSelectionDigest: CONTEXT_SELECTION_DIGEST,
           locationID: "location-1",
           sessionID: "ses_child",
           workspaceRevision: `blake3:${"f".repeat(64)}`,
           effectiveMaxTokens: "5000",
           remainingTokens: "5000",
           delegationBindingDigest: `blake3:${"a".repeat(64)}`,
+          permissionScopeDigest: `blake3:${"d".repeat(64)}`,
+          worktreeTarget: {
+            worktreeID: "worktree-1",
+            worktreeBaseRevision: "base-1",
+            worktreePoolRevision: "3",
+            locationID: "location-1",
+            workspaceID: "workspace-1",
+            workspaceRef: "refs/heads/managed",
+            canonicalRoot: "/workspace/managed",
+            workspaceRevision: `blake3:${"f".repeat(64)}`,
+          },
         },
       }
       const retried = yield* ManagedControl.admitAttempt(input)
@@ -1466,6 +1981,7 @@ describe("managed control client", () => {
         runID: "run-client",
         taskID: "task-client",
         attemptID: `att_${"b".repeat(32)}`,
+        parentSessionID: "ses_parent00000000000000000000000",
         ownerEpoch: 7n,
         locationID: "location-1",
         sessionID: "ses_child",
@@ -1473,10 +1989,21 @@ describe("managed control client", () => {
         attemptPhase: "EXECUTING",
         runPhase: "RUNNING",
         revision: 6n,
+        requestSequence: 1,
+        requestID: `req_managed_att_${"b".repeat(32)}_1`,
+        contextSelectionDigest: CONTEXT_SELECTION_DIGEST,
         profile: {
           profileID: DIRECT_PROFILE.profileId,
-          profileRevision: "1",
+          profileRevision: 1,
           profileDigest: DIRECT_PROFILE_DIGEST,
+        },
+        managedProviderRoute: {
+          providerID: "test",
+          modelID: "test-model",
+          harnessID: "native-rich",
+          routeID: TEST_ROUTE_ID,
+          endpointRevision: TEST_ENDPOINT_REVISION,
+          credentialLeaseRef: "lease-test-0001",
         },
         managedAttempt: {
           goalID: "goal-client",
@@ -1485,17 +2012,31 @@ describe("managed control client", () => {
           attemptID: `att_${"b".repeat(32)}`,
           ownerEpoch: "7",
           expectedManagedRevision: "6",
+          requestSequence: "1",
+          requestID: `req_managed_att_${"b".repeat(32)}_1`,
+          contextSelectionDigest: CONTEXT_SELECTION_DIGEST,
           locationID: "location-1",
           sessionID: "ses_child",
           workspaceRevision: `blake3:${"f".repeat(64)}`,
           effectiveMaxTokens: "5000",
           remainingTokens: "5000",
           delegationBindingDigest: `blake3:${"a".repeat(64)}`,
+          permissionScopeDigest: `blake3:${"d".repeat(64)}`,
+          worktreeTarget: {
+            worktreeID: "worktree-1",
+            worktreeBaseRevision: "base-1",
+            worktreePoolRevision: "3",
+            locationID: "location-1",
+            workspaceID: "workspace-1",
+            workspaceRef: "refs/heads/managed",
+            canonicalRoot: "/workspace/managed",
+            workspaceRevision: `blake3:${"f".repeat(64)}`,
+          },
         },
       }
       const error = yield* Effect.flip(ManagedControl.admitAttempt(input))
       expect(error).toBeInstanceOf(ManagedControlError)
-      expect(error.code).toBe("managed_protocol")
+      expect("code" in error ? error.code : undefined).toBe("managed_protocol")
     }),
   )
 
@@ -1508,16 +2049,74 @@ describe("managed control client", () => {
         runID: "run-client",
         taskID: "task-client",
         attemptID,
+        parentSessionID: "ses_parent00000000000000000000000",
         locationID: "location-1",
         sessionID: "ses_child",
+        preAdmissionProofDigest: `blake3:${"1".repeat(64)}`,
         expectedRevision: 1,
         profileSelection: DIRECT_PROFILE_SELECTION,
         contextSelection: Schema.decodeUnknownSync(ContextSelectionV1)({
           schemaVersion: 1,
-          sessionID: "ses_parent00000000000000000000000",
+          lane: "managed",
+          sessionID: "ses_child",
           mode: "fresh",
+          attemptID,
+          requestSequence: "1",
+          requestID: `req_managed_long_key_1`,
           sourceRevision: "0",
-          sources: [],
+          sources: [
+            {
+              kind: "managed-task",
+              sourceID: "task-client",
+              sourceRevision: "0",
+              contentDigest: SCOPE,
+              sourceAuthority: "managed-control",
+              trust: "user",
+              included: true,
+              inclusionReason: "required",
+            },
+            {
+              kind: "accepted-spec",
+              sourceID: "spec-client",
+              sourceRevision: "0",
+              contentDigest: RECEIPT,
+              sourceAuthority: "managed-control",
+              trust: "system",
+              included: true,
+              inclusionReason: "required",
+            },
+            {
+              kind: "agent-profile",
+              sourceID: "specialist.reader",
+              sourceRevision: "1",
+              contentDigest: DIRECT_PROFILE_DIGEST,
+              sourceAuthority: "core-config",
+              trust: "system",
+              included: true,
+              inclusionReason: "profile",
+            },
+            {
+              kind: "provider-input",
+              sourceID: `req_managed_long_key_1`,
+              sourceRevision: "1",
+              contentDigest: SCOPE,
+              sourceAuthority: "core-prompt-compiler",
+              trust: "mixed",
+              included: true,
+              inclusionReason: "current_request",
+            },
+            {
+              kind: "tool",
+              sourceID: "toolset:native-rich",
+              sourceRevision: RECEIPT,
+              contentDigest: RECEIPT,
+              sourceAuthority: "tool-registry",
+              trust: "system",
+              included: true,
+              inclusionReason: "selected_tool",
+              harnessRevision: 1,
+            },
+          ],
         }),
       }
       yield* ManagedControl.admitAttempt(input)
@@ -1541,12 +2140,26 @@ describe("managed control client", () => {
           attemptID: "att-managed",
           ownerEpoch: "9007199254740993",
           expectedManagedRevision: "9007199254740995",
+          requestSequence: "1",
+          requestID: "req_managed_att-managed_1",
+          contextSelectionDigest: `blake3:${"c".repeat(64)}`,
           locationID: "location-1",
           sessionID: "ses_child",
           workspaceRevision: `blake3:${"f".repeat(64)}`,
           effectiveMaxTokens: "5000",
           remainingTokens: "5000",
           delegationBindingDigest: `blake3:${"a".repeat(64)}`,
+          permissionScopeDigest: `blake3:${"d".repeat(64)}`,
+          worktreeTarget: {
+            worktreeID: "worktree-1",
+            worktreeBaseRevision: "base-1",
+            worktreePoolRevision: "3",
+            locationID: "location-1",
+            workspaceID: "workspace-1",
+            workspaceRef: "refs/heads/managed",
+            canonicalRoot: "/workspace/managed",
+            workspaceRevision: `blake3:${"f".repeat(64)}`,
+          },
         },
         effectID: "effect-1",
       }
@@ -1590,7 +2203,7 @@ describe("managed control client", () => {
       }
       const error = yield* Effect.flip(ManagedControl.bindAttemptEffect(input))
       expect(error).toBeInstanceOf(ManagedControlError)
-      expect(error.code).toBe("managed_protocol")
+      expect("code" in error ? error.code : undefined).toBe("managed_protocol")
     }),
   )
 
@@ -1606,18 +2219,32 @@ describe("managed control client", () => {
             attemptID: "att-managed",
             ownerEpoch: "07",
             expectedManagedRevision: "5",
+            requestSequence: "1",
+            requestID: "req_managed_att-managed_1",
+            contextSelectionDigest: `blake3:${"c".repeat(64)}`,
             locationID: "location-1",
             sessionID: "ses_child",
             workspaceRevision: `blake3:${"f".repeat(64)}`,
             effectiveMaxTokens: "5000",
             remainingTokens: "5000",
             delegationBindingDigest: `blake3:${"a".repeat(64)}`,
+            permissionScopeDigest: `blake3:${"d".repeat(64)}`,
+            worktreeTarget: {
+              worktreeID: "worktree-1",
+              worktreeBaseRevision: "base-1",
+              worktreePoolRevision: "3",
+              locationID: "location-1",
+              workspaceID: "workspace-1",
+              workspaceRef: "refs/heads/managed",
+              canonicalRoot: "/workspace/managed",
+              workspaceRevision: `blake3:${"f".repeat(64)}`,
+            },
           },
           effectID: "effect-1",
         }),
       )
       expect(error).toBeInstanceOf(ManagedControlError)
-      expect(error.code).toBe("managed_protocol")
+      expect("code" in error ? error.code : undefined).toBe("managed_protocol")
       expect(kernel.calls).toHaveLength(0)
     }),
   )
@@ -1729,13 +2356,13 @@ describe("managed control client", () => {
         runPhase: "PAUSED",
         revision: "8",
       })
-      expect(kernel.calls[0]!.deliveryID).toBe("run-client.pause")
+      expect(kernel.calls[0]!.deliveryID).toBe("run-client.pause.3")
       expect(kernel.calls[0]!.body).toEqual({ goalID: "goal-client", runID: "run-client", expectedRevision: 3n })
 
       const resumed = yield* ManagedControl.resumeRun({ ...input, expectedRevision: 8n })
       expect(resumed.status).toBe("RUNNING")
       expect(resumed.runPhase).toBe("RUNNING")
-      expect(kernel.calls[1]!.deliveryID).toBe("run-client.resume")
+      expect(kernel.calls[1]!.deliveryID).toBe("run-client.resume.8")
 
       const cancelling = yield* ManagedControl.cancelRun(input)
       expect(cancelling).toEqual({
@@ -1745,7 +2372,7 @@ describe("managed control client", () => {
         runPhase: "CANCELLING",
         revision: "10",
       })
-      expect(kernel.calls[2]!.deliveryID).toBe("run-client.cancel")
+      expect(kernel.calls[2]!.deliveryID).toBe("run-client.cancel.3")
 
       // Repeating a cancel after every Attempt stopped completes the same command.
       kernel.managedResponses.cancel = {
@@ -1769,7 +2396,7 @@ describe("managed control client", () => {
       }
       const error = yield* Effect.flip(ManagedControl.pauseRun({ ...input, expectedRevision: 11 }))
       expect(error).toBeInstanceOf(ManagedControlError)
-      expect(error.code).toBe("managed_protocol")
+      expect("code" in error ? error.code : undefined).toBe("managed_protocol")
     }),
   )
 
@@ -1805,7 +2432,6 @@ describe("managed control client", () => {
       const input = {
         goalID: "goal-client",
         runID: "run-client",
-        locationRef: Location.Ref.make({ directory: AbsolutePath.make("/tmp/workspace") }),
       }
 
       yield* Effect.flip(ManagedControl.runVerification(input))
@@ -1832,11 +2458,10 @@ describe("managed control client", () => {
         ManagedControl.runVerification({
           goalID: "goal-client",
           runID: "run-client",
-          locationRef: Location.Ref.make({ directory: AbsolutePath.make("/tmp/workspace") }),
         }),
       )
       expect(begun).toBeInstanceOf(ManagedControlError)
-      expect(begun.code).toBe("capability_unavailable")
+      expect("code" in begun ? begun.code : undefined).toBe("capability_unavailable")
       expect(kernel.calls.at(-1)!.deliveryID).toMatch(/^run-client\.verify\.[0-9a-f-]{36}$/)
       expect(kernel.calls.at(-1)!.trustedPrincipal).toEqual(REVIEWER)
       expect(kernel.calls.at(-1)!.body).toEqual({
@@ -1902,12 +2527,13 @@ describe("managed control client", () => {
       const result = yield* ManagedControl.runVerification({
         goalID: "goal-client",
         runID: "run-client",
-        locationRef: Location.Ref.make({ directory: AbsolutePath.make("/tmp/workspace") }),
       })
       expect(result.status).toBe("SUCCEEDED")
       expect(result).not.toHaveProperty("challenges")
-      expect(result).not.toHaveProperty("finalRevision")
-      expect(result).not.toHaveProperty("challengeSetDigest")
+      // finalRevision is part of the public VerificationRunResult contract;
+      // only bridge-internal challenge detail must stay hidden.
+      // challengeSetDigest is a public result pin; only bridge-internal
+      // challenge detail must stay hidden.
       expect(result).not.toHaveProperty("leases")
       expect(result).not.toHaveProperty("artifacts")
       expect(kernel.calls[0]!.body).toEqual({ goalID: "goal-client", runID: "run-client" })
@@ -1926,12 +2552,16 @@ describe("managed control client", () => {
         attemptID: "attempt-client",
         ownerEpoch: "7",
         expectedManagedRevision: "5",
+        requestSequence: "1",
+        requestID: "req_managed_attempt-client_1",
+        contextSelectionDigest: `blake3:${"c".repeat(64)}`,
         locationID: "location-1",
         sessionID: "ses_child",
         workspaceRevision,
         effectiveMaxTokens: "5000",
         remainingTokens: "12",
         delegationBindingDigest: RECEIPT,
+        permissionScopeDigest: `blake3:${"d".repeat(64)}`,
         worktreeTarget: {
           worktreeID: "worktree-1",
           worktreeBaseRevision: "base-1",
@@ -1950,10 +2580,10 @@ describe("managed control client", () => {
         attemptID: scope.attemptID,
         operationKey: `managed_usage_${"a".repeat(64)}`,
         usageDigest: RECEIPT,
-        managedRevision: "6",
-        accountingCursor: "6",
-        tokenTotal: "5000",
-        costMicrosTotal: "0",
+        managedRevision: 6,
+        accountingCursor: 6,
+        tokenTotal: 5000,
+        costMicrosTotal: 0,
         providerID: "test",
         modelID: "test-model",
         operationID: null,
@@ -2050,16 +2680,31 @@ describe("managed control client", () => {
       }
       kernel.managedResponses.settlement_recovery = {
         status: "SETTLEMENT_PENDING",
+        schemaVersion: 1,
         goalID: "goal-client",
         runID: "run-client",
-        terminalSnapshot,
-        verificationRunID: "verification-client",
+        taskID: "task-client",
+        attemptID: "attempt-client",
+        ownerEpoch: "7",
+        specID: "spec-client",
+        specDigest: RECEIPT,
+        profileID: DIRECT_PROFILE.profileId,
+        profileRevision: "1",
+        profileDigest: DIRECT_PROFILE_DIGEST,
+        finalRevision: RECEIPT,
+        evidencePlanDigest: RECEIPT,
+        verificationRunID: VERIFICATION_RUN_ID,
+        setIdentityDigest: RECEIPT,
         challengeSetDigest: RECEIPT,
+        terminalSnapshot,
       }
       kernel.managedResponses.settle_dispatch = {
         status: "SETTLED",
         goalID: "goal-client",
         runID: "run-client",
+        verificationRunID: VERIFICATION_RUN_ID,
+        setIdentityDigest: RECEIPT,
+        challengeSetDigest: RECEIPT,
         taskID: "task-client",
         attemptID: "attempt-client",
         workerExecutionID: "worker-client",
@@ -2071,7 +2716,7 @@ describe("managed control client", () => {
         workerPoolRevision: "9",
         receiptDigest: RECEIPT,
         worktreeDisposition: {
-          ownerEpoch: "2",
+          ownerEpoch: "7",
           disposition: "REUSABLE",
           settlementReceiptDigest: RECEIPT,
           finalWorktreeOperationID: "worktree-inspect-op",
@@ -2089,25 +2734,29 @@ describe("managed control client", () => {
       const result = yield* ManagedControl.runVerification({ goalID: "goal-client", runID: "run-client" })
 
       expect(result.status).toBe("SUCCEEDED")
-      expect(result.usageAccounting).toMatchObject({
+      // Narrow past the ABORTED variant before reading execution-only receipts.
+      const executed = result as Exclude<VerificationRunResult, { readonly status: "ABORTED" }>
+      expect(executed.usageAccounting).toMatchObject({
         accountingCursor: "18",
         tokenKnownSubtotal: "120",
         tokenRemainderStatus: "UNKNOWN",
         usageState: "UNKNOWN",
         costKnownSubtotalMicros: "45",
       })
-      expect(result.dispatchSettlement?.worktreeDisposition).toMatchObject({
+      const settlement = executed.dispatchSettlement
+      expect(settlement && "worktreeDisposition" in settlement ? settlement.worktreeDisposition : undefined).toMatchObject({
         disposition: "REUSABLE",
         observedWorkspaceRevision: terminalSnapshot.finalRevision,
         ownerLogSequence: "27",
       })
       expect(kernel.calls.map((call) => call.operation)).toEqual([
         "settlement_recovery",
+        "snapshot",
         "finalize_run",
         "settle_dispatch",
       ])
-      expect(kernel.calls[1]!.trustedPrincipal).toEqual(REVIEWER)
-      expect(kernel.calls[2]!.deliveryID).toBe("managed_settle_attempt-client")
+      expect(kernel.calls[2]!.trustedPrincipal).toEqual(REVIEWER)
+      expect(kernel.calls[3]!.deliveryID).toBe("managed_settle_attempt-client")
     }),
   )
 
@@ -2118,14 +2767,13 @@ describe("managed control client", () => {
         ManagedControl.runVerification({
           goalID: "goal-client",
           runID: "run-client",
-          locationRef: Location.Ref.make({ directory: AbsolutePath.make("/tmp/workspace") }),
         }).pipe(
           Effect.provideService(TrustedPrincipalContext, TrustedPrincipalContext.of({ principal: { kind: "host_os" } })),
         ),
       )
 
       expect(error).toBeInstanceOf(ManagedControlError)
-      expect(error.code).toBe("independent_verifier_required")
+      expect("code" in error ? error.code : undefined).toBe("independent_verifier_required")
       expect(kernel.calls).toHaveLength(0)
     }),
   )
@@ -2135,18 +2783,37 @@ describe("managed control client", () => {
       const kernel = freshKernel()
       kernel.managedResponses.begin_verification = {
         status: "NEEDS_APPROVAL",
+        schemaVersion: 1,
         goalID: "goal-client",
         runID: "run-client",
+        taskID: "task-client",
+        attemptID: ATTEMPT_ID,
+        ownerEpoch: "7",
+        specID: "spec-client",
+        specDigest: RECEIPT,
+        profileID: DIRECT_PROFILE.profileId,
+        profileRevision: "1",
+        profileDigest: DIRECT_PROFILE_DIGEST,
+        evidencePlanDigest: RECEIPT,
+        setIdentityDigest: RECEIPT,
         finalRevision: RECEIPT,
-        verificationRunID: "verification-run-client",
+        verificationRunID: VERIFICATION_RUN_ID,
         challengeSetDigest: RECEIPT,
+        approvalLocation: {
+          locationID: LOCATION_ID,
+          workspaceID: "wrk_client_workspace",
+          canonicalRoot: "/workspace/client",
+          workspaceRevision: RECEIPT,
+        },
+        evidenceDigest: null,
+        artifactRefs: [],
         challenges: Array.from({ length: 33 }, (_, index) => ({
           ...verifierGuardProjection(),
           criterionID: `criterion-${index}`,
           challengeID: `challenge-${index}`,
           effectID: `effect-${index}`,
           capabilityID: "builtin.verifier",
-          locationID: "location-client",
+          locationID: LOCATION_ID,
           inputDigest: RECEIPT,
           normalizedTargets: [{ criterionID: `criterion-${index}` }],
           expiresAtUnixMs: Date.now() + 60_000,
@@ -2158,12 +2825,14 @@ describe("managed control client", () => {
         ManagedControl.runVerification({
           goalID: "goal-client",
           runID: "run-client",
-          locationRef: Location.Ref.make({ directory: AbsolutePath.make("/tmp/workspace") }),
         }),
       )
       expect(error).toBeInstanceOf(ManagedControlError)
-      expect(error.code).toBe("managed_protocol")
-      expect(kernel.calls.map((call) => call.operation)).toEqual(["begin_verification"])
+      expect("code" in error ? error.code : undefined).toBe("managed_protocol")
+      expect(kernel.calls.map((call) => call.operation)).toEqual([
+        "settlement_recovery",
+        "begin_verification",
+      ])
       expect(kernel.approvalWindows).toHaveLength(0)
       expect(kernel.calls.some((call) => call.operation === "resolve_verification_approvals")).toBe(false)
     }),
@@ -2175,11 +2844,30 @@ describe("managed control client", () => {
       const { policyDigest: _policyDigest, ...incompleteProjection } = verifierGuardProjection()
       kernel.managedResponses.begin_verification = {
         status: "NEEDS_APPROVAL",
+        schemaVersion: 1,
         goalID: "goal-client",
         runID: "run-client",
+        taskID: "task-client",
+        attemptID: ATTEMPT_ID,
+        ownerEpoch: "7",
+        specID: "spec-client",
+        specDigest: RECEIPT,
+        profileID: DIRECT_PROFILE.profileId,
+        profileRevision: "1",
+        profileDigest: DIRECT_PROFILE_DIGEST,
+        evidencePlanDigest: RECEIPT,
+        setIdentityDigest: RECEIPT,
         finalRevision: RECEIPT,
-        verificationRunID: "verification-run-client",
+        verificationRunID: VERIFICATION_RUN_ID,
         challengeSetDigest: RECEIPT,
+        approvalLocation: {
+          locationID: LOCATION_ID,
+          workspaceID: "wrk_client_workspace",
+          canonicalRoot: "/workspace/client",
+          workspaceRevision: RECEIPT,
+        },
+        evidenceDigest: null,
+        artifactRefs: [],
         challenges: [
           {
             ...incompleteProjection,
@@ -2187,7 +2875,7 @@ describe("managed control client", () => {
             challengeID: "challenge-verifier-1",
             effectID: "effect-verifier-1",
             capabilityID: "builtin.verifier",
-            locationID: "location-client",
+            locationID: LOCATION_ID,
             inputDigest: RECEIPT,
             normalizedTargets: [{ criterionID: "tests-pass" }],
             expiresAtUnixMs: Date.now() + 60_000,
@@ -2201,14 +2889,16 @@ describe("managed control client", () => {
         ManagedControl.runVerification({
           goalID: "goal-client",
           runID: "run-client",
-          locationRef: Location.Ref.make({ directory: AbsolutePath.make("/tmp/workspace") }),
         }),
       )
 
       expect(error).toBeInstanceOf(ManagedControlError)
-      expect(error.code).toBe("managed_protocol")
+      expect("code" in error ? error.code : undefined).toBe("managed_protocol")
       expect(kernel.approvalWindows).toHaveLength(0)
-      expect(kernel.calls.map((call) => call.operation)).toEqual(["begin_verification"])
+      expect(kernel.calls.map((call) => call.operation)).toEqual([
+        "settlement_recovery",
+        "begin_verification",
+      ])
     }),
   )
 
@@ -2221,7 +2911,7 @@ describe("managed control client", () => {
         challengeID: `challenge-${index + 1}`,
         effectID: `effect-${index + 1}`,
         capabilityID: "builtin.verifier",
-        locationID: "location-client",
+        locationID: LOCATION_ID,
         inputDigest: RECEIPT,
         normalizedTargets: [{ criterionID: `criterion-${index + 1}` }],
         expiresAtUnixMs: Date.now() + 60_000,
@@ -2229,11 +2919,30 @@ describe("managed control client", () => {
       }))
       kernel.managedResponses.begin_verification = {
         status: "NEEDS_APPROVAL",
+        schemaVersion: 1,
         goalID: "goal-client",
         runID: "run-client",
+        taskID: "task-client",
+        attemptID: ATTEMPT_ID,
+        ownerEpoch: "7",
+        specID: "spec-client",
+        specDigest: RECEIPT,
+        profileID: DIRECT_PROFILE.profileId,
+        profileRevision: "1",
+        profileDigest: DIRECT_PROFILE_DIGEST,
+        evidencePlanDigest: RECEIPT,
+        setIdentityDigest: RECEIPT,
         finalRevision: RECEIPT,
-        verificationRunID: "verification-run-client",
+        verificationRunID: VERIFICATION_RUN_ID,
         challengeSetDigest: RECEIPT,
+        approvalLocation: {
+          locationID: LOCATION_ID,
+          workspaceID: "wrk_client_workspace",
+          canonicalRoot: "/workspace/client",
+          workspaceRevision: RECEIPT,
+        },
+        evidenceDigest: null,
+        artifactRefs: [],
         challenges,
         revision: 11n,
       }
@@ -2241,18 +2950,28 @@ describe("managed control client", () => {
       const result = yield* ManagedControl.runVerification({
         goalID: "goal-client",
         runID: "run-client",
-        locationRef: Location.Ref.make({ directory: AbsolutePath.make("/tmp/workspace") }),
         sessionID: "ses-managed",
       })
 
       expect(kernel.approvalWindows.map((window) => window.length)).toEqual([32])
       const calls = kernel.calls.map((call) => call.operation)
-      expect(calls).toEqual(["begin_verification", "resolve_verification_approvals", "execute_verification"])
-      const resolve = kernel.calls[1]!
+      expect(calls).toEqual([
+        "settlement_recovery",
+        "begin_verification",
+        "snapshot",
+        "resolve_verification_approvals",
+        "execute_verification",
+        "prepare_final_inspect",
+        "execute_final_inspect",
+        "settle",
+        "finalize_run",
+        "settle_dispatch",
+      ])
+      const resolve = kernel.calls[3]!
       expect(resolve.body).toMatchObject({
         goalID: "goal-client",
         runID: "run-client",
-        verificationRunID: "verification-run-client",
+        verificationRunID: VERIFICATION_RUN_ID,
         challengeSetDigest: RECEIPT,
         resolution: {
           kind: "decisions",
@@ -2260,11 +2979,11 @@ describe("managed control client", () => {
         },
       })
       expect(resolve.trustedPrincipal).toEqual(REVIEWER)
-      const execute = kernel.calls[2]!
+      const execute = kernel.calls[4]!
       expect(execute.body).toEqual({
         goalID: "goal-client",
         runID: "run-client",
-        verificationRunID: "verification-run-client",
+        verificationRunID: VERIFICATION_RUN_ID,
         challengeSetDigest: RECEIPT,
       })
       expect(execute.body).not.toHaveProperty("principal")
@@ -2283,7 +3002,7 @@ describe("managed control client", () => {
         status: "APPROVED",
         goalID: "goal-client",
         runID: "run-client",
-        verificationRunID: "verification-run-client",
+        verificationRunID: VERIFICATION_RUN_ID,
         challengeSetDigest: RECEIPT,
         leases: [
           {
@@ -2306,14 +3025,15 @@ describe("managed control client", () => {
         ManagedControl.runVerification({
           goalID: "goal-client",
           runID: "run-client",
-          locationRef: Location.Ref.make({ directory: AbsolutePath.make("/tmp/workspace") }),
         }),
       )
 
       expect(error).toBeInstanceOf(ManagedControlError)
-      expect(error.code).toBe("managed_protocol")
+      expect("code" in error ? error.code : undefined).toBe("managed_protocol")
       expect(kernel.calls.map((call) => call.operation)).toEqual([
+        "settlement_recovery",
         "begin_verification",
+        "snapshot",
         "resolve_verification_approvals",
       ])
       expect(kernel.calls.some((call) => call.operation === "execute_verification")).toBe(false)
@@ -2329,7 +3049,7 @@ describe("managed control client", () => {
         challengeID: `challenge-${id}`,
         effectID: `effect-${id}`,
         capabilityID: "builtin.verifier",
-        locationID: "location-client",
+        locationID: LOCATION_ID,
         inputDigest: RECEIPT,
         normalizedTargets: [{ criterionID: `criterion-${id}` }],
         expiresAtUnixMs: Date.now() + 60_000,
@@ -2337,11 +3057,30 @@ describe("managed control client", () => {
       }))
       kernel.managedResponses.begin_verification = {
         status: "NEEDS_APPROVAL",
+        schemaVersion: 1,
         goalID: "goal-client",
         runID: "run-client",
+        taskID: "task-client",
+        attemptID: ATTEMPT_ID,
+        ownerEpoch: "7",
+        specID: "spec-client",
+        specDigest: RECEIPT,
+        profileID: DIRECT_PROFILE.profileId,
+        profileRevision: "1",
+        profileDigest: DIRECT_PROFILE_DIGEST,
+        evidencePlanDigest: RECEIPT,
+        setIdentityDigest: RECEIPT,
         finalRevision: RECEIPT,
-        verificationRunID: "verification-run-client",
+        verificationRunID: VERIFICATION_RUN_ID,
         challengeSetDigest: RECEIPT,
+        approvalLocation: {
+          locationID: LOCATION_ID,
+          workspaceID: "wrk_client_workspace",
+          canonicalRoot: "/workspace/client",
+          workspaceRevision: RECEIPT,
+        },
+        evidenceDigest: null,
+        artifactRefs: [],
         challenges,
         revision: 11n,
       }
@@ -2353,7 +3092,6 @@ describe("managed control client", () => {
       const result = yield* ManagedControl.runVerification({
         goalID: "goal-client",
         runID: "run-client",
-        locationRef: Location.Ref.make({ directory: AbsolutePath.make("/tmp/workspace") }),
       })
 
       expect(kernel.approvalWindows.map((window) => window.length)).toEqual([3])
@@ -2383,7 +3121,7 @@ describe("managed control client", () => {
         challengeID: `challenge-${index + 1}`,
         effectID: `effect-${index + 1}`,
         capabilityID: "builtin.verifier",
-        locationID: "location-client",
+        locationID: LOCATION_ID,
         inputDigest: RECEIPT,
         normalizedTargets: [{ criterionID: `criterion-${index + 1}` }],
         expiresAtUnixMs: Date.now() + 60_000,
@@ -2391,11 +3129,30 @@ describe("managed control client", () => {
       }))
       kernel.managedResponses.begin_verification = {
         status: "NEEDS_APPROVAL",
+        schemaVersion: 1,
         goalID: "goal-client",
         runID: "run-client",
+        taskID: "task-client",
+        attemptID: ATTEMPT_ID,
+        ownerEpoch: "7",
+        specID: "spec-client",
+        specDigest: RECEIPT,
+        profileID: DIRECT_PROFILE.profileId,
+        profileRevision: "1",
+        profileDigest: DIRECT_PROFILE_DIGEST,
+        evidencePlanDigest: RECEIPT,
+        setIdentityDigest: RECEIPT,
         finalRevision: RECEIPT,
-        verificationRunID: "verification-run-client",
+        verificationRunID: VERIFICATION_RUN_ID,
         challengeSetDigest: RECEIPT,
+        approvalLocation: {
+          locationID: LOCATION_ID,
+          workspaceID: "wrk_client_workspace",
+          canonicalRoot: "/workspace/client",
+          workspaceRevision: RECEIPT,
+        },
+        evidenceDigest: null,
+        artifactRefs: [],
         challenges,
         revision: 11n,
       }
@@ -2404,7 +3161,6 @@ describe("managed control client", () => {
       const result = yield* ManagedControl.runVerification({
         goalID: "goal-client",
         runID: "run-client",
-        locationRef: Location.Ref.make({ directory: AbsolutePath.make("/tmp/workspace") }),
       })
 
       expect(kernel.approvalWindows.map((window) => window.length)).toEqual([17])
@@ -2434,7 +3190,6 @@ describe("managed control client", () => {
       const result = yield* ManagedControl.runVerification({
         goalID: "goal-client",
         runID: "run-client",
-        locationRef: Location.Ref.make({ directory: AbsolutePath.make("/tmp/workspace") }),
       })
 
       const resolve = kernel.calls.find((call) => call.operation === "resolve_verification_approvals")!
@@ -2455,7 +3210,6 @@ describe("managed control client", () => {
         ManagedControl.runVerification({
           goalID: "goal-client",
           runID: "run-client",
-          locationRef: Location.Ref.make({ directory: AbsolutePath.make("/tmp/workspace") }),
         }),
       )
 
@@ -2480,7 +3234,6 @@ describe("managed control client", () => {
       const result = yield* ManagedControl.runVerification({
         goalID: "goal-client",
         runID: "run-client",
-        locationRef: Location.Ref.make({ directory: AbsolutePath.make("/tmp/workspace") }),
       })
 
       const resolve = kernel.calls.find((call) => call.operation === "resolve_verification_approvals")!
@@ -2508,7 +3261,6 @@ describe("managed control client", () => {
       const result = yield* ManagedControl.runVerification({
         goalID: "goal-client",
         runID: "run-client",
-        locationRef: Location.Ref.make({ directory: AbsolutePath.make("/tmp/workspace") }),
       })
 
       const resolve = kernel.calls.find((call) => call.operation === "resolve_verification_approvals")!

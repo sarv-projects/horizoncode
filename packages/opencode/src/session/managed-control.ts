@@ -46,6 +46,9 @@ import { bytesToHex } from "@noble/hashes/utils.js"
 import { Effect, Schema } from "effect"
 import { Location } from "@opencode-ai/core/location"
 import { AbsolutePath } from "@opencode-ai/core/schema"
+import { ProviderV2 } from "@opencode-ai/core/provider"
+import { ModelV2 } from "@opencode-ai/core/model"
+import { WorkspaceV2 } from "@opencode-ai/core/workspace"
 import { AgentProfileService, Service as CoreConfigService } from "@opencode-ai/core/config"
 import { LocationServiceMap } from "@opencode-ai/core/location-service-map"
 import { TrustedPrincipalContext, type TrustedPrincipal } from "@opencode-ai/core/trusted-principal"
@@ -60,7 +63,7 @@ import {
   type ManagedProviderAuthorizationHandleV1,
 } from "@/auth/provider-transport"
 import type { ManagedRootSessionLinkProjectionV1 } from "./session"
-import { managedMessageConsumptionAckDigest } from "./managed-subagent-inbox"
+import { managedMessageConsumptionAckDigest, managedMessageInboxReceiptDigest } from "./managed-subagent-inbox"
 import type { ManagedSubagentConsumptionProofV1 } from "./managed-subagent-inbox"
 import { ContextSelectionV1, type ContextSelectionV1 as ContextSelection } from "@opencode-ai/schema/context-selection-v1"
 import {
@@ -234,7 +237,7 @@ export type GoalReviewSnapshot = {
     readonly name: string
     readonly roles: readonly string[]
     readonly capabilityCeiling: readonly string[]
-    readonly tokenBudget: number | null
+    readonly tokenBudget: string | null
   }[]
   readonly eligibleProfilesTruncated: boolean
   readonly runs: readonly {
@@ -417,7 +420,7 @@ export type DirectMessagePrepareResultV1 =
   | { readonly status: "DENIED"; readonly reasonCode: string; readonly pinsDigest: string }
   | {
     readonly status: "NEEDS_APPROVAL"
-    readonly receiptRef: string | null
+    readonly challengeID: string
     readonly effectID: string
     readonly capabilityID: "agents.message"
     readonly locationID: string
@@ -513,7 +516,7 @@ export type ManagedEffectWaveReceiptsV1 = {
     readonly callIndex: number
     readonly callID: string
     readonly effectID: string
-    readonly challengeID: string
+    readonly receiptRef: string | null
     readonly capabilityID: string
     readonly attemptScopeDigest: string
     readonly status: string
@@ -1316,7 +1319,23 @@ export const recordAttemptUsage = Effect.fn("ManagedControl.recordAttemptUsage")
   if ((BigInt(refreshed.remainingTokens) === 0n) !== (status === "STOPPED")) throw new ManagedControlError({ operation, code: "managed_protocol", reason: "an exhausted Attempt must be stopped before another managed step" })
   const ceilingDigest = digestValue(operation, requiredText(operation, response, "ceilingDigest", 256), "ceilingDigest")
   const receiptDigest = digestValue(operation, requiredText(operation, response, "receiptDigest", 256), "receiptDigest")
-  if (!isReceiptAdvancedManagedAttemptScope(scope, refreshed) || refreshed.expectedManagedRevision !== managedRevision || accountingCursor !== managedRevision || !sameManagedAttemptScope(scope, { ...refreshed, expectedManagedRevision: scope.expectedManagedRevision })) {
+  // The authority pins must be unchanged; only the usage-driven remainder and
+  // the managed revision may differ, because the receipt itself reports the
+  // new durable remainder (including exhaustion to zero).
+  const sameAuthorityPins = (() => {
+    const stripUsage = (value: unknown) =>
+      JSON.stringify(value, (key, entry) => (key === "remainingTokens" ? undefined : entry))
+    return (
+      stripUsage(managedAttemptScopeValue("managed_attempt_scope", scope)) ===
+      stripUsage(
+        managedAttemptScopeValue("managed_attempt_scope", {
+          ...refreshed,
+          expectedManagedRevision: scope.expectedManagedRevision,
+        }),
+      )
+    )
+  })()
+  if (!isReceiptAdvancedManagedAttemptScope(scope, refreshed) || refreshed.expectedManagedRevision !== managedRevision || accountingCursor !== managedRevision || !sameAuthorityPins) {
     throw new ManagedControlError({ operation, code: "managed_protocol", reason: "usage receipt does not advance the exact live Attempt" })
   }
   return {
@@ -1585,7 +1604,20 @@ export type RunFinalized = {
   readonly revision: string
 }
 
-/** The intersected facts one direct subagent dispatch is bound to. */
+/**
+ * The intersected facts one direct subagent dispatch is bound to.
+ *
+ * Contract decision (P2, 2026-10-25): `profileRevision`/`profileHarness`/
+ * `profileDefinition` are intentionally **not** part of this bundle. The profile
+ * pin is bound on the `DirectAttemptScopeV1` wire envelope
+ * (`profileID`/`profileRevision`/`profileDigest`), which HostKernel validates
+ * with its owner binding, while these facts pin the effective dispatch policy
+ * the digest exists to detect changing (agent/provider/model, permission rules,
+ * denied tools, budget, depth). Neither `arch_V1/12-DOMAIN-SCHEMAS.md` nor
+ * `contracts-v2` defines a schema for this TS-local bundle, so adding profile
+ * fields would be a wire-visible digest change with no added authority. The
+ * three excess call-site facts removed by P7 stay removed.
+ */
 export type DirectScopeFacts = {
   readonly parentSessionID: string
   readonly childSessionID: string
@@ -2234,7 +2266,19 @@ function decodeManagedDispatchHandoff(operation: string, raw: unknown): ManagedD
   for (const key of ["handoffDigest", "profileDigest", "permissionScopeDigest", "acceptedSpecDigest", "workspaceRevision", "contextSelectionDigest", "acceptedScopeDigest", "capabilityCeilingDigest", "claimOwnerLogEventDigest", "claimedProofDigest", "claimNonce", "bindingDigest", "pinsDigest"] as const) {
     digestValue(operation, value[key] as string, key)
   }
-  return { ...result, ...Object.fromEntries(["expectedManagedRevision", "ownerEpoch", "profileRevision", "budgetAmount", "leaseExpiresAtMs", "claimOwnerLogSequence", "workerPoolRevision", "worktreePoolRevision"].map((key) => [key, value[key]])), resourceLeaseIDs, worktreeTarget } as ManagedDispatchHandoffV1
+  return {
+    ...result,
+    expectedManagedRevision: requiredDecimalU64(operation, value, "expectedManagedRevision"),
+    ownerEpoch: requiredDecimalU64(operation, value, "ownerEpoch"),
+    profileRevision: requiredDecimalU64(operation, value, "profileRevision"),
+    budgetAmount: requiredDecimalU64(operation, value, "budgetAmount"),
+    leaseExpiresAtMs: requiredDecimalU64(operation, value, "leaseExpiresAtMs"),
+    claimOwnerLogSequence: requiredDecimalU64(operation, value, "claimOwnerLogSequence"),
+    workerPoolRevision: requiredDecimalU64(operation, value, "workerPoolRevision"),
+    worktreePoolRevision: requiredDecimalU64(operation, value, "worktreePoolRevision"),
+    resourceLeaseIDs,
+    worktreeTarget,
+  } satisfies ManagedDispatchHandoffV1
 }
 
 function decodeManagedDispatchConsumeReceipt(operation: string, response: Record<string, unknown>): ManagedDispatchConsumeReceiptV1 {
@@ -2375,7 +2419,11 @@ function decodeManagedActiveAttemptRecovery(
   operation: string,
   response: Record<string, unknown>,
 ): ManagedActiveAttemptRecoveryV1 {
-  const status = requiredText(operation, response, "status", 32)
+  // Validated against both variants below; unknown values fail closed. The
+  // literal union keeps the recovery result discriminant-exact.
+  const status = requiredText(operation, response, "status", 32) as
+    | "NO_ACTIVE_ATTEMPT"
+    | "ACTIVE_ATTEMPT"
   if (status !== "NO_ACTIVE_ATTEMPT" && status !== "ACTIVE_ATTEMPT") {
     throw new ManagedControlError({ operation, code: "managed_protocol", reason: "active Attempt recovery status is invalid" })
   }
@@ -2848,7 +2896,8 @@ function decodeGoalReviewSnapshot(operation: string, response: Record<string, un
 
 function projectEligibleProfiles(profiles: readonly AgentProfileV2.AgentProfileDefinitionV2[]) {
   const eligible = profiles
-    .filter((profile) => profile.enabled && profile.source === "user" && profile.roles.includes("subagent") && (profile.limits.tokenBudget ?? 0) > 0)
+    .filter((profile) => profile.enabled && profile.source === "user" && profile.roles.includes("subagent") &&
+      profile.limits.tokenBudget !== undefined && BigInt(profile.limits.tokenBudget) > 0n)
   return {
     truncated: eligible.length > 128,
     profiles: eligible.slice(0, 128)
@@ -3037,7 +3086,6 @@ function decodeManagedAttemptAdmission(operation: string, response: Record<strin
     sessionID,
     workspaceRevision,
     profile,
-    managedProviderRoute,
     managedProviderRoute,
     requestSequence,
     requestID,
@@ -4058,14 +4106,20 @@ function decodeVerificationRunResult(operation: string, response: Record<string,
     throw new ManagedControlError({ operation, code: "managed_protocol", reason: "verification result status is invalid" })
   }
   const success = status === "SETTLING"
-  const base = ["status", "goalID", "runID", "taskID", "attemptID", "verificationRunID", "challengeSetDigest", "finalRevision", "revision"]
+  const base = [
+    "status", "goalID", "runID", "taskID", "attemptID",
+    "schemaVersion", "ownerEpoch", "specID", "specDigest", "profileID", "profileRevision",
+    "profileDigest", "evidencePlanDigest", "setIdentityDigest",
+    "verificationRunID", "challengeSetDigest", "finalRevision", "revision",
+  ]
   const unknown = status === "UNKNOWN"
-  const expectedKeys = [...base, "sourceRevision", ...(unknown ? ["reason"] : []), ...(success ? ["evidenceDigest", "artifactRefs", "settlementCandidate"] : [])].toSorted()
+  const expectedKeys = [...base, "sourceRevision", ...(unknown ? ["reason"] : []), ...(success ? ["approvalLocation", "evidenceDigest", "artifactRefs", "settlementCandidate"] : [])].toSorted()
   if (Object.keys(response).toSorted().join("\0") !== expectedKeys.join("\0")) {
     throw new ManagedControlError({ operation, code: "managed_protocol", reason: "verification result has an invalid shape" })
   }
   const result = {
     status: status as VerificationExecutionStatus,
+    setIdentityDigest: decodeBlake3Digest(operation, requiredText(operation, response, "setIdentityDigest", 256), "setIdentityDigest"),
     goalID: identifier(operation, requiredText(operation, response, "goalID", 256), "goalID"),
     runID: identifier(operation, requiredText(operation, response, "runID", 256), "runID"),
     taskID: identifier(operation, requiredText(operation, response, "taskID", 256), "taskID"),
@@ -4984,13 +5038,9 @@ export const admitAttempt = Effect.fn("ManagedControl.admitAttempt")(function* (
   if (profileRevision < 1n) {
     return yield* new ManagedControlError({ operation, code: "managed_protocol", reason: "AgentProfile revision must be positive" })
   }
-  const profileRevisionNumber = Number(profileRevision)
-  if (!Number.isSafeInteger(profileRevisionNumber) || profileRevisionNumber < 1) {
-    return yield* new ManagedControlError({ operation, code: "managed_protocol", reason: "AgentProfile revision exceeds the Core Config revision range" })
-  }
   const profiles = yield* AgentProfileService
   const configuredProfile = yield* Effect.mapError(
-    profiles.agentProfile(profileID, profileRevisionNumber),
+    profiles.agentProfile(profileID, profileRevision.toString()),
     (error) => new ManagedControlError({ operation, code: "agent_profile_unavailable", reason: error.message }),
   )
   const profileDefinition = yield* Effect.try({
@@ -5002,8 +5052,8 @@ export const admitAttempt = Effect.fn("ManagedControl.admitAttempt")(function* (
   }
   const managedProviderRoute = yield* Effect.mapError(
     managedRouteProjection({
-      providerID: profileDefinition.model.providerId,
-      modelID: profileDefinition.model.modelId,
+      providerID: ProviderV2.ID.make(profileDefinition.model.providerId),
+      modelID: ModelV2.ID.make(profileDefinition.model.modelId),
       harnessID: profileDefinition.harness,
     }),
     (error) => new ManagedControlError({ operation, code: "provider_route_unavailable", reason: error.message }),
@@ -5233,7 +5283,7 @@ export const prepareManagedProviderRequest = Effect.fn("ManagedControl.prepareMa
   }
   const profiles = yield* AgentProfileService
   const configured = yield* Effect.mapError(
-    profiles.agentProfile(profileID, Number(profileRevision)),
+    profiles.agentProfile(profileID, profileRevision.toString()),
     (error) => new ManagedControlError({ operation, code: "agent_profile_unavailable", reason: error.message }),
   )
   const profileDefinition = yield* Effect.try({
@@ -5326,7 +5376,7 @@ export const prepareManagedProviderRequest = Effect.fn("ManagedControl.prepareMa
     return { status: "UNAVAILABLE", providerRequestID: null, prepareDigest: null, guardChallenge: null, ...echoed, revision, managedAttempt: unchanged } satisfies ManagedProviderRequestPreparedV1
   }
   const { revision, managedAttempt } = providerRequestScopeTransition(operation, scope, response.managedAttempt, pins, response)
-  return { status: response.status, providerRequestID, prepareDigest, guardChallenge, ...echoed, revision, managedAttempt } satisfies ManagedProviderRequestPreparedV1
+  return { status: response.status as "PREPARED" | "REPLAY", providerRequestID, prepareDigest, guardChallenge, ...echoed, revision, managedAttempt } satisfies ManagedProviderRequestPreparedV1
 })
 
 /** Await a real authenticated user decision for the exact HostKernel challenge. */
@@ -5336,17 +5386,17 @@ export const awaitManagedProviderApproval = Effect.fn("ManagedControl.awaitManag
   readonly requestPins: ManagedProviderInputPinsV1
   readonly challenge: ManagedProviderGuardChallengeV1
 }) {
-  const supervisor = yield* SessionSupervisor
+  const supervisor = yield* SessionSupervisor.Service
   return yield* supervisor.awaitManagedProviderApproval({
     locationRef: Location.Ref.make({
       directory: AbsolutePath.make(input.scope.worktreeTarget.canonicalRoot),
-      workspaceID: input.scope.worktreeTarget.workspaceID,
+      workspaceID: WorkspaceV2.ID.make(input.scope.worktreeTarget.workspaceID),
     }),
     scope: input.scope,
     routeProjection: input.routeProjection,
     requestPins: input.requestPins,
     challenge: { ...input.challenge, locationID: input.scope.locationID } satisfies SupervisorManagedProviderGuardChallengeV1,
-  }).pipe(Effect.mapError((error) => new ManagedControlError({
+  }).pipe(Effect.mapError((error: SessionSupervisorError) => new ManagedControlError({
     operation: "managed_provider.resolve_approval",
     code: error.hostCode ?? "managed_unavailable",
     reason: error.message,
@@ -5437,7 +5487,7 @@ export const beginManagedProviderRequest = Effect.fn("ManagedControl.beginManage
     return yield* Effect.fail(new ManagedControlError({ operation, code: "managed_protocol", reason: "only a fresh provider begin may carry one-use send authorization" }))
   }
   const { revision, managedAttempt } = providerRequestScopeTransition(operation, scope, response.managedAttempt, pins, response)
-  return { status: response.status, providerRequestID, prepareDigest, dispatchDigest, ...pins, guardChallengeID, effectID, capabilityLeaseDigest, authorizationBindingDigest, sendAuthorization, revision, managedAttempt } satisfies ManagedProviderRequestDispatchV1
+  return { status: response.status as "DISPATCHING" | "REPLAY", providerRequestID, prepareDigest, dispatchDigest, ...pins, guardChallengeID, effectID, capabilityLeaseDigest, authorizationBindingDigest, sendAuthorization, revision, managedAttempt } satisfies ManagedProviderRequestDispatchV1
 })
 
 /** Complete the durable call only after its exact assistant response entry exists in Session. */
@@ -5645,7 +5695,7 @@ export const claimManagedDispatch = Effect.fn("ManagedControl.claimManagedDispat
   }
   const profiles = yield* AgentProfileService
   const configured = yield* Effect.mapError(
-    profiles.agentProfile(profileID, Number(profileRevision)),
+    profiles.agentProfile(profileID, profileRevision.toString()),
     (error) => new ManagedControlError({ operation, code: "agent_profile_unavailable", reason: error.message }),
   )
   const profileDefinition = yield* Effect.try({
@@ -5927,7 +5977,7 @@ function* trustedManagedProfileDefinition(operation: string, profileIDRaw: strin
   }
   const profiles = yield* AgentProfileService
   const configured = yield* Effect.mapError(
-    profiles.agentProfile(profileID, Number(profileRevision)),
+    profiles.agentProfile(profileID, profileRevision.toString()),
     (error) => new ManagedControlError({ operation, code: "agent_profile_unavailable", reason: error.message }),
   )
   const profileDefinition = yield* Effect.try({
@@ -5956,7 +6006,7 @@ export const reserveManagedPreAdmissionTarget = Effect.fn("ManagedControl.reserv
   if (profileDefinition.profileId !== task.profile.profileID || String(profileDefinition.revision) !== task.profile.revision) {
     return yield* new ManagedControlError({ operation, code: "agent_profile_stale", reason: "READY_TASK profile pin differs from the trusted Core Config revision" })
   }
-  const sessionID = identifier(operation, ManagedControl.managedTaskSessionID(task.candidateAttemptID), "sessionID")
+  const sessionID = identifier(operation, managedTaskSessionID(task.candidateAttemptID), "sessionID")
   const response = yield* call(operation, {
     goalID: selection.goalID,
     runID: selection.runID,
@@ -6008,7 +6058,7 @@ export const bindManagedPreAdmissionContext = Effect.fn("ManagedControl.bindMana
     try: () => Schema.decodeUnknownSync(ContextSelectionV1, { onExcessProperty: "error" })(input.contextSelection),
     catch: () => new ManagedControlError({ operation, code: "managed_protocol", reason: "pre-admission ContextSelectionV1 is invalid" }),
   })
-  const sessionID = identifier(operation, ManagedControl.managedTaskSessionID(task.candidateAttemptID), "sessionID")
+  const sessionID = identifier(operation, managedTaskSessionID(task.candidateAttemptID), "sessionID")
   if (contextSelection.sessionID !== sessionID || contextSelection.attemptID !== task.candidateAttemptID ||
     contextSelection.requestID !== `req_managed_${task.candidateAttemptID}_1` || contextSelection.requestSequence !== "1") {
     return yield* new ManagedControlError({ operation, code: "managed_conflict", reason: "Stage B requires the exact candidate child Session and first request selection" })
@@ -6142,7 +6192,7 @@ function managedAttemptScopeValueWithExhaustion(
   }
   const worktreeTarget = decodeManagedWorktreeTarget(operation, scope.worktreeTarget)
   const requestSequence = counter("requestSequence", scope.requestSequence)
-  if (requestSequence < 1n || requestSequence > 1024n) {
+  if (BigInt(requestSequence) < 1n || BigInt(requestSequence) > 1024n) {
     throw new ManagedControlError({ operation, code: "managed_protocol", reason: "requestSequence is outside the managed context bound" })
   }
   if (worktreeTarget.locationID !== scope.locationID) {
@@ -6328,9 +6378,20 @@ const phaseChange = (
 ) =>
   Effect.gen(function* () {
     const trustedPrincipal = yield* serverAuthPrincipal(operation, input.trustedPrincipal)
-    const goalID = identifier(operation, input.goalID, "goalID")
-    const runID = identifier(operation, input.runID, "runID")
-    const revision = expectedRevision(operation, input.expectedRevision)
+    // Validation throws stay typed failures: a caller must observe a
+    // managed_protocol refusal through the error channel, never a defect.
+    const goalID = yield* Effect.try({
+      try: () => identifier(operation, input.goalID, "goalID"),
+      catch: (error) => error as ManagedControlError,
+    })
+    const runID = yield* Effect.try({
+      try: () => identifier(operation, input.runID, "runID"),
+      catch: (error) => error as ManagedControlError,
+    })
+    const revision = yield* Effect.try({
+      try: () => expectedRevision(operation, input.expectedRevision),
+      catch: (error) => error as ManagedControlError,
+    })
     const response = yield* call(
       operation,
       { goalID, runID, expectedRevision: revision },
@@ -6557,7 +6618,7 @@ export const runVerification = Effect.fn("ManagedControl.runVerification")(funct
     .awaitManagedVerifierApprovals({
       locationRef: Location.Ref.make({
         directory: AbsolutePath.make(started.approvalLocation.canonicalRoot),
-        workspaceID: started.approvalLocation.workspaceID,
+        workspaceID: WorkspaceV2.ID.make(started.approvalLocation.workspaceID),
       }),
       ...(input.sessionID === undefined ? {} : { sessionID: input.sessionID }),
       challenges,
@@ -6719,7 +6780,7 @@ export const runVerification = Effect.fn("ManagedControl.runVerification")(funct
     decodeManagedRootInspectChallenge(name, value, started.approvalLocation.locationID),
   )
   const inspectLease = yield* supervisor.awaitManagedRootApproval({
-    locationRef: Location.Ref.make({ directory: AbsolutePath.make(started.approvalLocation.canonicalRoot), workspaceID: started.approvalLocation.workspaceID }),
+    locationRef: Location.Ref.make({ directory: AbsolutePath.make(started.approvalLocation.canonicalRoot), workspaceID: WorkspaceV2.ID.make(started.approvalLocation.workspaceID) }),
     runID,
     challenge,
   })
@@ -6943,8 +7004,8 @@ function directAttemptScopeValue(operation: string, scope: DirectAttemptScopeV1)
     profileID: identifier(operation, scope.profileID, "profileID"),
     profileRevision: expectedRevision(operation, scope.profileRevision).toString(),
     profileDigest: digestValue(operation, scope.profileDigest, "profileDigest"),
-    ownerEpoch: expectedRevision(operation, scope.ownerEpoch),
-    expectedRevision: expectedRevision(operation, scope.expectedRevision),
+    ownerEpoch: expectedRevision(operation, scope.ownerEpoch).toString(),
+    expectedRevision: expectedRevision(operation, scope.expectedRevision).toString(),
     locationID: identifier(operation, scope.locationID, "locationID"),
     workspaceID: identifier(operation, scope.workspaceID, "workspaceID"),
     workspaceRevision: digestValue(operation, scope.workspaceRevision, "workspaceRevision"),
@@ -7069,7 +7130,13 @@ export const bindDirectAttemptEffects = Effect.fn("ManagedControl.bindDirectAtte
 export const settleDirectAttempt = Effect.fn("ManagedControl.settleDirectAttempt")(function* (input: {
   readonly attemptID: string
   readonly outcome: "succeeded" | "failed" | "unknown"
-  readonly expectedRevision: string | number
+  /**
+   * Canonical revision in any accepted JS form (canonical decimal string,
+   * safe number, or bigint). It is always serialized to the private
+   * MessagePack uint64 wire form (bigint) before `call(...)`, matching the
+   * kernel's `get_unsigned` contract and Core's `DirectAttemptScopeWireV1`.
+   */
+  readonly expectedRevision: string | number | bigint
   readonly resultDigest?: string
   readonly failureCode?: string
   readonly retryable?: boolean
@@ -7114,7 +7181,8 @@ export const settleDirectAttempt = Effect.fn("ManagedControl.settleDirectAttempt
 
 export const cancelDirectAttempt = Effect.fn("ManagedControl.cancelDirectAttempt")(function* (input: {
   readonly attemptID: string
-  readonly expectedRevision: string | number
+  /** Any accepted JS form; always serialized as the uint64 wire form (bigint). */
+  readonly expectedRevision: string | number | bigint
 }) {
   const operation = "cancel_direct_attempt"
   if (!ATTEMPT_ID.test(input.attemptID)) {
@@ -7937,7 +8005,13 @@ export const prepareDirectMessage = Effect.fn("ManagedControl.prepareDirectMessa
   }
   const body = { authorityPins: pins, ...(fresh ? { freshTurnAuthorization: fresh } : {}) }
   const response = yield* callDirectMessage("prepare", body, pins.messageID)
-  const status = requiredText(operation, response, "status", 32)
+  // The status text is validated against exactly one variant in every branch
+  // below; unknown values fail closed. The literal union keeps each result
+  // variant discriminant-exact so consumers retain narrowing.
+  const status = requiredText(operation, response, "status", 32) as
+    | "DENIED"
+    | "NEEDS_APPROVAL"
+    | "ADMITTED"
   if (status === "DENIED") {
     const keys = ["status", "reasonCode", "pinsDigest"].toSorted()
     if (Object.keys(response).toSorted().join("\0") !== keys.join("\0")) return yield* new ManagedControlError({ operation, code: "managed_protocol", reason: "direct message denial has an invalid shape" })

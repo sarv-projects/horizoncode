@@ -22,7 +22,7 @@ export interface Interface {
   readonly init: () => Effect.Effect<void>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/Plugin") {}
+export class Service extends Context.Service<Service, Interface>()("@horizoncode/Plugin") {}
 
 export function experimentalWebSocketsEnabled(input: { enabled: boolean; channel?: string }) {
   return input.enabled || ["local", "dev", "beta"].includes(input.channel ?? InstallationChannel)

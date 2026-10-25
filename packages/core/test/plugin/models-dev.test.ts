@@ -1,6 +1,6 @@
 import path from "path"
 import { describe, expect } from "bun:test"
-import { Effect, Layer } from "effect"
+import { Effect, Deferred, Layer } from "effect"
 import { Catalog } from "@opencode-ai/core/catalog"
 import { Integration } from "@opencode-ai/core/integration"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
@@ -124,6 +124,37 @@ describe("ModelsDevPlugin", () => {
           cache: { read: 0.5, write: 0 },
         },
       ])
+    }),
+  )
+
+  it.effect("attempts exactly one advisory metadata refresh at startup", () =>
+    Effect.gen(function* () {
+      const integrations = yield* Integration.Service
+      const catalog = yield* Catalog.Service
+      const refreshed = yield* Deferred.make<void>()
+      let calls = 0
+      let forceRefresh: boolean | undefined
+      const models = ModelsDev.Service.of({
+        get: () => Effect.succeed({}),
+        getSnapshot: () => Effect.succeed({ providers: {}, source: "unavailable", freshness: "unknown" }),
+        refresh: (force) =>
+          Effect.gen(function* () {
+            calls += 1
+            forceRefresh = force
+            yield* Deferred.succeed(refreshed, undefined)
+          }),
+      })
+
+      yield* ModelsDevPlugin.effect(
+        host({
+          catalog: catalogHost(catalog),
+          integration: integrationHost(integrations),
+        }),
+      ).pipe(Effect.provideService(ModelsDev.Service, models))
+
+      yield* Deferred.await(refreshed)
+      expect(calls).toBe(1)
+      expect(forceRefresh).toBe(true)
     }),
   )
 

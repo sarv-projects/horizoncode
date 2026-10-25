@@ -20,7 +20,7 @@ describe("authenticated LSP document reader composition", () => {
     const readDocument = makeRepoDocumentReader(
       supervisor,
       { sessionID: "ses_reader", locationRef: { directory: "/repo" } as never },
-      <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.runPromise(
+      <A, E>(effect: Effect.Effect<A, E, TrustedPrincipalContext>) => Effect.runPromise(
         Effect.provideService(effect, TrustedPrincipalContext, {
           principal: { kind: "server_auth", subject: "test-principal" },
         }),
@@ -39,6 +39,7 @@ describe("authenticated LSP document reader composition", () => {
       locationRef: { directory: "/repo" },
       request: {
         schemaVersion: 1,
+        revisionKind: "workspace",
         pathRef: "src/main.ts",
         expectedWorkspaceRevision: `blake3:${"b".repeat(64)}`,
         maxBytes: MAX_REPO_DOCUMENT_BYTES,
@@ -50,7 +51,7 @@ describe("authenticated LSP document reader composition", () => {
     const readDocument = makeRepoDocumentReader(
       {},
       { sessionID: "ses_reader", locationRef: { directory: "/repo" } as never },
-      <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.runPromise(
+      <A, E>(effect: Effect.Effect<A, E, TrustedPrincipalContext>) => Effect.runPromise(
         Effect.provideService(effect, TrustedPrincipalContext, {
           principal: { kind: "server_auth", subject: "test-principal" },
         }),
@@ -62,5 +63,38 @@ describe("authenticated LSP document reader composition", () => {
       expectedWorkspaceRevision: `blake3:${"b".repeat(64)}`,
       maxBytes: 1024,
     })).rejects.toMatchObject({ _tag: "SessionSupervisorError" })
+  })
+
+  test("rejects a document path outside the canonical relative contract before the supervisor", async () => {
+    let called = false
+    const supervisor = {
+      readRepoDocument: () => {
+        called = true
+        return Effect.succeed({
+          text: "source",
+          contentDigest: `blake3:${"a".repeat(64)}`,
+          observedWorkspaceRevision: `blake3:${"b".repeat(64)}`,
+        })
+      },
+    } as never
+    const readDocument = makeRepoDocumentReader(
+      supervisor,
+      { sessionID: "ses_reader", locationRef: { directory: "/repo" } as never },
+      <A, E>(effect: Effect.Effect<A, E, TrustedPrincipalContext>) => Effect.runPromise(
+        Effect.provideService(effect, TrustedPrincipalContext, {
+          principal: { kind: "server_auth", subject: "test-principal" },
+        }),
+      ),
+    )
+    await expect(readDocument({
+      schemaVersion: 1,
+      pathRef: ".",
+      expectedWorkspaceRevision: `blake3:${"b".repeat(64)}`,
+      maxBytes: 1024,
+    })).rejects.toMatchObject({
+      _tag: "SessionSupervisorError",
+      reason: "document read request failed strict schema validation",
+    })
+    expect(called).toBe(false)
   })
 })

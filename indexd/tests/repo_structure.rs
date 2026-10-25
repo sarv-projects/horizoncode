@@ -1,10 +1,10 @@
-use horizon_indexd_library::{
-    BufferOverlay, FileSnapshot, GenerationPins, OpaquePin, RepoIntelGeneration, RepoStructureCompletenessV1,
-    RepoStructureError, RepoStructureFallbackReasonV1, RepoStructureFreshnessV1,
-    RepoStructureProvenanceV1, RepoStructureQueryV1, RepoStructureSelectorV1,
-    RepoStructureSourceKindV1, RepoStructureStatusV1,
-};
 use horizon_indexd_library::repo_structure::RepoStructurePositionV1;
+use horizon_indexd_library::{
+    BufferOverlay, FileSnapshot, GenerationPins, OpaquePin, RepoIntelGeneration,
+    RepoStructureCompletenessV1, RepoStructureError, RepoStructureFallbackReasonV1,
+    RepoStructureFreshnessV1, RepoStructureProvenanceV1, RepoStructureQueryV1,
+    RepoStructureSelectorV1, RepoStructureSourceKindV1, RepoStructureStatusV1,
+};
 
 fn pin(value: &str) -> OpaquePin {
     OpaquePin::new(value.as_bytes().to_vec()).unwrap()
@@ -112,7 +112,10 @@ fn structure_query_marks_lexical_limits_partial_without_minting_a_cursor() {
     assert_eq!(page.status, RepoStructureStatusV1::Partial);
     assert_eq!(page.completeness, RepoStructureCompletenessV1::Partial);
     assert_eq!(page.nodes.len(), 1);
-    assert_eq!(page.fallback.unwrap().reason, RepoStructureFallbackReasonV1::ParsePartial);
+    assert_eq!(
+        page.fallback.unwrap().reason,
+        RepoStructureFallbackReasonV1::ParsePartial
+    );
     assert_eq!(page.next_cursor, None);
 }
 
@@ -148,7 +151,10 @@ fn structure_query_skips_over_budget_files_and_keeps_scanning_later_paths() {
     assert_eq!(page.nodes[0].path_ref, "z/small.rs");
     assert_eq!(page.nodes[0].byte_range.start, 0);
     assert_eq!(page.completeness, RepoStructureCompletenessV1::Partial);
-    assert_eq!(page.fallback.unwrap().reason, RepoStructureFallbackReasonV1::ParsePartial);
+    assert_eq!(
+        page.fallback.unwrap().reason,
+        RepoStructureFallbackReasonV1::ParsePartial
+    );
     assert_eq!(page.next_position, None);
 }
 
@@ -229,14 +235,18 @@ fn structure_continuation_resumes_after_host_resolved_occurrence() {
     let forged = RepoStructurePositionV1 {
         path_ref: "src/hits.rs".to_owned(),
         symbol_index: 0,
-        byte_offset: 0,
+        byte_offset: 1,
     };
-    assert!(generation
-        .query_structure_page(&continuation, &provenance(), None, Some(&forged))
-        .is_err());
-    assert!(generation
-        .query_structure_page(&continuation, &provenance(), None, None)
-        .is_err());
+    assert!(
+        generation
+            .query_structure_page(&continuation, &provenance(), None, Some(&forged))
+            .is_err()
+    );
+    assert!(
+        generation
+            .query_structure_page(&continuation, &provenance(), None, None)
+            .is_err()
+    );
 }
 
 #[test]
@@ -311,7 +321,11 @@ fn node_reference_selector_is_bound_to_workspace_generation_revision_and_range()
 
     // A structurally unsupported parser still returns honest UNAVAILABLE for a
     // correctly scoped reference. These caller-held refs never authorize access.
-    assert!(generation.query_structure(&scoped, &provenance(), None).is_ok());
+    assert!(
+        generation
+            .query_structure(&scoped, &provenance(), None)
+            .is_ok()
+    );
 
     let mut foreign_generation = scoped.clone();
     foreign_generation.selector.node_refs[0].source_generation =
@@ -382,22 +396,29 @@ fn overlay_query_requires_host_resolved_overlay_and_preserves_owner_isolated_dig
     let first = BufferOverlay::build(
         generation.base(),
         pin("owner-a/session-a/location-a"),
-        [FileSnapshot::new("src/main.rs", b"fn first() {}\n".to_vec())],
+        [FileSnapshot::new(
+            "src/main.rs",
+            b"fn first() {}\n".to_vec(),
+        )],
     )
     .unwrap();
     let second = BufferOverlay::build(
         generation.base(),
         pin("owner-b/session-b/location-b"),
-        [FileSnapshot::new("src/main.rs", b"fn second() {}\n".to_vec())],
+        [FileSnapshot::new(
+            "src/main.rs",
+            b"fn second() {}\n".to_vec(),
+        )],
     )
     .unwrap();
     let mut first_query = query(&generation);
     first_query.overlay_ref = Some("ovl_0123456789abcdef".to_owned());
+    first_query.selector.symbols = vec!["first".to_owned()];
 
     let base_page = generation
         .query_structure(&query(&generation), &provenance(), None)
         .unwrap();
-    assert_eq!(base_page.status, RepoStructureStatusV1::Unavailable);
+    assert_eq!(base_page.status, RepoStructureStatusV1::Partial);
     assert_eq!(base_page.overlay_digest, None);
 
     assert!(matches!(
@@ -420,7 +441,10 @@ fn overlay_query_requires_host_resolved_overlay_and_preserves_owner_isolated_dig
     let foreign_overlay = BufferOverlay::build(
         foreign_generation.base(),
         pin("owner-foreign/session-foreign/location-foreign"),
-        [FileSnapshot::new("src/main.rs", b"fn foreign() {}\n".to_vec())],
+        [FileSnapshot::new(
+            "src/main.rs",
+            b"fn foreign() {}\n".to_vec(),
+        )],
     )
     .unwrap();
     assert!(matches!(
@@ -432,18 +456,48 @@ fn overlay_query_requires_host_resolved_overlay_and_preserves_owner_isolated_dig
         .unwrap();
     let mut second_query = first_query.clone();
     second_query.overlay_ref = Some("ovl_abcdef0123456789".to_owned());
+    second_query.selector.symbols = vec!["second".to_owned()];
     let second_page = generation
         .query_structure(&second_query, &provenance(), Some(&second))
         .unwrap();
-    assert_eq!(first_page.status, RepoStructureStatusV1::Unavailable);
-    assert!(first_page.nodes.is_empty());
+    assert_eq!(first_page.status, RepoStructureStatusV1::Partial);
+    assert_eq!(first_page.source_kind, RepoStructureSourceKindV1::Lexical);
+    assert_eq!(first_page.nodes.len(), 1);
+    assert_eq!(first_page.nodes[0].symbol, "first");
     assert_eq!(
-        first_page.overlay_digest,
-        Some(first.digest().to_string())
+        first_page.nodes[0].overlay_digest,
+        first_page.overlay_digest
     );
+    let (first_file_digest, first_file_bytes) = first
+        .file_observation(generation.base(), "src/main.rs")
+        .unwrap();
+    assert_eq!(
+        first_page.nodes[0].file_digest,
+        first_file_digest.to_string()
+    );
+    let overlay_write_target = horizon_indexd_library::RepoWriteTargetV1 {
+        path_ref: first_page.nodes[0].path_ref.clone(),
+        source_generation: first_page.nodes[0].source_generation.clone(),
+        source_revision: first_page.nodes[0].source_revision.clone(),
+        file_digest: first_page.nodes[0].file_digest.clone(),
+        byte_start: first_page.nodes[0].byte_range.start,
+        byte_end: first_file_bytes as u64,
+    };
+    assert_eq!(
+        generation.validate_write_target(&overlay_write_target, &provenance().source_revision),
+        Err(horizon_indexd_library::RepoWriteRefusalV1::FileDigestMismatch),
+        "an overlay observation cannot be reused as a base-workspace write precondition"
+    );
+    assert_eq!(first_page.overlay_digest, Some(first.digest().to_string()));
     assert_eq!(
         second_page.overlay_digest,
         Some(second.digest().to_string())
+    );
+    assert_eq!(second_page.nodes.len(), 1);
+    assert_eq!(second_page.nodes[0].symbol, "second");
+    assert_eq!(
+        second_page.nodes[0].overlay_digest,
+        second_page.overlay_digest
     );
     assert_ne!(first_page.overlay_digest, second_page.overlay_digest);
 
@@ -456,12 +510,49 @@ fn overlay_query_requires_host_resolved_overlay_and_preserves_owner_isolated_dig
 }
 
 #[test]
+fn overlay_structure_continuation_validates_anchor_against_effective_overlay_bytes() {
+    let generation = generation();
+    let overlay = BufferOverlay::build(
+        generation.base(),
+        pin("owner/session/location"),
+        [FileSnapshot::new("src/main.rs", b"hit hit hit".to_vec())],
+    )
+    .unwrap();
+    let mut first_query = query(&generation);
+    first_query.overlay_ref = Some("ovl_0123456789abcdef".to_owned());
+    first_query.selector.symbols = vec!["hit".to_owned()];
+    first_query.max_nodes = 2;
+
+    let first = generation
+        .query_structure(&first_query, &provenance(), Some(&overlay))
+        .unwrap();
+    assert_eq!(first.nodes.len(), 2);
+    let resume = first
+        .next_position
+        .expect("the third overlay match proves another page exists");
+
+    let mut continuation = first_query;
+    continuation.cursor = Some("host_cursor_opaque".to_owned());
+    let second = generation
+        .query_structure_page(&continuation, &provenance(), Some(&overlay), Some(&resume))
+        .expect("the overlay-derived continuation anchor is valid for the same overlay");
+
+    assert_eq!(second.nodes.len(), 1);
+    assert_eq!(second.nodes[0].symbol, "hit");
+    assert_eq!(second.nodes[0].byte_range.start, 8);
+    assert_eq!(second.overlay_digest, Some(overlay.digest().to_string()));
+}
+
+#[test]
 fn overlay_node_refs_require_matching_overlay_digest_and_effective_file_digest() {
     let generation = generation();
     let overlay = BufferOverlay::build(
         generation.base(),
         pin("owner/session/location"),
-        [FileSnapshot::new("src/main.rs", b"fn edited() {}\n".to_vec())],
+        [FileSnapshot::new(
+            "src/main.rs",
+            b"fn edited() {}\n".to_vec(),
+        )],
     )
     .unwrap();
     let mut scoped = query(&generation);
@@ -495,15 +586,117 @@ fn overlay_node_refs_require_matching_overlay_digest_and_effective_file_digest()
         .expect("overlay provides the effective path observation");
     scoped.selector.node_refs[0].file_digest = effective_digest.to_string();
     scoped.selector.node_refs[0].byte_range.end = effective_bytes as u64;
-    assert!(generation
-        .query_structure(&scoped, &provenance(), Some(&overlay))
-        .is_ok());
-
-    scoped.selector.node_refs[0].overlay_digest = Some(
-        "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_owned(),
+    assert!(
+        generation
+            .query_structure(&scoped, &provenance(), Some(&overlay))
+            .is_ok()
     );
+
+    scoped.selector.node_refs[0].overlay_digest =
+        Some("blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_owned());
     assert!(matches!(
         generation.query_structure(&scoped, &provenance(), Some(&overlay)),
         Err(RepoStructureError::InvalidQuery(_))
     ));
+}
+
+#[test]
+fn write_target_revalidation_refuses_stale_generation_revision_digest_and_range() {
+    let generation = generation();
+    let revision = provenance().source_revision;
+    let valid = horizon_indexd_library::RepoWriteTargetV1 {
+        path_ref: "src/main.rs".to_owned(),
+        source_generation: generation.id().to_string(),
+        source_revision: revision.clone(),
+        file_digest: main_file_digest(),
+        byte_start: 3,
+        byte_end: 7,
+    };
+    assert_eq!(generation.validate_write_target(&valid, &revision), Ok(()));
+
+    let stale_generation = horizon_indexd_library::RepoWriteTargetV1 {
+        source_generation:
+            "blake3:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_owned(),
+        ..valid.clone()
+    };
+    assert_eq!(
+        generation.validate_write_target(&stale_generation, &revision),
+        Err(horizon_indexd_library::RepoWriteRefusalV1::StaleGeneration)
+    );
+
+    let advanced = "blake3:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+    assert_eq!(
+        generation.validate_write_target(&valid, advanced),
+        Err(horizon_indexd_library::RepoWriteRefusalV1::StaleRevision)
+    );
+
+    let unknown = horizon_indexd_library::RepoWriteTargetV1 {
+        path_ref: "src/other.rs".to_owned(),
+        ..valid.clone()
+    };
+    assert_eq!(
+        generation.validate_write_target(&unknown, &revision),
+        Err(horizon_indexd_library::RepoWriteRefusalV1::UnknownPath)
+    );
+
+    let changed = horizon_indexd_library::RepoWriteTargetV1 {
+        file_digest: "blake3:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+            .to_owned(),
+        ..valid.clone()
+    };
+    assert_eq!(
+        generation.validate_write_target(&changed, &revision),
+        Err(horizon_indexd_library::RepoWriteRefusalV1::FileDigestMismatch)
+    );
+
+    let reversed = horizon_indexd_library::RepoWriteTargetV1 {
+        byte_start: 9,
+        byte_end: 3,
+        ..valid.clone()
+    };
+    assert_eq!(
+        generation.validate_write_target(&reversed, &revision),
+        Err(horizon_indexd_library::RepoWriteRefusalV1::InvalidRange)
+    );
+
+    let past_end = horizon_indexd_library::RepoWriteTargetV1 {
+        byte_end: u64::MAX,
+        ..valid
+    };
+    assert_eq!(
+        generation.validate_write_target(&past_end, &revision),
+        Err(horizon_indexd_library::RepoWriteRefusalV1::InvalidRange)
+    );
+}
+
+#[test]
+fn structure_root_ref_is_path_segment_scoped_and_never_prefix_matches_siblings() {
+    let generation = RepoIntelGeneration::build(
+        GenerationPins {
+            repository: pin("repo"),
+            workspace: Some(pin("workspace")),
+            revision_set: pin("revision-set"),
+            read_scope: pin("read-scope"),
+            read_policy: pin("read-policy"),
+            source_receipt: pin("receipt"),
+            parser_set: pin("lexical-v1"),
+        },
+        [
+            FileSnapshot::new("src/main.rs", b"fn main() {}\n".to_vec()),
+            FileSnapshot::new("src2/main.rs", b"fn main() {}\n".to_vec()),
+        ],
+    )
+    .unwrap();
+    let mut scoped = query(&generation);
+    scoped.root_ref = "src".to_owned();
+    let page = generation
+        .query_structure(&scoped, &provenance(), None)
+        .expect("scoped query succeeds");
+    assert_eq!(page.coverage.files, 1);
+    assert!(page.nodes.iter().all(|node| node.path_ref == "src/main.rs"));
+    assert!(
+        page.nodes
+            .iter()
+            .all(|node| node.source_revision == provenance().source_revision)
+    );
 }

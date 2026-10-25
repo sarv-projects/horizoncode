@@ -18,8 +18,11 @@ test("tool labels accept only printable capability identifiers", () => {
 })
 
 test("tool text strips C1 controls and all bidi formatting controls", () => {
-  const unsafe = `left${String.fromCharCode(0x009b)}2J${String.fromCharCode(0x061c)}${String.fromCharCode(0x200e)}${String.fromCharCode(0x200f)}${String.fromCharCode(0x202e)}${String.fromCharCode(0x206f)}right`
-  expect(redactToolText(unsafe)).toBe("left2Jright")
+  const c1Csi = `left${String.fromCharCode(0x009b)}2Jright`
+  expect(redactToolText(c1Csi)).toBe("leftright")
+
+  const unsafe = `left${String.fromCharCode(0x0085)}${String.fromCharCode(0x061c)}${String.fromCharCode(0x200e)}${String.fromCharCode(0x200f)}${String.fromCharCode(0x202e)}${String.fromCharCode(0x206f)}right`
+  expect(redactToolText(unsafe)).toBe("leftright")
 })
 
 test("timeline labels redact credentials and cap prompt text before rendering", () => {

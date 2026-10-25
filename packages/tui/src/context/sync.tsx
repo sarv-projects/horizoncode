@@ -377,7 +377,10 @@ export const {
         const response = await sdk.client.guard.approval.reply(
           {
             approvalID,
-            decision,
+            // The generated SDK decision union lags the authenticated server
+            // schema, which accepts session/workspace grants. Send the exact
+            // user-selected decision; the server validates it.
+            decision: decision as "allow_once" | "deny",
             directory: entry.directory,
             ...(entry.workspace ? { workspace: entry.workspace } : {}),
           },

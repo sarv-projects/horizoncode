@@ -1,9 +1,21 @@
 import { describe, expect, test } from "bun:test"
-import { isZeroPricedModel, modelAvailabilityLabel, modelSelectableInV1, sortModelOptions } from "../../src/component/dialog-model"
+import { catalogProvenanceLabel, isZeroPricedModel, modelAvailabilityLabel, modelSelectableInV1, sortModelOptions } from "../../src/component/dialog-model"
 import { providerAuthFailureMessage, providerProvenance } from "../../src/component/dialog-provider"
 import { modelPriceLabel } from "../../src/util/model"
 import { FeatureExposure } from "@opencode-ai/core/v1/config/feature-exposure"
 import { featureSettingIsMutable } from "../../src/component/dialog-features"
+
+test("provider model catalog label preserves advisory provenance without implying route health", () => {
+  expect(catalogProvenanceLabel({
+    source: "cache",
+    freshness: "stale",
+    sourceURL: "https://models.opencode.ai",
+    retrievedAt: 0,
+    contentDigest: "abcdef0123456789",
+    license: "MIT",
+    attribution: "Catalog authors",
+  })).toBe("Catalog cache/stale · https://models.opencode.ai · retrieved 1970-01-01T00:00:00.000Z · digest abcdef012345 · license MIT · Catalog authors")
+})
 
 describe("isZeroPricedModel (AN-002/AN-003)", () => {
   test("incomplete pricing is unknown, not zero-priced", () => {

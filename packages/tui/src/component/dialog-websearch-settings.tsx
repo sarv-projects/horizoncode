@@ -251,8 +251,8 @@ export function DialogWebSearchSettings() {
       ? normalizeSettings({
           querySharingConsent: "anonymous_free_v1",
           byoConsents: current.byoConsents,
-          enabled: [...new Set(["exa_keyless", "youcom_free", "firecrawl_keyless", "parallel_keyless", ...current.enabled])],
-          order: [...new Set(["exa_keyless", "youcom_free", "firecrawl_keyless", "parallel_keyless", ...current.order])],
+          enabled: [...new Set<SearchRouteID>(["exa_keyless", "youcom_free", "firecrawl_keyless", "parallel_keyless", ...current.enabled])],
+          order: [...new Set<SearchRouteID>(["exa_keyless", "youcom_free", "firecrawl_keyless", "parallel_keyless", ...current.order])],
         })
       : setEnabled(current, id, enabling)
     await save(next)
@@ -344,7 +344,7 @@ export function DialogWebSearchSettings() {
   }
 
   return (
-    <DialogSelect
+    <DialogSelect<SearchSettingsChoice>
       title="Settings · Web search"
       options={options()}
       locked={busy()}

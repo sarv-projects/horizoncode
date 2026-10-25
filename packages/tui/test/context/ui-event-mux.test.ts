@@ -542,7 +542,9 @@ test("mux flushes accepted deltas then requests a resnapshot for a gap or a stal
     { sessionID: "a", partID: "text-1", sourceGeneration: "generation-1", sequence: 9, advance: 1 },
   ])
 
-  queue.seedStream({ sessionID: "a", partID: "text-1", sourceGeneration: "generation-1", sequence: 9 })
+  // Resnapshot cursor is the next expected source ordinal after the canonical
+  // rebuild included the ordinal 9 event; the following delta is 10.
+  queue.seedStream({ sessionID: "a", partID: "text-1", sourceGeneration: "generation-1", sequence: 10 })
   expect(queue.push(envelope("a", "text-1", 10, "lo"))).toBe("apply")
   queue.flush("a")
   expect(batches[1]?.[0]?.text).toBe("lo")
@@ -572,19 +574,30 @@ test("mux requires a seed before accepting envelope deltas after a reload", () =
   queue.close()
 })
 
-test("mux commits direct deliveries and delivers a stale generation as a separate resnapshot", () => {
+test("oversized canonical deltas request a resnapshot instead of bypassing the stream bound", () => {
   const { queue, batches, resnapshots } = envelopedMux({ maxQueuedBytes: 4 })
   queue.seedStream({ sessionID: "a", partID: "text-1", sourceGeneration: "generation-1", sequence: 0 })
-  expect(queue.push(envelope("a", "text-1", 0, "12345"))).toBe("apply")
-  expect(batches).toEqual([[{ sessionID: "a", partID: "text-1", text: "12345", cursor: expect.anything() }]])
+  expect(queue.push(envelope("a", "text-1", 0, "12345"))).toBe("resnapshot_required")
+  expect(batches).toEqual([])
+  expect(resnapshots).toEqual([
+    { sessionID: "a", partID: "text-1", sourceGeneration: "generation-1", sequence: 0, advance: 1 },
+  ])
+  expect(
+    queue.observations().find((observation) => observation.metric === "ui.stream.resnapshots_required"),
+  ).toMatchObject({ value: 1, unit: "events", provenance: "measured" })
+  queue.close()
+})
+
+test("direct-delivers canonical deltas when the queue is disabled and commits only after delivery", () => {
+  const { queue, batches } = envelopedMux({ maxQueuedEvents: 0 })
+  queue.seedStream({ sessionID: "a", partID: "text-1", sourceGeneration: "generation-1", sequence: 0 })
+  expect(queue.push(envelope("a", "text-1", 0, "x"))).toBe("apply")
+  expect(batches).toEqual([[{ sessionID: "a", partID: "text-1", text: "x", cursor: expect.anything() }]])
+  expect(queue.push(envelope("a", "text-1", 1, "y"))).toBe("apply")
+  expect(batches).toHaveLength(2)
   expect(
     queue.observations().find((observation) => observation.metric === "ui.queue.direct_deliveries"),
-  ).toMatchObject({ value: 1, unit: "events", provenance: "measured" })
-
-  expect(queue.push(envelope("a", "text-1", 1, "!"))).toBe("apply")
-  queue.flush("a")
-  expect(batches[1]?.[0]?.text).toBe("!")
-  expect(resnapshots).toEqual([])
+  ).toMatchObject({ value: 2, unit: "events", provenance: "measured" })
   queue.close()
 })
 

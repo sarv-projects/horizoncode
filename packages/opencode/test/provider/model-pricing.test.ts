@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { Schema } from "effect"
 import { ModelsDev } from "@opencode-ai/core/models-dev"
 import { Provider } from "../../src/provider/provider"
 
@@ -76,7 +77,7 @@ describe("provider pricing provenance (AN-002/AN-003)", () => {
   test("provider model schema rejects negative prices instead of publishing invalid cost metadata", () => {
     const provider = Provider.fromModelsDevProvider(catalog({ model: catalogModel({ id: "model" }) }))
     const model = provider.models.model!
-    expect(Provider.Model.is({ ...model, cost: { ...model.cost, input: -0.01 } })).toBe(false)
+    expect(Schema.is(Provider.Model)({ ...model, cost: { ...model.cost, input: -0.01 } })).toBe(false)
   })
 })
 

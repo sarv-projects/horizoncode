@@ -5,7 +5,7 @@
  * to Guard/ExecutionHost and SecretBroker; runtime dispatch stays independently
  * disabled until those owners' integrated acceptance passes.
  */
-import type { SearchRoute, SearchRouteID } from "./websearch-broker"
+import type { SearchRoute, SearchRouteID, SearchResultItem } from "./websearch-broker"
 import type { SecretBrokerV1 } from "@opencode-ai/schema/secret-broker-v1"
 
 export type BYOSearchProviderID = "brave" | "exa" | "youcom" | "tavily" | "firecrawl" | "parallel"
@@ -123,7 +123,7 @@ function url(value: unknown) {
   }
 }
 
-export function parseSearchProviderResponse(provider: SearchRouteID, payload: unknown, limit: number, depth = 0) {
+export function parseSearchProviderResponse(provider: SearchRouteID, payload: unknown, limit: number, depth = 0): SearchResultItem[] {
   // MCP structuredContent and text blocks are untrusted provider payloads. Keep
   // wrapper decoding shallow so a provider cannot turn a bounded response body
   // into unbounded recursive work.
@@ -138,7 +138,7 @@ export function parseSearchProviderResponse(provider: SearchRouteID, payload: un
       const rawText = record(entry)?.text
       if (typeof rawText !== "string" || rawText.length > MAX_MCP_TEXT_CHARS) continue
       try {
-        const parsed = parseSearchProviderResponse(provider, JSON.parse(rawText) as unknown, boundedLimit, depth + 1)
+        const parsed: SearchResultItem[] = parseSearchProviderResponse(provider, JSON.parse(rawText) as unknown, boundedLimit, depth + 1)
         if (parsed.length) return parsed
       } catch {
         // MCP text can contain explanatory prose; only structured result data
@@ -151,9 +151,17 @@ export function parseSearchProviderResponse(provider: SearchRouteID, payload: un
   const data = provider === "brave" ? record(root.web)
     : provider === "youcom" ? record(results?.web)
       : record(rootData?.web) ?? root
-  const rows = data?.results ?? root.results
+  // The You.com search API returns `results.web` as an array, whereas other
+  // fixed adapters use an object containing `results`.
+  const directRows = provider === "youcom" && Array.isArray(results?.web)
+    ? results.web
+    : provider === "firecrawl" && Array.isArray(rootData?.web) ? rootData.web : undefined
+  const rows = directRows ?? data?.results ?? root.results
   if (!Array.isArray(rows)) return []
-  return rows.slice(0, boundedLimit).flatMap((row) => {
+  // Skip malformed/non-web rows without allowing them to consume the result
+  // budget. The response frame is already byte-bounded by HostKernel; inspect
+  // at most ten candidates per requested result to bound adapter work.
+  return rows.slice(0, boundedLimit * 10).flatMap((row) => {
     const item = record(row)
     if (!item) return []
     const title = text(item.title, 240)
@@ -166,7 +174,7 @@ export function parseSearchProviderResponse(provider: SearchRouteID, payload: un
       : (content?.text ?? item.description ?? item.snippet ?? item.content ?? (Array.isArray(item.excerpts) ? item.excerpts[0] : undefined) ?? snippets?.[0] ?? item.text), 1_200)
     if (!title || !href) return []
     return [{ title, url: href, ...(snippet ? { snippet } : {}) }]
-  })
+  }).slice(0, boundedLimit)
 }
 
 /** Whether the bounded parser omitted provider rows or clipped a returned field. */
@@ -198,7 +206,9 @@ export function searchProviderResponseTruncated(provider: SearchRouteID, payload
   const data = provider === "brave" ? record(root.web)
     : provider === "youcom" ? record(results?.web)
       : record(rootData?.web) ?? root
-  const rows = data?.results ?? root.results
+  const rows = provider === "youcom" && Array.isArray(results?.web)
+    ? results.web
+    : provider === "firecrawl" && Array.isArray(rootData?.web) ? rootData.web : data?.results ?? root.results
   if (!Array.isArray(rows)) return false
   if (rows.length > boundedLimit) return true
   return rows.some((raw) => {
@@ -215,5 +225,3 @@ export function searchProviderResponseTruncated(provider: SearchRouteID, payload
       (typeof snippet === "string" && snippet.length > 1_200)
   })
 }
-
-

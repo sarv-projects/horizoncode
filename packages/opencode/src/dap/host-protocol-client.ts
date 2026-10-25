@@ -21,6 +21,7 @@ import {
   ProtocolAdmissionDeniedError,
   ProtocolDispatchUncertainError,
   isDefinitiveProtocolAdmissionFailure,
+  type HostProtocolDispatchReceiptV1,
 } from "@/lsp/protocol"
 import { guardActionID, operationForCommand } from "./session"
 import { assertHostProtocolAllowed } from "@/lsp/launch"
@@ -221,7 +222,7 @@ export class HostKernelDapProtocolClientV1 {
           ...lease,
           operation: { requestSequence, requestID, command, arguments: authorizationArguments },
         }
-        let receipt: Awaited<ReturnType<typeof this.#host.protocolOp>>
+        let receipt: HostProtocolDispatchReceiptV1
         try {
           receipt = await this.#host.protocolOp(request)
         } catch (error) {

@@ -1,9 +1,9 @@
 {
   "schema": "horizon.worker-resource-reservation-wire.v1",
-  "description": "Frozen §11.20/§18.18 wire vocabulary for WorkerResourceReservationV1.status, ResourcePressure state and BudgetDimension. Rust is the canonical consumer today; the TypeScript consumer is intentionally null until the Core/TS side consumes this exact fixture, so JC-RES-012.I cannot claim a TS roundtrip yet.",
+  "description": "Frozen §11.20/§18.18 wire vocabulary for WorkerResourceReservationV1.status, ResourcePressure state and BudgetDimension. Rust remains the canonical authority for transitions and capacity math; the TypeScript consumer in packages/core/src/v1/resource-reservation-wire.ts must roundtrip these exact canonical names and reject every forbidden alias (verified by packages/core/test/reservation-wire.test.ts).",
   "consumers": {
     "rust": "kernel/src/resource_budget.rs",
-    "typescript": null
+    "typescript": "packages/core/src/v1/resource-reservation-wire.ts"
   },
   "reservationStatus": {
     "canonical": [

@@ -1,5 +1,8 @@
 import { createMemo, createSignal, onMount } from "solid-js"
-import type { SubagentStatusV1 } from "@opencode-ai/schema/subagent-status-v1"
+// The TUI package does not currently declare @opencode-ai/schema as a
+// dependency. Import the canonical schema source directly so this surface
+// cannot fork its own decoder; packaging must add the workspace dependency.
+import type { SubagentStatusV1 } from "../../../schema/src/subagent-status-v1"
 import { DialogSelect } from "../ui/dialog-select"
 import { useSDK } from "../context/sdk"
 import { useTheme } from "../context/theme"
@@ -20,7 +23,7 @@ export function DialogSubagents(props: { sessionID: string; onOpenChild: (sessio
   const refresh = () =>
     sdk.client.session
       .subagents({ sessionID: props.sessionID }, { throwOnError: true })
-      .then((response) => setResult(response.data))
+      .then((response) => setResult(response.data as unknown as SubagentStatusV1.ListV1))
       .catch(() => setError("Child status is unavailable from the authenticated runtime."))
 
   onMount(() => void refresh())

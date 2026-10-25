@@ -198,7 +198,7 @@ it.live("fails closed for Git inspection subprocesses before dispatch", () =>
           gitDirectory: directory,
           commonDirectory: directory,
         })
-        const inspections = [
+        const inspections: ReadonlyArray<Effect.Effect<unknown, unknown>> = [
           git.remote.get(repository),
           git.history.head(repository),
           git.history.branch(repository),

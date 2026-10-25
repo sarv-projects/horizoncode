@@ -264,7 +264,7 @@ export function createHostKernelDapProtocolAdapterV1(requestHostKernel: Executio
         throw new ProtocolDispatchUncertainError({ operation: request.operation.command })
       }
     },
-    protocolRead: async (request) => {
+    protocolRead: async (request: HostDapEventReadRequestV1) => {
       assertHostProtocolAllowed()
       const validated = validateHostDapEventReadRequestV1(request)
       const response = await requestHostKernel("execution.v1", "protocol_read", validated)
@@ -569,7 +569,7 @@ function validateCommandArguments(command: HostCommand, args: Record<string, unk
         !exactArgumentKeys(args.source, ["name", "path"]) || !str(args.source.name, 4096) || !str(args.source.path) ||
         !optionalBool("sourceModified") || (args.breakpoints !== undefined && (!Array.isArray(args.breakpoints) || args.breakpoints.length > 2048 || args.breakpoints.some((bp) =>
           !exactArgumentKeys(bp, ["line"], ["column", "condition", "hitCondition", "logMessage"]) || !id(bp.line) ||
-          (bp.column !== undefined && !id(bp.column)) || !optionalText(bp, "condition") || !optionalText(bp, "hitCondition") || !optionalText(bp, "logMessage")))) reject()
+          (bp.column !== undefined && !id(bp.column)) || !optionalText(bp, "condition") || !optionalText(bp, "hitCondition") || !optionalText(bp, "logMessage"))))) reject()
       return
     case "setFunctionBreakpoints":
       if (!exactArgumentKeys(args, ["breakpoints"]) || !Array.isArray(args.breakpoints) || args.breakpoints.length > 512 || args.breakpoints.some((bp) =>
@@ -579,7 +579,7 @@ function validateCommandArguments(command: HostCommand, args: Record<string, unk
       if (!exactArgumentKeys(args, ["filters"], ["filterOptions", "exceptionOptions"]) || !Array.isArray(args.filters) || args.filters.length > 256 || args.filters.some((x) => !str(x, 512)) ||
         (args.filterOptions !== undefined && (!Array.isArray(args.filterOptions) || args.filterOptions.length > 256 || args.filterOptions.some((item) =>
           !exactArgumentKeys(item, ["filterId"], ["condition"]) || !str(item.filterId, 512) || !optionalText(item, "condition")))) ||
-        (args.exceptionOptions !== undefined && (!Array.isArray(args.exceptionOptions) || args.exceptionOptions.length > 256 || args.exceptionOptions.some((option) => !validExceptionOption(option)))) reject()
+        (args.exceptionOptions !== undefined && (!Array.isArray(args.exceptionOptions) || args.exceptionOptions.length > 256 || args.exceptionOptions.some((option) => !validExceptionOption(option))))) reject()
       return
     case "continue":
     case "next":

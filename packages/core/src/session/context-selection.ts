@@ -3,9 +3,11 @@ import { bytesToHex } from "@noble/hashes/utils.js"
 import { Schema } from "effect"
 import {
   ContextSelectionV1,
+  ContextSelectionSourceV1 as ContextSelectionSourceSchema,
   type ContextSelectionModeV1,
-  type ContextSelectionSourceV1,
 } from "@opencode-ai/schema/context-selection-v1"
+
+type ContextSelectionSourceV1 = typeof ContextSelectionSourceSchema.Type
 import * as AgentProfileV2 from "@opencode-ai/schema/agent-profile-v2"
 import type { DirectProviderRequestContextV1 } from "@opencode-ai/llm/route"
 import { SessionMessage } from "./message"
@@ -18,6 +20,7 @@ const MAX_PROVIDER_INPUT_BYTES = 16 * 1024 * 1024
 const MAX_PROVIDER_INPUT_NODES = 200_000
 const MAX_PROVIDER_INPUT_DEPTH = 48
 const U64_MAX = "18446744073709551615"
+const DIGEST_PATTERN = /^blake3:[0-9a-f]{64}$/
 
 /** Exact serialized bytes used for the corresponding ContextSelection source digest. */
 export function sessionMessageSourceBytesV1(message: SessionMessage.Message): number {
@@ -132,14 +135,37 @@ export const compile = (input: {
   /** Canonical decimal aggregate cursor observed from Session storage. */
   readonly sourceRevision: string
   readonly messages: readonly SessionMessage.Message[]
+  /**
+   * Exact project-instruction references resolved for this request. They enter
+   * only the next compile and never grant authority; see the §29.23 resolver.
+   */
+  readonly instructions?: readonly ContextSelectionSourceV1[]
   readonly providerInput: ProviderInputV1
 }) => {
   if (!/^[A-Za-z0-9._:-]{1,256}$/.test(input.requestID)) throw new TypeError("Session request identity is invalid")
   if (!validU64(input.sourceRevision)) throw new RangeError("Session context revision is invalid")
 
+  const instructions = input.instructions ?? []
+  if (instructions.length > MAX_SOURCES - 2) throw new RangeError("instruction sources exceed the context selection bound")
+  const instructionIDs = new Set<string>()
+  for (const source of instructions) {
+    if (
+      source.kind !== "instruction" ||
+      source.sourceAuthority !== "instruction-resolver" ||
+      source.inclusionReason !== "instruction" ||
+      !source.included ||
+      !/^[A-Za-z0-9._:-]{1,256}$/.test(source.sourceID) ||
+      !DIGEST_PATTERN.test(source.contentDigest)
+    ) {
+      throw new TypeError("instruction source must be an included instruction-resolver reference")
+    }
+    if (instructionIDs.has(source.sourceID)) throw new TypeError("instruction source references must be unique")
+    instructionIDs.add(source.sourceID)
+  }
+
   // The provider-input and active profile pins are mandatory, so at most 62
-  // message refs fit the shared 64-source schema.
-  const selected = input.mode === "fresh" ? [] : input.messages.slice(-(MAX_SOURCES - 2))
+  // message refs (less any instruction refs) fit the shared 64-source schema.
+  const selected = input.mode === "fresh" ? [] : input.messages.slice(-(MAX_SOURCES - 2 - instructions.length))
   const sources: ContextSelectionSourceV1[] = selected.map((message) => {
     const byteLength = sessionMessageSourceBytesV1(message)
     if (byteLength > MAX_MESSAGE_BYTES) throw new RangeError("Session context source exceeds its bound")
@@ -154,6 +180,7 @@ export const compile = (input: {
       inclusionReason: "history" as const,
     }
   })
+  sources.push(...instructions)
   sources.push({
     kind: "provider-input" as const,
     sourceID: input.requestID,
@@ -193,6 +220,8 @@ export function compileDirectProviderRequestContextV1(input: {
   readonly mode: ContextSelectionModeV1
   readonly agentProfile: AgentProfileV2.AgentProfileDefinitionV2
   readonly messages: readonly SessionMessage.Message[]
+  /** Exact resolved project-instruction references for this compile. */
+  readonly instructions?: readonly ContextSelectionSourceV1[]
   readonly providerInput: ProviderInputV1
   /** HostKernel/Provider authority projection; never infer scope or route revisions here. */
   readonly authority: {
@@ -205,9 +234,26 @@ export function compileDirectProviderRequestContextV1(input: {
     readonly routeID: string
     readonly routeRevision: string
     readonly endpointRevision: string
+    /**
+     * Public endpoint base from the selected route projection. Required for the
+     * frozen direct request; absent values fail closed before a context exists.
+     */
+    readonly endpointBase?: string
   }
   readonly pin: DirectProviderRequestContextV1["pin"]
 }): DirectProviderRequestContextV1 {
+  if (input.agentProfile.source === "plugin" || input.agentProfile.source === "external") {
+    throw new TypeError("only Core Config profiles can pin a direct context selection")
+  }
+  if (
+    input.authority.endpointBase === undefined ||
+    input.authority.endpointBase.length === 0 ||
+    input.authority.endpointBase.length > 2_048 ||
+    !URL.canParse(input.authority.endpointBase)
+  ) {
+    throw new TypeError("direct provider context requires the selectable public endpoint base")
+  }
+  const trust = input.agentProfile.source === "builtin" ? "system" as const : "user" as const
   const profile = Object.freeze({
     profileID: input.agentProfile.profileId,
     revision: String(input.agentProfile.revision),
@@ -221,10 +267,11 @@ export function compileDirectProviderRequestContextV1(input: {
       profileID: input.agentProfile.profileId,
       revision: input.agentProfile.revision,
       profileDigest: profile.profileDigest,
-      trust: "user",
+      trust,
     },
     sourceRevision: input.sourceRevision,
     messages: [...input.messages],
+    ...(input.instructions === undefined ? {} : { instructions: input.instructions }),
     providerInput: input.providerInput,
   })
   const contextSelection = Object.freeze({
@@ -248,6 +295,7 @@ export function compileDirectProviderRequestContextV1(input: {
       routeID: input.authority.routeID,
       routeRevision: input.authority.routeRevision,
       endpointRevision: input.authority.endpointRevision,
+      endpointBase: input.authority.endpointBase,
     }),
     contextSelection,
     pin: input.pin,

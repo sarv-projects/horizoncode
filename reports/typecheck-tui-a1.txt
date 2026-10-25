@@ -1,0 +1,3 @@
+$ ../../node_modules/.bin/tsgo --noEmit
+
+EXIT_STATUS=0

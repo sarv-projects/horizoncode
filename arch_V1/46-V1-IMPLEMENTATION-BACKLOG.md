@@ -2,7 +2,56 @@
 
 **Use with:** `46-V1-DESIGN-AUDIT.md`, [`46-V1-WIRE-TRACKER.md`](46-V1-WIRE-TRACKER.md) (done/not-done map), `10-DELIVERY.md`, `HANDOFF.md`.
 
-Each row is **implementation + wire + test**; design is already in the cited `arch_V1` sections. Status reflects **codebase observation 2026-10-22**, not acceptance.
+Each row is **implementation + wire + test**; design is already in the cited `arch_V1` sections. Status reflects **codebase observation 2026-10-24**, not acceptance.
+
+### 2026-10-24 status delta (parent re-observation; evidence cited, acceptance unchanged)
+
+Rows below were re-checked against the current tree and their owner phase reports. Advancement is
+**code present / focused-tested only**; no row became VERIFIED.
+
+| Row | Was | Now | Evidence (2026-10-24) |
+|---|---|---|---|
+| P1-10 | OPEN | **CP** | Rust `effects.v2/prepare_tool_batch_read` implemented and focused **2/2**; Core private `repo_read` allowlist test **3/0, 10 expectations**; caller `packages/core/src/session/direct-read-batch.ts` in flight (P7), fence ruling recorded. Runtime-accepted? **No** |
+| P3-05 | DES | **CP** | `packages/core/src/session/context-compile-policy.ts` + `packages/core/test/context-compile-policy.test.ts` present |
+| P3-09 | DES | **CP** | `packages/core/src/session/project-instruction.ts` + instruction-project tests present; P3 instruction suite **21/0, 69 expectations** |
+| P6-06 | DES | **CP** | `packages/core/src/config/coding-profile.ts` + `packages/core/test/config/coding-profile.test.ts` present; Settings chip rendering assigned to P4 in this wave |
+| P7-08 | DES | **CP** | `packages/tui/src/util/code-display.ts` + `packages/tui/test/util/code-display.test.ts`; rerun **7/0, 31 expectations** |
+| P9-03 | OPEN | **CP** | Installer/upgrade/dry-run/alias-refusal tests green; release readiness **82/82**. Real candidate build + clean install/rollback still **unrun** |
+| P0-03 | PART | PART | release readiness **82/82**, `audit_distribution` BLOCKED (15), `release_gate` BLOCKED (20) |
+
+### 2026-10-25 tracker reconciliation (audit; `reports/audit-v1-tracker-reconciliation.md`)
+
+Six rows were **pessimistically stale — code is ahead of status** and the row must be re-read before
+being treated as open:
+
+| Row | Tracker said | Reality |
+|---|---|---|
+| P7-09 | OPEN | `/debug effects` fully implemented (`app.tsx:1794`, `prompt/index.tsx:514`, `dialog-debug.tsx`) — **0 tests**, so the row stays CP, not done |
+| P3-10 | OPEN | `indexWarming`/`symbolFirst` coded **and tested**; only SPD-A `compileOverlapMs` is genuinely absent |
+| W-P4-05 | not done | post-patch diagnostics wired in `apply_patch.ts:434-469` + `lsp/diagnostic.test.ts` |
+| P3-11 | NOT STARTED (in `P3.md`) | P7 landed `transfer.ts` + `session-transfer.test.ts` **10/0 RUN** |
+
+Seven rows have **path drift** (file exists, documented path does not): P1-01, P3-01, P4-02, P6-02,
+P6-04, P6-07, P8-01. Six rows diverge between the wire tracker (`Not done`) and this backlog (`CP`):
+W-P1-07, W-P3-05, W-P3-09, W-P6-06, W-P7-08, W-P9-03.
+
+**Claimed-but-unverified (11):** **0 of 6 `PERF-DIRECT-*` rows have ever been executed** — no
+p95/baseline number exists anywhere in `reports/`; B1 typecheck not green (Run C **25 diagnostics /
+2 of 8 packages**); B5 free-model E2E **NOT_RUN with zero provider requests**; B6 RC0 **NOT_ATTESTED**
+(allowlist empty); two `SELF-REPORT` rows.
+
+**Verified so far: ~95 distinct `RUN` command+count records** across P1–P9 + A1 (registry claim
+independently confirmed: **226 designed / 4 `code_present` of 230**). **0 of 9 phases VERIFIED.**
+
+Rows that advanced to *partially integrated* but remain blocked by named owners: P1-01/P1-02
+(focused Rust greens **11/11**, **10/10**, lib **79/79**, `direct_attempt_rpc` **10/10**; six matrix +
+two terminal cases stay intentionally readiness-false), P5/P1-08 CodeMode (offline suite **128/0,
+430 expectations**; Core adapter not landed), P8 rows (RC0 **109/109**, evaluator **43/43**,
+JC-RES-012.I TS consumer **9/9**; trusted attestation allowlist empty → NOT_ATTESTED).
+
+**Still OPEN with no code:** P1-11 (`PERF-DIRECT-001`, parent measurement), P3-10 (SPD-A/B/D — no
+`compileOverlapMs`/`index_warming` consumer found in tests), P7-09 (`PERF-DIRECT-*`, ACT-023 unrun).
+**Design-only/unavailable:** P5-03 browser/desktop (post-V1 per A-V2-31).
 
 Legend: **DES** designed only · **CP** code present partial · **PART** partial integration · **OPEN** not started
 
@@ -31,7 +80,7 @@ Legend: **DES** designed only · **CP** code present partial · **PART** partial
 | P1-07 | SecretBroker / credentialed effects gate | `05`, `37` auth | — | `packages/opencode/src/auth/secret-broker.ts` | §32.21 auth rows | PART |
 | P1-08 | CodeMode EffectHost wave/receipt binding | `37.24`, `14` | codemode schemas in `12` | `kernel/src/effect_host.rs`, `packages/opencode/src/tool/code-mode.ts` | §32.41 CM-* | PART |
 | P1-09 | External editor launch + containment | `37.28`, `16` §16.20, DEC-V1-33 | `debug-session-action-v1` (patterns) | `kernel` editor journal seam | §32.44 EDITOR-* | PART |
-| P1-10 | **DEC-V1-36** read fast path + batched read RPC | `14` §14.3.1, `03` §3.2 | `prepare_tool_batch_read`, Core classifier | PERF-DIRECT-002,004 | OPEN |
+| P1-10 | **DEC-V1-36** read fast path + batched read RPC | `14` §14.3.1, `03` §3.2 | `prepare_tool_batch_read`, Core classifier | PERF-DIRECT-002,004 | CP |
 | P1-11 | Warm kernel IPC pool (provider not blocked) | `13` §13.2, `DEC-V1-36` | `session_supervisor`, kernel hello | PERF-DIRECT-001 | OPEN |
 
 **P1 exit gate:** §10.3 — no mutation bypass on tested paths; §32.14 negatives green; §32.49 read-path parity on warm kernel.
@@ -62,11 +111,11 @@ Legend: **DES** designed only · **CP** code present partial · **PART** partial
 | P3-02 | `repo.tree` / `repo.detect` registration | `33` §33.5, `30.25` | capability registry | `packages/opencode/src/tool/repo-tools.ts` | RD-*, V1-ADAPT-004 | PART (gated) |
 | P3-03 | ContextSelection pin (direct) | `30.24`, `DEC-V1-32` | `context-selection-v1` | `packages/core/src/session/context-selection.ts` | CTX-001 | CP |
 | P3-04 | ContextLedger compile + stream | `30.2`, `31` | `context-ledger-v2` | `packages/core/src/session/context-ledger.ts`, runner `llm.ts` | CTX-001–005 | PART |
-| P3-05 | **§30.26** policy resolver + anchor | `30.26`, `37.30` | `context-compile-policy-v1`, `repo-context-anchor-v1` | *new* `context-compile-policy.ts`, RepoIntel builder | CX-014–021 | DES |
+| P3-05 | **§30.26** policy resolver + anchor | `30.26`, `37.30` | `context-compile-policy-v1`, `repo-context-anchor-v1` | *new* `context-compile-policy.ts`, RepoIntel builder | CX-014–021 | CP |
 | P3-06 | Pressure ops `/trim` `/prune` `/compact` | `30.3–30.4` | — | `packages/core/src/session/compaction.ts`, OpenCode `SessionCompaction` | CX-001–010 | PART |
 | P3-07 | Progressive tool discovery | `29`, `31` §31.21 | `harness-profile-v1` | `packages/core/src/tool/registry.ts` | CX-008, LM-* | PART |
 | P3-08 | History search bounded SQL | `30.12`, `30.24 P3 note` | — | Core history tools | CX-004, UI-019 | PART |
-| P3-09 | **§29.23** project instruction resolver | `29.23`, `30.2` | extend `context-ledger-v2` reasons | *new* `project-instruction.ts`, Core `ContextService` | CX-022–025, INST-001–008 | DES |
+| P3-09 | **§29.23** project instruction resolver | `29.23`, `30.2` | extend `context-ledger-v2` reasons | *new* `project-instruction.ts`, Core `ContextService` | CX-022–025, INST-001–008 | CP |
 | P3-10 | §30.28 SP-A/C symbol-first + async index | `30.28`, `30.25` | `indexd`, ContextService | SPD-A,B,D | OPEN |
 | P3-11 | Session import/export | `30.30` REL-N, §42 | OpenCode transfer seam | REL-* | PART |
 
@@ -104,7 +153,7 @@ Legend: **DES** designed only · **CP** code present partial · **PART** partial
 | P6-03 | Provider Doctor tiers | `37.18` | `provider/doctor.ts` | PD-*, §32.31 | PART |
 | P6-04 | Settings / feature exposure | `16`, `33` feature registry | `config.ts`, `feature-exposure.ts` | FEAT-001–014 | PART |
 | P6-05 | AgentProfileV2 registry | `29`, `12` | `kernel/src/agent_profile.rs`, Core config | §32.12 | PART |
-| P6-06 | **Horizon Coding Profile** (`DEC-V1-37`) | `16` §16.19, `33.33` | feature exposure + `/permissions` | PERF-DIRECT-005, SPD-*, EXP-* | DES |
+| P6-06 | **Horizon Coding Profile** (`DEC-V1-37`) | `16` §16.19, `33.33` | feature exposure + `/permissions` | PERF-DIRECT-005, SPD-*, EXP-* | CP |
 | P6-07 | **Tool/skill tiers** + `builtin.horizoncode` register | `29.6`, `33.32`, `DEC-V1-38` | `skill.ts`, `opencode/src/skill`, `horizon/skills/horizoncode/` | EXP-001–005 | PART (sealed builtin registered; Core/Extended/Experimental enforcement + chips open) |
 
 ---
@@ -120,7 +169,7 @@ Legend: **DES** designed only · **CP** code present partial · **PART** partial
 | P7-05 | Checkpoint / rewind UI | `31.18`, `16.18`, DEC-V1-25 | `/checkpoints` dialog | CP-001–002 | PART |
 | P7-06 | Automations UI | `31.12`, `37.10` | HTTP API automation routes | §32.18 AU-* | PART |
 | P7-07 | Provider settlement EventV2 | `15`, `31` | `session/runner/llm.ts` | UI-017, LANE-* | PART |
-| P7-08 | **§31.23** code display + highlight RAM | `31.23`, `37.12` | `CodeDisplayPipelineV1` | TUI `artifact-markdown.tsx`, review overlay | UI-024–030, ACT-004/005 | DES |
+| P7-08 | **§31.23** code display + highlight RAM | `31.23`, `37.12` | `CodeDisplayPipelineV1` | TUI `artifact-markdown.tsx`, review overlay | UI-024–030, ACT-004/005 | CP |
 | P7-09 | `/debug effects` + slash parity §16.4.1 | `31.24`, `16` | TUI help + diagnostics | PERF-DIRECT-*, ACT-023 | OPEN |
 
 ---
@@ -142,7 +191,7 @@ Legend: **DES** designed only · **CP** code present partial · **PART** partial
 |---|---|---|---|---|
 | P9-01 | `horizoncode` / `hzcode` CLI | `18`, `10` §10.12 | install smoke | PART |
 | P9-02 | CI qualification workflow | `18.18` | `.github/workflows/` | PART |
-| P9-03 | Clean install / upgrade | `18` | §32 release rows | OPEN |
+| P9-03 | Clean install / upgrade | `18` | §32 release rows | CP |
 
 ---
 

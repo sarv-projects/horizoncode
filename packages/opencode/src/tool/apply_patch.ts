@@ -374,7 +374,7 @@ export const ApplyPatchTool = Tool.define(
             : {}),
         }),
       )
-      if (directAttemptScope) {
+        if (directAttemptScope && directAttempt) {
         if (!receipt.directAttempt || receipt.attemptScopeTransition !== "effect_receipt") {
           return yield* Effect.fail(new Error("Patch denied: HostKernel omitted direct Attempt receipt scope"))
         }

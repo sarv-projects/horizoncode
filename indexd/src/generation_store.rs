@@ -6,7 +6,7 @@
 //! scope, revalidate that authority before reuse, and keep exactly one store owner
 //! per root. Source remains canonical; every entry can be deleted and rebuilt.
 
-use crate::{BaseGeneration, Digest, GenerationPack, IndexError, DEFAULT_MAX_PACK_BYTES};
+use crate::{BaseGeneration, DEFAULT_MAX_PACK_BYTES, Digest, GenerationPack, IndexError};
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;

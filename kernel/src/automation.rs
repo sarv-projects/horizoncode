@@ -902,7 +902,7 @@ impl AutomationRegistryV1 {
         self.apply_mutation(&id, "create", idempotency_key, request_digest, now_ms, |states| {
             if states.contains_key(&id) { return Err(AutomationRegistryErrorV1::AlreadyExists); }
             if states.len() >= MAX_AUTOMATIONS_PER_SCOPE { return Err(AutomationRegistryErrorV1::Capacity); }
-            states.insert(id.clone(), AutomationStateV1::new(definition).map_err(Into::into)?);
+            states.insert(id.clone(), AutomationStateV1::new(definition)?);
             Ok(())
         })
     }
@@ -920,7 +920,7 @@ impl AutomationRegistryV1 {
         self.apply_guarded_mutation(&id, "create", idempotency_key, request_digest, now_ms, binding, |states| {
             if states.contains_key(&id) { return Err(AutomationRegistryErrorV1::AlreadyExists); }
             if states.len() >= MAX_AUTOMATIONS_PER_SCOPE { return Err(AutomationRegistryErrorV1::Capacity); }
-            states.insert(id.clone(), AutomationStateV1::new(definition).map_err(Into::into)?);
+            states.insert(id.clone(), AutomationStateV1::new(definition)?);
             Ok(())
         })
     }

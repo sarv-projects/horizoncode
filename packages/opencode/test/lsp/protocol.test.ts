@@ -12,6 +12,7 @@ import {
   lspServerRequestCapabilityV1,
   validateProtocolDispatchReceiptV1,
   type LspProtocolOperationRequestV1,
+  type HostProtocolDispatchReceiptV1,
 } from "@/lsp/protocol"
 import type { HostProcessRefV1 } from "@/lsp/process-scope"
 
@@ -54,7 +55,7 @@ function operationRequest(): LspProtocolOperationRequestV1 {
   }
 }
 
-function dispatchReceipt(requestSequence = "1") {
+function dispatchReceipt(requestSequence = "1"): HostProtocolDispatchReceiptV1 {
   return {
     schemaVersion: 1,
     hostProcessRef: processRef,
@@ -93,12 +94,69 @@ function responsePage() {
 describe("LSP typed HostKernel protocol contract", () => {
   test("maps every accepted lifecycle/query and server callback to its canonical Guard action", () => {
     expect(lspProtocolCapabilityV1("initialize")).toBe("language.start")
+    expect(lspProtocolCapabilityV1("workspace/didChangeConfiguration")).toBe("language.start")
     expect(lspProtocolCapabilityV1("shutdown")).toBe("language.stop")
+    expect(lspProtocolCapabilityV1("exit")).toBe("language.stop")
+    for (const notification of [
+      "initialized",
+      "textDocument/didOpen",
+      "textDocument/didChange",
+      "textDocument/didClose",
+      "workspace/didChangeWatchedFiles",
+      "$/cancelRequest",
+    ]) {
+      expect(lspProtocolCapabilityV1(notification)).toBe("language.diagnostics")
+    }
     expect(lspProtocolCapabilityV1("textDocument/codeAction")).toBe("language.diagnostics")
     expect(lspProtocolCapabilityV1("textDocument/rename")).toBe("references.find")
     expect(lspProtocolCapabilityV1("workspace/executeCommand")).toBeUndefined()
     expect(lspServerRequestCapabilityV1("workspace/configuration")).toBe("language.start")
     expect(lspServerRequestCapabilityV1("workspace/diagnostic/refresh")).toBe("language.diagnostics")
+  })
+
+  test("validates lifecycle requests and notifications against their exact Guard action", () => {
+    const lifecycle = [
+      { method: "initialize", capabilityID: "language.start", requestID: 1 },
+      { method: "initialized", capabilityID: "language.diagnostics" },
+      { method: "workspace/didChangeConfiguration", capabilityID: "language.start" },
+      { method: "textDocument/didOpen", capabilityID: "language.diagnostics" },
+      { method: "textDocument/didChange", capabilityID: "language.diagnostics" },
+      { method: "textDocument/didClose", capabilityID: "language.diagnostics" },
+      { method: "workspace/didChangeWatchedFiles", capabilityID: "language.diagnostics" },
+      { method: "$/cancelRequest", capabilityID: "language.diagnostics" },
+      { method: "shutdown", capabilityID: "language.stop", requestID: 2 },
+      { method: "exit", capabilityID: "language.stop" },
+    ] as const
+
+    for (const { method, capabilityID, ...requestID } of lifecycle) {
+      const request = {
+        ...operationRequest(),
+        capabilityID,
+        operation: {
+          requestSequence: "1",
+          method,
+          params: {},
+          ...requestID,
+        },
+      }
+      expect(validateLspProtocolOperationRequestV1(request).operation.method).toBe(method)
+      const weakerCapability = capabilityID === "language.start" ? "language.diagnostics"
+        : capabilityID === "language.stop" ? "language.diagnostics"
+          : "language.start"
+      expect(() => validateLspProtocolOperationRequestV1({ ...request, capabilityID: weakerCapability })).toThrow(
+        ProtocolError,
+      )
+    }
+
+    for (const method of ["textDocument/didSave", "workspace/executeCommand", "$/setTrace"]) {
+      const request = operationRequest()
+      ;(request.operation as { method: string }).method = method
+      expect(() => validateLspProtocolOperationRequestV1(request)).toThrow(ProtocolError)
+    }
+
+    const requestWithIDOnNotification = operationRequest()
+    ;(requestWithIDOnNotification.operation as { method: string }).method = "textDocument/didClose"
+    expect(() => validateLspProtocolOperationRequestV1(requestWithIDOnNotification)).toThrow(ProtocolError)
   })
 
   test("narrows buffered server callback params before Core handlers see them", () => {

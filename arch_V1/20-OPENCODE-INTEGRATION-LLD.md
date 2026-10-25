@@ -10,6 +10,8 @@ Status: normative source-placement map. Always inspect the live source before ed
 | packages/core/src/tool | canonical host tool definitions/registry |
 | packages/core/src/horizon | Horizon host integration/services |
 | packages/llm/src | current provider/model/protocol transport; replaceable only through A-V2-27 |
+| packages/opencode/src/provider, packages/opencode/src/auth | source-of-record provider list, connection recipes and credential brokerage; standalone-SDK boundary mapped in §20.16 |
+| packages/core/src/models-dev.ts, packages/core/src/plugin/models-dev.ts | Models.dev advisory metadata catalog, startup refresh and provenance |
 | packages/opencode/src | compatibility/legacy OpenCode features that must be audited for bypass |
 | packages/schema/src | shared OpenCode/Horizon host types where already established |
 | packages/server/src | public API composition |
@@ -309,3 +311,80 @@ ExecutionHost → bounded stdout/stderr capture → EffectHost receipt or artifa
 **Contracts:** operation IDs and argument bounds align with `§14.28`; acceptance `§32.46`.
 Mutating `git.*` capabilities remain on the ordinary guarded tool path with separate handlers.
 
+## 20.16 Provider layer as a standalone SDK boundary (2026-10-23)
+
+**Status:** normative source map. The provider layer is **not** a parallel provider runtime; it is the
+existing first-party OpenCode-derived provider implementation, isolated and mapped so pinned
+upstream updates can be applied predictably. Authority remains A-V2-27 as amended in §17.7.
+
+### 20.16.1 Mapped source roots
+
+| Concern | Local owner | Upstream pinned path |
+|---|---|---|
+| provider registry, bundled adapters, defaults, display identity, managed-route projection | `packages/opencode/src/provider/provider.ts` | `packages/opencode/src/provider/provider.ts` @ pin |
+| provider transform/options | `packages/opencode/src/provider/transform.ts` | same path @ pin |
+| provider errors/classification | `packages/opencode/src/provider/error.ts` | same path @ pin |
+| provider auth facade | `packages/opencode/src/provider/auth.ts` | same path @ pin |
+| model status projection | `packages/opencode/src/provider/model-status.ts` | same path @ pin |
+| DigitalOcean catalog adapter | `packages/opencode/src/provider/digitalocean-catalog.ts` | no matching path at pin; retained adapter lineage is local `provider.ts` |
+| provider doctor diagnostics | `packages/opencode/src/provider/doctor.ts` | Horizon-owned offline/full-tier projection; no matching path at pin |
+| login/OAuth/device/API-key flows | `packages/opencode/src/auth/index.ts` | `packages/opencode/src/auth/index.ts` @ pin |
+| one-shot direct route transport | `packages/opencode/src/auth/provider-transport.ts` | Horizon-specific hardening; upstream call shape only |
+| credential lease/version/revoke | `packages/opencode/src/auth/secret-broker.ts` | Horizon-specific hardening |
+| advisory metadata catalog + startup refresh | `packages/core/src/models-dev.ts`, `packages/core/src/plugin/models-dev.ts` | `packages/core/src/models-dev.ts` @ pin |
+| exact route projection match | `packages/core/src/session/provider-request.ts` | Horizon-specific hardening |
+
+The local file `packages/opencode/src/provider/UPSTREAM.md` carries the same map plus the
+update checklist. It is documentation, not authority; this section and §42 win on conflict.
+
+### 20.16.2 Invariants
+
+- Provider list and credentials have exactly one source: this layer. No second catalog, registry or
+  credential store.
+- Models.dev metadata is advisory only (models, costs, consumption, capabilities). It cannot enable a
+  route, prove freshness, or override a user-selected provider/model/harness.
+- `opencode` (OpenCode Default) and `opencode-go` (OpenCode Go) are explicit provider identities and
+  keep their upstream names in the picker and route projection.
+- Direct dispatch stays fail-closed: exact route match, SecretBroker lease, no forbidden credential
+  headers, bounded request/response, possible-send ambiguity is UNKNOWN and never replayed.
+- Startup metadata refresh is one bounded attempt per process start with last-known-good cache
+  fallback; failure is observable and never blocks session start or silently substitutes a route.
+
+### 20.16.3 Pinned-update procedure
+
+1. Fetch the upstream revision and record it in §42 before touching local source.
+2. Diff each mapped file and its callees/tests; classify REUSE / ADAPT / ADAPTER / REJECT per change.
+3. Re-apply Horizon hardening (Guard/SecretBroker/transport bounds/route projection) where the
+   upstream file is replaced; never take upstream wholesale over a hardened local boundary.
+4. Update `packages/opencode/src/provider/UPSTREAM.md` and the §42 pin.
+5. Run the provider/auth/models-dev focused suites and P6-PROVIDER-001..004; only then update status.
+
+## 20.17 First-party HorizonCode identity migration (V1, §17.7)
+
+**Owner:** parent coordinates this cross-cutting migration; each phase owner keeps authority over
+its package/source/test paths. It is staged by dependency boundary, not performed as a blind global
+replacement.
+
+| Boundary | Required V1 result | Preserve / guardrail |
+|---|---|---|
+| CLI/artifact/package metadata | HorizonCode-owned public commands, package/artifact names, container/Nix entrypoints and build identity use `horizoncode`; `hzcode` is the same runtime | Keep one executable/runtime; retain tested `opencode` compatibility aliases only where required |
+| First-party workspace packages/imports/generated bindings | Rename only Horizon-owned package IDs/scopes and internal imports after mapping every workspace dependency, generated client, lockfile/importer and package script | Keep genuine upstream package/API IDs and vendor packages; never edit the pinned `opencode/` source snapshot to make the migration appear complete |
+| Typecheck/build/workflow identity | Product-facing commands, output paths, candidate selectors, workflows and help use HorizonCode; full typecheck still covers the product CLI host, TUI and Core | Source directories may remain `packages/opencode` when they are hydration/compatibility locations; prove exact `bun.lock`/workspace resolution and rollback per stage |
+| First-party non-legal prose | Replace competitor product naming in Horizon-owned product/architecture prose where it describes HorizonCode itself | Preserve legal attribution, immutable provenance pins, actual upstream behavior citations and explicit compatibility facts; do not falsify authorship |
+
+### 20.17.1 Migration procedure
+
+1. Inventory package manifests, workspace edges, import aliases, generated clients, build targets,
+   config/environment names, CLI docs, user-visible strings and release scripts. Classify every hit
+   as Horizon-owned identity, true upstream/vendor identifier, legal/provenance fact or compatibility
+   contract before editing.
+2. Choose one bounded dependency layer; update its manifests/importers/lockfile/generated references
+   atomically. Do not overlap active phase typecheck inputs or mutate upstream snapshot roots.
+3. Test first: package resolution + focused typecheck/build + callers/tests + old compatibility alias
+   behavior. Keep a reversible alias for any existing workspace consumer until the migrated graph
+   passes.
+4. Run full `horizoncode:typecheck`, overlay visibility, distribution audit and `NAME-001..004`
+   after the final identity stage. Update §42 only if source pins/provenance change; product renaming
+   does not change upstream provenance.
+5. Report remaining external/legal/compatibility identifiers explicitly. A zero-string grep is not
+   the success criterion; correct ownership and functioning compatibility are.

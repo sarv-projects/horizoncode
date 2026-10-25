@@ -1,6 +1,7 @@
 import { Location } from "@opencode-ai/core/location"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { TrustedPrincipalContext } from "@opencode-ai/core/trusted-principal"
+import type { ArtifactRefWireV1 } from "@opencode-ai/core/session/supervisor"
 import { Effect, Option } from "effect"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import * as InstanceState from "@/effect/instance-state"
@@ -29,7 +30,7 @@ function wireRef(ref: {
   }
 }
 
-function apiRef(ref: ArtifactControl.ArtifactRefWireV1) {
+function apiRef(ref: ArtifactRefWireV1) {
   return {
     artifactID: ref.artifactId,
     digest: ref.digest,
@@ -66,6 +67,13 @@ export const artifactHandlers = HttpApiBuilder.group(InstanceHttpApi, "artifact"
         }
         const instance = yield* InstanceState.context
         const locationRef = Location.Ref.make({ directory: AbsolutePath.make(instance.directory) })
+        // Root direct-session artifacts are admitted only by an exact current
+        // HostKernel receipt-index edge. If that bounded index has no matching
+        // ref, retain the established verified-managed lookup; transport or
+        // authorization failures from the root lookup remain fail-closed.
+        const directSession = yield* ArtifactControl.directSessionReadScope({ sessionID, locationRef, artifactRef: wireRef(artifactRef) })
+          .pipe(Effect.mapError(mapError))
+        if (directSession) return directSession
         return yield* ArtifactControl.resolveVerifiedScope({ sessionID, locationRef, artifactRef: wireRef(artifactRef) })
           .pipe(Effect.mapError(mapError))
       })

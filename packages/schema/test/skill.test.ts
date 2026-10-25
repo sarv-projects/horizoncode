@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { Schema } from "effect"
 import { Skill } from "../src/skill"
 
-const docsRevision = "sha256:83d9a8e079486da8b673158cf2c2527ddb690eb55e56147c75b4d6489b3bb74e"
+const docsRevision = "sha256:28fb74ebf91729f5f62f6342bcd0c21f25fbb72487afdaba239317d215526fee"
 const horizoncodeRevision = "sha256:b784cb02d1655c7606bfc6548d17de2b237ca28e02c7e58b0f57c1c5ffece90f"
 
 describe("SkillV2.Identity", () => {

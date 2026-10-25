@@ -27,6 +27,8 @@ import { it } from "./lib/effect"
  */
 
 const DIGEST = `blake3:${"a".repeat(64)}`
+/** One-use leases carry distinct digests; the relay rejects duplicates across members. */
+const leaseDigest = (index: number) => `blake3:${(index + 1).toString(16).padStart(64, "0")}`
 const TARGETS = [{ target: "/workspace/a.txt", resource: "a.txt", operation: "write", existed: false }]
 
 function call(callID: string, capabilityID: string): GuardedToolCall {
@@ -77,7 +79,12 @@ function responseFor(
 
 type Recorded = {
   readonly approvals: Array<GuardApprovalRequest>
-  readonly resolves: Array<string>
+  readonly resolves: Array<{
+    readonly sessionID: string
+    readonly locationID: string
+    readonly batchID: string
+    readonly challengeIDs: ReadonlyArray<string>
+  }>
   readonly cancels: Array<{ readonly sessionID: string; readonly batchID: string }>
 }
 
@@ -85,7 +92,8 @@ function port(
   input: {
     readonly decisions?: ReadonlyArray<GuardApprovalDecision>
     readonly approvalError?: SessionSupervisorError
-    readonly resolveError?: (challengeID: string) => SessionSupervisorError | undefined
+    /** The atomic approval-set transaction fails as one unit: no member keeps a lease. */
+    readonly resolveSetError?: SessionSupervisorError
     readonly leaseEffectID?: (challengeID: string) => string
     readonly cancelError?: SessionSupervisorError
     readonly recorded: Recorded
@@ -98,14 +106,18 @@ function port(
       if (input.approvalError) return Effect.fail(input.approvalError)
       return Effect.succeed(input.decisions?.[next++] ?? "allow_once")
     },
-    resolveChallenge: (challengeID) => {
-      input.recorded.resolves.push(challengeID)
-      const failure = input.resolveError?.(challengeID)
-      if (failure) return Effect.fail(failure)
+    resolveApprovalSet: (request) => {
+      input.recorded.resolves.push(request)
+      if (input.resolveSetError) return Effect.fail(input.resolveSetError)
       return Effect.succeed({
-        effectID: input.leaseEffectID?.(challengeID) ?? `eff_${challengeID.slice(3)}`,
-        capabilityLeaseDigest: DIGEST,
-      } as EffectLease)
+        leases: request.challengeIDs.map((challengeID, index) => ({
+          challengeID,
+          lease: {
+            effectID: input.leaseEffectID?.(challengeID) ?? `eff_${challengeID.slice(3)}`,
+            capabilityLeaseDigest: leaseDigest(index),
+          } as EffectLease,
+        })),
+      })
     },
     cancelBatch: (value) =>
       Effect.suspend(() => {
@@ -171,12 +183,17 @@ it.live("asks one approval per member and returns one lease per approved call", 
     if (admission.status !== "prepared_batch") return
     expect(admission.calls.map((entry) => entry.callID)).toEqual(["call_a", "call_b"])
     expect(admission.calls.map((entry) => entry.capabilityID)).toEqual(["files.write", "files.patch"])
-    expect(admission.calls.map((entry) => entry.lease.capabilityLeaseDigest)).toEqual([DIGEST, DIGEST])
+    expect(admission.calls.map((entry) => entry.lease?.capabilityLeaseDigest)).toEqual([leaseDigest(0), leaseDigest(1)])
     expect(seen.approvals).toHaveLength(2)
     expect(seen.approvals.map((request) => request.challengeID)).toEqual(["ch_call_a", "ch_call_b"])
     expect(seen.approvals.map((request) => request.capabilityID)).toEqual(["files.write", "files.patch"])
     expect(seen.approvals.every((request) => request.locationID === "loc_1")).toBe(true)
-    expect(seen.resolves).toEqual(["ch_call_a", "ch_call_b"])
+    expect(seen.resolves).toEqual([{
+      sessionID: "ses_1",
+      locationID: "loc_1",
+      batchID: "batch_multi",
+      challengeIDs: ["ch_call_a", "ch_call_b"],
+    }])
     expect(seen.cancels).toHaveLength(0)
   })
 })
@@ -239,7 +256,7 @@ it.live("interruption while approvals are pending cancels the durable complete b
       { sessionID: "ses_1", batchID: "batch_multi", locationID: "loc_1", calls, response: responseFor(calls) },
       {
         requestApproval: () => Deferred.succeed(pending, undefined).pipe(Effect.andThen(Effect.never)),
-        resolveChallenge: () => Effect.die("must not resolve a pending approval"),
+        resolveApprovalSet: () => Effect.die("must not resolve a pending approval"),
         cancelBatch: () => Deferred.succeed(cancelled, undefined).pipe(Effect.asVoid),
       },
     ).pipe(Effect.forkChild)
@@ -267,7 +284,7 @@ it.live("cancels the batch when an approval expires or fails", () => {
   })
 })
 
-it.live("cancels the batch and returns no lease when a later resolve fails", () => {
+it.live("cancels the batch and returns no lease when the approval-set resolve fails", () => {
   const calls = [call("call_a", "files.write"), call("call_b", "files.write")]
   const seen = recorded()
   const decisions = ["allow_once", "allow_once"] as const
@@ -278,15 +295,14 @@ it.live("cancels the batch and returns no lease when a later resolve fails", () 
       port({
         decisions,
         recorded: seen,
-        resolveError: (challengeID) =>
-          challengeID === "ch_call_b"
-            ? new SessionSupervisorError({ stage: "host-kernel", reason: "host rejected Guard approval" })
-            : undefined,
+        // The approval-set transaction is atomic: the host either durably issues
+        // every member's one-use lease or fails the whole set with no lease.
+        resolveSetError: new SessionSupervisorError({ stage: "host-kernel", reason: "host rejected Guard approval" }),
       }),
     ).pipe(Effect.exit)
     expect(exit._tag).toBe("Failure")
-    expect(seen.resolves).toEqual(["ch_call_a", "ch_call_b"])
-    // A partially resolved batch must be cancelled: no member may keep an approval.
+    expect(seen.resolves).toHaveLength(1)
+    // A failed approval-set resolution must be cancelled: no member may keep an approval.
     expect(seen.cancels).toEqual([{ sessionID: "ses_1", batchID: "batch_multi" }])
   })
 })

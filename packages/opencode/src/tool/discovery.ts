@@ -146,8 +146,11 @@ export function searchToolDescriptorsV1<T extends ToolDiscoveryDescriptorV1>(inp
   readonly descriptors: readonly T[]
   readonly limit?: number
 }): readonly T[] {
+  // Keep the runtime guard from narrowing the generic readonly array to `any[]`.
+  // That preserves the descriptor element type for validation callbacks below.
+  const descriptorsAreArray = Array.isArray(input.descriptors)
   if (typeof input.query !== "string" || Buffer.byteLength(input.query, "utf8") > 1024 ||
-    !Array.isArray(input.descriptors) || input.descriptors.length > TOOL_DISCOVERY_LIMITS_V1.maxCandidates) {
+    !descriptorsAreArray || input.descriptors.length > TOOL_DISCOVERY_LIMITS_V1.maxCandidates) {
     throw new RangeError("tool discovery input exceeds its bounded candidate or query limit")
   }
   const query = input.query.trim().toLocaleLowerCase("en-US").slice(0, 256)
@@ -157,11 +160,13 @@ export function searchToolDescriptorsV1<T extends ToolDiscoveryDescriptorV1>(inp
   const descriptorIDs = new Set<string>()
   let aggregateDescriptionBytes = 0
   for (const descriptor of input.descriptors) {
+    // Array.isArray narrows readonly generic properties to `any[]`; keep the
+    // runtime check separate so callbacks below retain their declared types.
+    const tagsAreArray = typeof descriptor === "object" && descriptor !== null && Array.isArray(descriptor.tags)
     if (typeof descriptor !== "object" || descriptor === null ||
       typeof descriptor.id !== "string" || !/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/.test(descriptor.id) ||
       typeof descriptor.description !== "string" || Buffer.byteLength(descriptor.description, "utf8") > TOOL_DISCOVERY_LIMITS_V1.maxDescriptorDescriptionBytes ||
-      !Array.isArray(descriptor.tags) || descriptor.tags.length > 32 ||
-      descriptor.tags.some((tag) => typeof tag !== "string" || Buffer.byteLength(tag, "utf8") > 64) ||
+      !tagsAreArray || descriptor.tags.length > 32 ||
       typeof descriptor.requiredCapability !== "string" || Buffer.byteLength(descriptor.requiredCapability, "utf8") > 256 ||
       !/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/.test(descriptor.requiredCapability) ||
       (descriptor.sideEffectClass !== "read_only" && descriptor.sideEffectClass !== "control" && descriptor.sideEffectClass !== "effect") ||
@@ -172,7 +177,12 @@ export function searchToolDescriptorsV1<T extends ToolDiscoveryDescriptorV1>(inp
     if (descriptorIDs.has(descriptor.id)) throw new TypeError("tool discovery candidate IDs must be unique")
     descriptorIDs.add(descriptor.id)
     aggregateDescriptionBytes += Buffer.byteLength(descriptor.description, "utf8")
-    aggregateDescriptionBytes += descriptor.tags.reduce((total, tag) => total + Buffer.byteLength(tag, "utf8"), 0)
+    for (const tag of descriptor.tags as readonly unknown[]) {
+      if (typeof tag !== "string" || Buffer.byteLength(tag, "utf8") > 64) {
+        throw new TypeError("tool discovery descriptor is malformed or exceeds its bounds")
+      }
+      aggregateDescriptionBytes += Buffer.byteLength(tag, "utf8")
+    }
     if (aggregateDescriptionBytes > TOOL_DISCOVERY_LIMITS_V1.maxAggregateDescriptionBytes) {
       throw new RangeError("tool discovery descriptions exceed the aggregate bound")
     }

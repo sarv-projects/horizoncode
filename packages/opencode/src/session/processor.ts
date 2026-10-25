@@ -26,7 +26,7 @@ import { Database } from "@opencode-ai/core/database/database"
 import { Usage, type LLMEvent } from "@opencode-ai/llm"
 import { SessionMessage as SessionMessageSchema } from "@opencode-ai/schema/session-message"
 
-import { SessionSupervisorError } from "@opencode-ai/core/session/supervisor"
+import { SessionSupervisor, SessionSupervisorError } from "@opencode-ai/core/session/supervisor"
 import * as ManagedControl from "./managed-control"
 import { managedProviderStepFinish } from "./managed-provider-entry"
 const DOOM_LOOP_THRESHOLD = 3
@@ -88,7 +88,7 @@ interface ProcessorContext extends Input {
 
 type StreamEvent = LLMEvent
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/SessionProcessor") {}
+export class Service extends Context.Service<Service, Interface>()("@horizoncode/SessionProcessor") {}
 
 const layer = Layer.effect(
   Service,
@@ -105,6 +105,10 @@ const layer = Layer.effect(
     const image = yield* Image.Service
     const events = yield* EventV2Bridge.Service
     const database = yield* Database.Service
+    // ManagedControl host-kernel calls run inside process and its provider
+    // callbacks; the processor owns that dependency instead of leaking it into
+    // Handle.process's infallible requirement channel.
+    const supervisor = yield* SessionSupervisor.Service
 
     const create = Effect.fn("SessionProcessor.create")(function* (input: Input) {
       const ctx: ProcessorContext = {
@@ -344,15 +348,25 @@ const layer = Layer.effect(
             reason: "persisted transcript does not contain exactly one indexed step-finish part",
           })
         }
-        const unresolved = persisted.parts.filter((part) => part.type === "tool" && (part.state.status === "pending" || part.state.status === "running"))
+        const unresolved = persisted.parts.filter(
+          (part): part is SessionV1.ToolPart =>
+            part.type === "tool" && (part.state.status === "pending" || part.state.status === "running"),
+        )
         if (unresolved.length !== allowed.size || unresolved.some((part) => !allowed.has(part.callID))) {
           return yield* new SessionSupervisorError({
             stage: "managed_provider_settlement",
             reason: "persisted provider snapshot contains missing or unrelated unresolved tool work",
           })
         }
+        const persistedInfo = persisted.info
+        if (persistedInfo.role !== "assistant") {
+          return yield* new SessionSupervisorError({
+            stage: "managed_provider_settlement",
+            reason: "persisted assistant message is missing after the step update",
+          })
+        }
         const receipt = managedProviderStepFinish({
-          info: persisted.info,
+          info: persistedInfo,
           stepFinishPart: matchingSteps[0],
           stepFinishIndex: input.stepFinishIndex,
         })
@@ -651,7 +665,10 @@ const layer = Layer.effect(
                   reason: "persisted transcript does not contain exactly one indexed step-finish part",
                 })
               }
-              const pending = persisted.parts.filter((part) => part.type === "tool" && (part.state.status === "pending" || part.state.status === "running"))
+              const pending = persisted.parts.filter(
+                (part): part is SessionV1.ToolPart =>
+                  part.type === "tool" && (part.state.status === "pending" || part.state.status === "running"),
+              )
               if (pending.some((part) => !ctx.managedProviderStepToolCallIDs.has(part.callID))) {
                 managedAttempt.markUsageStopped?.()
                 return yield* new SessionSupervisorError({
@@ -659,10 +676,18 @@ const layer = Layer.effect(
                   reason: "persisted provider snapshot contains unrelated unresolved tool work",
                 })
               }
+              const persistedInfo = persisted.info
+              if (persistedInfo.role !== "assistant") {
+                managedAttempt.markUsageStopped?.()
+                return yield* new SessionSupervisorError({
+                  stage: "managed_provider_settlement",
+                  reason: "persisted assistant message is missing after the step update",
+                })
+              }
               let receipt: ReturnType<typeof managedProviderStepFinish>
               try {
                 receipt = managedProviderStepFinish({
-                  info: persisted.info,
+                  info: persistedInfo,
                   stepFinishPart: matchingSteps[0],
                   stepFinishIndex: value.index,
                 })
@@ -883,7 +908,7 @@ const layer = Layer.effect(
         yield* status.set(ctx.sessionID, { type: "idle" })
       })
 
-      const process = Effect.fn("SessionProcessor.process")(function* (streamInput: LLM.StreamInput) {
+      const processImpl = Effect.fn("SessionProcessor.process")(function* (streamInput: LLM.StreamInput) {
         yield* Effect.logInfo("process", {
           "session.id": input.sessionID,
           messageID: input.assistantMessage.id,
@@ -952,7 +977,7 @@ const layer = Layer.effect(
                             reason: "HostKernel context receipt did not advance the current Attempt scope",
                           })
                         }
-                      }),
+                      }).pipe(Effect.provideService(SessionSupervisor.Service, supervisor)),
                     onManagedProviderDispatch: (handoff) =>
                       Effect.gen(function* () {
                         const scope = managedAttempt.currentScope()
@@ -1101,7 +1126,7 @@ const layer = Layer.effect(
                           return "STOPPED" as const
                         }
                         return exit.value.status
-                      }),
+                      }).pipe(Effect.provideService(SessionSupervisor.Service, supervisor)),
                   }
                 : {}),
             })
@@ -1154,6 +1179,11 @@ const layer = Layer.effect(
           return "continue"
         })
       })
+      // The managed settlement path talks to HostKernel through ManagedControl;
+      // bind the processor's own supervisor so Handle.process stays requirement
+      // free for every caller.
+      const process: Handle["process"] = (streamInput) =>
+        processImpl(streamInput).pipe(Effect.provideService(SessionSupervisor.Service, supervisor))
 
       return {
         get message() {
@@ -1185,6 +1215,7 @@ export const node = LayerNode.make({
     Image.node,
     EventV2Bridge.node,
     Database.node,
+    SessionSupervisor.node,
   ],
 })
 

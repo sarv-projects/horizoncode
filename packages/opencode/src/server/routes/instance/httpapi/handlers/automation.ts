@@ -1,6 +1,6 @@
 import { Location } from "@opencode-ai/core/location"
 import { AbsolutePath } from "@opencode-ai/core/schema"
-import { SessionSupervisor } from "@opencode-ai/core/session/supervisor"
+import { SessionSupervisor, type Service as SessionSupervisorService } from "@opencode-ai/core/session/supervisor"
 import { TrustedPrincipalContext } from "@opencode-ai/core/trusted-principal"
 import { Effect, Option } from "effect"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
@@ -50,8 +50,19 @@ export const automationHandlers = HttpApiBuilder.group(InstanceHttpApi, "automat
       }
       return new ApiAutomationError({ name: "AutomationError", data })
     }
-    const provideScope = <A, E>(sessionID: string, effect: (value: AutomationControl.AutomationScope) => Effect.Effect<A, E>) =>
-      scope(sessionID).pipe(Effect.flatMap(effect))
+    // The control effects require the handler's captured supervisor and the
+    // scope's authenticated principal; both are bound here so no group handler
+    // leaks a service requirement into the route's never-requirement contract.
+    const provideScope = <A, E>(
+      sessionID: string,
+      effect: (value: AutomationControl.AutomationScope) => Effect.Effect<A, E, SessionSupervisorService | TrustedPrincipalContext>,
+    ) =>
+      scope(sessionID).pipe(
+        Effect.flatMap((value) =>
+          effect(value).pipe(Effect.provideService(TrustedPrincipalContext, { principal: value.trustedPrincipal })),
+        ),
+        Effect.provideService(SessionSupervisor.Service, supervisor),
+      )
     return handlers
       .handle("automationList", ({ query }) => provideScope(query.sessionID, (value) => AutomationControl.list(value).pipe(Effect.mapError(failure))))
       .handle("automationInspect", ({ query }) => provideScope(query.sessionID, (value) => AutomationControl.inspect(value, query.automationID).pipe(Effect.mapError(failure))))

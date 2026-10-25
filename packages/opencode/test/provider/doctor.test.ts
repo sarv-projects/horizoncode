@@ -97,6 +97,7 @@ describe("ProviderDoctor.inspectOffline", () => {
     try {
       const facts = {
         catalog: { alpha: { models: { "model-id": {} } } },
+        catalogFreshness: "fresh" as const,
         config: {
           disabled_providers: [],
           provider: { custom: { models: { "custom-id": {} }, options: { apiKey: "must-not-escape" } } },
@@ -176,6 +177,33 @@ describe("ProviderDoctor.inspectOffline", () => {
   test("rejects credential-bearing or network-enabled input rather than inspecting it", () => {
     expect(() => ProviderDoctor.inspectOffline({ ...request, apiKey: "must-not-be-read" }, auth)).toThrow()
     expect(() => ProviderDoctor.inspectOffline({ ...request, maxNetworkRequests: 1 }, auth)).toThrow()
+    expect(() =>
+      ProviderDoctor.inspectOffline({
+        ...request,
+        spendConsentRef: "consent:must-not-be-accepted-offline",
+      }, auth),
+    ).toThrow()
+  })
+
+  test("keeps an unavailable account/auth state UNKNOWN without probing or echoing identifiers", () => {
+    const result = ProviderDoctor.inspectOffline({
+      ...request,
+      selection: {
+        providerRef: "provider:opencode",
+        accountRef: "account:unavailable",
+        modelRef: "model:opencode/big-pickle",
+      },
+    }, auth, {
+      catalog: { opencode: { models: { "big-pickle": {} } } },
+      catalogFreshness: "fresh",
+      config: {},
+    })
+    expect(result.credentialAccess).toBe("NOT_READ")
+    expect(result.remoteChecks).toEqual({ entitlement: "UNCHECKED", quota: "UNCHECKED", service: "UNCHECKED" })
+    expect(result.networkRequestCount).toBe(0)
+    // The account ref stays an opaque caller-visible label; it is never
+    // resolved, probed, or treated as authentication.
+    expect(result.selection.accountRef).toBe("account:unavailable")
   })
 
   test("rejects caller-supplied configuration status without touching the provider route", () => {
@@ -257,6 +285,59 @@ describe("ProviderDoctor.inspectOffline", () => {
       outcome: "SKIPPED",
       code: "catalog_pre_dispatch_guard_unavailable",
     })
+  })
+
+  test("rejects catalog and full probes that omit their required consent labels", () => {
+    expect(() =>
+      ProviderDoctor.inspectCatalog({
+        ...request,
+        tier: "catalog",
+        maxNetworkRequests: 1,
+      } as never, auth),
+    ).toThrow()
+    expect(() =>
+      ProviderDoctor.inspectFull({
+        ...request,
+        tier: "full",
+        maxNetworkRequests: 1,
+        networkGrantRef: "grant:caller-asserted",
+      } as never, auth),
+    ).toThrow()
+  })
+
+  test("reports local readiness but no remote spend for a consented full tier without a Guarded dispatcher", () => {
+    const result = ProviderDoctor.inspectFull({
+      ...request,
+      tier: "full",
+      maxNetworkRequests: 2,
+      networkGrantRef: "grant:caller-asserted",
+      spendConsentRef: "consent:caller-asserted",
+    }, auth, {
+      catalog: { opencode: { models: { "big-pickle": {} } } },
+      catalogFreshness: "fresh",
+      config: {},
+    })
+    expect(result.localReadiness).toBe("READY")
+    expect(result.selection.configurationStatus).toBe("VALID")
+    expect(result.networkRequestCount).toBe(0)
+    expect(result.credentialAccess).toBe("NOT_READ")
+    expect(result.costStatus).toBe("NOT_INCURRED")
+    expect(result.probes.every((probe) => probe.phase === "config" || probe.outcome === "SKIPPED")).toBe(true)
+  })
+
+  test("bounds the Doctor deadline instead of accepting an unbounded probe", () => {
+    expect(() => ProviderDoctor.inspectFull({
+      ...request,
+      tier: "full",
+      maxNetworkRequests: 1,
+      networkGrantRef: "grant:caller-asserted",
+      spendConsentRef: "consent:caller-asserted",
+      deadlineMs: 60_001,
+    }, auth)).toThrow()
+    expect(() => ProviderDoctor.inspectOffline({
+      ...request,
+      deadlineMs: 0,
+    }, auth)).toThrow()
   })
 
   test("keeps full-tier network and spend consent labels from authorizing provider traffic", () => {

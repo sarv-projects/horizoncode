@@ -27,8 +27,10 @@ struct Directory(PathBuf);
 
 impl Directory {
     fn new() -> Self {
+        // SUN_LEN budget: the kernel socket beneath this directory must stay
+        // within ~108 bytes on a repository-local TMPDIR.
         let path = std::env::temp_dir().join(format!(
-            "hz-terminal-events-{}-{}",
+            "p1te-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)

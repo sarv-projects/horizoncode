@@ -244,7 +244,10 @@ export function normalizeSearchCascadeSettings(input?: SearchCascadeSettings) {
       : byoConsents.includes(id))
     .slice(0, MAX_ROUTES)
   const uniqueOrder = [...new Set(order)].filter((id): id is SearchRouteID => SEARCH_ROUTE_IDS.includes(id))
-  const cascade = [...uniqueOrder.filter((id) => uniqueEnabled.includes(id)), ...uniqueEnabled.filter((id) => !uniqueOrder.includes(id))]
+  // Keep the full supported preference order for Settings even before consent
+  // or route enablement. Executable plans separately intersect this order with
+  // the consented enabled set, so retaining disabled IDs grants no route.
+  const cascade = [...uniqueOrder, ...uniqueEnabled.filter((id) => !uniqueOrder.includes(id))]
   return {
     querySharingConsent: anonymousConsent ? "anonymous_free_v1" as const : undefined,
     byoConsents: byoConsents.map((route) => ({ route, consent: "secret_broker_unknown_cost_v1" as const })),
@@ -361,4 +364,3 @@ export class SearchCascadeError extends Error {
     this.name = "SearchCascadeError"
   }
 }
-

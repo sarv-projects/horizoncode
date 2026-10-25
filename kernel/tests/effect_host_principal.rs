@@ -10,7 +10,10 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const PRINCIPAL: &str = "host_os_uid:1000";
+// Root direct-session admission resolves the typed ServerAuth subject from
+// the host binding (§14/DEC-V1-28); the same subject that registered the
+// Location fronts every request so the owner binding matches.
+const PRINCIPAL: &str = "server_auth:effect-host-location-owner";
 const INCARNATION: &str = "inc_effect_test";
 
 struct Fixture {
@@ -20,6 +23,12 @@ struct Fixture {
     host: HostKernel,
     location_id: String,
     fence: FrameFence,
+}
+
+struct PreparedEffect {
+    challenge_id: Option<String>,
+    effect_id: String,
+    capability_lease_digest: Option<String>,
 }
 
 impl Fixture {
@@ -43,7 +52,12 @@ impl Fixture {
         let response = host.handle_request(
             &request(
                 "register_location",
-                value_map([("canonicalRoot", string(workspace.to_str().unwrap()))]),
+                value_map([
+                    ("canonicalRoot", string(workspace.to_str().unwrap())),
+                    // Direct-session admission requires a Location bound
+                    // to a registered workspace, not just a canonical root.
+                    ("workspaceID", string("wrk_effect_host")),
+                ]),
                 1,
             ),
             "server_auth:effect-host-location-owner",
@@ -66,7 +80,7 @@ impl Fixture {
         fs::remove_dir_all(self.base).unwrap();
     }
 
-    fn prepare(&mut self, capability: &str, arguments: Value, call_id: &str) -> (String, String) {
+    fn prepare(&mut self, capability: &str, arguments: Value, call_id: &str) -> PreparedEffect {
         let body = value_map([
             ("sessionID", string("ses_effect_test")),
             ("locationID", string(&self.location_id)),
@@ -91,11 +105,29 @@ impl Fixture {
         );
         assert_eq!(response.outcome, RpcOutcomeV1::Ok);
         let body = response.body.unwrap();
-        assert_eq!(value_string(&body, "status"), "needs_approval");
-        (
-            value_string(&body, "challengeID").to_owned(),
-            value_string(&body, "effectID").to_owned(),
-        )
+        let effect_id = value_string(&body, "effectID").to_owned();
+        match value_string(&body, "status") {
+            "prepared" => PreparedEffect {
+                challenge_id: None,
+                effect_id,
+                capability_lease_digest: Some(
+                    value_string(&body, "capabilityLeaseDigest").to_owned(),
+                ),
+            },
+            "needs_approval" => PreparedEffect {
+                challenge_id: Some(value_string(&body, "challengeID").to_owned()),
+                effect_id,
+                capability_lease_digest: None,
+            },
+            status => panic!("unexpected prepared effect status: {status}"),
+        }
+    }
+
+    fn lease(&mut self, prepared: &PreparedEffect) -> String {
+        if let Some(lease) = &prepared.capability_lease_digest {
+            return lease.clone();
+        }
+        self.approve(prepared.challenge_id.as_deref().expect("ASK has challenge"))
     }
 
     fn approve(&mut self, challenge_id: &str) -> String {
@@ -215,9 +247,9 @@ fn value_string<'a>(value: &'a Value, key: &str) -> &'a str {
 }
 
 #[test]
-fn explicit_allow_once_settles_a_registered_location_write() {
+fn quiet_prepared_lease_settles_a_registered_location_write() {
     let mut fixture = Fixture::new();
-    let (challenge_id, effect_id) = fixture.prepare(
+    let prepared = fixture.prepare(
         "files.write",
         value_map([
             ("path", string("write.txt")),
@@ -225,14 +257,14 @@ fn explicit_allow_once_settles_a_registered_location_write() {
         ]),
         "call_write",
     );
-    let lease = fixture.approve(&challenge_id);
+    let lease = fixture.lease(&prepared);
     let response = fixture.host.handle_request(
         &request(
             "execute_write",
             value_map([
                 ("sessionID", string("ses_effect_test")),
                 ("locationID", string(&fixture.location_id)),
-                ("effectID", string(&effect_id)),
+                ("effectID", string(&prepared.effect_id)),
                 ("capabilityLeaseDigest", string(&lease)),
                 ("content", string("approved write")),
             ]),
@@ -241,7 +273,7 @@ fn explicit_allow_once_settles_a_registered_location_write() {
         PRINCIPAL,
         &fixture.fence,
     );
-    assert_eq!(response.outcome, RpcOutcomeV1::Ok);
+    assert_eq!(response.outcome, RpcOutcomeV1::Ok, "{:?}", response.error);
     assert_eq!(
         value_string(response.body.as_ref().unwrap(), "status"),
         "settled"
@@ -254,7 +286,7 @@ fn explicit_allow_once_settles_a_registered_location_write() {
 }
 
 #[test]
-fn explicit_allow_once_settles_a_registered_location_patch() {
+fn quiet_prepared_lease_settles_a_registered_location_patch() {
     let mut fixture = Fixture::new();
     let operation = value_map([
         ("operation", string("write")),
@@ -262,19 +294,19 @@ fn explicit_allow_once_settles_a_registered_location_patch() {
         ("expectedBeforeBase64", Value::Nil),
         ("contentBase64", string("cGF0Y2hlZA==")),
     ]);
-    let (challenge_id, effect_id) = fixture.prepare(
+    let prepared = fixture.prepare(
         "files.patch",
         value_map([("operations", Value::Array(vec![operation.clone()]))]),
         "call_patch",
     );
-    let lease = fixture.approve(&challenge_id);
+    let lease = fixture.lease(&prepared);
     let response = fixture.host.handle_request(
         &request(
             "execute_patch",
             value_map([
                 ("sessionID", string("ses_effect_test")),
                 ("locationID", string(&fixture.location_id)),
-                ("effectID", string(&effect_id)),
+                ("effectID", string(&prepared.effect_id)),
                 ("capabilityLeaseDigest", string(&lease)),
                 ("operations", Value::Array(vec![operation])),
             ]),
@@ -298,7 +330,7 @@ fn explicit_allow_once_settles_a_registered_location_patch() {
 #[test]
 fn wrong_authenticated_principal_cannot_approve_or_create_a_file() {
     let mut fixture = Fixture::new();
-    let (challenge_id, _) = fixture.prepare(
+    let prepared = fixture.prepare(
         "files.write",
         value_map([
             ("path", string("denied.txt")),
@@ -306,12 +338,16 @@ fn wrong_authenticated_principal_cannot_approve_or_create_a_file() {
         ]),
         "call_deny",
     );
+    let lease = fixture.lease(&prepared);
     let denied = fixture.host.handle_request(
         &request(
-            "resolve_approval",
+            "execute_write",
             value_map([
-                ("challengeID", string(&challenge_id)),
-                ("decision", string("allow_once")),
+                ("sessionID", string("ses_effect_test")),
+                ("locationID", string(&fixture.location_id)),
+                ("effectID", string(&prepared.effect_id)),
+                ("capabilityLeaseDigest", string(&lease)),
+                ("content", string("must not exist")),
             ]),
             6,
         ),
@@ -326,7 +362,7 @@ fn wrong_authenticated_principal_cannot_approve_or_create_a_file() {
 #[test]
 fn restart_does_not_reuse_a_prior_epoch_lease() {
     let mut fixture = Fixture::new();
-    let (challenge_id, effect_id) = fixture.prepare(
+    let prepared = fixture.prepare(
         "files.write",
         value_map([
             ("path", string("restart.txt")),
@@ -334,7 +370,7 @@ fn restart_does_not_reuse_a_prior_epoch_lease() {
         ]),
         "call_restart",
     );
-    let lease = fixture.approve(&challenge_id);
+    let lease = fixture.lease(&prepared);
     drop(fixture.host);
     let mut restarted = HostKernel::open(&fixture.state).unwrap();
     restarted.set_effects_enabled(true);
@@ -344,7 +380,7 @@ fn restart_does_not_reuse_a_prior_epoch_lease() {
             value_map([
                 ("sessionID", string("ses_effect_test")),
                 ("locationID", string(&fixture.location_id)),
-                ("effectID", string(&effect_id)),
+                ("effectID", string(&prepared.effect_id)),
                 ("capabilityLeaseDigest", string(&lease)),
                 ("content", string("must not replay")),
             ]),
@@ -363,7 +399,7 @@ fn restart_does_not_reuse_a_prior_epoch_lease() {
 #[test]
 fn settled_write_receipt_is_queryable_after_restart_when_execute_response_was_lost() {
     let mut fixture = Fixture::new();
-    let (challenge_id, effect_id) = fixture.prepare(
+    let prepared = fixture.prepare(
         "files.write",
         value_map([
             ("path", string("lost-response.txt")),
@@ -371,14 +407,14 @@ fn settled_write_receipt_is_queryable_after_restart_when_execute_response_was_lo
         ]),
         "call_lost_response",
     );
-    let lease = fixture.approve(&challenge_id);
+    let lease = fixture.lease(&prepared);
     let _lost_response = fixture.host.handle_request(
         &request(
             "execute_write",
             value_map([
                 ("sessionID", string("ses_effect_test")),
                 ("locationID", string(&fixture.location_id)),
-                ("effectID", string(&effect_id)),
+                ("effectID", string(&prepared.effect_id)),
                 ("capabilityLeaseDigest", string(&lease)),
                 ("content", string("settled before disconnect")),
             ]),
@@ -396,7 +432,7 @@ fn settled_write_receipt_is_queryable_after_restart_when_execute_response_was_lo
         &request_for_epoch(
             "reconcile_effect",
             value_map([
-                ("effectID", string(&effect_id)),
+                ("effectID", string(&prepared.effect_id)),
                 ("locationID", string(&fixture.location_id)),
                 ("sessionID", string("ses_effect_test")),
             ]),
@@ -409,13 +445,13 @@ fn settled_write_receipt_is_queryable_after_restart_when_execute_response_was_lo
     assert_eq!(reconciled.outcome, RpcOutcomeV1::Ok);
     let body = reconciled.body.unwrap();
     assert_eq!(value_string(&body, "status"), "settled");
-    assert_eq!(value_string(&body, "effectID"), effect_id);
+    assert_eq!(value_string(&body, "effectID"), prepared.effect_id);
     assert!(value_string(&body, "receiptDigest").starts_with("blake3:"));
     let wrong_principal = restarted.handle_request(
         &request_for_epoch(
             "reconcile_effect",
             value_map([
-                ("effectID", string(&effect_id)),
+                ("effectID", string(&prepared.effect_id)),
                 ("locationID", string(&fixture.location_id)),
                 ("sessionID", string("ses_effect_test")),
             ]),
@@ -430,7 +466,7 @@ fn settled_write_receipt_is_queryable_after_restart_when_execute_response_was_lo
         &request_for_epoch(
             "reconcile_effect",
             value_map([
-                ("effectID", string(&effect_id)),
+                ("effectID", string(&prepared.effect_id)),
                 ("locationID", string(&fixture.location_id)),
                 ("sessionID", string("ses_other")),
             ]),
@@ -452,7 +488,7 @@ fn settled_write_receipt_is_queryable_after_restart_when_execute_response_was_lo
 #[test]
 fn prepared_applied_write_is_settled_from_location_after_state_on_restart() {
     let mut fixture = Fixture::new();
-    let (challenge_id, effect_id) = fixture.prepare(
+    let prepared = fixture.prepare(
         "files.write",
         value_map([
             ("path", string("prepared-write.txt")),
@@ -460,14 +496,14 @@ fn prepared_applied_write_is_settled_from_location_after_state_on_restart() {
         ]),
         "call_prepared_recovery",
     );
-    let lease = fixture.approve(&challenge_id);
+    let lease = fixture.lease(&prepared);
     let executed = fixture.host.handle_request(
         &request(
             "execute_write",
             value_map([
                 ("sessionID", string("ses_effect_test")),
                 ("locationID", string(&fixture.location_id)),
-                ("effectID", string(&effect_id)),
+                ("effectID", string(&prepared.effect_id)),
                 ("capabilityLeaseDigest", string(&lease)),
                 ("content", string("applied before crash")),
             ]),
@@ -488,7 +524,7 @@ fn prepared_applied_write_is_settled_from_location_after_state_on_restart() {
     assert_eq!(
         connection.execute(
             "UPDATE effect_challenges SET status='PREPARED', receipt_digest=NULL WHERE effect_id=?1",
-            [&effect_id],
+            [&prepared.effect_id],
         ).unwrap(),
         1,
     );
@@ -500,7 +536,7 @@ fn prepared_applied_write_is_settled_from_location_after_state_on_restart() {
         &request_for_epoch(
             "reconcile_effect",
             value_map([
-                ("effectID", string(&effect_id)),
+                ("effectID", string(&prepared.effect_id)),
                 ("locationID", string(&fixture.location_id)),
                 ("sessionID", string("ses_effect_test")),
             ]),
@@ -537,7 +573,7 @@ fn mixed_patch_recovery_stays_unknown_and_does_not_replay_missing_target() {
         ("expectedBeforeBase64", Value::Nil),
         ("contentBase64", string("c2Vjb25k")),
     ]);
-    let (challenge_id, effect_id) = fixture.prepare(
+    let prepared = fixture.prepare(
         "files.patch",
         value_map([(
             "operations",
@@ -545,14 +581,14 @@ fn mixed_patch_recovery_stays_unknown_and_does_not_replay_missing_target() {
         )]),
         "call_mixed_patch",
     );
-    let lease = fixture.approve(&challenge_id);
+    let lease = fixture.lease(&prepared);
     let executed = fixture.host.handle_request(
         &request(
             "execute_patch",
             value_map([
                 ("sessionID", string("ses_effect_test")),
                 ("locationID", string(&fixture.location_id)),
-                ("effectID", string(&effect_id)),
+                ("effectID", string(&prepared.effect_id)),
                 ("capabilityLeaseDigest", string(&lease)),
                 ("operations", Value::Array(vec![first, second])),
             ]),
@@ -577,7 +613,7 @@ fn mixed_patch_recovery_stays_unknown_and_does_not_replay_missing_target() {
     let connection = Connection::open(effect_db).unwrap();
     connection.execute(
         "UPDATE effect_challenges SET status='PREPARED', receipt_digest=NULL WHERE effect_id=?1",
-        [&effect_id],
+        [&prepared.effect_id],
     ).unwrap();
     drop(connection);
 
@@ -587,7 +623,7 @@ fn mixed_patch_recovery_stays_unknown_and_does_not_replay_missing_target() {
         &request_for_epoch(
             "reconcile_effect",
             value_map([
-                ("effectID", string(&effect_id)),
+                ("effectID", string(&prepared.effect_id)),
                 ("locationID", string(&fixture.location_id)),
                 ("sessionID", string("ses_effect_test")),
             ]),
@@ -608,74 +644,53 @@ fn mixed_patch_recovery_stays_unknown_and_does_not_replay_missing_target() {
 }
 
 #[test]
-fn settled_terminal_run_reconciles_as_a_run_effect() {
+fn terminal_run_is_denied_before_spawn_when_readiness_is_false() {
     let mut fixture = Fixture::new();
     let shell_profile_id = register_bash_profile(&mut fixture);
     let cwd = fs::canonicalize(&fixture.workspace).unwrap();
     let cwd = cwd.to_str().unwrap();
     let arguments = value_map([
+        ("mode", string("shell")),
         ("shellProfileID", string(&shell_profile_id)),
-        ("command", string("printf run-effect")),
+        ("command", string("touch terminal-run-should-not-start")),
         ("cwd", string(cwd)),
         ("timeoutMs", Value::Unsigned(30_000)),
         ("resolvedEnvironment", Value::Map(BTreeMap::new())),
     ]);
-    let (challenge_id, effect_id) = fixture.prepare("terminal.run", arguments, "call_terminal");
-    let lease = fixture.approve(&challenge_id);
-    let executed = fixture.host.handle_request(
-        &terminal_request(
-            "run",
-            value_map([
-                ("locationID", string(&fixture.location_id)),
-                ("effectID", string(&effect_id)),
-                ("capabilityLeaseDigest", string(&lease)),
-                ("sessionID", string("ses_effect_test")),
-                ("shellProfileID", string(&shell_profile_id)),
-                ("command", string("printf run-effect")),
-                ("cwd", string(cwd)),
-                ("timeoutMs", Value::Unsigned(30_000)),
-                ("resolvedEnvironment", Value::Map(BTreeMap::new())),
-            ]),
-            21,
-        ),
-        PRINCIPAL,
-        &fixture.fence,
-    );
-    assert_eq!(executed.outcome, RpcOutcomeV1::Ok, "{:?}", executed.error);
-    let body = executed.body.unwrap();
-    assert_eq!(value_string(&body, "status"), "exited");
-    assert_eq!(value_string(&body, "preview"), "run-effect");
-    let Value::Map(settled) = &body else {
-        panic!("expected settled run map")
-    };
-    assert_eq!(settled.get("previewTruncated"), Some(&Value::Bool(false)));
-    assert_eq!(settled.get("artifactTruncated"), Some(&Value::Bool(false)));
-    assert_eq!(settled.get("exitCode"), Some(&Value::Unsigned(0)));
-    let reconciled = fixture.host.handle_request(
+    let prepared = fixture.host.handle_request(
         &request(
-            "reconcile_effect",
+            "prepare_tool_batch",
             value_map([
-                ("effectID", string(&effect_id)),
-                ("locationID", string(&fixture.location_id)),
                 ("sessionID", string("ses_effect_test")),
+                ("locationID", string(&fixture.location_id)),
+                ("batchID", string("batch_effect_test")),
+                (
+                    "turnContextDigest",
+                    string(&format!("sha256:{}", "0".repeat(64))),
+                ),
+                (
+                    "calls",
+                    Value::Array(vec![value_map([
+                        ("callID", string("call_terminal")),
+                        ("capabilityID", string("terminal.run")),
+                        ("arguments", arguments),
+                    ])]),
+                ),
             ]),
-            22,
+            20,
         ),
         PRINCIPAL,
         &fixture.fence,
     );
-    assert_eq!(reconciled.outcome, RpcOutcomeV1::Ok);
-    let body = reconciled.body.unwrap();
-    assert_eq!(value_string(&body, "status"), "settled");
-    let Value::Map(map) = &body else {
-        panic!("expected reconcile map")
-    };
-    let Some(Value::Array(targets)) = map.get("targets") else {
-        panic!("missing reconcile targets")
-    };
-    assert_eq!(targets.len(), 1);
-    assert_eq!(value_string(&targets[0], "operation"), "run");
-    assert_eq!(value_string(&targets[0], "resource"), ".");
+    assert_eq!(prepared.outcome, RpcOutcomeV1::Error, "{:?}", prepared.error);
+    assert_eq!(
+        prepared.error.as_ref().map(|error| error.code.as_str()),
+        Some("capability_unavailable")
+    );
+    assert!(
+        !fixture.workspace.join("terminal-run-should-not-start").exists(),
+        "false PTY readiness must deny before starting the command"
+    );
     fixture.cleanup();
 }
 
@@ -724,7 +739,7 @@ fn legacy_effect_schema_without_origin_kind_is_upgraded_on_open() {
 }
 
 #[test]
-fn user_origin_terminal_run_is_admitted_by_principal_and_settles_after_approval() {
+fn user_origin_terminal_run_preserves_ask_then_respects_false_readiness_gate() {
     let mut fixture = Fixture::new();
     let shell_profile_id = register_bash_profile(&mut fixture);
     let cwd = fs::canonicalize(&fixture.workspace).unwrap();
@@ -742,8 +757,9 @@ fn user_origin_terminal_run_is_admitted_by_principal_and_settles_after_approval(
                 (
                     "arguments",
                     value_map([
+                        ("mode", string("shell")),
                         ("shellProfileID", string(&shell_profile_id)),
-                        ("command", string("printf user-effect")),
+                        ("command", string("touch user-terminal-should-not-start")),
                         ("cwd", string(cwd)),
                         ("timeoutMs", Value::Unsigned(30_000)),
                         ("resolvedEnvironment", Value::Map(BTreeMap::new())),
@@ -769,8 +785,9 @@ fn user_origin_terminal_run_is_admitted_by_principal_and_settles_after_approval(
                 ("effectID", string(&effect_id)),
                 ("capabilityLeaseDigest", string(&lease)),
                 ("sessionID", string("ses_effect_test")),
+                ("mode", string("shell")),
                 ("shellProfileID", string(&shell_profile_id)),
-                ("command", string("printf user-effect")),
+                ("command", string("touch user-terminal-should-not-start")),
                 ("cwd", string(cwd)),
                 ("timeoutMs", Value::Unsigned(30_000)),
                 ("resolvedEnvironment", Value::Map(BTreeMap::new())),
@@ -780,10 +797,15 @@ fn user_origin_terminal_run_is_admitted_by_principal_and_settles_after_approval(
         PRINCIPAL,
         &fixture.fence,
     );
-    assert_eq!(executed.outcome, RpcOutcomeV1::Ok, "{:?}", executed.error);
-    let body = executed.body.unwrap();
-    assert_eq!(value_string(&body, "status"), "exited");
-    assert_eq!(value_string(&body, "preview"), "user-effect");
+    assert_eq!(executed.outcome, RpcOutcomeV1::Error, "{:?}", executed.error);
+    assert_eq!(
+        executed.error.as_ref().map(|error| error.code.as_str()),
+        Some("capability_unavailable")
+    );
+    assert!(
+        !fixture.workspace.join("user-terminal-should-not-start").exists(),
+        "false PTY readiness must deny before starting the approved user action"
+    );
     fixture.cleanup();
 }
 

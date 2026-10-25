@@ -2,7 +2,7 @@ import { Context, Duration, Effect, Fiber, Layer, Schema, Stream } from "effect"
 import { createHash } from "node:crypto"
 import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs"
 import { dirname } from "node:path"
-import * as PlatformError from "effect/PlatformError"
+import { systemError } from "effect/PlatformError"
 import type { PlatformError } from "effect/PlatformError"
 import { ChildProcess } from "effect/unstable/process"
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
@@ -262,6 +262,12 @@ function isPinnedSupervisorExecutable(path: string, binaryName: "hz-kernel" | "s
   }
 }
 
+function pinnedSupervisorBinaryName(path: string) {
+  const pin = pinnedSupervisorExecutables.get(path)
+  if (!pin || !isPinnedSupervisorExecutable(path, pin.binaryName)) return undefined
+  return pin.binaryName
+}
+
 function isPinnedSupervisorSource(path: string) {
   const pin = pinnedSupervisorSources.get(path)
   if (!pin) return false
@@ -286,8 +292,8 @@ const isSupervisorControlLaunch = (command: ChildProcess.Command) => {
   const { args, options } = standard
   if (options.extendEnv !== false || options.stdin !== "ignore" || options.stdout !== "ignore" || options.stderr !== "ignore")
     return false
-  const binary = standard.command.slice(standard.command.lastIndexOf("/") + 1)
-  if (binary === "hz-kernel") {
+  const binaryName = pinnedSupervisorBinaryName(standard.command)
+  if (binaryName === "hz-kernel") {
     const helperArg = args.length === 6 ? args[5] : undefined
     const helperRoot = helperArg?.slice("--codemode-helper-root=".length)
     return isPinnedSupervisorExecutable(standard.command, "hz-kernel") && (args.length === 5 || args.length === 6)
@@ -299,7 +305,7 @@ const isSupervisorControlLaunch = (command: ChildProcess.Command) => {
       && (args.length === 5 || (helperArg !== undefined && absoluteOption(helperArg, "codemode-helper-root") &&
         helperRoot !== undefined && isPinnedCodeModeHelperRoot(helperRoot)))
   }
-  if (binary === "session_supervisor") {
+  if (binaryName === "session_supervisor") {
     const source = args[0]?.slice("--source=".length)
     return isPinnedSupervisorExecutable(standard.command, "session_supervisor") &&
       source !== undefined && isPinnedSupervisorSource(source) && args.length === 8
@@ -319,10 +325,9 @@ const isSupervisorControlLaunch = (command: ChildProcess.Command) => {
 const isHostDigestProbe = (command: ChildProcess.Command) => {
   const standard = standardCommand(command)
   if (!standard || !standard.command.startsWith("/")) return false
-  const binary = standard.command.slice(standard.command.lastIndexOf("/") + 1)
   const options = standard.options
-  const binaryName = binary === "hz-kernel" || binary === "session_supervisor" ? binary : undefined
-  return binaryName !== undefined && isPinnedSupervisorExecutable(standard.command, binaryName)
+  const binaryName = pinnedSupervisorBinaryName(standard.command)
+  return binaryName !== undefined
     && standard.args.length === 1
     && absoluteOption(standard.args[0]!, "digest-host-executable")
     && options.extendEnv === false
@@ -340,7 +345,7 @@ const processUnavailable = () =>
   })
 
 const spawnUnavailable = () =>
-  PlatformError.systemError({
+  systemError({
     _tag: "PermissionDenied",
     module: "ChildProcess",
     method: "spawn",

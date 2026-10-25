@@ -7,10 +7,24 @@ import {
   type ContextLedgerEntryV2,
   type ContextLedgerV2 as ContextLedgerValueV2,
 } from "@opencode-ai/schema/context-ledger-v2"
+import {
+  ContextCompilePolicyV1 as ContextCompilePolicySchema,
+  type ContextCompilePolicyV1,
+} from "@opencode-ai/schema/context-compile-policy-v1"
 import type { ContextSelectionV1 as ContextSelectionValueV1 } from "@opencode-ai/schema/context-selection-v1"
 
 const MAX_NODES = 20_000
 const MAX_DEPTH = 24
+
+/**
+ * The canonical JSON ledger schema already carries optional `compilePolicy`
+ * (§30.26 / contracts-v2); the browser-safe TS mirror is awaiting the schema
+ * owner's sync. Validate the policy with its canonical Schema and attach it as a
+ * typed extension so the digest binds it without inventing a second ledger.
+ */
+export type ContextLedgerWithCompilePolicyV2 = ContextLedgerValueV2 & {
+  readonly compilePolicy?: ContextCompilePolicyV1
+}
 
 export type ContextLedgerCompileInputV2 = {
   readonly lane: "direct" | "managed"
@@ -27,13 +41,15 @@ export type ContextLedgerCompileInputV2 = {
   readonly contextSelection?: ContextSelectionValueV1
   /** Managed lane supplies the exact HostKernel receipt digest for this selection. */
   readonly contextSelectionDigest?: string
+  /** §30.26 resolved tier for this exact request; never changes the pinned route. */
+  readonly compilePolicy?: ContextCompilePolicyV1
   readonly entries?: ReadonlyArray<ContextLedgerEntryV2>
   readonly completeness?: "complete" | "partial"
   readonly partialReason?: string
 }
 
 export type CompiledContextLedgerV2 = {
-  readonly ledger: ContextLedgerValueV2
+  readonly ledger: ContextLedgerWithCompilePolicyV2
   readonly ledgerDigest: string
 }
 
@@ -114,5 +130,31 @@ export function compileContextLedgerV2(input: ContextLedgerCompileInputV2): Comp
     completeness,
     ...(partialReason ? { partialReason } : {}),
   })
-  return { ledger, ledgerDigest: digestJson(ledger) }
+  const compilePolicy =
+    input.compilePolicy === undefined
+      ? undefined
+      : Schema.decodeUnknownSync(ContextCompilePolicySchema, { onExcessProperty: "error" })(input.compilePolicy)
+  if (compilePolicy !== undefined) {
+    if (
+      compilePolicy.catalogHints?.providerID !== undefined &&
+      compilePolicy.catalogHints.providerID !== input.providerID
+    ) {
+      throw new TypeError("ContextLedger compile policy names a different provider")
+    }
+    if (compilePolicy.catalogHints?.modelID !== undefined && compilePolicy.catalogHints.modelID !== input.modelID) {
+      throw new TypeError("ContextLedger compile policy names a different model")
+    }
+    if (compilePolicy.effective === "cache_anchor" && compilePolicy.prefixCacheSupport === "none") {
+      throw new TypeError("ContextLedger cannot claim cache_anchor on a route without prefix-cache support")
+    }
+    if (
+      (compilePolicy.effective === "cache_anchor" && compilePolicy.anchorProjection !== "full") ||
+      (compilePolicy.effective === "minimize_tokens" && compilePolicy.anchorProjection !== "compressed")
+    ) {
+      throw new TypeError("ContextLedger compile policy projection does not match its effective tier")
+    }
+  }
+  const result: ContextLedgerWithCompilePolicyV2 =
+    compilePolicy === undefined ? ledger : { ...ledger, compilePolicy }
+  return { ledger: result, ledgerDigest: digestJson(result) }
 }

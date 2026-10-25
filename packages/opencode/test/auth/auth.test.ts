@@ -109,6 +109,7 @@ it.effect("exposes only SecretBroker metadata operations and keeps legacy raw au
         return receipt
       },
       authorizeUse: async () => { throw new Error("unused credential lease fixture") },
+      withUse: async () => { throw new Error("unused credential lease fixture") },
     }
     const auth = Auth.makeService(broker)
     const put = yield* Effect.exit(auth.putCredential({
@@ -158,6 +159,7 @@ it.effect("redacts lower-level keyring details from Auth errors", () =>
       listByProviderIds: async () => { throw new Error("credential bytes and private D-Bus details") },
       revoke: async () => { throw new Error("credential bytes and private D-Bus details") },
       authorizeUse: async () => { throw new Error("credential bytes and private D-Bus details") },
+      withUse: async () => { throw new Error("credential bytes and private D-Bus details") },
     })
     const result = yield* Effect.exit(auth.describeCredential("secret_test" as SecretBrokerV1.SecretRef))
     expect(Exit.isFailure(result)).toBe(true)
@@ -200,8 +202,9 @@ it.effect("projects only one available opaque search credential per fixed route"
         receiptId: "receipt_test",
       }),
       authorizeUse: async () => { throw new Error("unused credential lease fixture") },
+      withUse: async () => { throw new Error("unused credential lease fixture") },
     })
-    expect(yield* auth.searchCredentialRefs()).toEqual({ brave: "secret_brave" })
+    expect(yield* auth.searchCredentialRefs()).toEqual({ brave: "secret_brave" as SecretBrokerV1.SecretRef })
   }),
 )
 
@@ -231,9 +234,10 @@ it.effect("projects one metadata-only credential ref only for canonical provider
       },
       revoke: async () => { throw new Error("unused") },
       authorizeUse: async () => { throw new Error("unused") },
+      withUse: async () => { throw new Error("unused") },
     })
     expect(yield* auth.credentialRefsForProviders(["provider-a", "provider-b"])).toEqual({
-      "provider-a": "secret_a",
+      "provider-a": "secret_a" as SecretBrokerV1.SecretRef,
     })
     expect(yield* auth.credentialRefsForProviders(["provider-a", "invalid\nprovider"])).toEqual({})
     expect(yield* auth.credentialRefsForProviders(Array.from({ length: 257 }, (_, index) => `provider-${index}`))).toEqual({})

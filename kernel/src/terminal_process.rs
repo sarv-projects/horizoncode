@@ -18,6 +18,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::time::{Duration, Instant};
 
+use crate::guard::is_blake3_digest;
+
 /// Maximum private stdio frame; enough for the complete bounded 1 MiB CodeMode
 /// call wave plus framing overhead. Aggregate process input remains separately capped.
 pub const MAX_INPUT_BYTES: usize = 2 * 1024 * 1024;
@@ -286,6 +288,13 @@ pub struct PreparedTerminalLaunch {
     cgroup: Option<crate::cgroup_v2::ExecutionCgroupV2>,
     cgroup_required: bool,
 }
+
+/// Exact durable marker for an explicitly authenticated Full Access launch. It is
+/// written into the HostKernel consent preflight and is the only record that lets
+/// EffectHost settle a cgroup-less terminal effect using the supervised process
+/// tree observation instead of cgroup emptiness. Any other record keeps the
+/// outcome UNKNOWN.
+pub(crate) const FULL_ACCESS_GUARANTEE_RECORD: &str = "explicit direct-session Full Access; no HorizonCode filesystem/network sandbox and no cgroup containment claim; supervised process-group lifetime only; restart without exact process-tree proof is UNKNOWN";
 
 /// A host-resolved, bounded request for a non-PTY process. Callers must resolve the
 /// executable reference from a trusted profile registry before constructing this value;
@@ -1912,6 +1921,29 @@ pub struct StdioExecutionSupervisor {
 }
 
 impl PreparedTerminalLaunch {
+    /// Attach the exact durable execution cgroup a HostKernel binding owns to
+    /// this prepared launch. `prepare_confined` intentionally carries no
+    /// identity (the durable identity lives only in the HostKernel binding),
+    /// but §14.21 forbids spawning without a prepared, persisted containment
+    /// identity, so the dispatcher must attach the group — after confirming it
+    /// is empty and exactly owned — before `spawn_prepared`.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn attach_execution_cgroup(
+        &mut self,
+        cgroup: crate::cgroup_v2::ExecutionCgroupV2,
+    ) -> io::Result<()> {
+        if self.cgroup.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "a confinement cgroup is already attached to this prepared launch",
+            ));
+        }
+        crate::cgroup_v2::ExecutionCgroupV2::confirm_empty_before_dispatch(cgroup.identity())?;
+        self.cgroup = Some(cgroup);
+        self.cgroup_required = true;
+        Ok(())
+    }
+
     pub fn guarantee_record(&self) -> &str {
         &self.guarantee_record
     }
@@ -3595,25 +3627,30 @@ impl TerminalProcess {
             return Err(io::Error::new(io::ErrorKind::PermissionDenied,
                 "trusted editor executable changed during preflight"));
         }
-        let cgroup = crate::cgroup_v2::ExecutionCgroupV2::create(
-            &binding.execution_id,
-            &binding.effect_id,
-            &binding.capability_lease_digest,
-            &binding.profile_ref.profile_id,
-            None,
-            binding.owner_epoch,
-            binding.generation,
-            "external_editor",
-            &binding.profile_ref.profile_id,
-            binding.profile_ref.revision,
-            &binding.profile_ref.profile_digest,
-            &binding.executable_digest,
-            "none",
-            prepared.cgroup_hierarchy_hidden,
-        )?;
-        crate::cgroup_v2::ExecutionCgroupV2::confirm_empty_before_dispatch(cgroup.identity())?;
-        prepared.cgroup = Some(cgroup);
-        prepared.cgroup_required = true;
+        // Full Access intentionally allocates no retained cgroup (the child can
+        // migrate descendants, so an empty group is not proof). Confined profiles
+        // keep the exact-identity cgroup requirement.
+        if permission_mode.sandbox_mode != crate::guard::DirectSandboxModeV1::DangerFullAccess {
+            let cgroup = crate::cgroup_v2::ExecutionCgroupV2::create(
+                &binding.execution_id,
+                &binding.effect_id,
+                &binding.capability_lease_digest,
+                &binding.profile_ref.profile_id,
+                None,
+                binding.owner_epoch,
+                binding.generation,
+                "external_editor",
+                &binding.profile_ref.profile_id,
+                binding.profile_ref.revision,
+                &binding.profile_ref.profile_digest,
+                &binding.executable_digest,
+                "none",
+                prepared.cgroup_hierarchy_hidden,
+            )?;
+            crate::cgroup_v2::ExecutionCgroupV2::confirm_empty_before_dispatch(cgroup.identity())?;
+            prepared.cgroup = Some(cgroup);
+            prepared.cgroup_required = true;
+        }
         let profile_digest = profile.definition_digest()?;
         let target_kind_name = match target.kind {
             ExternalEditorTargetKindV1::PromptScratch => "prompt_scratch",
@@ -3728,14 +3765,19 @@ impl TerminalProcess {
         Ok(PreparedTerminalLaunch {
             spec,
             confinement: None,
-            guarantee_record: "explicit direct-session Full Access; no HorizonCode filesystem/network sandbox; Linux cgroup-v2 process-tree containment required before dispatch".to_owned(),
+            // Full Access deliberately allocates no cgroup: the child can reach the
+            // delegated hierarchy and migrate descendants, so an empty visible group
+            // proves nothing. The durable effect journal plus the supervised
+            // process-group lifetime are the only guarantees; restart without exact
+            // process-tree proof is UNKNOWN and never replayed.
+            guarantee_record: FULL_ACCESS_GUARANTEE_RECORD.to_owned(),
             launch_digest,
             executable_path,
             executable_digest,
             cgroup_hierarchy_hidden: false,
             #[cfg(target_os = "linux")]
             cgroup: None,
-            cgroup_required: true,
+            cgroup_required: false,
         })
     }
 
@@ -3760,6 +3802,8 @@ impl TerminalProcess {
         Ok(Self {
             inner: platform::Process::spawn(spec)?,
             _confinement: None,
+            #[cfg(target_os = "linux")]
+            cgroup: None,
         })
     }
 
@@ -5781,17 +5825,27 @@ mod tests {
             ("environmentPolicy".to_owned(), Value::String("sanitized_host".to_owned())),
         ]));
         let profile = ExternalEditorProfileV1::from_value(&definition).unwrap();
-        assert_eq!(profile.argv_for_target("src/file with spaces.rs", ExternalEditorTargetKindV1::WorkspaceFile).unwrap(),
-            vec![OsString::from("--"), OsString::from("src/file with spaces.rs")]);
+        // Production only ever passes the absolute host-created scratch token
+        // (§14.29); it must land as one literal argv value, spaces included.
+        let scratch = "/private/horizoncode-scratch/editor target with spaces.rs";
+        assert_eq!(profile.argv_for_target(scratch, ExternalEditorTargetKindV1::WorkspaceFile).unwrap(),
+            vec![OsString::from("--"), OsString::from(scratch)]);
+        // Relative and traversal-shaped targets are refused outright.
+        assert!(profile.argv_for_target("src/file with spaces.rs", ExternalEditorTargetKindV1::WorkspaceFile).is_err());
         assert!(profile.argv_for_target("../outside.rs", ExternalEditorTargetKindV1::WorkspaceFile).is_err());
         assert!(profile.argv_for_target("src\\outside.rs", ExternalEditorTargetKindV1::WorkspaceFile).is_err());
         let base = profile.definition_digest().unwrap();
         let mut changed = definition.clone();
-        let Value::Map(fields) = &mut changed else { unreachable!() };
-        fields.insert("argv".to_owned(), Value::Array(vec![Value::String("--readonly".to_owned())]));
+        {
+            let Value::Map(fields) = &mut changed else { unreachable!() };
+            fields.insert("argv".to_owned(), Value::Array(vec![Value::String("--readonly".to_owned())]));
+        }
         assert_ne!(base, ExternalEditorProfileV1::from_value(&changed).unwrap().definition_digest().unwrap());
-        fields.insert("argv".to_owned(), Value::Array(vec![Value::String("--".to_owned())]));
-        fields.insert("unexpected".to_owned(), Value::Bool(true));
+        {
+            let Value::Map(fields) = &mut changed else { unreachable!() };
+            fields.insert("argv".to_owned(), Value::Array(vec![Value::String("--".to_owned())]));
+            fields.insert("unexpected".to_owned(), Value::Bool(true));
+        }
         assert!(ExternalEditorProfileV1::from_value(&changed).is_err());
     }
 
@@ -5836,6 +5890,35 @@ mod tests {
             cols: 80,
             rows: 24,
         }
+    }
+
+    /// OS capability probe: confined stdio/PTY preflight and cgroup attachment
+    /// need a delegated cgroup subtree this user can write. Root-owned cgroupfs
+    /// without user delegation cannot run those paths; tests gate on this and
+    /// report SKIP loudly instead of failing, exactly like the product's
+    /// fail-closed "confinement unavailable" stance. Everything durable before
+    /// the probe still runs.
+    fn delegated_cgroup_root_available() -> bool {
+        std::fs::read_to_string("/proc/self/cgroup")
+            .ok()
+            .and_then(|contents| {
+                contents
+                    .lines()
+                    .find(|line| line.starts_with("0::"))
+                    .map(|line| line[3..].to_owned())
+            })
+            .map(|relative| {
+                std::path::PathBuf::from("/sys/fs/cgroup").join(relative.trim_start_matches('/'))
+            })
+            .map(|root| {
+                let probe = root.join(format!(".hz-p1-delegation-probe-{}", std::process::id()));
+                let created = std::fs::create_dir(&probe).is_ok();
+                if created {
+                    let _ = std::fs::remove_dir(&probe);
+                }
+                created
+            })
+            .unwrap_or(false)
     }
 
     #[test]
@@ -6011,6 +6094,10 @@ mod tests {
 
     #[test]
     fn confined_launch_writes_workspace_but_cannot_touch_outside_or_metadata() {
+        if !delegated_cgroup_root_available() {
+            eprintln!("SKIP confined_launch_writes_workspace_but_cannot_touch_outside_or_metadata: no user-owned delegated cgroup root on this host");
+            return;
+        }
         let root = std::env::temp_dir().join(format!("hz-pty-confinement-{}", std::process::id()));
         let workspace = root.join("workspace");
         std::fs::create_dir_all(workspace.join(".git")).unwrap();
@@ -6021,8 +6108,30 @@ mod tests {
             root.join("outside").display()
         ));
         spec.cwd = workspace.clone();
-        let prepared = TerminalProcess::prepare_confined(spec, &workspace)
+        let mut prepared = TerminalProcess::prepare_confined(spec, &workspace)
             .expect("confinement required for this acceptance host");
+        // §14.21: the dispatcher attaches the exact durable execution cgroup it
+        // owns before spawn; the prepared launch refuses to run without one.
+        let cgroup = crate::cgroup_v2::ExecutionCgroupV2::create(
+            "execution_pty_confine",
+            "effect_pty_confine",
+            &format!("blake3:{}", "a".repeat(64)),
+            "host_os_uid:1000",
+            None,
+            1,
+            1,
+            "terminal_run",
+            "linux-bash",
+            1,
+            &format!("blake3:{}", "b".repeat(64)),
+            &executable_digest(&prepared.executable_path).unwrap(),
+            "none",
+            prepared.cgroup_hierarchy_hidden,
+        )
+        .expect("delegated root probe passed, cgroup creation must succeed");
+        prepared
+            .attach_execution_cgroup(cgroup)
+            .expect("the prepared launch accepts its exact confinement cgroup");
         assert!(
             prepared
                 .guarantee_record()
@@ -6176,6 +6285,10 @@ mod tests {
 
     #[test]
     fn stdio_execution_deadline_starts_at_launch_not_guard_preflight() {
+        if !delegated_cgroup_root_available() {
+            eprintln!("SKIP stdio_execution_deadline_starts_at_launch_not_guard_preflight: no user-owned delegated cgroup root on this host");
+            return;
+        }
         let workspace = repository_test_workspace("preflight-deadline");
         let workspace_revision = format!("blake3:{}", "a".repeat(64));
         let profile_digest = format!("blake3:{}", "d".repeat(64));
@@ -6201,6 +6314,7 @@ mod tests {
             profile_revision: 1,
             profile_digest: profile_digest.clone(),
             executable_digest: executable_digest.clone(),
+            dap_allow_evaluate: false,
         };
         let mut spec = StdioLaunchSpec::new(
             "/bin/sh",
@@ -6245,20 +6359,31 @@ mod tests {
         let approved = format!("blake3:{}", "b".repeat(64));
         let altered = format!("blake3:{}", "c".repeat(64));
 
-        let expected = bind_stdio_execution_digest(&spec_digest, &approved);
+        let principal = "host_os_uid:1000";
+        let expected = bind_stdio_execution_digest(&spec_digest, &approved, principal);
         assert_eq!(
             expected,
-            bind_stdio_execution_digest(&spec_digest, &approved)
+            bind_stdio_execution_digest(&spec_digest, &approved, principal)
         );
         assert_ne!(
             expected,
-            bind_stdio_execution_digest(&spec_digest, &altered)
+            bind_stdio_execution_digest(&spec_digest, &altered, principal)
+        );
+        // The execution principal is part of the approval binding: a reviewer
+        // identity can never substitute for the trusted process owner.
+        assert_ne!(
+            expected,
+            bind_stdio_execution_digest(&spec_digest, &approved, "host_os_uid:0")
         );
         assert!(expected.starts_with("blake3:"));
     }
 
     #[test]
     fn discarding_preflight_releases_only_the_exact_unstarted_execution() {
+        if !delegated_cgroup_root_available() {
+            eprintln!("SKIP discarding_preflight_releases_only_the_exact_unstarted_execution: no user-owned delegated cgroup root on this host");
+            return;
+        }
         let root = std::env::temp_dir().join(format!("hz-stdio-discard-{}", std::process::id()));
         let workspace = root.join("workspace");
         std::fs::create_dir_all(&workspace).unwrap();
@@ -6288,6 +6413,7 @@ mod tests {
             profile_revision: 1,
             profile_digest: profile_digest.clone(),
             executable_digest: executable_digest.clone(),
+            dap_allow_evaluate: false,
         };
         let mut spec = StdioLaunchSpec::new(
             "/bin/sh",
@@ -6405,6 +6531,10 @@ mod tests {
 
     #[test]
     fn confined_pty_cannot_connect_to_host_listener() {
+        if !delegated_cgroup_root_available() {
+            eprintln!("SKIP confined_pty_cannot_connect_to_host_listener: no user-owned delegated cgroup root on this host");
+            return;
+        }
         let root = std::env::temp_dir().join(format!("hz-pty-network-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -6415,7 +6545,28 @@ mod tests {
         ));
         spec.executable = PathBuf::from("/bin/bash");
         spec.cwd = root.clone();
-        let prepared = TerminalProcess::prepare_confined(spec, &root).unwrap();
+        let mut prepared = TerminalProcess::prepare_confined(spec, &root).unwrap();
+        // §14.21: attach the exact durable execution cgroup before spawn.
+        let cgroup = crate::cgroup_v2::ExecutionCgroupV2::create(
+            "execution_pty_network",
+            "effect_pty_network",
+            &format!("blake3:{}", "a".repeat(64)),
+            "host_os_uid:1000",
+            None,
+            1,
+            1,
+            "terminal_run",
+            "linux-bash",
+            1,
+            &format!("blake3:{}", "b".repeat(64)),
+            &executable_digest(&prepared.executable_path).unwrap(),
+            "none",
+            prepared.cgroup_hierarchy_hidden,
+        )
+        .expect("delegated root probe passed, cgroup creation must succeed");
+        prepared
+            .attach_execution_cgroup(cgroup)
+            .expect("the prepared launch accepts its exact confinement cgroup");
         let mut process = TerminalProcess::spawn_prepared(prepared).unwrap();
         let output = read_for(&mut process, b"DENIED");
         assert!(!output.windows(9).any(|window| window == b"CONNECTED"));

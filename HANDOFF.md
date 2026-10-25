@@ -1,6 +1,612 @@
 # HorizonCode — Current implementation handoff
 
-## Current continuation checkpoint — 2026-10-22
+## Whole-phase V1 continuation — 2026-10-24
+
+The user requested whole V1 completion and exact Git add/commit/push followed by all open gates.
+Whole-phase owners for P1–P9 were dispatched in parallel with disjoint write scopes; current
+sessions and acceptance state are in `reports/phases/LEDGER.md`. P1, P2, P3, P4, P5, P6, P7, P8,
+and P9 remain unverified; no effect gates were opened.
+
+Fresh handoffs in this wave:
+
+- **P1:** Core denial suites **13/0, 52 expectations**; cross-capability proof still stops at the
+  intentionally false PTY readiness gate. Delegated-cgroup matrix and integrated terminal grant /
+  profile / receipt / recovery remain unverified. P1 resumed to test its migrated
+  `effects_host_process` PreparedBatch fixtures after P2 released Cargo; readiness remains false.
+- **P2:** first continuation had no source edits; it confirmed HostRun reconciliation needs a durable
+  authenticated `dispatch_idempotency_key` → Run/Task/Attempt, evaluator Session and process-generation
+  binding plus a terminal producer and real positive fixture. P8's HostRun receipt is not this
+  authority. P2 has resumed its whole phase for independently runnable managed work; Cargo was
+  explicitly released. No authority or successful result was fabricated.
+- **P3:** **61/61 Core**, OpenCode adapters **80/0/1 todo**, schema **29/29**. Authenticated
+  HostKernel query/cursor/recovery, P4 buffer, P1/P2/P8 lifecycle, Guarded patch and real-project
+  acceptance remain blocked; navigation stays gated.
+- **P6:** **27/0 Core** (107 expectations), **28/0 OpenCode** (120 expectations), offline only.
+  `projectCapabilityChips` still lacks a runtime/UI consumer (P5/P7); credentialed SecretBroker/live
+  Doctor and managed-profile consumption remain gated. Prior S1 9/0 is not current-revision evidence.
+- **P9:** release readiness **79/79**, runtime identity **2 tests / 57 expectations**, installer and
+  Python syntax checks green. No source edits. Offline package resolution lacks cached
+  `@noble/hashes@2.2.0`, `@horizoncode/client/effect` is unresolved, Nix is unavailable, and
+  candidate install/rollback plus legal/signing gates remain open. No network/install/build/sign or
+  publication occurred.
+- **P4:** OpenCode LSP/DAP/REPL suites **298/0, 1,160 expectations**; TUI editor/helper/settings/
+  mounted `/editor` suites **15/0, 47 expectations**. No HostKernel route, subprocess, PTY, workspace
+  mutation, Cargo, or full typecheck was exercised. P1/P2/P3/P8 prerequisites still block all
+  effectful editor/language-tool claims; native Windows remains unavailable.
+- **P5:** web-search/CodeMode local suite **114/0, 353 expectations / 8 files**; focused no-send and
+  route-digest tests **2/0, 7 expectations**. Fixed helper asset/manifest contract is source-only;
+  real build/install/containment and CM-001..012 remain open. Search and CodeMode gates remain false.
+- **P7:** cold AppRuntime still fails with `InstanceRef not provided`; exact callback is unidentified
+  and no production fix was made. Core P1-10 caller/DTO remains missing; P7 resumed to work other
+  independent activity/transfer/artifact/analytics/automation acceptance without editing the
+  P1-owned Supervisor boundary. No P2/P6 rerun or effect gate change.
+- **P8:** proposed `HostRunDispatchBoundV1` binds the dispatch key to authenticated Run/Task/Attempt,
+  evaluator Session/process generation, owner epoch and frozen pins. A post-commit receipt must
+  supply OwnerLog cursor/event digest. P8 owns append/resolve and evaluator consumption; P2 owns the
+  HostKernel reconcile route; P1/P2 proof/producer and a real authenticated positive fixture are
+  prerequisites. Existing evaluator **39/39** and RC0 input **88/88** do not prove HostRun or real
+  measurements. Trusted RC0 and repeated 1/5/10/20 workloads remain unavailable; hard quotas remain
+  unsupported.
+- **P1/P2 HostRun handoff:** P1 searched the Rust source and found no dispatch-key producer. Its
+  `CgroupIdentityV1` and EffectHost can project process/effect/quiescence facts only after P2 persists
+  a trusted link; they cannot bind the evaluator Session or dispatch key themselves. P2 owns the
+  binding, HostKernel reconcile operation and terminal event. P2 must specify the exact typed P1
+  receipt/process projection contract and real authenticated fixture before P1 can wire it. Existing
+  P1 effects-host 10/10, cross-capability unit 1/1 and Core boundary 13/0 evidence remain; neither
+  readiness gate changed.
+
+### P8 offline acceptance follow-up — 2026-10-24
+
+P8 tightened `scripts/perf/rc0.py` so an attestation must cover each selected Session's exact Linux
+PID/start-time generation, in addition to its owner/session/run/revision/receipt/verifier/OwnerLog
+pins. Tests reject absent, malformed, stale, duplicate, foreign-session/run, wrong-generation and
+caller-claimed `ATTESTED` evidence; a foreign evaluator Run outcome remains UNKNOWN and is not
+replayed. Current tests: RC0 **93/93**, evaluator **40/40**, Python compilation passed. The
+production `TRUSTED_ATTESTATION_SOURCES` allowlist remains empty, so no trusted attestation or real
+measurement exists. JC-RES-012.K/L authenticated ingress negatives and the TypeScript reservation
+consumer are still missing. No Cargo, product workload, provider/network, Git, worktree, or cleanup
+operation occurred; P8 gates remain closed.
+
+Git is intentionally still untouched: before this wave the shared tree contained 302 modified/deleted
+tracked paths, 115 untracked paths, no staged paths and 17 commits ahead of `origin/main`. Owners are
+still writing. The explicit user request does not make a blanket stage/push safe; parent will stage
+only exact reviewed verified task-owned changes after phase writers stop, and will not push unrelated
+or unverified pre-existing commits. V1 remains **PARTIAL / NOT VERIFIED / NOT RELEASED**.
+
+### P9 identity follow-up — 2026-10-24
+
+P9 fixed the SDK-next import edge test-first: `packages/sdk-next/src/index.ts` now re-exports from
+`@horizoncode/client/effect`, and `packages/sdk-next/test/import-boundaries.test.ts` passes **1 test / 2
+expectations**. The intended export is source-based (`packages/client/package.json` maps `./effect` to
+`./src/effect.ts`); client typecheck and local source build pass. The installed SDK-next link is stale
+and still points `@opencode-ai/client` at the local client; no `@horizoncode/client` link exists.
+Offline install/link refresh remains blocked by uncached `@noble/hashes@2.2.0`, so the full SDK
+boundary suite is **4 pass / 1 fail**, and sdk-next typecheck also has the unresolved link plus arity
+and server-field diagnostics of unknown baseline. P9 confirms all 59 released tag IDs across 53
+files are migrated with Provider/Auth/LLM and vendor identities preserved. No node_modules edit,
+install, network, Git, signing or publication occurred. Candidate/Nix/legal/signing/rollback gates
+remain open.
+
+### P2/P1 continuation handoff — 2026-10-24
+
+P2 confirms Cargo is released and no P2 Cargo job is running. Managed-control tests passed **41/41
+(225 expectations)**; Markdown audit has **0 active blockers** and convergence has **1,300 checks / 0
+failures**. P2 continuation 28 records the precise P1-10 request/response contract and a report-level
+HostRun binding/projection split, but no compiled DTO, HostRun route, or runtime evidence. P2 is
+resuming whole-phase source/test work without Cargo. P1 has taken the sole Cargo slot for the queued
+`effects_host_process` PreparedBatch fixture verification and scoped Rust security triage. The
+HostRun dependency remains: P2 must implement trusted durable binding/route, P1 a typed projection
+over persisted references, and P8 authenticated post-commit evidence consumption; all positive and
+negative/restart tests are still required. Terminal gates remain false.
+
+### P1 Rust acceptance continuation — 2026-10-24
+
+P1 ran the single Cargo slot sequentially from `kernel/` with repo-local `TMPDIR` and
+`CARGO_TARGET_DIR=../target-p2 CARGO_BUILD_JOBS=1`. The queued `effects_host_process` rerun first
+failed 7/10 on three `SUN_LEN` bind errors caused by a fixture socket path exceeding Linux's 108-byte
+limit; P1 fixed only the fixture (compact hex child name, explicit 12-byte name budget, pre-spawn
+<108-byte assertion) and reran to **10/10**. Also green on the current tree: `effect_host_principal`
+**11/11** (previously 2/9 pre-migration), library `guard`/`effect_host`/`cgroup_v2`/`terminal_process`
+**79/79**, and `direct_attempt_rpc` **10/10**. `tool_batch_guard_matrix` 3/9, `host_terminal_process`
+2/3 and `host_terminal_events_process` 0/1 are the same intentional P2-owned
+`capability_unavailable` readiness-false denials; no assertion was relaxed and both gates stay false.
+P1 could not implement the HostRun process projection: no persisted HostRun binding exists and
+`effect_challenges` rows carry no per-effect Run/Task/Attempt/Session/epoch/process-generation pins.
+P1 released Cargo to P2, which now owns compiling the real binding/DTO/route. P1 remains PARTIAL.
+
+### P5 integration continuation and parent overlay fix — 2026-10-24
+
+**P5** re-inspected the Core CodeMode seam: `tool/tool.ts:44-70` carries the typed
+`dispatchPreparedToolBatch` DTO and `tool/registry.ts:32,112` plumbs it into the tool Context, but
+`packages/core/src/session/runner/llm.ts:686-699` is still the fail-closed stub and has no consumer,
+so P5 did not fabricate an adapter. P1's authenticated HostKernel surface now exists at
+`supervisor.ts:6105-6230` (`codemode_prepare_wave`, `codemode_settle_tool_results`,
+`codemode_wave_receipts`, `codemode_cancel_wave`). P5's test-locked contract finding: the Core DTO
+has no `batchID`, `waveIndex`, `requestId` or per-row `receiptKind`, so callback rows can never be
+treated as §37.24 receipts — a Core adapter must additionally project `codemode_wave_receipts`.
+Independent P5 hardening (test-first, two real REDs): fixed-helper enablement now requires an exact
+`sha256:` manifest digest, one-shot batch/receipt bindings, empty BYO `cascadeRef` rejection,
+exported frozen helper limits (32/wave, 64 waves, 512 KiB wave, 64 calls, 1 MiB script, 64 KiB
+output, 30 s). Evidence: P5 group **128/0, 430 expectations / 8 files** (was 116/0/362), changed
+files **98/0, 340 expectations**, P7 `tool-batch` consumer **71/0, 322 expectations**, focused tsgo
+**0 P5 diagnostics**. All gates remain false; CM-001..012 unrun.
+
+**Parent structural fix (blocking any honest commit):** `scripts/architecture/audit_overlay_visibility.py`
+reported `hidden_changed=26` — 26 first-party overlay deltas existed but were hidden by the blanket
+`*` ignore, so a commit would silently have omitted HorizonCode behavior — plus 32+ generated
+`kernel/tmp-p8` and phase-scratch files miscounted as new source. Fixed test-first: the auditor now
+classifies exact `tmp-p<N>` and `.agent-tmp`/`.p7-sandbox`/`.p9-*`/`.p9probe` phase scratch (4 regression tests,
+RED proven against the pre-fix HEAD implementation), and `.gitignore` gained exact `!` entries for the
+26 delta files plus 7 parent directories that contained no tracked file (children cannot be
+re-included without them). Re-run after fix: overlay **hidden_changed 0 / hidden_new_source 0 /
+stale_unignore 0**, Markdown **0 active blockers**, convergence **1,300 checks / 0 failures**.
+
+## Parent continuation — 2026-10-24 (activity progress, selector projection, read-batch context)
+
+Three bounded gaps are now implemented and focused-tested; none unlocks an effectful route.
+
+- **Activity digest (§31.22):** `packages/tui/src/component/activity-cards.ts` projects redacted
+  `progress` cards with `durationMs`/`pathRef`/`lineStats`/`receiptState`/`fidelity`/`artifactRef`;
+  `activity-stream.tsx` renders `Reasoning · 1.2s` and tool durations. Focused TUI tests **9/0,
+  73 expectations**; TUI typecheck **exit 0** after three stale test-fixture type fixes.
+- **Delegation selector truthfulness:** `tool/registry.ts` lists only immutable `AgentProfileV2`
+  selectors and reports when none are configured, rather than advertising built-in names that
+  cannot dispatch. New test **2/0, 6 expectations**; existing registry suite **13/0, 42
+  expectations**. Task metadata now carries the child agent/profile for activity cards.
+- **P1-10 read boundary:** `packages/core/src/session/supervisor.ts` allows private `repo_read`
+  context for exactly `effects.v2/prepare_tool_batch_read`, body Session/Location equality and
+  1–8 calls. New test **3/0, 10 expectations**; Core typecheck **exit 0** (with a P3 RepoIntel
+  decimal-coverage conversion, focused **2/0, 5 expectations**).
+
+Delegation remains read-only: direct child turns (`DIRECT_CHILD_TURN_RPC_ENABLED=false`), child
+effects, resume/follow-up, managed Task dispatch, and background-by-default remain gated. P7 still
+must implement the TypeScript P1-10 caller/DTO; AppRuntime RED, P2 HostRun reconciliation, P8
+trusted measurements, provider E2E, and release/legal/signing gates remain open. V1 is
+**PARTIAL / NOT VERIFIED / NOT RELEASED**.
+
+## P8 offline acceptance follow-up (second wave) — 2026-10-24
+
+- **JC-RES-012.I cross-language consumer closed on the TS side:** new
+  `packages/core/src/v1/resource-reservation-wire.ts` (strict codec for the 7 reservation states, 4
+  pressure states and 9 budget dimensions with `Schema.Literals`) plus
+  `packages/core/test/reservation-wire.test.ts` reading
+  `kernel/tests/fixtures/reservation-wire-v1.json` — **9/0, 89 expectations**, `packages/core` tsgo
+  **0 errors**. Forbidden aliases (`ACTIVE`, `UNKNOWN`, `SOFT`, `HARD`, lowercase/camelCase) are all
+  rejected; the fixture's `consumers.typescript` now names the module. P8 also updated the Rust
+  assertion in `kernel/tests/support/jc_res_012_wire_tests.rs`, which remains **uncompiled** until
+  the Cargo slot is used — routed to P2 with the assignment.
+- **RC0 attestation now has a real keyed verification path instead of a syntax check:**
+  `scripts/perf/rc0.py` requires an allowlisted source **and** a registered verifier for that source,
+  a domain-separated canonical payload digest (source, commit, Session/Run joins, exact Session→
+  PID/start-time generations, HostRun receipt refs, verifier-evidence refs, OwnerLog digests) and a
+  matching `hmac-sha256` MAC, with repo-contained no-follow single-link `0600` 32–64-byte key
+  loading and deny-on-verifier-error. Public-key/Ed25519 is deliberately rejected as unsupported
+  rather than hand-rolled, and no dependency was added. `TRUSTED_ATTESTATION_SOURCES` and the
+  verifier registry remain **empty**, so RC0 is still honestly **NOT_ATTESTED**.
+- **Evaluator fail-closed:** `eval_harness.py` requires HostRun receipt and verifier evidence to be
+  distinct refs, rejects contradictory PASS/FAIL verdicts and security/false-completion mismatches,
+  and rejects any `resourceUse` beyond `{"status":"UNKNOWN"}`; `summarize_pairs` requires complete
+  evidence.
+- **JC-RES-012.C–J** transition relation audited against §11.20/§45 with no divergence (no
+  `RESERVED→QUARANTINED`, terminals one-way); offline math negatives added for PSS/RSS aggregation
+  above 2^53 and at `u64::MAX`. **K/L** remain open pending authenticated ingress. No 1/5/10/20
+  harness was scaffolded: the only owner-sample producer is P2's authenticated managed route
+  (`host_kernel.rs:17259`) and there is no exporter/Core orchestrator, so a harness would only
+  mislabel mocks.
+- **Evidence:** RC0 **109/109** (was 93), evaluator **43/43** (was 40), Python compile OK, Markdown
+  **0 active blockers**, convergence **1,300 / 0**. RED captured for each before implementation.
+
+## P7 continuation 23 — P1-10 caller landed; AppRuntime narrowed — 2026-10-24
+
+- **P1-10 Core read caller is implemented** in `packages/core/src/session/direct-read-batch.ts`
+  (+ test), honoring all five parent rulings: no `supervisor.ts` edit (uses public
+  `requestHostKernel` + private `repo_read` context), local strict request validation before any send
+  (`validateDirectReadCallsV1`), execution order `classify → feature → principal → validate →
+  register → send → execute → snapshot → publish`, a post-read fence against
+  `directSessionWorkspaceSnapshot` (`sessionID`/`locationID`/`workspaceRevision` compared to the
+  prepare response **and** every row `revision`) that denies the whole wave with `unknown:true`,
+  `replay:"forbidden"` and no partial `calls`, and `packages/core/src/tool/registry.ts` left untouched
+  because the fence proved sufficient (the proposed `ExecuteInput.readAdmission` shape is recorded for
+  sign-off, not applied). Evidence: **27/0, 447 expectations**; non-vacuity proven by mutation
+  (moving the snapshot before execution made the strict-order test fail, then it was restored).
+- **Two P1-owned seam blockers reported (not edited by P7):** (1) `HostKernelClientImpl.request`
+  (`supervisor.ts:4134-4165`) accepts `repo_read` only when `isRepoIntelRead`, so the allowlisted
+  `prepare_tool_batch_read` is rejected at the client and can never be sent; (2) the envelope
+  `requestID` minted at `:4167` is discarded at `:4332-4341`, so Core cannot bind row `requestID`
+  exactly as Rust does. Both routed to P1 with exact test-first instructions.
+- **AppRuntime:** the cold `InstanceRef not provided` RED no longer reproduces —
+  `test/effect/instance-state.test.ts` is **3/0** with all probes removed. The failure narrowed to
+  `Service not found: @opencode/v2/Plugin` from `Agent.state` (`agent.ts:215`) via
+  `InstanceState.get:38`: `agent.ts:224-225` requires `PluginV2`/`Reference` inside the initializer
+  while `Agent.node` deps (`:679`) omit them under `requireServicesAt:"lookup"`. A contract test
+  proves the cache keeps construction context, so it is a graph-dependency gap; P7 has been authorized
+  to apply the narrow fix test-first and only then rerun P2 `task.test.ts` and P6 `config.test`.
+- **CodeMode adapter not built:** the dispatch DTO has no `batchID`/`waveIndex`/`requestId`/
+  `receiptKind`, so it would need P1's `codemode_wave_receipts` projection first. Exposure stays false.
+- Fresh independent acceptance on the current revision: core **27/0**, opencode
+  automation/checkpoint/artifact/registry **54/0**, TUI stream/activity/analytics/render/scroll
+  **62/0**. No Cargo, provider, network or package-wide typecheck; no gate opened.
+
+
+
+## P1 seam fixes — P1-10 path now wired end-to-end in source — 2026-10-24
+
+P1 closed both blockers P7 reported, test-first (exact evidence in `reports/phases/P1.md` §34):
+
+- **Client gate:** `HostKernelClientImpl.request` (`supervisor.ts:4134-4165`) now admits the
+  allowlisted `effects.v2/prepare_tool_batch_read` under private `repo_read` context — negotiated
+  `effects.v2` feature **and** `validDirectReadBatchAuthenticatedRequest` (body Session/Location
+  equality, 1..8 calls) — while every other `effects.v2` operation, a feature-less negotiation, a
+  scope mismatch and a missing context stay denied. `requestHostKernel` carries the same disjunct as
+  defense in depth. RED reproduced the exact `authenticated read context is unavailable or invalid`
+  at `supervisor.ts:4176`.
+- **Envelope identity:** optional `options.requestID`, validated `^[A-Za-z0-9._:-]{1,256}$` and
+  accepted only on the read path, rejected **before any frame is written**; absent ⇒ legacy
+  `req_<uuid32>`. Wire DTO untouched and no other caller passes it yet. This lets Core bind each
+  projection row's `requestID` exactly as Rust does.
+- **Fail-closed principal:** `packages/core/src/session.ts` now uses `Effect.serviceOption` at
+  create/prompt/resume/revert.stage/revert.clear — a missing `TrustedPrincipalContext` is a typed
+  denial that precedes any mutation, and `host_os` is never fabricated.
+
+Evidence: `session-supervisor-read-batch-client.test.ts` **10/0, 47 expectations**; combined
+read-batch-client + read-batch-context + P7's `session-direct-read-batch` + launch **53/0, 541
+expectations** (P7's 27/0 intact); `session-revert-principal` **3/0, 11**; process-guard/Bash/ripgrep
+**10/0, 42**. Both terminal readiness flags remain **false**; no Cargo run by P1 (P2 held it).
+
+**Routed from P1:** `packages/sdk-next/test/embedded.test.ts` is **1 pass / 3 fail / 2 errors** and is
+*not* fixed by the principal change — `createEmbeddedRoutes` runs `authorizationLayer` with auth not
+required and the web handler has no `remoteAddress`, so `isTrustedLoopbackPeer` is false and Core's
+resume guard correctly denies. Parent ruling sent to P6: thread the **real** peer address if the
+transport carries one; if it does not, the request is unauthenticated and must **stay denied** with
+the tests corrected to express that — never weaken the guard or fabricate `host_os`.
+
+
+
+## A1 whole-repo typecheck inventory — 2026-10-24
+
+Artifacts: `reports/typecheck-integration-a1.txt` (raw, Run A baseline + Run C final, logs in
+`.tmp-a1/logs-c/`) and `reports/a1-ownership-triage.md` (owner table, merged with the parent routing
+draft).
+
+- **Run A baseline: 60 diagnostics / 4 packages failing** (schema 7, opencode 28, sdk-next 23,
+  server 2; core/tui/llm/protocol clean).
+- **Run C final: 25 diagnostics / 2 packages failing** — `packages/core` 4, `packages/opencode` 21.
+  Clean: **tui, llm, server, protocol, sdk-next, schema**.
+- **40 rows cleared:** A1 fixed **15** as test-fixture defects (schema 7, opencode 8 — duplicate keys,
+  missing mock params, branded `SessionID` fixture values rather than a cast), other owners **25**
+  (sdk-next 23 from the authorized workspace install, server 2 from P6's `ServerAuth.primaryOnlyInfo`).
+  **5 new** rows appeared during the session while P7 landed the P1-10 caller.
+- **Routing applied:** P7 14, P6 8, P9 3. A second P7 helper session took an explicit disjoint set of
+  8 (read-batch test, checkpoint handler, managed-artifact-search) so two sessions never write the
+  same file; the original P7 session keeps `task.ts`, `repo-tools.ts`, `instance-state.test.ts`.
+- **Two non-diagnostic product findings routed beyond typecheck:**
+  1. `packages/schema/test/agent-profile-v2.test.ts:92,23` — strict contract **11 pass / 1 fail**
+     (`PositiveDecimalU64` `$ref` vs `integer`) → P6, fix against §12/§17.13 authority, not by
+     loosening the contract.
+  2. **14 failing `tool.task authenticated dispatch` product cases** at
+     `packages/opencode/src/tool/task.ts:276` → P7 with P2 support; assertions must not be weakened —
+     if dispatch truly cannot authenticate today, the test must express the fail-closed state and the
+     prerequisite moves to the ledger.
+- B1 is **not** green: 25 diagnostics remain plus both product findings.
+
+
+
+## P9 install-graph proof — 2026-10-24
+
+P9 executed the user-authorized install under strict sequencing (waited for A1's live `tsgo` to
+finish, verified only task-owned records, no host-wide process touched):
+
+| Check | Result |
+|---|---|
+| `bun install --frozen-lockfile` (repo root) | **exit 0**, bun 1.4.2 — resolved/downloaded/extracted 21, postinstall `fix-node-pty` + `husky`, **2427 installs across 2700 packages, no changes**, 11.39 s |
+| `sha256sum` over `bun.lock` + 27 manifests, pre vs post | **byte-identical** — install changed no lockfile or manifest |
+| Workspace link | `sdk-next/node_modules/@horizoncode/client -> ../../../client` resolves `src/effect.ts`; there were **zero** `@horizoncode/*` links before |
+| SDK boundary suite | **4 pass / 1 fail → 5 pass / 0 fail, 11 expectations** |
+| `packages/client` typecheck | **exit 0** |
+| `packages/sdk-next` typecheck | **23 → 1 diagnostic** — only `src/opencode.ts(32,85) TS2554`, the P1-routed `TrustedPrincipalContext` arity. Cleared: 4 `TS2307` (install), 16 `embedded.test.ts` cascades, 2 `TS2739` (P6's `ServerAuth.primaryOnlyInfo`) |
+| sdk-next full suite | 5 pass / 4 fail — all four are `ForbiddenError: Authenticated principal required`, i.e. the same P1-routed residual |
+
+Honest residue: the stale `sdk-next/node_modules/@opencode-ai/client` entry is still on disk (Bun did
+not prune it); nothing resolves through it and P9 did not hand-delete it.
+
+**Real P9 defect fixed test-first:** `_resolve_dependency` rejected any symlink component while
+Bun's isolated store symlinks everything, producing a false "100 required runtime dependencies were
+not resolved" blocker after a clean install. RED (`0 != 2`) → containment-by-resolved-target fix →
+GREEN, with the `test_runtime_dependency_symlink_cannot_escape_audited_root` negative intact.
+Release readiness **81 → 82/82**; the audit now sees **869 packages, 0 unresolved required, 0
+inventory errors** (73 unresolved optional, non-blocking).
+
+Release gates moved truthfully rather than silently: audit **14 → 15** blockers, gate **19 → 20** —
+one blind blocker replaced by two real ones (4 packages missing license metadata, 58 missing direct
+LICENSE/NOTICE). `publication_performed=false`, `signature_created=false`, signing/update
+`UNAVAILABLE`, install matrix `NOT_RUN`, candidate **NO-GO**. Nix and shellcheck are absent from this
+host. Overlay exit **0, hidden 0/0**; Markdown **0 active blockers**; convergence **1300/0**.
+
+Cleanup: removed only P9's own scratch (`.tmp/p9-qualification` 1.4 MB + empty `p9-qual-matrix` 4 KB);
+preserved `node_modules` 2.5 GB, `kernel/target` 1.8 GB, `target-p2` 4.8 GB; **827 GB free**.
+
+## P9 release/identity continuation — 2026-10-24
+
+- **sdk-next diagnostics baselined as pre-existing, not rename-caused.** 23 diagnostics: 4 unresolved
+  client `TS2307`, one `src/opencode.ts(32,85) TS2554`, 16 `test/embedded.test.ts` cascades, 2
+  `packages/server/src/routes.ts(42,48) TS2739`. P9 reproduced the arity/reviewer errors with a
+  temporary probe compiling `@opencode-ai/server/routes` + `core/permission/saved` with **no client
+  import**, then removed the probe. `routes.ts`/`auth.ts` are unmodified vs HEAD, yet the committed
+  `ServerAuth.Info` requires `reviewerUsername`/`reviewerPassword` while both `configLayer(...)` sites
+  pass only `username`/`password`, and the pinned snapshot has no reviewer fields — owner is P6/core
+  server-auth. The arity residual needs the local first-party `TrustedPrincipalContext` provided only
+  on some branches of `packages/server/src/middleware/authorization.ts` — owner P1/P6. No fix applied
+  outside ownership; `embedded.test.ts` errors are downstream of the unresolved import.
+- **Real P9-owned lockfile defect fixed test-first:** `bun.lock` importer `packages/opencode` still
+  recorded `./bin/opencode` while the manifest and distribution audit expect `./bin/horizoncode`. New
+  `test_workspace_lockfile_importers_match_manifest_identity` (strict JSONC reader, name/version/bin
+  parity across all 36 importers, orphan-importer rejection, product-bin pin) failed RED on exactly
+  that row, then passed after the two path strings were corrected. No resolution/integrity row touched.
+- **Workspace link blocker narrowed:** of 36 manifests exactly one stale local link exists
+  (`packages/sdk-next/node_modules/@opencode-ai/client -> ../../../client`); `@horizoncode/client`
+  has no link anywhere. Manifest graph, glob, lock importer edge and both workspace resolutions are
+  already correct, so no source edit can materialize the link — only install can, and
+  `bun install --dry-run --offline --frozen-lockfile` stops at `no cached manifest for "@noble/hashes"`
+  even though the package is extracted. A `tsconfig` `paths` shim was rejected: it would green tests
+  while leaving the install graph broken.
+- **Evidence:** release readiness **81/81** (was 79/79), client typecheck **exit 0**, SDK boundary
+  **4 pass / 1 fail** (bundle test only), `bash -n install` + `py_compile` exit 0, `audit_distribution`
+  BLOCKED (14 blockers), `release_gate` exit 1 BLOCKED (19 blockers), Markdown **0 active blockers**,
+  convergence **1,300 / 0**. New static Nix/container control test asserts one `horizoncode` runtime
+  with `hzcode`/legacy symlinks, `--push` rejected before Docker, local-only registry, no `docker
+  push`/`:latest`.
+- **Cleanup:** removed only P9-owned scratch after confirming no process used it —
+  `packages/opencode/packages` (19 MB / 858 partials), `packages/sdk-next/.p9probe/`, two
+  `kernel/target/p9-*` entries; `packages/opencode` 382 MB, `kernel/target` 1.8 GB preserved, 828 GB
+  free.
+
+**Remaining gates:** offline `@noble/hashes@2.2.0` manifest → frozen install → SDK boundary/typecheck;
+P6/core reviewer fields + `TrustedPrincipalContext`; exact clean candidate plus a genuine previous
+binary for install/upgrade/rollback and Linux/WSL acceptance; Nix unavailable; DEC-V1-11
+grant/notices and DEC-V1-12 signing remain hard blocks. Candidate stays **NO-GO**.
+
+## P9 continuation — 2026-10-24 (generated-client import edge)
+
+P9 reproduced the three prior `sdk-next` typecheck diagnostics exactly before
+editing: `src/opencode.ts:32` (`web.handler` arity) and `packages/server/src/routes.ts`
+missing `reviewerPassword` / `reviewerUsername` at lines 42 and 48. Their
+pre-rename baseline remains unknown; none is labeled pre-existing or rename-caused.
+Source inspection found and fixed a separate P9-owned identity break: `sdk-next`
+still imported `@opencode-ai/client/effect` after its workspace edge moved to
+`@horizoncode/client`. The collision regression now asserts the new import and
+passed test-first (RED before, GREEN after). `packages/client` typecheck passes.
+
+The fresh post-fix `sdk-next` typecheck cannot yet resolve
+`@horizoncode/client/effect` in the existing install/link state and reports
+cascading `embedded.test.ts` typing errors alongside the arity and server
+reviewer-field errors. `bun install --frozen-lockfile --offline` is blocked by
+uncached `@noble/hashes@2.2.0`; no online retry. Lock importer and workspace
+resolution are textually present, but frozen resolution/lock consistency is not
+verified. Next candidate layer is local `@opencode-ai/sdk-next`; mapping found
+its manifest/lock identity, first-party Service identifier and CONTEXT mentions,
+with no vendored collision in searched local source. Defer it until the client
+workspace edge resolves offline and the lock is verified. Exact P9 ledger is in
+`reports/phases/P9.md` §11. No Git, network, publication, or signing operation.
+
+## Live update — 2026-10-24 (P2 Rust wave triage)
+
+**P2 continuation 10 correction:** The deferred-location recovery test failure was
+caused by its fixture registering a direct-Session Location without a
+`workspaceID`, not by a principal mismatch. The test now uses the same named
+workspace on registration and re-registration; focused unit test **1/1**,
+`direct_attempt_rpc` **10/10**, and `managed_control` **39/39** pass. The
+Location owner check remains unchanged. P2 still owns Cargo and has **not
+released** it. The two managed-delegation admission failures still require
+reconciliation of the synthetic P8 lease fixture with the current pre-admission
+lease contract; do not weaken lease validation. Remaining P2 phase acceptance
+is open as recorded in `reports/phases/P2.md` continuation 10.
+
+P2's final combined Rust wave has completed and **failed** (`target-p2/p2-wave-final.log`, EXIT 101):
+lib 477 pass / 7 fail; `direct_attempt_rpc` 5 pass / 5 fail; `effect_host_principal` 2/9;
+`effects_host_process` 2/8; `host_terminal_events_process` 0/1; `host_terminal_process` 2/1;
+`tool_batch_guard_matrix` 1/8. The log contains explicit `capability_unavailable` PTY failures while
+P1's readiness gate is false; do not "fix" these by enabling terminal execution. P2 has been sent the
+exact failure inventory for owner triage and repair; Cargo remains assigned to P2 until its owned
+failures are fixed and it explicitly releases the slot. P8's Rust matrix is queued behind that release.
+At the last snapshot no Cargo/rustc/tsgo/bun-test process was running; P7/P1/P9 are continuing disjoint
+work. Disk: 829 GB free; preserve `kernel/target` 1.8 GB and `target-p2` 4.4 GB.
+
+P9's latest independent pass passed `bash -n install` plus three focused installer tests (dual-command
+install/upgrade, dry-run, alias refusal); no files changed. Nix evaluation is unavailable (`nix` not
+installed). Candidate install/upgrade/rollback still awaits integrated P1–P8 acceptance; package identity
+migration waits P7's package-input release and a deliberate resolution of the local-vs-vendored
+`@opencode-ai/client` collision. No publication: licensing/signing remain unresolved.
+
+**Newest owner updates:** P1 fixed `packages/core/src/tool/bash.ts` fail-closed principal provision; its
+focused suite is **3/3**, and the stale `terminal-run-live` revision negative is rebased onto canonical
+`bind_direct_attempt_effects` (runtime still waits for P2's kernel binary). P7 repaired its three new
+Core diagnostics in `message-updater.ts`, `projector.ts`, and `transfer.ts`; fresh serialized A1 Core/TUI
+typechecks are in progress, with TUI's compiler active at the last snapshot. P7's OpenCode package
+typecheck is **65 total / 0 P7-owned**; its focused runner and transfer journeys passed 125/125 combined.
+P2 has been given P1's exact failure characterization: B1 prepares now succeed, and five direct-RPC
+tests have stale expectations for the new `prepared + capabilityLeaseDigest` quiet-admission result;
+false-gated PTY failures remain intentionally unavailable. P2 retains Cargo ownership during repair.
+
+The Markdown audit is **0 active blockers**, convergence **1300/0**, and overlay audit **0 hidden
+changed/new-source/stale-unignore**. Overlay fix: the auditor now classifies exact `.tmp` directories as
+generated scratch (regression test 1/1), and the new P7 compile-boundary test is Git-visible.
+
+## Acceleration update — 2026-10-24 (P6 returned; research recommendations surfaced)
+
+P6 has now returned **PHASE_PARTIAL** with its S1 five-module acceptance green at **9/0 (41
+expectations)** and focused phase suites green (exact breakdown in `reports/phases/P6.md`). Credentialed
+SecretBroker/live Doctor, managed-profile consumption, and integrated E2E remain gated; no live or paid
+provider calls were made. P2 currently owns the only Cargo build slot for its final Rust wave, and P7 has
+the package-wide `tsgo` slot. P1 and P9 have been resumed on independent work (P1: `bash.ts` typecheck
+root; P9: release/identity work that does not collide with active package inputs). P8 is ready for its
+Rust acceptance immediately after P2 explicitly releases Cargo.
+
+The promised research comparison is in `reports/research/competitors-cursor-devin.md` §§11–13. Short
+version: HorizonCode's architecture is already stronger on single-Guard effects, per-effect fresh policy,
+lease/receipt/UNKNOWN recovery, and worktree ownership; its largest competitive gap is **published,
+implementable contracts**, not another authority/runtime. The best V1 candidates are (1) publish a
+headless NDJSON turn protocol with terminal-receipt semantics, (2) freeze the worker claim/queue wire
+contract, (3) specify restrictive-wins sandbox/config merge algebra, (4) add trusted, default-off Cursor
+rule ingestion, and (5) machine-check Run structured output. Hook execution and machine-readable session
+reason codes follow. These are **research recommendations only**—not runtime scope changes or permission
+to weaken Guard. Deliberately reject LLM auto-approval, fail-open security hooks, remote feature gates,
+boot-stale policy, and at-least-once prompt delivery without idempotency. See §12 for owner/effort/schema
+details and §13 for the full reject list.
+
+## Live update — 2026-10-24 (P2 source fix, P9 map, overlay gates)
+
+The A1 typecheck and R3 research sessions have now returned; P9 returned its dependency map. A1's
+second independent run confirms Core **4**, TUI **1**, all other-owned; parent assigned the
+`packages/opencode/src/effect/instance-state.ts:35` residual exclusively to P7 because P7 owns the
+package-wide typecheck closure (P6 must not edit it). P1 owns `packages/core/src/tool/bash.ts:68`.
+The directAttempt strict-fields test remains unverified until a kernel binary exists.
+
+P2's B1 root-cause fix is now present in source: `kernel/src/host_kernel.rs` parse and persist checks
+both use SHA-256 for `turnContextDigest`; the source comment identifies the Core producer as SHA-256,
+while the separate kernel-produced `call_manifest_digest` stays BLAKE3. This resolves the observed
+algorithm contradiction in source, **not yet verified**: P2 currently owns the only Cargo job, running
+`cargo test --lib unavailable_registered_location_is_deferred` in `target-p2`. P6 has one focused
+`tsgo -p tsconfig.p6-focus.json`; P7 has one focused `session-runner-compile-boundary.test.ts` run.
+Do not start another Cargo/tsgo/full test job until these owners release their slots. P1/P8 Rust suites
+remain queued behind P2's explicit Cargo release.
+
+R3 is complete at 1,713 lines (Cursor CLI no-auth observations + Devin docs/OpenAPI); P9 returned
+PHASE_PARTIAL after an inventory-only Stage-2 identity map, identifying a local-vs-vendored
+`@opencode-ai/client` collision. No P9 files changed and no package/lockfile migration started; it waits
+for P6/P7/A1 package inputs. Overlay audit now passes `hidden_changed=0 / hidden_new_source=0 /
+stale_unignore=0`; Markdown audit `ACTIVE_BLOCKERS=0`; convergence `1300/0`. Remaining scope and legal
+gate unchanged: finish P1/P2/P6/P7/P8 acceptance, identity Stage 2, candidate/install qualification,
+free-model E2E, full integrated acceptance; user license/notice decision still blocks distribution.
+V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## Current checkpoint — 2026-10-24 (second restart; A1 and R3 handoffs)
+
+After the second server restart, re-read the required architecture/status sources and reloaded Engram.
+Git MCP confirms `main`, `origin/main`, 17 commits ahead, **nothing staged**, 296 changed/untracked
+paths, no conflicts. Repository disk check: 830 GB free; `kernel/target` 1.8 GB and `target-p2` 3.9 GB
+(retain both caches). At one inspection, P6 auth tests, P7's `#` filename test and one `tsgo` were
+running; a later process check found them all exited. Do not assume their results—read phase reports.
+
+**A1 returned partial, not green:** `reports/a1-core-tui-convergence.md` establishes Core **6→4**,
+TUI **1→1**; the 5 residual diagnostics are all other-owned: `packages/core/src/tool/bash.ts:68`
+(P1, also sole TUI error), plus P7's `packages/opencode/src/agent/agent.ts:512,552` and
+`packages/opencode/src/effect/instance-state.ts:35`. A1 fixed two stale tests in
+`packages/core/test/terminal-run-live.test.ts`, but runtime proof is blocked until P2's `hz-kernel`
+binary exists. That report also finds a security-negative fixture that sends unknown `directAttempt`
+to `prepare_tool_batch`; Rust strict-fields rejects it before the intended revision assertion. P1/P2
+must rebase that test onto `bind_direct_attempt_effects` once the kernel is available; denial still
+holds, but the current assertion is not yet runtime-proven.
+
+**Research R3 has landed:** `reports/research/competitors-cursor-devin.md` is 1,713 lines; 19 Cursor
+help surfaces were observed unauthenticated, while Devin is documented/OpenAPI-only. All four research
+artifacts are complete, with exact `.gitignore` exceptions. Research remains observational only; no
+competitor recommendation changes runtime scope without §17 + topic owner + §32.
+
+Owners have been re-based again without redoing prior green suites: P1 resumes the A1 `bash.ts` row
+and full acceptance, but waits for P2's Cargo release; P2 rechecks/finishes B1 plus its single Cargo
+wave; P7 continues the three typecheck residuals and original P7 backlog; P6 closes S1/focused suites;
+P8 prepares and then runs its Rust acceptance after P2; P9 now has a fresh whole-phase owner for the
+staged identity/package/release lane. Current unfinished critical chain: P2 B1/test-target compile →
+P1/P8 Rust suites → P7/P1 typecheck residuals → stage-2 identity migration → full typecheck/release
+qualification → authorized free-model E2E → integrated acceptance. License/notice decision remains
+deferred; no public distribution. V1 remains PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+## Current checkpoint — 2026-10-24 (post-restart re-basing)
+
+The server restarted mid-wave and cancelled **all eight** children. Verified before any re-dispatch, so no
+work was repeated and no result was invented: `reports/research/` did not exist (no research output lost);
+`repo_take/re-sandbox/` was intact — Claude Code **v2.1.310** at `npm-global/bin/claude`, the **9.7 MB**
+official `claude-code/docs/llms-full.txt` corpus, REA installed, working `env.sh`; no `cargo`/`rustc`/
+`tsgo`/`bun test` process was running; 291 dirty/untracked paths, nothing staged, `main` at `44f8b5f2a`,
+17 commits ahead of `origin/main`.
+
+Re-based owners (each received its already-landed evidence back verbatim so it resumes rather than
+re-derives): **P2** `ses_e937b302affeKsOR3vmHl9WZ3V` — sole Cargo slot, B1 digest wall + `direct_attempt_rpc`
++ its 25 whole-lib failures; **P7** `ses_e937b3029ffethV0uwoBHXHiSK` — own supervisor-mock regression,
+`prompt.ts` 2 + `goal-review.ts` 1, CTX-019 overlap/speed consumers, durable message-append; **P6**
+`ses_e937b3010ffe6z0PlazQV4wLaK` — S1 `WebSearchRuntime` layer gap to 9/0; **A1 (new)**
+`ses_e937b3012ffe1XiN1EnfOAFCtu` — `packages/core` + `packages/tui` typecheck to zero (P7 owns
+`packages/opencode`). Research lanes, observational only and explicitly barred from decompilation, source
+reconstruction, auth/licence circumvention and code reuse: **R1** `ses_e937b302cffePPOqZUWyYcXwHG` Claude
+Code docs+CLI+HLD/LLD; **R2** `ses_e93792458ffe4XPIHvhbUj7Q5D` published Agent SDK typed contracts; **R3**
+`ses_e93792456ffem4yYzmru4Irtts` Cursor CLI + Devin; **R4** `ses_e93792441ffeYpnQ78u4p9YorJ` DeepSeek
+API/harness + Cordis. Live table: `reports/phases/LEDGER.md`. **R1, R2 and R4 have returned complete**
+(`reports/research/claude-code-architecture.md` 1,457 lines; `claude-code-sdk-contracts.md` 1,981 lines;
+`deepseek-harness-cordis.md` 454 lines); R3 (Cursor CLI + Devin) is still running. Gates on the three
+artifacts: Markdown **0 blockers**, convergence **1300/0**, overlay clean for `reports/research/**`.
+
+Critical path is unchanged: **B1** (`host_kernel.rs:19558` sha256 vs `:35183` blake3 on the same
+`turnContextDigest`) gates 25 P1 tests; then `packages/opencode` 90→0 and Core/TUI→0, the identity stage-2
+package layer, the candidate build, and the free-model E2E. **V1 remains PARTIAL / NOT VERIFIED / NOT
+RELEASED**; public distribution still waits on the user's licence/notice decision.
+
+## Current continuation checkpoint — 2026-10-23 (provider-source wave + parallel build)
+
+**Provider-source decision implemented.** User direction: provider list/auth/connection recipes come
+from the pinned OpenCode provider layer as a standalone SDK; models.dev is advisory metadata only
+with one bounded startup refresh and cached fallback; `opencode` (OpenCode Default) / `opencode-go`
+stay explicit identities; the OpenCode free-model route is the authorized V1 E2E smoke path. Landed:
+`arch_V1/17` A-V2-27 amendment, `arch_V1/20` §20.16 SDK boundary + update procedure, `arch_V1/42`
+SRC-027/028, `arch_V1/16` note, `arch_V1/32` P6-PROVIDER-004 row + dated evidence note,
+`repo_take/NOTES.md` take-map, new `packages/opencode/src/provider/UPSTREAM.md`, and the startup
+`refresh()` fork in `packages/core/src/plugin/models-dev.ts` with a new 3/3 test. Gates after edit:
+markdown 0 blockers, convergence 1300/0, overlay 0-0-0, core typecheck 100 (none in changed files),
+models-dev tests 2/2 and 3/3. P6-PROVIDER-004 integrated cases and the real free-model journey are
+still OPEN.
+
+**Active whole-phase owners (2026-10-23 — seven concurrent agents; OpenCode imposes no subagent-count cap, the real serialization is one Cargo slot + one full-typecheck slot + disjoint writes + 6.0 GiB host RAM):** P1
+(ses_e97fdf4c3ffekTjdOWVZZzH2FG) **holds the sole Cargo slot** and is running its Guard/EffectHost/
+cgroup/terminal/workspace_command_profile/http_execution lib + integration suites after resolving the
+Full Access prepared-editor cancel disposition and the `prepare_external_editor_execution` XOR-gate
+defect (4 new TDD tests, not yet run). P2 (ses_e961dbfe8ffeksMLE4073bBWw1) is on source work until
+P1 releases the slot: its Rust wave already passed `cargo check --tests` **0 errors**, P8 lib modules
+25+21+12+4, managed_control 39/39, unix_peer 5/5, unix_hello 4/4, and it fixed two real managed-control
+bugs; it is now repairing 7 `direct_attempt_rpc` drifts plus the `managed-control.ts:7939` status
+widening behind ~44 of P7's handler errors. P6 (ses_e961dbfd5ffeCC2ADFscKeTji1) was resumed on its
+independent work now that AppRuntime runs: the last `config.test` permission residual, the 14 legacy
+`getLanguage` provider tests (one `be4f48c4d` fail-closed root), and the single `Schema.Union` array
+fix in `groups/control-plane.ts` that blocks the S1 HTTP QA modules.
+
+**P5 returned PHASE_PARTIAL with the AppRuntime unblock verified:** `websearch.ts` eager-init fix
+RED→GREEN — `config.test` **0/112 → 111/112**, registry **0/12 → 12/12**, AppRuntime now VERIFIED
+in-repo (all config/registry tests build the full `AppLayer` with no `InstanceRef`), codemode
+**263/0** + typecheck exit 0, P5 10-file suite **179/0**, plus 4 new coverage tests (no keyless→paid
+upgrade, Retry-After cooldown, 429-only failover, bounded-transient-retry rejection). P5's residual
+config failure is P6-owned; its remaining blockers are all cross-phase; search + CodeMode gates stay
+false.
+
+**P7 is now ACTIVE** (it was queued): parent added §42 SRC-029, so P7 holds the P3-11 write grant
+and is implementing `packages/core/src/session/transfer.ts` plus clearing its remaining
+prompt/session/handler typecheck errors (opencode total **389→311**). Also newly dispatched to fill
+the raised concurrency: **P4** (fresh session, LSP/DAP/REPL + editor UX), **P3** (indexd + Core
+context compile/selection/ledger/compaction; repo-tools/repo-intel/history explicitly carved out to
+P7), and **P8** (RC0 1/5/10/20-session evidence composition + JC-RES-012.C–L negatives). **P5's own
+scope is closed** after the AppRuntime fix and stays queued only for cross-phase follow-ups.
+
+P3/P4/P8 remain partial (their unit gates pass but authenticated OS/Guarded acceptance is not done);
+P9 is parent-owned. **License/notice decision remains deferred by the user, so public distribution is
+not authorized.** Docs gates re-passed after the §42 edit: Markdown 0 blockers, convergence 1300/0.
+
+**Cleanup done this wave:** removed generated `kernel/tmp-p8/` (11 MB, no live process) and the stale
+`.gitignore` unignore for the deleted `worker_durable.rs` target; added exact unignores for 5 flagged
+first-party/agent-added sources. Next parent actions: integrate the three owner reports, run the
+combined cargo/typecheck/audits, then the free-model E2E smoke and integrated acceptance. V1 remains
+PARTIAL / NOT VERIFIED / NOT RELEASED.
+
+**Parent P9 continuation (2026-10-23):** the public `horizoncode`/`hzcode` package bins now target
+`bin/horizoncode`; the build emits `horizoncode-<target>/bin/horizoncode`, and release candidate
+discovery, artifact audit, fixtures, Nix and Linux container entrypoint consume that name. The single
+launcher implementation prefers `HORIZONCODE_BIN_PATH` and retains `OPENCODE_BIN_PATH` as compatibility
+fallback; Nix/container keep `opencode` as a compatibility symlink, and the compiled user-agent names
+`horizoncode/<version>`. Release-readiness tests pass **78/78**, py_compile, install
+syntax and diff checks pass. Nix evaluation and a real candidate build/install are unverified; P9
+remains PARTIAL. The complete first-party package/import/generated/build/typecheck/prose migration is
+also now V1 under §17.7/§20.17/NAME-001..004; it is queued until P7 releases active typecheck inputs
+and P6's remaining provider files are assigned/closed; `packages/opencode` still has private
+`name: opencode`. See `reports/phases/P9.md` §8 and
+`reports/release-readiness-2026-10-23-naming.txt`.
+
+## Previous continuation checkpoint — 2026-10-22
 
 Active whole-phase owners: P1 Guard/ExecutionHost, P2 managed lifecycle/HostKernel, and P7 streams/context/artifacts/analytics/automation/rewind. P8 handed off SOURCE-COMPLETE FOR CURRENTLY UNBLOCKED WORK, NOT PHASE-ACCEPTED, after adding a bounded repository-local task catalog and paired HostRun evaluator seam. P2 was immediately refilled for the complete managed phase: per-Task verification/DAG/aggregate settlement, authenticated CodeMode/root-artifact HostKernel routes, managed recovery, and Goal/Run delivery, while coordinating P1/P7 shared files. P1 has source for strict trusted Core→HostKernel workspace-profile projection, the shell-mode discriminator/digest correction, and a persisted-quiescence cgroup janitor. Janitor deletion requires a hidden cgroup hierarchy, persisted exact quiescence, exact root/cgroup owner plus device/inode/path revalidation, emptiness, and the exclusive namespace lock. The 256 bound remains only for quarantined UNKNOWN/Full Access/legacy/unproven groups; verified eligible groups are removed, so normal lifetime launches are not capped at 256. P1 still owes the complete fixed-argv profile effect/Guard/lease/receipt path and keeps terminal execution gated.
 
@@ -468,7 +1074,7 @@ The user asked to stop implementation for today and leave a restartable record. 
 
 | Phase | Last reported evidence | Remaining gate |
 |---|---|---|
-| P1.3 Guard | Owner reports Core runner **93/0** (308 assertions), write/registry **27/0** (71 assertions); stand-down ack: `terminal-run-live` user-origin/over-limit subset **2 passed / 31 assertions**. | Shell/interpolation, Task/subagent, enabled-origin closure, multi-call ToolBatch, leases/receipts/UNKNOWN, cancel/restart, native Windows; wire the verified `horizoncode-sandbox` backend into ExecutionHost (§14.5). |
+| P1.3 Guard | Owner reports Core runner **93/0** (308 assertions), write/registry **27/0** (71 assertions); stand-down ack: `terminal-run-live` user-origin/over-limit subset **2 passed / 31 assertions**. **2026-10-25 delta (see "P1 `revert.commit` principal gate" + "P1 `session.revert.*` denies 403 family-wide" + "P1 supervisor startup diagnostics / regeneration outcome" below):** `session-revert-principal` **5/0/18**, revert+launch+process-guard+ripgrep+tool-bash **33/0/113**, read-batch **27/0/447**, `server: session-revert-authorization` **7/0/45** (family-wide 403 table), `session-supervisor-launch` **18/0/53** (new stderr/exit-status diagnostics), `tsgo --noEmit` core **0** / server **0** / sdk-next **0** / client **0**. **Open:** regeneration — item 1 `packages/client` **blocked** by a HEAD condition in `packages/schema/src/skill.ts` (`skills.skill.list.success` non-portable) so CI `check:generated` still cannot pass; item 2 `packages/sdk/js` **stopped** at the 21,306/21,650 diff stop-condition, half-patched output + a destroyed other-owner hunk awaiting the parent's decision. | Shell/interpolation, Task/subagent, enabled-origin closure, multi-call ToolBatch, leases/receipts/UNKNOWN, cancel/restart, native Windows; wire the verified `horizoncode-sandbox` backend into ExecutionHost (§14.5). |
 | P2 managed control | Owner reports managed-control client **15 passed / 63 expectations**; typecheck exits 2 on 3 diagnostics in `test/session/llm.test.ts` (L822/834/839). | Authenticated reviewer, Attempt-issued intent/lease, live workspace revision, independent verifier, Core→TUI delivery. Keep execution/finalization disabled. |
 | P3 RepoIntel | No edits/tests in final continuation; prior owner report **44 passed / 342 expectations**, not rerun. | Authenticated bounded HostKernel indexd bridge; ~72 MB frame exceeds 6 MiB RPC cap. Keep symbol/reference production route unavailable. |
 | P4 LSP/DAP/REPL | Owner reports full focused suite `test/lsp test/dap test/repl` **198 tests / 654 expectations passed**; typecheck exits 2 with diagnostics in `test/session/llm.test.ts` and TUI files. | P1 Guard, trusted executable resolution and OS confinement; effectful production paths remain unavailable. |
@@ -4851,3 +5457,554 @@ P1 must resolve a Full Access availability edge: retaining all successful Full A
 **2026-10-22 active source correction:** P1 accepted an authenticated Full Access launch path without persistent cgroups, preserving live process-group supervision and the durable effect journal; restart without exact process-tree proof remains UNKNOWN/no-replay. Confined workspace profiles continue to require cgroup-v2. Codex/OpenCode process-group patterns do not establish crash-proof containment and include documented orphan/child-survival failure modes. P1 is updating the owning architecture/provenance docs.
 
 P1's typed EffectHost CodeMode prepare/settle APIs are source-present. P2 is implementing HostKernel prepare/settle/receipt/cancel and strict normalized call identity checks. The suspected `read_code_mode_wave_outcome` tuple decode defect was not reproduced by parent source inspection; P2 is rechecking. An active admission API mismatch remains: CodeMode prepare uses a private body shape and mixes callbacks into effect-only ToolBatch admission. P1/P2 are aligning one canonical guarded effect admission plus no-lease callback rows, with no parallel executor. No tests/builds/typechecks or gates run.
+
+## P4 capability chips + editor rows — 2026-10-24 (dated addendum)
+
+P4 delivered the Settings capability-chip consumer that P6 reported as missing: a pure
+`projectCapabilityChipsViewV1` in `packages/tui/src/routes/session/dialog-settings.tsx` consuming
+P6's exact `projectCapabilityChips` / `exposeCapabilityIDsV1` signature. Chips are read-only
+presentation (`Requested · Effective · Source · Policy lock · Precedence`); `experimental` renders
+OFF unless explicitly requested; `code_present`/design-only rows always render `unavailable` with
+wiring truth ahead of tier/platform reasons; an **absent** runtime source renders `unknown`, never
+`0` (§16.17); output is bounded (12 unavailable rows + overflow) with an explicit no-authority note.
+RED first (`projectCapabilityChipsViewV1` not found, 0/1), then **11/0, 106 expectations**.
+
+§32.44 rows needing no HostKernel route: **EDITOR-003** shell-string `$EDITOR` with flags/command
+substitution against a canary resolves `undefined`, canary never created (`editor.test.ts` **11/0,
+25 exp**); **EDITOR-013** mounted journey `/settings` → Editors → saved profile → exactly one CAS
+PATCH → `Selected: nvim` → Escape → Explorer open/close, exactly one write and no process.
+Totals: settings+editor **22/0, 131 expectations**, `editor-route.test.tsx` **2/0, 16**.
+
+Honest limits: the Tools chip reports `effective unknown / catalog unknown` because no trusted
+client-side `CapabilityDescriptorV1` projection exists — **parent follow-up: route a trusted runtime
+capability projection (§33 registry + feature exposure) to an owner**; changed files are
+typecheck-NOT-VERIFIED until A1 releases the slot. Mount-test timeout reproduced at baseline HEAD
+and diagnosed as load (budget 30 s → 180 s, assertions and 5 s frame deadlines unchanged).
+
+All P4 gates remain false; LS/DAP/REPL/editor integrated journeys still need P1/P2/P3/P8.
+
+## P9 typecheck rows + DEC-V1-11 license inventory — 2026-10-25
+
+**Typecheck: 3/3 routed rows cleared, no product source touched.** P9 reproduced A1's exact Run C
+messages with throwaway single-file TS projects (deleted after capture, no package `tsconfig`
+edited, no A1 slot used):
+
+- `test/identity/runtime-service-identity.test.ts(79,34) TS2769` — **not** a vendor/first-party ID
+  mismatch: the table is `Record<string, ReadonlyArray<string>>` while `actual` inferred `string[]`,
+  and Bun's `toEqual` overloads reject a readonly expectation. Fixed with `actual:
+  ReadonlyArray<string>`; the assertion, every expected ID and all four **provider/Auth/LLM
+  preservation assertions are unedited**. Focused typecheck **0** (was 1), identity test **2/0, 57
+  expectations**.
+- `test/cli/run/runtime.boot.test.ts(203,7)` + `(266,7) TS2322` — the fixture had drifted from the
+  real contract: `ProviderListResponses[200]` requires `catalogSnapshot`, which the handler emits.
+  Re-typed both fixtures against the generated `ProviderListResponse` and added the field.
+  Production `resolveModelInfo` is correct and unchanged, so **nothing was routed to P7**. Focused
+  typecheck **0** (was 2), boot test **6/0, 27 expectations**, prettier clean.
+- Added one exact `.gitignore` exception for `runtime.boot.test.ts` (it was untracked *and* hidden,
+  so the overlay audit failed after the edit); `hidden_changed` back to 0.
+
+**Release qualification, candidate NO-GO:** readiness **82/82** re-run; audit **BLOCKED, 15**; gate
+**exit 1, BLOCKED, 20** (`install_matrix NOT_RUN`, `signing_update UNAVAILABLE`, no publication,
+no signature).
+
+**DEC-V1-11 license inventory — this needs your decision, with a real contradiction found:**
+- **4 packages with no license metadata at all:** `@openauthjs/openauth@0.0.0-20250322224806` (a
+  direct `packages/opencode` dependency) and `poe-oauth@0.0.8` have neither metadata nor file;
+  `seq-queue@0.0.5` and `xmlhttprequest-ssl@2.1.2` have a file but no `license` field.
+- **58 packages with no direct LICENSE/NOTICE file**, of which **12 are first-party workspace
+  packages** (`@opencode-ai/{codemode,core,effect-drizzle-sqlite,effect-sqlite-node,llm,plugin,
+  protocol,schema,script,sdk,server,tui}`) declaring `license: MIT` while **root `package.json` says
+  `UNLICENSED`**, root `LICENSE` is byte-identical to upstream (`625f0f…cb6b`), there is **no root
+  NOTICE**, and Nix declares `MIT` — **three contradictory statements of fact about the same tree**.
+  3 of the 12 also have **no version field**.
+- **46 external rows / 32 names**, including Apache-2.0 ×21, MIT ×17, `MIT OR Apache-2.0`, ISC,
+  lowercase `apache-2.0`, Unlicense, **CC-BY-3.0 ×1 attribution-bearing (`spdx-exceptions`)**, CC0-1.0,
+  and 2 null.
+- P9 recorded the **seven inputs a distribution decision needs** (grant; root LICENSE/NOTICE
+  authoring; reconciling root/manifest/Nix; per-package rule including missing versions; NOTICE/
+  THIRD-PARTY policy for the 46; isolated-store-layout rule; exact-artifact re-audit).
+  **No license or notice text was fabricated and no decision was claimed.**
+
+**Parent cleanup of 4 flagged files from other owners:** extended `skip_hidden_file` in
+`scripts/architecture/audit_overlay_visibility.py` with a test-first regression so live phase probe
+names (`tsconfig.p7typefix.json`, `tsconfig.p7-rows6.json`, `tsconfig.p6focus.json`,
+`tsconfig.p6-focus.json`) are classified as the scratch the policy already declares, while
+`tsconfig.json`, `tsconfig.build.json` and `tsconfig.a1focus.json` stay visible — **6 tests OK**.
+Unignored P7's real test `packages/opencode/test/agent/agent-node-deps.test.ts`. Overlay re-run:
+**hidden_changed 0 / hidden_new_source 0 / stale_unignore 0**.
+
+## P3 runbook execution — 43 of 62 acceptance rows, 0 failures — 2026-10-25
+
+P3 executed runbook Phases 3–4 against the current tree (`reports/phases/P3.md` §22) instead of
+leaving them unrun by design. **62 acceptance items (58 catalog IDs + 4 cross-cuts); 43 executed;
+32 PASS, 11 PASS\*, 18 NOT_RUN, 1 BLOCKED_P2 (RD-017), 1 BLOCKED_P4 (RD-012), 0 FAIL.** Grand
+total **362 executions → 360 pass, 1 todo, 1 load-induced timeout, 0 assertion failures** across 8
+commands; `session-runner` **102/102**, `repo-tools` **14/14** (after the new 32 KiB cap row),
+`artifact-search` **19/19**, schema **35/35**, OpenCode P3 set **95/94 pass + 1 todo**.
+
+**11 new tests written test-first:** CX-003 protected Goal/criteria line survives 20 turns of
+trim/prune; CX-014 ×2 anchor digest + static ledger segments stable over 3 consecutive turns;
+CX-024 ×2 installed skills project metadata only and never `SKILL.md` bodies, body reachable only
+through explicit lookup, sorted/stable output; CTX-001 ledger digest binds the normalized payload and
+every request pin; CTX-002 exact/estimated/unknown byte and token classes kept distinct; CTX-003 ×2
+excluded entries keep reason/protection/cache state and unpinned inclusion is rejected; CTX-004
+`session.context_ledger` is closed, request-fenced and carries **no raw prompt**; plus the `repo_tree`
+32 KiB cap and RD-020 credential-shaped path redaction.
+
+Notable rows now proven: **CX-017** `auto never claims cache_anchor when the route reports no prefix
+cache` and explicit `cache_anchor` fails closed on an unvalidated route; **CX-018** anchor epoch reuse
+requires every workspace/profile/permission pin to match; **RD-010** out-of-scope subpath denied
+before any read, symlinks never followed out of scope, and both swap-after-validation attacks rejected;
+**RD-011** generation builds coalesce only within the same repository/workspace/read-policy identity
+and a cross-epoch join is refused.
+
+Honest red→green records: the CTX-006 parity batch first failed as a 5 s cold `python3 jsonschema`
+timeout under load 16–29 (harness budget, not a contract disagreement — an explicit 30 s budget was
+declared on those two rows, assertions untouched) → 35/35; one instruction test timed out at 30 s and
+passed isolated **7/7**; the new repo_tree row was red on its first label assertion before the fixture
+path was corrected → 14/14.
+
+NOT_RUN routed by owner: **P7 8** (CX-005/008/009/010/011/012, CTX-005, INST-004 — queued to P7),
+P6/provider 3 (CX-006/007/021 — need a provider), P4 1 (RD-008), P1 1 (RD-009 edit leg), **parent 5**
+(RD-001..005 real-repo journey — B4). All navigation/RepoIntel gates remain closed.
+
+## P1 principal gate + integrated HTTP security proof — 2026-10-25
+
+**Root cause found first-hand, not assumed.** `HttpRouter.toWebHandler` types `handler` as
+`(request, context?)` only when the route's unsatisfied `Requires` set is `never`;
+`SessionV2.Interface.revert.stage/clear` declared `R = TrustedPrincipalContext` (`session.ts:188-200`)
+while the server middleware legitimately projects **no** principal at `authorization.ts:62/:69/:79`.
+
+**RED with no principal supplied (never fabricated):** `stage` **succeeded and mutated** — returned
+`{"messageID":…,"diff":"","restoreFiles":[]}` — and `clear` **succeeded**: `1 pass / 2 fail`.
+**Fix:** `Effect.serviceOption` first in `packages/core/src/session.ts` only → typed
+`SessionSupervisorError{stage:"authorization"}` with the exact per-method reason, interface `R`
+removed, denial strictly before any mutation. No middleware branch, protocol, or principal provider
+was touched.
+
+| Check | Result |
+|---|---|
+| `session-revert-principal` | **3/0, 11 expectations** |
+| revert + process-guard + ripgrep + tool-bash | **13/0, 53 expectations** |
+| read-batch-context + `session-direct-read-batch` | **27/0, 447 expectations** |
+| **new** `server: session-revert-authorization` (×2) | **3/0, 15 expectations** |
+| `tsgo --noEmit` for `packages/core`, `sdk-next`, `server` | **exit 0 / 0 / 0** (former `TS2554` gone) |
+| overlay / markdown / convergence | **exit 0, hidden 0/0/0** · **0 active blockers** · **1300/0** |
+
+**Integrated HTTP proof on real `createEmbeddedRoutes()` / `createRoutes("secret")` stacks:**
+unauthenticated non-loopback `stage` → **403** typed `ForbiddenError`, **zero revert events**,
+`revert` NULL; `clear` → **403** with the staged row preserved; anonymous or wrong Basic → **401**;
+genuine `server_auth` → `stage` **200** / `clear` **204** with exactly `revert.staged.1` +
+`revert.cleared.1`. This is real Guard-equivalent evidence for the principal boundary, not a unit
+assertion.
+
+**New gap routed back to P1 and now assigned:** `session.revert.commit` had **no principal gate at
+all** (`packages/core/src/session.ts:543`, called from `packages/server/src/handlers/session.ts:304`).
+Ownership resolved to P1 — same file, same seam as stage/clear, no protocol change needed — with the
+same RED-first requirement (commit must be shown mutating without a principal before the fix).
+
+Concurrency note: a second P1 continuation landed the P1-10 client seam at the same time and
+appended a duplicate `§34`; P1 renumbered it to `§35` preserving content and reconciled the ledger
+row (its "sdk-next NOT VERIFIED" claim is superseded by the exit-0 runs). No file lost, no parallel
+write raced afterwards.
+
+P1 remains **PHASE_PARTIAL**: `embedded.test.ts` **1/3/2** still needs the P6 authority decision I
+routed; B4 OS containment is **NOT RUN — this host has no user-owned delegated cgroup root** (stated,
+not faked; `cgroup_v2` greens are unit negatives only); integrated grant/profile/terminal receipt
+journeys and live Core→HostKernel bootstrap remain open; Rust re-runs wait behind P2's explicit Cargo
+release. Both readiness gates remain **false**.
+
+## P7 continuation 24/24b — product failures root-caused, 6 typecheck rows to zero — 2026-10-25
+
+**The 14 `tool.task authenticated dispatch` failures had one shared root cause, not `task.ts:276`:**
+`Service not found: @opencode/v2/Plugin` at `Agent.state` → `agent.ts:215` → `task.ts:398/1513`.
+Trigger: a repo-local `TMPDIR` puts the test instance inside the worktree, so `ConfigPaths` picks up
+`.opencode/opencode.jsonc` → `references` → `agent.ts:222-227`, whose `PluginV2`/`Reference` come only
+from `locations.get(ref)` — a layer `task.test.ts:434-443` stubs to `AgentProfileService` alone.
+
+- **Both proposed candidates were rejected against the file's own convention:** adding
+  `PluginV2.node → SkillV2.node → Location.node` makes every root compile throw `Unbound layer node`;
+  hoisting moves the requirement to a context that also lacks them. **Fix:** `Effect.serviceOption`
+  for both services inside the existing `locations.get` provide. `Agent.node` deps untouched; an
+  absent service ⇒ no whitelist ⇒ default `ask` (**fail-closed**, not permissive).
+- **RED** first in new `packages/opencode/test/agent/agent-node-deps.test.ts`. **GREEN:**
+  `agent-node-deps` **2/0, 4 exp** · `instance-state` **3/0, 3 exp** · `task.test` **6 pass / 12 fail /
+  75 exp, 0 Plugin hits** · **P6 `config.test` 112/0, 199 expectations** (the post-fix rerun P6 was
+  waiting on) · `repo-tools` **14/0, 66 exp**.
+
+**The 12 remaining are P2-owned and were reported at the boundary, not edited:**
+1. `no such table: direct_subagent_inbox` ×6 — `DatabaseMigration.apply` seeds from `schema.gen.ts`
+   then marks every `migration.gen.ts` id complete, but the inbox tables are absent from the
+   generated schema. On the tree now: `migration.gen.ts` **modified**,
+   `20261020090000_direct_subagent_inbox.ts` **modified**, and
+   `20261023120000_managed_subagent_inbox_consumption_proof.ts` **untracked but Git-visible**.
+2. `cancel_direct_attempt: stale direct Attempt revision` ×5 (Attempt stuck `EXECUTING`) — proved
+   with a reverted instrument: `managed-control.ts:7166-7193` sends a **bigint**,
+   `decodeDirectAttempt` yields a canonical **string**, the kernel compares strictly against a
+   **number**, unlike `bind_direct_attempt_effects` which coerces `BigInt(String(...))`.
+3. Contract flag: `DirectScopeFacts`/`scopeDigest` never covered `profileRevision`; 3 excess call-site
+   facts were removed and proven **digest-neutral** — P2 must either add the pin with digest coverage
+   or record the decision that it is intentionally absent.
+
+**Six assigned typecheck rows: 6 → 0** via focused `tsconfig.p7-rows6.json` (not A1's package slot).
+Two *non-owned* diagnostics remain in that run — `image.ts(5,24) TS2307`
+(`@silvia-odwyer/photon-node/photon_rs_bg.wasm`, package present at
+`packages/opencode/node_modules/…`, declaration currently only in `src/audio.d.ts`) and
+`managed-artifact-search.ts(378,124)` (the helper session's row). Left for the owner / Run D rather
+than patched blind.
+
+**P3 §22 rows:** **CX-008 PASS** with a new test (`harness-profile-tool-projection.test.ts` **5/0,
+29 expectations** — the pure lazy-exposure split had zero coverage). The other 7 are **NOT_RUN with
+reason + owner** rather than faked: CX-009/CX-012 have no implementation in tree, CX-010 is also
+blocked by cause (A), CX-011 has no TUI `/clear` epoch marker, INST-004 has no delivery-root
+instruction-set builder, CX-005 needs a real tokenizer/usage run, CTX-005 needs an in-flight provider
+request. None inherited `BLOCKED_P2`/`BLOCKED_P4`.
+
+Safety: no Git/Cargo/provider/network/package-wide typecheck; no P2/P6/`supervisor.ts`/Rust/P8/P9
+source edited; all effect gates false; diagnostic residue `rg P7DIAG|P7PROBE|P7TRACE` → **0**; three
+new files unignored and Git-visible; 826 GB free.
+
+## A2 closed — P1-10 read fast path wired into the runner (direct Sessions only) — 2026-10-25
+
+**Lane ruling taken from the authorities before enabling anything:** `arch_V1/14` §14.3.1 — *"Managed
+lane: read fast path is optional and **off by default** for Attempt-bound waves"*; `DEC-V1-36` —
+*"Read-class tools in **direct Sessions** may use the §14.3.1 read fast path … Managed mutating
+Attempt chains remain strict."* → **only direct Sessions qualify**, encoded in code and tests; the
+managed/child/CodeMode lanes never take it.
+
+**RED first** (`packages/core/test/session-runner-direct-read-routing.test.ts`): `SyntaxError: Export
+named 'directReadFastPathV1' not found` → **0 pass / 1 fail**. Six cases: read-class routed with an
+exact envelope `requestID`; a bound `requestID` sent as-is while rows bound to another request are
+rejected whole-wave; mixed read+effect falls back; >8 denied **locally with zero host contact**;
+managed/attempt/child/CodeMode lanes never taken; the runner seam really invokes it.
+
+**Implementation (3 P7-owned files):** `runner/llm.ts` exports `directReadFastPathV1` (mints
+`req_<uuid>` when absent, delegates to `DirectReadBatch.runWave`, converts any escaped failure into a
+whole-wave `denied` / `replay:"forbidden"`) and wires it at the recorded seam as an `else` on
+`if (guarded)` — **all `LLMEvent.toolResult` publication is deferred until `runWave` reports
+`published`**, i.e. the fence runs before any result is visible; per-call errors publish only on
+`denied`, and `unavailable` continues the ordinary loop byte-for-byte as today. Lane is
+`direct_session`, with `parentSessionID` from `session.parentID` so managed Attempts (children of the
+managed root) are refused. `direct-read-batch.ts` now sends P1's envelope binding
+(`requestID` in `requestHostKernel` options). A member with no bounded text ⇒ `rejected` ⇒ the
+publication gate denies the whole wave (no partial `calls`).
+
+**GREEN (verbatim, `packages/core`, repo-local TMPDIR):**
+
+| Command | Result |
+|---|---|
+| `bun test --timeout 60000 test/session-runner-direct-read-routing.test.ts` | **6/0, 33 expectations** |
+| `bun test test/session-direct-read-batch.test.ts test/session-supervisor-read-batch-client.test.ts` | **34/0, 484 expectations** |
+| `bun test test/session-runner.test.ts test/session-runner-compile-boundary.test.ts` | **105/0, 380 expectations** |
+| `tsgo --noEmit -p tsconfig.p7-wiring.json` (3 files) | **exit 0** (4 → 0) |
+
+First typecheck round's 4 diagnostics were all P7's own and all fixed without weakening types
+(`session.metadata` absent on core `Session.Info`, `ToolOutput` vs `string`, `RunTurn` error
+`unknown`, and `Effect.catchAll` does not exist in effect v4 — replaced with this file's own
+`Effect.catch`).
+
+**Honest NOT_RUN:** `test/session-runner-recorded.test.ts` fails before assertions with
+`ENOENT: kernel/target/debug/session_supervisor` — the Rust observer binary does not exist because P2
+holds Cargo. Not caused by this change; the real provider-backed §32.49 read turn stays **NOT_RUN,
+owner P7, after P2 releases a build.**
+
+Not fabricated: the 12 `tool.task` failures stay routed to P2; `image.ts` TS2307 waits for A1's Run D
+attribution; the 7 P3 rows remain NOT_RUN because `rg` proved four have no implementation in the tree,
+CX-010 is blocked by P2's `direct_subagent_inbox` baseline, CX-005 needs a real tokenizer run and
+CTX-005 needs an in-flight provider request.
+
+## P1 `revert.commit` principal gate — 2026-10-25
+
+Parent routed the §34.7 gap back to P1: `session.revert.commit` had no principal gate.
+Resolved to the **same file, same seam, same mechanism** as `revert.stage`/`revert.clear`
+(`packages/core/src/session.ts:545`).
+
+**Caller audit (first-hand, exhaustive):** `grep -rn "revert\.commit" packages --include=*.ts`
+(excluding `node_modules`, `/dist/`, generated) → the **only** Core caller is
+`packages/server/src/handlers/session.ts:307`. Everything else is an event-type string, a
+generated SDK/client wrapper, or the HTTP route row in
+`packages/opencode/test/server/httpapi-exercise/index.ts:1028`. No second Core path reaches
+the seam. `packages/app/src/utils/server-compat.ts:298` is the *generated client* function —
+it goes over HTTP through the same gated handler, not a bypass.
+
+**RED (no principal, never fabricated):** `revert.commit` **succeeded and mutated** — with a
+post-boundary message seeded at `seq: 2`, the pre-fix run printed
+`expect(outcome.value.events).toEqual([])` → `+ "session.next.revert.committed.1"`, i.e. an
+unauthenticated caller could write the committed event, null the staged revert and **delete**
+the post-boundary message (`projector.ts:445-483`). **4 pass / 1 fail / 15 expectations.**
+
+**GREEN:** `Effect.serviceOption(TrustedPrincipalContext)` first → typed
+`SessionSupervisorError { stage: "authorization", reason: "Authenticated principal required to
+commit a Session revert" }`, denial strictly before `result.get` and before any mutation.
+`Interface.revert.commit` widened to `Effect.Effect<void, NotFoundError | SessionSupervisorError>`.
+**`R` was unchanged, not removed** — `commit` never declared `R = TrustedPrincipalContext`
+(unlike stage/clear), so there was no `R` to remove; the required change is an error-union
+widening.
+
+**The "no protocol or handler change" premise: protocol ✓ held, handler ✗ did not — compiler
+quoted as instructed.** With only the Core change:
+
+```
+src/handlers/session.ts(305,9): error TS2345: ... not assignable to 'HandlerWithName<...>'.
+  Type 'Effect<void, SessionNotFoundError | SessionSupervisorError, never>' is not assignable to
+  type 'Effect<void | HttpServerResponse, InvalidRequestError | ServiceUnavailableError |
+  SessionNotFoundError | UnauthorizedError, never>'.
+    Type 'SessionSupervisorError' is not assignable to type 'UnauthorizedError'.
+      Types of property '_tag' are incompatible.
+        Type '"SessionSupervisorError"' is not assignable to type '"UnauthorizedError"'.
+SERVER_EXIT=2
+```
+
+`SessionSupervisorError` is in the Core channel the handler must consume and is not assignable
+to the endpoint's effective error set, so a handler-side mapping is unavoidable. The allowed set
+is exactly `InvalidRequestError | ServiceUnavailableError | SessionNotFoundError |
+UnauthorizedError` (endpoint-declared + API-level `Authorization`/`SchemaErrorMiddleware`);
+**`ForbiddenError` is not in it**. Minimal fix applied at `packages/server/src/handlers/session.ts:304-324`
+(`Effect.catchTag` → `Effect.mapError`, denial → `UnauthorizedError` 401 with the verbatim
+message). **`packages/protocol/**` untouched** — `session.revert.commit` still declares
+`error: SessionNotFoundError`, so the public contract/OpenAPI/generated clients are unchanged.
+
+**Deviation flagged for parent audit:** that is a *handler* edit outside P1's nominal
+`session.ts`+tests scope, made because the compiler proves a Core-only gate cannot reach HTTP,
+the required HTTP commit row cannot pass without it, and "keep `tsgo` at 0" is unconditional.
+If 403-consistency with stage/clear is preferred, the alternative is a one-line protocol edit
+(`error: [SessionNotFoundError, ForbiddenError]` at `packages/protocol/src/groups/session.ts:293`)
++ `mapSupervisorError` — that **is** a public-contract change and was deliberately **not** done.
+Known inconsistency recorded: stage/clear answer **403**, commit now answers **401**, same
+missing-principal condition; both deny.
+
+| Command | Result |
+|---|---|
+| `cd packages/core && TMPDIR="$PWD" bun test test/session-revert-principal.test.ts` (pre-fix RED) | **4 pass / 1 fail / 15 expectations** |
+| same command (post-fix) | **5 pass / 0 fail / 18 expectations** |
+| `cd packages/core && TMPDIR="$PWD" bun test test/session-revert-principal.test.ts test/process-guard.test.ts test/ripgrep.test.ts test/tool-bash.test.ts` | **15 pass / 0 fail / 60 expectations** |
+| `cd packages/core && TMPDIR="$PWD" bun test test/session-supervisor-read-batch-context.test.ts test/session-direct-read-batch.test.ts` | **27 pass / 0 fail / 447 expectations** |
+| `cd packages/server && OPENCODE_DB=:memory: TMPDIR="$PWD" bun test --timeout 400000 test/session-revert-authorization.test.ts` | **5 pass / 0 fail / 27 expectations** (was 3/0/15) |
+| `cd packages/core && TMPDIR="$PWD" ../../node_modules/.bin/tsgo --noEmit` | **exit 0** |
+| `cd packages/server && TMPDIR="$PWD" ../../node_modules/.bin/tsgo --noEmit` | **exit 0** |
+| `cd packages/sdk-next && TMPDIR="$PWD" ../../node_modules/.bin/tsgo --noEmit` | **exit 2**, one diagnostic **not P1-owned**: `p6-embedded-probe.ts(26,48) TS2339` — untracked P6 scratch probe (mtime 2026-10-25 01:33, after §34.8's green run), zero rows in `packages/sdk-next/src`. Reported, not deleted; routing to P6 is the parent's call. |
+
+**HTTP negatives on the real route stacks:** unauthenticated `revert/commit` → **401**
+`{"_tag":"UnauthorizedError","message":"…Authenticated principal required to commit a Session revert"}`,
+`events == []`, staged `revert` preserved, post-boundary message intact; anonymous/wrong Basic →
+**401**/**401**; genuine `server_auth` → stage **200**, commit **204**, events **exactly**
+`revert.staged.1` + `revert.committed.1`, `revert` NULL, post-boundary message deleted. Existing
+stage 403 / clear 403 / authenticated 200+204 rows unchanged and green.
+
+**P7 `options.requestID` — confirmed present in source:** `packages/core/src/session/direct-read-batch.ts:569-575`
+now passes `requestID: input.requestID` in the `requestHostKernel` options; covered by the green
+**27/0/447**. P7 still owns declaring it done and the runner-wiring decision.
+
+Files changed: `packages/core/src/session.ts` (gate `:545-561`, Interface `:197-199`),
+`packages/server/src/handlers/session.ts` (import + `:304-324`), the two P1 revert test files,
+`reports/phases/P1.md` §37. **Untouched:** `packages/protocol/**`, Rust, Cargo,
+`kernel/src/effect_host.rs` (that is §36's concurrent session). No Git, no provider/network, no
+worktree, no scratch left (one transient `.p1-core-tsgo.txt` created and deleted), nothing staged.
+No `host_os`/`server_auth` was ever fabricated for a negative; both terminal readiness flags stay
+`false`. P1 remains **PHASE_PARTIAL / NOT VERIFIED / NOT RELEASED**.
+
+## P2 HostRun route complete; 12 product failures fixed; Cargo released — 2026-10-25
+
+**Mission deliverables (A1's largest remaining gap):**
+1. **`HostRunDispatchBindingV1` persisted pre-dispatch**, keyed by the **BLAKE3 of the dispatch key**
+   (raw key never persisted), with every authority pin derived by HostKernel, exposed on a new
+   `managed.v1/host_run.bind` route taking the strict body
+   `{goalID, attemptID, dispatchKeyDigest, manifestDigest, evaluatorTaskId, armId, taskGroup}` and
+   returning `{binding, receipt}`. Per-wave projection requests now use the durable edge scope digests.
+2. **Read-only `managed.v1/host_run.inspect`** joins, in order: binding → P2 receipt → **P8 OwnerLog
+   receipt** → Run/Task/Attempt terminal + final workspace revision → ordered P1 projection echo →
+   full verifier evidence (`verificationRunID`) → HostKernel verifier pins (`setIdentityDigest`,
+   `challengeSetDigest`) → P8 settlement receipt, exposing roughly **10 typed UNKNOWN reasons that can
+   never authorize redispatch**.
+3. **All of P8's negative-matrix cases covered** in `--lib host_run`.
+
+**Rust results (serialized from `kernel/`, logs in `kernel/tmp-p2/`):**
+
+| Target | Result |
+|---|---|
+| `cargo test --lib host_run` | **12/0** — binding, reconcile, P8-receipt, route |
+| `--test direct_attempt_rpc` | **10/0** |
+| `--test managed_control` | **39/0** |
+| `--test task_dag` | **17/0** |
+| `--lib codemode_protocol` | **6/0** |
+| `--lib jc_res_012` (P8's fixture incl. the TS-consumer-pointer assertion) | **4/0** |
+| `--test tool_batch_guard_matrix` | **3 pass / 6 failed** — all six inspected: 5× PTY journey + 1× cross-capability, every one `capability_unavailable` **before** `effect_denied`; intentional readiness-false denials, gate untouched |
+| `--test host_terminal_events_process` / `host_terminal_process` | **0/1** / **2/1** — same intentional denials |
+
+**The 12 `tool.task authenticated dispatch` failures are fixed:** baseline **6/12** → **12/7** after
+cause (B) → **18/1** after cause (A) → **19 pass / 0 fail** final (including a new 42-expectation
+variant test). `managed-control.test.ts` **41/0, 225** unchanged; `migration.ts --check` **exit 0**.
+P2's `DirectScopeFacts` decision recorded: it **excludes** the profile pin, with the rationale in the
+type's doc comment — P7's 3 removed facts stay removed.
+
+**Cargo explicitly released** at base `44f8b5f2a` with file fingerprints recorded in
+`reports/phases/P2.md` cont. 30; final check showed no `cargo`/`rustc` process. Caches retained
+(`target-p2` 5.2 GB, `kernel/target` 1.8 GB), 825 GB free. All jobs were serialized with
+`CARGO_BUILD_JOBS=1`, and a foreign `codemode_wave_reader_fence_tests` job was **waited out** rather
+than duplicated.
+
+**Cross-phase handoffs now dispatched:**
+- **P1** implements `HostRunEffectProjectionSourceV1::project_committed_batch(...) -> Result<...,
+  ManagedError>` over persisted rows (exact echo via `validate_against`, completeness via
+  `is_complete_terminal`, any mismatch → `Err(Conflict)`), installed with
+  `HostKernel::install_host_run_effect_projection_source`. Until installed, `host_run.inspect`
+  correctly returns the typed `host_run_effect_projection_unavailable` UNKNOWN. P2 handed P1 that one
+  symbol plus its tests inside P2's `managed_control.rs` and nothing else; P1 holds Cargo.
+- **P8** implements append (`host_run.bind`) → post-commit receipt (`host_run.bind_receipt`, which is
+  where the OwnerLog cursor/event digest comes from) → resolve (`host_run.inspect`), and builds the
+  authentic positive fixture; dependent assertions are **BLOCKED_P1** until P1's projection installs.
+  P8 has no Cargo.
+
+**B2 (full Rust acceptance) is queued behind P1's release of Cargo.** Remaining P2 ledger: managed
+admission positives (1/3), CodeMode lifecycle, root-artifact integration, DAG/per-Task aggregate
+settlement, P7 `InstanceRef` HTTP journeys, resume-success re-arm when
+`DIRECT_CHILD_TURN_RPC_ENABLED` opens, a P7-owned `task.ts:640` swallow review, and the queued
+`DecimalU64` wire handoff. P2 = **PHASE_PARTIAL / NOT VERIFIED / NOT RELEASED**.
+
+## P1 `session.revert.*` denies 403 family-wide — 2026-10-25
+
+Parent ratified the §37 handler deviation and chose **403**: `stage`/`clear`/`commit` are one API
+family and must deny identically (401 stays for bad credentials).
+
+**Derivation check run first, as instructed:**
+
+| Path | Verdict |
+|---|---|
+| `packages/sdk/js/src/v2/gen/*` | **Byte-generated** (`script/build.ts:14` dumps OpenAPI from `packages/opencode`, whose `httpapi/api.ts:34` imports `makeApi` from `@opencode-ai/protocol/api`; `@hey-api/openapi-ts` with `clean: true`). Declared errors do flow in — `V2SessionRevertStageErrors` already has `403: ForbiddenError`. **Moves:** `V2SessionRevertCommitErrors` gains `403: ForbiddenError`. |
+| `packages/app/src/utils/server-compat.ts` | **Hand-written**, uses only `Parameters<Fn>[0]`. **Unaffected**, nothing to regenerate. |
+| `packages/client/src/generated/*` (not on the list; found by the check) | **Byte-generated** — `httpapi-codegen/src/index.ts:520` `declaredStatuses = [...new Set(endpoint.errors.map(e => e.status))]`. **Moves:** `client.ts:433` `[404, 400, 401]` → `[404, 403, 400, 401]`. `generated/types.ts` + `generated-effect/client.ts` unaffected. |
+
+**RED** (`revertOps` table over all three ops): `"op": "commit"` expected **403**, received **401** →
+**6 pass / 1 fail / 41 expectations**; `stage`/`clear` already 403 and bad-Basic already 401 for all
+three.
+
+**GREEN:** `packages/protocol/src/groups/session.ts:293` → `error: [SessionNotFoundError, ForbiddenError]`
+(additive; `ForbiddenError` already imported `:12`); `packages/server/src/handlers/session.ts:304-331`
+→ `new ForbiddenError({ message: error.message })`, unused `UnauthorizedError` import dropped.
+
+**`mapSupervisorError` verbatim does not typecheck here — compiler quoted:** with the authorized
+array in place,
+`Type 'ConflictError' is not assignable to type 'ForbiddenError | InvalidRequestError | ServiceUnavailableError | SessionNotFoundError | UnauthorizedError'` (its declared return is
+`ForbiddenError | ConflictError | ServiceUnavailableError`; the 409 `stage: "ownership"` arm is
+neither producible by `revert.commit` nor declared on this endpoint). Resolved **in favour of your
+exact contract array**, since declaring 409/503 would exceed the additive bound you authorized and
+multiply the churn you asked me to minimize. The inlined body is `mapSupervisorError`'s own `:26` arm
+**byte-for-byte** (`return new ForbiddenError({ message: error.message })`), so runtime status/body
+match stage/clear exactly; only the helper *call* is local, documented at the site. Literal-helper
+alternative = widen to `error: [SessionNotFoundError, ConflictError, ForbiddenError,
+ServiceUnavailableError]` (mirrors `clear`) — larger contract+churn delta, **not** done.
+
+| Command | Result |
+|---|---|
+| `cd packages/server && OPENCODE_DB=:memory: TMPDIR="$PWD" bun test --timeout 400000 test/session-revert-authorization.test.ts` (RED) | **6 pass / 1 fail / 41 expectations** |
+| same (GREEN) | **7 pass / 0 fail / 45 expectations** (was 5/0/27) |
+| `cd packages/core && TMPDIR="$PWD" bun test test/session-revert-principal.test.ts` | **5 pass / 0 fail / 18 expectations** |
+| `cd packages/core && TMPDIR="$PWD" bun test test/session-revert-principal.test.ts test/process-guard.test.ts test/ripgrep.test.ts test/tool-bash.test.ts` | **15 pass / 0 fail / 60 expectations** |
+| `cd packages/core && TMPDIR="$PWD" bun test test/session-supervisor-read-batch-context.test.ts test/session-direct-read-batch.test.ts` | **27 pass / 0 fail / 447 expectations** |
+| `tsgo --noEmit` core / server / sdk-next | **exit 0 / 0 / 0** (P6's `p6-embedded-probe.ts` was removed by its owner, clearing §37's residual) |
+| `cd packages/client && TMPDIR="$PWD" ../../node_modules/.bin/tsgo --noEmit` | **exit 0** (direct consumer of the changed protocol) |
+| `cd packages/codemode && bun test test/openapi.test.ts` | **26 pass / 0 fail / 138 expectations** |
+| `cd packages/httpapi-codegen && bun test test/generate.test.ts` | **60 pass / 0 fail / 113 expectations** |
+
+**⚠ PENDING, deliberately NOT run — regeneration.** No `bun run generate` / `bun dev generate`
+anywhere. Two files must move: (1) `packages/client/src/generated/client.ts:433`
+`declaredStatuses: [404, 400, 401]` → `[404, 403, 400, 401]` — `cd packages/client && bun run generate`;
+(2) `packages/sdk/js/src/v2/gen/types.gen.ts:13913` `V2SessionRevertCommitErrors` gains
+`403: ForbiddenError` — `cd packages/sdk/js && bun run build`, which uses `output.clean: true`
+(wholesale rewrite of `src/v2/gen`; the churn risk flagged). **Consequence:** `.github/workflows/test.yml:72-75`
+runs `bun run check:generated`, so **CI fails on this source change until (1) is regenerated and
+committed**; runtime is already correct (server returns 403), only the checked-in client lags — until
+then a `packages/client` consumer sees `ClientError("UnexpectedStatus")` instead of the parsed
+`ForbiddenError` for this endpoint. Both are yours to authorize.
+
+**Overlay:** `audit_overlay_visibility.py` → exit 1, `hidden_changed=0 hidden_new_source=4
+stale_unignore=0`; the four are `packages/opencode/tmp/probe-{provider,v2,v3,v4}.ts` (other owner).
+This round added **no new file**, so **no `.gitignore` edit** was made and the four were left to their
+owners. The previous round's four findings are already cleared.
+
+Files changed: `packages/protocol/src/groups/session.ts:293`, `packages/server/src/handlers/session.ts`
+(`:304-331` + import), `packages/server/test/session-revert-authorization.test.ts` (`revertOps` table
++ 2 table cases, commit row 401→403), `reports/phases/P1.md` §38. **No** `.gitignore`, **no**
+generated file, **no** Rust/Cargo, **no** `kernel/src/effect_host.rs`, **no** Git write, **no**
+provider/network, **no** scratch left. Both readiness flags stay `false`; no principal fabricated.
+P1 remains **PHASE_PARTIAL / NOT VERIFIED / NOT RELEASED**.
+
+## P1 supervisor startup diagnostics + regeneration outcome — 2026-10-25
+
+Full evidence in `reports/phases/P1.md` **§39** (§38.5 updated in place with the two verbatim stats).
+
+**Item 1 `cd packages/client && bun run generate` → EXIT 1, wrote nothing.** `GenerationError:
+Unportable schema: skills.skill.list.success` at `httpapi-codegen/src/index.ts:618`. Measurement
+`git diff --stat -- src/generated src/generated-effect` = **empty**. Not caused by the revert change:
+`makeSessionGroup` is added at `protocol/src/api.ts:41`, `SkillGroup` at `:50`, so
+`session.revert.commit` normalised and passed first; and a read-only probe replicated the
+portability predicates to the exact leaf — `skills.skill.list.success.data.rest[0].identity [Objects]
+checks -> Filter check annotations=undefined`, i.e. `Skill.Info.identity`'s `Schema.makeFilter` at
+**`packages/schema/src/skill.ts:49-65`** has no filter annotations, and `checksPortable`
+(`index.ts:858-869`) requires `annotations.meta` + `arbitrary.constraint`. That `makeFilter` **is in
+HEAD** (`git show HEAD:…skill.ts` → line 50). **⇒ CI `check:generated` cannot pass from regeneration
+alone; needs that filter annotated (owner of `packages/schema/src/skill.ts`). Not edited by P1.**
+
+**Item 2 `cd packages/sdk/js && bun run build` → EXIT 1 after hey-api rewrote `src/v2/gen`. STOPPED
+at the stop-condition.** VERBATIM:
+
+```
+ packages/sdk/js/src/v2/gen/sdk.gen.ts   | 13959 ++++++--------
+ packages/sdk/js/src/v2/gen/types.gen.ts | 28997 ++++++++++++++++--------------
+ 2 files changed, 21306 insertions(+), 21650 deletions(-)
+```
+
+- Intended change **did land**: `V2SessionRevertCommitErrors` = `400/401/403: ForbiddenError/404/503`.
+- Build died at `patchGoalReviewNullability` (`script/build.ts:174`, `expected 1 maxMemoryBytes fields,
+  found 2`), and both `Bun.write` calls for the post-patches are **after** that point ⇒ on-disk files
+  are **raw unpatched hey-api output** (missing the history-numeric, Goal-review-nullable and SseFn
+  patches).
+- **Other owner's hunk destroyed**: `grep -ic subagentwait` = 0 in both files; the pre-existing
+  uncommitted `SessionSubagentWaitErrors/Responses` import addition to `sdk.gen.ts` was overwritten by
+  `output.clean: true` and cannot be restored from Git (it was uncommitted). Its exact content (2
+  inserted import lines) was captured earlier this session.
+- Overlay regressed from `hidden_changed=0` → **`hidden_changed=13 hidden_new_source=2`**, all 13 in
+  `packages/sdk/js/src/v2/gen/{client,core}/` plus `packages/sdk/js/openapi.json` from this run (the
+  other new source is `scripts/eval/blake3.py`, other owner). **No `.gitignore` entry added** —
+  unignoring paths of a half-finished regeneration you may revert would be premature.
+
+**Supervisor startup diagnostics (P1-owned, test-first, fake child):** `supervisor.ts:3663` used to
+report only `supervisor exited before binding its socket (…)` while both spawn sites passed
+`stderr: "ignore"`. Now both spawn sites use `stderr: "pipe"` (`:3918`, `:4684`), a bounded 8 KiB
+drain starts at spawn (a piped-but-unread stderr would block the child), and both child-death branches
+append `; exit code N; stderr: <tail>` resolved within a 500 ms bound. RED `16 pass / 2 fail / 51`
+→ GREEN **`18 pass / 0 fail / 53`** (`packages/core/test/session-supervisor-launch.test.ts`). No lease,
+permission or socket-ownership check and no readiness flag was touched.
+
+**Hand-offs (reported, not edited — outside `supervisor.ts`):**
+- **P9 / CLI `run`:** `packages/opencode/src/cli/cmd/run/runtime.ts:757-759` — `if (!next?.id) throw new
+  Error("Session not found")` discards the cause, so a bring-up failure is misreported as a missing
+  session (exit 1). Needed: carry the cause (`{ cause }`) or surface the upstream error. Supporting:
+  `packages/opencode/src/cli/cmd/run.ts:461-466` swallows `sdk.session.get` via `.catch(() => undefined)`
+  before `UI.error("Session not found"); process.exit(1)`. Both tracked and unmodified.
+- **App-path vs standalone:** `ensurePrivateDirectory` (`supervisor.ts:2430-2460`) already enforces
+  owner-only `0700`, canonical path, uid match and `(parent.mode & 0o022) === 0`, so the directory the
+  app creates is compliant with the kernel's `InsecureDirectory` rule; which child-death branch fires
+  and what the child printed was unobservable until §39.4. **No cause asserted that was not observed** —
+  the next E2E attempt should be read against the enriched message first.
+
+| Command | Result |
+|---|---|
+| `cd packages/core && TMPDIR="$PWD" bun test test/session-supervisor-launch.test.ts` (RED → GREEN) | **16/2/51** → **18/0/53** |
+| core `session-revert-principal` | **5/0/18** |
+| core revert+launch+process-guard+ripgrep+tool-bash | **33/0/113** |
+| core read-batch-context + `session-direct-read-batch` | **27/0/447** |
+| server `session-revert-authorization` | **7/0/45** |
+| `tsgo --noEmit` core / server / sdk-next / client | **0 / 0 / 0 / 0** |
+| `codemode/test/openapi.test.ts` · `httpapi-codegen/test/generate.test.ts` | **26/0/138** · **60/0/113** |
+| `audit_markdown_repo.py` · `validate_convergence.py` | **ACTIVE_BLOCKERS 0** · **1300/0** |
+
+Pre-existing, **not mine**: `session-supervisor-discovery.test.ts` "validates discovery depth…" fails
+`1/0/10` in isolation — the tested `repoDiscoveryPageMatchesRequest` sits at `supervisor.ts:145`,
+outside **every** uncommitted hunk (62 hunks start at ≥504), the test is tracked and unmodified, and it
+exercises none of my code; its schema dependency `packages/schema/src/repo-intelligence-v1.ts` is
+modified by another owner.
+
+No Cargo, no Rust, no provider/network, no Git write. Leftovers: the temporary
+`packages/client/.p1-portability-probe.ts` was deleted; `.gitignore` untouched; no worktree/process.
+Both terminal readiness flags **false**. P1 remains **PHASE_PARTIAL / NOT VERIFIED / NOT RELEASED**.

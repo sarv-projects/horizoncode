@@ -169,7 +169,7 @@ function eventResponse(events: EventV2.Interface, sessions: Session.Interface) {
       )),
       Stream.map((queued) => ({ ...queued.wire, serialized: queued.serialized })),
     )
-    const disposed = Stream.callback<{ id: string; type: string; properties: unknown; serialized: string }>((queue) => {
+    const disposed = Stream.callback<{ id: string; type: string; properties: unknown; serialized: string }, Error>((queue) => {
       const listener = (event: {
         directory?: string
         payload: { id?: string; type?: string; properties?: unknown }

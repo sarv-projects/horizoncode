@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "incremental": false,
+    "tsBuildInfoFile": "./.tmp-p7/rows6.tsbuildinfo"
+  },
+  "include": ["src/tool/task.ts", "src/tool/repo-tools.ts", "test/effect/instance-state.test.ts"]
+}

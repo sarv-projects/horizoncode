@@ -42,6 +42,21 @@ export class Config extends Context.Service<Config, Info>()("@opencode/ServerAut
   }
 }
 
+/** Primary-only Info for the programmatic route entry points
+ * (`createRoutes` / `createEmbeddedRoutes`). Reviewer identity is deliberately
+ * not configurable here: it is enabled only as a complete, distinct pair
+ * through the environment-configured `Config.layer`. Every programmatic
+ * producer must state explicitly that no reviewer identity is active, so the
+ * `Info` requirement cannot be silently omitted. */
+export function primaryOnlyInfo(password: Option.Option<string>): Info {
+  return {
+    username: "opencode",
+    password,
+    reviewerUsername: Option.none(),
+    reviewerPassword: Option.none(),
+  }
+}
+
 export function required(config: Info) {
   return Option.isSome(config.password) && config.password.value !== ""
 }

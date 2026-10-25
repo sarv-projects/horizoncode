@@ -1,6 +1,7 @@
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Permission } from "@/permission"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { SessionV2 } from "@opencode-ai/core/session"
 
 import { Session } from "@/session/session"
 import { MessageV2 } from "@/session/message-v2"
@@ -226,7 +227,7 @@ export const SessionApi = HttpApi.make("session")
           params: { sessionID: SessionID },
           query: WorkspaceRoutingQuery,
           success: described(Schema.Array(Todo.Info), "Todo list"),
-          error: [HttpApiError.BadRequest, ApiNotFoundError],
+          error: [HttpApiError.BadRequest, ApiNotFoundError, ForbiddenError],
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "session.todo",
@@ -238,7 +239,7 @@ export const SessionApi = HttpApi.make("session")
           params: { sessionID: SessionV2.ID },
           query: WorkspaceRoutingQuery,
           success: described(Schema.Array(QuestionV2.Request), "Pending questions for this session"),
-          error: [HttpApiError.BadRequest, ApiNotFoundError, ForbiddenError],
+          error: [HttpApiError.BadRequest, ApiNotFoundError, ForbiddenError, ServiceUnavailableError],
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "session.questions",
@@ -251,7 +252,7 @@ export const SessionApi = HttpApi.make("session")
           query: WorkspaceRoutingQuery,
           payload: QuestionV2.Reply,
           success: HttpApiSchema.NoContent,
-          error: [HttpApiError.BadRequest, ApiNotFoundError, ForbiddenError],
+          error: [HttpApiError.BadRequest, ApiNotFoundError, ForbiddenError, ServiceUnavailableError],
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "session.question.reply",
@@ -263,7 +264,7 @@ export const SessionApi = HttpApi.make("session")
           params: { sessionID: SessionV2.ID, requestID: QuestionV2.ID },
           query: WorkspaceRoutingQuery,
           success: HttpApiSchema.NoContent,
-          error: [HttpApiError.BadRequest, ApiNotFoundError, ForbiddenError],
+          error: [HttpApiError.BadRequest, ApiNotFoundError, ForbiddenError, ServiceUnavailableError],
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "session.question.reject",
@@ -335,7 +336,7 @@ export const SessionApi = HttpApi.make("session")
           query: WorkspaceRoutingQuery,
           payload: UpdatePayload,
           success: described(Session.Info, "Successfully updated session"),
-          error: [HttpApiError.BadRequest, ApiNotFoundError],
+          error: [HttpApiError.BadRequest, ApiNotFoundError, ForbiddenError],
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "session.update",

@@ -16,13 +16,13 @@
 use std::collections::BTreeMap;
 
 use crate::transport::{
-    response_from_index_error, QueryResponse, TransportError, TransportRequest, TransportResponse,
-    WireErrorCode,
+    QueryResponse, TransportError, TransportRequest, TransportResponse, WireErrorCode,
+    response_from_index_error,
 };
 use crate::{
-    validate_query, BufferOverlay, Digest, GenerationPack, OpaquePin, OverlayChange,
-    RepoIntelGeneration, RepoIntelOperation, RepoIntelQuery, RepoIntelQueryResult, RepoIntelStatus,
-    RepoIntelUnavailableReason, SearchCursor,
+    BufferOverlay, Digest, GenerationPack, OpaquePin, OverlayChange, RepoIntelGeneration,
+    RepoIntelOperation, RepoIntelQuery, RepoIntelQueryResult, RepoIntelStatus,
+    RepoIntelUnavailableReason, SearchCursor, validate_query,
 };
 
 /// In-memory reference handler for decoded RepoIntel transport requests.

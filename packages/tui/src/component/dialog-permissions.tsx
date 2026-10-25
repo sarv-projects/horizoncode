@@ -6,6 +6,7 @@ import { useSDK } from "../context/sdk"
 import { useTheme } from "../context/theme"
 import { useToast } from "../ui/toast"
 import type { DirectSessionPermissionModeV1 } from "@opencode-ai/sdk/v2"
+import { HorizonCodingProfile } from "@opencode-ai/core/config/coding-profile"
 
 type Choice =
   | { dimension: "sandboxMode"; value: DirectSessionPermissionModeV1["sandboxMode"] }
@@ -138,6 +139,7 @@ export function DialogPermissions(props: { sessionID: string }) {
             <text fg={theme.warning}>Full access disables HorizonCode filesystem and network sandboxing for this Session.</text>
           </Show>
           <text fg={theme.textMuted}>Changing this posture does not execute or approve an effect.</text>
+          <text fg={theme.textMuted}>Coding (recommended) preset: {HorizonCodingProfile.settings.sandboxMode} + {HorizonCodingProfile.settings.approvalPolicy} · Goal {HorizonCodingProfile.settings.goal} · {HorizonCodingProfile.settings.firstBoundaryGrant} on first boundary crossing.</text>
         </box>
       }
       onFilter={() => {}}

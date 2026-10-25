@@ -280,15 +280,20 @@ def _resolve_dependency(package_root: Path, dependency: str, allowed_root: Path)
         if not _inside(candidate, allowed_root):
             continue
         try:
-            _reject_symlink_components(candidate, allowed_root, "runtime dependency manifest")
-            metadata = candidate.lstat()
+            # Containment is decided by the resolved target: an in-root install
+            # link (isolated package store) is resolvable, an escaping link is not.
+            resolved = candidate.resolve(strict=True)
         except OSError:
             continue
-        except ValueError:
+        if not _inside(resolved, allowed_root):
             return None
+        try:
+            metadata = resolved.lstat()
+        except OSError:
+            continue
         if not stat.S_ISREG(metadata.st_mode):
             return None
-        return candidate.parent
+        return resolved.parent
     return None
 
 
@@ -929,6 +934,67 @@ def _product_target(root_package: dict, app_package: dict) -> dict:
     }
 
 
+def _container_builder_has_push_command(source: str) -> bool:
+    """Detect push flags on Docker command lines, not policy prose/comments."""
+    executable_lines = "\n".join(
+        line for line in source.splitlines() if not line.lstrip().startswith("//")
+    )
+    return bool(re.search(r"\bdocker\b[^\n]*(?:--push|\bpush\b)", executable_lines, re.IGNORECASE))
+
+
+def _top_level_yaml_block(source: str, key: str) -> list[str] | None:
+    """Read one indentation-based YAML top-level block without loading YAML."""
+    lines = source.splitlines()
+    header = f"{key}:"
+    for index, line in enumerate(lines):
+        if line != header:
+            continue
+        block: list[str] = []
+        for candidate in lines[index + 1 :]:
+            if candidate and not candidate[0].isspace():
+                break
+            block.append(candidate)
+        return block
+    return None
+
+
+def _publication_workflow_is_fail_closed(source: str) -> bool:
+    """Require the root publication workflow to be manual, read-only, and inert."""
+    triggers = _top_level_yaml_block(source, "on")
+    if triggers is None:
+        return False
+    trigger_names = [
+        line.strip().removesuffix(":")
+        for line in triggers
+        if line.startswith("  ") and not line.startswith("   ") and line.strip()
+    ]
+    if trigger_names != ["workflow_dispatch"]:
+        return False
+
+    permissions = _top_level_yaml_block(source, "permissions")
+    if permissions is None:
+        return False
+    permission_entries = [line.strip() for line in permissions if line.strip() and not line.lstrip().startswith("#")]
+    if permission_entries != ["contents: read"]:
+        return False
+
+    jobs = _top_level_yaml_block(source, "jobs")
+    if jobs is None:
+        return False
+    job_starts = [
+        index
+        for index, line in enumerate(jobs)
+        if re.fullmatch(r"  [A-Za-z0-9_-]+:\s*", line)
+    ]
+    if not job_starts:
+        return False
+    for start_index, end_index in zip(job_starts, [*job_starts[1:], len(jobs)], strict=True):
+        job = jobs[start_index:end_index]
+        if not any(re.fullmatch(r"    if:\s*\$\{\{\s*false\s*\}\}\s*", line) for line in job):
+            return False
+    return True
+
+
 def audit_repository(root: Path, artifact: Path | None = None) -> dict:
     requested_root = Path(os.path.abspath(root))
     if not _inside(requested_root, REPOSITORY_ROOT):
@@ -953,6 +1019,10 @@ def audit_repository(root: Path, artifact: Path | None = None) -> dict:
     vendor_license = _read_local_bytes(vendor_license_path, root, MAX_AUDIT_TEXT_BYTES) if vendor_license_regular else None
     root_license_matches_vendor = root_license is not None and vendor_license is not None and root_license == vendor_license
     tracked_root_license = root_license_regular and _is_tracked(root, "LICENSE")
+    tracked_root_notice = any(
+        _regular_file(root / name, root) and _is_tracked(root, name)
+        for name in ("NOTICE", "NOTICE.md", "NOTICE.txt")
+    )
 
     license_reasons = []
     if root_package.get("license") == "UNLICENSED":
@@ -968,11 +1038,20 @@ def audit_repository(root: Path, artifact: Path | None = None) -> dict:
         license_reasons.append("root LICENSE is byte-identical to the OpenCode vendor license and carries upstream-only attribution")
     if not tracked_root_license:
         license_reasons.append("no tracked first-party root distribution license was established")
+    if not tracked_root_notice:
+        license_reasons.append("no tracked first-party root distribution notice was established")
     if root_license_regular and root_license is None:
         license_reasons.append("root distribution license could not be safely read within the audit bound")
     if vendor_license_regular and vendor_license is None:
         license_reasons.append("vendor license could not be safely read within the audit bound")
     distribution_license_status = "BLOCKED" if license_reasons else "REVIEW_REQUIRED"
+    first_party_license_decision_made = (
+        root_package.get("license") == "MIT"
+        and root_license_regular
+        and tracked_root_license
+        and not root_license_matches_vendor
+        and tracked_root_notice
+    )
 
     runtime_dependencies = scan_runtime_dependencies(root / "packages" / "opencode", root, manifest_errors) if app_package else {
         "basis": "no packages/opencode/package.json",
@@ -1043,17 +1122,27 @@ def audit_repository(root: Path, artifact: Path | None = None) -> dict:
     container_push_guard = 'if (process.argv.includes("--push") || process.env.PUSH === "1")'
     container_guard_index = container_builder_text.find(container_push_guard)
     container_docker_index = container_builder_text.find("docker build")
-    container_has_push_command = bool(
-        re.search(r"docker[^`\n]*(?:--push|\bpush\b)", container_builder_text, re.IGNORECASE)
-    )
+    container_has_push_command = _container_builder_has_push_command(container_builder_text)
     package_build = root / "packages" / "opencode" / "script" / "build.ts"
     package_build_bytes = _read_local_bytes(package_build, root, MAX_AUDIT_TEXT_BYTES)
     package_build_text = package_build_bytes.decode("utf-8", errors="replace") if package_build_bytes is not None else ""
+    nix_package_bytes = _read_local_bytes(root / "nix" / "opencode.nix", root, MAX_AUDIT_TEXT_BYTES)
+    nix_package_text = nix_package_bytes.decode("utf-8", errors="replace") if nix_package_bytes is not None else ""
+    nix_package_license_claim = (
+        "MIT"
+        if re.search(r"(?m)^\s*license\s*=\s*lib\.licenses\.mit\s*;", nix_package_text)
+        else None
+    )
     package_release_upload_disabled = (
-        "HorizonCode release upload is unavailable until distribution rights" in package_build_text
+        re.search(
+            r"HorizonCode release upload is unavailable (?:until|while)\b",
+            package_build_text,
+        )
+        is not None
         and "gh release upload" not in package_build_text
     )
     release_source_paths = (
+        ".github/workflows/publish.yml",
         "packages/opencode/script/publish.ts",
         "packages/opencode/script/build.ts",
         "packages/containers/README.md",
@@ -1068,6 +1157,14 @@ def audit_repository(root: Path, artifact: Path | None = None) -> dict:
         "scripts/release/prepare_build.py",
         "scripts/release/release_gate.py",
         ".github/workflows/horizoncode-release-qualification.yml",
+        "flake.nix",
+        "flake.lock",
+        "nix/opencode.nix",
+        "nix/node_modules.nix",
+        "nix/desktop.nix",
+        "nix/hashes.json",
+        "nix/scripts/canonicalize-node-modules.ts",
+        "nix/scripts/normalize-bun-binaries.ts",
     )
     release_source_visibility = {
         name: (root / name).is_file() and _is_git_visible(root, name)
@@ -1079,7 +1176,8 @@ def audit_repository(root: Path, artifact: Path | None = None) -> dict:
     }
     container_local_chain_safe = (
         'process.env.REGISTRY ?? "localhost/horizoncode"' in container_builder_text
-        and '"--build-arg", `IMAGE_TAG=${tag}`' in container_builder_text
+        and '"--build-arg"' in container_builder_text
+        and '`IMAGE_TAG=${tag}`' in container_builder_text
         and all(
             raw is not None
             and "ARG REGISTRY=localhost/horizoncode" in raw.decode("utf-8", errors="replace")
@@ -1101,7 +1199,7 @@ def audit_repository(root: Path, artifact: Path | None = None) -> dict:
         blockers.extend(license_reasons)
     if app_package.get("private") is True:
         blockers.append("packages/opencode is private and is not a public package target")
-    if package_bin != {"horizoncode": "./bin/opencode", "hzcode": "./bin/opencode"}:
+    if package_bin != {"horizoncode": "./bin/horizoncode", "hzcode": "./bin/horizoncode"}:
         blockers.append("packages/opencode must expose horizoncode and hzcode from the same launcher")
     if installer_command != "horizoncode" or installer_alias != "hzcode":
         blockers.append("standalone installer must install horizoncode with the hzcode short command")
@@ -1152,6 +1250,9 @@ def audit_repository(root: Path, artifact: Path | None = None) -> dict:
             "release control sources are absent or hidden by Git ignore rules: "
             + ", ".join(hidden_release_sources)
         )
+    publish_workflow_fail_closed = _publication_workflow_is_fail_closed(workflow_text)
+    if not publish_workflow_fail_closed:
+        blockers.append("root publication workflow is absent or not fail-closed")
     if not publisher_disabled or publisher_has_mutation:
         blockers.append("the direct package publisher is absent, not HorizonCode-disabled, or retains publication commands")
     if not container_builder_rejects_publication:
@@ -1205,15 +1306,13 @@ def audit_repository(root: Path, artifact: Path | None = None) -> dict:
             "root_license_is_regular": root_license_regular,
             "root_license_tracked": tracked_root_license,
             "root_license_sha256": hashlib.sha256(root_license).hexdigest() if root_license is not None else None,
+            "root_notice_tracked": tracked_root_notice,
             "vendor_license_present": vendor_license is not None,
             "vendor_license_sha256": hashlib.sha256(vendor_license).hexdigest() if vendor_license is not None else None,
             "root_license_matches_vendor": root_license_matches_vendor,
-            "separate_notice_tracked": any(
-                _regular_file(root / name) and _is_tracked(root, name)
-                for name in ("NOTICE", "NOTICE.md", "NOTICE.txt")
-            ),
+            "separate_notice_tracked": tracked_root_notice,
             "reasons": license_reasons,
-            "legal_decision_made": False,
+            "legal_decision_made": first_party_license_decision_made,
         },
         "package_target": {
             "name": app_package.get("name"),
@@ -1232,6 +1331,8 @@ def audit_repository(root: Path, artifact: Path | None = None) -> dict:
             "installer_command_name": installer_command,
             "installer_alias_name": installer_alias,
             "publish_workflow_upstream_guard": "github.repository == 'anomalyco/opencode'" in workflow_text,
+            "publish_workflow_fail_closed": publish_workflow_fail_closed,
+            "nix_package_license_claim": nix_package_license_claim,
             "inherited_publication_workflows_disabled": disabled_workflow_facts,
             "inherited_publication_workflows_git_visible": workflow_git_visibility_facts,
             "release_control_sources_git_visible": release_source_visibility,

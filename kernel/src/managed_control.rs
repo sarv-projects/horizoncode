@@ -19,15 +19,17 @@
 use crate::artifact_store::{
     ArtifactAccessV1, ArtifactError, ArtifactMetadataV1, ArtifactOwnerScopeV1,
 };
-pub(crate) use crate::agent_profile::{ProfileOwnerBindingV1, ProfileRevisionRefV1};
+pub use crate::agent_profile::ProfileRevisionRefV1;
+pub(crate) use crate::agent_profile::ProfileOwnerBindingV1;
 use crate::host_kernel::ObservedVerifierRunV1;
 use crate::messagepack::{self, FRAME_LIMITS};
 use crate::owner_log::{
     DurabilityProfile, OwnerEventInput, OwnerIdentity, OwnerLogError, OwnerLogV2,
+    OWNER_EVENT_SCHEMA_VERSION_V1,
 };
 use crate::protocol::{
     ArtifactClassificationV1, ArtifactRefV1, CursorV1, DelegationBindingV1,
-    ManagedMessageAuthorityPinsV1, MAX_DIRECT_ATTEMPT_EFFECTS,
+    ManagedMessageAuthorityPinsV1, MAX_DIRECT_ATTEMPT_EFFECTS, is_sha256_digest,
 };
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -910,17 +912,20 @@ impl ManagedDispatchCompletionSnapshotV1 {
 
 /// Immutable Task authority captured by `goal.plan` and adopted atomically by
 /// `goal.start`. It intentionally contains no Attempt or effect authority.
+/// Public so authenticated plan-ingress callers (and reducer tests) can
+/// construct the exact planned-run shape; the reducer still validates every
+/// field before it becomes durable Task authority.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct PlannedTaskV1 {
-    pub(crate) task_id: String,
-    pub(crate) title: Option<String>,
-    pub(crate) purpose: Option<String>,
-    pub(crate) dependencies: Vec<String>,
-    pub(crate) criterion_ids: Vec<String>,
-    pub(crate) required_capabilities: Vec<String>,
-    pub(crate) agent_profile_revision: ProfileRevisionRefV1,
-    pub(crate) profile_token_budget: u64,
-    pub(crate) profile_owner_binding_digest: String,
+pub struct PlannedTaskV1 {
+    pub task_id: String,
+    pub title: Option<String>,
+    pub purpose: Option<String>,
+    pub dependencies: Vec<String>,
+    pub criterion_ids: Vec<String>,
+    pub required_capabilities: Vec<String>,
+    pub agent_profile_revision: ProfileRevisionRefV1,
+    pub profile_token_budget: u64,
+    pub profile_owner_binding_digest: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -948,7 +953,7 @@ pub struct BoundEffect {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum AttemptEffectOutcomeV1 {
+pub enum AttemptEffectOutcomeV1 {
     Succeeded,
     Failed,
     Unknown,
@@ -957,56 +962,60 @@ pub(crate) enum AttemptEffectOutcomeV1 {
 /// HostKernel-only facts from the exact EffectHost target receipt. The request
 /// decoder cannot construct this proof; the append path verifies it against the
 /// live Attempt and its immutable bound-effect edge before making it durable.
+/// Public fields let the authenticated HostKernel adapter (and reducer tests)
+/// construct the proof; every field is revalidated against live durable state.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ManagedAttemptEffectReceiptProofV1 {
-    pub(crate) goal_id: String,
-    pub(crate) run_id: String,
-    pub(crate) task_id: String,
-    pub(crate) attempt_id: String,
-    pub(crate) effect_id: String,
-    pub(crate) executor_principal: String,
-    pub(crate) owner_epoch: u64,
-    pub(crate) bound_revision: u64,
-    pub(crate) location_id: String,
-    pub(crate) session_id: String,
-    pub(crate) capability_id: String,
-    pub(crate) capability_lease_digest: String,
-    pub(crate) outcome: AttemptEffectOutcomeV1,
-    pub(crate) target_receipt_digest: Option<String>,
-    pub(crate) before_workspace_revision: String,
-    pub(crate) after_workspace_revision: Option<String>,
+pub struct ManagedAttemptEffectReceiptProofV1 {
+    pub goal_id: String,
+    pub run_id: String,
+    pub task_id: String,
+    pub attempt_id: String,
+    pub effect_id: String,
+    pub executor_principal: String,
+    pub owner_epoch: u64,
+    pub bound_revision: u64,
+    pub location_id: String,
+    pub session_id: String,
+    pub capability_id: String,
+    pub capability_lease_digest: String,
+    pub outcome: AttemptEffectOutcomeV1,
+    pub target_receipt_digest: Option<String>,
+    pub before_workspace_revision: String,
+    pub after_workspace_revision: Option<String>,
 }
 
 /// HostKernel-only immutable verifier intent attached to one already durable
-/// EffectIntent/Attempt edge before Guard issues the one-use lease.
+/// EffectIntent/Attempt edge before Guard issues the one-use lease. Public
+/// fields let the authenticated HostKernel adapter (and reducer tests) build
+/// the intent; the reducer revalidates every pin against live durable state.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ManagedAttemptVerifierIntentV1 {
-    pub(crate) goal_id: String,
-    pub(crate) run_id: String,
-    pub(crate) task_id: String,
-    pub(crate) attempt_id: String,
-    pub(crate) effect_id: String,
+pub struct ManagedAttemptVerifierIntentV1 {
+    pub goal_id: String,
+    pub run_id: String,
+    pub task_id: String,
+    pub attempt_id: String,
+    pub effect_id: String,
     /// Authenticated assigned reviewer who approved the verifier challenge.
-    pub(crate) reviewer_principal: String,
+    pub reviewer_principal: String,
     /// Registered verifier child identity that will run the read-only process.
-    pub(crate) verifier_principal: String,
-    pub(crate) owner_epoch: u64,
-    pub(crate) bound_revision: u64,
-    pub(crate) location_id: String,
-    pub(crate) session_id: String,
-    pub(crate) capability_id: String,
-    pub(crate) verifier_profile_id: String,
-    pub(crate) executable_digest: String,
-    pub(crate) profile_digest: String,
-    pub(crate) criterion_id: String,
-    pub(crate) test_identity: String,
-    pub(crate) arguments_digest: String,
+    pub verifier_principal: String,
+    pub owner_epoch: u64,
+    pub bound_revision: u64,
+    pub location_id: String,
+    pub session_id: String,
+    pub capability_id: String,
+    pub verifier_profile_id: String,
+    pub executable_digest: String,
+    pub profile_digest: String,
+    pub criterion_id: String,
+    pub test_identity: String,
+    pub arguments_digest: String,
     /// Exact refreshed managed scope under which the verifier process lease was
     /// admitted. Missing only on legacy replay and therefore not recoverable.
-    pub(crate) attempt_scope_digest: Option<String>,
-    pub(crate) source_workspace_revision: String,
-    pub(crate) max_duration_ms: u64,
-    pub(crate) max_output_bytes: u64,
+    pub attempt_scope_digest: Option<String>,
+    pub source_workspace_revision: String,
+    pub max_duration_ms: u64,
+    pub max_output_bytes: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1281,6 +1290,13 @@ impl ManagedDispatchQuiescedReceiptV1 {
 
     pub(crate) fn proof(&self) -> &ManagedDispatchQuiescenceProofV1 { &self.proof }
     pub(crate) fn managed_revision(&self) -> u64 { self.managed_revision }
+    pub(crate) fn session_id(&self) -> &str { &self.proof.session_id }
+    pub(crate) fn attempt_id(&self) -> &str { &self.proof.attempt_id }
+    pub(crate) fn owner_epoch(&self) -> u64 { self.proof.owner_epoch }
+    pub(crate) fn process_incarnation(&self) -> &str { &self.proof.process_incarnation }
+    pub(crate) fn child_session_sequence(&self) -> u64 { self.proof.child_session_sequence }
+    pub(crate) fn child_session_event_digest(&self) -> &str { &self.proof.child_session_event_digest }
+    pub(crate) fn child_session_state_digest(&self) -> &str { &self.proof.child_session_state_digest }
     pub(crate) fn owner_log_id(&self) -> &str { &self.owner_log_id }
     pub(crate) fn owner_log_sequence(&self) -> u64 { self.owner_log_sequence }
     pub(crate) fn owner_log_event_digest(&self) -> &str { &self.owner_log_event_digest }
@@ -1445,36 +1461,36 @@ pub enum VerificationVerdictV1 {
 /// content references owned by `verification_run:{verification_run_id}`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CriterionTestEvidenceV1 {
-    pub(crate) criterion_id: String,
-    pub(crate) verdict: VerificationVerdictV1,
-    pub(crate) test_identity: String,
-    pub(crate) test_run_id: String,
-    pub(crate) process: CriterionVerifierProcessEvidenceV1,
-    pub(crate) artifact_refs: Vec<ArtifactRefV1>,
+    pub criterion_id: String,
+    pub verdict: VerificationVerdictV1,
+    pub test_identity: String,
+    pub test_run_id: String,
+    pub process: CriterionVerifierProcessEvidenceV1,
+    pub artifact_refs: Vec<ArtifactRefV1>,
 }
 
 /// Immutable HostKernel profile binding for an independently supervised
 /// verification run. The profile applies to the full exact criterion set.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerifierProfileEvidenceV1 {
-    pub(crate) profile_id: String,
-    pub(crate) owner_epoch: u64,
-    pub(crate) executable_digest: String,
-    pub(crate) profile_digest: String,
+    pub profile_id: String,
+    pub owner_epoch: u64,
+    pub executable_digest: String,
+    pub profile_digest: String,
 }
 
 /// Host-observed bounded output facts for the one supervised process assigned
 /// to a criterion by the immutable HostKernel profile.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CriterionVerifierProcessEvidenceV1 {
-    pub(crate) execution_id: String,
-    pub(crate) generation: u64,
-    pub(crate) exit_code: i32,
-    pub(crate) stdout_digest: String,
-    pub(crate) stderr_digest: String,
-    pub(crate) output_bytes: u64,
-    pub(crate) duration_ms: u64,
-    pub(crate) truncated: bool,
+    pub execution_id: String,
+    pub generation: u64,
+    pub exit_code: i32,
+    pub stdout_digest: String,
+    pub stderr_digest: String,
+    pub output_bytes: u64,
+    pub duration_ms: u64,
+    pub truncated: bool,
 }
 
 /// Full immutable verifier result for one live final workspace revision.
@@ -1482,14 +1498,14 @@ pub struct CriterionVerifierProcessEvidenceV1 {
 /// exact fields after it has validated each ArtifactRef against ArtifactStore.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerificationEvidenceV1 {
-    pub(crate) verification_run_id: String,
-    pub(crate) verifier_id: String,
-    pub(crate) source_revision: String,
-    pub(crate) profile: VerifierProfileEvidenceV1,
-    pub(crate) aggregate_output_bytes: u64,
-    pub(crate) aggregate_duration_ms: u64,
-    pub(crate) criteria: Vec<CriterionTestEvidenceV1>,
-    pub(crate) evidence_digest: String,
+    pub verification_run_id: String,
+    pub verifier_id: String,
+    pub source_revision: String,
+    pub profile: VerifierProfileEvidenceV1,
+    pub aggregate_output_bytes: u64,
+    pub aggregate_duration_ms: u64,
+    pub criteria: Vec<CriterionTestEvidenceV1>,
+    pub evidence_digest: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1845,19 +1861,38 @@ impl ParentExecutionProofV1 {
         if !proof.matches_worker_owner(parent_worker)
             || parent_worker.worker_state() != crate::resource_budget::ReservationState::Claimed
             || parent_worker.process_identity().is_none()
-            || proof.owner_epoch == 0
-            || proof.worker_pool_revision == 0
-            || !proof.owner_log_sequence.parse::<u64>().is_ok_and(|sequence| sequence > 0)
         {
             return Err(ManagedError::Conflict(
                 "active parent execution owner proof is missing or stale",
             ));
         }
-        id(&proof.execution_id)?;
-        id(&proof.owner_log_id)?;
-        principal(&proof.principal_ref)?;
-        managed_digest(&proof.accepted_spec_digest)?;
-        blake3_digest(&proof.owner_log_event_digest)?;
+        let Self::Worker {
+            execution_id,
+            principal_ref,
+            owner_epoch,
+            worker_pool_revision,
+            owner_log_sequence,
+            owner_log_id,
+            accepted_spec_digest,
+            owner_log_event_digest,
+            ..
+        } = &proof
+        else {
+            unreachable!("constructed worker proof must be the worker variant")
+        };
+        if *owner_epoch == 0
+            || *worker_pool_revision == 0
+            || !owner_log_sequence.parse::<u64>().is_ok_and(|sequence| sequence > 0)
+        {
+            return Err(ManagedError::Conflict(
+                "active parent execution owner proof is missing or stale",
+            ));
+        }
+        id(execution_id)?;
+        id(owner_log_id)?;
+        principal(principal_ref)?;
+        managed_digest(accepted_spec_digest)?;
+        blake3_digest(owner_log_event_digest)?;
         Ok(proof)
     }
 
@@ -2431,7 +2466,7 @@ fn durable_lease_proof_matches_attempt(
         && pins.profile_revision() == facts.registered_profile.profile_revision
         && pins.profile_digest() == facts.registered_profile.profile_digest
         && pins.profile_permission_ceiling_digest() == facts.registered_profile.permission_ceiling_digest
-        && pins.context_selection_digest() == facts.bounded_context.context_selection_digest
+        && pins.context_selection_digest() == Some(facts.bounded_context.context_selection_digest.as_str())
         && pins.accepted_scope_digest() == facts.effective_capability_ceiling.accepted_scope_digest()
         && pins.capability_ceiling_digest() == facts.effective_capability_ceiling.effective_ceiling_digest()
         && pins.dimension() == crate::resource_budget::BudgetDimension::ActiveWorkers
@@ -2445,6 +2480,3045 @@ fn durable_lease_proof_matches_attempt(
         && blake3_digest(lease.owner_log_event_digest()).is_ok()
         && lease.worker_pool_revision() > 0
         && facts.parent_execution.matches_child(&facts.authenticated_attempt, lease)
+}
+
+// ---------------------------------------------------------------------------
+// HostRun dispatch binding / reconciliation contract (P2-owned durable record)
+// ---------------------------------------------------------------------------
+
+/// Canonical domain separator for the durable HostRun dispatch binding digest.
+const HOST_RUN_BINDING_DOMAIN: &[u8] = b"horizoncode.host-run-dispatch-binding.v1\0";
+/// Canonical domain separator for the managed provider-selection projection.
+const HOST_RUN_PROVIDER_SELECTION_DOMAIN: &[u8] =
+    b"horizoncode.managed-provider-selection.v1\0";
+
+/// Maximum committed effects P2 requests in one HostRun projection. This mirrors
+/// P1's canonical ToolBatch bound (`effect_host::MAX_TOOL_BATCH_CALLS`); P2 keeps
+/// a local copy so this contract does not depend on a private P1 constant.
+pub(crate) const MAX_HOST_RUN_PROJECTION_EFFECTS: usize = 32;
+
+/// P8-owned evaluator-side identity for one dispatch arm. P2 stores only the
+/// values below; every managed identity field of the durable binding is derived
+/// from the live `ManagedSnapshot`, never from this input.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HostRunEvaluationIdentityV1 {
+    pub(crate) dispatch_key_digest: String,
+    pub(crate) manifest_digest: String,
+    pub(crate) evaluator_task_id: String,
+    pub(crate) arm_id: String,
+    pub(crate) task_group: String,
+    pub(crate) evaluation_session_id: String,
+    pub(crate) core_process_generation: u64,
+    pub(crate) owner_id: String,
+    pub(crate) workspace_binding_digest: String,
+    pub(crate) owner_principal_binding_digest: String,
+}
+
+impl HostRunEvaluationIdentityV1 {
+    /// Strict decoder for P8's authenticated evaluator projection. P8 must
+    /// validate the record against its own OwnerLog before calling; P2
+    /// additionally rejects anything that does not match the live managed
+    /// Attempt, so this value alone never establishes dispatch authority.
+    pub(crate) fn decode(value: &Value) -> Result<Self, ManagedError> {
+        exact_object(value, 10)?;
+        let core_process_generation = required_decimal_u64(value, "coreProcessGeneration")?;
+        let identity = Self {
+            dispatch_key_digest: required_blake3(value, "dispatchKeyDigest")?,
+            manifest_digest: required_blake3(value, "manifestDigest")?,
+            evaluator_task_id: required_string(value, "evaluatorTaskId")?,
+            arm_id: required_string(value, "armId")?,
+            task_group: required_string(value, "taskGroup")?,
+            evaluation_session_id: required_string(value, "evaluationSessionId")?,
+            core_process_generation,
+            owner_id: required_string(value, "ownerId")?,
+            workspace_binding_digest: required_blake3(value, "workspaceBindingDigest")?,
+            owner_principal_binding_digest: required_blake3(
+                value,
+                "ownerPrincipalBindingDigest",
+            )?,
+        };
+        identity.validate()?;
+        Ok(identity)
+    }
+
+    pub(crate) fn value(&self) -> Value {
+        json!({
+            "dispatchKeyDigest": self.dispatch_key_digest,
+            "manifestDigest": self.manifest_digest,
+            "evaluatorTaskId": self.evaluator_task_id,
+            "armId": self.arm_id,
+            "taskGroup": self.task_group,
+            "evaluationSessionId": self.evaluation_session_id,
+            "coreProcessGeneration": self.core_process_generation.to_string(),
+            "ownerId": self.owner_id,
+            "workspaceBindingDigest": self.workspace_binding_digest,
+            "ownerPrincipalBindingDigest": self.owner_principal_binding_digest,
+        })
+    }
+
+    fn validate(&self) -> Result<(), ManagedError> {
+        for value in [
+            &self.evaluator_task_id,
+            &self.arm_id,
+            &self.task_group,
+            &self.evaluation_session_id,
+            &self.owner_id,
+        ] {
+            id(value)?;
+        }
+        for value in [
+            &self.dispatch_key_digest,
+            &self.manifest_digest,
+            &self.workspace_binding_digest,
+            &self.owner_principal_binding_digest,
+        ] {
+            blake3_digest(value)?;
+        }
+        if self.core_process_generation == 0 {
+            return Err(ManagedError::Invalid(
+                "HostRun evaluation process generation is zero",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Durable, pre-dispatch binding between one P8 evaluator dispatch key and the
+/// exact authenticated managed Run/Task/Attempt/evaluation Session/process
+/// generation that owns it.
+///
+/// P2 persists a digest of the dispatch key, never the key itself. The record is
+/// **not** proof of a terminal outcome: reconciliation additionally requires the
+/// committed ToolBatch projection from P1 (see
+/// [`HostRunProcessEffectProjectionV1`]) and the durable managed Task/Run
+/// settlement. No RPC body constructs this value; only
+/// [`HostRunDispatchBindingV1::from_authenticated_evaluator`] does, and it derives
+/// every managed identity field from the live snapshot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HostRunDispatchBindingV1 {
+    pub(crate) schema_version: u64,
+    pub(crate) dispatch_key_digest: String,
+    pub(crate) manifest_digest: String,
+    pub(crate) evaluator_task_id: String,
+    pub(crate) arm_id: String,
+    pub(crate) task_group: String,
+    pub(crate) run_id: String,
+    pub(crate) managed_task_id: String,
+    pub(crate) attempt_id: String,
+    pub(crate) evaluation_session_id: String,
+    pub(crate) core_process_generation: u64,
+    pub(crate) owner_id: String,
+    pub(crate) owner_epoch: u64,
+    pub(crate) worker_execution_id: String,
+    pub(crate) delegation_binding_digest: String,
+    pub(crate) accepted_spec_digest: String,
+    pub(crate) provider_selection_digest: String,
+    pub(crate) workspace_binding_digest: String,
+    pub(crate) admitted_workspace_revision: String,
+    pub(crate) attempt_scope_digest: String,
+    pub(crate) owner_principal_binding_digest: String,
+}
+
+impl HostRunDispatchBindingV1 {
+    pub(crate) const SCHEMA_VERSION: u64 = 1;
+
+    /// HostKernel-only constructor. The `attempt_id` and
+    /// `attempt_scope_digest` must come from the live authenticated dispatch
+    /// frame (the latter is the exact canonical `EffectAttemptScopeV1::digest()`
+    /// Guard will consume for this Attempt's effects). Every other managed field
+    /// is read from durable managed state rather than accepted as a caller claim.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_authenticated_evaluator(
+        snapshot: &ManagedSnapshot,
+        attempt_id: &str,
+        worker_execution_id: &str,
+        attempt_scope_digest: &str,
+        identity: HostRunEvaluationIdentityV1,
+    ) -> Result<Self, ManagedError> {
+        identity.validate()?;
+        id(attempt_id)?;
+        id(worker_execution_id)?;
+        blake3_digest(attempt_scope_digest)?;
+        let attempt = snapshot
+            .attempts
+            .get(attempt_id)
+            .ok_or(ManagedError::Conflict(
+                "HostRun dispatch binding requires a live managed Attempt",
+            ))?;
+        if attempt.phase != AttemptPhase::Executing {
+            return Err(ManagedError::Conflict(
+                "HostRun dispatch binding requires an executing Attempt",
+            ));
+        }
+        let run = snapshot
+            .runs
+            .get(&attempt.run_id)
+            .ok_or(ManagedError::Conflict(
+                "HostRun dispatch binding Attempt has no Run",
+            ))?;
+        if run.tasks.get(&attempt.task_id).is_none() {
+            return Err(ManagedError::Conflict(
+                "HostRun dispatch binding Attempt has no Task",
+            ));
+        }
+        let spec = snapshot
+            .specs
+            .get(&run.spec_id)
+            .ok_or(ManagedError::Conflict(
+                "HostRun dispatch binding Run has no accepted SpecVersion",
+            ))?;
+        let delegation = attempt.delegation_binding.as_ref().ok_or(
+            ManagedError::Conflict("HostRun dispatch binding Attempt has no delegation binding"),
+        )?;
+        if delegation.run_id != attempt.run_id
+            || delegation.task_id != attempt.task_id
+            || delegation.owner_epoch != attempt.owner_epoch
+            || delegation.accepted_spec_digest != spec.digest
+        {
+            return Err(ManagedError::Conflict(
+                "HostRun dispatch binding delegation differs from durable managed state",
+            ));
+        }
+        let route = delegation.managed_provider_route.as_ref().ok_or(
+            ManagedError::Conflict(
+                "HostRun dispatch binding requires the exact managed provider route",
+            ),
+        )?;
+        let admitted_workspace_revision = attempt
+            .workspace_revision
+            .clone()
+            .ok_or(ManagedError::Conflict(
+                "HostRun dispatch binding requires an admitted workspace revision",
+            ))?;
+        managed_digest(&admitted_workspace_revision)?;
+        let binding = Self {
+            schema_version: Self::SCHEMA_VERSION,
+            dispatch_key_digest: identity.dispatch_key_digest,
+            manifest_digest: identity.manifest_digest,
+            evaluator_task_id: identity.evaluator_task_id,
+            arm_id: identity.arm_id,
+            task_group: identity.task_group,
+            run_id: attempt.run_id.clone(),
+            managed_task_id: attempt.task_id.clone(),
+            attempt_id: attempt_id.to_owned(),
+            evaluation_session_id: identity.evaluation_session_id,
+            core_process_generation: identity.core_process_generation,
+            owner_id: identity.owner_id,
+            owner_epoch: attempt.owner_epoch,
+            worker_execution_id: worker_execution_id.to_owned(),
+            delegation_binding_digest: delegation
+                .digest()
+                .map_err(|_| ManagedError::Invalid("delegation binding digest failed"))?,
+            accepted_spec_digest: spec.digest.clone(),
+            provider_selection_digest: managed_provider_selection_digest(route)?,
+            workspace_binding_digest: identity.workspace_binding_digest,
+            admitted_workspace_revision,
+            attempt_scope_digest: attempt_scope_digest.to_owned(),
+            owner_principal_binding_digest: identity.owner_principal_binding_digest,
+        };
+        binding.validate()?;
+        Ok(binding)
+    }
+
+    fn validate(&self) -> Result<(), ManagedError> {
+        if self.schema_version != Self::SCHEMA_VERSION {
+            return Err(ManagedError::Invalid(
+                "HostRun dispatch binding schema version is unsupported",
+            ));
+        }
+        for value in [
+            &self.evaluator_task_id,
+            &self.arm_id,
+            &self.task_group,
+            &self.run_id,
+            &self.managed_task_id,
+            &self.attempt_id,
+            &self.evaluation_session_id,
+            &self.owner_id,
+            &self.worker_execution_id,
+        ] {
+            id(value)?;
+        }
+        for value in [
+            &self.dispatch_key_digest,
+            &self.manifest_digest,
+            &self.delegation_binding_digest,
+            &self.accepted_spec_digest,
+            &self.provider_selection_digest,
+            &self.workspace_binding_digest,
+            &self.attempt_scope_digest,
+            &self.owner_principal_binding_digest,
+        ] {
+            blake3_digest(value)?;
+        }
+        managed_digest(&self.admitted_workspace_revision)?;
+        if self.core_process_generation == 0 || self.owner_epoch == 0 {
+            return Err(ManagedError::Invalid(
+                "HostRun dispatch binding carries a zero generation or epoch",
+            ));
+        }
+        Ok(())
+    }
+
+    fn preimage(&self) -> Value {
+        json!({
+            "schemaVersion": self.schema_version,
+            "dispatchKeyDigest": self.dispatch_key_digest,
+            "manifestDigest": self.manifest_digest,
+            "evaluatorTaskId": self.evaluator_task_id,
+            "armId": self.arm_id,
+            "taskGroup": self.task_group,
+            "runId": self.run_id,
+            "managedTaskId": self.managed_task_id,
+            "attemptId": self.attempt_id,
+            "evaluationSessionId": self.evaluation_session_id,
+            "coreProcessGeneration": self.core_process_generation.to_string(),
+            "ownerId": self.owner_id,
+            "ownerEpoch": self.owner_epoch.to_string(),
+            "workerExecutionId": self.worker_execution_id,
+            "delegationBindingDigest": self.delegation_binding_digest,
+            "acceptedSpecDigest": self.accepted_spec_digest,
+            "providerSelectionDigest": self.provider_selection_digest,
+            "workspaceBindingDigest": self.workspace_binding_digest,
+            "admittedWorkspaceRevision": self.admitted_workspace_revision,
+            "attemptScopeDigest": self.attempt_scope_digest,
+            "ownerPrincipalBindingDigest": self.owner_principal_binding_digest,
+        })
+    }
+
+    pub(crate) fn digest(&self) -> Result<String, ManagedError> {
+        let value = crate::protocol::Value::from_json_value(&self.preimage())
+            .ok_or(ManagedError::Invalid("HostRun dispatch binding preimage is invalid"))?;
+        let bytes = messagepack::encode(&value, FRAME_LIMITS)
+            .map_err(|_| ManagedError::Invalid("HostRun dispatch binding preimage is oversized"))?;
+        let mut preimage = HOST_RUN_BINDING_DOMAIN.to_vec();
+        preimage.extend_from_slice(&bytes);
+        Ok(format!("blake3:{}", blake3::hash(&preimage).to_hex()))
+    }
+
+    pub(crate) fn value(&self) -> Value {
+        let mut value = self.preimage();
+        value["bindingDigest"] = Value::String(
+            self.digest()
+                .unwrap_or_else(|_| "blake3:".to_owned()),
+        );
+        value
+    }
+
+    /// Strict decoder for durable replay. The digest is recomputed from the
+    /// decoded fields, so a persisted payload cannot carry a stale digest.
+    pub(crate) fn decode(payload: &Value) -> Result<Self, ManagedError> {
+        exact_object(payload, 22)?;
+        let binding = Self {
+            schema_version: required_u64(payload, "schemaVersion")?,
+            dispatch_key_digest: required_blake3(payload, "dispatchKeyDigest")?,
+            manifest_digest: required_blake3(payload, "manifestDigest")?,
+            evaluator_task_id: required_string(payload, "evaluatorTaskId")?,
+            arm_id: required_string(payload, "armId")?,
+            task_group: required_string(payload, "taskGroup")?,
+            run_id: required_string(payload, "runId")?,
+            managed_task_id: required_string(payload, "managedTaskId")?,
+            attempt_id: required_string(payload, "attemptId")?,
+            evaluation_session_id: required_string(payload, "evaluationSessionId")?,
+            core_process_generation: required_decimal_u64(payload, "coreProcessGeneration")?,
+            owner_id: required_string(payload, "ownerId")?,
+            owner_epoch: required_decimal_u64(payload, "ownerEpoch")?,
+            worker_execution_id: required_string(payload, "workerExecutionId")?,
+            delegation_binding_digest: required_blake3(payload, "delegationBindingDigest")?,
+            accepted_spec_digest: required_blake3(payload, "acceptedSpecDigest")?,
+            provider_selection_digest: required_blake3(payload, "providerSelectionDigest")?,
+            workspace_binding_digest: required_blake3(payload, "workspaceBindingDigest")?,
+            admitted_workspace_revision: required_string(payload, "admittedWorkspaceRevision")?,
+            attempt_scope_digest: required_blake3(payload, "attemptScopeDigest")?,
+            owner_principal_binding_digest: required_blake3(
+                payload,
+                "ownerPrincipalBindingDigest",
+            )?,
+        };
+        binding.validate()?;
+        let expected = required_blake3(payload, "bindingDigest")?;
+        if binding.digest()? != expected {
+            return Err(ManagedError::Invalid(
+                "HostRun dispatch binding digest mismatch",
+            ));
+        }
+        Ok(binding)
+    }
+}
+
+/// Exact durable reply for the committed HostRun dispatch binding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HostRunDispatchBindingReceiptV1 {
+    pub(crate) dispatch_key_digest: String,
+    pub(crate) binding_digest: String,
+    pub(crate) owner_log_sequence: u64,
+    pub(crate) owner_log_event_digest: String,
+    pub(crate) binding_managed_revision: u64,
+}
+
+impl HostRunDispatchBindingReceiptV1 {
+    pub(crate) fn value(&self) -> Value {
+        json!({
+            "schemaVersion": 1,
+            "dispatchKeyDigest": self.dispatch_key_digest,
+            "bindingDigest": self.binding_digest,
+            "ownerLogSequence": self.owner_log_sequence.to_string(),
+            "ownerLogEventDigest": self.owner_log_event_digest,
+            "bindingManagedRevision": self.binding_managed_revision.to_string(),
+        })
+    }
+}
+
+/// Accepts either the bare OwnerLog event-digest hex or the canonical
+/// `blake3:`-prefixed form; both encode exactly one BLAKE3-256 digest.
+fn owner_event_digest_is_valid(value: &str) -> bool {
+    let bare = value.strip_prefix("blake3:").unwrap_or(value);
+    bare.len() == 64
+        && bare
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+/// P8's post-commit OwnerLog receipt for a committed HostRun dispatch
+/// binding. P8 appends its mirrored `HostRunDispatchBoundV1` event first and
+/// then submits the exact cursor (OwnerLog ID, sequence, event digest) through
+/// HostKernel, which validates it against the already-committed binding.
+/// Dispatch must not proceed until this receipt is durable; reconciliation
+/// resolves `UNKNOWN` without it. No caller-supplied field creates or repairs
+/// the underlying binding, and a conflicting duplicate is rejected without
+/// mutation. `ownerLogID` is P8's own OwnerLog identity — P2 persists it as
+/// authenticated correlation evidence but never treats it as standalone
+/// terminal authority (reconcile still requires the managed terminal
+/// transition, verifier pins and the full P1 projection).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HostRunDispatchP8OwnerReceiptV1 {
+    pub(crate) schema_version: u64,
+    pub(crate) dispatch_key_digest: String,
+    pub(crate) binding_digest: String,
+    pub(crate) owner_log_id: String,
+    pub(crate) owner_log_sequence: String,
+    pub(crate) owner_log_event_digest: String,
+}
+
+impl HostRunDispatchP8OwnerReceiptV1 {
+    pub(crate) const SCHEMA_VERSION: u64 = 1;
+
+    pub(crate) fn validate(&self) -> Result<(), ManagedError> {
+        if self.schema_version != Self::SCHEMA_VERSION {
+            return Err(ManagedError::Invalid(
+                "HostRun P8 OwnerLog receipt schema version is unsupported",
+            ));
+        }
+        blake3_digest(&self.dispatch_key_digest)?;
+        blake3_digest(&self.binding_digest)?;
+        id(&self.owner_log_id)?;
+        if self.owner_log_sequence.is_empty()
+            || self.owner_log_sequence.len() > 32
+            || !self.owner_log_sequence.bytes().all(|byte| byte.is_ascii_digit())
+            || self
+                .owner_log_sequence
+                .parse::<u64>()
+                .map_err(|_| ManagedError::Invalid("HostRun P8 OwnerLog sequence is invalid"))?
+                == 0
+        {
+            return Err(ManagedError::Invalid(
+                "HostRun P8 OwnerLog sequence is invalid",
+            ));
+        }
+        if !owner_event_digest_is_valid(&self.owner_log_event_digest) {
+            return Err(ManagedError::Invalid(
+                "HostRun P8 OwnerLog event digest is invalid",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn value(&self) -> Value {
+        json!({
+            "schemaVersion": self.schema_version,
+            "dispatchKeyDigest": self.dispatch_key_digest,
+            "bindingDigest": self.binding_digest,
+            "ownerLogID": self.owner_log_id,
+            "ownerLogSequence": self.owner_log_sequence,
+            "ownerLogEventDigest": self.owner_log_event_digest,
+        })
+    }
+
+    /// Strict decoder for the durable replay payload; validity is rechecked.
+    pub(crate) fn decode(payload: &Value) -> Result<Self, ManagedError> {
+        exact_object(payload, 6)?;
+        let receipt = Self {
+            schema_version: required_u64(payload, "schemaVersion")?,
+            dispatch_key_digest: required_blake3(payload, "dispatchKeyDigest")?,
+            binding_digest: required_blake3(payload, "bindingDigest")?,
+            owner_log_id: required_string(payload, "ownerLogID")?,
+            owner_log_sequence: required_string(payload, "ownerLogSequence")?,
+            owner_log_event_digest: required_string(payload, "ownerLogEventDigest")?,
+        };
+        receipt.validate()?;
+        Ok(receipt)
+    }
+}
+
+/// One ordered effect reference P2 asks P1 to project from its persisted rows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HostRunProcessEffectReferenceV1 {
+    pub(crate) call_id: String,
+    pub(crate) effect_id: String,
+    pub(crate) capability_id: String,
+    pub(crate) arguments_digest: String,
+    pub(crate) effect_intent_digest: String,
+    pub(crate) capability_lease_digest: String,
+}
+
+/// P2-to-P1 read-only projection request over one committed ToolBatch. Every
+/// field is derived from the durable binding and the committed managed wave; no
+/// request body creates it and no receipt fact is supplied by the caller.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HostRunProcessEffectProjectionRequestV1 {
+    pub(crate) schema_version: u64,
+    pub(crate) binding_digest: String,
+    pub(crate) dispatch_key_digest: String,
+    pub(crate) batch_id: String,
+    pub(crate) run_id: String,
+    pub(crate) task_id: String,
+    pub(crate) attempt_id: String,
+    pub(crate) session_id: String,
+    pub(crate) principal: String,
+    pub(crate) owner_epoch: u64,
+    pub(crate) process_generation: u64,
+    pub(crate) attempt_scope_digest: String,
+    pub(crate) effects: Vec<HostRunProcessEffectReferenceV1>,
+}
+
+impl HostRunProcessEffectProjectionRequestV1 {
+    /// Builds the exact projection request for one committed wave. A wave whose
+    /// edges lack a committed receipt cannot be projected; the caller must map
+    /// that error to `UNKNOWN` and never redispatch.
+    pub(crate) fn for_committed_wave(
+        binding: &HostRunDispatchBindingV1,
+        binding_digest: &str,
+        wave: &ManagedAttemptEffectWaveV1,
+        receipts: &BTreeMap<String, ManagedAttemptEffectReceiptV1>,
+        principal: &str,
+    ) -> Result<Self, ManagedError> {
+        blake3_digest(binding_digest)?;
+        if binding_digest != binding.digest()? {
+            return Err(ManagedError::Conflict(
+                "HostRun projection binding digest differs from the durable binding",
+            ));
+        }
+        if wave.run_id != binding.run_id
+            || wave.task_id != binding.managed_task_id
+            || wave.attempt_id != binding.attempt_id
+        {
+            return Err(ManagedError::Conflict(
+                "HostRun projection wave differs from the durable binding identity",
+            ));
+        }
+        if wave.edges.is_empty() || wave.edges.len() > MAX_HOST_RUN_PROJECTION_EFFECTS {
+            return Err(ManagedError::Conflict(
+                "HostRun projection wave is empty or exceeds the committed batch bound",
+            ));
+        }
+        let mut effects = Vec::with_capacity(wave.edges.len());
+        // The dispatch-time Attempt scope digest is recorded per wave edge (it
+        // refreshes as the managed revision advances, including by this very
+        // binding's append); the binding's own digest is the pre-dispatch pin.
+        // P1 resolves effects from the exact per-wave pins, so the request
+        // carries the edge digest — never a caller-supplied value.
+        let mut wave_scope_digest: Option<&str> = None;
+        for edge in &wave.edges {
+            let receipt = receipts.get(&edge.effect_id).ok_or(ManagedError::Conflict(
+                "HostRun projection edge has no committed target receipt",
+            ))?;
+            if receipt.outcome == AttemptEffectOutcomeV1::Unknown {
+                return Err(ManagedError::Conflict(
+                    "HostRun projection edge is durably UNKNOWN",
+                ));
+            }
+            if receipt.capability_id != edge.capability_id
+                || receipt.session_id != wave.session_id
+                || receipt.owner_epoch != binding.owner_epoch
+            {
+                return Err(ManagedError::Conflict(
+                    "HostRun projection edge receipt differs from its committed identity",
+                ));
+            }
+            let edge_scope = edge.attempt_scope_digest.as_deref().ok_or(
+                ManagedError::Conflict(
+                    "HostRun projection edge has no committed Attempt scope digest",
+                ),
+            )?;
+            blake3_digest(edge_scope)?;
+            if wave_scope_digest.replace(edge_scope).is_some_and(|prior| prior != edge_scope) {
+                return Err(ManagedError::Conflict(
+                    "HostRun projection wave mixes Attempt scope digests",
+                ));
+            }
+            blake3_digest(&receipt.capability_lease_digest)?;
+            effects.push(HostRunProcessEffectReferenceV1 {
+                call_id: edge.call_id.clone(),
+                effect_id: edge.effect_id.clone(),
+                capability_id: edge.capability_id.clone(),
+                arguments_digest: edge.arguments_digest.clone(),
+                effect_intent_digest: edge.intent_digest.clone(),
+                capability_lease_digest: receipt.capability_lease_digest.clone(),
+            });
+        }
+        let attempt_scope_digest =
+            wave_scope_digest.ok_or(ManagedError::Conflict("HostRun projection wave is empty"))?
+                .to_owned();
+        Ok(Self {
+            schema_version: 1,
+            binding_digest: binding_digest.to_owned(),
+            dispatch_key_digest: binding.dispatch_key_digest.clone(),
+            batch_id: wave.batch_id.clone(),
+            run_id: binding.run_id.clone(),
+            task_id: binding.managed_task_id.clone(),
+            attempt_id: binding.attempt_id.clone(),
+            session_id: wave.session_id.clone(),
+            principal: principal.to_owned(),
+            owner_epoch: binding.owner_epoch,
+            process_generation: binding.core_process_generation,
+            attempt_scope_digest,
+            effects,
+        })
+    }
+
+    pub(crate) fn value(&self) -> Value {
+        json!({
+            "schemaVersion": self.schema_version,
+            "bindingDigest": self.binding_digest,
+            "dispatchKeyDigest": self.dispatch_key_digest,
+            "batchId": self.batch_id,
+            "runId": self.run_id,
+            "taskId": self.task_id,
+            "attemptId": self.attempt_id,
+            "sessionId": self.session_id,
+            "principal": self.principal,
+            "ownerEpoch": self.owner_epoch.to_string(),
+            "processGeneration": self.process_generation.to_string(),
+            "attemptScopeDigest": self.attempt_scope_digest,
+            "effects": self.effects.iter().map(|effect| json!({
+                "callId": effect.call_id,
+                "effectId": effect.effect_id,
+                "capabilityId": effect.capability_id,
+                "argumentsDigest": effect.arguments_digest,
+                "effectIntentDigest": effect.effect_intent_digest,
+                "capabilityLeaseDigest": effect.capability_lease_digest,
+            })).collect::<Vec<_>>(),
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HostRunEffectOutcomeV1 {
+    Succeeded,
+    Failed,
+    Cancelled,
+    Unknown,
+}
+
+impl HostRunEffectOutcomeV1 {
+    pub(crate) fn wire_name(self) -> &'static str {
+        match self {
+            Self::Succeeded => "SUCCEEDED",
+            Self::Failed => "FAILED",
+            Self::Cancelled => "CANCELLED",
+            Self::Unknown => "UNKNOWN",
+        }
+    }
+
+    fn decode(value: &str) -> Result<Self, ManagedError> {
+        match value {
+            "SUCCEEDED" => Ok(Self::Succeeded),
+            "FAILED" => Ok(Self::Failed),
+            "CANCELLED" => Ok(Self::Cancelled),
+            "UNKNOWN" => Ok(Self::Unknown),
+            _ => Err(ManagedError::Invalid(
+                "HostRun projection effect outcome is invalid",
+            )),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HostRunProcessEffectProjectionMemberV1 {
+    pub(crate) call_id: String,
+    pub(crate) effect_id: String,
+    pub(crate) capability_id: String,
+    pub(crate) outcome: HostRunEffectOutcomeV1,
+    pub(crate) receipt_ref: Option<String>,
+    pub(crate) receipt_digest: Option<String>,
+    pub(crate) arguments_digest: String,
+    pub(crate) effect_intent_digest: String,
+    pub(crate) capability_lease_digest: String,
+}
+
+/// P1's typed projection of persisted effect rows for one committed batch. This
+/// is evidence, not authority: P2 validates it field-by-field against its own
+/// committed request before it can contribute to a terminal result.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HostRunProcessEffectProjectionV1 {
+    pub(crate) schema_version: u64,
+    pub(crate) status: ProjectionStatusV1,
+    pub(crate) binding_digest: String,
+    pub(crate) dispatch_key_digest: String,
+    pub(crate) batch_id: String,
+    pub(crate) run_id: String,
+    pub(crate) task_id: String,
+    pub(crate) attempt_id: String,
+    pub(crate) session_id: String,
+    pub(crate) principal: String,
+    pub(crate) owner_epoch: u64,
+    pub(crate) process_generation: u64,
+    pub(crate) attempt_scope_digest: String,
+    pub(crate) process_quiescence: ProcessQuiescenceV1,
+    pub(crate) effects: Vec<HostRunProcessEffectProjectionMemberV1>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProjectionStatusV1 {
+    Settled,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProcessQuiescenceV1 {
+    Proved,
+    Unknown,
+}
+
+impl HostRunProcessEffectProjectionV1 {
+    pub(crate) fn status_wire(status: ProjectionStatusV1) -> &'static str {
+        match status {
+            ProjectionStatusV1::Settled => "SETTLED",
+            ProjectionStatusV1::Unknown => "UNKNOWN",
+        }
+    }
+
+    pub(crate) fn quiescence_wire(quiescence: ProcessQuiescenceV1) -> &'static str {
+        match quiescence {
+            ProcessQuiescenceV1::Proved => "PROVED",
+            ProcessQuiescenceV1::Unknown => "UNKNOWN",
+        }
+    }
+
+    pub(crate) fn decode(value: &Value) -> Result<Self, ManagedError> {
+        exact_object(value, 15)?;
+        let status = match required_string(value, "status")?.as_str() {
+            "SETTLED" => ProjectionStatusV1::Settled,
+            "UNKNOWN" => ProjectionStatusV1::Unknown,
+            _ => {
+                return Err(ManagedError::Invalid(
+                    "HostRun projection status is invalid",
+                ))
+            }
+        };
+        let process_quiescence = match required_string(value, "processQuiescence")?.as_str() {
+            "PROVED" => ProcessQuiescenceV1::Proved,
+            "UNKNOWN" => ProcessQuiescenceV1::Unknown,
+            _ => {
+                return Err(ManagedError::Invalid(
+                    "HostRun projection process quiescence is invalid",
+                ))
+            }
+        };
+        let members = value
+            .get("effects")
+            .and_then(Value::as_array)
+            .ok_or(ManagedError::Invalid(
+                "HostRun projection effects are missing",
+            ))?;
+        if members.is_empty() || members.len() > MAX_HOST_RUN_PROJECTION_EFFECTS {
+            return Err(ManagedError::Invalid(
+                "HostRun projection effect count is empty or oversized",
+            ));
+        }
+        let effects = members
+            .iter()
+            .map(|member| {
+                exact_object(member, 9)?;
+                let outcome = HostRunEffectOutcomeV1::decode(&required_string(member, "outcome")?)?;
+                let receipt_ref = optional_string(member, "receiptRef")?;
+                let receipt_digest = optional_string(member, "receiptDigest")?;
+                if let Some(digest) = receipt_digest.as_deref() {
+                    blake3_digest(digest)?;
+                }
+                match outcome {
+                    HostRunEffectOutcomeV1::Succeeded | HostRunEffectOutcomeV1::Failed => {
+                        if receipt_ref.is_none() || receipt_digest.is_none() {
+                            return Err(ManagedError::Invalid(
+                                "HostRun projection terminal effect lacks its receipt",
+                            ));
+                        }
+                    }
+                    HostRunEffectOutcomeV1::Cancelled | HostRunEffectOutcomeV1::Unknown => {}
+                }
+                Ok(HostRunProcessEffectProjectionMemberV1 {
+                    call_id: required_string(member, "callId")?,
+                    effect_id: required_string(member, "effectId")?,
+                    capability_id: required_string(member, "capabilityId")?,
+                    outcome,
+                    receipt_ref,
+                    receipt_digest,
+                    arguments_digest: required_blake3(member, "argumentsDigest")?,
+                    effect_intent_digest: required_blake3(member, "effectIntentDigest")?,
+                    capability_lease_digest: required_blake3(member, "capabilityLeaseDigest")?,
+                })
+            })
+            .collect::<Result<Vec<_>, ManagedError>>()?;
+        Ok(Self {
+            schema_version: required_u64(value, "schemaVersion")?,
+            status,
+            binding_digest: required_blake3(value, "bindingDigest")?,
+            dispatch_key_digest: required_blake3(value, "dispatchKeyDigest")?,
+            batch_id: required_string(value, "batchId")?,
+            run_id: required_string(value, "runId")?,
+            task_id: required_string(value, "taskId")?,
+            attempt_id: required_string(value, "attemptId")?,
+            session_id: required_string(value, "sessionId")?,
+            principal: required_string(value, "principal")?,
+            owner_epoch: required_decimal_u64(value, "ownerEpoch")?,
+            process_generation: required_decimal_u64(value, "processGeneration")?,
+            attempt_scope_digest: required_blake3(value, "attemptScopeDigest")?,
+            process_quiescence,
+            effects,
+        })
+    }
+
+    /// Exact echo/coverage validation. A projection that reorders, substitutes,
+    /// drops or adds one member is rejected as a whole-batch failure.
+    pub(crate) fn validate_against(
+        &self,
+        request: &HostRunProcessEffectProjectionRequestV1,
+    ) -> Result<(), ManagedError> {
+        if self.schema_version != 1
+            || self.binding_digest != request.binding_digest
+            || self.dispatch_key_digest != request.dispatch_key_digest
+            || self.batch_id != request.batch_id
+            || self.run_id != request.run_id
+            || self.task_id != request.task_id
+            || self.attempt_id != request.attempt_id
+            || self.session_id != request.session_id
+            || self.principal != request.principal
+            || self.owner_epoch != request.owner_epoch
+            || self.process_generation != request.process_generation
+            || self.attempt_scope_digest != request.attempt_scope_digest
+            || self.effects.len() != request.effects.len()
+        {
+            return Err(ManagedError::Conflict(
+                "HostRun projection does not echo the exact committed request",
+            ));
+        }
+        for (projected, requested) in self.effects.iter().zip(&request.effects) {
+            if projected.call_id != requested.call_id
+                || projected.effect_id != requested.effect_id
+                || projected.capability_id != requested.capability_id
+                || projected.arguments_digest != requested.arguments_digest
+                || projected.effect_intent_digest != requested.effect_intent_digest
+                || projected.capability_lease_digest != requested.capability_lease_digest
+            {
+                return Err(ManagedError::Conflict(
+                    "HostRun projection member differs from the committed batch order",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn is_complete_terminal(&self) -> bool {
+        self.status == ProjectionStatusV1::Settled
+            && self.process_quiescence == ProcessQuiescenceV1::Proved
+            && self
+                .effects
+                .iter()
+                .all(|effect| effect.outcome != HostRunEffectOutcomeV1::Unknown)
+    }
+}
+
+/// P1's read-only projection provider. P1 implements this over its persisted
+/// EffectHost rows and process-generation/cgroup records; P2 never executes an
+/// effect and never derives a receipt itself. No implementation is registered by
+/// default, which keeps HostRun reconciliation fail-closed.
+pub(crate) trait HostRunEffectProjectionSourceV1 {
+    fn project_committed_batch(
+        &self,
+        request: &HostRunProcessEffectProjectionRequestV1,
+    ) -> Result<HostRunProcessEffectProjectionV1, ManagedError>;
+}
+
+// ---------------------------------------------------------------------------
+// P1 HostRun effect projection source (EffectHost-backed, read-only)
+// ---------------------------------------------------------------------------
+
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use std::path::PathBuf;
+
+/// Durable effect database file name inside one Location's state directory.
+/// `effect_host` keeps its own private constant for exactly this file; the
+/// projection only ever opens it read-only and never writes to it.
+const PROJECTION_EFFECTS_DB: &str = "effects.sqlite";
+/// Bound for one projection identifier (batch/Run/Task/Attempt/Session/principal
+/// and call/effect/capability ids).
+const MAX_PROJECTION_IDENTIFIER_BYTES: usize = 512;
+/// Origin of every effect of a committed managed ToolBatch wave; the same value
+/// `effect_host::recover_managed_attempt_effect_receipts` requires.
+const PROJECTION_MANAGED_ORIGIN: &str = "managed_run";
+/// The only process-row statuses that can contribute to a quiescence proof.
+/// `PREPARED`/`RUNNING`/`CANCELLING`/`UNKNOWN` may still name a live process.
+const PROJECTION_TERMINAL_PROCESS_STATUSES: [&str; 2] = ["SETTLED", "CANCELLED"];
+/// Tables that persist one durable process record per effect together with its
+/// containment (`cgroup_identity`) and quiescence proof (`quiescence_digest`).
+const PROJECTION_PROCESS_TABLES: [&str; 3] =
+    ["stdio_executions", "terminal_runs", "external_editor_runs"];
+
+/// One durable Guard challenge row of the committed batch.
+struct ProjectionChallengeRowV1 {
+    challenge_id: String,
+    batch_id: String,
+    call_index: i64,
+    call_id: String,
+    capability_id: String,
+    session_id: String,
+    principal: String,
+    origin_kind: String,
+    managed_attempt_digest: Option<String>,
+    status: String,
+    receipt_digest: Option<String>,
+    arguments_digest: String,
+    admitted_intent_digest: String,
+    capability_lease_digest: Option<String>,
+}
+
+/// One durable decision receipt row of a non-`SETTLED` Guard decision.
+struct ProjectionDecisionRowV1 {
+    challenge_id: String,
+    batch_id: String,
+    call_index: i64,
+    call_id: String,
+    principal: String,
+    session_id: String,
+    attempt_scope_digest: String,
+    receipt_digest: String,
+}
+
+/// One durable process/cgroup record of a projected effect.
+struct ProjectionProcessRowV1 {
+    status: String,
+    exit_code: Option<i64>,
+    quiescence_digest: Option<String>,
+    cgroup_identity: Option<Vec<u8>>,
+    owner_epoch: Option<i64>,
+    generation: Option<i64>,
+}
+
+/// Durable facts resolved for one requested effect.
+struct ProjectionEffectFactsV1 {
+    outcome: HostRunEffectOutcomeV1,
+    receipt_ref: Option<String>,
+    receipt_digest: Option<String>,
+    quiescence: ProcessQuiescenceV1,
+}
+
+/// P1's read-only EffectHost-backed [`HostRunEffectProjectionSourceV1`],
+/// installed with `HostKernel::install_host_run_effect_projection_source`.
+///
+/// The request only *pins* which durable rows must be proven; every value of the
+/// response is rebuilt from those rows. Nothing here dispatches, retries,
+/// repairs or records a receipt, and no caller-supplied value is ever accepted
+/// as an outcome. An absent, duplicate, substituted or stale row and an
+/// incomplete ordered batch coverage are a typed `ManagedError::Conflict`
+/// (the `host_run.inspect` route reports
+/// `host_run_effect_projection_ambiguous`); rows that match every pin but do not
+/// yet carry terminal evidence project an explicit `UNKNOWN` status. The
+/// finished projection must still `validate_against` its own request, so this
+/// source can never emit a result that fails P2's exact-echo check.
+///
+/// The production install call lives in `HostKernel::open` (P2-owned
+/// `host_kernel.rs`); until it is made, `host_run.inspect` keeps resolving the
+/// typed `host_run_effect_projection_unavailable` UNKNOWN.
+#[allow(dead_code)] // constructed by the install site in `host_kernel.rs` and by the tests below
+pub(crate) struct EffectHostRunProjectionSourceV1 {
+    /// `<state>/effect-locations`, re-enumerated on every projection so a
+    /// Location registered after `HostKernel::open` is never silently skipped.
+    effect_locations_root: PathBuf,
+}
+
+impl EffectHostRunProjectionSourceV1 {
+    /// Opens the read-only source over one trusted state directory's Location
+    /// effect databases. A missing, substituted or non-directory root is a typed
+    /// conflict: the projection then never runs and can never invent a result.
+    pub(crate) fn open(effect_locations_root: impl Into<PathBuf>) -> Result<Self, ManagedError> {
+        let effect_locations_root = effect_locations_root.into();
+        let metadata = fs::symlink_metadata(&effect_locations_root).map_err(|_| {
+            ManagedError::Conflict("HostRun projection effect-location root is unavailable")
+        })?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(ManagedError::Conflict(
+                "HostRun projection effect-location root is not a trusted directory",
+            ));
+        }
+        Ok(Self {
+            effect_locations_root,
+        })
+    }
+
+    /// Effect databases of every registered Location. Symlinks, non-directories
+    /// and non-regular files are skipped, so a substituted path can neither be
+    /// read nor hide a database, and the sorted order keeps the projection
+    /// deterministic across repeated calls.
+    fn effect_databases(&self) -> Result<Vec<PathBuf>, ManagedError> {
+        let entries = fs::read_dir(&self.effect_locations_root).map_err(|_| {
+            ManagedError::Conflict("HostRun projection cannot enumerate the effect locations")
+        })?;
+        let mut databases = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|_| {
+                ManagedError::Conflict("HostRun projection cannot read an effect location")
+            })?;
+            let location = entry.path();
+            match fs::symlink_metadata(&location) {
+                Ok(metadata) if !metadata.file_type().is_symlink() && metadata.is_dir() => {}
+                _ => continue,
+            }
+            let database = location.join(PROJECTION_EFFECTS_DB);
+            match fs::symlink_metadata(&database) {
+                Ok(metadata) if !metadata.file_type().is_symlink() && metadata.is_file() => {
+                    databases.push(database)
+                }
+                _ => continue,
+            }
+        }
+        databases.sort();
+        Ok(databases)
+    }
+
+    /// Read-only handles over every effect database. A database that cannot be
+    /// opened read-only makes the whole projection a typed conflict; it is never
+    /// silently dropped, because a missing row would otherwise read as absent
+    /// evidence instead of unavailable evidence.
+    fn connections(&self) -> Result<Vec<Connection>, ManagedError> {
+        let mut connections = Vec::new();
+        for database in self.effect_databases()? {
+            let connection = Connection::open_with_flags(
+                &database,
+                OpenFlags::SQLITE_OPEN_READ_ONLY
+                    | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                    | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+            )
+            .map_err(|_| {
+                ManagedError::Conflict(
+                    "HostRun projection cannot open a durable effect database read-only",
+                )
+            })?;
+            connections.push(connection);
+        }
+        Ok(connections)
+    }
+}
+
+impl HostRunEffectProjectionSourceV1 for EffectHostRunProjectionSourceV1 {
+    fn project_committed_batch(
+        &self,
+        request: &HostRunProcessEffectProjectionRequestV1,
+    ) -> Result<HostRunProcessEffectProjectionV1, ManagedError> {
+        validate_projection_request(request)?;
+        let connections = self.connections()?;
+        let mut effects = Vec::with_capacity(request.effects.len());
+        let mut resolved = true;
+        let mut process_quiescence = ProcessQuiescenceV1::Proved;
+        for (index, reference) in request.effects.iter().enumerate() {
+            let facts = resolve_projection_effect(&connections, request, index, reference)?;
+            if facts.outcome == HostRunEffectOutcomeV1::Unknown {
+                resolved = false;
+            }
+            if facts.quiescence == ProcessQuiescenceV1::Unknown {
+                process_quiescence = ProcessQuiescenceV1::Unknown;
+            }
+            effects.push(HostRunProcessEffectProjectionMemberV1 {
+                call_id: reference.call_id.clone(),
+                effect_id: reference.effect_id.clone(),
+                capability_id: reference.capability_id.clone(),
+                outcome: facts.outcome,
+                receipt_ref: facts.receipt_ref,
+                receipt_digest: facts.receipt_digest,
+                arguments_digest: reference.arguments_digest.clone(),
+                effect_intent_digest: reference.effect_intent_digest.clone(),
+                capability_lease_digest: reference.capability_lease_digest.clone(),
+            });
+        }
+        // Ordered coverage is proven, not assumed: every requested position was
+        // matched to exactly one persisted row above, so a persisted batch that
+        // holds more rows than the request asked for means the list is partial.
+        verify_projection_batch_coverage(&connections, request)?;
+        let projection = HostRunProcessEffectProjectionV1 {
+            schema_version: 1,
+            status: if resolved && process_quiescence == ProcessQuiescenceV1::Proved {
+                ProjectionStatusV1::Settled
+            } else {
+                ProjectionStatusV1::Unknown
+            },
+            binding_digest: request.binding_digest.clone(),
+            dispatch_key_digest: request.dispatch_key_digest.clone(),
+            batch_id: request.batch_id.clone(),
+            run_id: request.run_id.clone(),
+            task_id: request.task_id.clone(),
+            attempt_id: request.attempt_id.clone(),
+            session_id: request.session_id.clone(),
+            principal: request.principal.clone(),
+            owner_epoch: request.owner_epoch,
+            process_generation: request.process_generation,
+            attempt_scope_digest: request.attempt_scope_digest.clone(),
+            process_quiescence,
+            effects,
+        };
+        // Last line of defence: never return a projection that does not echo the
+        // exact committed request it was built from.
+        projection.validate_against(request)?;
+        Ok(projection)
+    }
+}
+
+fn projection_invalid() -> ManagedError {
+    ManagedError::Invalid("HostRun projection request is structurally invalid")
+}
+
+/// Structural validation of a request before any durable row is read. A
+/// malformed, empty, oversized or self-contradictory request is a typed denial;
+/// it is never answered with an empty projection.
+fn validate_projection_request(
+    request: &HostRunProcessEffectProjectionRequestV1,
+) -> Result<(), ManagedError> {
+    if request.schema_version != 1
+        || request.owner_epoch == 0
+        || request.process_generation == 0
+        || request.effects.is_empty()
+        || request.effects.len() > MAX_HOST_RUN_PROJECTION_EFFECTS
+    {
+        return Err(projection_invalid());
+    }
+    blake3_digest(&request.binding_digest)?;
+    blake3_digest(&request.dispatch_key_digest)?;
+    blake3_digest(&request.attempt_scope_digest)?;
+    for identifier in [
+        request.batch_id.as_str(),
+        request.run_id.as_str(),
+        request.task_id.as_str(),
+        request.attempt_id.as_str(),
+        request.session_id.as_str(),
+        request.principal.as_str(),
+    ] {
+        if !projection_identifier(identifier) {
+            return Err(projection_invalid());
+        }
+    }
+    let mut call_ids = BTreeSet::new();
+    let mut effect_ids = BTreeSet::new();
+    for effect in &request.effects {
+        if !projection_identifier(&effect.call_id)
+            || !projection_identifier(&effect.effect_id)
+            || !projection_identifier(&effect.capability_id)
+        {
+            return Err(projection_invalid());
+        }
+        blake3_digest(&effect.arguments_digest)?;
+        blake3_digest(&effect.effect_intent_digest)?;
+        blake3_digest(&effect.capability_lease_digest)?;
+        // A repeated reference inside one batch is a substitution attempt, not a
+        // second member: it is rejected as a whole-batch conflict.
+        if !call_ids.insert(effect.call_id.clone()) || !effect_ids.insert(effect.effect_id.clone())
+        {
+            return Err(ManagedError::Conflict(
+                "HostRun projection request repeats a committed effect reference",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn projection_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_PROJECTION_IDENTIFIER_BYTES
+        && !value.bytes().any(|byte| byte.is_ascii_control())
+}
+
+/// Reads the single durable challenge row of one requested effect.
+fn projection_challenge_row(
+    connection: &Connection,
+    effect_id: &str,
+) -> Result<Option<ProjectionChallengeRowV1>, ManagedError> {
+    connection
+        .query_row(
+            "SELECT challenge_id,batch_id,call_index,call_id,capability_id,session_id,\
+                    principal,origin_kind,managed_attempt_digest,status,receipt_digest,\
+                    arguments_digest,admitted_intent_digest,capability_lease_digest
+             FROM effect_challenges WHERE effect_id=?1",
+            params![effect_id],
+            |row| {
+                Ok(ProjectionChallengeRowV1 {
+                    challenge_id: row.get(0)?,
+                    batch_id: row.get(1)?,
+                    call_index: row.get(2)?,
+                    call_id: row.get(3)?,
+                    capability_id: row.get(4)?,
+                    session_id: row.get(5)?,
+                    principal: row.get(6)?,
+                    origin_kind: row.get(7)?,
+                    managed_attempt_digest: row.get(8)?,
+                    status: row.get(9)?,
+                    receipt_digest: row.get(10)?,
+                    arguments_digest: row.get(11)?,
+                    admitted_intent_digest: row.get(12)?,
+                    capability_lease_digest: row.get(13)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|_| {
+            ManagedError::Conflict("HostRun projection cannot read a persisted effect row")
+        })
+}
+
+/// Reads the durable decision receipt of a non-`SETTLED` Guard decision.
+fn projection_decision_row(
+    connection: &Connection,
+    effect_id: &str,
+    status: &str,
+) -> Result<Option<ProjectionDecisionRowV1>, ManagedError> {
+    connection
+        .query_row(
+            "SELECT challenge_id,batch_id,call_index,call_id,principal,session_id,\
+                    attempt_scope_digest,receipt_digest
+             FROM effect_decision_receipts WHERE effect_id=?1 AND status=?2",
+            params![effect_id, status],
+            |row| {
+                Ok(ProjectionDecisionRowV1 {
+                    challenge_id: row.get(0)?,
+                    batch_id: row.get(1)?,
+                    call_index: row.get(2)?,
+                    call_id: row.get(3)?,
+                    principal: row.get(4)?,
+                    session_id: row.get(5)?,
+                    attempt_scope_digest: row.get(6)?,
+                    receipt_digest: row.get(7)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|_| {
+            ManagedError::Conflict("HostRun projection cannot read a persisted decision receipt")
+        })
+}
+
+/// Reads every durable process record of one effect. `NULL` epoch/generation
+/// columns mark the tables that carry those pins only inside the cgroup
+/// identity blob.
+fn projection_process_rows(
+    connection: &Connection,
+    effect_id: &str,
+) -> Result<Vec<ProjectionProcessRowV1>, ManagedError> {
+    let mut rows = Vec::new();
+    for table in PROJECTION_PROCESS_TABLES {
+        let statement = format!(
+            "SELECT status,exit_code,quiescence_digest,cgroup_identity,\
+                    owner_epoch,generation FROM {table} WHERE effect_id=?1"
+        );
+        let mut statement = connection.prepare(&statement).map_err(|_| {
+            ManagedError::Conflict("HostRun projection cannot read a persisted process record")
+        })?;
+        let mapped = statement
+            .query_map(params![effect_id], |row| {
+                Ok(ProjectionProcessRowV1 {
+                    status: row.get(0)?,
+                    exit_code: row.get(1)?,
+                    quiescence_digest: row.get(2)?,
+                    cgroup_identity: row.get(3)?,
+                    owner_epoch: row.get(4)?,
+                    generation: row.get(5)?,
+                })
+            })
+            .map_err(|_| {
+                ManagedError::Conflict("HostRun projection cannot read a persisted process record")
+            })?;
+        for row in mapped {
+            rows.push(row.map_err(|_| {
+                ManagedError::Conflict(
+                    "HostRun projection cannot decode a persisted process record",
+                )
+            })?);
+        }
+    }
+    Ok(rows)
+}
+
+/// Resolves one requested effect from its exact durable rows. Identity
+/// violations (absent, duplicate or substituted row, wrong batch/call/Session/
+/// principal/scope pins, stale epoch or process generation) are `Conflict`;
+/// durable rows that match every pin but are not terminal project `UNKNOWN`.
+fn resolve_projection_effect(
+    connections: &[Connection],
+    request: &HostRunProcessEffectProjectionRequestV1,
+    index: usize,
+    reference: &HostRunProcessEffectReferenceV1,
+) -> Result<ProjectionEffectFactsV1, ManagedError> {
+    let mut challenges = Vec::new();
+    for connection in connections {
+        if let Some(row) = projection_challenge_row(connection, &reference.effect_id)? {
+            challenges.push(row);
+        }
+    }
+    if challenges.is_empty() {
+        return Err(ManagedError::Conflict(
+            "HostRun projection effect has no persisted batch row",
+        ));
+    }
+    if challenges.len() != 1 {
+        return Err(ManagedError::Conflict(
+            "HostRun projection effect resolves to duplicate persisted rows",
+        ));
+    }
+    let challenge = challenges
+        .pop()
+        .ok_or_else(|| ManagedError::Conflict("HostRun projection effect row is missing"))?;
+    if challenge.batch_id != request.batch_id
+        || challenge.call_index != index as i64
+        || challenge.call_id != reference.call_id
+        || challenge.capability_id != reference.capability_id
+        || challenge.session_id != request.session_id
+        || challenge.principal != request.principal
+        || challenge.origin_kind != PROJECTION_MANAGED_ORIGIN
+        || challenge.managed_attempt_digest.as_deref()
+            != Some(request.attempt_scope_digest.as_str())
+        || challenge.arguments_digest != reference.arguments_digest
+        || challenge.admitted_intent_digest != reference.effect_intent_digest
+        || challenge.capability_lease_digest.as_deref()
+            != Some(reference.capability_lease_digest.as_str())
+    {
+        return Err(ManagedError::Conflict(
+            "HostRun projection effect row differs from the committed batch pins",
+        ));
+    }
+
+    let mut process_rows = Vec::new();
+    for connection in connections {
+        process_rows.extend(projection_process_rows(connection, &reference.effect_id)?);
+    }
+    let mut quiescence = ProcessQuiescenceV1::Proved;
+    for row in &process_rows {
+        if !PROJECTION_TERMINAL_PROCESS_STATUSES.contains(&row.status.as_str()) {
+            // A `PREPARED`/`RUNNING`/`CANCELLING`/`UNKNOWN` row may still name a
+            // live process: that is an ambiguous process state, never a proof.
+            quiescence = ProcessQuiescenceV1::Unknown;
+        }
+        match row.quiescence_digest.as_deref() {
+            Some(digest) if blake3_digest(digest).is_ok() => {}
+            _ => quiescence = ProcessQuiescenceV1::Unknown,
+        }
+        // P1's own process-generation records: the row columns and the encoded
+        // cgroup identity must both name this exact owner epoch and generation.
+        if row
+            .owner_epoch
+            .is_some_and(|epoch| u64::try_from(epoch) != Ok(request.owner_epoch))
+        {
+            return Err(ManagedError::Conflict(
+                "HostRun projection process row has a stale owner epoch",
+            ));
+        }
+        if row
+            .generation
+            .is_some_and(|generation| u64::try_from(generation) != Ok(request.process_generation))
+        {
+            return Err(ManagedError::Conflict(
+                "HostRun projection process row has a stale process generation",
+            ));
+        }
+        if let Some(encoded) = row.cgroup_identity.as_ref() {
+            let identity = messagepack::decode(encoded, FRAME_LIMITS)
+                .ok()
+                .and_then(|value| crate::cgroup_v2::CgroupIdentityV1::from_value(&value).ok());
+            match identity {
+                Some(identity) => {
+                    if identity.effect_id != reference.effect_id
+                        || identity.owner_epoch != request.owner_epoch
+                        || identity.process_generation != request.process_generation
+                        || identity.capability_lease_digest != reference.capability_lease_digest
+                    {
+                        return Err(ManagedError::Conflict(
+                            "HostRun projection process containment is stale or foreign",
+                        ));
+                    }
+                }
+                // The containment record cannot be read back: the process state
+                // is ambiguous, so quiescence is unknown rather than assumed.
+                None => quiescence = ProcessQuiescenceV1::Unknown,
+            }
+        }
+    }
+
+    // A non-`SETTLED` decision needs its own durable decision receipt before it
+    // may project a terminal outcome; the receipt row is never minted here.
+    let mut decisions = Vec::new();
+    if challenge.status != "SETTLED" {
+        for connection in connections {
+            if let Some(row) =
+                projection_decision_row(connection, &reference.effect_id, &challenge.status)?
+            {
+                decisions.push(row);
+            }
+        }
+        if decisions.len() > 1 {
+            return Err(ManagedError::Conflict(
+                "HostRun projection effect resolves to duplicate decision receipts",
+            ));
+        }
+        if let Some(decision) = decisions.first() {
+            if decision.challenge_id != challenge.challenge_id
+                || decision.batch_id != request.batch_id
+                || decision.call_index != index as i64
+                || decision.call_id != reference.call_id
+                || decision.principal != request.principal
+                || decision.session_id != request.session_id
+                || decision.attempt_scope_digest != request.attempt_scope_digest
+                || blake3_digest(&decision.receipt_digest).is_err()
+            {
+                return Err(ManagedError::Conflict(
+                    "HostRun projection decision receipt differs from the committed batch",
+                ));
+            }
+        }
+    }
+
+    let process_settled = |rows: &[ProjectionProcessRowV1]| {
+        rows.len() == 1
+            && PROJECTION_TERMINAL_PROCESS_STATUSES.contains(&rows[0].status.as_str())
+    };
+    let mut outcome = HostRunEffectOutcomeV1::Unknown;
+    let mut receipt_ref = None;
+    let mut receipt_digest = None;
+    match challenge.status.as_str() {
+        "SETTLED" => {
+            // A settled effect must carry its committed target receipt.
+            let committed = challenge
+                .receipt_digest
+                .as_deref()
+                .is_some_and(|digest| blake3_digest(digest).is_ok());
+            outcome = if !committed {
+                HostRunEffectOutcomeV1::Unknown
+            } else if process_rows.is_empty() {
+                // No process row belongs to this effect: nothing to execute.
+                HostRunEffectOutcomeV1::Succeeded
+            } else if !process_settled(&process_rows) {
+                // Still live or ambiguous: never a terminal outcome.
+                HostRunEffectOutcomeV1::Unknown
+            } else if process_rows[0].exit_code == Some(0) {
+                HostRunEffectOutcomeV1::Succeeded
+            } else {
+                // Mirrors HostKernel's settled-outcome derivation for a durable
+                // process receipt: only an exact zero exit is a success.
+                HostRunEffectOutcomeV1::Failed
+            };
+            if outcome != HostRunEffectOutcomeV1::Unknown {
+                receipt_ref = Some(challenge.challenge_id.clone());
+                receipt_digest = challenge.receipt_digest.clone();
+            }
+        }
+        "CANCELLED" => {
+            outcome = HostRunEffectOutcomeV1::Cancelled;
+            if let Some(decision) = decisions.first() {
+                receipt_ref = Some(decision.challenge_id.clone());
+                receipt_digest = Some(decision.receipt_digest.clone());
+            }
+        }
+        "DENIED" | "EXPIRED" | "NOT_APPLIED" => {
+            // A terminal non-success is projected only from its own durable
+            // decision receipt; without it the outcome stays UNKNOWN.
+            if let Some(decision) = decisions.first() {
+                outcome = HostRunEffectOutcomeV1::Failed;
+                receipt_ref = Some(decision.challenge_id.clone());
+                receipt_digest = Some(decision.receipt_digest.clone());
+            }
+        }
+        _ => {
+            // Never committed (`PREPARED`, `APPROVED`, `AWAITING_APPROVAL`,
+            // `RUNNING`) or durably `UNKNOWN`: never a terminal outcome.
+            outcome = HostRunEffectOutcomeV1::Unknown;
+        }
+    }
+    Ok(ProjectionEffectFactsV1 {
+        outcome,
+        receipt_ref,
+        receipt_digest,
+        quiescence,
+    })
+}
+
+/// Proves that the persisted batch holds exactly the requested ordered effect
+/// list. Every requested position was matched to one row by the caller, so a
+/// larger persisted set means the request covered only part of the batch.
+fn verify_projection_batch_coverage(
+    connections: &[Connection],
+    request: &HostRunProcessEffectProjectionRequestV1,
+) -> Result<(), ManagedError> {
+    let mut persisted = 0_i64;
+    for connection in connections {
+        let count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM effect_challenges
+                 WHERE batch_id=?1 AND session_id=?2 AND principal=?3 AND origin_kind=?4",
+                params![
+                    request.batch_id,
+                    request.session_id,
+                    request.principal,
+                    PROJECTION_MANAGED_ORIGIN
+                ],
+                |row| row.get(0),
+            )
+            .map_err(|_| {
+                ManagedError::Conflict("HostRun projection cannot read the persisted batch")
+            })?;
+        persisted += count;
+    }
+    if persisted != request.effects.len() as i64 {
+        return Err(ManagedError::Conflict(
+            "persisted batch does not cover the exact ordered effect list",
+        ));
+    }
+    Ok(())
+}
+
+/// One durable ToolBatch row exactly as persisted in an EffectHost journal.
+/// Private to [`HostRunPersistedEffectProjectionSourceV1`]: it is the read shape
+/// of `effect_challenges`, never a caller-supplied value.
+#[derive(Clone, Debug)]
+struct HostRunPersistedEffectRowV1 {
+    /// Durable call position. `NULL` is an incomplete row and always denies.
+    call_index: Option<i64>,
+    call_id: String,
+    effect_id: String,
+    capability_id: String,
+    arguments_digest: String,
+    admitted_intent_digest: String,
+    capability_lease_digest: Option<String>,
+    /// `effect_challenges.managed_attempt_digest`: the exact Attempt-scope pin
+    /// under which this effect's lease was issued.
+    attempt_scope_digest: Option<String>,
+    status: String,
+    receipt_digest: Option<String>,
+    session_id: String,
+    principal: String,
+    challenge_id: String,
+    origin_kind: String,
+}
+
+/// What the persisted process-generation/cgroup records prove for one committed
+/// effect. Derived ordering lets several records merge with `max`: an ambiguous
+/// record always outranks a quiescent one, and a present record outranks none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum HostRunPersistedProcessVerdictV1 {
+    /// No process record exists for this effect, so no process can be live.
+    Absent,
+    /// Terminal record whose settlement already required its quiescence proof.
+    Quiescent,
+    /// Terminal record without a usable quiescence proof.
+    Unquiesced,
+    /// In-flight or durably UNKNOWN process state: ambiguous, never terminal.
+    Ambiguous,
+}
+
+/// P1's read-only projection provider over the durable EffectHost journals.
+///
+/// Every journal lives at `<state_dir>/effect-locations/<locationID>/effects.sqlite`
+/// (one per registered Location), so the directory set is resolved on every read;
+/// an absent, empty, unreadable or ambiguous set denies the batch instead of
+/// guessing. Nothing in a request creates evidence: every field the journals can
+/// substantiate must match them exactly and in durable call order, and any
+/// missing, substituted, stale, duplicate, foreign, out-of-order or uncommitted
+/// row is a typed `ManagedError::Conflict` denial. `host_run.inspect` maps that
+/// denial to the `host_run_effect_projection_ambiguous` UNKNOWN, so it can never
+/// become a fabricated terminal success or authorize a redispatch.
+///
+/// A batch whose rows all resolve but whose process record cannot prove
+/// quiescence returns an honest `UNKNOWN` projection instead of a denial; the
+/// route reaches the same typed UNKNOWN through `is_complete_terminal`.
+///
+/// The constructor takes the HostKernel state directory and is installed with
+/// `HostKernel::install_host_run_effect_projection_source`. Until that call site
+/// exists, `host_run.inspect` keeps returning
+/// `host_run_effect_projection_unavailable`, which is the intended fallback.
+pub(crate) struct HostRunPersistedEffectProjectionSourceV1 {
+    /// `<state_dir>/effect-locations`; each child directory may own one journal.
+    locations_root: std::path::PathBuf,
+}
+
+impl HostRunPersistedEffectProjectionSourceV1 {
+    /// Binds the source to one HostKernel state directory. No journal is opened
+    /// here: Locations register lazily, so absence is evaluated per read.
+    pub(crate) fn new(state_dir: &Path) -> Self {
+        Self {
+            locations_root: state_dir.join("effect-locations"),
+        }
+    }
+
+    /// Exact durable journals that may carry a batch, in a stable order. A
+    /// journal that cannot be enumerated or inspected denies the whole read,
+    /// because absence there could otherwise not be proven.
+    fn journals(&self) -> Result<Vec<std::path::PathBuf>, ManagedError> {
+        let entries = match fs::read_dir(&self.locations_root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(ManagedError::Conflict(
+                    "HostRun projection has no durable effect journal",
+                ));
+            }
+            Err(_) => {
+                return Err(ManagedError::Conflict(
+                    "HostRun projection effect journals could not be enumerated",
+                ));
+            }
+        };
+        let mut journals = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|_| {
+                ManagedError::Conflict("HostRun projection effect journal entry is unreadable")
+            })?;
+            // `file_type` does not follow symlinks, so a link is never a Location.
+            if !entry.file_type().map_err(|_| {
+                ManagedError::Conflict("HostRun projection effect journal type is unreadable")
+            })?.is_dir()
+            {
+                continue;
+            }
+            let journal = entry.path().join("effects.sqlite");
+            let metadata = match fs::symlink_metadata(&journal) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(_) => {
+                    return Err(ManagedError::Conflict(
+                        "HostRun projection effect journal could not be inspected",
+                    ));
+                }
+            };
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(ManagedError::Conflict(
+                    "HostRun projection effect journal is not a regular file",
+                ));
+            }
+            journals.push(journal);
+        }
+        journals.sort();
+        if journals.is_empty() {
+            return Err(ManagedError::Conflict(
+                "HostRun projection has no durable effect journal",
+            ));
+        }
+        Ok(journals)
+    }
+
+    fn open_read_only(journal: &Path) -> Result<rusqlite::Connection, ManagedError> {
+        rusqlite::Connection::open_with_flags(journal, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|_| {
+                ManagedError::Conflict("HostRun projection effect journal could not be opened")
+            })
+    }
+
+    /// Reads every durable row of one committed batch from one journal. `Ok(None)`
+    /// means this journal carries no row of the batch, which is not by itself an
+    /// error: another Location may own it.
+    fn read_batch(
+        journal: &Path,
+        batch_id: &str,
+    ) -> Result<Option<Vec<HostRunPersistedEffectRowV1>>, ManagedError> {
+        let connection = Self::open_read_only(journal)?;
+        let mut statement = connection
+            .prepare(
+                "SELECT call_index, call_id, effect_id, capability_id, arguments_digest,
+                        admitted_intent_digest, capability_lease_digest, managed_attempt_digest,
+                        status, receipt_digest, session_id, principal, challenge_id, origin_kind
+                 FROM effect_challenges WHERE batch_id = ?1 ORDER BY call_index ASC",
+            )
+            .map_err(|_| {
+                ManagedError::Conflict("HostRun projection effect rows could not be read")
+            })?;
+        let rows = statement
+            .query_map(rusqlite::params![batch_id], |row| {
+                Ok(HostRunPersistedEffectRowV1 {
+                    call_index: row.get(0)?,
+                    call_id: row.get(1)?,
+                    effect_id: row.get(2)?,
+                    capability_id: row.get(3)?,
+                    arguments_digest: row.get(4)?,
+                    admitted_intent_digest: row.get(5)?,
+                    capability_lease_digest: row.get(6)?,
+                    attempt_scope_digest: row.get(7)?,
+                    status: row.get(8)?,
+                    receipt_digest: row.get(9)?,
+                    session_id: row.get(10)?,
+                    principal: row.get(11)?,
+                    challenge_id: row.get(12)?,
+                    origin_kind: row.get(13)?,
+                })
+            })
+            .map_err(|_| {
+                ManagedError::Conflict("HostRun projection effect rows could not be read")
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| {
+                ManagedError::Conflict("HostRun projection effect rows could not be decoded")
+            })?;
+        if rows.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(rows))
+    }
+
+    /// Structural admission of the request itself. A malformed or out-of-bounds
+    /// request is `Invalid`; every disagreement with a persisted row is
+    /// `Conflict`. Both fail closed into the same typed route UNKNOWN.
+    fn validate_request(request: &HostRunProcessEffectProjectionRequestV1) -> Result<(), ManagedError> {
+        if request.schema_version != 1 {
+            return Err(ManagedError::Invalid(
+                "HostRun projection request schema version is unsupported",
+            ));
+        }
+        if request.effects.is_empty()
+            || request.effects.len() > MAX_HOST_RUN_PROJECTION_EFFECTS
+        {
+            return Err(ManagedError::Invalid(
+                "HostRun projection request effect count is out of bounds",
+            ));
+        }
+        if request.owner_epoch == 0 || request.process_generation == 0 {
+            return Err(ManagedError::Invalid(
+                "HostRun projection request carries a zero epoch or generation",
+            ));
+        }
+        for value in [
+            request.batch_id.as_str(),
+            request.run_id.as_str(),
+            request.task_id.as_str(),
+            request.attempt_id.as_str(),
+            request.session_id.as_str(),
+        ] {
+            crate::protocol::validate_identifier(value).map_err(|_| {
+                ManagedError::Invalid("HostRun projection request identifier is malformed")
+            })?;
+        }
+        principal(&request.principal)?;
+        for value in [
+            &request.binding_digest,
+            &request.dispatch_key_digest,
+            &request.attempt_scope_digest,
+        ] {
+            blake3_digest(value)?;
+        }
+        let mut calls = BTreeSet::new();
+        let mut effects = BTreeSet::new();
+        for effect in &request.effects {
+            for value in [
+                effect.call_id.as_str(),
+                effect.effect_id.as_str(),
+                effect.capability_id.as_str(),
+            ] {
+                crate::protocol::validate_identifier(value).map_err(|_| {
+                    ManagedError::Invalid("HostRun projection request effect identity is malformed")
+                })?;
+            }
+            if !calls.insert(effect.call_id.as_str())
+                || !effects.insert(effect.effect_id.as_str())
+            {
+                return Err(ManagedError::Invalid(
+                    "HostRun projection request repeats a call or effect reference",
+                ));
+            }
+            for value in [
+                &effect.arguments_digest,
+                &effect.effect_intent_digest,
+                &effect.capability_lease_digest,
+            ] {
+                blake3_digest(value)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Exact pin equality and ordered complete coverage of the committed batch.
+    /// Reordering, substitution, a dropped or added member, a foreign
+    /// Session/principal/Attempt scope or an unmanaged row all deny here.
+    fn verify_coverage(
+        request: &HostRunProcessEffectProjectionRequestV1,
+        rows: &[HostRunPersistedEffectRowV1],
+    ) -> Result<(), ManagedError> {
+        if rows.len() != request.effects.len() {
+            return Err(ManagedError::Conflict(
+                "HostRun projection does not cover the complete committed batch",
+            ));
+        }
+        for (position, (row, requested)) in rows.iter().zip(&request.effects).enumerate() {
+            if row.call_index != Some(position as i64) {
+                return Err(ManagedError::Conflict(
+                    "HostRun projection does not cover the durable call order",
+                ));
+            }
+            if row.session_id != request.session_id || row.principal != request.principal {
+                return Err(ManagedError::Conflict(
+                    "HostRun projection batch row carries a foreign Session or principal",
+                ));
+            }
+            if row.origin_kind != "managed_run" {
+                return Err(ManagedError::Conflict(
+                    "HostRun projection batch row is not a managed ToolBatch effect",
+                ));
+            }
+            if row.attempt_scope_digest.as_deref()
+                != Some(request.attempt_scope_digest.as_str())
+            {
+                return Err(ManagedError::Conflict(
+                    "HostRun projection batch row carries a stale Attempt scope",
+                ));
+            }
+            if row.call_id != requested.call_id
+                || row.effect_id != requested.effect_id
+                || row.capability_id != requested.capability_id
+            {
+                return Err(ManagedError::Conflict(
+                    "HostRun projection member differs from the durable effect reference",
+                ));
+            }
+            if row.arguments_digest != requested.arguments_digest
+                || row.admitted_intent_digest != requested.effect_intent_digest
+                || row.capability_lease_digest.as_deref()
+                    != Some(requested.capability_lease_digest.as_str())
+            {
+                return Err(ManagedError::Conflict(
+                    "HostRun projection member differs from the durable effect digests",
+                ));
+            }
+            for value in [
+                row.arguments_digest.as_str(),
+                row.admitted_intent_digest.as_str(),
+                row.capability_lease_digest.as_deref().unwrap_or_default(),
+            ] {
+                if blake3_digest(value).is_err() {
+                    return Err(ManagedError::Conflict(
+                        "HostRun projection batch row carries a malformed effect digest",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The durable disposition of one committed effect. `SETTLED` is the only
+    /// success-bearing state and requires its committed receipt; the terminal
+    /// decision states require their durable classification receipt and project
+    /// `CANCELLED`/`FAILED`, never success. Anything uncommitted or durably
+    /// UNKNOWN is a typed denial, never an empty or successful projection.
+    ///
+    /// The outcome names the *effect disposition*, not the tool's semantic
+    /// result: P2 joins the durable managed Attempt/Run settlement for the
+    /// terminal verdict of the run itself.
+    fn disposition(
+        journal: &Path,
+        request: &HostRunProcessEffectProjectionRequestV1,
+        row: &HostRunPersistedEffectRowV1,
+    ) -> Result<(HostRunEffectOutcomeV1, Option<String>, Option<String>), ManagedError> {
+        let receipt_ref = Some(row.challenge_id.clone());
+        match row.status.as_str() {
+            "SETTLED" => {
+                let receipt_digest = row
+                    .receipt_digest
+                    .clone()
+                    .filter(|digest| blake3_digest(digest).is_ok())
+                    .ok_or_else(|| {
+                        ManagedError::Conflict(
+                            "HostRun projection effect has no committed target receipt",
+                        )
+                    })?;
+                Ok((HostRunEffectOutcomeV1::Succeeded, receipt_ref, Some(receipt_digest)))
+            }
+            "DENIED" | "EXPIRED" => {
+                let receipt_digest = Self::decision_receipt(journal, request, row)?;
+                Ok((HostRunEffectOutcomeV1::Failed, receipt_ref, Some(receipt_digest)))
+            }
+            "CANCELLED" | "NOT_APPLIED" => {
+                let receipt_digest = Self::decision_receipt(journal, request, row)?;
+                Ok((HostRunEffectOutcomeV1::Cancelled, receipt_ref, Some(receipt_digest)))
+            }
+            "UNKNOWN" => Err(ManagedError::Conflict(
+                "HostRun projection effect disposition is durably UNKNOWN",
+            )),
+            _ => Err(ManagedError::Conflict(
+                "HostRun projection effect is not durably committed",
+            )),
+        }
+    }
+
+    /// Requires the durable classification receipt for a terminal non-`SETTLED`
+    /// decision and returns its digest only after every pin matches the batch
+    /// row, the Session/principal and the Attempt scope of the request.
+    fn decision_receipt(
+        journal: &Path,
+        request: &HostRunProcessEffectProjectionRequestV1,
+        row: &HostRunPersistedEffectRowV1,
+    ) -> Result<String, ManagedError> {
+        use rusqlite::OptionalExtension;
+        let call_index = row.call_index.ok_or_else(|| {
+            ManagedError::Conflict("HostRun projection effect has no durable call position")
+        })?;
+        let connection = Self::open_read_only(journal)?;
+        let stored: (String, String, i64, String, String, String, Option<String>, String) =
+            connection
+                .query_row(
+                    "SELECT challenge_id, batch_id, call_index, call_id, principal, session_id,
+                            attempt_scope_digest, receipt_digest
+                     FROM effect_decision_receipts WHERE effect_id = ?1 AND status = ?2",
+                    rusqlite::params![row.effect_id, row.status],
+                    |stored| {
+                        Ok((
+                            stored.get(0)?,
+                            stored.get(1)?,
+                            stored.get(2)?,
+                            stored.get(3)?,
+                            stored.get(4)?,
+                            stored.get(5)?,
+                            stored.get(6)?,
+                            stored.get(7)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(|_| {
+                    ManagedError::Conflict(
+                        "HostRun projection effect decision receipt could not be read",
+                    )
+                })?
+                .ok_or_else(|| {
+                    ManagedError::Conflict(
+                        "HostRun projection effect has no committed decision receipt",
+                    )
+                })?;
+        if stored.0 != row.challenge_id
+            || stored.1 != request.batch_id
+            || stored.2 != call_index
+            || stored.3 != row.call_id
+            || stored.4 != request.principal
+            || stored.5 != request.session_id
+            || stored.6.as_deref() != Some(request.attempt_scope_digest.as_str())
+            || blake3_digest(&stored.7).is_err()
+        {
+            return Err(ManagedError::Conflict(
+                "HostRun projection effect decision receipt differs from its committed identity",
+            ));
+        }
+        Ok(stored.7)
+    }
+
+    /// Classifies one persisted process status. Durably terminal states are the
+    /// ones P1's own guarded settlement may write (that settlement refuses to
+    /// complete without the quiescence proof it requires for the capability);
+    /// `UNKNOWN` and any in-flight or unrecognised state is ambiguous.
+    fn classify_process_status(status: &str) -> HostRunPersistedProcessVerdictV1 {
+        match status {
+            "SETTLED" | "COMPLETE" | "CANCELLED" | "FAILED" | "EXPIRED" | "DENIED"
+            | "NOT_APPLIED" => HostRunPersistedProcessVerdictV1::Quiescent,
+            _ => HostRunPersistedProcessVerdictV1::Ambiguous,
+        }
+    }
+
+    /// Reads one process record from a fixed journal table. The table name is
+    /// never caller data: it is checked against this internal whitelist before it
+    /// enters the statement.
+    fn read_process_row(
+        connection: &rusqlite::Connection,
+        table: &str,
+        columns: &str,
+        effect_id: &str,
+    ) -> Result<Option<Vec<rusqlite::types::Value>>, ManagedError> {
+        let whitelisted = matches!(
+            table,
+            "stdio_executions"
+                | "code_mode_runs"
+                | "http_executions"
+                | "terminal_runs"
+                | "external_editor_runs"
+        );
+        if !whitelisted {
+            return Err(ManagedError::Conflict(
+                "HostRun projection process table is not readable",
+            ));
+        }
+        let statement_text = format!(
+            "SELECT {columns} FROM {table} WHERE effect_id = ?1"
+        );
+        let mut statement = connection.prepare(&statement_text).map_err(|_| {
+            ManagedError::Conflict("HostRun projection process record could not be read")
+        })?;
+        let column_count = statement.column_count();
+        let mut rows = statement
+            .query(rusqlite::params![effect_id])
+            .map_err(|_| {
+                ManagedError::Conflict("HostRun projection process record could not be read")
+            })?;
+        let mut collected: Vec<Vec<rusqlite::types::Value>> = Vec::new();
+        while let Some(row) = rows.next().map_err(|_| {
+            ManagedError::Conflict("HostRun projection process record could not be read")
+        })? {
+            let mut values = Vec::with_capacity(column_count);
+            for index in 0..column_count {
+                values.push(row.get::<_, rusqlite::types::Value>(index).map_err(|_| {
+                    ManagedError::Conflict(
+                        "HostRun projection process record could not be decoded",
+                    )
+                })?);
+            }
+            collected.push(values);
+        }
+        match collected.len() {
+            0 => Ok(None),
+            1 => Ok(collected.into_iter().next()),
+            _ => Err(ManagedError::Conflict(
+                "HostRun projection effect has more than one process record",
+            )),
+        }
+    }
+
+    fn text_value(value: Option<&rusqlite::types::Value>) -> Result<String, ManagedError> {
+        match value {
+            Some(rusqlite::types::Value::Text(text)) => Ok(text.clone()),
+            _ => Err(ManagedError::Conflict(
+                "HostRun projection process record has no readable state",
+            )),
+        }
+    }
+
+    fn integer_value(value: Option<&rusqlite::types::Value>) -> Result<i64, ManagedError> {
+        match value {
+            Some(rusqlite::types::Value::Integer(integer)) => Ok(*integer),
+            _ => Err(ManagedError::Conflict(
+                "HostRun projection process record has no readable integer",
+            )),
+        }
+    }
+
+    fn optional_text(
+        value: Option<&rusqlite::types::Value>,
+    ) -> Result<Option<String>, ManagedError> {
+        match value {
+            None | Some(rusqlite::types::Value::Null) => Ok(None),
+            Some(rusqlite::types::Value::Text(text)) => Ok(Some(text.clone())),
+            _ => Err(ManagedError::Conflict(
+                "HostRun projection process record has no readable text",
+            )),
+        }
+    }
+
+    /// True when the record retained no containment identity (nothing was ever
+    /// contained, so there is no contained tree to prove empty), or when its
+    /// durable quiescence proof is a well-formed BLAKE3 digest. A retained
+    /// identity without that proof never counts as quiescent.
+    fn quiescence_proved(
+        row: &[rusqlite::types::Value],
+        containment_index: usize,
+        quiescence_index: usize,
+    ) -> bool {
+        if !matches!(row.get(containment_index), Some(rusqlite::types::Value::Blob(_))) {
+            return true;
+        }
+        matches!(
+            row.get(quiescence_index),
+            Some(rusqlite::types::Value::Text(digest)) if blake3_digest(digest).is_ok()
+        )
+    }
+
+    /// Resolves the persisted process-generation/cgroup evidence for one effect.
+    ///
+    /// A stale owner epoch or a foreign/stale Attempt scope in a process record
+    /// is a typed denial (`Conflict`) before any projection is built. A record
+    /// that is in flight or durably UNKNOWN makes the effect ambiguous, and a
+    /// terminal record whose retained cgroup identity has no durable quiescence
+    /// proof leaves quiescence unproved. With no process record at all there is
+    /// no process to quiesce, so absence is `Absent`.
+    fn process_verdict(
+        journal: &Path,
+        request: &HostRunProcessEffectProjectionRequestV1,
+        effect_id: &str,
+    ) -> Result<HostRunPersistedProcessVerdictV1, ManagedError> {
+        let connection = Self::open_read_only(journal)?;
+        let mut verdict = HostRunPersistedProcessVerdictV1::Absent;
+
+        // Records that carry the durable owner-epoch, generation and Attempt-scope pins.
+        for (table, columns) in [
+            (
+                "stdio_executions",
+                "status, owner_epoch, generation, attempt_scope_digest, cgroup_identity, quiescence_digest",
+            ),
+            (
+                "code_mode_runs",
+                "status, owner_epoch, generation, attempt_scope_digest, NULL, NULL",
+            ),
+            (
+                "http_executions",
+                "status, owner_epoch, generation, attempt_scope_digest, NULL, NULL",
+            ),
+        ] {
+            let row = Self::read_process_row(&connection, table, columns, effect_id)?;
+            let Some(row) = row else { continue };
+            let status = Self::text_value(row.first())?;
+            let owner_epoch = Self::integer_value(row.get(1))?;
+            let generation = Self::integer_value(row.get(2))?;
+            let scope = Self::optional_text(row.get(3))?;
+            if u64::try_from(owner_epoch).ok() != Some(request.owner_epoch) {
+                return Err(ManagedError::Conflict(
+                    "HostRun projection process record carries a stale owner epoch",
+                ));
+            }
+            if generation <= 0 {
+                return Err(ManagedError::Conflict(
+                    "HostRun projection process record carries an invalid process generation",
+                ));
+            }
+            if scope.as_deref() != Some(request.attempt_scope_digest.as_str()) {
+                return Err(ManagedError::Conflict(
+                    "HostRun projection process record carries a foreign Attempt scope",
+                ));
+            }
+            verdict = verdict.max(Self::classify_process_status(&status));
+            // A retained containment identity without its durable quiescence
+            // proof leaves the process tree unproven, whatever the status says.
+            if !Self::quiescence_proved(&row, 4, 5) {
+                verdict = verdict.max(HostRunPersistedProcessVerdictV1::Unquiesced);
+            }
+        }
+
+        // Records that carry containment/quiescence evidence but no epoch pins.
+        for table in ["terminal_runs", "external_editor_runs"] {
+            let row = Self::read_process_row(
+                &connection,
+                table,
+                "status, cgroup_identity, quiescence_digest",
+                effect_id,
+            )?;
+            let Some(row) = row else { continue };
+            let status = Self::text_value(row.first())?;
+            verdict = verdict.max(Self::classify_process_status(&status));
+            if !Self::quiescence_proved(&row, 1, 2) {
+                verdict = verdict.max(HostRunPersistedProcessVerdictV1::Unquiesced);
+            }
+        }
+        Ok(verdict)
+    }
+}
+
+impl HostRunEffectProjectionSourceV1 for HostRunPersistedEffectProjectionSourceV1 {
+    fn project_committed_batch(
+        &self,
+        request: &HostRunProcessEffectProjectionRequestV1,
+    ) -> Result<HostRunProcessEffectProjectionV1, ManagedError> {
+        Self::validate_request(request)?;
+
+        // Resolve the one durable journal that carries this batch. Carried by
+        // more than one journal is an ambiguous duplicate and denies.
+        let mut carrier: Option<(std::path::PathBuf, Vec<HostRunPersistedEffectRowV1>)> = None;
+        for journal in self.journals()? {
+            let Some(rows) = Self::read_batch(&journal, &request.batch_id)? else {
+                continue;
+            };
+            if carrier.is_some() {
+                return Err(ManagedError::Conflict(
+                    "HostRun projection batch is durable in more than one effect journal",
+                ));
+            }
+            carrier = Some((journal, rows));
+        }
+        let (journal, rows) = carrier.ok_or_else(|| {
+            ManagedError::Conflict(
+                "HostRun projection has no durable row for this committed batch",
+            )
+        })?;
+        Self::verify_coverage(request, &rows)?;
+
+        let mut members = Vec::with_capacity(rows.len());
+        let mut quiescence = ProcessQuiescenceV1::Proved;
+        let mut complete = true;
+        for row in &rows {
+            let (mut outcome, receipt_ref, receipt_digest) =
+                Self::disposition(&journal, request, row)?;
+            match Self::process_verdict(&journal, request, &row.effect_id)? {
+                HostRunPersistedProcessVerdictV1::Absent
+                | HostRunPersistedProcessVerdictV1::Quiescent => {}
+                HostRunPersistedProcessVerdictV1::Unquiesced => {
+                    quiescence = ProcessQuiescenceV1::Unknown;
+                }
+                HostRunPersistedProcessVerdictV1::Ambiguous => {
+                    // The receipt may be durable while the process record is not:
+                    // the process axis and the effect axis are reported separately,
+                    // and neither may then be read as terminal.
+                    quiescence = ProcessQuiescenceV1::Unknown;
+                    outcome = HostRunEffectOutcomeV1::Unknown;
+                    complete = false;
+                }
+            }
+            if outcome == HostRunEffectOutcomeV1::Unknown {
+                complete = false;
+            }
+            let terminal = matches!(
+                outcome,
+                HostRunEffectOutcomeV1::Succeeded
+                    | HostRunEffectOutcomeV1::Failed
+                    | HostRunEffectOutcomeV1::Cancelled
+            );
+            members.push(HostRunProcessEffectProjectionMemberV1 {
+                call_id: row.call_id.clone(),
+                effect_id: row.effect_id.clone(),
+                capability_id: row.capability_id.clone(),
+                outcome,
+                receipt_ref: if terminal { receipt_ref } else { None },
+                receipt_digest: if terminal { receipt_digest } else { None },
+                arguments_digest: row.arguments_digest.clone(),
+                effect_intent_digest: row.admitted_intent_digest.clone(),
+                capability_lease_digest: row
+                    .capability_lease_digest
+                    .clone()
+                    .unwrap_or_default(),
+            });
+        }
+        if quiescence != ProcessQuiescenceV1::Proved {
+            complete = false;
+        }
+        let projection = HostRunProcessEffectProjectionV1 {
+            schema_version: 1,
+            status: if complete {
+                ProjectionStatusV1::Settled
+            } else {
+                ProjectionStatusV1::Unknown
+            },
+            binding_digest: request.binding_digest.clone(),
+            dispatch_key_digest: request.dispatch_key_digest.clone(),
+            batch_id: request.batch_id.clone(),
+            run_id: request.run_id.clone(),
+            task_id: request.task_id.clone(),
+            attempt_id: request.attempt_id.clone(),
+            session_id: request.session_id.clone(),
+            principal: request.principal.clone(),
+            owner_epoch: request.owner_epoch,
+            process_generation: request.process_generation,
+            attempt_scope_digest: request.attempt_scope_digest.clone(),
+            process_quiescence: quiescence,
+            effects: members,
+        };
+        // A projection that does not echo the request byte-for-byte is never
+        // returned: the mismatch is a typed denial, never a fabricated success.
+        projection.validate_against(request).map_err(|_| {
+            ManagedError::Conflict("HostRun projection does not echo the committed request")
+        })?;
+        Ok(projection)
+    }
+}
+
+#[cfg(test)]
+mod host_run_persisted_projection_tests {
+    use super::*;
+    use crate::effect_host::EffectHost;
+
+    const JOURNAL_LOCATION: &str = "loc-host-run-projection";
+    const BATCH_ID: &str = "batch-host-run-projection";
+    const SESSION_ID: &str = "ses_host_run_projection";
+    const PRINCIPAL: &str = "server_auth:projection";
+    const OWNER_EPOCH: u64 = 3;
+    const PROCESS_GENERATION: u64 = 7;
+    const SCOPE_SEED: u8 = 0xc1;
+    const NOW_MS: i64 = 1_700_000_000_000;
+
+    fn digest(seed: u8) -> String {
+        format!(
+            "blake3:{}",
+            [seed; 32]
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        )
+    }
+
+    /// Repository-local scratch root. Honors TMPDIR (tests are run with TMPDIR
+    /// pointed at a repository path) and is unique per call.
+    fn temp_root(name: &str) -> std::path::PathBuf {
+        static NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "hz-host-run-projection-{name}-{}-{}",
+            std::process::id(),
+            NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        ));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        path
+    }
+
+    fn release(root: &Path) {
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Creates the canonical per-Location journal layout and returns its path.
+    /// The schema-owning EffectHost is dropped before the seed, so no second
+    /// connection is ever open while the projection source reads.
+    fn open_journal(root: &Path, location: &str) -> std::path::PathBuf {
+        let directory = root.join("effect-locations").join(location);
+        std::fs::create_dir_all(&directory).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        drop(EffectHost::open(&directory, None).unwrap());
+        directory.join("effects.sqlite")
+    }
+
+    fn with_journal<R>(journal: &Path, run: impl FnOnce(&rusqlite::Connection) -> R) -> R {
+        let connection = rusqlite::Connection::open(journal).unwrap();
+        let result = run(&connection);
+        drop(connection);
+        result
+    }
+
+    /// The exact value `install_host_run_effect_projection_source` takes, so the
+    /// tests exercise the object the HostKernel field holds.
+    fn source(root: &Path) -> Box<dyn HostRunEffectProjectionSourceV1> {
+        Box::new(HostRunPersistedEffectProjectionSourceV1::new(root))
+    }
+
+    fn reference(index: usize) -> HostRunProcessEffectReferenceV1 {
+        HostRunProcessEffectReferenceV1 {
+            call_id: format!("call-{index}"),
+            effect_id: format!("eff-{index}"),
+            capability_id: "files.read".to_owned(),
+            arguments_digest: digest(0x10 + index as u8),
+            effect_intent_digest: digest(0x20 + index as u8),
+            capability_lease_digest: digest(0x30 + index as u8),
+        }
+    }
+
+    fn request(
+        effects: Vec<HostRunProcessEffectReferenceV1>,
+    ) -> HostRunProcessEffectProjectionRequestV1 {
+        HostRunProcessEffectProjectionRequestV1 {
+            schema_version: 1,
+            binding_digest: digest(0xb1),
+            dispatch_key_digest: digest(0xb2),
+            batch_id: BATCH_ID.to_owned(),
+            run_id: "run-host-run-projection".to_owned(),
+            task_id: "task-host-run-projection".to_owned(),
+            attempt_id: "attempt-host-run-projection".to_owned(),
+            session_id: SESSION_ID.to_owned(),
+            principal: PRINCIPAL.to_owned(),
+            owner_epoch: OWNER_EPOCH,
+            process_generation: PROCESS_GENERATION,
+            attempt_scope_digest: digest(SCOPE_SEED),
+            effects,
+        }
+    }
+
+    /// One durable challenge row to seed. The defaults mirror `reference(index)`
+    /// under the pins of `request(...)`, so a test only overrides what it proves.
+    struct ChallengeSeed {
+        index: usize,
+        batch_id: String,
+        call_id: String,
+        effect_id: String,
+        capability_id: String,
+        arguments_digest: String,
+        admitted_intent_digest: String,
+        capability_lease_digest: Option<String>,
+        attempt_scope_digest: Option<String>,
+        session_id: String,
+        principal: String,
+        origin_kind: String,
+        status: String,
+        receipt_digest: Option<String>,
+    }
+
+    impl ChallengeSeed {
+        fn new(index: usize) -> Self {
+            let effect = reference(index);
+            Self {
+                index,
+                batch_id: BATCH_ID.to_owned(),
+                call_id: effect.call_id,
+                effect_id: effect.effect_id,
+                capability_id: effect.capability_id,
+                arguments_digest: effect.arguments_digest,
+                admitted_intent_digest: effect.effect_intent_digest,
+                capability_lease_digest: Some(effect.capability_lease_digest),
+                attempt_scope_digest: Some(digest(SCOPE_SEED)),
+                session_id: SESSION_ID.to_owned(),
+                principal: PRINCIPAL.to_owned(),
+                origin_kind: "managed_run".to_owned(),
+                status: "SETTLED".to_owned(),
+                receipt_digest: Some(digest(0x90 + index as u8)),
+            }
+        }
+
+        fn challenge_id(&self) -> String {
+            format!("challenge-{}", self.index)
+        }
+    }
+
+    fn seed_challenge(connection: &rusqlite::Connection, seed: &ChallengeSeed) {
+        connection
+            .execute(
+                "INSERT INTO effect_challenges(challenge_id, effect_id, session_id, principal,
+                    batch_id, call_id, call_index, capability_id, relative_path, requested_path,
+                    target, resource, existed, argument_digest, content_digest, expires_at_ms,
+                    status, turn_context_digest, origin_kind, managed_attempt_digest,
+                    capability_lease_digest, arguments_digest, admitted_intent_digest,
+                    receipt_digest, approved, lease_id)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,'.','.','.','.',0,?9,?9,?10,?11,?9,
+                    ?12,?13,?14,?15,?16,?17,1,NULL)",
+                rusqlite::params![
+                    seed.challenge_id(),
+                    seed.effect_id,
+                    seed.session_id,
+                    seed.principal,
+                    seed.batch_id,
+                    seed.call_id,
+                    seed.index as i64,
+                    seed.capability_id,
+                    digest(0x41),
+                    NOW_MS + 600_000,
+                    seed.status,
+                    seed.origin_kind,
+                    seed.attempt_scope_digest,
+                    seed.capability_lease_digest,
+                    seed.arguments_digest,
+                    seed.admitted_intent_digest,
+                    seed.receipt_digest,
+                ],
+            )
+            .unwrap();
+    }
+
+    fn seed_decision_receipt(connection: &rusqlite::Connection, seed: &ChallengeSeed) {
+        connection
+            .execute(
+                "INSERT INTO effect_decision_receipts(effect_id, status, challenge_id, batch_id,
+                    call_index, call_id, principal, session_id, attempt_scope_digest,
+                    receipt_digest, created_at_ms)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                rusqlite::params![
+                    seed.effect_id,
+                    seed.status,
+                    seed.challenge_id(),
+                    BATCH_ID,
+                    seed.index as i64,
+                    seed.call_id,
+                    seed.principal,
+                    seed.session_id,
+                    seed.attempt_scope_digest,
+                    digest(0x50 + seed.index as u8),
+                    NOW_MS,
+                ],
+            )
+            .unwrap();
+    }
+
+    /// One durable process record for an effect of the batch.
+    struct ProcessSeed {
+        effect_id: String,
+        challenge_id: String,
+        status: String,
+        owner_epoch: i64,
+        generation: i64,
+        attempt_scope_digest: Option<String>,
+        cgroup_identity: Option<Vec<u8>>,
+        quiescence_digest: Option<String>,
+    }
+
+    impl ProcessSeed {
+        fn new(effect_id: &str, challenge_id: &str) -> Self {
+            Self {
+                effect_id: effect_id.to_owned(),
+                challenge_id: challenge_id.to_owned(),
+                status: "SETTLED".to_owned(),
+                owner_epoch: OWNER_EPOCH as i64,
+                generation: 1,
+                attempt_scope_digest: Some(digest(SCOPE_SEED)),
+                cgroup_identity: None,
+                quiescence_digest: None,
+            }
+        }
+    }
+
+    fn seed_process(connection: &rusqlite::Connection, seed: &ProcessSeed) {
+        connection
+            .execute(
+                "INSERT INTO stdio_executions(execution_id, intent_id, effect_id, challenge_id,
+                    principal, session_id, location_id, capability_id, capability_lease_digest,
+                    attempt_scope_digest, owner_epoch, generation, workspace_revision, profile_ref,
+                    execution_digest, confinement_record, status, cgroup_identity,
+                    quiescence_digest, created_at_ms, updated_at_ms)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,'files.read',?8,?9,?10,?11,?12,'profile',?12,?12,
+                    ?13,?14,?15,?16,?16)",
+                rusqlite::params![
+                    format!("exec-{}", seed.effect_id),
+                    format!("intent-{}", seed.effect_id),
+                    seed.effect_id,
+                    seed.challenge_id,
+                    PRINCIPAL,
+                    SESSION_ID,
+                    "loc-host-run-projection",
+                    digest(0x31),
+                    seed.attempt_scope_digest,
+                    seed.owner_epoch,
+                    seed.generation,
+                    digest(0x61),
+                    seed.status,
+                    seed.cgroup_identity,
+                    seed.quiescence_digest,
+                    NOW_MS,
+                ],
+            )
+            .unwrap();
+    }
+
+    /// Asserts a typed denial. A returned projection would be a fabricated
+    /// success for a request that must not resolve.
+    fn deny(root: &Path, request: &HostRunProcessEffectProjectionRequestV1) -> ManagedError {
+        match source(root).project_committed_batch(request) {
+            Err(error) => error,
+            Ok(projection) => panic!("expected a typed denial, projected {projection:?}"),
+        }
+    }
+
+    #[test]
+    fn committed_batch_resolves_an_exact_complete_terminal_echo() {
+        let root = temp_root("echo");
+        let journal = open_journal(&root, JOURNAL_LOCATION);
+        with_journal(&journal, |connection| {
+            seed_challenge(connection, &ChallengeSeed::new(0));
+            seed_challenge(connection, &ChallengeSeed::new(1));
+        });
+        let request = request(vec![reference(0), reference(1)]);
+        let projection = source(&root)
+            .project_committed_batch(&request)
+            .expect("both committed rows must resolve");
+
+        projection
+            .validate_against(&request)
+            .expect("the projection must echo the exact committed request");
+        assert!(projection.is_complete_terminal());
+        assert_eq!(projection.status, ProjectionStatusV1::Settled);
+        assert_eq!(projection.process_quiescence, ProcessQuiescenceV1::Proved);
+        assert_eq!(projection.schema_version, 1);
+        assert_eq!(projection.binding_digest, request.binding_digest);
+        assert_eq!(projection.dispatch_key_digest, request.dispatch_key_digest);
+        assert_eq!(projection.batch_id, request.batch_id);
+        assert_eq!(projection.run_id, request.run_id);
+        assert_eq!(projection.task_id, request.task_id);
+        assert_eq!(projection.attempt_id, request.attempt_id);
+        assert_eq!(projection.session_id, request.session_id);
+        assert_eq!(projection.principal, request.principal);
+        assert_eq!(projection.owner_epoch, request.owner_epoch);
+        assert_eq!(projection.process_generation, request.process_generation);
+        assert_eq!(
+            projection.attempt_scope_digest,
+            request.attempt_scope_digest
+        );
+        // Receipt facts come from the persisted rows, in durable call order.
+        assert_eq!(projection.effects.len(), 2);
+        for (index, member) in projection.effects.iter().enumerate() {
+            let requested = &request.effects[index];
+            assert_eq!(member.call_id, requested.call_id);
+            assert_eq!(member.effect_id, requested.effect_id);
+            assert_eq!(member.capability_id, requested.capability_id);
+            assert_eq!(member.outcome, HostRunEffectOutcomeV1::Succeeded);
+            assert_eq!(
+                member.receipt_ref.as_deref(),
+                Some(format!("challenge-{index}").as_str())
+            );
+            assert_eq!(
+                member.receipt_digest.as_deref(),
+                Some(digest(0x90 + index as u8).as_str())
+            );
+            assert_eq!(member.arguments_digest, requested.arguments_digest);
+            assert_eq!(member.effect_intent_digest, requested.effect_intent_digest);
+            assert_eq!(
+                member.capability_lease_digest,
+                requested.capability_lease_digest
+            );
+        }
+        release(&root);
+    }
+
+    #[test]
+    fn substituted_effect_references_are_denied() {
+        let root = temp_root("substituted");
+        let journal = open_journal(&root, JOURNAL_LOCATION);
+        with_journal(&journal, |connection| {
+            seed_challenge(connection, &ChallengeSeed::new(0));
+        });
+
+        let mut effect_id = request(vec![reference(0)]);
+        effect_id.effects[0].effect_id = "eff-forged".to_owned();
+        assert!(matches!(
+            deny(&root, &effect_id),
+            ManagedError::Conflict(_)
+        ));
+
+        let mut capability = request(vec![reference(0)]);
+        capability.effects[0].capability_id = "files.write".to_owned();
+        assert!(matches!(deny(&root, &capability), ManagedError::Conflict(_)));
+
+        let mut arguments = request(vec![reference(0)]);
+        arguments.effects[0].arguments_digest = digest(0xff);
+        assert!(matches!(deny(&root, &arguments), ManagedError::Conflict(_)));
+
+        let mut lease = request(vec![reference(0)]);
+        lease.effects[0].capability_lease_digest = digest(0xfe);
+        assert!(matches!(deny(&root, &lease), ManagedError::Conflict(_)));
+
+        release(&root);
+    }
+
+    #[test]
+    fn unordered_partial_and_repeated_effect_lists_are_denied() {
+        let root = temp_root("ordered");
+        let journal = open_journal(&root, JOURNAL_LOCATION);
+        with_journal(&journal, |connection| {
+            seed_challenge(connection, &ChallengeSeed::new(0));
+            seed_challenge(connection, &ChallengeSeed::new(1));
+        });
+
+        let swapped = request(vec![reference(1), reference(0)]);
+        assert!(matches!(deny(&root, &swapped), ManagedError::Conflict(_)));
+
+        let partial = request(vec![reference(0)]);
+        assert!(matches!(deny(&root, &partial), ManagedError::Conflict(_)));
+
+        let repeated = request(vec![reference(0), reference(0)]);
+        assert!(matches!(
+            source(&root).project_committed_batch(&repeated),
+            Err(ManagedError::Invalid(_))
+        ));
+
+        release(&root);
+    }
+
+    #[test]
+    fn missing_or_emptied_journals_are_denied() {
+        let root = temp_root("no-journal");
+        let request = request(vec![reference(0)]);
+        assert!(matches!(
+            source(&root).project_committed_batch(&request),
+            Err(ManagedError::Conflict(_))
+        ));
+
+        // An empty Location directory is still an absence, never a success.
+        std::fs::create_dir_all(root.join("effect-locations")).unwrap();
+        assert!(matches!(
+            source(&root).project_committed_batch(&request),
+            Err(ManagedError::Conflict(_))
+        ));
+
+        // A Location whose journal is missing is skipped, and the batch is absent.
+        std::fs::create_dir_all(root.join("effect-locations").join(JOURNAL_LOCATION)).unwrap();
+        assert!(matches!(
+            source(&root).project_committed_batch(&request),
+            Err(ManagedError::Conflict(_))
+        ));
+        release(&root);
+    }
+
+    #[test]
+    fn a_batch_absent_or_duplicated_across_journals_is_denied() {
+        let root = temp_root("absent-batch");
+        let journal = open_journal(&root, JOURNAL_LOCATION);
+        // A batch that no journal carries is absent, never resolvable.
+        let mut foreign = ChallengeSeed::new(0);
+        foreign.batch_id = "batch-host-run-other".to_owned();
+        with_journal(&journal, |connection| seed_challenge(connection, &foreign));
+        let request = request(vec![reference(0)]);
+        assert!(matches!(deny(&root, &request), ManagedError::Conflict(_)));
+
+        // The same batch durable in two journals is ambiguous, not resolvable.
+        let second = open_journal(&root, "loc-host-run-projection-b");
+        // `effect_challenges.effect_id` is unique within one journal. Replace
+        // the earlier foreign-batch row before seeding the same effect into
+        // this journal, then duplicate only across the two journals as the
+        // ambiguity case intends.
+        with_journal(&journal, |connection| {
+            connection.execute("DELETE FROM effect_challenges", []).unwrap();
+            seed_challenge(connection, &ChallengeSeed::new(0));
+        });
+        with_journal(&second, |connection| seed_challenge(connection, &ChallengeSeed::new(0)));
+        assert!(matches!(deny(&root, &request), ManagedError::Conflict(_)));
+        release(&root);
+    }
+
+    #[test]
+    fn a_stale_owner_epoch_in_the_process_record_is_denied() {
+        let root = temp_root("stale-epoch");
+        let journal = open_journal(&root, JOURNAL_LOCATION);
+        with_journal(&journal, |connection| {
+            let seed = ChallengeSeed::new(0);
+            seed_challenge(connection, &seed);
+            let mut process = ProcessSeed::new(&seed.effect_id, &seed.challenge_id());
+            process.owner_epoch = (OWNER_EPOCH + 1) as i64;
+            seed_process(connection, &process);
+        });
+        let request = request(vec![reference(0)]);
+        assert!(matches!(deny(&root, &request), ManagedError::Conflict(_)));
+        release(&root);
+    }
+
+    #[test]
+    fn a_foreign_attempt_scope_in_the_batch_row_is_denied() {
+        let root = temp_root("stale-scope");
+        let journal = open_journal(&root, JOURNAL_LOCATION);
+        with_journal(&journal, |connection| {
+            let mut seed = ChallengeSeed::new(0);
+            seed.attempt_scope_digest = Some(digest(0xef));
+            seed_challenge(connection, &seed);
+        });
+        let request = request(vec![reference(0)]);
+        assert!(matches!(deny(&root, &request), ManagedError::Conflict(_)));
+        release(&root);
+    }
+
+    #[test]
+    fn a_foreign_session_principal_or_unmanaged_row_is_denied() {
+        let root = temp_root("foreign-pin");
+        let journal = open_journal(&root, JOURNAL_LOCATION);
+
+        let mut foreign_session = ChallengeSeed::new(0);
+        foreign_session.session_id = "ses_host_run_other".to_owned();
+        with_journal(&journal, |connection| seed_challenge(connection, &foreign_session));
+        let request = request(vec![reference(0)]);
+        assert!(matches!(deny(&root, &request), ManagedError::Conflict(_)));
+
+        let mut foreign_principal = ChallengeSeed::new(0);
+        foreign_principal.principal = "server_auth:other".to_owned();
+        with_journal(&journal, |connection| {
+            connection
+                .execute("DELETE FROM effect_challenges", [])
+                .unwrap();
+            seed_challenge(connection, &foreign_principal);
+        });
+        assert!(matches!(deny(&root, &request), ManagedError::Conflict(_)));
+
+        let mut unmanaged = ChallengeSeed::new(0);
+        unmanaged.origin_kind = "session_batch".to_owned();
+        with_journal(&journal, |connection| {
+            connection
+                .execute("DELETE FROM effect_challenges", [])
+                .unwrap();
+            seed_challenge(connection, &unmanaged);
+        });
+        assert!(matches!(deny(&root, &request), ManagedError::Conflict(_)));
+        release(&root);
+    }
+
+    #[test]
+    fn an_uncommitted_or_durably_unknown_effect_is_denied() {
+        let root = temp_root("uncommitted");
+        let journal = open_journal(&root, JOURNAL_LOCATION);
+        let request = request(vec![reference(0)]);
+
+        for status in ["PREPARED", "APPROVED", "RUNNING", "UNKNOWN"] {
+            with_journal(&journal, |connection| {
+                connection
+                    .execute("DELETE FROM effect_challenges", [])
+                    .unwrap();
+                let mut seed = ChallengeSeed::new(0);
+                seed.status = status.to_owned();
+                seed.receipt_digest = None;
+                seed_challenge(connection, &seed);
+            });
+            assert!(
+                matches!(deny(&root, &request), ManagedError::Conflict(_)),
+                "status {status} must never resolve"
+            );
+        }
+        release(&root);
+    }
+
+    #[test]
+    fn a_settled_effect_without_a_committed_receipt_is_denied() {
+        let root = temp_root("no-receipt");
+        let journal = open_journal(&root, JOURNAL_LOCATION);
+        with_journal(&journal, |connection| {
+            let mut seed = ChallengeSeed::new(0);
+            seed.receipt_digest = None;
+            seed_challenge(connection, &seed);
+        });
+        let request = request(vec![reference(0)]);
+        assert!(matches!(deny(&root, &request), ManagedError::Conflict(_)));
+
+        // A malformed receipt digest is equally uncommitted evidence.
+        with_journal(&journal, |connection| {
+            connection
+                .execute("DELETE FROM effect_challenges", [])
+                .unwrap();
+            let mut seed = ChallengeSeed::new(0);
+            seed.receipt_digest = Some("blake3:not-a-digest".to_owned());
+            seed_challenge(connection, &seed);
+        });
+        assert!(matches!(deny(&root, &request), ManagedError::Conflict(_)));
+        release(&root);
+    }
+
+    #[test]
+    fn terminal_decision_receipts_project_failure_and_cancellation_never_success() {
+        let root = temp_root("decisions");
+        let journal = open_journal(&root, JOURNAL_LOCATION);
+        let request = request(vec![reference(0), reference(1)]);
+
+        with_journal(&journal, |connection| {
+            let mut denied = ChallengeSeed::new(0);
+            denied.status = "DENIED".to_owned();
+            denied.receipt_digest = None;
+            seed_challenge(connection, &denied);
+            seed_decision_receipt(connection, &denied);
+
+            let mut cancelled = ChallengeSeed::new(1);
+            cancelled.status = "CANCELLED".to_owned();
+            cancelled.receipt_digest = None;
+            seed_challenge(connection, &cancelled);
+            seed_decision_receipt(connection, &cancelled);
+        });
+        let projection = source(&root)
+            .project_committed_batch(&request)
+            .expect("both terminal decisions carry a durable classification receipt");
+        projection.validate_against(&request).unwrap();
+        assert!(projection.is_complete_terminal());
+        assert_eq!(projection.effects[0].outcome, HostRunEffectOutcomeV1::Failed);
+        assert_eq!(
+            projection.effects[1].outcome,
+            HostRunEffectOutcomeV1::Cancelled
+        );
+        assert!(projection
+            .effects
+            .iter()
+            .all(|member| member.outcome != HostRunEffectOutcomeV1::Succeeded));
+        assert_eq!(
+            projection.effects[0].receipt_digest.as_deref(),
+            Some(digest(0x50).as_str())
+        );
+        assert_eq!(
+            projection.effects[1].receipt_digest.as_deref(),
+            Some(digest(0x51).as_str())
+        );
+
+        // The same terminal status without its durable classification receipt is
+        // uncommitted evidence, not a projection.
+        with_journal(&journal, |connection| {
+            connection
+                .execute("DELETE FROM effect_decision_receipts", [])
+                .unwrap();
+        });
+        assert!(matches!(deny(&root, &request), ManagedError::Conflict(_)));
+        release(&root);
+    }
+
+    #[test]
+    fn an_ambiguous_process_record_projects_unknown_never_success() {
+        let root = temp_root("ambiguous-process");
+        let journal = open_journal(&root, JOURNAL_LOCATION);
+        with_journal(&journal, |connection| {
+            let seed = ChallengeSeed::new(0);
+            seed_challenge(connection, &seed);
+            let mut process = ProcessSeed::new(&seed.effect_id, &seed.challenge_id());
+            process.status = "RUNNING".to_owned();
+            seed_process(connection, &process);
+        });
+        let request = request(vec![reference(0)]);
+        let projection = source(&root)
+            .project_committed_batch(&request)
+            .expect("an ambiguous process state is projected as UNKNOWN, not denied");
+        projection.validate_against(&request).unwrap();
+        assert!(!projection.is_complete_terminal());
+        assert_eq!(projection.status, ProjectionStatusV1::Unknown);
+        assert_eq!(projection.process_quiescence, ProcessQuiescenceV1::Unknown);
+        assert_eq!(projection.effects[0].outcome, HostRunEffectOutcomeV1::Unknown);
+        assert!(projection.effects[0].receipt_ref.is_none());
+        assert!(projection.effects[0].receipt_digest.is_none());
+        release(&root);
+    }
+
+    #[test]
+    fn an_unproven_quiescence_keeps_the_batch_non_terminal() {
+        let root = temp_root("quiescence");
+        let journal = open_journal(&root, JOURNAL_LOCATION);
+        with_journal(&journal, |connection| {
+            let seed = ChallengeSeed::new(0);
+            seed_challenge(connection, &seed);
+            let mut process = ProcessSeed::new(&seed.effect_id, &seed.challenge_id());
+            process.cgroup_identity = Some(vec![0u8, 1, 2, 3]);
+            seed_process(connection, &process);
+        });
+        let request = request(vec![reference(0)]);
+        let projection = source(&root)
+            .project_committed_batch(&request)
+            .expect("a terminal effect with unproven quiescence is projected as UNKNOWN");
+        assert!(!projection.is_complete_terminal());
+        assert_eq!(projection.status, ProjectionStatusV1::Unknown);
+        assert_eq!(projection.process_quiescence, ProcessQuiescenceV1::Unknown);
+        // The effect axis is still durable: only quiescence is unproven.
+        assert_eq!(projection.effects[0].outcome, HostRunEffectOutcomeV1::Succeeded);
+        projection.validate_against(&request).unwrap();
+
+        // Non-vacuity control: with the durable quiescence proof recorded, the
+        // same batch resolves complete and terminal.
+        let settled = reference(0);
+        with_journal(&journal, |connection| {
+            connection
+                .execute(
+                    "UPDATE stdio_executions SET quiescence_digest = ?1 WHERE effect_id = ?2",
+                    rusqlite::params![digest(0x71), settled.effect_id],
+                )
+                .unwrap();
+        });
+        let resolved = source(&root).project_committed_batch(&request).unwrap();
+        assert!(resolved.is_complete_terminal());
+        assert_eq!(resolved.process_quiescence, ProcessQuiescenceV1::Proved);
+        release(&root);
+    }
+}
+
+/// Typed reason codes for a non-terminal HostRun reconciliation.
+pub(crate) const HOST_RUN_UNKNOWN_BINDING_ABSENT: &str = "host_run_binding_absent";
+pub(crate) const HOST_RUN_UNKNOWN_BINDING_IDENTITY: &str = "host_run_binding_identity_mismatch";
+pub(crate) const HOST_RUN_UNKNOWN_PROJECTION_UNAVAILABLE: &str =
+    "host_run_effect_projection_unavailable";
+pub(crate) const HOST_RUN_UNKNOWN_PROJECTION_INCOMPLETE: &str =
+    "host_run_effect_projection_incomplete";
+pub(crate) const HOST_RUN_UNKNOWN_PROJECTION_IDENTITY: &str =
+    "host_run_effect_projection_identity_mismatch";
+pub(crate) const HOST_RUN_UNKNOWN_PROJECTION_AMBIGUOUS: &str =
+    "host_run_effect_projection_ambiguous";
+pub(crate) const HOST_RUN_UNKNOWN_MANAGED_TERMINAL: &str = "host_run_managed_terminal_unsettled";
+pub(crate) const HOST_RUN_UNKNOWN_TASK_UNVERIFIED: &str = "host_run_task_unverified";
+pub(crate) const HOST_RUN_UNKNOWN_ATTEMPT_UNKNOWN: &str = "host_run_attempt_unknown";
+pub(crate) const HOST_RUN_UNKNOWN_ATTEMPT_RECEIPT: &str = "host_run_attempt_receipt_missing";
+pub(crate) const HOST_RUN_UNKNOWN_BINDING_RECEIPT: &str = "host_run_binding_receipt_missing";
+pub(crate) const HOST_RUN_UNKNOWN_VERIFIER_EVIDENCE: &str =
+    "host_run_verifier_evidence_missing";
+pub(crate) const HOST_RUN_UNKNOWN_VERIFIER_PINS: &str = "host_run_verifier_pins_unavailable";
+pub(crate) const HOST_RUN_UNKNOWN_P8_OWNER_RECEIPT: &str =
+    "host_run_p8_owner_receipt_missing";
+pub(crate) const HOST_RUN_UNKNOWN_P8_SETTLEMENT: &str = "host_run_p8_settlement_missing";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HostRunReconciliationStatusV1 {
+    Succeeded,
+    Failed,
+    Cancelled,
+    Unknown,
+}
+
+impl HostRunReconciliationStatusV1 {
+    pub(crate) fn wire_name(self) -> &'static str {
+        match self {
+            Self::Succeeded => "SUCCEEDED",
+            Self::Failed => "FAILED",
+            Self::Cancelled => "CANCELLED",
+            Self::Unknown => "UNKNOWN",
+        }
+    }
+}
+
+/// Public, read-only HostRun reconciliation result. Missing or ambiguous evidence
+/// is always `UNKNOWN`; a possibly-dispatched binding is never redispatched.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HostRunReconciliationV1 {
+    pub(crate) dispatch_key_digest: String,
+    pub(crate) status: HostRunReconciliationStatusV1,
+    pub(crate) unknown_reason: Option<&'static str>,
+    pub(crate) binding: Option<HostRunDispatchBindingV1>,
+    pub(crate) binding_digest: Option<String>,
+    pub(crate) attempt_receipt_digest: Option<String>,
+    pub(crate) verified_revision: Option<String>,
+}
+
+impl HostRunReconciliationV1 {
+    pub(crate) fn unknown(
+        dispatch_key_digest: &str,
+        reason: &'static str,
+        binding: Option<&HostRunDispatchBindingV1>,
+        binding_digest: Option<&str>,
+    ) -> Self {
+        Self {
+            dispatch_key_digest: dispatch_key_digest.to_owned(),
+            status: HostRunReconciliationStatusV1::Unknown,
+            unknown_reason: Some(reason),
+            binding: binding.cloned(),
+            binding_digest: binding_digest.map(str::to_owned),
+            attempt_receipt_digest: None,
+            verified_revision: None,
+        }
+    }
+
+    pub(crate) fn value(&self) -> Value {
+        let mut value = json!({
+            "schemaVersion": 1,
+            "dispatchKeyDigest": self.dispatch_key_digest,
+            "status": self.status.wire_name(),
+            "unknownReason": self.unknown_reason,
+            "binding": self.binding.as_ref().map(HostRunDispatchBindingV1::value),
+            "bindingDigest": self.binding_digest,
+            "attemptReceiptDigest": self.attempt_receipt_digest,
+            "verifiedRevision": self.verified_revision,
+        });
+        if let Some(map) = value.as_object_mut() {
+            map.retain(|_, entry| !entry.is_null());
+        }
+        value
+    }
+}
+
+/// Canonical provider-selection projection P8 must use for
+/// `providerSelectionDigest`. Published by P2 because P2 owns the binding record.
+pub(crate) fn managed_provider_selection_digest(
+    route: &crate::protocol::ManagedProviderRouteBindingV1,
+) -> Result<String, ManagedError> {
+    let value = crate::protocol::Value::Map(BTreeMap::from([
+        (
+            "providerID".to_owned(),
+            crate::protocol::Value::String(route.provider_id.clone()),
+        ),
+        (
+            "modelID".to_owned(),
+            crate::protocol::Value::String(route.model_id.clone()),
+        ),
+        (
+            "harnessID".to_owned(),
+            crate::protocol::Value::String(route.harness_id.clone()),
+        ),
+        (
+            "routeID".to_owned(),
+            crate::protocol::Value::String(route.route_id.clone()),
+        ),
+        (
+            "endpointRevision".to_owned(),
+            crate::protocol::Value::String(route.endpoint_revision.clone()),
+        ),
+        (
+            "credentialLeaseRef".to_owned(),
+            match &route.credential_lease_ref {
+                Some(reference) => crate::protocol::Value::String(reference.clone()),
+                None => crate::protocol::Value::Nil,
+            },
+        ),
+    ]));
+    let bytes = messagepack::encode(&value, FRAME_LIMITS)
+        .map_err(|_| ManagedError::Invalid("provider selection projection is oversized"))?;
+    let mut preimage = HOST_RUN_PROVIDER_SELECTION_DOMAIN.to_vec();
+    preimage.extend_from_slice(&bytes);
+    Ok(format!("blake3:{}", blake3::hash(&preimage).to_hex()))
 }
 
 #[derive(Clone, Debug, Default)]
@@ -2482,6 +5556,16 @@ pub struct ManagedSnapshot {
     /// Values are refs only; provider payload/transcript text is never persisted.
     context_selections: BTreeMap<(String, u64), ManagedAttemptContextSelectionRecordV1>,
     provider_requests: BTreeMap<(String, u64), ManagedProviderRequestRecordV1>,
+    /// Exact pre-dispatch HostRun bindings keyed by the digest of P8's dispatch
+    /// key. The raw key is never persisted, and this map is not terminal proof.
+    host_run_dispatch_bindings: BTreeMap<String, HostRunDispatchBindingV1>,
+    /// Exact durable committed-binding receipts, persisted for P8's post-commit
+    /// OwnerLog append. Never reconstructed from the current revision.
+    host_run_dispatch_binding_receipts: BTreeMap<String, HostRunDispatchBindingReceiptV1>,
+    /// P8's post-commit OwnerLog receipts for committed bindings, submitted
+    /// through the authenticated `host_run.bind_receipt` route before dispatch.
+    /// Keyed by dispatch-key digest; immutable once committed.
+    host_run_p8_owner_receipts: BTreeMap<String, HostRunDispatchP8OwnerReceiptV1>,
 }
 
 /// Commands contain only control identifiers and digests, never conversation
@@ -2660,6 +5744,19 @@ pub enum ManagedCommand {
     /// prompt outcome and HostKernel has verified the callback is quiescent.
     DispatchQuiesced {
         proof: ManagedDispatchQuiescenceProofV1,
+    },
+    /// Durable pre-dispatch HostRun binding. Only HostKernel constructs this
+    /// command after validating P8's authenticated evaluator identity against the
+    /// live managed Attempt; there is no request decoder for it.
+    RecordHostRunDispatchBinding {
+        binding: HostRunDispatchBindingV1,
+    },
+    /// Durable P8 post-commit OwnerLog receipt for an already-committed
+    /// HostRun dispatch binding. Only HostKernel records it after validating
+    /// the receipt against the exact committed binding; there is no request
+    /// decoder for it.
+    RecordHostRunP8OwnerReceipt {
+        receipt: HostRunDispatchP8OwnerReceiptV1,
     },
     AbandonPreAdmissionCandidate {
         proof: ManagedCandidateAbandonProofV1,
@@ -2949,6 +6046,9 @@ fn delegation_binding_json(binding: &DelegationBindingV1) -> Value {
         "profileDigest": binding.profile_digest,
         "providerID": binding.provider_id,
         "modelID": binding.model_id,
+        // Canonical key always present; a legacy binding without a pinned
+        // budget roundtrips as an explicit null.
+        "profileTokenBudget": binding.profile_token_budget.map(|budget| budget.to_string()),
         "criteriaIDs": binding.criteria_ids,
         "workspaceLeaseID": binding.workspace_lease_id,
         "sourceRevision": binding.source_revision,
@@ -4096,6 +7196,14 @@ impl ManagedCommand {
                     "deliveryID": proof.delivery_id,
                 }),
             ),
+            Self::RecordHostRunDispatchBinding { binding } => (
+                "host_run_dispatch_binding_recorded",
+                binding.value(),
+            ),
+            Self::RecordHostRunP8OwnerReceipt { receipt } => (
+                "host_run_p8_owner_receipt_recorded",
+                receipt.value(),
+            ),
             Self::AbandonPreAdmissionCandidate { proof } => (
                 "pre_admission_candidate_abandoned",
                 json!({
@@ -4743,6 +7851,16 @@ impl ManagedCommand {
                         process_incarnation: field(payload, "processIncarnation")?,
                         delivery_id: field(payload, "deliveryID")?,
                     },
+                }
+            }
+            "host_run_dispatch_binding_recorded" if count == 22 => {
+                Self::RecordHostRunDispatchBinding {
+                    binding: HostRunDispatchBindingV1::decode(payload)?,
+                }
+            }
+            "host_run_p8_owner_receipt_recorded" if count == 6 => {
+                Self::RecordHostRunP8OwnerReceipt {
+                    receipt: HostRunDispatchP8OwnerReceiptV1::decode(payload)?,
                 }
             }
             "attempt_effect_bound" if count == 6 => Self::BindAttemptEffect {
@@ -6310,6 +9428,14 @@ mod managed_verification_evidence_tests {
             before_workspace_revision: digest('a'),
             after_workspace_revision: Some(digest('b')),
         });
+        // The verifier intent binds the workspace revision it observes, which
+        // follows the already-settled coding edge (`a` -> `b`). Reconciling the
+        // read-only verifier edge must therefore compare against `b`.
+        attempt
+            .verifier_intents
+            .get_mut("effect-verifier")
+            .unwrap()
+            .source_workspace_revision = digest('b');
         let proof = ManagedAttemptEffectReceiptProofV1 {
             goal_id: "goal-verification".into(),
             run_id: "run-verification".into(),
@@ -6510,11 +9636,13 @@ mod managed_verification_evidence_tests {
             profile_digest: digest('2'),
             provider_id: "provider-test".into(),
             model_id: "model-test".into(),
+            managed_provider_route: None,
             profile_token_budget: None,
             criteria_ids: vec!["tests-pass".into()],
             workspace_lease_id: "workspace-lease".into(),
             source_revision: digest('a'),
             capability_ceiling_digest: digest('3'),
+            permission_scope_digest: digest('5'),
             context_selection_digest: digest('4'),
             budget_lease_id: "budget-lease".into(),
             resource_lease_ids: vec![],
@@ -6820,7 +9948,15 @@ mod managed_verification_evidence_tests {
                         pending_verification_attempt: None,
                         unknown_effect: false,
                         verified_revision: Some(old_revision.clone()),
-                        verification_evidence: None,
+                        // A completed Task carries its independent typed proof;
+                        // `verified_revision` alone is a legacy replay-only shape
+                        // and no longer admits a new verification revision.
+                        verification_evidence: Some(TaskVerificationEvidence {
+                            attempt_id: "attempt-v1".into(),
+                            verifier_id: verifier_id.clone(),
+                            source_revision: old_revision.clone(),
+                            evidence_digest: digest('f'),
+                        }),
                         failed_criterion_ids: Vec::new(),
                         attempt_count: 1,
                         candidate_generation: 0,
@@ -6844,7 +9980,6 @@ mod managed_verification_evidence_tests {
                 failure_code: None,
             },
         );
-
         snapshot
             .apply(&ManagedCommand::BeginVerification {
                 run_id: "run-v1".into(),
@@ -6868,6 +10003,48 @@ mod managed_verification_evidence_tests {
         current_evidence.verifier_id = verifier_id;
         current_evidence.source_revision = current_revision.clone();
         current_evidence.evidence_digest = verification_evidence_digest(&current_evidence);
+        // The settled Attempt must carry the exact trusted verifier evidence the
+        // Run records; finalization re-derives the per-Task typed digest from it.
+        snapshot.attempts.insert("attempt-v1".into(), AttemptRecord {
+            run_id: "run-v1".into(),
+            task_id: "task-v1".into(),
+            executor_principal: "server_auth.executor".into(),
+            owner_epoch: current_evidence.profile.owner_epoch,
+            location_id: "location-1".into(),
+            session_id: "session-1".into(),
+            workspace_revision: Some(old_revision.clone()),
+            delegation_binding: None,
+            effects: vec![BoundEffect {
+                effect_id: "effect-v1".into(),
+                location_id: "location-1".into(),
+                session_id: "session-1".into(),
+                bound_revision: 1,
+            }],
+            effect_waves: Vec::new(),
+            effect_receipts: BTreeMap::from([(
+                "effect-v1".to_owned(),
+                ManagedAttemptEffectReceiptV1 {
+                    executor_principal: "server_auth.executor".into(),
+                    owner_epoch: current_evidence.profile.owner_epoch,
+                    bound_revision: 1,
+                    location_id: "location-1".into(),
+                    session_id: "session-1".into(),
+                    capability_id: "files.write".into(),
+                    capability_lease_digest: digest('b'),
+                    outcome: AttemptEffectOutcomeV1::Succeeded,
+                    target_receipt_digest: Some(digest('e')),
+                    before_workspace_revision: old_revision.clone(),
+                    after_workspace_revision: Some(old_revision.clone()),
+                },
+            )]),
+            verifier_intents: BTreeMap::new(),
+            verifier_evidence: Some(current_evidence.clone()),
+            phase: AttemptPhase::Succeeded,
+            receipt_digest: Some(digest('c')),
+            failure_code: None,
+            retryable: None,
+        });
+
         snapshot
             .apply(&ManagedCommand::RecordVerificationEvidence {
                 run_id: "run-v1".into(),
@@ -7023,6 +10200,829 @@ mod managed_verification_evidence_tests {
 }
 
 #[cfg(test)]
+mod host_run_dispatch_binding_tests {
+    use super::*;
+
+    fn digest(seed: char) -> String {
+        format!("blake3:{}", seed.to_string().repeat(64))
+    }
+
+    fn route() -> crate::protocol::ManagedProviderRouteBindingV1 {
+        crate::protocol::ManagedProviderRouteBindingV1 {
+            provider_id: "provider-test".into(),
+            model_id: "model-test".into(),
+            harness_id: "harness-test".into(),
+            route_id: "route-test".into(),
+            endpoint_revision: "endpoint-1".into(),
+            credential_lease_ref: None,
+        }
+    }
+
+    fn identity() -> HostRunEvaluationIdentityV1 {
+        HostRunEvaluationIdentityV1 {
+            dispatch_key_digest: digest('f'),
+            manifest_digest: digest('e'),
+            evaluator_task_id: "evaluator-task-1".into(),
+            arm_id: "arm-1".into(),
+            task_group: "group-1".into(),
+            evaluation_session_id: "evaluation-session-1".into(),
+            core_process_generation: 7,
+            owner_id: "evaluator-owner-1".into(),
+            workspace_binding_digest: digest('d'),
+            owner_principal_binding_digest: digest('c'),
+        }
+    }
+
+    fn snapshot_with_live_attempt() -> ManagedSnapshot {
+        let mut snapshot = ManagedSnapshot {
+            owner_goal_id: "goal-host-run".into(),
+            ..ManagedSnapshot::default()
+        };
+        let draft = SpecVersionDraft {
+            parent_version_id: None,
+            objective: "reconcile one host run".into(),
+            project_ref: "project-1".into(),
+            workspace_ref: "workspace-1".into(),
+            capability_scope: vec!["files.read".into()],
+            scope: vec!["src/**".into()],
+            constraints: vec![],
+            criteria: vec![AcceptanceCriterion {
+                id: "tests-pass".into(),
+                description: "tests pass".into(),
+            }],
+            budget: SpecBudget {
+                max_tasks: 1,
+                max_attempts_per_task: 1,
+                max_run_duration_ms: 60_000,
+                max_memory_bytes: None,
+                max_disk_bytes: None,
+                max_workers: 1,
+                max_tokens: None,
+                max_cost_micros: Some(0),
+            },
+            source_digests: vec![digest('a')],
+            proposed_by: "server_auth.author".into(),
+        };
+        let spec_digest = draft.digest();
+        snapshot.specs.insert(
+            "spec-host-run".into(),
+            SpecVersion {
+                digest: spec_digest.clone(),
+                content: draft,
+                accepted: true,
+                accepted_by: Some("server_auth.reviewer".into()),
+                accepted_at_ms: Some(1),
+                reviewer_id: Some("server_auth.reviewer".into()),
+                reviewer_assigned_revision: Some(1),
+                reviewed_revision: Some(2),
+                rejected_by: None,
+                rejected_at_ms: None,
+            },
+        );
+        snapshot.runs.insert(
+            "run-host-run".into(),
+            Run {
+                spec_id: "spec-host-run".into(),
+                phase: RunPhase::Running,
+                started_at_ms: Some(1),
+                tasks: BTreeMap::from([(
+                    "task-host-run".into(),
+                    Task {
+                        candidate_generation: 0,
+                        title: Some("Run the task".into()),
+                        purpose: Some("Exercise the host run".into()),
+                        dependencies: Vec::new(),
+                        criterion_ids: vec!["tests-pass".into()],
+                        required_capabilities: vec!["files.read".into()],
+                        agent_profile_revision: None,
+                        profile_token_budget: Some(1_000),
+                        profile_owner_binding_digest: Some(digest('b')),
+                        ready: false,
+                        active_attempt: Some("attempt-host-run".into()),
+                        pending_verification_attempt: None,
+                        unknown_effect: false,
+                        verified_revision: None,
+                        verification_evidence: None,
+                        failed_criterion_ids: Vec::new(),
+                        attempt_count: 1,
+                    },
+                )]),
+                session_link: None,
+                final_revision: None,
+                verifier_id: None,
+                criterion_evidence: BTreeMap::new(),
+                verification_evidence: None,
+                verification_history: Vec::new(),
+                failure_code: None,
+            },
+        );
+        snapshot.attempts.insert(
+            "attempt-host-run".into(),
+            AttemptRecord {
+                run_id: "run-host-run".into(),
+                task_id: "task-host-run".into(),
+                executor_principal: "server_auth:executor".into(),
+                owner_epoch: 3,
+                location_id: "location-1".into(),
+                session_id: "ses_host_run_child".into(),
+                workspace_revision: Some(digest('a')),
+                delegation_binding: Some(DelegationBindingV1 {
+                    run_id: "run-host-run".into(),
+                    task_id: "task-host-run".into(),
+                    attempt_id: "attempt-host-run".into(),
+                    parent_execution_id: "parent-execution".into(),
+                    child_execution_id: "child-execution".into(),
+                    accepted_spec_digest: spec_digest,
+                    profile_id: "profile-host-run".into(),
+                    profile_revision: 1,
+                    profile_digest: digest('9'),
+                    provider_id: "provider-test".into(),
+                    model_id: "model-test".into(),
+                    managed_provider_route: Some(route()),
+                    profile_token_budget: Some(1_000),
+                    criteria_ids: vec!["tests-pass".into()],
+                    workspace_lease_id: "workspace-lease".into(),
+                    source_revision: digest('a'),
+                    capability_ceiling_digest: digest('8'),
+                    permission_scope_digest: digest('7'),
+                    context_selection_digest: digest('6'),
+                    budget_lease_id: "budget-lease".into(),
+                    resource_lease_ids: vec![],
+                    owner_epoch: 3,
+                    admitted_managed_revision: 1,
+                }),
+                effects: vec![],
+                effect_waves: vec![],
+                effect_receipts: BTreeMap::new(),
+                verifier_intents: BTreeMap::new(),
+                verifier_evidence: None,
+                phase: AttemptPhase::Executing,
+                receipt_digest: None,
+                failure_code: None,
+                retryable: None,
+            },
+        );
+        snapshot
+    }
+
+    fn commit_binding(snapshot: &mut ManagedSnapshot) -> HostRunDispatchBindingV1 {
+        let binding = HostRunDispatchBindingV1::from_authenticated_evaluator(
+            snapshot,
+            "attempt-host-run",
+            "worker-execution-1",
+            &digest('6'),
+            identity(),
+        )
+        .unwrap();
+        snapshot
+            .apply(&ManagedCommand::RecordHostRunDispatchBinding {
+                binding: binding.clone(),
+            })
+            .unwrap();
+        // Mirror the receipt-backed OwnerLog projection: the durable binding is
+        // only terminal-authority-relevant together with its committed receipt.
+        let receipt = HostRunDispatchBindingReceiptV1 {
+            dispatch_key_digest: binding.dispatch_key_digest.clone(),
+            binding_digest: binding.digest().unwrap(),
+            owner_log_sequence: 7,
+            owner_log_event_digest: "0123456789abcdef".repeat(4),
+            binding_managed_revision: snapshot.revision,
+        };
+        snapshot
+            .host_run_dispatch_binding_receipts
+            .insert(binding.dispatch_key_digest.clone(), receipt);
+        // Mirror P8's authenticated post-commit append through the durable
+        // command path (the `host_run.bind_receipt` route's only writer).
+        let p8_receipt = HostRunDispatchP8OwnerReceiptV1 {
+            schema_version: 1,
+            dispatch_key_digest: binding.dispatch_key_digest.clone(),
+            binding_digest: binding.digest().unwrap(),
+            owner_log_id: "owner-log-p8-evaluator".into(),
+            owner_log_sequence: "7".into(),
+            owner_log_event_digest: "0123456789abcdef".repeat(4),
+        };
+        snapshot
+            .apply(&ManagedCommand::RecordHostRunP8OwnerReceipt {
+                receipt: p8_receipt,
+            })
+            .unwrap();
+        binding
+    }
+
+    /// Adds full committed verifier evidence for the succeeded path, mirroring
+    /// the durable `SucceedAttempt` projection plus the managed verifier record.
+    fn commit_verifier_evidence(snapshot: &mut ManagedSnapshot) {
+        let evidence = VerificationEvidenceV1 {
+            verification_run_id: "verify-host-run".into(),
+            verifier_id: "server_auth:verifier".into(),
+            source_revision: digest('a'),
+            profile: VerifierProfileEvidenceV1 {
+                profile_id: "verifier-profile-1".into(),
+                owner_epoch: 3,
+                executable_digest: digest('7'),
+                profile_digest: digest('6'),
+            },
+            aggregate_output_bytes: 12,
+            aggregate_duration_ms: 34,
+            criteria: vec![CriterionTestEvidenceV1 {
+                criterion_id: "tests-pass".into(),
+                verdict: VerificationVerdictV1::Pass,
+                test_identity: "test-identity-1".into(),
+                test_run_id: "test-run-1".into(),
+                process: CriterionVerifierProcessEvidenceV1 {
+                    execution_id: "execution-1".into(),
+                    generation: 1,
+                    exit_code: 0,
+                    stdout_digest: digest('5'),
+                    stderr_digest: digest('4'),
+                    output_bytes: 12,
+                    duration_ms: 34,
+                    truncated: false,
+                },
+                artifact_refs: vec![],
+            }],
+            evidence_digest: digest('3'),
+        };
+        snapshot
+            .attempts
+            .get_mut("attempt-host-run")
+            .unwrap()
+            .verifier_evidence = Some(evidence);
+    }
+
+    fn commit_wave_and_receipt(snapshot: &mut ManagedSnapshot, binding: &HostRunDispatchBindingV1) {
+        let attempt = snapshot.attempts.get_mut("attempt-host-run").unwrap();
+        attempt.effect_waves = vec![ManagedAttemptEffectWaveV1 {
+            schema_version: 2,
+            run_id: binding.run_id.clone(),
+            task_id: binding.managed_task_id.clone(),
+            attempt_id: binding.attempt_id.clone(),
+            batch_id: "batch-1".into(),
+            wave_index: 0,
+            location_id: "location-1".into(),
+            session_id: "ses_host_run_child".into(),
+            source_scope_digest: digest('5'),
+            edges: vec![ManagedAttemptEffectWaveEdgeV1 {
+                call_index: 0,
+                call_id: "call-1".into(),
+                effect_id: "effect-1".into(),
+                capability_id: "files.read".into(),
+                arguments_digest: digest('4'),
+                intent_digest: digest('3'),
+                attempt_scope_digest: Some(binding.attempt_scope_digest.clone()),
+            }],
+            wave_digest: digest('2'),
+            bound_revision: 2,
+        }];
+        attempt.effect_receipts.insert(
+            "effect-1".into(),
+            ManagedAttemptEffectReceiptV1 {
+                executor_principal: attempt.executor_principal.clone(),
+                owner_epoch: 3,
+                bound_revision: 2,
+                location_id: "location-1".into(),
+                session_id: "ses_host_run_child".into(),
+                capability_id: "files.read".into(),
+                capability_lease_digest: digest('1'),
+                outcome: AttemptEffectOutcomeV1::Succeeded,
+                target_receipt_digest: Some(digest('0')),
+                before_workspace_revision: digest('a'),
+                after_workspace_revision: Some(digest('a')),
+            },
+        );
+    }
+
+    fn projection_value(
+        request: &HostRunProcessEffectProjectionRequestV1,
+        outcome: &str,
+        quiescence: &str,
+    ) -> Value {
+        let effects = request
+            .effects
+            .iter()
+            .map(|effect| {
+                let terminal = matches!(outcome, "SUCCEEDED" | "FAILED");
+                json!({
+                    "callId": effect.call_id,
+                    "effectId": effect.effect_id,
+                    "capabilityId": effect.capability_id,
+                    "outcome": outcome,
+                    "receiptRef": if terminal { Value::String("receipt-1".into()) } else { Value::Null },
+                    "receiptDigest": if terminal { Value::String(digest('9')) } else { Value::Null },
+                    "argumentsDigest": effect.arguments_digest,
+                    "effectIntentDigest": effect.effect_intent_digest,
+                    "capabilityLeaseDigest": effect.capability_lease_digest,
+                })
+            })
+            .collect::<Vec<_>>();
+        let status = if outcome == "UNKNOWN" || quiescence == "UNKNOWN" {
+            "UNKNOWN"
+        } else {
+            "SETTLED"
+        };
+        json!({
+            "schemaVersion": 1,
+            "status": status,
+            "bindingDigest": request.binding_digest,
+            "dispatchKeyDigest": request.dispatch_key_digest,
+            "batchId": request.batch_id,
+            "runId": request.run_id,
+            "taskId": request.task_id,
+            "attemptId": request.attempt_id,
+            "sessionId": request.session_id,
+            "principal": request.principal,
+            "ownerEpoch": request.owner_epoch.to_string(),
+            "processGeneration": request.process_generation.to_string(),
+            "attemptScopeDigest": request.attempt_scope_digest,
+            "processQuiescence": quiescence,
+            "effects": effects,
+        })
+    }
+
+    #[test]
+    fn binding_derives_managed_identity_and_round_trips_strictly() {
+        let snapshot = snapshot_with_live_attempt();
+        let binding = commit_binding(&mut snapshot.clone());
+        assert_eq!(binding.run_id, "run-host-run");
+        assert_eq!(binding.managed_task_id, "task-host-run");
+        assert_eq!(binding.attempt_id, "attempt-host-run");
+        assert_eq!(binding.owner_epoch, 3);
+        assert_eq!(binding.worker_execution_id, "worker-execution-1");
+        assert_eq!(
+            binding.provider_selection_digest,
+            managed_provider_selection_digest(&route()).unwrap()
+        );
+
+        let encoded = binding.value();
+        assert_eq!(encoded.as_object().unwrap().len(), 22);
+        let decoded = HostRunDispatchBindingV1::decode(&encoded).unwrap();
+        assert_eq!(decoded, binding);
+        assert_eq!(decoded.digest().unwrap(), binding.digest().unwrap());
+
+        let mut tampered = encoded.clone();
+        tampered["dispatchKeyDigest"] = Value::String(digest('7'));
+        assert!(HostRunDispatchBindingV1::decode(&tampered).is_err());
+
+        let mut extra = encoded;
+        extra["extra"] = Value::String("x".into());
+        assert!(HostRunDispatchBindingV1::decode(&extra).is_err());
+    }
+
+    #[test]
+    fn binding_rejects_non_executing_or_unbound_attempts() {
+        let mut snapshot = snapshot_with_live_attempt();
+        snapshot
+            .attempts
+            .get_mut("attempt-host-run")
+            .unwrap()
+            .phase = AttemptPhase::Succeeded;
+        assert!(HostRunDispatchBindingV1::from_authenticated_evaluator(
+            &snapshot,
+            "attempt-host-run",
+            "worker-execution-1",
+            &digest('6'),
+            identity(),
+        )
+        .is_err());
+
+        let mut missing = snapshot_with_live_attempt();
+        missing.attempts.get_mut("attempt-host-run").unwrap().delegation_binding = None;
+        assert!(HostRunDispatchBindingV1::from_authenticated_evaluator(
+            &missing,
+            "attempt-host-run",
+            "worker-execution-1",
+            &digest('6'),
+            identity(),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn binding_rejects_a_second_dispatch_key_for_one_attempt() {
+        let mut snapshot = snapshot_with_live_attempt();
+        commit_binding(&mut snapshot);
+        let mut other = identity();
+        other.dispatch_key_digest = digest('1');
+        let second = HostRunDispatchBindingV1::from_authenticated_evaluator(
+            &snapshot,
+            "attempt-host-run",
+            "worker-execution-2",
+            &digest('6'),
+            other,
+        )
+        .unwrap();
+        assert!(snapshot
+            .apply(&ManagedCommand::RecordHostRunDispatchBinding { binding: second })
+            .is_err());
+    }
+
+    #[test]
+    fn reconcile_is_unknown_without_a_committed_binding() {
+        let snapshot = ManagedSnapshot::default();
+        let reconciliation = snapshot.reconcile_host_run(&digest('f'), &[]);
+        assert_eq!(
+            reconciliation.status,
+            HostRunReconciliationStatusV1::Unknown
+        );
+        assert_eq!(
+            reconciliation.unknown_reason,
+            Some(HOST_RUN_UNKNOWN_BINDING_ABSENT)
+        );
+        assert!(reconciliation.binding.is_none());
+    }
+
+    #[test]
+    fn reconcile_never_terminalizes_without_complete_projection_and_settlement() {
+        let mut snapshot = snapshot_with_live_attempt();
+        let binding = commit_binding(&mut snapshot);
+
+        // No committed wave: the request set cannot even be formed.
+        let no_wave = snapshot.reconcile_host_run(&binding.dispatch_key_digest, &[]);
+        assert_eq!(
+            no_wave.unknown_reason,
+            Some(HOST_RUN_UNKNOWN_PROJECTION_INCOMPLETE)
+        );
+
+        commit_wave_and_receipt(&mut snapshot, &binding);
+        let requests = snapshot
+            .host_run_projection_requests(&binding.dispatch_key_digest)
+            .unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].effects.len(), 1);
+        assert_eq!(requests[0].principal, "server_auth:executor");
+
+        let ambiguous = HostRunProcessEffectProjectionV1::decode(&projection_value(
+            &requests[0],
+            "UNKNOWN",
+            "UNKNOWN",
+        ))
+        .unwrap();
+        ambiguous.validate_against(&requests[0]).unwrap();
+        let pending = snapshot.reconcile_host_run(&binding.dispatch_key_digest, &[ambiguous]);
+        assert_eq!(
+            pending.unknown_reason,
+            Some(HOST_RUN_UNKNOWN_PROJECTION_AMBIGUOUS)
+        );
+
+        let settled = HostRunProcessEffectProjectionV1::decode(&projection_value(
+            &requests[0],
+            "SUCCEEDED",
+            "PROVED",
+        ))
+        .unwrap();
+        // While the Attempt is still in flight, a complete projection never
+        // terminalizes: the durable managed terminal transition is missing.
+        let in_flight = snapshot.reconcile_host_run(&binding.dispatch_key_digest, &[settled.clone()]);
+        assert_eq!(
+            in_flight.unknown_reason,
+            Some(HOST_RUN_UNKNOWN_MANAGED_TERMINAL)
+        );
+
+        // Durable terminal FAILED/SUCCEEDED projection without the committed
+        // Task verification evidence resolves to UNKNOWN, never SUCCEEDED.
+        snapshot
+            .attempts
+            .get_mut("attempt-host-run")
+            .unwrap()
+            .phase = AttemptPhase::Succeeded;
+        snapshot.attempts.get_mut("attempt-host-run").unwrap().receipt_digest = Some(digest('b'));
+        let unverified = snapshot.reconcile_host_run(&binding.dispatch_key_digest, &[settled.clone()]);
+        assert_eq!(
+            unverified.unknown_reason,
+            Some(HOST_RUN_UNKNOWN_TASK_UNVERIFIED)
+        );
+
+        commit_verifier_evidence(&mut snapshot);
+        let run = snapshot.runs.get_mut("run-host-run").unwrap();
+        let task = run.tasks.get_mut("task-host-run").unwrap();
+        task.active_attempt = None;
+        task.verified_revision = Some(digest('a'));
+        task.verification_evidence = Some(TaskVerificationEvidence {
+            attempt_id: "attempt-host-run".into(),
+            verifier_id: "server_auth:verifier".into(),
+            source_revision: digest('a'),
+            evidence_digest: digest('c'),
+        });
+        let succeeded = snapshot.reconcile_host_run(&binding.dispatch_key_digest, &[settled]);
+        assert_eq!(
+            succeeded.status,
+            HostRunReconciliationStatusV1::Succeeded
+        );
+        assert_eq!(succeeded.attempt_receipt_digest, Some(digest('b')));
+        assert_eq!(succeeded.verified_revision, Some(digest('a')));
+    }
+
+    #[test]
+    fn projection_rejects_substitution_ambiguity_and_missing_receipts() {
+        let mut snapshot = snapshot_with_live_attempt();
+        let binding = commit_binding(&mut snapshot);
+        commit_wave_and_receipt(&mut snapshot, &binding);
+        let request = snapshot
+            .host_run_projection_requests(&binding.dispatch_key_digest)
+            .unwrap()
+            .remove(0);
+
+        let mut substituted = projection_value(&request, "SUCCEEDED", "PROVED");
+        substituted["effects"][0]["effectId"] = Value::String("effect-substituted".into());
+        let substituted = HostRunProcessEffectProjectionV1::decode(&substituted).unwrap();
+        assert!(substituted.validate_against(&request).is_err());
+
+        let mut terminal_without_receipt = projection_value(&request, "SUCCEEDED", "PROVED");
+        terminal_without_receipt["effects"][0]["receiptDigest"] = Value::Null;
+        assert!(HostRunProcessEffectProjectionV1::decode(&terminal_without_receipt).is_err());
+
+        let mut extra = projection_value(&request, "SUCCEEDED", "PROVED");
+        extra["extra"] = Value::String("x".into());
+        assert!(HostRunProcessEffectProjectionV1::decode(&extra).is_err());
+
+        let mut wrong_identity = projection_value(&request, "SUCCEEDED", "PROVED");
+        wrong_identity["dispatchKeyDigest"] = Value::String(digest('9'));
+        let wrong_identity = HostRunProcessEffectProjectionV1::decode(&wrong_identity).unwrap();
+        assert!(wrong_identity.validate_against(&request).is_err());
+    }
+
+    /// P8 negative matrix: a stale owner epoch or process generation on the
+    /// projection is an identity mismatch, never a terminal result.
+    #[test]
+    fn reconcile_rejects_stale_epoch_and_generation_projection() {
+        let mut snapshot = snapshot_with_live_attempt();
+        let binding = commit_binding(&mut snapshot);
+        commit_wave_and_receipt(&mut snapshot, &binding);
+        let request = snapshot
+            .host_run_projection_requests(&binding.dispatch_key_digest)
+            .unwrap()
+            .remove(0);
+
+        let mut stale_epoch = projection_value(&request, "SUCCEEDED", "PROVED");
+        stale_epoch["ownerEpoch"] = Value::String("99".into());
+        let stale_epoch = HostRunProcessEffectProjectionV1::decode(&stale_epoch).unwrap();
+        assert!(stale_epoch.validate_against(&request).is_err());
+
+        let mut stale_generation = projection_value(&request, "SUCCEEDED", "PROVED");
+        stale_generation["processGeneration"] = Value::String("99".into());
+        let stale_generation = HostRunProcessEffectProjectionV1::decode(&stale_generation).unwrap();
+        assert!(stale_generation.validate_against(&request).is_err());
+    }
+
+    /// P8 negative matrix: foreign Run/Task/Attempt/Session/owner identity in
+    /// the projection is rejected as a whole-batch failure.
+    #[test]
+    fn reconcile_rejects_foreign_run_task_attempt_session_and_owner() {
+        let mut snapshot = snapshot_with_live_attempt();
+        let binding = commit_binding(&mut snapshot);
+        commit_wave_and_receipt(&mut snapshot, &binding);
+        let request = snapshot
+            .host_run_projection_requests(&binding.dispatch_key_digest)
+            .unwrap()
+            .remove(0);
+        for (field, foreign) in [
+            ("runId", "run-foreign"),
+            ("taskId", "task-foreign"),
+            ("attemptId", "attempt-foreign"),
+            ("sessionId", "ses_foreign"),
+            ("principal", "server_auth:foreign"),
+        ] {
+            let mut value = projection_value(&request, "SUCCEEDED", "PROVED");
+            value[field] = Value::String(foreign.into());
+            let decoded = HostRunProcessEffectProjectionV1::decode(&value).unwrap();
+            assert!(
+                decoded.validate_against(&request).is_err(),
+                "foreign {field} must be rejected"
+            );
+        }
+    }
+
+    /// P8 negative matrix: a duplicate or conflicting terminal event for one
+    /// dispatch key never produces a second binding; an ambiguous in-flight
+    /// Attempt after restart stays UNKNOWN and a persisted FAILED terminal
+    /// without its receipt is UNKNOWN, never FAILED.
+    #[test]
+    fn reconcile_rejects_conflicting_binding_duplicate_terminal_and_receiptless_failure() {
+        let mut snapshot = snapshot_with_live_attempt();
+        let binding = commit_binding(&mut snapshot);
+        commit_wave_and_receipt(&mut snapshot, &binding);
+
+        // Conflicting second binding for the same dispatch key is denied.
+        let mut other = identity();
+        other.manifest_digest = digest('1');
+        let conflicting = HostRunDispatchBindingV1::from_authenticated_evaluator(
+            &snapshot,
+            "attempt-host-run",
+            "worker-execution-1",
+            &digest('6'),
+            other,
+        )
+        .unwrap();
+        assert!(snapshot
+            .apply(&ManagedCommand::RecordHostRunDispatchBinding { binding: conflicting })
+            .is_err());
+
+        let requests = snapshot
+            .host_run_projection_requests(&binding.dispatch_key_digest)
+            .unwrap();
+        let settled = HostRunProcessEffectProjectionV1::decode(&projection_value(
+            &requests[0],
+            "SUCCEEDED",
+            "PROVED",
+        ))
+        .unwrap();
+
+        // Ambiguous in-flight after restart: Attempt is still EXECUTING.
+        let in_flight = snapshot.reconcile_host_run(&binding.dispatch_key_digest, &[settled.clone()]);
+        assert_eq!(
+            in_flight.unknown_reason,
+            Some(HOST_RUN_UNKNOWN_MANAGED_TERMINAL)
+        );
+
+        // Persisted FAILED without its receipt digest is UNKNOWN.
+        snapshot
+            .attempts
+            .get_mut("attempt-host-run")
+            .unwrap()
+            .phase = AttemptPhase::Failed;
+        let receiptless = snapshot.reconcile_host_run(&binding.dispatch_key_digest, &[settled.clone()]);
+        assert_eq!(
+            receiptless.unknown_reason,
+            Some(HOST_RUN_UNKNOWN_ATTEMPT_RECEIPT)
+        );
+        snapshot.attempts.get_mut("attempt-host-run").unwrap().receipt_digest = Some(digest('b'));
+        let failed = snapshot.reconcile_host_run(&binding.dispatch_key_digest, &[settled]);
+        assert_eq!(failed.status, HostRunReconciliationStatusV1::Failed);
+        assert_eq!(failed.attempt_receipt_digest, Some(digest('b')));
+    }
+
+    /// P8 negative matrix: replayed/substituted binding receipt is UNKNOWN, and
+    /// a persisted SUCCEEDED terminal without the full committed verifier
+    /// evidence is UNKNOWN — never SUCCEEDED.
+    #[test]
+    fn reconcile_requires_binding_receipt_and_full_verifier_evidence() {
+        let mut snapshot = snapshot_with_live_attempt();
+        let binding = commit_binding(&mut snapshot);
+        commit_wave_and_receipt(&mut snapshot, &binding);
+        let requests = snapshot
+            .host_run_projection_requests(&binding.dispatch_key_digest)
+            .unwrap();
+        let settled = HostRunProcessEffectProjectionV1::decode(&projection_value(
+            &requests[0],
+            "SUCCEEDED",
+            "PROVED",
+        ))
+        .unwrap();
+
+        // Missing binding receipt: UNKNOWN.
+        let receipt = snapshot
+            .host_run_dispatch_binding_receipts
+            .remove(&binding.dispatch_key_digest)
+            .unwrap();
+        let missing_receipt =
+            snapshot.reconcile_host_run(&binding.dispatch_key_digest, &[settled.clone()]);
+        assert_eq!(
+            missing_receipt.unknown_reason,
+            Some(HOST_RUN_UNKNOWN_BINDING_RECEIPT)
+        );
+
+        // Substituted (replayed) binding receipt digest: UNKNOWN.
+        let mut substituted = receipt.clone();
+        substituted.binding_digest = digest('9');
+        snapshot
+            .host_run_dispatch_binding_receipts
+            .insert(binding.dispatch_key_digest.clone(), substituted);
+        let substituted_receipt =
+            snapshot.reconcile_host_run(&binding.dispatch_key_digest, &[settled.clone()]);
+        assert_eq!(
+            substituted_receipt.unknown_reason,
+            Some(HOST_RUN_UNKNOWN_BINDING_RECEIPT)
+        );
+
+        // Receipt with a stripped/empty OwnerLog event digest (replayed cursor
+        // without its event proof) is UNKNOWN, never terminal.
+        let mut stripped = receipt.clone();
+        stripped.owner_log_event_digest = String::new();
+        snapshot
+            .host_run_dispatch_binding_receipts
+            .insert(binding.dispatch_key_digest.clone(), stripped);
+        let stripped_receipt =
+            snapshot.reconcile_host_run(&binding.dispatch_key_digest, &[settled.clone()]);
+        assert_eq!(
+            stripped_receipt.unknown_reason,
+            Some(HOST_RUN_UNKNOWN_BINDING_RECEIPT)
+        );
+        snapshot
+            .host_run_dispatch_binding_receipts
+            .insert(binding.dispatch_key_digest.clone(), receipt);
+
+        // Persisted SUCCEEDED without full verifier evidence: UNKNOWN.
+        snapshot
+            .attempts
+            .get_mut("attempt-host-run")
+            .unwrap()
+            .phase = AttemptPhase::Succeeded;
+        snapshot.attempts.get_mut("attempt-host-run").unwrap().receipt_digest = Some(digest('b'));
+        let run = snapshot.runs.get_mut("run-host-run").unwrap();
+        let task = run.tasks.get_mut("task-host-run").unwrap();
+        task.active_attempt = None;
+        task.verified_revision = Some(digest('a'));
+        task.verification_evidence = Some(TaskVerificationEvidence {
+            attempt_id: "attempt-host-run".into(),
+            verifier_id: "server_auth:verifier".into(),
+            source_revision: digest('a'),
+            evidence_digest: digest('c'),
+        });
+        let no_full_evidence =
+            snapshot.reconcile_host_run(&binding.dispatch_key_digest, &[settled.clone()]);
+        assert_eq!(
+            no_full_evidence.unknown_reason,
+            Some(HOST_RUN_UNKNOWN_VERIFIER_EVIDENCE)
+        );
+
+        // Verifier evidence with a foreign owner epoch is UNKNOWN.
+        commit_verifier_evidence(&mut snapshot);
+        snapshot
+            .attempts
+            .get_mut("attempt-host-run")
+            .unwrap()
+            .verifier_evidence
+            .as_mut()
+            .unwrap()
+            .profile
+            .owner_epoch = 99;
+        let foreign_epoch =
+            snapshot.reconcile_host_run(&binding.dispatch_key_digest, &[settled.clone()]);
+        assert_eq!(
+            foreign_epoch.unknown_reason,
+            Some(HOST_RUN_UNKNOWN_VERIFIER_EVIDENCE)
+        );
+
+        // With the exact committed evidence the same inputs reconcile SUCCEEDED.
+        commit_verifier_evidence(&mut snapshot);
+        let succeeded =
+            snapshot.reconcile_host_run(&binding.dispatch_key_digest, &[settled]);
+        assert_eq!(succeeded.status, HostRunReconciliationStatusV1::Succeeded);
+    }
+
+    /// P8 negative matrix: without P8's durable post-commit OwnerLog receipt
+    /// reconciliation is UNKNOWN; an exact replay is idempotent and a
+    /// conflicting receipt is rejected without mutation.
+    #[test]
+    fn reconcile_requires_p8_postcommit_receipt_and_rejects_conflicts() {
+        let mut snapshot = snapshot_with_live_attempt();
+        let binding = commit_binding(&mut snapshot);
+
+        // Missing P8 receipt: UNKNOWN, never terminal.
+        snapshot.host_run_p8_owner_receipts.clear();
+        let missing = snapshot.reconcile_host_run(&binding.dispatch_key_digest, &[]);
+        assert_eq!(
+            missing.unknown_reason,
+            Some(HOST_RUN_UNKNOWN_P8_OWNER_RECEIPT)
+        );
+
+        // A receipt naming a different binding digest is rejected outright.
+        let original = HostRunDispatchP8OwnerReceiptV1 {
+            schema_version: 1,
+            dispatch_key_digest: binding.dispatch_key_digest.clone(),
+            binding_digest: binding.digest().unwrap(),
+            owner_log_id: "owner-log-p8-evaluator".into(),
+            owner_log_sequence: "7".into(),
+            owner_log_event_digest: "0123456789abcdef".repeat(4),
+        };
+        let mut substituted = original.clone();
+        substituted.binding_digest = digest('9');
+        assert!(snapshot
+            .apply(&ManagedCommand::RecordHostRunP8OwnerReceipt {
+                receipt: substituted
+            })
+            .is_err());
+
+        // A receipt for an unbound dispatch key is rejected outright.
+        let mut unbound = original.clone();
+        unbound.dispatch_key_digest = digest('7');
+        assert!(snapshot
+            .apply(&ManagedCommand::RecordHostRunP8OwnerReceipt {
+                receipt: unbound
+            })
+            .is_err());
+
+        // Exact replay is idempotent; a conflicting cursor is a conflict.
+        snapshot
+            .apply(&ManagedCommand::RecordHostRunP8OwnerReceipt {
+                receipt: original.clone(),
+            })
+            .unwrap();
+        let mut conflicting = original.clone();
+        conflicting.owner_log_sequence = "8".into();
+        assert!(snapshot
+            .apply(&ManagedCommand::RecordHostRunP8OwnerReceipt {
+                receipt: conflicting
+            })
+            .is_err());
+
+        // With the durable receipt present the join proceeds past the check.
+        let after = snapshot.reconcile_host_run(&binding.dispatch_key_digest, &[]);
+        assert_ne!(after.unknown_reason, Some(HOST_RUN_UNKNOWN_P8_OWNER_RECEIPT));
+    }
+}
+
+#[cfg(test)]
 mod managed_delegation_admission_tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
@@ -7121,6 +11121,15 @@ mod managed_delegation_admission_tests {
             "attempt-1", 3, "run-1", "task-1", &scope_digest,
             &profile.profile_id, profile.revision, &profile_digest, &owner_digest, &digest('c'), vec![],
         );
+        // Re-derive the effective permission scope exactly as HostKernel does at
+        // claim time, from the same authenticated fixture facts; the admission
+        // facts must carry the proper pin, never a fabricated digest.
+        let effective_permission_scope_digest =
+            crate::protocol::managed_effective_permission_scope_digest_v1(
+                "attempt-1", 3, "run-1", "task-1", &scope_digest,
+                &profile.profile_id, profile.revision, &profile_digest, &owner_digest,
+                &digest('c'), proof.guard_policy_revision(), proof.capabilities(),
+            ).expect("fixture facts rederive the effective permission scope");
         ManagedDelegationAdmissionFactsV1::from_owner_proofs(
             AuthenticatedAttemptAdmissionProofV1 {
                 goal_id: "goal-admission".into(),
@@ -7148,6 +11157,7 @@ mod managed_delegation_admission_tests {
             bounded_context,
             durable_lease,
             proof,
+            effective_permission_scope_digest,
             parent_execution,
             ManagedWorktreeAdmissionProjectionV1 {
                 worktree_id: "worktree-1".into(),
@@ -7159,7 +11169,9 @@ mod managed_delegation_admission_tests {
                 workspace_id: "worktree-workspace-1".into(),
                 workspace_ref: "workspace-1".into(),
                 canonical_root: "/tmp/horizoncode-test-worktree".into(),
-                workspace_revision: digest('d'),
+                // The child worktree's measured revision must equal the live
+                // Attempt and the P8 durable lease's source revision.
+                workspace_revision: digest('b'),
             },
             crate::protocol::ManagedProviderRouteBindingV1 {
                 provider_id: "provider-test".into(),
@@ -7401,6 +11413,8 @@ mod managed_delegation_admission_tests {
                         revision: 7,
                         definition_digest: digest('a'),
                     },
+                    // Same pinned profile budget this fixture's Task carries.
+                    profile_token_budget: 64_000,
                     profile_owner_binding_digest: ProfileOwnerBindingV1::Builtin.digest(),
                 },
             )?;
@@ -7808,6 +11822,17 @@ fn validate_session_link(link: &SessionLink) -> Result<(), ManagedError> {
 }
 
 impl ManagedSnapshot {
+    /// Highest durable managed ContextSelection request sequence for an Attempt,
+    /// or zero when none has been admitted.
+    pub(crate) fn latest_managed_context_sequence(&self, attempt_id: &str) -> u64 {
+        self.context_selections
+            .keys()
+            .filter(|(owner, _)| owner == attempt_id)
+            .map(|(_, sequence)| *sequence)
+            .max()
+            .unwrap_or(0)
+    }
+
     fn apply_attempt_usage(&mut self, proof: &ManagedAttemptUsageProofV1) -> Result<(), ManagedError> {
         if proof.goal_id != self.owner_goal_id || proof.expected_managed_revision != self.revision {
             return Err(ManagedError::Conflict("usage proof owner or revision is stale"));
@@ -7999,6 +12024,332 @@ impl ManagedSnapshot {
 
     pub fn attempt_delegation_binding(&self, attempt_id: &str) -> Option<&DelegationBindingV1> {
         self.attempts.get(attempt_id)?.delegation_binding.as_ref()
+    }
+
+    /// Exact durable pre-dispatch HostRun binding for one dispatch-key digest.
+    pub(crate) fn host_run_dispatch_binding(
+        &self,
+        dispatch_key_digest: &str,
+    ) -> Option<&HostRunDispatchBindingV1> {
+        self.host_run_dispatch_bindings.get(dispatch_key_digest)
+    }
+
+    pub(crate) fn host_run_dispatch_binding_receipt(
+        &self,
+        dispatch_key_digest: &str,
+    ) -> Option<&HostRunDispatchBindingReceiptV1> {
+        self.host_run_dispatch_binding_receipts
+            .get(dispatch_key_digest)
+    }
+
+    /// Exact durable P8 post-commit OwnerLog receipt for one dispatch-key
+    /// digest. Absent until the authenticated `host_run.bind_receipt` append.
+    pub(crate) fn host_run_p8_owner_receipt(
+        &self,
+        dispatch_key_digest: &str,
+    ) -> Option<&HostRunDispatchP8OwnerReceiptV1> {
+        self.host_run_p8_owner_receipts.get(dispatch_key_digest)
+    }
+
+    /// Builds the exact per-wave P1 projection requests for one committed
+    /// binding. A missing binding, missing receipt or stale wave yields the typed
+    /// fail-closed reason instead of a partial request set.
+    pub(crate) fn host_run_projection_requests(
+        &self,
+        dispatch_key_digest: &str,
+    ) -> Result<Vec<HostRunProcessEffectProjectionRequestV1>, &'static str> {
+        let binding = self
+            .host_run_dispatch_bindings
+            .get(dispatch_key_digest)
+            .ok_or(HOST_RUN_UNKNOWN_BINDING_ABSENT)?;
+        let binding_digest = binding
+            .digest()
+            .map_err(|_| HOST_RUN_UNKNOWN_BINDING_IDENTITY)?;
+        let attempt = self
+            .attempts
+            .get(&binding.attempt_id)
+            .ok_or(HOST_RUN_UNKNOWN_BINDING_IDENTITY)?;
+        if attempt.run_id != binding.run_id
+            || attempt.task_id != binding.managed_task_id
+            || attempt.owner_epoch != binding.owner_epoch
+            || self
+                .runs
+                .get(&binding.run_id)
+                .is_none_or(|run| run.tasks.get(&binding.managed_task_id).is_none())
+        {
+            return Err(HOST_RUN_UNKNOWN_BINDING_IDENTITY);
+        }
+        if attempt.effect_waves.is_empty() {
+            return Err(HOST_RUN_UNKNOWN_PROJECTION_INCOMPLETE);
+        }
+        let mut requests = Vec::with_capacity(attempt.effect_waves.len());
+        for wave in &attempt.effect_waves {
+            let request = HostRunProcessEffectProjectionRequestV1::for_committed_wave(
+                binding,
+                &binding_digest,
+                wave,
+                &attempt.effect_receipts,
+                &attempt.executor_principal,
+            )
+            .map_err(|_| HOST_RUN_UNKNOWN_PROJECTION_INCOMPLETE)?;
+            requests.push(request);
+        }
+        Ok(requests)
+    }
+
+    /// Read-only HostRun reconciliation. Never returns a terminal status without
+    /// (a) the durable committed binding, (b) complete ordered P1 projections for
+    /// every committed wave, and (c) the durable managed Task/Run settlement.
+    pub(crate) fn reconcile_host_run(
+        &self,
+        dispatch_key_digest: &str,
+        projections: &[HostRunProcessEffectProjectionV1],
+    ) -> HostRunReconciliationV1 {
+        let Some(binding) = self.host_run_dispatch_bindings.get(dispatch_key_digest) else {
+            return HostRunReconciliationV1::unknown(
+                dispatch_key_digest,
+                HOST_RUN_UNKNOWN_BINDING_ABSENT,
+                None,
+                None,
+            );
+        };
+        let Ok(binding_digest) = binding.digest() else {
+            return HostRunReconciliationV1::unknown(
+                dispatch_key_digest,
+                HOST_RUN_UNKNOWN_BINDING_IDENTITY,
+                None,
+                None,
+            );
+        };
+        // The pre-commit binding alone is never terminal authority: P8's
+        // post-commit OwnerLog receipt must also be durably projected, and its
+        // digest must name this exact binding. A missing or substituted receipt
+        // (including a replayed cursor) resolves to UNKNOWN.
+        let Some(binding_receipt) = self.host_run_dispatch_binding_receipt(dispatch_key_digest)
+        else {
+            return HostRunReconciliationV1::unknown(
+                dispatch_key_digest,
+                HOST_RUN_UNKNOWN_BINDING_RECEIPT,
+                Some(binding),
+                Some(&binding_digest),
+            );
+        };
+        if binding_receipt.binding_digest != binding_digest
+            || binding_receipt.dispatch_key_digest != dispatch_key_digest
+            || binding_receipt.owner_log_event_digest.is_empty()
+        {
+            return HostRunReconciliationV1::unknown(
+                dispatch_key_digest,
+                HOST_RUN_UNKNOWN_BINDING_RECEIPT,
+                Some(binding),
+                Some(&binding_digest),
+            );
+        }
+        // P8's post-commit OwnerLog receipt must be durable too and must name
+        // this exact binding. A missing or conflicting receipt — including a
+        // replayed or stripped cursor — resolves to UNKNOWN and can never
+        // authorize redispatch.
+        let Some(p8_receipt) = self.host_run_p8_owner_receipts.get(dispatch_key_digest)
+        else {
+            return HostRunReconciliationV1::unknown(
+                dispatch_key_digest,
+                HOST_RUN_UNKNOWN_P8_OWNER_RECEIPT,
+                Some(binding),
+                Some(&binding_digest),
+            );
+        };
+        if p8_receipt.binding_digest != binding_digest
+            || p8_receipt.owner_log_id.is_empty()
+            || p8_receipt.owner_log_sequence.is_empty()
+            || p8_receipt.owner_log_event_digest.is_empty()
+        {
+            return HostRunReconciliationV1::unknown(
+                dispatch_key_digest,
+                HOST_RUN_UNKNOWN_P8_OWNER_RECEIPT,
+                Some(binding),
+                Some(&binding_digest),
+            );
+        }
+        let Some(run) = self.runs.get(&binding.run_id) else {
+            return HostRunReconciliationV1::unknown(
+                dispatch_key_digest,
+                HOST_RUN_UNKNOWN_BINDING_IDENTITY,
+                Some(binding),
+                Some(&binding_digest),
+            );
+        };
+        let Some(task) = run.tasks.get(&binding.managed_task_id) else {
+            return HostRunReconciliationV1::unknown(
+                dispatch_key_digest,
+                HOST_RUN_UNKNOWN_BINDING_IDENTITY,
+                Some(binding),
+                Some(&binding_digest),
+            );
+        };
+        let Some(attempt) = self.attempts.get(&binding.attempt_id) else {
+            return HostRunReconciliationV1::unknown(
+                dispatch_key_digest,
+                HOST_RUN_UNKNOWN_BINDING_IDENTITY,
+                Some(binding),
+                Some(&binding_digest),
+            );
+        };
+        if attempt.run_id != binding.run_id
+            || attempt.task_id != binding.managed_task_id
+            || attempt.owner_epoch != binding.owner_epoch
+        {
+            return HostRunReconciliationV1::unknown(
+                dispatch_key_digest,
+                HOST_RUN_UNKNOWN_BINDING_IDENTITY,
+                Some(binding),
+                Some(&binding_digest),
+            );
+        }
+        if attempt.effect_waves.is_empty() || projections.len() != attempt.effect_waves.len() {
+            return HostRunReconciliationV1::unknown(
+                dispatch_key_digest,
+                HOST_RUN_UNKNOWN_PROJECTION_INCOMPLETE,
+                Some(binding),
+                Some(&binding_digest),
+            );
+        }
+        let Ok(requests) = self.host_run_projection_requests(dispatch_key_digest) else {
+            return HostRunReconciliationV1::unknown(
+                dispatch_key_digest,
+                HOST_RUN_UNKNOWN_PROJECTION_INCOMPLETE,
+                Some(binding),
+                Some(&binding_digest),
+            );
+        };
+        for (request, projection) in requests.iter().zip(projections) {
+            if projection.validate_against(request).is_err() {
+                return HostRunReconciliationV1::unknown(
+                    dispatch_key_digest,
+                    HOST_RUN_UNKNOWN_PROJECTION_IDENTITY,
+                    Some(binding),
+                    Some(&binding_digest),
+                );
+            }
+            if !projection.is_complete_terminal() {
+                return HostRunReconciliationV1::unknown(
+                    dispatch_key_digest,
+                    HOST_RUN_UNKNOWN_PROJECTION_AMBIGUOUS,
+                    Some(binding),
+                    Some(&binding_digest),
+                );
+            }
+        }
+        if run.phase == RunPhase::Cancelled {
+            return HostRunReconciliationV1 {
+                dispatch_key_digest: dispatch_key_digest.to_owned(),
+                status: HostRunReconciliationStatusV1::Cancelled,
+                unknown_reason: None,
+                binding: Some(binding.clone()),
+                binding_digest: Some(binding_digest),
+                attempt_receipt_digest: None,
+                verified_revision: None,
+            };
+        }
+        match attempt.phase {
+            AttemptPhase::Succeeded => {
+                let Some(evidence) = task.verification_evidence.as_ref() else {
+                    return HostRunReconciliationV1::unknown(
+                        dispatch_key_digest,
+                        HOST_RUN_UNKNOWN_TASK_UNVERIFIED,
+                        Some(binding),
+                        Some(&binding_digest),
+                    );
+                };
+                // The compact Task evidence is not enough for a terminal
+                // projection: the Attempt must also carry the full committed
+                // verifier evidence (which names the `verificationRunID` the
+                // HostKernel joins against its durable verifier pins).
+                let Some(full_evidence) = attempt.verifier_evidence.as_ref() else {
+                    return HostRunReconciliationV1::unknown(
+                        dispatch_key_digest,
+                        HOST_RUN_UNKNOWN_VERIFIER_EVIDENCE,
+                        Some(binding),
+                        Some(&binding_digest),
+                    );
+                };
+                if full_evidence.verification_run_id.is_empty()
+                    || full_evidence.verifier_id != evidence.verifier_id
+                    || full_evidence.source_revision != evidence.source_revision
+                    || full_evidence.profile.owner_epoch != binding.owner_epoch
+                {
+                    return HostRunReconciliationV1::unknown(
+                        dispatch_key_digest,
+                        HOST_RUN_UNKNOWN_VERIFIER_EVIDENCE,
+                        Some(binding),
+                        Some(&binding_digest),
+                    );
+                }
+                let Some(receipt_digest) = attempt.receipt_digest.clone() else {
+                    return HostRunReconciliationV1::unknown(
+                        dispatch_key_digest,
+                        HOST_RUN_UNKNOWN_ATTEMPT_RECEIPT,
+                        Some(binding),
+                        Some(&binding_digest),
+                    );
+                };
+                if evidence.attempt_id != binding.attempt_id
+                    || task.verified_revision.as_deref()
+                        != Some(binding.admitted_workspace_revision.as_str())
+                    || evidence.source_revision != binding.admitted_workspace_revision
+                {
+                    return HostRunReconciliationV1::unknown(
+                        dispatch_key_digest,
+                        HOST_RUN_UNKNOWN_TASK_UNVERIFIED,
+                        Some(binding),
+                        Some(&binding_digest),
+                    );
+                }
+                HostRunReconciliationV1 {
+                    dispatch_key_digest: dispatch_key_digest.to_owned(),
+                    status: HostRunReconciliationStatusV1::Succeeded,
+                    unknown_reason: None,
+                    binding: Some(binding.clone()),
+                    binding_digest: Some(binding_digest),
+                    attempt_receipt_digest: Some(receipt_digest),
+                    verified_revision: task.verified_revision.clone(),
+                }
+            }
+            AttemptPhase::Failed => {
+                // A durable FAILED terminal without its Attempt receipt is not
+                // reconcilable evidence; it resolves to UNKNOWN, never FAILED.
+                let Some(receipt_digest) = attempt.receipt_digest.clone() else {
+                    return HostRunReconciliationV1::unknown(
+                        dispatch_key_digest,
+                        HOST_RUN_UNKNOWN_ATTEMPT_RECEIPT,
+                        Some(binding),
+                        Some(&binding_digest),
+                    );
+                };
+                HostRunReconciliationV1 {
+                    dispatch_key_digest: dispatch_key_digest.to_owned(),
+                    status: HostRunReconciliationStatusV1::Failed,
+                    unknown_reason: None,
+                    binding: Some(binding.clone()),
+                    binding_digest: Some(binding_digest),
+                    attempt_receipt_digest: Some(receipt_digest),
+                    verified_revision: None,
+                }
+            }
+            AttemptPhase::Unknown => HostRunReconciliationV1::unknown(
+                dispatch_key_digest,
+                HOST_RUN_UNKNOWN_ATTEMPT_UNKNOWN,
+                Some(binding),
+                Some(&binding_digest),
+            ),
+            AttemptPhase::Admitted | AttemptPhase::Executing | AttemptPhase::Settling => {
+                HostRunReconciliationV1::unknown(
+                    dispatch_key_digest,
+                    HOST_RUN_UNKNOWN_MANAGED_TERMINAL,
+                    Some(binding),
+                    Some(&binding_digest),
+                )
+            }
+        }
     }
 
     pub(crate) fn attempt_usage_stopped(&self, attempt_id: &str) -> bool {
@@ -8282,8 +12633,8 @@ impl ManagedSnapshot {
             // next DAG Task gets its own Attempt/verifier cycle. An unstarted
             // Task with no pending Attempt cannot be skipped into aggregate
             // finalization. Legacy digest-only proof is replay-only.
-            task.verified_revision.is_some() && task.verification_evidence.is_some()
-                || replaying_owner_log && task.verified_revision.is_some()
+            !(task.verified_revision.is_some() && task.verification_evidence.is_some()
+                || replaying_owner_log && task.verified_revision.is_some())
         }) };
         let live_verification_retry = live_attempt.is_some()
             && run.phase == RunPhase::Verifying
@@ -8687,7 +13038,7 @@ impl ManagedSnapshot {
                     id(&task.task_id)?;
                     match (&task.title, &task.purpose) {
                         (Some(title), Some(purpose)) => validate_task_delivery_text(title, purpose)?,
-                        (None, None) if replay => (),
+                        (None, None) if replaying_owner_log => (),
                         _ => return Err(ManagedError::Invalid("planned Task delivery text must be complete")),
                     }
                     if !task.agent_profile_revision.is_valid() || blake3_digest(&task.profile_owner_binding_digest).is_err() {
@@ -8797,7 +13148,7 @@ impl ManagedSnapshot {
                 if run.tasks.values().any(|task| task.profile_token_budget.is_none_or(|budget| budget == 0)) {
                     return Err(ManagedError::Conflict("planned Run lacks an immutable positive profile token budget"));
                 }
-                if !replay && run.tasks.values().any(|task| task.title.is_none() || task.purpose.is_none()) {
+                if !replaying_owner_log && run.tasks.values().any(|task| task.title.is_none() || task.purpose.is_none()) {
                     return Err(ManagedError::Conflict("legacy Run plan lacks immutable Task delivery text and cannot be started"));
                 }
                 if planned_task_set_digest(run) != *plan_digest {
@@ -8938,6 +13289,11 @@ impl ManagedSnapshot {
                 if !agent_profile_revision.is_valid() || *profile_token_budget == 0 || blake3_digest(profile_owner_binding_digest).is_err() {
                     return Err(ManagedError::Invalid("Task AgentProfile revision reference is invalid"));
                 }
+                // One durable command is exactly one projection revision. The
+                // nested `AddTask` projection helper increments the revision, so
+                // restore the pre-command base before the outer +1 (same pattern
+                // as atomic Attempt admission).
+                let base_revision = self.revision;
                 self.apply(&ManagedCommand::AddTask {
                     run_id: run_id.clone(),
                     task_id: task_id.clone(),
@@ -8945,6 +13301,7 @@ impl ManagedSnapshot {
                     criterion_ids: criterion_ids.clone(),
                     required_capabilities: required_capabilities.clone(),
                 })?;
+                self.revision = base_revision;
                 self.runs
                     .get_mut(run_id)
                     .and_then(|run| run.tasks.get_mut(task_id))
@@ -9066,7 +13423,7 @@ impl ManagedSnapshot {
                 if record.request_sequence < 2 || record.request_sequence > 1024
                     || attempt.phase != AttemptPhase::Executing
                     || self.runs.get(&attempt.run_id).is_none_or(|run| run.phase != RunPhase::Running
-                        || run.tasks.get(&attempt.task_id).is_none_or(|task| task.active_attempt.as_deref() != Some(attempt.attempt_id.as_str())
+                        || run.tasks.get(&attempt.task_id).is_none_or(|task| task.active_attempt.as_deref() != Some(record.attempt_id.as_str())
                             || task.unknown_effect || task.pending_verification_attempt.is_some()))
                     || crate::context_selection::ContextSelectionV1::decode_json(&record.selection)
                         .is_none_or(|selection| selection.session_id != attempt.session_id)
@@ -9246,7 +13603,7 @@ impl ManagedSnapshot {
                         .ok_or(ManagedError::Conflict("UNKNOWN or pending managed Task has no retained Attempt"))?;
                     let active_attempt = self.attempts.get(active_attempt_id)
                         .ok_or(ManagedError::Conflict("active managed Task has no retained Attempt record"))?;
-                    if active_attempt.run_id != run_id || active_attempt.task_id != active_task_id.as_str()
+                    if active_attempt.run_id != *run_id || active_attempt.task_id != active_task_id.as_str()
                         || !active_locations.insert(active_attempt.location_id.as_str())
                     {
                         return Err(ManagedError::Conflict("active managed Tasks have conflicting or stale Location bindings"));
@@ -9536,6 +13893,102 @@ impl ManagedSnapshot {
                     return Err(ManagedError::Conflict("managed prompt quiescence differs from consumed child, pending-verification Attempt, or settled effect state"));
                 }
                 self.dispatch_quiescence_proofs.insert(proof.attempt_id.clone(), proof.clone());
+            }
+            ManagedCommand::RecordHostRunDispatchBinding { binding } => {
+                binding.validate()?;
+                let run = self
+                    .runs
+                    .get(&binding.run_id)
+                    .ok_or(ManagedError::Conflict("HostRun binding Run is missing"))?;
+                let task = run.tasks.get(&binding.managed_task_id).ok_or(
+                    ManagedError::Conflict("HostRun binding Task is missing"),
+                )?;
+                let attempt = self
+                    .attempts
+                    .get(&binding.attempt_id)
+                    .ok_or(ManagedError::Conflict("HostRun binding Attempt is missing"))?;
+                let delegation = attempt.delegation_binding.as_ref().ok_or(
+                    ManagedError::Conflict("HostRun binding Attempt has no delegation binding"),
+                )?;
+                let spec = self
+                    .specs
+                    .get(&run.spec_id)
+                    .ok_or(ManagedError::Conflict("HostRun binding SpecVersion is missing"))?;
+                let route = delegation.managed_provider_route.as_ref().ok_or(
+                    ManagedError::Conflict("HostRun binding delegation has no provider route"),
+                )?;
+                if attempt.run_id != binding.run_id
+                    || attempt.task_id != binding.managed_task_id
+                    || attempt.owner_epoch != binding.owner_epoch
+                    || attempt.phase != AttemptPhase::Executing
+                    || task.active_attempt.as_deref() != Some(binding.attempt_id.as_str())
+                    || task.unknown_effect
+                    || task.verified_revision.is_some()
+                    || delegation.owner_epoch != binding.owner_epoch
+                    || delegation.accepted_spec_digest != binding.accepted_spec_digest
+                    || spec.digest != binding.accepted_spec_digest
+                    || delegation
+                        .digest()
+                        .map_err(|_| ManagedError::Invalid("HostRun delegation digest failed"))?
+                        != binding.delegation_binding_digest
+                    || managed_provider_selection_digest(route)?
+                        != binding.provider_selection_digest
+                    || attempt.workspace_revision.as_deref()
+                        != Some(binding.admitted_workspace_revision.as_str())
+                {
+                    return Err(ManagedError::Conflict(
+                        "HostRun dispatch binding differs from the live managed Attempt authority",
+                    ));
+                }
+                if let Some(existing) = self
+                    .host_run_dispatch_bindings
+                    .get(&binding.dispatch_key_digest)
+                {
+                    if existing == binding {
+                        return Ok(());
+                    }
+                    return Err(ManagedError::Conflict(
+                        "HostRun dispatch key is already bound to a different managed identity",
+                    ));
+                }
+                if self
+                    .host_run_dispatch_bindings
+                    .values()
+                    .any(|existing| existing.attempt_id == binding.attempt_id)
+                {
+                    return Err(ManagedError::Conflict(
+                        "managed Attempt already has a committed HostRun dispatch binding",
+                    ));
+                }
+                self.host_run_dispatch_bindings
+                    .insert(binding.dispatch_key_digest.clone(), binding.clone());
+            }
+            ManagedCommand::RecordHostRunP8OwnerReceipt { receipt } => {
+                receipt.validate()?;
+                let committed = self
+                    .host_run_dispatch_bindings
+                    .get(&receipt.dispatch_key_digest)
+                    .ok_or(ManagedError::Conflict(
+                        "HostRun P8 receipt has no committed dispatch binding",
+                    ))?;
+                if committed.digest()? != receipt.binding_digest {
+                    return Err(ManagedError::Conflict(
+                        "HostRun P8 receipt names a different committed binding",
+                    ));
+                }
+                if let Some(existing) = self
+                    .host_run_p8_owner_receipts
+                    .get(&receipt.dispatch_key_digest)
+                {
+                    if *existing == *receipt {
+                        return Ok(());
+                    }
+                    return Err(ManagedError::Conflict(
+                        "HostRun P8 receipt conflicts with the retained post-commit receipt",
+                    ));
+                }
+                self.host_run_p8_owner_receipts
+                    .insert(receipt.dispatch_key_digest.clone(), receipt.clone());
             }
             ManagedCommand::AbandonPreAdmissionCandidate { proof } => {
                 for value in [&proof.goal_id, &proof.run_id, &proof.task_id,
@@ -11305,7 +15758,7 @@ impl ManagedMessageJournalV1 {
                 && existing.effect_id == effect_id && existing.input_digest == input_digest { Ok(()) }
                 else { Err(ManagedError::Conflict("managed message ID replay differs from its durable prepare")) };
         }
-        if self.entries.len() >= 256 || self.pending_count() >= usize::from(pins.mailbox_capacity)
+        if self.entries.len() >= 256 || self.pending_count() >= usize::try_from(pins.mailbox_capacity).map_err(|_| ManagedError::Invalid("managed message mailbox capacity is invalid"))?
             || pins.mailbox_sequence != self.next_sequence() {
             return Err(ManagedError::Conflict("managed message mailbox is full or sequence is stale"));
         }
@@ -11530,7 +15983,7 @@ impl ManagedMessageJournalV1 {
                     || sequence != prior_sequence.saturating_add(1)
                     || receipt.wake_claim_receipt_digest != crate::protocol::ManagedMessageWakeClaimReceiptV1::new(
                         request.clone(), "CLAIMED",
-                    ).ok().map(|expected| expected.wake_claim_receipt_digest).unwrap_or_default()
+                    ).map(|expected| expected.wake_claim_receipt_digest).unwrap_or_default()
                 {
                     return Err(ManagedError::Conflict("managed context advance differs from its exact wake claim"));
                 }
@@ -11573,7 +16026,7 @@ impl ManagedMessageJournalV1 {
         let digest = OwnerLogV2::command_digest(&delivery_id, std::slice::from_ref(&event))?;
         let mut event = event; event.delivery_id = Some(delivery_id.clone()); event.command_digest = Some(digest.clone());
         let receipt = self.log.append_batch(&delivery_id, &digest, &[event], self.cursor.as_ref())?;
-        self.cursor = Some(receipt.owner_cursor.clone()); Ok(format!("blake3:{}", receipt.owner_cursor.event_digest.to_hex()))
+        self.cursor = Some(receipt.owner_cursor.clone()); Ok(format!("blake3:{}", receipt.owner_cursor.event_digest))
     }
 
     fn replay(&mut self) -> Result<(), ManagedError> {
@@ -11760,6 +16213,24 @@ impl ManagedControl {
                     );
                     if snapshot.dispatch_quiescence.insert(proof.attempt_id.clone(), marker).is_some() {
                         return Err(ManagedError::Invalid("duplicate managed dispatch quiescence marker"));
+                    }
+                }
+                if let ManagedCommand::RecordHostRunDispatchBinding { binding } = &command {
+                    let receipt = HostRunDispatchBindingReceiptV1 {
+                        dispatch_key_digest: binding.dispatch_key_digest.clone(),
+                        binding_digest: binding.digest()?,
+                        owner_log_sequence: event.seq,
+                        owner_log_event_digest: format!("blake3:{}", event.event_digest.to_hex()),
+                        binding_managed_revision: snapshot.revision,
+                    };
+                    if snapshot
+                        .host_run_dispatch_binding_receipts
+                        .insert(binding.dispatch_key_digest.clone(), receipt)
+                        .is_some()
+                    {
+                        return Err(ManagedError::Invalid(
+                            "duplicate HostRun dispatch binding receipt",
+                        ));
                     }
                 }
                 if let ManagedCommand::AdmitAttemptWithDelegation { attempt_id, .. } = &command {
@@ -12059,6 +16530,7 @@ impl ManagedControl {
             return Err(ManagedError::Conflict("dispatch completion conflicts with another verifier Attempt"));
         }
 
+        let mut effects: Vec<ManagedAttemptTerminalEffectV1> = Vec::with_capacity(attempt.effects.len());
         let mut encoded_effects = Vec::with_capacity(attempt.effects.len());
         let mut workspace_head = attempt.workspace_revision.clone();
         let mut workspace_head_confident = workspace_head.is_some();
@@ -12191,7 +16663,7 @@ impl ManagedControl {
         let task_revision = attempt_revision.checked_sub(1)
             .ok_or(ManagedError::Conflict("Attempt admission revision is invalid"))?;
 
-        let mut effects = Vec::with_capacity(attempt.effects.len());
+        let mut effects: Vec<ManagedAttemptTerminalEffectV1> = Vec::with_capacity(attempt.effects.len());
         let mut encoded_effects = Vec::with_capacity(attempt.effects.len());
         let mut chain_settled = true;
         let mut workspace_head = attempt.workspace_revision.clone();
@@ -12394,7 +16866,7 @@ impl ManagedControl {
         }
         let mut head = attempt.workspace_revision.as_deref()
             .ok_or(ManagedError::Conflict("settlement candidate admission revision is missing"))?;
-        let mut effects = Vec::with_capacity(attempt.effects.len());
+        let mut effects: Vec<ManagedAttemptTerminalEffectV1> = Vec::with_capacity(attempt.effects.len());
         let mut encoded_effects = Vec::with_capacity(attempt.effects.len());
         for edge in &attempt.effects {
             let receipt = attempt.effect_receipts.get(&edge.effect_id)
@@ -12532,6 +17004,12 @@ impl ManagedControl {
         self.snapshot.managed_admission_receipts.get(delivery_id).cloned()
     }
 
+    /// Immutable delegation binding for one admitted Attempt, if present.
+    pub(crate) fn attempt_delegation_binding(&self, attempt_id: &str) -> Option<&DelegationBindingV1> {
+        self.snapshot.attempts.get(attempt_id)
+            .and_then(|attempt| attempt.delegation_binding.as_ref())
+    }
+
     pub(crate) fn managed_context_selection(
         &self,
         attempt_id: &str,
@@ -12541,10 +17019,7 @@ impl ManagedControl {
     }
 
     pub(crate) fn latest_managed_context_sequence(&self, attempt_id: &str) -> u64 {
-        self.snapshot.context_selections.keys()
-            .filter(|(owner, _)| owner == attempt_id)
-            .map(|(_, sequence)| *sequence)
-            .max().unwrap_or(0)
+        self.snapshot.latest_managed_context_sequence(attempt_id)
     }
 
     pub(crate) fn managed_provider_request(&self, attempt_id: &str, sequence: u64) -> Option<ManagedProviderRequestRecordV1> {
@@ -13390,7 +17865,7 @@ impl ManagedControl {
             return Err(ManagedError::Invalid("HostKernel clock produced an invalid Run start timestamp"));
         }
         let mut event = OwnerEventInput {
-            schema_version: 2,
+            schema_version: OWNER_EVENT_SCHEMA_VERSION_V1,
             time_ms: timestamp,
             kind: kind.to_owned(),
             data,
@@ -13436,6 +17911,31 @@ impl ManagedControl {
                 return Err(ManagedError::Conflict("managed dispatch quiescence already exists"));
             }
         }
+        if let ManagedCommand::RecordHostRunDispatchBinding { binding } = &command {
+            let binding_sequence = receipt
+                .owner_cursor
+                .seq
+                .parse::<u64>()
+                .map_err(|_| {
+                    ManagedError::Invalid("HostRun binding OwnerLog sequence is invalid")
+                })?;
+            let binding_receipt = HostRunDispatchBindingReceiptV1 {
+                dispatch_key_digest: binding.dispatch_key_digest.clone(),
+                binding_digest: binding.digest()?,
+                owner_log_sequence: binding_sequence,
+                owner_log_event_digest: receipt.owner_cursor.event_digest.clone(),
+                binding_managed_revision: next.revision,
+            };
+            if next
+                .host_run_dispatch_binding_receipts
+                .insert(binding.dispatch_key_digest.clone(), binding_receipt)
+                .is_some()
+            {
+                return Err(ManagedError::Conflict(
+                    "HostRun dispatch binding receipt already exists",
+                ));
+            }
+        }
         next.deliveries.insert(delivery_id.to_owned(), logical);
         self.snapshot = next;
         self.cursor = Some(receipt.owner_cursor);
@@ -13473,6 +17973,66 @@ impl ManagedControl {
     /// Persist a trusted immutable authority binding after all accepted-state and
     /// live lease inputs have been resolved. The binding revision is checked by
     /// projection against the exact post-append OwnerLog revision.
+    /// Persist the pre-dispatch HostRun binding and return its exact durable
+    /// receipt. Only HostKernel may call this, after it has validated P8's
+    /// authenticated evaluator identity and the live managed Attempt.
+    pub(crate) fn record_host_run_dispatch_binding(
+        &mut self,
+        delivery_id: &str,
+        binding: HostRunDispatchBindingV1,
+    ) -> Result<HostRunDispatchBindingReceiptV1, ManagedError> {
+        let expected_digest = binding.digest()?;
+        let dispatch_key_digest = binding.dispatch_key_digest.clone();
+        self.apply(
+            self.snapshot.revision,
+            delivery_id,
+            ManagedCommand::RecordHostRunDispatchBinding { binding },
+        )?;
+        let receipt = self
+            .snapshot
+            .host_run_dispatch_binding_receipts
+            .get(&dispatch_key_digest)
+            .cloned()
+            .ok_or(ManagedError::Conflict(
+                "HostRun dispatch binding receipt was not projected",
+            ))?;
+        if receipt.binding_digest != expected_digest {
+            return Err(ManagedError::Conflict(
+                "HostRun dispatch binding receipt differs from the committed binding",
+            ));
+        }
+        Ok(receipt)
+    }
+
+    /// Persist P8's post-commit OwnerLog receipt for a committed HostRun
+    /// binding. Only HostKernel calls this after validating the receipt
+    /// against the exact committed binding; dispatch must not proceed until
+    /// the receipt is durable. Exact replay of an identical receipt is
+    /// idempotent; a conflicting cursor is rejected without mutation.
+    pub(crate) fn record_host_run_p8_owner_receipt(
+        &mut self,
+        delivery_id: &str,
+        receipt: HostRunDispatchP8OwnerReceiptV1,
+    ) -> Result<(), ManagedError> {
+        let dispatch_key_digest = receipt.dispatch_key_digest.clone();
+        self.apply(
+            self.snapshot.revision,
+            delivery_id,
+            ManagedCommand::RecordHostRunP8OwnerReceipt { receipt },
+        )?;
+        if self
+            .snapshot
+            .host_run_p8_owner_receipts
+            .contains_key(&dispatch_key_digest)
+        {
+            Ok(())
+        } else {
+            Err(ManagedError::Conflict(
+                "HostRun P8 OwnerLog receipt was not projected",
+            ))
+        }
+    }
+
     pub fn bind_attempt_delegation(
         &mut self,
         delivery_id: &str,
@@ -14515,11 +19075,25 @@ impl DirectAttemptRecord {
             } => {
                 sha256_digest(result_digest)?;
                 blake3_digest(receipt_digest)?;
-                if !matches!(self.phase, DirectAttemptPhase::Executing | DirectAttemptPhase::Unknown)
-                    || self.effect_chain_failed
-                    || !self.all_effects_succeeded()
-                {
-                    return Err(ManagedError::Conflict("direct Attempt is not executing"));
+                // An explicit UNKNOWN outcome is terminal unless every bound
+                // effect has been independently reconciled as succeeded. A
+                // zero-effect or partially-reconciled UNKNOWN Attempt must never
+                // be laundered into success without target-side evidence.
+                let reconciled_success = !self.effect_intents.is_empty()
+                    && self.effect_intents.iter().all(|intent| {
+                        self.reconciliation_for(&intent.effect_id).is_some_and(|receipt| {
+                            receipt.outcome == DirectAttemptEffectOutcome::Succeeded
+                        })
+                    });
+                let valid_phase = match self.phase {
+                    DirectAttemptPhase::Executing => self.all_effects_succeeded(),
+                    DirectAttemptPhase::Unknown => reconciled_success,
+                    _ => false,
+                };
+                if !valid_phase || self.effect_chain_failed {
+                    return Err(ManagedError::Conflict(
+                        "direct Attempt has no settled evidence for success",
+                    ));
                 }
                 self.phase = DirectAttemptPhase::Succeeded;
                 self.result_digest = Some(result_digest.clone());
@@ -15330,6 +19904,29 @@ fn validate_direct_profile_reservation(
 mod direct_attempt_profile_admission_tests {
     use super::*;
 
+    /// Repository-local test scratch directory. Honors TMPDIR (tests are run
+    /// with TMPDIR pointed at a package path); unique per call so parallel
+    /// tests never share durable admission state.
+    fn temp_test_directory() -> std::path::PathBuf {
+        static NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "hz-profile-admission-{}-{}",
+            std::process::id(),
+            NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        ));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).unwrap();
+        // Owner logs require an owner-private (0700) state root; `create_dir_all`
+        // honors the process umask and would otherwise leave 0755, which the
+        // owner-log admission rejects as `StoragePermissionsUnavailable`.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        path
+    }
+
     fn reserve(control: &mut DirectAttemptProfileAdmissionControl, attempt_id: &str, child_id: &str) {
         control
             .reserve(
@@ -15349,9 +19946,9 @@ mod direct_attempt_profile_admission_tests {
 
     #[test]
     fn profile_child_admission_serializes_active_and_total_limits_across_reopen() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = temp_test_directory();
         {
-            let mut control = DirectAttemptProfileAdmissionControl::open(directory.path()).unwrap();
+            let mut control = DirectAttemptProfileAdmissionControl::open(&directory).unwrap();
             reserve(&mut control, "attempt_one", "ses_child_one");
             assert!(control
                 .reserve(
@@ -15384,11 +19981,11 @@ mod direct_attempt_profile_admission_tests {
                 .is_err());
         }
         {
-            let mut control = DirectAttemptProfileAdmissionControl::open(directory.path()).unwrap();
+            let mut control = DirectAttemptProfileAdmissionControl::open(&directory).unwrap();
             reserve(&mut control, "attempt_two", "ses_child_two");
             control.release_terminal("attempt_two").unwrap();
         }
-        let mut control = DirectAttemptProfileAdmissionControl::open(directory.path()).unwrap();
+        let mut control = DirectAttemptProfileAdmissionControl::open(&directory).unwrap();
         assert!(control
             .reserve(
                 "attempt_three",
@@ -15407,8 +20004,8 @@ mod direct_attempt_profile_admission_tests {
 
     #[test]
     fn unknown_attempt_keeps_its_active_profile_reservation() {
-        let directory = tempfile::tempdir().unwrap();
-        let mut control = DirectAttemptProfileAdmissionControl::open(directory.path()).unwrap();
+        let directory = temp_test_directory();
+        let mut control = DirectAttemptProfileAdmissionControl::open(&directory).unwrap();
         reserve(&mut control, "attempt_unknown", "ses_child_one");
         // No release event is emitted for UNKNOWN. The next child remains denied.
         assert!(control
@@ -15429,9 +20026,9 @@ mod direct_attempt_profile_admission_tests {
 
     #[test]
     fn parent_child_cap_is_shared_across_profiles_and_survives_reopen() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = temp_test_directory();
         {
-            let mut control = DirectAttemptProfileAdmissionControl::open(directory.path()).unwrap();
+            let mut control = DirectAttemptProfileAdmissionControl::open(&directory).unwrap();
             control.reserve(
                 "attempt_0_first",
                 "ses_parent",
@@ -15486,7 +20083,7 @@ mod direct_attempt_profile_admission_tests {
                 ).unwrap();
             }
         }
-        let mut control = DirectAttemptProfileAdmissionControl::open(directory.path()).unwrap();
+        let mut control = DirectAttemptProfileAdmissionControl::open(&directory).unwrap();
         assert!(control.reserve(
             "attempt_64",
             "ses_parent",
@@ -15516,8 +20113,8 @@ mod direct_attempt_profile_admission_tests {
 
     #[test]
     fn reservation_recovery_matches_the_full_pinned_attempt_authority_tuple() {
-        let directory = tempfile::tempdir().unwrap();
-        let mut control = DirectAttemptProfileAdmissionControl::open(directory.path()).unwrap();
+        let directory = temp_test_directory();
+        let mut control = DirectAttemptProfileAdmissionControl::open(&directory).unwrap();
         reserve(&mut control, "attempt_recovery", "ses_child_one");
         let digest = format!("blake3:{}", "a".repeat(64));
         assert!(control.reservation_matches_attempt(
@@ -15536,8 +20133,8 @@ mod direct_attempt_profile_admission_tests {
 
     #[test]
     fn abandoned_attempt_id_cannot_be_reused_to_create_a_child() {
-        let directory = tempfile::tempdir().unwrap();
-        let mut control = DirectAttemptProfileAdmissionControl::open(directory.path()).unwrap();
+        let directory = temp_test_directory();
+        let mut control = DirectAttemptProfileAdmissionControl::open(&directory).unwrap();
         reserve(&mut control, "attempt_abandoned", "ses_child_one");
         control.abandon_uncreated("attempt_abandoned").unwrap();
         assert!(control

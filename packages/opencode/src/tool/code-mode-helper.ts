@@ -32,14 +32,29 @@ export type CodeModeHelperResultV1 = {
 }
 
 const UTF8 = new TextEncoder()
-const MAX_CALLS_PER_WAVE = 32
-const MAX_WAVES = 64
-const MAX_CALL_ARGUMENT_BYTES = 262_144
-const MAX_WAVE_ARGUMENT_BYTES = 512 * 1024
-const MAX_TOTAL_CALLS = 64
-const MAX_TOTAL_ARGUMENT_BYTES = 1_048_576
-const MAX_OUTPUT_BYTES = 65_536
-const MAX_EXECUTION_MS = 30_000
+/**
+ * The one fixed helper budget from §37.24. It is exported as data so the
+ * contract can be asserted without waiting out the 30 s interpreter deadline,
+ * and so helper and wire limits cannot silently drift apart.
+ */
+export const CODE_MODE_HELPER_LIMITS_V1 = Object.freeze({
+  maxCallsPerWave: 32,
+  maxWaves: 64,
+  maxCallArgumentBytes: 262_144,
+  maxWaveArgumentBytes: 512 * 1024,
+  maxTotalCalls: 64,
+  maxTotalArgumentBytes: 1_048_576,
+  maxOutputBytes: 65_536,
+  maxExecutionMs: 30_000,
+} as const)
+const MAX_CALLS_PER_WAVE = CODE_MODE_HELPER_LIMITS_V1.maxCallsPerWave
+const MAX_WAVES = CODE_MODE_HELPER_LIMITS_V1.maxWaves
+const MAX_CALL_ARGUMENT_BYTES = CODE_MODE_HELPER_LIMITS_V1.maxCallArgumentBytes
+const MAX_WAVE_ARGUMENT_BYTES = CODE_MODE_HELPER_LIMITS_V1.maxWaveArgumentBytes
+const MAX_TOTAL_CALLS = CODE_MODE_HELPER_LIMITS_V1.maxTotalCalls
+const MAX_TOTAL_ARGUMENT_BYTES = CODE_MODE_HELPER_LIMITS_V1.maxTotalArgumentBytes
+const MAX_OUTPUT_BYTES = CODE_MODE_HELPER_LIMITS_V1.maxOutputBytes
+const MAX_EXECUTION_MS = CODE_MODE_HELPER_LIMITS_V1.maxExecutionMs
 const TRUNCATION_MARKER = "\n[output truncated]"
 
 class CodeModeUnknownOutcome extends Error {
@@ -80,7 +95,9 @@ function boundText(value: string, limit: number): { value: string; truncated: bo
   return { value: value.slice(0, end) + TRUNCATION_MARKER, truncated: true }
 }
 
-type ToolTree = Record<string, SandboxTool.Definition | ToolTree>
+interface ToolTree {
+  [name: string]: SandboxTool.Definition | ToolTree
+}
 
 function insertTool(root: ToolTree, path: string, tool: SandboxTool.Definition): void {
   const segments = path.split(".")

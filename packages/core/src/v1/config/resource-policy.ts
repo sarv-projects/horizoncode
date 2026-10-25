@@ -34,7 +34,7 @@ export const RequestedLimitV1 = Schema.Struct({
 )).annotate({ identifier: "RequestedResourceLimitV1" })
 
 export const ConfigV1 = Schema.Struct({
-  limits: Schema.Record(Dimension, RequestedLimitV1),
+  limits: Schema.Record(Dimension, Schema.optional(RequestedLimitV1)),
 }).annotate({ identifier: "ResourcePolicyConfigV1" })
 export type ConfigV1 = typeof ConfigV1.Type
 
@@ -86,7 +86,8 @@ export function project(input: {
     reason?: string
   }>>
 }): ResourcePolicyProjectionV1 {
-  const requested = input.requested?.limits ?? {}
+  const requested: Partial<Record<Dimension, Schema.Schema.Type<typeof RequestedLimitV1>>> =
+    input.requested?.limits ?? {}
   return {
     schemaVersion: 1,
     limits: DIMENSIONS.map((dimension) => {

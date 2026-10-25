@@ -12,42 +12,43 @@ pub mod transport;
 pub mod upload;
 pub mod watch;
 pub use generation_store::{
-    GenerationStoreError, GenerationStoreLimits, GenerationStoreStats, PersistentGenerationStore,
-    DEFAULT_MAX_PERSISTED_BYTES, DEFAULT_MAX_PERSISTED_GENERATIONS,
+    DEFAULT_MAX_PERSISTED_BYTES, DEFAULT_MAX_PERSISTED_GENERATIONS, GenerationStoreError,
+    GenerationStoreLimits, GenerationStoreStats, PersistentGenerationStore,
 };
 pub use handler::TransportHandler;
-pub use persist::{GenerationPack, DEFAULT_MAX_PACK_BYTES};
+pub use persist::{DEFAULT_MAX_PACK_BYTES, GenerationPack};
 pub use repo_intel::{
     RepoIntelGeneration, RepoIntelOperation, RepoIntelQuery, RepoIntelQueryResult, RepoIntelStatus,
     RepoIntelUnavailableReason,
 };
 pub use repo_structure::{
-    RepoNodeRefV1, RepoStructureCompletenessV1, RepoStructureCoverageV1, RepoStructureError,
-    RepoStructureFallbackReasonV1, RepoStructureFallbackV1, RepoStructureFreshnessV1,
-    RepoStructurePageV1, RepoStructurePositionV1, RepoStructureProvenanceV1,
-    RepoStructureQueryV1, RepoStructureSelectorV1,
-    RepoStructureSourceKindV1, RepoStructureStatusV1, StructureByteRangeV1, MAX_STRUCTURE_BYTES,
-    MAX_STRUCTURE_CURSOR_BYTES, MAX_STRUCTURE_DEPTH, MAX_STRUCTURE_IDENTIFIER_BYTES,
-    MAX_STRUCTURE_NODES, MAX_STRUCTURE_SYMBOL_BYTES, MAX_STRUCTURE_WORK_UNITS,
+    MAX_STRUCTURE_BYTES, MAX_STRUCTURE_CURSOR_BYTES, MAX_STRUCTURE_DEPTH,
+    MAX_STRUCTURE_IDENTIFIER_BYTES, MAX_STRUCTURE_NODES, MAX_STRUCTURE_SYMBOL_BYTES,
+    MAX_STRUCTURE_WORK_UNITS, RepoNodeRefV1, RepoStructureCompletenessV1, RepoStructureCoverageV1,
+    RepoStructureError, RepoStructureFallbackReasonV1, RepoStructureFallbackV1,
+    RepoStructureFreshnessV1, RepoStructurePageV1, RepoStructurePositionV1,
+    RepoStructureProvenanceV1, RepoStructureQueryV1, RepoStructureSelectorV1,
+    RepoStructureSourceKindV1, RepoStructureStatusV1, RepoWriteRefusalV1, RepoWriteTargetV1,
+    StructureByteRangeV1,
 };
 pub use transport::{
-    operation_from_tag, operation_tag, peek_request_frame, peek_response_frame, FrameHeader,
-    QueryResponse, TransportError, TransportRequest, TransportResponse, WireErrorCode,
-    MAX_BUILD_BODY_BYTES, MAX_ERROR_DETAIL_BYTES, MAX_OVERLAY_BODY_BYTES, MAX_QUERY_BODY_BYTES,
-    MAX_QUERY_RESPONSE_BODY_BYTES, MAX_RELEASE_BODY_BYTES, MAX_TRANSPORT_BODY_BYTES,
-    MAX_TRANSPORT_FRAME_BYTES, REQUEST_BUILD, REQUEST_OVERLAY, REQUEST_QUERY,
-    REQUEST_RELEASE_GENERATION, REQUEST_RELEASE_OVERLAY, RESPONSE_BUILD, RESPONSE_ERROR,
-    RESPONSE_OVERLAY, RESPONSE_QUERY, RESPONSE_RELEASED, TRANSPORT_CHECKSUM_BYTES,
-    TRANSPORT_HEADER_BYTES, TRANSPORT_VERSION,
+    FrameHeader, MAX_BUILD_BODY_BYTES, MAX_ERROR_DETAIL_BYTES, MAX_OVERLAY_BODY_BYTES,
+    MAX_QUERY_BODY_BYTES, MAX_QUERY_RESPONSE_BODY_BYTES, MAX_RELEASE_BODY_BYTES,
+    MAX_TRANSPORT_BODY_BYTES, MAX_TRANSPORT_FRAME_BYTES, QueryResponse, REQUEST_BUILD,
+    REQUEST_OVERLAY, REQUEST_QUERY, REQUEST_RELEASE_GENERATION, REQUEST_RELEASE_OVERLAY,
+    RESPONSE_BUILD, RESPONSE_ERROR, RESPONSE_OVERLAY, RESPONSE_QUERY, RESPONSE_RELEASED,
+    TRANSPORT_CHECKSUM_BYTES, TRANSPORT_HEADER_BYTES, TRANSPORT_VERSION, TransportError,
+    TransportRequest, TransportResponse, WireErrorCode, operation_from_tag, operation_tag,
+    peek_request_frame, peek_response_frame,
 };
 pub use upload::{
-    GenerationUploadError, GenerationUploadId, GenerationUploadStore, PackDigest, MAX_STAGED_BYTES,
-    MAX_STAGED_UPLOADS, MAX_UPLOAD_CHUNK_BYTES, MAX_UPLOAD_TTL_MS,
+    GenerationUploadError, GenerationUploadId, GenerationUploadStore, MAX_STAGED_BYTES,
+    MAX_STAGED_UPLOADS, MAX_UPLOAD_CHUNK_BYTES, MAX_UPLOAD_TTL_MS, PackDigest,
 };
 pub use watch::{
-    GenerationLifecycle, LifecycleBuildTicket, LifecycleError, LifecycleState, WatchBatch,
-    WatchBatcher, WatchChange, WatchChangeKind, WatchClassification, WatchDecision,
-    DEFAULT_WATCH_DEBOUNCE_MS, MAX_WATCH_CHANGES, MAX_WATCH_DEBOUNCE_MS,
+    DEFAULT_WATCH_DEBOUNCE_MS, GenerationLifecycle, LifecycleBuildTicket, LifecycleError,
+    LifecycleState, MAX_WATCH_CHANGES, MAX_WATCH_DEBOUNCE_MS, WatchBatch, WatchBatcher,
+    WatchChange, WatchChangeKind, WatchClassification, WatchDecision,
 };
 
 pub const MAX_BASE_FILES: usize = 4_096;
@@ -364,9 +365,9 @@ impl BaseGeneration {
     /// Iterate immutable file observations in canonical path order. This is used by
     /// RepoIntel's lexical structural projection; callers receive no mutable access.
     pub fn file_entries(&self) -> impl Iterator<Item = (&str, &str, Digest)> {
-        self.files.iter().map(|(path, file)| {
-            (path.as_str(), file.contents.as_str(), file.content_digest)
-        })
+        self.files
+            .iter()
+            .map(|(path, file)| (path.as_str(), file.contents.as_str(), file.content_digest))
     }
 
     /// Search the base generation only.
@@ -541,11 +542,7 @@ impl fmt::Debug for BufferOverlay {
 impl BufferOverlay {
     /// Observe the effective content for a path, preferring this overlay and
     /// falling back to the exact base generation. No filesystem access occurs.
-    pub fn file_observation(
-        &self,
-        base: &BaseGeneration,
-        path: &str,
-    ) -> Option<(Digest, usize)> {
+    pub fn file_observation(&self, base: &BaseGeneration, path: &str) -> Option<(Digest, usize)> {
         if self.validate_base(base).is_err() {
             return None;
         }
@@ -553,6 +550,14 @@ impl BufferOverlay {
             .get(path)
             .map(|file| (file.content_digest, file.contents.len()))
             .or_else(|| base.file_observation(path))
+    }
+
+    /// Return an immutable override for one exact path, if this overlay shadows it.
+    /// The caller must still validate the overlay against the base generation.
+    pub fn file_override(&self, path: &str) -> Option<(&str, Digest)> {
+        self.files
+            .get(path)
+            .map(|file| (file.contents.as_str(), file.content_digest))
     }
 
     /// Build an overlay that shadows only paths already present in `base`.
@@ -2003,11 +2008,12 @@ mod tests {
                 .len(),
             1
         );
-        assert!(base
-            .search_with_overlay("edited a", 10, Some(&updated))
-            .unwrap()
-            .matches
-            .is_empty());
+        assert!(
+            base.search_with_overlay("edited a", 10, Some(&updated))
+                .unwrap()
+                .matches
+                .is_empty()
+        );
         assert_eq!(
             base.search_with_overlay("edited a", 10, Some(&original))
                 .unwrap()
@@ -2015,11 +2021,12 @@ mod tests {
                 .len(),
             1
         );
-        assert!(base
-            .search_with_overlay("edited b", 10, Some(&original))
-            .unwrap()
-            .matches
-            .is_empty());
+        assert!(
+            base.search_with_overlay("edited b", 10, Some(&original))
+                .unwrap()
+                .matches
+                .is_empty()
+        );
     }
 
     #[test]
@@ -2050,11 +2057,12 @@ mod tests {
                 .len(),
             1
         );
-        assert!(base
-            .search_with_overlay("edited a", 10, Some(&updated))
-            .unwrap()
-            .matches
-            .is_empty());
+        assert!(
+            base.search_with_overlay("edited a", 10, Some(&updated))
+                .unwrap()
+                .matches
+                .is_empty()
+        );
         assert_eq!(
             base.search_with_overlay("edited a", 10, Some(&original))
                 .unwrap()
@@ -2119,11 +2127,12 @@ mod tests {
                 .len(),
             1
         );
-        assert!(base
-            .search_with_overlay("old a", 10, Some(&updated))
-            .unwrap()
-            .matches
-            .is_empty());
+        assert!(
+            base.search_with_overlay("old a", 10, Some(&updated))
+                .unwrap()
+                .matches
+                .is_empty()
+        );
         assert_eq!(
             base.search_with_overlay("old a", 10, Some(&original))
                 .unwrap()
@@ -2168,11 +2177,12 @@ mod tests {
                 .len(),
             1
         );
-        assert!(base
-            .search_with_overlay("new a", 10, Some(&original))
-            .unwrap()
-            .matches
-            .is_empty());
+        assert!(
+            base.search_with_overlay("new a", 10, Some(&original))
+                .unwrap()
+                .matches
+                .is_empty()
+        );
         assert!(matches!(
             original.apply_changes(
                 &base,

@@ -16,7 +16,7 @@ import type {
 import { Effect } from "effect"
 import type { Capability } from "@/tool/tool"
 import type { CodeModeDispatchWaveV1, CodeModeToolContextV1 } from "@/tool/code-mode"
-import { codeModeReceiptDigestV1, codeModeToolResultDigestV1, decodeCodeModeFrameV1, type CodeModeToolV1, type CodeModeWaveRequestV1, type CodeModeWaveSettlementV1 } from "@/tool/code-mode-protocol"
+import { codeModeToolResultDigestV1, codeModeWaveReceiptDigestV2, decodeCodeModeFrameV1, type CodeModeCallResultV1, type CodeModeToolV1, type CodeModeWaveRequestV1, type CodeModeWaveSettlementV1 } from "@/tool/code-mode-protocol"
 import { Location } from "@opencode-ai/core/location"
 import {
   isNextDirectAttemptScope,
@@ -706,7 +706,6 @@ async function dispatchCodeModeWave(
       callID: result.call.toolCallId,
       status: result.status,
       ...(result.status === "settled" ? { resultDigest: result.resultDigest, outputBytes: result.outputBytes } : {}),
-      ...(result.status === "rejected" || result.status === "cancelled" ? { errorCode: result.errorCode } : {}),
     }))
     if (signal.aborted) await cancellation.cancel()
     await nested.settleResults({ callID, requestID: request.requestID, waveIndex: frame.waveIndex, results: callbackRows })
@@ -726,7 +725,7 @@ async function dispatchCodeModeWave(
   }
 }
 
-function codeModeSettlementFromReceipts(
+export function codeModeSettlementFromReceipts(
   value: unknown,
   frame: CodeModeWaveRequestV1,
   callbacks: ReadonlyArray<{ readonly call: Extract<LanguageModelV3StreamPart, { type: "tool-call" }>; readonly status: "settled" | "rejected" | "cancelled" | "unknown"; readonly output?: string; readonly resultDigest?: string; readonly outputBytes?: number; readonly errorCode?: string }>,
@@ -739,7 +738,7 @@ function codeModeSettlementFromReceipts(
     throw new Error("HostKernel returned a malformed CodeMode receipt projection")
   const rows = value.results
   if (rows.length !== frame.calls.length) throw new Error("HostKernel CodeMode receipt projection omitted or added calls")
-  const results = rows.map((item, index) => {
+  const results: CodeModeCallResultV1[] = rows.map((item, index) => {
     const callback = callbacks[index]
     if (!callback || !isRecord(item) || item.callIndex !== index || item.callID !== frame.calls[index]!.callId ||
       !["settled", "rejected", "cancelled", "unknown"].includes(String(item.status)))
@@ -777,16 +776,24 @@ function codeModeSettlementFromReceipts(
     }
   })
   const status = value.status
+  if (status !== "settled" && status !== "rejected" && status !== "cancelled" && status !== "unknown") {
+    throw new Error("HostKernel returned an invalid CodeMode wave status")
+  }
   const precedence = results.some((result) => result.status === "unknown") ? "unknown" :
     results.some((result) => result.status === "cancelled") ? "cancelled" :
       results.some((result) => result.status === "rejected") ? "rejected" : "settled"
   if (status !== precedence) throw new Error("HostKernel aggregate CodeMode status disagrees with ordered call outcomes")
-  const knownReceipts = status === "unknown" ? [] : results.flatMap((result, callIndex) => result.receiptRef && result.receiptDigest && result.receiptKind
-    ? [[callIndex, result.callId, result.status, result.receiptKind, result.receiptRef, result.receiptDigest] as const]
-    : [])
-  const receiptDigest = knownReceipts.length ? codeModeReceiptDigestV1(knownReceipts) : undefined
+  // The durable v2 contract binds the wave index plus the ordered public call
+  // tuples [waveIndex, callIndex, callId, status, receiptKind, receiptRef,
+  // receiptDigest]. A zero-call wave and any UNKNOWN row carry no aggregate
+  // digest, so HostKernel must return null instead of a synthetic value.
+  const receiptDigest = status !== "unknown" && results.length > 0
+    ? codeModeWaveReceiptDigestV2(frame.waveIndex, results)
+    : undefined
   if (status === "unknown") {
     if (value.receiptDigest !== null) throw new Error("UNKNOWN CodeMode wave cannot expose an aggregate receipt digest")
+  } else if (results.length === 0) {
+    if (value.receiptDigest !== null) throw new Error("Zero-call CodeMode wave cannot expose an aggregate receipt digest")
   } else if (!receiptDigest || value.receiptDigest !== receiptDigest) {
     throw new Error("HostKernel CodeMode aggregate receipt digest differs from its ordered rows")
   }
@@ -800,7 +807,7 @@ function codeModeSettlementFromReceipts(
   }
 }
 
-function codeModeSettlementFromPreDispatch(value: Record<string, unknown>, frame: CodeModeWaveRequestV1): CodeModeWaveSettlementV1 {
+export function codeModeSettlementFromPreDispatch(value: Record<string, unknown>, frame: CodeModeWaveRequestV1): CodeModeWaveSettlementV1 {
   const keys = ["status", "decision", "requestID", "batchID", "waveIndex", "results", "receiptDigest"].toSorted()
   if (Object.keys(value).toSorted().join("\0") !== keys.join("\0") || value.status !== "pre_dispatch_terminal" ||
     (value.decision !== "rejected" && value.decision !== "cancelled") || value.requestID !== frame.requestId ||
@@ -829,9 +836,8 @@ function codeModeSettlementFromPreDispatch(value: Record<string, unknown>, frame
       ...(typeof raw.errorCode === "string" ? { errorCode: raw.errorCode } : {}),
     }
   })
-  const aggregate = codeModeReceiptDigestV1(results.map((result, index) => [
-    index, result.callId, result.status, result.receiptKind, result.receiptRef!, result.receiptDigest!,
-  ] as const))
+  if (results.length === 0) throw new Error("HostKernel pre-dispatch CodeMode decision cannot describe a zero-call wave")
+  const aggregate = codeModeWaveReceiptDigestV2(frame.waveIndex, results)
   if (aggregate !== value.receiptDigest) throw new Error("HostKernel pre-dispatch aggregate receipt digest does not match its ordered rows")
   return {
     requestId: frame.requestId,
@@ -1052,7 +1058,8 @@ async function admitBatch(
         toolCallID: call.callID,
         toolName,
         capabilityID: call.capabilityID,
-        arguments: call.arguments,
+        // Arguments were validated and normalized by the tool definition before Guard.
+        arguments: call.arguments as Record<string, unknown>,
       })),
     })
     if (accounting !== "ACCOUNTED") {
@@ -1105,7 +1112,8 @@ async function admitBatch(
     }
     if (managedAttemptScope.remainingTokens === "0") {
       input.managedAttempt.markUsageStopped?.()
-      return deny("managed effect withheld: Attempt token budget is exhausted")
+      deny("managed effect withheld: Attempt token budget is exhausted")
+      return false
     }
   }
   if (input.parentSessionID !== undefined && hasEffectCalls) {
@@ -1145,7 +1153,10 @@ async function admitBatch(
       })
     preparedBatch = preparedProjection as ToolBatchHostResult
     await cancellation.settleAdmission()
-    if (codeMode && isRecord(preparedBatch) && preparedBatch.status === "pre_dispatch_terminal") {
+    // The CodeMode host may answer with a pre-dispatch terminal decision that is
+    // outside the ordinary admission union; read it through the record view.
+    const hostStatus: unknown = (preparedBatch as { status?: unknown } | undefined)?.status
+    if (codeMode && hostStatus === "pre_dispatch_terminal") {
       deny("HostKernel recorded a terminal pre-dispatch CodeMode decision")
       return
     }
@@ -1294,6 +1305,11 @@ async function admitBatch(
       admission.leaseNext,
     )
   }
+  // A complete-batch admission is settled by admitCompleteBatch above. Reaching
+  // the single-call path with one means the host protocol disagreed with itself;
+  // fail closed instead of reading a challenge that member does not carry.
+  if (admission.status === "admitted_batch")
+    return await denyAndCancel("Rust returned a batch admission outside the complete-batch path")
   if (
     prepared.length !== 1 ||
     !["files.write", "files.patch", "terminal.run", "web.search"].includes(prepared[0]!.call.capabilityID)
@@ -1460,6 +1476,9 @@ function attemptBoundEffectIDs(
   if (admission.status === "prepared") {
     return isEffectLease(admission.lease) ? [admission.lease.effectID] : undefined
   }
+  // Batch admissions carry no single challenge; only admitCompleteBatch may
+  // validate them, so this single-call probe cannot bind their effect IDs.
+  if (admission.status === "admitted_batch") return undefined
   if (!isEffectChallenge(admission.challenge)) return undefined
   if (
     prepared[0]!.call.capabilityID === "files.patch" &&
@@ -1597,6 +1616,7 @@ function isCompleteBatchAdmission(
 async function admitPreparedBatch(
   prepared: ReadonlyArray<{
     readonly call: GuardedToolCall
+    readonly definition: ToolBatchDefinition
     readonly execution?: unknown
   }>,
   calls: ReadonlyArray<{

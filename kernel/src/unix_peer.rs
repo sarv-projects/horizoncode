@@ -7,7 +7,7 @@
 
 use std::ffi::OsStr;
 use std::fmt;
-use std::fs::{self, FileType, Metadata};
+use std::fs::{self, File, FileType, Metadata};
 use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;

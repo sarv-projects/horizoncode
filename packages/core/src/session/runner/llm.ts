@@ -21,6 +21,15 @@ import { Database } from "../../database/database"
 import { EventV2 } from "../../event"
 import { Location } from "../../location"
 import { ModelV2 } from "../../model"
+import {
+  contextCompilePolicyDigestV1,
+  decideContextCompileOverlapV1,
+  resolveContextCompilePolicyV1,
+  resolveContextSpeedPlanV1,
+  type ContextCompileOverlapDecisionV1,
+  type ContextSpeedPlanV1,
+} from "../context-compile-policy"
+import { PrefixCacheSupportV1 as PrefixCacheSupportSchema, type ContextCompilePolicyV1 } from "@opencode-ai/schema/context-compile-policy-v1"
 import { PermissionV2 } from "../../permission"
 import { ProviderV2 } from "../../provider"
 import { QuestionV2 } from "../../question"
@@ -46,6 +55,13 @@ import { createLLMEventPublisher } from "./publish-llm-event"
 import { toLLMMessages } from "./to-llm-message"
 import { MAX_STEPS_PROMPT } from "./max-steps"
 import { SessionSupervisor, SessionSupervisorError } from "../../session/supervisor"
+import {
+  DirectReadBatch,
+  type DirectReadHostV1,
+  type DirectReadProjectionV1,
+  type DirectReadSettledResultV1,
+  type DirectReadWaveOutcomeV1,
+} from "../direct-read-batch"
 import { Pty } from "../../pty"
 import { TrustedPrincipalContext } from "../../trusted-principal"
 import type { EffectAdmission, EffectLease } from "../../session/supervisor"
@@ -103,6 +119,92 @@ import { builtinHarnessProfileV1 } from "../../harness-profile"
  * provider turn. Registry definitions are advertised, local tool calls are settled durably, and an
  * explicit loop starts the next provider turn after local settlement. Configured agent step limits bound the loop.
  */
+
+/** §30.28 SP-B/C/D plan for a direct turn; cold index never blocks Send. */
+export function directContextSpeedPlanV1(input: {
+  readonly modelContextLimit?: number
+  readonly nativeTools: boolean
+}): ContextSpeedPlanV1 {
+  const limit = input.modelContextLimit
+  const contextLimitTokens =
+    limit !== undefined && Number.isSafeInteger(limit) && limit > 0 && limit <= 100_000_000 ? limit : undefined
+  return resolveContextSpeedPlanV1({
+    // Honest cold state: no authenticated RepoIntel index-status producer is
+    // bound to the direct lane. Never infer "current" from a cached file.
+    indexStatus: "absent",
+    ...(contextLimitTokens === undefined ? {} : { contextLimitTokens }),
+    nativeTools: input.nativeTools,
+  })
+}
+
+/** §30.28 SP-A compile-overlap decision at the immutable-ledger boundary. */
+export function directContextCompileOverlapV1(input: {
+  readonly previous?: { readonly ledgerDigest: string; readonly compilePolicyDigest?: string }
+  readonly current: { readonly ledgerDigest: string; readonly compilePolicyDigest?: string }
+}): ContextCompileOverlapDecisionV1 {
+  return decideContextCompileOverlapV1(input)
+}
+
+/**
+ * §14.3.1 / `DEC-V1-36` read fast path, wired at the runner's tool-batch
+ * decision. One authenticated `effects.v2/prepare_tool_batch_read` admission
+ * covers a read-class wave of 1..8 `files.read` calls, and the envelope
+ * `requestID minted here is carried in `options.requestID` so every
+ * projection row matches it exactly (P1's read-path-only envelope binding).
+ *
+ * Lane scope is deliberately narrow and encoded here rather than inferred by
+ * callers: only an authenticated **direct** Session qualifies. Managed
+ * Attempts, direct-Attempt lanes, child sessions and CodeMode waves return
+ * `unavailable`, and the runner keeps the ordinary Guard admission path —
+ * §14.3.1 keeps the managed lane "off by default" and DEC-V1-36 keeps managed
+ * chains strict.
+ */
+export const directReadFastPathV1 = Effect.fn("SessionRunnerLLM.directReadFastPathV1")(function* (input: {
+  readonly host: DirectReadHostV1
+  readonly sessionID: string
+  readonly locationRef: Parameters<DirectReadHostV1["registerHostLocation"]>[0]
+  readonly lane: "direct_session" | "managed_attempt" | "direct_attempt"
+  readonly codeMode: boolean
+  readonly parentSessionID?: string
+  readonly requestID?: string
+  readonly calls: ReadonlyArray<{
+    readonly callID: string
+    readonly capabilityID: string
+    readonly arguments: unknown
+  }>
+  /** Canonical execution of the admitted reads, in admitted order. */
+  readonly execute: (
+    projections: ReadonlyArray<DirectReadProjectionV1>,
+  ) => Effect.Effect<ReadonlyArray<DirectReadSettledResultV1>, unknown>
+}) {
+  const outcome: DirectReadWaveOutcomeV1 = yield* DirectReadBatch.runWave({
+    host: input.host,
+    sessionID: input.sessionID,
+    locationRef: input.locationRef,
+    requestID: input.requestID ?? `req_${randomUUID().replaceAll("-", "")}`,
+    lane: input.lane,
+    codeMode: input.codeMode,
+    ...(input.parentSessionID === undefined ? {} : { parentSessionID: input.parentSessionID }),
+    calls: input.calls,
+    execute: input.execute,
+  }).pipe(
+    // A failure that escapes the wave's own control flow never becomes a
+    // partial success: whole-wave denial, receiptless and replay-forbidden.
+    Effect.catch((error) =>
+      Effect.succeed({
+        status: "denied" as const,
+        failure: {
+          status: "failed" as const,
+          phase: "result" as const,
+          unknown: true,
+          replay: "forbidden" as const,
+          reason: `direct read wave execution failed: ${error instanceof Error ? error.message : String(error)}`,
+        },
+      } as DirectReadWaveOutcomeV1),
+    ),
+  )
+  return outcome
+})
 
 const layer = Layer.effect(
   Service,
@@ -192,6 +294,19 @@ const layer = Layer.effect(
         concurrency: "unbounded",
       }).pipe(Effect.map(SystemContext.combine))
 
+    /**
+     * §30.28 SP-A..D planners at the direct compile boundary.
+     *
+     * `indexStatus: "absent"` is the honest contract state while no authenticated
+     * RepoIntel index-status producer is bound to the direct lane: the plan may
+     * bias tools (symbol-first) and prefer a small harness, but it must never
+     * block Send or claim a warm index/cache.
+     */
+    const directCompileLedger = new Map<
+      string,
+      { readonly ledgerDigest: string; readonly compilePolicyDigest?: string }
+    >()
+
     /** Compile one immutable, Core-owned request context before the transport can dispatch. */
     const prepareDirectProviderContext = Effect.fn("SessionRunner.prepareDirectProviderContext")(function* (input: {
       readonly session: SessionSchema.Info
@@ -207,6 +322,13 @@ const layer = Layer.effect(
         readonly routeID: string
         readonly routeRevision: string
         readonly endpointRevision: string
+        readonly endpointBase: string
+        /**
+         * Route prefix-cache capability. The producer is P6's ProviderTransport
+         * projection; while it is absent the runner fails closed to `unknown`
+         * (never `cache_anchor`), matching §30.26.4.
+         */
+        readonly prefixCacheSupport?: (typeof PrefixCacheSupportSchema)["Type"]
       }
       /** Supplied only by the authenticated HostKernel projection; never inferred from Core policy. */
       readonly authority?: {
@@ -223,8 +345,30 @@ const layer = Layer.effect(
       if (!profile || profile.model.providerId !== input.request.model.provider || profile.model.modelId !== input.request.model.id) return undefined
       const harness = builtinHarnessProfileV1(profile.harness)
       if (!harness) return undefined
-      const generation = input.messages.filter((message) => message.type === "user").at(-1)
-      if (!generation || generation.type !== "user") return undefined
+      // §30.28 speed plan is resolved from the pinned model limit and this
+      // turn's actual native tool definitions. It is advisory: the profile-
+      // selected harness/model never changes here. A cold index must never
+      // block Send (SP-C).
+      const speedPlan = directContextSpeedPlanV1({
+        modelContextLimit: input.request.model.defaults?.limits?.context,
+        nativeTools: input.request.tools.length > 0,
+      })
+      if (speedPlan.sendBlocked !== false) return undefined
+      yield* Effect.logDebug("direct context speed plan", {
+        sessionID: input.session.id,
+        indexMode: speedPlan.indexMode,
+        indexWarming: speedPlan.indexWarming,
+        harnessPreference: speedPlan.harnessPreference,
+        selectedHarness: harness.harnessId,
+        toolBias: speedPlan.toolBias,
+      })
+      // The durable generation is the last user message, or the compaction row
+      // itself: toLLMMessages lowers a completed checkpoint to the exact
+      // user-role `<conversation-checkpoint>` message this request carries.
+      const generation = input.messages
+        .filter((message) => message.type === "user" || message.type === "compaction")
+        .at(-1)
+      if (!generation || (generation.type !== "user" && generation.type !== "compaction")) return undefined
 
       const requestID = input.requestID
       const providerInput: ContextSelection.ProviderInputV1 = {
@@ -327,10 +471,11 @@ const layer = Layer.effect(
             providerID: input.request.model.provider,
             modelID: input.request.model.id,
             harnessID: harness.harnessId,
-            harnessRevision: harness.revision,
+            harnessRevision: String(harness.revision),
             routeID: selectedRoute.routeID,
             routeRevision: selectedRoute.routeRevision,
             endpointRevision: selectedRoute.endpointRevision,
+            endpointBase: selectedRoute.endpointBase,
           },
           pin,
         }),
@@ -370,6 +515,36 @@ const layer = Layer.effect(
             : `blake3:${bytesToHex(blake3(new TextEncoder().encode(`${source.kind}:${source.contentDigest}`)))}`,
         }
       })
+      // §30.26 catalog provenance is *advisory*: it may refine a cache tier but
+      // can never authorize, block, or delay a direct turn. No authenticated
+      // catalog producer is bound to the pinned route yet, so the runner pins
+      // the contract's fail-closed provenance (`unavailable`/`unknown`) instead
+      // of reading a developer-global cache on the provider hot path. With that
+      // provenance `catalog_hint` is ineligible, so the effective tier stays
+      // `minimize_tokens` until a real producer lands.
+      const catalogSnapshot = {
+        source: "unavailable" as const,
+        freshness: "unknown" as const,
+      }
+      let compilePolicy: ContextCompilePolicyV1 | undefined
+      try {
+        compilePolicy = resolveContextCompilePolicyV1({
+          route: {
+            providerID: selectedRoute.providerID,
+            modelID: selectedRoute.modelID,
+            routeRevision: selectedRoute.routeRevision,
+            endpointRevision: selectedRoute.endpointRevision,
+          },
+          // P6's route capability producer has not landed: stay `unknown`
+          // (never infer `cache_anchor` support from the catalog).
+          prefixCacheSupport: selectedRoute.prefixCacheSupport ?? "unknown",
+          catalogSnapshot: { source: catalogSnapshot.source, freshness: catalogSnapshot.freshness },
+        })
+      } catch {
+        // Fail closed exactly like the other prerequisite gates: an unresolvable
+        // policy blocks this direct turn instead of downgrading silently.
+        return undefined
+      }
       const projection = yield* Effect.try({
         try: () => compileContextLedgerV2({
           lane: "direct",
@@ -384,10 +559,35 @@ const layer = Layer.effect(
           requestBytes: Buffer.byteLength(canonical, "utf8"),
           contextSelection: selection,
           entries,
+          ...(compilePolicy === undefined ? {} : { compilePolicy }),
         }),
         catch: () => undefined,
       }).pipe(Effect.catch(() => Effect.succeed(undefined)))
       if (projection) {
+        const compilePolicyDigest = compilePolicy === undefined
+          ? undefined
+          : contextCompilePolicyDigestV1(compilePolicy)
+        const currentCompile = {
+          ledgerDigest: projection.ledgerDigest,
+          ...(compilePolicyDigest === undefined ? {} : { compilePolicyDigest }),
+        }
+        const previousCompile = directCompileLedger.get(input.session.id)
+        const overlap = directContextCompileOverlapV1({
+          ...(previousCompile === undefined ? {} : { previous: previousCompile }),
+          current: currentCompile,
+        })
+        directCompileLedger.delete(input.session.id)
+        directCompileLedger.set(input.session.id, currentCompile)
+        if (directCompileLedger.size > 256) {
+          const oldest = directCompileLedger.keys().next().value
+          if (oldest !== undefined) directCompileLedger.delete(oldest)
+        }
+        yield* Effect.logDebug("direct context compile overlap", {
+          sessionID: input.session.id,
+          overlap: overlap.overlap,
+          reason: overlap.reason,
+          maxOverlapMs: overlap.maxOverlapMs,
+        })
         const timestamp = yield* DateTime.now
         const event = {
           timestamp,
@@ -398,7 +598,11 @@ const layer = Layer.effect(
           ledger: projection.ledger,
           ledgerDigest: projection.ledgerDigest,
         } satisfies SessionEvent.ContextLedger["data"]
-        if (Buffer.byteLength(JSON.stringify(event), "utf8") <= 48 * 1024) {
+        // §30.28 SP-A: only an exactly unchanged ledger + policy may reuse the
+        // already-published projection and let provider start proceed against
+        // it. Any drift publishes the freshly compiled ledger before transport;
+        // a stale payload is never dispatched.
+        if (!overlap.overlap && Buffer.byteLength(JSON.stringify(event), "utf8") <= 48 * 1024) {
           // Attempt delivery before the provider stream starts so the context
           // projection is ordered ahead of this request's streamed response.
           // It is a best-effort UI event: publication failure never authorizes
@@ -510,6 +714,7 @@ const layer = Layer.effect(
           routeID: selectedModel.directProviderRoute.routeID,
           routeRevision: selectedModel.directProviderRoute.routeRevision,
           endpointRevision: selectedModel.directProviderRoute.endpointRevision,
+          endpointBase: selectedModel.directProviderRoute.endpointBase,
         },
         ...(providerPermissionScope ? {
           authority: {
@@ -528,7 +733,6 @@ const layer = Layer.effect(
       const publisher = createLLMEventPublisher(events, {
         sessionID: session.id,
         agent: agent.id,
-        requestID: providerRequestID,
         model: {
           id: ModelV2.ID.make(model.id),
           providerID: ProviderV2.ID.make(model.provider),
@@ -542,10 +746,11 @@ const layer = Layer.effect(
       // The only valid nested CodeMode path is the HostKernel-owned lifecycle
       // that starts/binds the helper, admits the complete wave, settles each
       // ordinary ToolBatch call, and returns authenticated per-call receipts.
-      // P2 has not yet exposed that typed supervisor API. Do not substitute a
-      // plain prepareToolBatch call here: without the CodeMode execution/wave
-      // binding it cannot supply the exact receipt projection required by
-      // §§12.21/37.24. Keep this callback fail-closed until that API is wired.
+      // The typed supervisor DTOs exist, but P2's Rust HostKernel lifecycle,
+      // authenticated wave receipt handlers, and integrated acceptance are
+      // incomplete. Do not substitute a plain prepareToolBatch call here:
+      // without the CodeMode execution/wave binding it cannot supply the exact
+      // receipt projection required by §§12.21/37.24. Keep this fail-closed.
       const dispatchPreparedToolBatch = toolMaterialization
         ? Effect.fn("SessionRunner.dispatchPreparedToolBatch")(function* (_input: {
             readonly calls: ReadonlyArray<{
@@ -617,6 +822,14 @@ const layer = Layer.effect(
               const leasesByCallID = new Map<string, EffectLease>()
               const normalizedCallsByCallID = new Map<string, import("../../session/supervisor").GuardedToolCall>()
               const workspaceCommandProfilesByCallID = new Map<string, import("../../pty").WorkspaceCommandProfileBindingV1>()
+              // §14.3.1 / DEC-V1-36 read fast path: a read-class wave in an
+              // authenticated direct Session is admitted once for the whole
+              // wave and published only after the workspace fence. Anything
+              // else (mixed/effect/unknown, managed Attempt, child session,
+              // CodeMode) leaves `readWave` unavailable and keeps today's
+              // ordinary Guard admission path unchanged.
+              let readWave: DirectReadWaveOutcomeV1 | undefined
+              const readWavePublish: Array<ReturnType<typeof publish>> = []
               if (!invalid) {
                 const capabilities = localToolCalls.map((call) => materialization.classify(call))
                 const guarded = capabilities.some(
@@ -722,10 +935,96 @@ const layer = Layer.effect(
                   } else if (admission.status !== "denied") {
                     admission = { status: "denied", reason: "Rust Guard returned no prepared lease" }
                   }
+                } else {
+                  readWave = yield* directReadFastPathV1({
+                    host: supervisor,
+                    sessionID: session.id,
+                    locationRef: session.location,
+                    // Managed Attempt sessions are created as children of the
+                    // managed root (they carry `parentID`), so the child-lane
+                    // rule refuses them here; a root Session with no parent is
+                    // the only shape that can reach this path. §14.3.1 keeps the
+                    // managed lane off by default and DEC-V1-36 keeps those
+                    // chains strict — both are encoded in the classifier, and
+                    // `lane` stays the explicit hook for a caller that holds
+                    // lane authority to refuse outright.
+                    lane: "direct_session",
+                    codeMode: false,
+                    ...(session.parentID === undefined ? {} : { parentSessionID: session.parentID }),
+                    calls: localToolCalls.map((call, index) => ({
+                      callID: call.id,
+                      capabilityID: capabilities[index]!.id,
+                      arguments: call.input,
+                    })),
+                    execute: (projections) =>
+                      Effect.gen(function* () {
+                        const settled: DirectReadSettledResultV1[] = []
+                        for (const projection of projections) {
+                          const admitted = localToolCalls.find((item) => item.id === projection.callID)
+                          if (!admitted)
+                            return yield* Effect.die(
+                              new Error("Admitted direct read call is absent from the provider batch"),
+                            )
+                          const assistantMessageID = yield* publisher.assistantMessageID(admitted.id)
+                          const settlement = yield* materialization.settle({
+                            sessionID: session.id,
+                            agent: agent.id,
+                            assistantMessageID,
+                            call: admitted,
+                            trustedPrincipal,
+                            locationRef: session.location,
+                          }).pipe(Effect.catch(() => Effect.succeed(undefined)))
+                          const encoded = settlement?.result as { readonly value?: unknown } | undefined
+                          const output =
+                            encoded !== undefined && typeof encoded.value === "string" ? encoded.value : undefined
+                          if (settlement === undefined || output === undefined) {
+                            // No bounded text to fence ⇒ this member does not
+                            // settle, and the publication gate denies the wave.
+                            settled.push({ callID: projection.callID, status: "rejected" })
+                            continue
+                          }
+                          // Publication is deferred until the authenticated
+                          // workspace fence passes; `runWave` gates it.
+                          readWavePublish.push(
+                            publish(
+                              LLMEvent.toolResult({
+                                id: admitted.id,
+                                name: admitted.name,
+                                result: settlement.result,
+                                output: settlement.output,
+                              }),
+                            ),
+                          )
+                          settled.push({
+                            callID: projection.callID,
+                            status: "settled",
+                            output,
+                          })
+                        }
+                        return settled
+                      }),
+                  })
+                }
+              }
+              // Whole-wave publication: the fence already passed (published) or
+              // the wave is denied outright — in both cases every call is
+              // handled once, here, and the ordinary per-call path is skipped.
+              if (readWave?.status === "published") {
+                for (const publishEffect of readWavePublish) yield* publishEffect
+              } else if (readWave?.status === "denied") {
+                for (const call of localToolCalls) {
+                  yield* publish(
+                    LLMEvent.toolResult({
+                      id: call.id,
+                      name: call.name,
+                      result: { type: "error", value: readWave.failure.reason },
+                    }),
+                  )
                 }
               }
               let previousEffectID: string | undefined
               for (const [index, call] of localToolCalls.entries()) {
+                if (readWave !== undefined && readWave.status !== "unavailable") continue
                 const validationError = validation[index]
                 if (invalid) {
                   yield* publish(
@@ -754,7 +1053,7 @@ const layer = Layer.effect(
                 let effect = leasesByCallID.get(call.id)
                 if (!effect && admission?.status === "prepared_batch" && admission.leaseNext) {
                   if (!previousEffectID) {
-                    yield* Effect.fail(new Error("Attempt ToolBatch has no prior settled effect for next lease"))
+                    return yield* Effect.fail(new Error("Attempt ToolBatch has no prior settled effect for next lease"))
                   }
                   const next = yield* admission.leaseNext({ callID: call.id, previousEffectID })
                   if (next.callID !== call.id || !next.lease?.effectID) {

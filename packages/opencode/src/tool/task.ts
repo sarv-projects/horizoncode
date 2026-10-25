@@ -10,6 +10,8 @@ import { SessionID, MessageID } from "../session/schema"
 import { MessageV2 } from "../session/message-v2"
 import { Agent } from "../agent/agent"
 import { Provider } from "@/provider/provider"
+import { ProviderV2 } from "@opencode-ai/core/provider"
+import { ModelV2 } from "@opencode-ai/core/model"
 import { deriveSubagentSessionPermission } from "../agent/subagent-permissions"
 import type { SessionPrompt } from "../session/prompt"
 import { Config } from "@/config/config"
@@ -116,6 +118,10 @@ const PROFILE_PIN_KEY = "horizonAgentProfileV2"
 const DIRECT_ATTEMPT_PIN_KEY = "horizonDirectAttemptID"
 const DIRECT_SCOPE_PIN_KEY = "horizonDirectAttemptScopeDigest"
 const MAX_DIRECT_CHILD_SESSIONS_PER_PARENT = 64
+type DirectInboxTransitionWithDelivery = Parameters<Session.Interface["directInboxTransition"]>[0] & {
+  readonly deliveryAttemptID?: string | null
+  readonly deliveryOwnerEpoch?: string | null
+}
 
 type DirectProfilePin = {
   readonly profileID: string
@@ -148,7 +154,7 @@ function directProfilePin(metadata: Record<string, unknown> | undefined): Direct
   ) return undefined
   return {
     profileID: value.profileID,
-    profileRevision: value.profileRevision,
+    profileRevision: revision,
     profileDigest: value.profileDigest,
     permissionsDigest: value.permissionsDigest,
     harness: value.harness,
@@ -538,10 +544,6 @@ export const TaskTool = Tool.define(
         parentSessionID: ctx.sessionID,
         childSessionID: childID,
         agent: next.name,
-        profileID: profileDefinition.profileId,
-        profileRevision: profileDefinition.revision,
-        profileHarness: profileDefinition.harness,
-        profileDefinition,
         providerID: model.providerID,
         modelID: model.modelID,
         workspaceRoot: instance.worktree,
@@ -792,7 +794,10 @@ export const TaskTool = Tool.define(
       }
       const deliveryEnvelope = yield* Effect.try({
         try: () => {
-          const expiresAt = Date.now() + profileDefinition.limits.wallTimeMs
+          const now = Date.now()
+          const configuredWallTimeMs = BigInt(profileDefinition.limits.wallTimeMs ?? "300000")
+          if (configuredWallTimeMs > BigInt(Number.MAX_SAFE_INTEGER - now)) throw new Error("AgentProfile delivery expiry exceeds the supported timestamp range")
+          const expiresAt = now + Number(configuredWallTimeMs)
           if (!Number.isSafeInteger(expiresAt)) throw new Error("AgentProfile delivery expiry exceeds the supported timestamp range")
           return directDeliveryEnvelope({
             scope: directAttemptScope,
@@ -881,6 +886,9 @@ export const TaskTool = Tool.define(
       const metadata = {
         parentSessionId: ctx.sessionID,
         sessionId: nextSession.id,
+        agent: next.name,
+        profileID: profileDefinition.profileId,
+        profileRevision: String(profileDefinition.revision),
         model,
         attemptID,
         attemptScopeDigest: scopeDigest,
@@ -904,7 +912,7 @@ export const TaskTool = Tool.define(
             state,
             deliveryAttemptID: row.delivery_attempt_id,
             deliveryOwnerEpoch: row.delivery_owner_epoch,
-          })
+          } as DirectInboxTransitionWithDelivery)
         }
       })
       const acknowledgeInboxRow = Effect.fn("TaskTool.acknowledgeInboxRow")(function* (
@@ -1216,10 +1224,14 @@ export const TaskTool = Tool.define(
       // and its messages stay durable and can be resumed with task_id).
       const childRun = Effect.fn("TaskTool.childRun")(function* () {
         const wallTimeMs = profileDefinition.limits.wallTimeMs
+        const timeoutMs = wallTimeMs === undefined ? undefined : Number(BigInt(wallTimeMs))
+        if (timeoutMs !== undefined && !Number.isSafeInteger(timeoutMs)) {
+          return yield* Effect.fail(new Error("AgentProfileV2 wall-time limit exceeds the supported timer range"))
+        }
         const exit = wallTimeMs === undefined
           ? yield* runTask().pipe(Effect.exit)
           : yield* Effect.gen(function* () {
-              const timed = yield* runTask().pipe(Effect.timeout(`${wallTimeMs} millis`))
+              const timed = yield* runTask().pipe(Effect.timeoutOption(timeoutMs!))
               if (Option.isNone(timed)) {
                 return yield* Effect.fail(new Error(`AgentProfileV2 wall-time limit exceeded (${wallTimeMs} ms)`)).pipe(Effect.exit)
               }
@@ -1547,7 +1559,7 @@ const MAX_MANAGED_CHILD_OUTPUT_BYTES = 8 * 1024 * 1024
 export function managedTaskTokenBudget(input: {
   readonly effectiveMaxTokens: string
   readonly remainingTokens: string
-  readonly profileTokenBudget?: number
+  readonly profileTokenBudget?: string
 }): { readonly effectiveMaxTokens: string; readonly remainingTokens: string } {
   const canonical = (value: string) => /^(0|[1-9][0-9]{0,19})$/.test(value) &&
     BigInt(value) <= 18_446_744_073_709_551_615n
@@ -1555,7 +1567,7 @@ export function managedTaskTokenBudget(input: {
     BigInt(input.effectiveMaxTokens) < 1n || BigInt(input.remainingTokens) < 1n ||
     BigInt(input.remainingTokens) > BigInt(input.effectiveMaxTokens) ||
     (input.profileTokenBudget !== undefined &&
-      (!Number.isSafeInteger(input.profileTokenBudget) || input.profileTokenBudget < 1 ||
+      (!canonical(input.profileTokenBudget) || BigInt(input.profileTokenBudget) < 1n ||
         BigInt(input.effectiveMaxTokens) > BigInt(input.profileTokenBudget)))) {
     throw new RangeError("managed Task token ceiling is missing, exhausted, or differs from its pinned profile")
   }
@@ -1868,7 +1880,7 @@ export const runManagedTaskPrompt = Effect.fn("TaskTool.runManagedTaskPrompt")(f
     const subagentDelivery = child.metadata?.horizonSubagentDelivery
     const storedWorktreeTarget = child.metadata?.horizonManagedWorktreeTarget
     if (child.parentID !== root.id || typeof lineage !== "object" || lineage === null ||
-      Object.keys(managedLineage).some((key) => lineage[key] !== managedLineage[key]) ||
+      Object.keys(managedLineage).some((key) => (lineage as Record<string, unknown>)[key] !== (managedLineage as Record<string, unknown>)[key]) ||
       typeof delivery !== "object" || delivery === null || delivery.handoffDigest !== handoff.handoffDigest ||
       delivery.consumeReceiptDigest !== input.consumeReceipt.receiptDigest ||
       typeof delivery.completionDeliveryID !== "string" ||
@@ -1953,7 +1965,7 @@ export const runManagedTaskPrompt = Effect.fn("TaskTool.runManagedTaskPrompt")(f
     ...managedToolDenies.filter((deny) => !childPermission.some((rule) =>
       rule.permission === deny.permission && rule.pattern === deny.pattern && rule.action === deny.action)),
   ]
-  const model = yield* provider.getModel(profile.model.providerId, profile.model.modelId)
+  const model = yield* provider.getModel(ProviderV2.ID.make(profile.model.providerId), ModelV2.ID.make(profile.model.modelId))
   if (!model || handoff.profileID !== profile.profileId || handoff.profileRevision !== String(profile.revision)) {
     return yield* new ManagedControlError({ operation: "task", code: "agent_profile_unavailable", reason: "pinned managed Task provider/model is unavailable" })
   }
@@ -2007,7 +2019,7 @@ export const runManagedTaskPrompt = Effect.fn("TaskTool.runManagedTaskPrompt")(f
     parentID: root.id,
     title: task.title,
     agent: next.name,
-    model: { providerID: model.providerID, modelID: model.id },
+    model: { providerID: model.providerID, id: model.id },
     permission: childPermissionRules,
     workspaceID: targetWorkspaceID,
     metadata: childMetadata,

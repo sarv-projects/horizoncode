@@ -157,8 +157,10 @@
           ]
         },
         "harnessRevision": {
-          "$ref": "horizon://schemas/wire-primitives-v1#/$defs/PositiveDecimalU64",
-          "description": "Toolset manifest generation encoded as exact positive u64 decimal string."
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "Toolset manifest generation as the exact positive u64 integer, matching the TS producer (Number.isSafeInteger, >=1) and the Rust decoder (Value::Unsigned, 1..=9_007_199_254_740_991), and the context-ledger-v2 canonical. (2026-10-24 correction: this was incorrectly declared as a positive u64 decimal string.)"
         }
       },
       "allOf": [

@@ -92,6 +92,15 @@ export const LspRequestMethodV1 = Schema.Literals([
   "textDocument/rename",
   "textDocument/documentSymbol",
   "workspace/symbol",
+  // Non-canonical LSP queries exposed by the editor tool. HostKernel has no
+  // capability mapping for these, so its typed parser denies them before
+  // dispatch; they remain listed here only so the legacy client surface stays
+  // type-safe and every attempt fails closed.
+  "textDocument/hover",
+  "textDocument/implementation",
+  "textDocument/prepareCallHierarchy",
+  "callHierarchy/incomingCalls",
+  "callHierarchy/outgoingCalls",
 ])
 export type LspRequestMethodV1 = typeof LspRequestMethodV1.Type
 
@@ -1038,6 +1047,21 @@ export class LspEventCursorV1 {
     return this.#quarantined
   }
 
+  readRequest(): LspEventReadRequestV1 {
+    if (this.#quarantined) throw new ResnapshotRequiredError({ reason: "unknown_process" })
+    return {
+      hostProcessRef: this.hostProcessRef,
+      sessionID: this.sessionID,
+      locationID: this.locationID,
+      workspaceRevision: this.workspaceRevision,
+      ...(this.managedAttempt === undefined ? {} : { managedAttempt: this.managedAttempt }),
+      ...(this.directAttempt === undefined ? {} : { directAttempt: this.directAttempt }),
+      afterEventSequence: this.#afterEventSequence,
+      maxEvents: MAX_EVENTS,
+      maxBytes: MAX_PAGE_BYTES,
+    }
+  }
+
   accept(input: unknown): LspEventPageV1 {
     if (this.#quarantined) throw new ResnapshotRequiredError({ reason: "unknown_process" })
     try {
@@ -1060,20 +1084,7 @@ export class LspEventCursorV1 {
         }
         throw new ResnapshotRequiredError({ reason: "cursor_gap" })
       }
-      const page = validateEventPageV1(
-        {
-          hostProcessRef: this.hostProcessRef,
-          sessionID: this.sessionID,
-          locationID: this.locationID,
-          workspaceRevision: this.workspaceRevision,
-          afterEventSequence: this.#afterEventSequence,
-          maxEvents: MAX_EVENTS,
-          maxBytes: MAX_PAGE_BYTES,
-          ...(this.managedAttempt === undefined ? {} : { managedAttempt: this.managedAttempt }),
-          ...(this.directAttempt === undefined ? {} : { directAttempt: this.directAttempt }),
-        },
-        input,
-      )
+      const page = validateEventPageV1(this.readRequest(), input)
       if (page.status === "EXITED") this.#quarantined = true
       const serialized = JSON.stringify(input)
       if (typeof serialized !== "string") throw new ProtocolError({ detail: "invalid HostKernel LSP event page" })
@@ -1211,7 +1222,7 @@ export class LspProtocolJournalV1 {
         const eventSequence = BigInt(payload.eventSequence)
         if (eventSequence !== this.#lastEventSequence + 1n) throw new ResnapshotRequiredError({ reason: "cursor_gap" })
         this.#lastEventSequence = eventSequence
-        if (event.messageKind === "response") {
+        if (event.messageKind === "response" && "requestSequence" in payload) {
           const key = this.#sequenceKey(payload.requestSequence)
           const pending = this.#pendingResponses.get(key)
           if (
@@ -1223,7 +1234,7 @@ export class LspProtocolJournalV1 {
           }
           this.#pendingResponses.delete(key)
         }
-        if (event.messageKind === "server_request") {
+        if (event.messageKind === "server_request" && "requestID" in payload) {
           const key = this.#serverRequestKey(payload.requestID, payload.method)
           if (this.#pendingServerRequests.has(key)) {
             throw new ResnapshotRequiredError({ reason: "cursor_gap" })

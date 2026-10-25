@@ -86,10 +86,13 @@ export function DialogProviderDoctor() {
         },
         { throwOnError: true },
       )
+      const catalogFreshness = (response.data as { catalogFreshness?: unknown }).catalogFreshness
       setServerResult({
         localReadiness: response.data.localReadiness,
         configuration: response.data.selection.configurationStatus,
-        catalogFreshness: response.data.catalogFreshness,
+        catalogFreshness: catalogFreshness === "FRESH" || catalogFreshness === "STALE" || catalogFreshness === "UNKNOWN"
+          ? catalogFreshness
+          : "UNKNOWN",
         credentials: response.data.credentialAccess,
         networkRequests: response.data.networkRequestCount,
         remote:
@@ -107,30 +110,29 @@ export function DialogProviderDoctor() {
   })
 
   return (
-    <box paddingLeft={2} paddingRight={2} gap={1} paddingBottom={1}>
+    <box width="100%" paddingLeft={2} paddingRight={2} gap={1} paddingBottom={1}>
       <text fg={theme.text} attributes={1}>Provider Doctor · Offline</text>
       <text fg={theme.textMuted}>Selected: {selection().selection}</text>
-      <text fg={theme.textMuted}>Local readiness: {serverResult()?.localReadiness ?? selection().localReadiness}</text>
-      <text fg={theme.textMuted}>Configuration: {serverResult()?.configuration ?? selection().configuration}</text>
-      <text fg={theme.textMuted}>Local catalog snapshot: {serverResult()?.catalogFreshness ?? "UNKNOWN"}</text>
-      <text fg={theme.textMuted}>Credentials: {serverResult()?.credentials ?? selection().credentials}</text>
       <text fg={theme.textMuted}>
-        Remote entitlement, quota, and service: {serverResult()?.remote ?? selection().remote}
+        Local readiness: {serverResult()?.localReadiness ?? selection().localReadiness} · Configuration: {serverResult()?.configuration ?? selection().configuration}
       </text>
       <text fg={theme.textMuted}>
-        Provider requests: {serverResult()?.networkRequests ?? selection().networkRequests} · Cost: {serverResult()?.cost ?? selection().cost}
+        Local catalog snapshot: {serverResult()?.catalogFreshness ?? "UNKNOWN"} · Credentials: {serverResult()?.credentials ?? selection().credentials}
       </text>
       <text fg={theme.textMuted}>
-        Offline tier: available · zero provider requests · credentials not read · no charge.
+        Remote: {serverResult()?.remote ?? selection().remote} · Requests: {serverResult()?.networkRequests ?? selection().networkRequests} · Cost: {serverResult()?.cost ?? selection().cost}
       </text>
       <text fg={theme.textMuted}>
-        Catalog tier: unavailable · requires an authenticated network grant and Guarded dispatch; no requests are sent.
+        Offline tier: available · 0 requests · no credentials · no charge; diagnostics never contact a provider.
       </text>
       <text fg={theme.textMuted}>
-        Full tier: unavailable · selected-model inference may incur cost; it requires a separate network grant, explicit spend consent, and Guarded dispatch. No provider fallback is used.
+        Catalog tier: unavailable · Guarded network access is required. No requests are sent.
       </text>
+      <text fg={theme.textMuted} wrapMode="word">
+        Full tier: unavailable · may incur cost; requires separate network grant and explicit spend consent.
+      </text>
+      <text fg={theme.textMuted} wrapMode="word">Guarded dispatch only. No provider fallback. Consent alone cannot enable a probe.</text>
       {error() && <text fg={theme.error}>Offline diagnostics could not be loaded from this local runtime.</text>}
-      <text fg={theme.textMuted}>Offline diagnostics never read credentials or contact a provider. Consent alone cannot enable a probe.</text>
     </box>
   )
 }

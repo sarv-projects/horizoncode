@@ -1,0 +1,15 @@
+Every changed root overlay file must be unignored explicitly.
+OVERLAY_VISIBILITY compared=6627 changed=418 missing=0 symlink_delta=0 hidden_changed=11 hidden_new_source=2 stale_unignore=0
+HIDDEN_CHANGED packages/core/test/session-prompt.test.ts
+HIDDEN_CHANGED packages/core/test/tool-output-store.test.ts
+HIDDEN_CHANGED packages/core/test/config/agent.test.ts
+HIDDEN_CHANGED packages/core/test/config/command.test.ts
+HIDDEN_CHANGED packages/core/test/config/plugin.test.ts
+HIDDEN_CHANGED packages/core/test/config/provider.test.ts
+HIDDEN_CHANGED packages/core/test/config/skill.test.ts
+HIDDEN_CHANGED packages/core/test/filesystem/watcher.test.ts
+HIDDEN_CHANGED packages/opencode/test/server/httpapi-instance-route-auth.test.ts
+HIDDEN_CHANGED packages/protocol/src/groups/question.ts
+HIDDEN_CHANGED packages/server/src/handlers/question.ts
+HIDDEN_NEW_SOURCE packages/core/tsconfig.a1focus.json
+HIDDEN_NEW_SOURCE packages/core/test/lib/config.ts

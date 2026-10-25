@@ -11,6 +11,7 @@
 use horizoncode_kernel::host_kernel::{EFFECTS_SERVICE_ID, HostKernel, MANAGED_SERVICE_ID};
 use horizoncode_kernel::managed_control::{
     DirectAttemptCommand, DirectAttemptControl, DirectAttemptEffectIntent, DirectAttemptIntent,
+    DirectAttemptPhase,
 };
 use horizoncode_kernel::messagepack::Value;
 use horizoncode_kernel::owner_log::OwnerIdentity;
@@ -21,7 +22,61 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+fn json_to_value(value: &serde_json::Value) -> Value {
+    match value {
+        serde_json::Value::Null => Value::Nil,
+        serde_json::Value::Bool(value) => Value::Bool(*value),
+        serde_json::Value::Number(value) if value.is_u64() => {
+            Value::Unsigned(value.as_u64().unwrap())
+        }
+        serde_json::Value::Number(value) if value.is_i64() => {
+            Value::Signed(value.as_i64().unwrap())
+        }
+        serde_json::Value::Number(value) => Value::Float(value.as_f64().unwrap().to_bits()),
+        serde_json::Value::String(value) => Value::String(value.clone()),
+        serde_json::Value::Array(values) => {
+            Value::Array(values.iter().map(json_to_value).collect())
+        }
+        serde_json::Value::Object(values) => Value::Map(
+            values
+                .iter()
+                .map(|(key, value)| (key.clone(), json_to_value(value)))
+                .collect(),
+        ),
+    }
+}
+
+/// Canonical Core-owned profile pin carried by every direct Attempt admission.
+fn profile_selection() -> Value {
+    map([
+        ("profileId", string("specialist.reader")),
+        ("revision", string("1")),
+    ])
+}
+
+fn profile_definition() -> Value {
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/agent-profile-definition-v2.json")).unwrap();
+    let mut definition = fixture["definition"].clone();
+    // This test file exercises sibling and retried child admissions under one
+    // parent Session; the canonical single-child fixture default is widened for
+    // this test-local revision so the limit itself stays enforced (a second
+    // widening beyond these bounds must still fail closed).
+    if let Some(limits) = definition.get_mut("limits").and_then(|value| value.as_object_mut()) {
+        limits.insert("maxActiveChildren".into(), serde_json::json!(8));
+        limits.insert("maxTotalChildren".into(), serde_json::json!(8));
+    }
+    if let Some(parallel) = definition.get_mut("maxParallelChildren") {
+        *parallel = serde_json::json!(8);
+    }
+    json_to_value(&definition)
+}
+
 const PRINCIPAL: &str = "host_os_uid:1000";
+/// Location registration crosses the host-authenticated execution boundary
+/// and therefore requires a typed ServerAuth principal, never a raw host OS
+/// identity.
+const LOCATION_PRINCIPAL: &str = "server_auth:direct-attempt-owner";
 const REVIEWER: &str = "server_auth:reviewer";
 const EPOCH: u64 = 23;
 const INCARNATION: &str = "inc_direct_attempt";
@@ -86,7 +141,7 @@ impl Fixture {
         };
         let fence = FrameFence::new(EPOCH, INCARNATION).unwrap();
         let location_id = field_text(
-            &ok_body(host.handle_request(&register, PRINCIPAL, &fence)),
+            &ok_body(host.handle_request(&register, LOCATION_PRINCIPAL, &fence)),
             "locationID",
         )
         .to_owned();
@@ -105,7 +160,8 @@ impl Fixture {
     }
 
     fn send(&mut self, operation: &str, body: Value, delivery: Option<&str>) -> RpcResponseV1 {
-        self.send_as(PRINCIPAL, operation, body, delivery)
+        // Every direct Attempt RPC is owned by authenticated Core ServerAuth.
+        self.send_as(LOCATION_PRINCIPAL, operation, body, delivery)
     }
 
     fn send_as(
@@ -245,6 +301,8 @@ fn admit_body_for(
         ("capabilityDigest", string(&sha('b'))),
         ("permissionsDigest", string(&sha('c'))),
         ("budgetDigest", string(&sha('d'))),
+        ("profileSelection", profile_selection()),
+        ("profileDefinition", profile_definition()),
     ])
 }
 
@@ -372,13 +430,22 @@ fn direct_attempt_effect_scope_rejects_workspace_edits_after_admission() {
         Some("bind-after-workspace-edit"),
     );
     assert_eq!(error_code(&response), "stale_workspace_revision");
-    let snapshot = ok_body(fixture.send(
+    // The scope-recovery fence covers the read-only projection as well: after an
+    // out-of-band human edit, no operation may imply the stale scope is live.
+    let snapshot = fixture.send(
         "direct_attempt_snapshot",
         map([("attemptID", string(ATTEMPT))]),
         None,
-    ));
-    assert_eq!(field_unsigned(&snapshot, "revision"), 1);
-    assert_eq!(field_text(&snapshot, "attemptPhase"), "EXECUTING");
+    );
+    assert_eq!(error_code(&snapshot), "stale_workspace_revision");
+    // Durable truth is untouched: no effect was bound. Reopening after dropping
+    // the host crosses an owner-epoch boundary, so recovery durably fences the
+    // still-EXECUTING Attempt as UNKNOWN at the next revision.
+    drop(fixture.host.take());
+    let record = DirectAttemptControl::open_existing(&fixture.state.join("managed-control"), ATTEMPT).unwrap();
+    assert_eq!(record.revision(), 2);
+    assert!(record.record().unwrap().effect_intents.is_empty());
+    assert_eq!(record.record().unwrap().phase, DirectAttemptPhase::Unknown);
 }
 
 #[test]
@@ -419,6 +486,9 @@ fn direct_attempt_effect_batches_are_atomic_revision_bound_and_restart_durable()
         parent_session_id: "ses_parent000000000000000000000000001".to_owned(),
         child_session_id: "ses_child000000000000000000000000001".to_owned(),
         agent: "general".to_owned(),
+        profile_id: "profile-direct".to_owned(),
+        profile_revision: 1,
+        profile_digest: format!("blake3:{}", "a".repeat(64)),
         executor_principal: PRINCIPAL.to_owned(),
         owner_epoch: EPOCH,
         location_id: fixture.location_id.clone(),
@@ -429,7 +499,7 @@ fn direct_attempt_effect_batches_are_atomic_revision_bound_and_restart_durable()
         budget_digest: sha('d'),
         scope_digest: sha('e'),
     };
-    let mut control = DirectAttemptControl::create(&fixture.state, ATTEMPT).unwrap();
+    let mut control = DirectAttemptControl::create(&fixture.state.join("managed-control"), ATTEMPT).unwrap();
     control
         .apply(
             0,
@@ -480,9 +550,12 @@ fn direct_attempt_effect_batches_are_atomic_revision_bound_and_restart_durable()
     assert_eq!(control.record().unwrap().effect_intents.len(), 2);
 
     drop(control);
-    let reopened = DirectAttemptControl::open_existing(&fixture.state, ATTEMPT).unwrap();
-    assert_eq!(reopened.revision(), 2);
+    let reopened = DirectAttemptControl::open_existing(&fixture.state.join("managed-control"), ATTEMPT).unwrap();
+    // Reopening is an owner-epoch boundary: the durable UNKNOWN fence appends one
+    // more revision but never re-admits or replays the bound effects.
+    assert_eq!(reopened.revision(), 3);
     assert_eq!(reopened.record().unwrap().effect_intents.len(), 2);
+    assert_eq!(reopened.record().unwrap().phase, DirectAttemptPhase::Unknown);
 }
 
 #[test]
@@ -894,6 +967,8 @@ fn direct_attempt_rpc_one_use_keys_principal_and_fence_negatives() {
                 ("capabilityDigest", string(&sha('b'))),
                 ("permissionsDigest", string(&sha('c'))),
                 ("budgetDigest", string(&sha('d'))),
+                ("profileSelection", profile_selection()),
+                ("profileDefinition", profile_definition()),
             ]),
             Some("bad-scope-digest"),
         )),
@@ -919,6 +994,8 @@ fn direct_attempt_rpc_one_use_keys_principal_and_fence_negatives() {
                 ("capabilityDigest", string(&sha('b'))),
                 ("permissionsDigest", string(&sha('c'))),
                 ("budgetDigest", string(&sha('d'))),
+                ("profileSelection", profile_selection()),
+                ("profileDefinition", profile_definition()),
             ]),
             Some("bad-attempt-id"),
         )),
@@ -1019,7 +1096,9 @@ fn direct_attempt_rpc_restart_recovery_fences_an_in_flight_attempt() {
         None,
     ));
     assert_eq!(field_text(&snapshot, "attemptPhase"), "UNKNOWN");
-    assert_eq!(field_unsigned(&snapshot, "revision"), 1);
+    // The durable UNKNOWN fence is appended during recovery, so the revision
+    // advances past the original admission revision.
+    assert_eq!(field_unsigned(&snapshot, "revision"), 2);
     assert_eq!(
         error_code(&fixture.send(
             "settle_direct_attempt",
@@ -1043,11 +1122,18 @@ fn direct_attempt_rpc_restart_recovery_fences_an_in_flight_attempt() {
         "managed_attempt_unknown"
     );
 
-    // A fresh Attempt id is required to retry the child work.
+    // UNKNOWN keeps its child-Session reservation, so a retry needs both a fresh
+    // Attempt id and a fresh child Session; reusing either is a typed conflict.
     const RETRY: &str = "att_direct0000000000000000000000000003";
     let retried = ok_body(fixture.send(
         "admit_direct_attempt",
-        admit_body(&fixture, RETRY),
+        admit_body_for(
+            &fixture,
+            RETRY,
+            "ses_child000000000000000000000000003",
+            "general",
+            'b',
+        ),
         Some("att-retry-admit-1"),
     ));
     assert_eq!(field_text(&retried, "attemptPhase"), "EXECUTING");

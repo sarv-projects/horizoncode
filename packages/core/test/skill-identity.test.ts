@@ -23,7 +23,7 @@ describe("SkillV2 identity", () => {
     })
     expect(skill.location).toContain("horizon/skills/horizon-docs/SKILL.md")
     expect(() => SkillV2.horizonDocs({ content: skill.content, expectedRevision: "sha256:stale" })).toThrow(
-      "canonical Horizon docs skill digest mismatch",
+      "canonical horizon-docs skill digest mismatch",
     )
   })
 

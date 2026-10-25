@@ -1,9 +1,16 @@
 import { Config } from "@/config/config"
 import { emptyConsoleState } from "@opencode-ai/core/v1/config/console-state"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
+import * as ExternalEditorProfileV1 from "@opencode-ai/schema/external-editor-profile-v1"
 import { Effect, Layer } from "effect"
 
 export function make(overrides: Partial<Config.Interface> = {}) {
+  const emptyEditorProfiles: ExternalEditorProfileV1.ExternalEditorProfilesProjectionV1 = {
+    schemaVersion: 1,
+    source: "global_user_config",
+    profiles: [],
+    selected: null,
+  }
   return Config.Service.of({
     get: () => Effect.succeed({}),
     getGlobal: () => Effect.succeed({}),
@@ -18,6 +25,17 @@ export function make(overrides: Partial<Config.Interface> = {}) {
     directories: () => Effect.succeed([]),
     waitForDependencies: () => Effect.void,
     ...overrides,
+    getRepoIntelProfile: overrides.getRepoIntelProfile ?? (() =>
+      Effect.succeed(ConfigV1.ConfigRepoIntelligenceV1.resolveProfile({}))),
+    updateRepoIntelProfile: overrides.updateRepoIntelProfile ?? ((input) =>
+      Effect.succeed(
+        ConfigV1.ConfigRepoIntelligenceV1.resolveProfile({
+          requested: input.profile,
+          configurationSource: "user",
+        }),
+      )),
+    getExternalEditorProfiles: overrides.getExternalEditorProfiles ?? (() => Effect.succeed(emptyEditorProfiles)),
+    updateExternalEditorProfiles: overrides.updateExternalEditorProfiles ?? (() => Effect.succeed(emptyEditorProfiles)),
   })
 }
 

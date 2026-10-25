@@ -3,8 +3,8 @@ import { Schema } from "effect"
 import { SessionEvent } from "../src/session-event"
 import { SessionMessage } from "../src/session-message"
 
-const reported = { status: "provider-reported", value: 0 }
-const measured = { status: "measured", value: 0 }
+const reported = { status: "provider-reported", value: 0 } as const
+const measured = { status: "measured", value: 0 } as const
 const estimated = {
   status: "estimated",
   value: 0.25,
@@ -13,8 +13,8 @@ const estimated = {
   pricing: { input: 1, output: 2, cacheRead: 0.5, cacheWrite: 1.5 },
   algorithm: "per-million-linear-v1",
   tokenInputs: { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
-}
-const unknown = { status: "unknown" }
+} as const
+const unknown = { status: "unknown" } as const
 
 test("V2 step settlement preserves explicit zero and unknown usage provenance", () => {
   const decoded = Schema.decodeUnknownSync(SessionEvent.Step.Ended)({
@@ -39,8 +39,8 @@ test("V2 step settlement preserves explicit zero and unknown usage provenance", 
       },
     },
   })
-  expect(decoded.data.usageProvenance.cost).toEqual(reported)
-  expect(decoded.data.usageProvenance.tokens.cache.read).toEqual(unknown)
+  expect(decoded.data.usageProvenance?.cost).toEqual(reported)
+  expect(decoded.data.usageProvenance?.tokens.cache.read).toEqual(unknown)
   expect(() =>
     Schema.decodeUnknownSync(SessionEvent.Step.Ended)({
       id: "evt_usage_negative",

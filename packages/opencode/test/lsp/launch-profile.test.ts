@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import { Schema } from "effect"
+import { Location } from "@opencode-ai/schema"
+import { AbsolutePath } from "@opencode-ai/core/schema"
+import { WorkspaceV2 } from "@opencode-ai/core/workspace"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import {
   projectGlobalDapConfigProfileV1,
@@ -87,13 +90,41 @@ describe("trusted global execution launch profiles", () => {
       dispatched = true
       return {}
     }
+    const locationRef = Location.Ref.make({
+      directory: AbsolutePath.make("/workspace"),
+      workspaceID: WorkspaceV2.ID.make("wrk_editor_test"),
+    })
+    const workspaceRevision = `blake3:${"b".repeat(64)}`
 
     await expect(createSupervisedLspClientV1({
+      config: {},
+      serverID: "typescript",
+      sessionID: "ses_lsp_test",
+      locationID: "loc_lsp_test",
+      locationRef,
+      workspaceRevision,
+      workspaceID: "wrk_editor_test",
+      root: "/workspace",
+      directory: "/workspace",
+      instance: { directory: "/workspace", worktree: "/workspace", project: {} },
+      supervisor: {},
+      runTrustedEffect: async () => undefined,
       requestHostKernel,
-    } as never)).rejects.toMatchObject({ _tag: "LanguageServiceProcessError" })
+    } as never)).rejects.toMatchObject({ _tag: "LanguageServiceProcessError", operation: "server.spawn" })
     await expect(createSupervisedDapClientV1({
+      config: {},
+      adapterID: "debugpy",
+      sessionID: "ses_dap_test",
+      locationID: "loc_dap_test",
+      locationRef,
+      userActionID: "action_dap_test",
+      callID: "call_dap_test",
+      workspaceRevision,
+      workspaceID: "wrk_editor_test",
+      supervisor: {},
+      runTrustedEffect: async () => undefined,
       requestHostKernel,
-    } as never)).rejects.toMatchObject({ _tag: "LanguageServiceProcessError" })
+    } as never)).rejects.toMatchObject({ _tag: "LanguageServiceProcessError", operation: "debug.start" })
     expect(dispatched).toBe(false)
   })
 
@@ -121,6 +152,21 @@ describe("trusted global execution launch profiles", () => {
           revision: "1",
           profileDigest: `blake3:${"a".repeat(64)}`,
         },
+        inputDigest: `blake3:${"b".repeat(64)}`,
+        expiresAtUnixMs: Date.now() + 60_000,
+        normalizedTargets: [{ kind: "registered_location_root" }],
+        targets: [{ kind: "registered_location_root" }],
+        policySummary: "Start the configured TypeScript language server",
+        allowEnabled: true,
+        argumentSummary: { status: "available", text: "Start TypeScript language server" },
+        guaranteeAssessment: { status: "assessed", residual: [] },
+        noResponse: "deny_and_expire",
+        normalizedAction: "language.start",
+        origin: "user_action",
+        policyDigest: `blake3:${"c".repeat(64)}`,
+        policyID: "editor.launch",
+        requestedGuarantees: ["process_supervision"],
+        source: "authenticated.user_action",
       }
     }
     const approved = await resolveTrustedGlobalLaunchProfileV1({
@@ -162,16 +208,208 @@ describe("trusted global execution launch profiles", () => {
           attemptID: "attempt_1",
           ownerEpoch: "1",
           expectedManagedRevision: "1",
+          requestSequence: "1",
+          requestID: "request_1",
+          contextSelectionDigest: `blake3:${"9".repeat(64)}`,
           locationID: "loc_1",
           sessionID: "ses_1",
           workspaceRevision: `blake3:${"b".repeat(64)}`,
           effectiveMaxTokens: "100000",
           remainingTokens: "100000",
           delegationBindingDigest: `blake3:${"c".repeat(64)}`,
+          permissionScopeDigest: `blake3:${"a".repeat(64)}`,
+          worktreeTarget: {
+            worktreeID: "worktree_1",
+            worktreeBaseRevision: `blake3:${"5".repeat(64)}`,
+            worktreePoolRevision: "3",
+            locationID: "loc_1",
+            workspaceID: "wrk_editor_test",
+            workspaceRef: "worktree_1",
+            canonicalRoot: "/workspace",
+            workspaceRevision: `blake3:${"b".repeat(64)}`,
+          },
         },
       },
       requestHostKernel: async () => { dispatched = true; return {} },
     })).rejects.toThrow(/authenticated Session\/Location/)
+    expect(dispatched).toBe(false)
+  })
+
+  test("admits the current managed Attempt scope contract up to the HostKernel approval boundary", async () => {
+    let dispatched = false
+    await expect(resolveTrustedGlobalLaunchProfileV1({
+      kind: "lsp",
+      selectorID: "typescript",
+      config: { lsp: { typescript: { command: ["typescript-language-server"] } } },
+      scope: {
+        locationID: "loc_1",
+        sessionID: "ses_1",
+        userActionID: "action_1",
+        callID: "call_1",
+        managedAttempt: {
+          goalID: "goal_1",
+          runID: "run_1",
+          taskID: "task_1",
+          attemptID: "attempt_1",
+          ownerEpoch: "1",
+          expectedManagedRevision: "1",
+          requestSequence: "1",
+          requestID: "request_1",
+          contextSelectionDigest: `blake3:${"9".repeat(64)}`,
+          locationID: "loc_1",
+          sessionID: "ses_1",
+          workspaceRevision: `blake3:${"b".repeat(64)}`,
+          effectiveMaxTokens: "100000",
+          remainingTokens: "100000",
+          delegationBindingDigest: `blake3:${"c".repeat(64)}`,
+          permissionScopeDigest: `blake3:${"a".repeat(64)}`,
+          worktreeTarget: {
+            worktreeID: "worktree_1",
+            worktreeBaseRevision: `blake3:${"5".repeat(64)}`,
+            worktreePoolRevision: "3",
+            locationID: "loc_1",
+            workspaceID: "wrk_managed",
+            workspaceRef: "worktree_1",
+            canonicalRoot: "/workspace/managed",
+            workspaceRevision: `blake3:${"b".repeat(64)}`,
+          },
+        },
+      },
+      requestHostKernel: async () => {
+        dispatched = true
+        return {}
+      },
+    })).rejects.toThrow(/HostKernel did not return a Guard approval challenge/)
+    expect(dispatched).toBe(true)
+  })
+
+  test("rejects a managed LSP root outside the Attempt worktree target before HostKernel dispatch", async () => {
+    let dispatched = false
+    await expect(createSupervisedLspClientV1({
+      config: {},
+      serverID: "typescript",
+      sessionID: "ses_managed",
+      locationID: "loc_1",
+      locationRef: Location.Ref.make({
+        directory: AbsolutePath.make("/workspace"),
+        workspaceID: WorkspaceV2.ID.make("wrk_managed"),
+      }),
+      workspaceRevision: `blake3:${"b".repeat(64)}`,
+      managedAttempt: {
+        goalID: "goal_1",
+        runID: "run_1",
+        taskID: "task_1",
+        attemptID: "attempt_1",
+        ownerEpoch: "1",
+        expectedManagedRevision: "1",
+        requestSequence: "1",
+        requestID: "request_1",
+        contextSelectionDigest: `blake3:${"9".repeat(64)}`,
+        locationID: "loc_1",
+        sessionID: "ses_managed",
+        workspaceRevision: `blake3:${"b".repeat(64)}`,
+        effectiveMaxTokens: "100000",
+        remainingTokens: "100000",
+        delegationBindingDigest: `blake3:${"c".repeat(64)}`,
+        permissionScopeDigest: `blake3:${"a".repeat(64)}`,
+        worktreeTarget: {
+          worktreeID: "worktree_1",
+          worktreeBaseRevision: `blake3:${"5".repeat(64)}`,
+          worktreePoolRevision: "3",
+          locationID: "loc_1",
+          workspaceID: "wrk_managed",
+          workspaceRef: "worktree_1",
+          canonicalRoot: "/workspace/managed",
+          workspaceRevision: `blake3:${"b".repeat(64)}`,
+        },
+      },
+      root: "/workspace",
+      directory: "/workspace",
+      instance: { directory: "/workspace", worktree: "/workspace", project: {} },
+      supervisor: {},
+      runTrustedEffect: async () => undefined,
+      requestHostKernel: async () => {
+        dispatched = true
+        return {}
+      },
+    } as never)).rejects.toThrow("supervised LSP scope does not match the managed Attempt worktree target")
+    expect(dispatched).toBe(false)
+  })
+
+  test("rejects a DAP root Session scope without the authenticated workspace pin", async () => {
+    let dispatched = false
+    const locationRef = Location.Ref.make({
+      directory: AbsolutePath.make("/workspace"),
+      workspaceID: WorkspaceV2.ID.make("wrk_editor_test"),
+    })
+    await expect(createSupervisedDapClientV1({
+      config: {},
+      adapterID: "debugpy",
+      sessionID: "ses_dap_root",
+      locationID: "loc_dap_root",
+      locationRef,
+      userActionID: "action_dap_root",
+      callID: "call_dap_root",
+      workspaceRevision: `blake3:${"b".repeat(64)}`,
+      supervisor: {},
+      runTrustedEffect: async () => undefined,
+      requestHostKernel: async () => {
+        dispatched = true
+        return {}
+      },
+    } as never)).rejects.toThrow("supervised DAP root Session scope is malformed")
+    expect(dispatched).toBe(false)
+  })
+
+  test("rejects a DAP managed LocationRef outside the Attempt worktree target before dispatch", async () => {
+    let dispatched = false
+    await expect(createSupervisedDapClientV1({
+      config: {},
+      adapterID: "debugpy",
+      sessionID: "ses_dap_managed",
+      locationID: "loc_1",
+      locationRef: Location.Ref.make({
+        directory: AbsolutePath.make("/workspace"),
+        workspaceID: WorkspaceV2.ID.make("wrk_managed"),
+      }),
+      userActionID: "action_dap_managed",
+      callID: "call_dap_managed",
+      workspaceRevision: `blake3:${"b".repeat(64)}`,
+      managedAttempt: {
+        goalID: "goal_1",
+        runID: "run_1",
+        taskID: "task_1",
+        attemptID: "attempt_1",
+        ownerEpoch: "1",
+        expectedManagedRevision: "1",
+        requestSequence: "1",
+        requestID: "request_1",
+        contextSelectionDigest: `blake3:${"9".repeat(64)}`,
+        locationID: "loc_1",
+        sessionID: "ses_dap_managed",
+        workspaceRevision: `blake3:${"b".repeat(64)}`,
+        effectiveMaxTokens: "100000",
+        remainingTokens: "100000",
+        delegationBindingDigest: `blake3:${"c".repeat(64)}`,
+        permissionScopeDigest: `blake3:${"a".repeat(64)}`,
+        worktreeTarget: {
+          worktreeID: "worktree_1",
+          worktreeBaseRevision: `blake3:${"5".repeat(64)}`,
+          worktreePoolRevision: "3",
+          locationID: "loc_1",
+          workspaceID: "wrk_managed",
+          workspaceRef: "worktree_1",
+          canonicalRoot: "/workspace/managed",
+          workspaceRevision: `blake3:${"b".repeat(64)}`,
+        },
+      },
+      supervisor: {},
+      runTrustedEffect: async () => undefined,
+      requestHostKernel: async () => {
+        dispatched = true
+        return {}
+      },
+    } as never)).rejects.toThrow("supervised DAP scope does not match the managed Attempt worktree target")
     expect(dispatched).toBe(false)
   })
 

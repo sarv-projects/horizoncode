@@ -313,6 +313,7 @@ export const ManagedSubagentInboxTable = sqliteTable(
     delivery_workspace_id: text(),
     delivery_workspace_revision: text(),
     consumption_ack_digest: text(),
+    consumption_proof_json: text(),
     host_consumed_ack_digest: text(),
     time_created: integer().notNull(),
     time_updated: integer().notNull(),

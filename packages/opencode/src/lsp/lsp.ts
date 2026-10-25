@@ -7,6 +7,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { NonNegativeInt } from "@opencode-ai/core/schema"
 import { LspEvent } from "@opencode-ai/schema/lsp-event"
 import type { CodeActionEditProposalV1, VersionedWorkspaceEditV1 } from "./edits"
+import * as LSPDiagnostic from "./diagnostic"
 import type { DirectAttemptScopeV1, ManagedAttemptScopeV1 } from "@/session/managed-control"
 import type { Info as SupervisedClientInfo } from "./client"
 import { assertLanguageServiceProcessAllowed, hostProtocolRouteAvailable, languageServiceProcessRouteAvailable } from "./launch"
@@ -28,7 +29,7 @@ export type ExecutionScopeV1 = {
   readonly dispose: () => Promise<void>
 }
 
-export class ExecutionScope extends Context.Service<ExecutionScope, ExecutionScopeV1>()("@opencode/LSPExecutionScope") {}
+export class ExecutionScope extends Context.Service<ExecutionScope, ExecutionScopeV1>()("@horizoncode/LSPExecutionScope") {}
 
 export const Event = LspEvent
 
@@ -124,6 +125,8 @@ export interface Interface {
   readonly hasClients: (file: string) => Effect.Effect<boolean>
   readonly touchFile: (input: string, diagnostics?: "document" | "full") => Effect.Effect<void>
   readonly diagnostics: () => Effect.Effect<Record<string, LSPClient.Diagnostic[]>>
+  /** Bounded post-patch diagnostics for tool results (ACC-002). Never writes. */
+  readonly postPatchDiagnostics: (files: readonly string[]) => Effect.Effect<import("./diagnostic").PostPatchDiagnosticsV1>
   readonly hover: (input: LocInput) => Effect.Effect<any>
   readonly definition: (input: LocInput) => Effect.Effect<any[]>
   readonly references: (input: LocInput) => Effect.Effect<any[]>
@@ -139,7 +142,7 @@ export interface Interface {
   readonly outgoingCalls: (input: LocInput) => Effect.Effect<any[]>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/LSP") {}
+export class Service extends Context.Service<Service, Interface>()("@horizoncode/LSP") {}
 
 const layer = Layer.effect(
   Service,
@@ -264,6 +267,17 @@ const layer = Layer.effect(
         }
       }
       return results
+    })
+
+    const postPatchDiagnostics = Effect.fn("LSP.postPatchDiagnostics")(function* (files: readonly string[]) {
+      const bounded = [...new Set(files)].slice(0, 64)
+      yield* Effect.forEach(
+        bounded,
+        (file) => touchFile(file, "document").pipe(Effect.ignoreCause),
+        { concurrency: 4 },
+      )
+      const all = yield* diagnostics()
+      return LSPDiagnostic.postPatch({ diagnostics: all, touched: bounded })
     })
 
     const hover = Effect.fn("LSP.hover")(function* (input: LocInput) {
@@ -399,6 +413,7 @@ const layer = Layer.effect(
       hasClients,
       touchFile,
       diagnostics,
+      postPatchDiagnostics,
       hover,
       definition,
       references,
@@ -445,6 +460,7 @@ export * as Diagnostic from "./diagnostic"
 export const node = LayerNode.make({
   service: Service,
   layer: layer,
+  deps: [],
 })
 
 export * as LSP from "./lsp"

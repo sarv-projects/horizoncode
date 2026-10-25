@@ -148,12 +148,12 @@ export type Entry = Document | Directory
 
 export class AgentProfileConflictError extends Schema.TaggedErrorClass<AgentProfileConflictError>()(
   "Config.AgentProfileConflictError",
-  { profileID: Schema.String, revision: Schema.Number },
+  { profileID: Schema.String, revision: AgentProfileV2.Revision },
 ) {}
 
 export class AgentProfileNotFoundError extends Schema.TaggedErrorClass<AgentProfileNotFoundError>()(
   "Config.AgentProfileNotFoundError",
-  { profileID: Schema.String, revision: Schema.Number },
+  { profileID: Schema.String, revision: AgentProfileV2.Revision },
 ) {}
 
 export class AgentProfileSelectorConflictError extends Schema.TaggedErrorClass<AgentProfileSelectorConflictError>()(
@@ -163,7 +163,7 @@ export class AgentProfileSelectorConflictError extends Schema.TaggedErrorClass<A
 
 export class AgentProfileRoleError extends Schema.TaggedErrorClass<AgentProfileRoleError>()(
   "Config.AgentProfileRoleError",
-  { profileID: Schema.String, revision: Schema.Number, role: Schema.String },
+  { profileID: Schema.String, revision: AgentProfileV2.Revision, role: Schema.String },
 ) {}
 
 export class AgentProfileSelectorNotFoundError extends Schema.TaggedErrorClass<AgentProfileSelectorNotFoundError>()(
@@ -239,7 +239,7 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/v2
 export interface AgentProfileInterface {
   readonly agentProfiles: () => Effect.Effect<AgentProfileV2.AgentProfileDefinitionV2[], AgentProfileConflictError>
   readonly agentProfileSelectors: () => Effect.Effect<AgentProfileSelector[], AgentProfileConflictError | AgentProfileNotFoundError | AgentProfileSelectorConflictError>
-  readonly agentProfile: (profileID: string, revision: number) => Effect.Effect<AgentProfileV2.AgentProfileDefinitionV2, AgentProfileConflictError | AgentProfileNotFoundError>
+  readonly agentProfile: (profileID: string, revision: AgentProfileV2.Revision) => Effect.Effect<AgentProfileV2.AgentProfileDefinitionV2, AgentProfileConflictError | AgentProfileNotFoundError>
   readonly agentProfileSelector: (selector: string) => Effect.Effect<AgentProfileV2.AgentProfileDefinitionV2, AgentProfileConflictError | AgentProfileNotFoundError | AgentProfileSelectorConflictError | AgentProfileSelectorNotFoundError>
   /** Resolves the explicitly configured global primary profile; undefined means no primary selector is configured. */
   readonly primaryAgentProfile: () => Effect.Effect<AgentProfileV2.AgentProfileDefinitionV2 | undefined, AgentProfileConflictError | AgentProfileNotFoundError | AgentProfileSelectorConflictError | AgentProfileRoleError>
@@ -467,7 +467,7 @@ const agentProfileLayer = Layer.effect(
         }
         byIdentity.set(identity, profile)
       }
-      return [...byIdentity.values()].sort((left, right) => left.profileId.localeCompare(right.profileId) || left.revision - right.revision)
+      return [...byIdentity.values()].sort((left, right) => left.profileId.localeCompare(right.profileId) || (BigInt(left.revision) < BigInt(right.revision) ? -1 : BigInt(left.revision) > BigInt(right.revision) ? 1 : 0))
     })
     const selectors = Effect.fn("Config.AgentProfiles.selectors")(function* () {
       const userConfigDirectory = path.resolve(global.config)
@@ -480,7 +480,7 @@ const agentProfileLayer = Layer.effect(
             path.resolve(path.dirname(entry.path)) === userConfigDirectory,
         )
         .flatMap((entry) => entry.info.agent_profile_selectors ?? [])
-      const bySelector = new Map<string, { profileId: string; revision: number }>()
+      const bySelector = new Map<string, { profileId: string; revision: AgentProfileV2.Revision }>()
       for (const item of configured) {
         if (bySelector.has(item.selector)) {
           return yield* Effect.fail(new AgentProfileSelectorConflictError({ selector: item.selector }))
@@ -506,7 +506,7 @@ const agentProfileLayer = Layer.effect(
         }
         return result.sort((left, right) => left.selector.localeCompare(right.selector))
       }),
-      agentProfile: Effect.fn("Config.AgentProfiles.get")(function* (profileID: string, revision: number) {
+      agentProfile: Effect.fn("Config.AgentProfiles.get")(function* (profileID: string, revision: AgentProfileV2.Revision) {
         const profile = (yield* profiles()).find(
           (candidate) => candidate.profileId === profileID && candidate.revision === revision,
         )

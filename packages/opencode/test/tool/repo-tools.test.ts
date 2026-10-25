@@ -1,4 +1,4 @@
-import { afterEach, describe, expect } from "bun:test"
+import { describe, expect, it } from "bun:test"
 import path from "path"
 import { Effect, Layer, Schema } from "effect"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -15,29 +15,76 @@ import { Agent } from "../../src/agent/agent"
 import { Config } from "@/config/config"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { InstanceState } from "@/effect/instance-state"
+import { InstanceRef } from "@/effect/instance-ref"
+import { ProjectV2 } from "@opencode-ai/core/project"
 import { SessionID, MessageID } from "../../src/session/schema"
 import { Truncate } from "@/tool/truncate"
 import { DefinitionsFindTool, ReferencesFindTool, RepoDetectTool, RepoSearchParameters, RepoTreeTool, SymbolsSearchTool } from "../../src/tool/repo-tools"
 import { RepoIntel } from "../../src/tool/repo-intel"
 import { Git } from "@/git"
-import { disposeAllInstances, TestInstance } from "../fixture/fixture"
+import { TestInstance } from "../fixture/fixture"
+import { SessionStatus } from "@/session/status"
 import { testEffect } from "../lib/effect"
 import { TestConfig } from "../fixture/config"
 import type { Context as ToolContext } from "../../src/tool/tool"
 
 const configLayer = TestConfig.layer({
   directories: () => InstanceState.directory.pipe(Effect.map((dir) => [path.join(dir, ".opencode")])),
+  getRepoIntelProfile: () => Effect.succeed({
+    requested: "lightweight",
+    requestedValue: null,
+    effective: "lightweight",
+    configurationSource: "default",
+    effectiveSource: "default",
+    policyLock: "unlocked",
+  }),
 })
 
-const registryRoot = LayerNode.group([ToolRegistry.node, Agent.node])
+const unavailableSupervisorNode = LayerNode.make({
+  service: SessionSupervisor.Service,
+  layer: Layer.mock(SessionSupervisor.Service, {
+    queryRepoStructure: () => Effect.fail({ _tag: "SessionSupervisorError", code: "host-kernel-feature" } as never),
+    discoverRepo: () => Effect.fail({ _tag: "SessionSupervisorError", code: "host-kernel-feature" } as never),
+    readRepoDocument: () => Effect.fail({ _tag: "SessionSupervisorError", code: "host-kernel-feature" } as never),
+  }),
+  deps: [],
+})
+
+// TaskTool.init requires SessionStatus.Service and WebSearchTool.init reads the
+// instance context at layer-build time; in the full app graph both arrive from
+// the root-group ordering/bootstrap scope, so this minimal test graph supplies
+// them explicitly (SessionStatus before ToolRegistry; a build-scope InstanceRef).
+// The build-scope context is captured by tool init effects but never used for
+// filesystem access by these gate tests; keep the path repo-contained anyway.
+const fixtureInstanceRef = Layer.succeed(InstanceRef, {
+  directory: "/home/sarvesh/business_Dev/agentx/.p3-fixture",
+  worktree: "/home/sarvesh/business_Dev/agentx/.p3-fixture",
+  project: {
+    id: ProjectV2.ID.make("proj_repo-tools-fixture"),
+    worktree: "/home/sarvesh/business_Dev/agentx/.p3-fixture",
+    time: { created: 0, updated: 0 },
+    sandboxes: [],
+  },
+})
+const registryRoot = LayerNode.group([SessionStatus.node, Agent.node, ToolRegistry.node])
 const registryLayer = (flags: Partial<RuntimeFlags.Info> = {}) =>
   LayerNode.compile(registryRoot, [
     [Config.node, configLayer],
     [RuntimeFlags.node, RuntimeFlags.layer(flags)],
-  ])
+  ]).pipe(Layer.provide(fixtureInstanceRef))
 
 const toolLayer = LayerNode.compile(
-  LayerNode.group([FSUtil.node, RepoIntel.node, CrossSpawnSpawner.node, Truncate.node, Agent.node, Git.node]),
+  LayerNode.group([
+    Config.node,
+    FSUtil.node,
+    RepoIntel.node,
+    CrossSpawnSpawner.node,
+    Truncate.node,
+    Agent.node,
+    Git.node,
+    unavailableSupervisorNode,
+  ]),
+  [[Config.node, configLayer]],
 )
 
 const itRegistry = testEffect(registryLayer())
@@ -64,7 +111,7 @@ const structurePage = Schema.decodeUnknownSync(RepoIntelligenceSchema.RepoStruct
   status: "CURRENT",
   freshness: "current",
   completeness: "complete",
-  coverage: { files: 1, nodes: 1, bytes: 128 },
+  coverage: { files: "2", nodes: "2", bytes: "256" },
   nodes: [
     {
       workspaceBinding: "workspace-test",
@@ -73,6 +120,19 @@ const structurePage = Schema.decodeUnknownSync(RepoIntelligenceSchema.RepoStruct
       pathRef: "src/a.ts",
       fileDigest: Schema.decodeUnknownSync(Digest)(structureDocumentDigest),
       nodeId: "node-a",
+      nodeKind: "function",
+      symbol: "entry",
+      byteRange: { start: 0, end: 18 },
+      parserId: "typescript",
+      parserVersion: "5.9.0",
+    },
+    {
+      workspaceBinding: "workspace-test",
+      sourceGeneration: structureGeneration,
+      sourceRevision: structureRevision,
+      pathRef: "src/b.ts",
+      fileDigest: Schema.decodeUnknownSync(Digest)(structureDocumentDigest),
+      nodeId: "node-b",
       nodeKind: "function",
       symbol: "entry",
       byteRange: { start: 0, end: 18 },
@@ -95,7 +155,7 @@ const repoStructureSupervisorNode = LayerNode.make({
       pathRef: input.request.pathRef,
       revisionKind: input.request.revisionKind,
       text: structureDocumentText,
-      contentDigest: RepoIntelligenceSchema.repoDocumentContentDigest(structureDocumentText),
+      contentDigest: Schema.decodeUnknownSync(Digest)(RepoIntelligenceSchema.repoDocumentContentDigest(structureDocumentText)),
       observedWorkspaceRevision: input.request.expectedWorkspaceRevision,
     }),
   }),
@@ -111,7 +171,7 @@ const largeStructureSupervisorNode = LayerNode.make({
         status: "PARTIAL",
         freshness: "current",
         completeness: "partial",
-        coverage: { files: 40, nodes: 100, bytes: 40_000 },
+        coverage: { files: "40", nodes: "100", bytes: "40000" },
         nodes: Array.from({ length: 100 }, (_, index) => ({
           ...structurePage.nodes[0]!,
           nodeId: `node-${index}`,
@@ -119,7 +179,7 @@ const largeStructureSupervisorNode = LayerNode.make({
           symbol: "x".repeat(900),
         })),
         fallback: { reason: "parse_partial", sourceKind: "parser" },
-        nextCursor: "repo_cur_0123456789abcdef",
+        nextCursor: Schema.decodeUnknownSync(RepoIntelligenceSchema.RepoStructureCursorLeaseRefV1)("repo_cur_0123456789abcdef"),
       }),
   }),
   deps: [],
@@ -135,6 +195,7 @@ const trustedPrincipalNode = LayerNode.make({
 const itRepoStructure = testEffect(
   LayerNode.compile(
     LayerNode.group([
+      Config.node,
       FSUtil.node,
       RepoIntel.node,
       CrossSpawnSpawner.node,
@@ -144,11 +205,13 @@ const itRepoStructure = testEffect(
       repoStructureSupervisorNode,
       trustedPrincipalNode,
     ]),
+    [[Config.node, configLayer]],
   ),
 )
 const itLargeStructure = testEffect(
   LayerNode.compile(
     LayerNode.group([
+      Config.node,
       FSUtil.node,
       RepoIntel.node,
       CrossSpawnSpawner.node,
@@ -158,6 +221,7 @@ const itLargeStructure = testEffect(
       largeStructureSupervisorNode,
       trustedPrincipalNode,
     ]),
+    [[Config.node, configLayer]],
   ),
 )
 
@@ -193,6 +257,17 @@ const discoveryPage = Schema.decodeUnknownSync(RepoIntelligenceSchema.RepoDiscov
 const observedDiscoveryCalls: Array<{ mode: string; request: typeof RepoIntelligenceSchema.RepoDiscoveryRequestV1.Type }> = []
 const observedManifestReads: string[] = []
 const observedManifestRevisionKinds: string[] = []
+/** >32 KiB of rendered tree lines, used to prove the `repo_tree` display cap. */
+const largeTreeEntries = Array.from({ length: 512 }, (_, index) => ({
+  pathRef:
+    index === 0
+      ? "src/generated/evil\u001b]0;pwned\u0007_\u202egnp.ts"
+      : `src/generated/module_${String(index).padStart(4, "0")}_padding_padding_padding_padding_padding_padding.ts`,
+  kind: "file" as const,
+  depth: 2,
+  sizeBytes: "128",
+}))
+const treeEntriesFor = (rootRef: string) => (rootRef === "large" ? largeTreeEntries : discoveryPage.entries)
 const discoverySupervisorNode = LayerNode.make({
   service: SessionSupervisor.Service,
   layer: Layer.mock(SessionSupervisor.Service, {
@@ -207,7 +282,7 @@ const discoverySupervisorNode = LayerNode.make({
         ...(partial ? { partialReason: "entry_limit" as const } : {}),
         authority: { ...discoveryPage.authority, rootRef: input.request.rootRef, mode: input.request.mode,
           maxEntries: input.request.maxEntries, maxBytes: input.request.maxBytes, maxDepth: input.request.maxDepth },
-        entries: input.request.mode === "tree" ? discoveryPage.entries : [
+        entries: input.request.mode === "tree" ? treeEntriesFor(input.request.rootRef) : [
           {
             pathRef: input.request.rootRef === "redact" ? "redact/api_key=fixture-secret/package.json" : "package.json",
             kind: "file",
@@ -218,7 +293,7 @@ const discoverySupervisorNode = LayerNode.make({
           },
         ],
         coverage: {
-          entries: input.request.mode === "tree" ? discoveryPage.entries.length : 1,
+          entries: input.request.mode === "tree" ? treeEntriesFor(input.request.rootRef).length : 1,
           bytes: 128,
           depth: input.request.rootRef === "redact" ? 2 : 1,
         },
@@ -229,26 +304,22 @@ const discoverySupervisorNode = LayerNode.make({
       observedManifestRevisionKinds.push(input.request.revisionKind)
       return { schemaVersion: 1 as const, status: "OK" as const, pathRef: input.request.pathRef,
         revisionKind: input.request.revisionKind,
-        text: '{"packageManager":"bun@1.3.14","dependencies":{"react":"^19"},"scripts":{"test":"bun test","build":"bun run build"}}', contentDigest: discoveryGeneration,
+        text: '{"packageManager":"bun@1.3.14","dependencies":{"react":"^19"},"scripts":{"test":"bun test","build":"bun run build"}}',
+        contentDigest: Schema.decodeUnknownSync(Digest)(RepoIntelligenceSchema.repoDocumentContentDigest('{"packageManager":"bun@1.3.14","dependencies":{"react":"^19"},"scripts":{"test":"bun test","build":"bun run build"}}')),
         observedWorkspaceRevision: input.request.expectedWorkspaceRevision }
     }),
   }),
   deps: [],
 })
 const itDiscovery = testEffect(LayerNode.compile(LayerNode.group([
-  FSUtil.node, RepoIntel.node, CrossSpawnSpawner.node, Truncate.node, Agent.node, Git.node,
+  Config.node, FSUtil.node, RepoIntel.node, CrossSpawnSpawner.node, Truncate.node, Agent.node, Git.node,
   discoverySupervisorNode, trustedPrincipalNode,
-])))
-
-const unavailableSupervisorNode = LayerNode.make({
-  service: SessionSupervisor.Service,
-  layer: Layer.mock(SessionSupervisor.Service, {
-    queryRepoStructure: () => Effect.fail({ _tag: "SessionSupervisorError", code: "host-kernel-feature" } as never),
-  }),
-  deps: [],
-})
+]), [[Config.node, configLayer]]))
 const itUnavailableSupervisor = testEffect(
-  LayerNode.compile(LayerNode.group([FSUtil.node, RepoIntel.node, CrossSpawnSpawner.node, Truncate.node, Agent.node, Git.node, unavailableSupervisorNode, trustedPrincipalNode])),
+  LayerNode.compile(LayerNode.group([
+    Config.node, FSUtil.node, RepoIntel.node, CrossSpawnSpawner.node, Truncate.node, Agent.node, Git.node,
+    unavailableSupervisorNode, trustedPrincipalNode,
+  ]), [[Config.node, configLayer]]),
 )
 
 const ctx = {
@@ -261,10 +332,6 @@ const ctx = {
   metadata: () => Effect.void,
   ask: () => Effect.void,
 } satisfies ToolContext
-
-afterEach(async () => {
-  await disposeAllInstances()
-})
 
 describe("tool.repo-tools", () => {
   it("rejects over-limit or unsafe search inputs before any HostKernel dispatch", () => {
@@ -312,6 +379,18 @@ describe("tool.repo-tools", () => {
     }),
   )
 
+  itRepoStructure.instance("lists every bounded same-name candidate without selecting a write target", () =>
+    Effect.gen(function* () {
+      const info = yield* DefinitionsFindTool
+      const tool = yield* info.init()
+      const result = yield* tool.execute({ query: "entry" }, ctx)
+      expect(result.metadata.status).toBe("PARTIAL")
+      expect(result.output).toContain("src/a.ts:1 function entry")
+      expect(result.output).toContain("src/b.ts:1 function entry")
+      expect(result.output).toContain("candidates do not authorize edits")
+    }),
+  )
+
   itTool.instance("repo_tree and repo_detect fail closed when HostKernel discovery is unavailable", () =>
     Effect.gen(function* () {
       const treeInfo = yield* RepoTreeTool
@@ -351,6 +430,28 @@ describe("tool.repo-tools", () => {
       expect(observedManifestReads).toEqual(["package.json"])
       expect(observedManifestRevisionKinds).toEqual(["discovery_observation"])
       expect(observedDiscoveryCalls[1]?.mode).toBe("manifests")
+    }),
+  )
+
+  itDiscovery.instance("caps repo_tree rendering at 32 KiB while keeping authority provenance", () =>
+    Effect.gen(function* () {
+      const treeInfo = yield* RepoTreeTool
+      const tree = yield* treeInfo.init()
+      const result = yield* tree.execute({ path: "large", depth: 8, maxEntries: 512 }, ctx)
+      const bytes = new TextEncoder().encode(result.output).byteLength
+      expect(bytes).toBeLessThanOrEqual(32 * 1024)
+      expect(result.output).toContain("[display truncated at 32 KiB")
+      // The header that carries the provenance survives the truncation.
+      expect(result.output).toContain("authority: authenticated read-only inventory")
+      expect(result.output).toContain("coverage: 512 entries")
+      expect(result.output).toContain("sourceRevision:")
+      // RD-020: terminal controls, OSC payloads and bidi overrides never reach
+      // the discovery output; the stripped label is what the tool printed.
+      expect(result.output).not.toContain("\u001b")
+      expect(result.output).not.toContain("\u0007")
+      expect(result.output).not.toContain("\u202e")
+      expect(result.output).toContain("evil]0;pwned")
+      expect(result.metadata.status).toBe("CURRENT")
     }),
   )
 
@@ -405,7 +506,7 @@ describe("tool.repo-tools", () => {
       expect(observedStructureCalls[0]?.query.selector.symbols).toEqual(["entry"])
       expect(observedStructureCalls[0]?.query).not.toHaveProperty("sourceGeneration")
       expect(result.output).toContain("src/a.ts")
-      expect(result.output).toContain("symbol: entry")
+      expect(result.output).toContain("function entry")
     }),
   )
 

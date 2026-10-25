@@ -16,13 +16,18 @@ export const PrefixCacheSupportV1 = Schema.Literals(["none", "ephemeral", "expli
 export const ModelsDevCatalogSourceV1 = Schema.Literals(["cache", "bundled", "override", "unavailable"])
 export const ModelsDevCatalogFreshnessV1 = Schema.Literals(["fresh", "stale", "unknown"])
 
+/** Canonical identifier bound: `minLength: 1, maxLength: 512` on providerID/modelID/anchorArtifactRef. */
+const BoundedIdentifier = Schema.String.check(Schema.isNonEmpty()).check(Schema.isMaxLength(512))
+/** Canonical token bound: `integer, minimum: 1, maximum: 100000000` on the catalog limit tokens. */
+const TokenLimit = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100_000_000 }))
+
 export const ContextCompileCatalogHintsV1 = Schema.Struct({
-  providerID: Schema.String,
-  modelID: Schema.String,
+  providerID: BoundedIdentifier,
+  modelID: BoundedIdentifier,
   catalogSource: ModelsDevCatalogSourceV1,
   catalogFreshness: ModelsDevCatalogFreshnessV1,
-  contextLimitTokens: Schema.optional(Schema.Int),
-  outputLimitTokens: Schema.optional(Schema.Int),
+  contextLimitTokens: Schema.optional(TokenLimit),
+  outputLimitTokens: Schema.optional(TokenLimit),
   priceCacheReadKnown: Schema.optional(Schema.Boolean),
   priceCacheWriteKnown: Schema.optional(Schema.Boolean),
 })
@@ -34,7 +39,7 @@ export const ContextCompilePolicyV1 = Schema.Struct({
   resolvedFrom: ContextCompilePolicyResolvedFromV1,
   prefixCacheSupport: PrefixCacheSupportV1,
   catalogHints: Schema.optional(ContextCompileCatalogHintsV1),
-  anchorArtifactRef: Schema.optional(Schema.String),
+  anchorArtifactRef: Schema.optional(BoundedIdentifier),
   anchorProjection: Schema.optional(Schema.Literals(["full", "compressed"])),
 })
 

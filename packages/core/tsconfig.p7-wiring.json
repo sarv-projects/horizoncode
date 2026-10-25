@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "incremental": false,
+    "tsBuildInfoFile": "./.tmp-p7/wiring.tsbuildinfo"
+  },
+  "include": [
+    "src/session/runner/llm.ts",
+    "src/session/direct-read-batch.ts",
+    "test/session-runner-direct-read-routing.test.ts"
+  ]
+}

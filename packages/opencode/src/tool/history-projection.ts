@@ -4,7 +4,7 @@ import { and, desc, eq, inArray, lt, or, sql } from "drizzle-orm"
 import { Database } from "@opencode-ai/core/database/database"
 import { MessageTable, PartTable } from "@opencode-ai/core/session/sql"
 import { MessageV2 } from "../session/message-v2"
-import type { MessageID, SessionID } from "../session/schema"
+import type { MessageID, PartID, SessionID } from "../session/schema"
 
 export const MAX_HISTORY_PART_PREFIX_CHARS = 16_384
 export const MAX_HISTORY_PARTS_PER_MESSAGE = 16
@@ -128,7 +128,7 @@ export const page = Effect.fn("HistoryProjection.page")(function* (input: {
 export const readRange = Effect.fn("HistoryProjection.readRange")(function* (input: {
   readonly sessionID: SessionID
   readonly messageID: MessageID
-  readonly partID: string
+  readonly partID: PartID
   readonly offset: number
   readonly length: number
 }) {

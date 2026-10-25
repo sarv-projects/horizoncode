@@ -2082,7 +2082,7 @@ impl WorkerPool {
         {
             return Err(WorkerPoolError::AttemptBindingMismatch);
         }
-        let owner = rehydrate(&record.owner).map_err(|_| WorkerPoolError::ScopeMismatch)?;
+        let owner = rehydrate_owner(&record.owner);
         let reconciled = reconciliation_owner_epoch.is_some();
         if record.process_identity.is_some()
             || (reconciled && (record.state != ReservationState::Quarantined
@@ -2169,7 +2169,7 @@ impl WorkerPool {
         {
             return Err(WorkerPoolError::AttemptBindingMismatch);
         }
-        let owner = rehydrate(&record.owner).map_err(|_| WorkerPoolError::ScopeMismatch)?;
+        let owner = rehydrate_owner(&record.owner);
         let lease_id = record.worktree_lease_id.as_deref().ok_or(WorkerPoolError::WorktreeRequired)?;
         self.worktrees.finalize_logical_managed_worktree_disposition(
             lease_id, &owner, reconciliation_owner_epoch, observed_revision, reusable,
@@ -3342,3 +3342,11 @@ fn map_reservation_error(error: ResourceOwnerError) -> WorkerPoolError {
         other => WorkerPoolError::Reservation(other),
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/support/worker_pool_tests.rs"]
+mod worker_pool_tests;
+
+#[cfg(test)]
+#[path = "../tests/support/jc_res_012_wire_tests.rs"]
+mod jc_res_012_wire_tests;

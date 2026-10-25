@@ -222,13 +222,13 @@ export interface Interface {
   readonly updateFeature: (
     input: FeatureExposure.Update,
   ) => Effect.Effect<FeatureExposure.Feature[], Error | EffectFlock.LockError>
-  readonly updateGlobal: (config: Info) => Effect.Effect<{ info: Info; changed: boolean }>
+  readonly updateGlobal: (config: Info) => Effect.Effect<{ info: Info; changed: boolean }, Error | EffectFlock.LockError>
   readonly invalidate: () => Effect.Effect<void>
   readonly directories: () => Effect.Effect<string[]>
   readonly waitForDependencies: () => Effect.Effect<void>
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/Config") {}
+export class Service extends Context.Service<Service, Interface>()("@horizoncode/Config") {}
 
 export const use = serviceUse(Service)
 
@@ -350,12 +350,12 @@ function projectExternalEditorProfiles(value: unknown): ExternalEditorProfileV1.
   const selected = selection && typeof selection.profileId === "string" && typeof selection.revision === "string"
     ? profiles.find((profile) => profile.definition.profileId === selection.profileId && profile.definition.revision === selection.revision)?.profileRef ?? null
     : null
-  return Schema.decodeUnknownSync(ExternalEditorProfileV1.ExternalEditorProfilesProjectionV1, {
+  return Schema.decodeUnknownSync(ExternalEditorProfileV1.ExternalEditorProfilesProjectionV1, { onExcessProperty: "error" })({
     schemaVersion: 1,
     source: "global_user_config",
     profiles,
     selected,
-  }, { onExcessProperty: "error" })
+  })
 }
 
 function validateExternalEditorProfileHistory(existing: unknown, next: unknown): string | undefined {
@@ -616,7 +616,7 @@ const layer = Layer.effect(
             const definition = nextProfiles.find((value) => isRecord(value) && value.profileId === nextSelection!.profileId && value.revision === nextSelection!.revision)
             if (!definition) return yield* Effect.fail(new ExternalEditorProfileInvalid("selected editor profile revision is not present in global user config"))
             try {
-              const decoded = Schema.decodeUnknownSync(ExternalEditorProfileV1.ExternalEditorProfileDefinitionV1, definition, { onExcessProperty: "error" })
+              const decoded = Schema.decodeUnknownSync(ExternalEditorProfileV1.ExternalEditorProfileDefinitionV1, { onExcessProperty: "error" })(definition)
               const expected = ExternalEditorProfileV1.externalEditorProfileRefV1(decoded)
               if (!editorProfileRefEquals(expected, nextSelection)) return yield* Effect.fail(new ExternalEditorProfileInvalid("selected editor profile digest does not match its immutable definition"))
               nextSelection = expected
@@ -959,16 +959,7 @@ const layer = Layer.effect(
         }
 
         if (result.tools) {
-          const perms: Record<string, ConfigPermissionV1.Action> = {}
-          for (const [tool, enabled] of Object.entries(result.tools)) {
-            const action: ConfigPermissionV1.Action = enabled ? "allow" : "deny"
-            if (tool === "write" || tool === "edit" || tool === "patch") {
-              perms.edit = action
-              continue
-            }
-            perms[tool] = action
-          }
-          result.permission = mergeDeep(perms, result.permission ?? {})
+          result.permission = mergeDeep(projectToolPermissions(result.tools), result.permission ?? {})
         }
 
         if (!result.username) {
@@ -1284,5 +1275,24 @@ export const node = LayerNode.make({
   layer: layer,
   deps: [FSUtil.node, EffectFlock.node, Auth.node, Account.node, Env.node, httpClient],
 })
+
+/**
+ * Project the legacy `tools` on/off map into permission defaults so a
+ * disabled tool is an explicit `deny` entry in the effective permission set.
+ * User-written permission entries always win (they are merged on top), and
+ * shared keys keep their position from this projection.
+ */
+export function projectToolPermissions(tools: Record<string, boolean>): Record<string, ConfigPermissionV1.Action> {
+  const perms: Record<string, ConfigPermissionV1.Action> = {}
+  for (const [tool, enabled] of Object.entries(tools)) {
+    const action: ConfigPermissionV1.Action = enabled ? "allow" : "deny"
+    if (tool === "write" || tool === "edit" || tool === "patch") {
+      perms.edit = action
+      continue
+    }
+    perms[tool] = action
+  }
+  return perms
+}
 
 export * as Config from "./config"

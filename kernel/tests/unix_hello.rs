@@ -91,7 +91,7 @@ fn authenticated_socket_binds_version_features_nonce_and_incarnation() {
     let listener = UnixPeerListener::bind(&path, policy.clone()).unwrap();
     let service = std::thread::spawn(move || {
         let (mut channel, peer) = listener.accept_authenticated().unwrap();
-        assert_eq!(peer.executable, policy.executable);
+        assert_eq!(peer.executable(), policy.executable);
         serve_authenticated_unix_hello(&mut channel, &handshake_policy()).unwrap()
     });
 

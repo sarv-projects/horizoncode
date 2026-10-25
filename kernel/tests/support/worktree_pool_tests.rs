@@ -1,9 +1,6 @@
-#[path = "../src/resource_budget.rs"]
-mod resource_budget;
-#[path = "../src/resource_sampler.rs"]
-mod resource_sampler;
-#[path = "../src/worktree_pool.rs"]
-mod worktree_pool;
+use crate::resource_budget;
+use crate::resource_sampler;
+use crate::worktree_pool;
 
 use std::path::PathBuf;
 

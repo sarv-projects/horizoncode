@@ -9,6 +9,7 @@
  */
 
 import { randomUUID } from "node:crypto"
+import path from "node:path"
 import { Effect } from "effect"
 import { Location } from "@opencode-ai/schema"
 import type { Interface as SessionSupervisorInterface } from "@opencode-ai/core/session/supervisor"
@@ -20,6 +21,7 @@ import {
   launchApprovedEditorProcessV1,
   readEditorProcessStatusV1,
   type EditorProcessLifecycleScopeV1,
+  type RequestExecutionHostV1,
 } from "./process-lifecycle"
 import { makeEditorProtocolGuardAuthorizerV1 } from "./guard-authorizer"
 import { HostKernelLspProtocolClientV1 } from "./host-protocol-client"
@@ -31,20 +33,7 @@ import { assertLanguageServiceProcessAllowed } from "./launch"
 
 type RunTrustedEffect = <A, E, R>(effect: Effect.Effect<A, E, R>) => Promise<A>
 
-export type SupervisedLspHostRequestV1 = (
-  serviceID: "execution.v1",
-  operation:
-    | "resolve_launch_profile"
-    | "prepare"
-    | "launch"
-    | "status"
-    | "read"
-    | "cancel"
-    | "protocol_op"
-    | "protocol_read"
-    | "protocol_reply",
-  body: Readonly<Record<string, unknown>>,
-) => Promise<unknown>
+export type SupervisedLspHostRequestV1 = RequestExecutionHostV1
 
 /**
  * Resolve, approve, start and connect one immutable configured LSP profile.
@@ -84,9 +73,23 @@ export async function createSupervisedLspClientV1(input: {
         (input.managedAttempt && input.workspaceID !== undefined)) {
       throw new TypeError("supervised LSP scope does not match the authenticated Attempt workspace pins")
     }
+    if (input.workspaceID !== undefined && input.locationRef.workspaceID !== input.workspaceID) {
+      throw new TypeError("supervised LSP location pin does not match the authenticated workspace ID")
+    }
+    if (input.managedAttempt !== undefined &&
+        (path.resolve(input.root) !== path.resolve(input.managedAttempt.worktreeTarget.canonicalRoot) ||
+          input.locationRef.workspaceID !== input.managedAttempt.worktreeTarget.workspaceID)) {
+      throw new TypeError("supervised LSP scope does not match the managed Attempt worktree target")
+    }
   } else if (!input.sessionID || !input.locationID || !input.workspaceID ||
       input.locationRef.workspaceID !== input.workspaceID || !/^blake3:[0-9a-f]{64}$/.test(input.workspaceRevision)) {
     throw new TypeError("supervised LSP root Session scope is malformed")
+  }
+  // Exact Location pin: the registered Location must resolve to the same root
+  // this launch will register, so a stale or foreign LocationRef can never
+  // enter HostKernel approval or per-frame protocol authorization.
+  if (path.resolve(input.locationRef.directory) !== path.resolve(input.root)) {
+    throw new TypeError("supervised LSP location pin does not match the authenticated workspace root")
   }
   assertLanguageServiceProcessAllowed("server.spawn")
 
@@ -141,8 +144,8 @@ export async function createSupervisedLspClientV1(input: {
         capabilityLeaseDigest: launch.lease.capabilityLeaseDigest,
         scope,
         requestHostKernel: hostRequest,
-      })
-    return stopPromise
+      }).then(() => undefined)
+    return stopPromise!
   }
 
   let protocol: HostKernelLspProtocolClientV1 | undefined

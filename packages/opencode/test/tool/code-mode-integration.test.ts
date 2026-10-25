@@ -6,6 +6,8 @@ import { Session } from "@/session/session"
 import { Tool } from "@/tool/tool"
 import { MessageID, SessionID } from "@/session/schema"
 import { Effect, Layer } from "effect"
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { Truncate } from "@/tool/truncate"
 
 const ctx: Tool.Context = {
   sessionID: SessionID.make("ses_code-mode-guard"),
@@ -21,6 +23,7 @@ const ctx: Tool.Context = {
 test("CodeMode does not evaluate source before the supervised helper is accepted", async () => {
   let dispatches = 0
   const layer = Layer.mergeAll(
+    LayerNode.compile(LayerNode.group([Truncate.node, Agent.node])),
     Layer.mock(Agent.Service, { get: () => Effect.succeed({ name: "build", permission: [] } as any) }),
     Layer.mock(Session.Service, { get: () => Effect.succeed({ permission: [] } as any) }),
     Layer.mock(MCP.Service, {

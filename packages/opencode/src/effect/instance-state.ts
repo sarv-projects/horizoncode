@@ -27,7 +27,7 @@ export const make = <A, E = never, R = never>(
   init: (ctx: InstanceContext) => Effect.Effect<A, E, R | Scope.Scope>,
 ): Effect.Effect<InstanceState<A, E, Exclude<R, Scope.Scope>>, never, R | Scope.Scope> =>
   Effect.gen(function* () {
-    const cache = yield* ScopedCache.make<string, A, E, R>({
+    const cache = yield* ScopedCache.make<string, A, E, R, "lookup">({
       capacity: Number.POSITIVE_INFINITY,
       // InstanceState is a shared service; each cache lookup must receive the
       // caller's current InstanceRef rather than the context present when the

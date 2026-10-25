@@ -68,6 +68,7 @@ const structureRequest = {
   sessionID: "ses_01J9ABCDEF0123456789ABCDEFGH",
   locationRef: LocationSchema.Ref.make({ directory: AbsolutePath.make("/workspace") }),
   query: structureQuery,
+  analysisProfile: RepoIntel.DEFAULT_ANALYSIS_PROFILE,
 }
 const unavailableStructurePage: RepoIntelligenceSchema.RepoStructurePageV1 = {
   schemaVersion: 1,
@@ -80,7 +81,7 @@ const unavailableStructurePage: RepoIntelligenceSchema.RepoStructurePageV1 = {
   status: "UNAVAILABLE",
   freshness: "unknown",
   completeness: "unavailable",
-  coverage: { files: 0, nodes: 0, bytes: 0 },
+  coverage: { files: "0", nodes: "0", bytes: "0" },
   nodes: [],
   fallback: { reason: "parser_unsupported", sourceKind: "none" },
 }
@@ -429,7 +430,7 @@ describe("tool.repo-intel", () => {
 
         const result = yield* service.searchText({ scope: scope(dir), query: "answer" })
         expect(resolutions).toBe(1)
-        expect(result.analysisProfile).toEqual({ requested: "adaptive", effective: "lightweight" })
+        expect(result.analysisProfile).toMatchObject({ requested: "adaptive", effective: "lightweight" })
       }),
     ),
   )
@@ -595,7 +596,7 @@ describe("tool.repo-intel", () => {
 
       const tooManyFiles = {
         ...unavailableStructurePage,
-        coverage: { files: 4_097, nodes: 0, bytes: 0 },
+        coverage: { files: "4097", nodes: "0", bytes: "0" },
       }
       const tooManyFilesExit = yield* Effect.exit(failure(tooManyFiles))
       expect(Exit.isFailure(tooManyFilesExit)).toBe(true)
@@ -603,7 +604,7 @@ describe("tool.repo-intel", () => {
 
       const overLimit = {
         ...unavailableStructurePage,
-        coverage: { files: 1, nodes: 0, bytes: structureQuery.maxBytes + 1 },
+        coverage: { files: "1", nodes: "0", bytes: String(structureQuery.maxBytes + 1) },
       }
       const boundsExit = yield* Effect.exit(failure(overLimit))
       expect(Exit.isFailure(boundsExit)).toBe(true)
@@ -638,7 +639,7 @@ describe("tool.repo-intel", () => {
             parserVersion: "1.0",
           },
         ],
-        coverage: { files: 1, nodes: 1, bytes: 10 },
+        coverage: { files: "1", nodes: "1", bytes: "10" },
         fallback: undefined,
       }
       const smallRequest = { ...structureRequest, query: { ...structureQuery, maxBytes: 100 } }
@@ -649,6 +650,46 @@ describe("tool.repo-intel", () => {
       )
       expect(Exit.isFailure(serializedExit)).toBe(true)
       if (Exit.isFailure(serializedExit)) expect(Cause.squash(serializedExit.cause)).toMatchObject({ code: "rejected" })
+    }),
+  )
+
+  it.live("rejects nodes whose workspace or source generation differs from the page", () =>
+    Effect.gen(function* () {
+      const validNode = {
+        workspaceBinding: unavailableStructurePage.workspaceBinding,
+        sourceGeneration: structureGeneration,
+        sourceRevision: structureRevision,
+        pathRef: "src/example.ts",
+        fileDigest: structureRevision,
+        nodeId: "node-example",
+        nodeKind: "text_occurrence" as const,
+        symbol: "example",
+        byteRange: { start: 0, end: 7 },
+        parserId: "horizoncode.lexical",
+        parserVersion: "1",
+      }
+      const validPage = {
+        ...unavailableStructurePage,
+        sourceKind: "lexical" as const,
+        status: "PARTIAL" as const,
+        freshness: "current" as const,
+        completeness: "partial" as const,
+        coverage: { files: "1", nodes: "1", bytes: "7" },
+        nodes: [validNode],
+        fallback: { reason: "parse_partial" as const, sourceKind: "lexical" as const },
+      }
+      const mismatchedPages = [
+        { ...validPage, nodes: [{ ...validNode, workspaceBinding: "another-workspace" }] },
+        { ...validPage, nodes: [{ ...validNode, sourceGeneration: structureRevision }] },
+      ]
+
+      for (const page of mismatchedPages) {
+        const exit = yield* Effect.exit(
+          RepoIntel.repoStructureClientFromTransport({ query: () => Effect.succeed(page) }).query(structureRequest),
+        )
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toMatchObject({ code: "rejected" })
+      }
     }),
   )
 
@@ -687,6 +728,10 @@ describe("tool.repo-intel", () => {
 
   it.live("accepts structural continuation only after a full current page", () =>
     Effect.gen(function* () {
+      const continuationRequest = {
+        ...structureRequest,
+        query: { ...structureQuery, maxBytes: 16_384 },
+      }
       const nodes = Array.from({ length: structureQuery.maxNodes }, (_, index) => ({
         workspaceBinding: unavailableStructurePage.workspaceBinding,
         sourceGeneration: structureGeneration,
@@ -706,19 +751,19 @@ describe("tool.repo-intel", () => {
         status: "PARTIAL" as const,
         freshness: "current" as const,
         completeness: "partial" as const,
-        coverage: { files: nodes.length, nodes: nodes.length, bytes: nodes.length * 5 },
+        coverage: { files: String(nodes.length), nodes: String(nodes.length), bytes: String(nodes.length * 5) },
         nodes,
         fallback: { reason: "parse_partial" as const, sourceKind: "lexical" as const },
-        nextCursor: "repo_cur_0123456789abcdef",
+        nextCursor: Schema.decodeUnknownSync(RepoIntelligenceSchema.RepoStructureCursorLeaseRefV1)("repo_cur_0123456789abcdef"),
       }
       const accepted = yield* RepoIntel.repoStructureClientFromTransport({
         query: () => Effect.succeed(page),
-      }).query(structureRequest)
+      }).query(continuationRequest)
       expect(accepted.nextCursor).toBe(page.nextCursor)
 
       const shortPage = { ...page, nodes: nodes.slice(0, -1), coverage: { ...page.coverage, nodes: nodes.length - 1 } }
       const rejected = yield* Effect.exit(
-        RepoIntel.repoStructureClientFromTransport({ query: () => Effect.succeed(shortPage) }).query(structureRequest),
+        RepoIntel.repoStructureClientFromTransport({ query: () => Effect.succeed(shortPage) }).query(continuationRequest),
       )
       expect(Exit.isFailure(rejected)).toBe(true)
       if (Exit.isFailure(rejected)) expect(Cause.squash(rejected.cause)).toMatchObject({ code: "rejected" })
@@ -1650,28 +1695,28 @@ describe("tool.repo-intel", () => {
 
         profileState = undefined
         const missing = yield* service.searchText({ scope: scope(dir), query: "needle", maxResults: 10 })
-        expect(missing.analysisProfile).toEqual({ requested: "lightweight", effective: "lightweight" })
+        expect(missing.analysisProfile).toMatchObject({ requested: "lightweight", effective: "lightweight" })
 
         profileState = { requested: "unrecognized", effective: "full" }
         const invalid = yield* service.searchText({ scope: scope(dir), query: "needle", maxResults: 10 })
-        expect(invalid.analysisProfile).toEqual({ requested: "lightweight", effective: "lightweight" })
+        expect(invalid.analysisProfile).toMatchObject({ requested: "lightweight", effective: "lightweight" })
 
         profileState = { requested: "full", effective: "invalid" }
         const invalidEffective = yield* service.searchText({ scope: scope(dir), query: "needle", maxResults: 10 })
-        expect(invalidEffective.analysisProfile).toEqual({ requested: "full", effective: "lightweight" })
+        expect(invalidEffective.analysisProfile).toMatchObject({ requested: "full", effective: "lightweight" })
 
         profileThrows = true
         const failedResolution = yield* service.searchText({ scope: scope(dir), query: "needle", maxResults: 10 })
         profileThrows = false
-        expect(failedResolution.analysisProfile).toEqual({ requested: "lightweight", effective: "lightweight" })
+        expect(failedResolution.analysisProfile).toMatchObject({ requested: "lightweight", effective: "lightweight" })
 
         profileState = { requested: "full", effective: "adaptive" }
         const adaptive = yield* service.searchText({ scope: scope(dir), query: "needle", maxResults: 10 })
-        expect(adaptive.analysisProfile).toEqual({ requested: "full", effective: "adaptive" })
+        expect(adaptive.analysisProfile).toMatchObject({ requested: "full", effective: "adaptive" })
 
         profileState = { requested: "lightweight", effective: "full" }
         const clamped = yield* service.searchText({ scope: scope(dir), query: "needle", maxResults: 10 })
-        expect(clamped.analysisProfile).toEqual({ requested: "lightweight", effective: "lightweight" })
+        expect(clamped.analysisProfile).toMatchObject({ requested: "lightweight", effective: "lightweight" })
         profileState = {
           requested: "full",
           effective: "lightweight",

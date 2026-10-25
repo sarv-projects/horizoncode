@@ -25,6 +25,7 @@ Options:
     -v, --version <version> Select a version (remote installation unavailable)
     -b, --binary <path>     Install from a local executable candidate
         --no-modify-path    Don't modify shell config files
+        --dry-run           Validate the candidate and print the plan; write nothing
 
 Example:
     ./install --binary /path/to/horizoncode
@@ -33,6 +34,7 @@ EOF
 
 binary_path=""
 no_modify_path=false
+dry_run=false
 requested_version=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -58,6 +60,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --no-modify-path)
             no_modify_path=true
+            shift
+            ;;
+        --dry-run)
+            dry_run=true
             shift
             ;;
         *)
@@ -100,7 +106,6 @@ if [[ -L "$INSTALL_DIR" ]]; then
     echo -e "${RED}Error: Install directory must not be a symlink: ${INSTALL_DIR}${NC}" >&2
     exit 1
 fi
-mkdir -p "$INSTALL_DIR"
 
 for destination in "$COMMAND" "$ALIAS"; do
     current="${INSTALL_DIR}/${destination}"
@@ -109,6 +114,22 @@ for destination in "$COMMAND" "$ALIAS"; do
         exit 1
     fi
 done
+
+if [[ "$dry_run" == true ]]; then
+    echo "Dry run: no files will be written."
+    echo "  candidate: ${binary_path}"
+    echo "  canonical: ${INSTALL_DIR}/${COMMAND}"
+    echo "  short:     ${INSTALL_DIR}/${ALIAS} -> ${COMMAND}"
+    if [[ "$no_modify_path" == true ]]; then
+        echo "  shell path: unchanged (--no-modify-path)"
+    else
+        echo "  shell path: would add ${INSTALL_DIR} to the login shell configuration when absent"
+    fi
+    echo "  network install/publication/signing: unavailable"
+    exit 0
+fi
+
+mkdir -p "$INSTALL_DIR"
 
 # Copy into the destination filesystem, then replace the canonical path with a
 # single rename. A failed copy/chmod leaves the previous install untouched.

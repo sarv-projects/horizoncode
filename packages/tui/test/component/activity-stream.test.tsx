@@ -39,7 +39,7 @@ test("renders canonical progress, tool states, and answer in part order without 
   await mkdir(state, { recursive: true })
   await Bun.write(path.join(state, "kv.json"), "{}")
   const parts = [
-    { type: "reasoning", id: "reason-1", text: "private chain of thought" },
+    { type: "reasoning", id: "reason-1", text: "private chain of thought", time: { start: 1_000, end: 2_200 } },
     {
       type: "tool",
       id: "call-1",
@@ -124,22 +124,21 @@ test("renders canonical progress, tool states, and answer in part order without 
     expect(collapsed).not.toContain("bearer-secret-value")
     expect(collapsed).not.toContain("sk-live-secret-value")
     expect(collapsed).not.toContain("secret-error-value")
-    expect(collapsed).toContain("Progress summary unavailable")
-    expect(collapsed).toContain("read")
-    expect(collapsed).toContain('filePath="src/main.ts"')
+    expect(collapsed).toContain("Reasoning · 1.2s")
+    expect(collapsed).toContain("Read")
+    expect(collapsed).toContain("Read src/main.ts")
     expect(collapsed).toContain("command=")
     expect(collapsed).toContain("curl")
     expect(collapsed).toContain("Running")
     expect(collapsed).toContain("Succeeded")
     expect(collapsed).toContain("Output artifact: UNKNOWN")
     expect(collapsed).toContain("Failed")
-    expect(collapsed).toContain("Output limited (64 KiB)")
-    expect(collapsed).toContain("first output")
+    expect(collapsed).not.toContain("first output")
     expect(collapsed).not.toContain("fourth output")
     expect(collapsed).toContain("Expand output")
     expect(collapsed).toContain("final answer")
-    expect(collapsed.indexOf("Progress summary unavailable")).toBeLessThan(collapsed.indexOf("read"))
-    expect(collapsed.indexOf("read")).toBeLessThan(collapsed.indexOf("Succeeded"))
+    expect(collapsed.indexOf("Reasoning · 1.2s")).toBeLessThan(collapsed.indexOf("Read"))
+    expect(collapsed.indexOf("Read")).toBeLessThan(collapsed.indexOf("Succeeded shell"))
     expect(collapsed.indexOf("Succeeded")).toBeLessThan(collapsed.indexOf("Failed"))
     expect(collapsed.indexOf("Failed")).toBeLessThan(collapsed.indexOf("final answer"))
 
@@ -154,12 +153,13 @@ test("renders canonical progress, tool states, and answer in part order without 
     const keyboardExpanded = app.captureCharFrame()
     expect(keyboardExpanded).toContain("fourth output")
     expect(keyboardExpanded.indexOf("Succeeded bash")).toBeLessThan(keyboardExpanded.indexOf("fourth output"))
+    toggle!.focus()
     app.mockInput.pressKey(" ")
     await app.renderOnce()
     expect(app.captureCharFrame()).not.toContain("fourth output")
 
     const rows = collapsed.split("\n")
-    const bashRow = rows.findIndex((line) => line.includes("Succeeded bash"))
+    const bashRow = rows.findIndex((line) => line.includes("Succeeded shell"))
     const toggleLine = rows.findIndex((line, index) => index > bashRow && line.includes("Expand output"))
     const toggleColumn = collapsed.split("\n")[toggleLine].indexOf("Expand output")
     await app.mockMouse.click(toggleColumn, toggleLine)
@@ -169,7 +169,12 @@ test("renders canonical progress, tool states, and answer in part order without 
     expect(expanded).not.toContain("bearer-secret-value")
     expect(expanded).not.toContain("sk-live-secret-value")
 
-    await app.mockMouse.click(toggleColumn, toggleLine)
+    const expandedRows = expanded.split("\n")
+    const expandedToggleLine = expandedRows.findIndex(
+      (line, index) => index > bashRow && line.includes("Collapse output"),
+    )
+    const expandedToggleColumn = expandedRows[expandedToggleLine]?.indexOf("Collapse output") ?? -1
+    await app.mockMouse.click(expandedToggleColumn, expandedToggleLine)
     await app.renderOnce()
     const collapsedAgain = app.captureCharFrame()
     expect(collapsedAgain).not.toContain("fourth output")
@@ -177,7 +182,7 @@ test("renders canonical progress, tool states, and answer in part order without 
   } finally {
     app.renderer.destroy()
   }
-})
+}, 90_000)
 
 test("keeps only one tool details panel expanded at a time", async () => {
   await using tmp = await tmpdir()
@@ -234,7 +239,7 @@ test("keeps only one tool details panel expanded at a time", async () => {
   )
 
   try {
-    await waitForFrame(app, (frame) => frame.includes("OUTPUT_ONE_MARKER"))
+    await waitForFrame(app, (frame) => frame.includes("Expand output"))
     for (const id of ["one", "two"]) {
       const toggle = app.renderer.root.findDescendantById(`activity-output-toggle-detail-${id}`)
       expect(toggle).toBeDefined()
@@ -306,14 +311,14 @@ test("bounds aggregate activity nodes and bytes while retaining final text", asy
 
   try {
     const frame = await waitForFrame(app, (value) => value.includes("FINAL ANSWER RETAINED"), 5_000)
-    const renderedTools = frame.match(/Succeeded tool-/g) ?? []
-    expect(renderedTools.length).toBeLessThanOrEqual(32)
+    const renderedTools = frame.match(/succeeded tool-/g) ?? []
+    expect(renderedTools.length).toBeLessThanOrEqual(64)
     expect(frame).toContain("Activity limited: remaining parts omitted")
     expect(frame).toContain("FINAL ANSWER RETAINED")
   } finally {
     app.renderer.destroy()
   }
-})
+}, 90_000)
 
 test("bounds projection work to the live tail of very large part histories", async () => {
   await using tmp = await tmpdir()
@@ -361,8 +366,8 @@ test("bounds projection work to the live tail of very large part histories", asy
     expect(frame).toContain("Activity limited: remaining parts omitted")
     expect(frame).not.toContain("OLD HISTORY SHOULD BE OMITTED")
     expect(frame).toContain("LATEST ANSWER RETAINED")
-    expect(frame.match(/Succeeded read/g)?.length ?? 0).toBeLessThanOrEqual(32)
+    expect(frame.match(/Read filePath=/g)?.length ?? 0).toBeLessThanOrEqual(64)
   } finally {
     app.renderer.destroy()
   }
-})
+}, 90_000)

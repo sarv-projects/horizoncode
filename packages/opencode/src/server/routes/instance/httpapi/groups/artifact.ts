@@ -84,19 +84,19 @@ export const ArtifactApi = HttpApi.make("artifact")
         HttpApiEndpoint.post("artifactInspect", `${root}/inspect`, {
           ...common,
           payload: ReadRequest,
-          success: described(Metadata, "Metadata for an exact verified managed artifact"),
+          success: described(Metadata, "Metadata for an artifact authorized by an exact HostKernel receipt index or verified managed evidence"),
           error: errors,
         }),
         HttpApiEndpoint.post("artifactReadRange", `${root}/read-range`, {
           ...common,
           payload: RangeRequest,
-          success: described(Range, "Bounded bytes for an exact verified managed artifact"),
+          success: described(Range, "Bounded bytes for an artifact authorized by an exact HostKernel receipt index or verified managed evidence"),
           error: errors,
         }),
       )
       .annotateMerge(OpenApi.annotations({
         title: "artifact",
-        description: "Bounded reads of artifact refs proven by Rust-owned verified managed evidence. The request never accepts principal or Attempt authority.",
+        description: "Bounded reads of artifact refs proven by the authenticated HostKernel direct-session receipt index or Rust-owned verified managed evidence. The request never accepts principal or Attempt authority.",
       }))
       .middleware(InstanceContextMiddleware)
       .middleware(WorkspaceRoutingMiddleware)

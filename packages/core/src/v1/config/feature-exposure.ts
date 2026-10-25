@@ -38,15 +38,15 @@ export interface Feature {
   optional: true
   audience: "public" | "developer"
   defaultEnabled: boolean
-  supportedScopes: Array<"user" | "project" | "session">
+  supportedScopes: ReadonlyArray<"user" | "project" | "session">
   /** Runtime prerequisites are descriptive gates; they never grant authority. */
-  prerequisites: string[]
+  prerequisites: readonly string[]
   /** Empty model/harness lists mean there is no additional restriction. */
-  supportedPlatforms: Array<"linux" | "windows" | "darwin">
-  supportedModelRefs: string[]
-  supportedHarnessRefs: string[]
+  supportedPlatforms: ReadonlyArray<"linux" | "windows" | "darwin">
+  supportedModelRefs: readonly string[]
+  supportedHarnessRefs: readonly string[]
   applyBoundary: "live" | "next_turn" | "next_session" | "restart"
-  capabilityIds: string[]
+  capabilityIds: readonly string[]
   riskNotes?: string
   costNotes?: string
   state: {
@@ -147,7 +147,7 @@ export function validateCatalog(features: readonly Feature[], canonicalCapabilit
 }
 
 /** Decode the wire shape and enforce cross-entry/catalog rules in one call. */
-export function decodeCatalog(input: unknown, canonicalCapabilityIds: ReadonlySet<string>): Feature[] {
+export function decodeCatalog(input: unknown, canonicalCapabilityIds: ReadonlySet<string>): readonly Feature[] {
   const features = Schema.decodeUnknownSync(FeatureListSchema)(input, { onExcessProperty: "error" })
   const issues = validateCatalog(features, canonicalCapabilityIds)
   if (issues.length > 0) throw new Error(`FeatureExposure catalog is invalid: ${issues.map((issue) => issue.code).join(", ")}`)
@@ -161,6 +161,39 @@ export const UpdateSchema = Schema.Struct({
 }).annotate({ identifier: "FeatureExposureUpdate" })
 
 export type Update = Schema.Schema.Type<typeof UpdateSchema>
+
+export type CapabilityStatus = {
+  readonly effective: boolean
+  readonly reason?: string
+}
+
+/**
+ * Tie a feature's effective state to the canonical capability owner's live
+ * status. A requested-but-missing capability is BLOCKED; a feature that is
+ * merely unavailable stays UNAVAILABLE. This projection never enables a
+ * capability and never grants authority.
+ */
+export function applyCapabilityStatus(
+  features: readonly Feature[],
+  statuses: ReadonlyMap<string, CapabilityStatus>,
+): Feature[] {
+  return features.map((feature) => {
+    if (!feature.state.effectiveEnabled || feature.capabilityIds.length === 0) return feature
+    const missing = feature.capabilityIds.find((capabilityId) => statuses.get(capabilityId)?.effective !== true)
+    if (missing === undefined) return feature
+    const reason = statuses.get(missing)?.reason ?? `${missing} is not effective`
+    const { pendingApplyAt: _pending, ...state } = feature.state
+    return {
+      ...feature,
+      state: {
+        ...state,
+        effectiveEnabled: false,
+        effectiveState: feature.state.requestedEnabled === true ? "blocked" : "unavailable",
+        blockedReason: reason,
+      },
+    }
+  })
+}
 
 export interface SourceConfig {
   compaction?: {
@@ -278,7 +311,7 @@ export function list(config: SourceConfig, effective: SourceConfig = config): Fe
         ...((blocked || origin?.blockedReason) ? {
           blockedReason: origin?.blockedReason ?? (origin?.policyLock === "locked"
             ? "Effective state is constrained by policy"
-            : origin?.policyLock === "unknown" && requested !== null
+            : (origin === undefined || origin.policyLock === "unknown") && requested !== null
               ? "Effective state differs from the request; policy status is unknown"
               : wanted && !enabled
                 ? "A runtime disable override is active"

@@ -46,9 +46,9 @@ export const AuthorityPinsV1 = Schema.Struct({
   messageId: Identifier,
   deliveryMode: Schema.Literals(["queued", "follow_up"]),
   payloadDigest: Schema.String.check(Schema.isPattern(/^sha256:[0-9a-f]{64}$/)),
-  payloadBytes: Schema.Number.check(Schema.isInt()).check(Schema.isBetween(1, MAX_MESSAGE_BYTES)),
+  payloadBytes: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: MAX_MESSAGE_BYTES })),
   mailboxSequence: PositiveUInt64Decimal,
-  mailboxCapacity: Schema.Number.check(Schema.isInt()).check(Schema.isBetween(1, MAX_PENDING_MESSAGES)),
+  mailboxCapacity: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: MAX_PENDING_MESSAGES })),
 }).annotate({ identifier: "Horizon.AgentMessageV1.AuthorityPinsV1" })
 
 export interface ReceiptV1 extends Schema.Schema.Type<typeof ReceiptV1> {}
@@ -72,7 +72,7 @@ export const ChildStatusV1 = Schema.Struct({
   profileId: Identifier,
   profileRevision: PositiveUInt64Decimal,
   profileDigest: Schema.String.check(Schema.isPattern(/^blake3:[0-9a-f]{64}$/)),
-  pendingMessages: Schema.Number.check(Schema.isInt()).check(Schema.isBetween(0, MAX_PENDING_MESSAGES)),
+  pendingMessages: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: MAX_PENDING_MESSAGES })),
   activeRequest: Schema.Boolean,
   lastSequence: UInt64Decimal,
 }).annotate({ identifier: "Horizon.AgentMessageV1.ChildStatusV1" })

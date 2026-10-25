@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test"
 import { Schema } from "effect"
 import * as SubagentStatusV1 from "../src/subagent-status-v1"
+import { SessionID } from "../src/session-id"
 
 const child = {
   schemaVersion: 1,
-  sessionId: "ses_child",
-  parentSessionId: "ses_parent",
+  sessionId: SessionID.descending("ses_child"),
+  parentSessionId: SessionID.descending("ses_parent"),
   title: "child",
   state: "running",
   activeRequest: true,

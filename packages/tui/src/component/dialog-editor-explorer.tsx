@@ -80,8 +80,11 @@ function DialogEditorFilePreview(props: {
       setLoading(false)
       return
     }
-    void sdk.client.repoExplorer.read({ sessionID, pathRef: props.pathRef, sourceRevision: props.sourceRevision }, { throwOnError: true }).then((result) => {
-      const value = result.data
+    void sdk.client.experimental.repoExplorer.read({ sessionID, pathRef: props.pathRef, sourceRevision: props.sourceRevision }, { throwOnError: true }).then((result) => {
+      // The generated client's RequestResult maps multi-field DTOs to a union
+      // of their property values. The authenticated route returns the exact
+      // document; decode the validated envelope below.
+      const value = result.data as unknown as RepoExplorerDocumentV1
       if (value.status !== "OK" || value.pathRef !== props.pathRef || value.revisionKind !== "discovery_observation" ||
           value.schemaVersion !== 1 || value.observedWorkspaceRevision !== props.sourceRevision ||
           !/^blake3:[0-9a-f]{64}$/.test(value.contentDigest) || Buffer.byteLength(value.text, "utf8") > MAX_FILE_BYTES) {
@@ -133,8 +136,10 @@ function useExplorer() {
     try {
       const sessionID = route.data.type === "session" ? route.data.sessionID : undefined
       if (!sessionID) throw new Error("Explorer requires an active Session")
-      const result = await sdk.client.repoExplorer.discover({ sessionID, rootRef, maxDepth: 2 }, { throwOnError: true })
-      const value = result.data
+      const result = await sdk.client.experimental.repoExplorer.discover({ sessionID, rootRef, maxDepth: 2 }, { throwOnError: true })
+      // See the document-read note: unwrap the generated union type to the
+      // exact route DTO before the strict runtime validation below.
+      const value = result.data as unknown as RepoExplorerDiscoveryV1
       const entriesValid = value.entries.every((entry, index) => {
         const depth = pathDepthFromRoot(entry.pathRef, rootRef)
         const pathSegments = entry.pathRef.split("/")

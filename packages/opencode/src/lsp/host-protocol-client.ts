@@ -26,6 +26,7 @@ import {
   type LspRequestMethodV1,
   type LspServerNotificationMethod,
   type LspServerRequestMethod,
+  type HostProtocolDispatchReceiptV1,
 } from "./protocol"
 import { assertHostProtocolAllowed } from "./launch"
 
@@ -272,7 +273,7 @@ export class HostKernelLspProtocolClientV1 implements LspProtocolAdapter {
         params,
       },
     }
-    let receipt: Awaited<ReturnType<typeof this.#host.protocolOp>>
+    let receipt: HostProtocolDispatchReceiptV1
     try {
       receipt = await this.#host.protocolOp(request)
     } catch (error) {
@@ -372,7 +373,7 @@ export class HostKernelLspProtocolClientV1 implements LspProtocolAdapter {
           ...lease,
           reply: { schemaVersion: 1, requestSequence, serverRequestID: requestID, method, result },
         }
-        let receipt: Awaited<ReturnType<typeof this.#host.protocolReply>>
+        let receipt: HostProtocolDispatchReceiptV1
         try {
           receipt = await this.#host.protocolReply(reply)
         } catch (error) {

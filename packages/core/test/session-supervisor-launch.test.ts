@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createServer } from "node:net"
-import { Cause, Effect, Exit, Option } from "effect"
+import { Cause, Effect, Exit, Option, Stream } from "effect"
 import {
   assertApplicationFrameFence,
   OPTIONAL_HOST_FEATURES,
@@ -193,10 +193,12 @@ describe("managed verifier approval challenge bounds", () => {
     normalizedAction: "builtin.verifier",
     argumentSummary: { status: "available", text: "Run the host-selected verifier" },
     requestedGuarantees: ["no_symlink"],
-    guaranteeAssessment: { status: "assessed", residual: [] },
+    // Verifier challenges are always fail-closed: the reviewer decides, so the host
+    // must never pre-assess guarantees or pre-enable allow for the consent projection.
+    guaranteeAssessment: { status: "not_assessed", residual: null },
     runID: `run-${index}`,
     noResponse: "deny_and_expire",
-    allowEnabled: true,
+    allowEnabled: false,
   })
 
   test("accepts one complete bounded set for the registered location", () => {
@@ -263,5 +265,67 @@ describe("managed verifier approval challenge bounds", () => {
         { challengeID: "challenge-2", decision: "deny" },
       ],
     })
+  })
+})
+
+describe("session_supervisor startup failure diagnostics", () => {
+  const encoder = new TextEncoder()
+
+  /**
+   * A child that has already died. `waitForSocket` only ever consults the exit
+   * status and stderr on the paths where `isRunning` is false, which is exactly
+   * the `Session supervisor startup failed` case the E2E run hit with no
+   * explanation of why the child exited.
+   */
+  const exitedChild = (exitCode: number, stderr: string) =>
+    ({
+      isRunning: Effect.succeed(false),
+      exitCode: Effect.succeed(exitCode),
+      stderr: Stream.fromIterable([encoder.encode(stderr)]),
+    }) as unknown as ChildProcessHandle
+
+  const failure = (child: ChildProcessHandle, path: string) =>
+    waitForSocket(path, child, new AbortController().signal, 1_000).then(
+      () => undefined,
+      (error: unknown) => String(error),
+    )
+
+  test("reports exit status and stderr when the child exits before binding its socket", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "hc-supervisor-startup-"))
+    // The socket is never created, so `lstatSync` fails and the child-death
+    // branch of `waitForSocket` is the one that reports.
+    const path = join(directory, "host-0123456789abcdef.sock")
+    try {
+      const message = await failure(
+        exitedChild(7, "hz-kernel: InsecureDirectory lease check failed\n"),
+        path,
+      )
+      expect(message).toContain("exited before binding its socket")
+      // Both of these are absent before the fix: a startup failure that hides
+      // why the child exited is a diagnosability defect on its own.
+      expect(message).toContain("exit code 7")
+      expect(message).toContain("InsecureDirectory lease check failed")
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  test("reports exit status and stderr when the child exits before securing its socket", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "hc-supervisor-socket-unsecured-"))
+    const path = join(directory, "supervisor.sock")
+    const server = createServer()
+    try {
+      await new Promise<void>((resolve) => server.listen(path, resolve))
+      const message = await failure(
+        exitedChild(2, "supervisor.lock must be 0600 (UnsafeFile)\n"),
+        path,
+      )
+      expect(message).toContain("exited before securing its socket")
+      expect(message).toContain("exit code 2")
+      expect(message).toContain("UnsafeFile")
+    } finally {
+      server.close()
+      rmSync(directory, { recursive: true, force: true })
+    }
   })
 })

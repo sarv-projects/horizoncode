@@ -29,7 +29,7 @@ export const ChildV1 = Schema.Struct({
   permissionScopeDigest: Digest,
   directAttemptId: Identifier,
   /** Authenticated aggregate of rows that still reserve bounded mailbox capacity. */
-  pendingMessages: Schema.Number.check(Schema.isInt()).check(Schema.isBetween(0, 32)),
+  pendingMessages: Schema.Number.check(Schema.isInt()).check(Schema.isBetween({ minimum: 0, maximum: 32 })),
   deliveryAckState: Schema.Literals(["queued", "delivered", "acknowledged", "expired", "unknown"]),
   lastSequence: UInt64Decimal,
   resultDigest: Schema.NullOr(Digest),

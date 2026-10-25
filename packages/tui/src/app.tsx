@@ -55,7 +55,7 @@ import { DialogFeatures } from "./component/dialog-features"
 import { DialogRepoIntelligenceProfile } from "./component/dialog-repo-intelligence-profile"
 import { DialogWebSearchSettings } from "./component/dialog-websearch-settings"
 import { DialogStatus } from "./component/dialog-status"
-import { DialogDebug } from "./component/dialog-debug"
+import { DialogDebug, DialogDebugEffects } from "./component/dialog-debug"
 import { DialogThemeList } from "./component/dialog-theme-list"
 import { DialogHelp } from "./ui/dialog-help"
 import { DialogPrompt } from "./ui/dialog-prompt"
@@ -73,6 +73,7 @@ import { DialogAlert } from "./ui/dialog-alert"
 import { DialogConfirm } from "./ui/dialog-confirm"
 import { ToastProvider, useToast } from "./ui/toast"
 import { isDefaultTitle } from "./util/session"
+import { boundToolOutput } from "./util/collapse-tool-output"
 import { KVProvider, useKV } from "./context/kv"
 import * as Model from "./util/model"
 import { ArgsProvider, useArgs, type Args } from "./context/args"
@@ -1007,21 +1008,22 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
                         sessionID: rootSessionID,
                         idempotencyKey: authority.idempotencyKey,
                       }, { throwOnError: true })
+                      const dispatchStatus = (response.data as { dispatchStatus?: unknown }).dispatchStatus
                       if (response.data.goalID !== authority.goalID || response.data.runID !== authority.runID ||
-                        response.data.sessionID !== rootSessionID ||
-                        !["DISABLED", "NO_TASK", "PROMPT_RETURNED", "PROMPT_RETURNED_ERROR", "PROMPT_UNKNOWN", "UNAVAILABLE"].includes(response.data.dispatchStatus)) {
+                        response.data.sessionID !== rootSessionID || typeof dispatchStatus !== "string" ||
+                        !["DISABLED", "NO_TASK", "PROMPT_RETURNED", "PROMPT_RETURNED_ERROR", "PROMPT_UNKNOWN", "UNAVAILABLE"].includes(dispatchStatus)) {
                         throw new Error("Server returned a different managed Run or an invalid dispatch status")
                       }
                       dialog.clear()
-                      const dispatchMessage = response.data.dispatchStatus === "PROMPT_RETURNED"
+                      const dispatchMessage = dispatchStatus === "PROMPT_RETURNED"
                         ? " · first Task returned; use Goal actions → Verify accepted managed Run"
-                        : response.data.dispatchStatus === "PROMPT_RETURNED_ERROR"
+                        : dispatchStatus === "PROMPT_RETURNED_ERROR"
                           ? " · first Task returned with an error; use Goal actions → Verify accepted managed Run"
-                          : response.data.dispatchStatus === "PROMPT_UNKNOWN"
+                          : dispatchStatus === "PROMPT_UNKNOWN"
                             ? " · Task dispatch is ambiguous; the same Attempt is fenced and its prompt will not be replayed"
-                            : response.data.dispatchStatus === "UNAVAILABLE"
+                            : dispatchStatus === "UNAVAILABLE"
                               ? " · Task dispatch unavailable for the current Run state"
-                              : response.data.dispatchStatus === "DISABLED"
+                              : dispatchStatus === "DISABLED"
                                 ? " · Task dispatch is not enabled"
                                 : " · no Task is ready"
                       toast.show({ message: `Run ${response.data.runID} · ${response.data.runPhase} · revision ${response.data.revision}${dispatchMessage}`, variant: "info" })
@@ -1063,6 +1065,54 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
     return value as Record<string, unknown>
   }
 
+  // The generated V2 client unwraps single-property response envelopes to the
+  // property value in its return type (`RequestResult`), while the authenticated
+  // route still returns the exact bounded envelope on the wire. Decode the
+  // documented envelope shape here instead of trusting the generated type.
+  function automationListResponse(value: unknown): Record<string, unknown>[] {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error("Automation list response is malformed")
+    }
+    const automations = (value as { automations?: unknown }).automations
+    if (!Array.isArray(automations) || automations.length > 128) {
+      throw new Error("Automation list response is out of bounds")
+    }
+    return automations.map((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        throw new Error("Automation summary is malformed")
+      }
+      return item as Record<string, unknown>
+    })
+  }
+
+  function automationHistoryResponse(value: unknown): Record<string, unknown>[] {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error("Automation history response is malformed")
+    }
+    const history = (value as { history?: unknown }).history
+    if (!Array.isArray(history) || history.length > 128) {
+      throw new Error("Automation history response is out of bounds")
+    }
+    return history.map((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        throw new Error("Automation history row is malformed")
+      }
+      return item as Record<string, unknown>
+    })
+  }
+
+  function checkpointListResponse(value: unknown): string[] {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error("Checkpoint list response is malformed")
+    }
+    const checkpointIDs = (value as { checkpointIDs?: unknown }).checkpointIDs
+    if (!Array.isArray(checkpointIDs) || checkpointIDs.length > 32 ||
+      checkpointIDs.some((id) => typeof id !== "string" || !/^[A-Za-z0-9._-]{1,256}$/.test(id))) {
+      throw new Error("Checkpoint list response is out of bounds")
+    }
+    return checkpointIDs as string[]
+  }
+
   function automationWorkspaceLabel() {
     const workspace = project.workspace.current()
     return workspace ? safeAutomationText(workspace, 128) : "unresolved"
@@ -1084,10 +1134,10 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
         workspace: project.workspace.current(),
         sessionID,
       }, { throwOnError: true })
-      const automations = response.data.automations
+      const automations = automationListResponse(response.data)
       type AutomationOption = { kind: "create" } | { kind: "entry"; automation: Record<string, unknown> }
       dialog.replace(() => (
-        <DialogSelect
+        <DialogSelect<AutomationOption>
           title="Automation · Rust journal"
           options={[
             {
@@ -1095,8 +1145,8 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
               value: { kind: "create" as const },
               description: "Unavailable until the authenticated capability registry validates the action schema.",
             },
-            ...automations.map((raw): DialogSelectOption<AutomationOption> => {
-              const automation = raw as Record<string, unknown>
+            ...automations.map((raw: Record<string, unknown>): DialogSelectOption<AutomationOption> => {
+              const automation = raw
               const definition = automation.definition as Record<string, unknown>
               const summary = automation.active ? "active" : automation.pending ? "pending" : automation.retryPending ? "retry pending" : "idle"
               const next = automationOccurrence(automation.pending) ?? automationOccurrence(automation.retryPending)
@@ -1155,15 +1205,14 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
                   }
                   if (action.value === "inspect") {
                     const inspected = await sdk.client.experimental.automation.inspect({ directory: sdk.directory, workspace: project.workspace.current(), sessionID, automationID }, { throwOnError: true })
-                    const value = inspected.data as Record<string, unknown>
-                    const definition = value.definition as Record<string, unknown>
+                    const value = automationOccurrence(inspected.data)
+                    const definition = automationOccurrence(value?.definition)
+                    if (!value || !definition) throw new Error("Automation inspect response is malformed")
                     const active = automationOccurrence(value.active)
                     const pending = automationOccurrence(value.pending)
                     const retryPending = automationOccurrence(value.retryPending)
                     const history = await sdk.client.experimental.automation.history({ directory: sdk.directory, workspace: project.workspace.current(), sessionID, automationID, limit: "1" }, { throwOnError: true })
-                    const last = Array.isArray(history.data.history)
-                      ? automationOccurrence(history.data.history[0])
-                      : undefined
+                    const last = automationHistoryResponse(history.data)[0]
                     const lines = [
                       `Automation: ${safeAutomationText(value.automationID)}`,
                       `Version: ${safeAutomationText(value.version, 32)}`,
@@ -1186,9 +1235,8 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
                   }
                   if (action.value === "history") {
                     const history = await sdk.client.experimental.automation.history({ directory: sdk.directory, workspace: project.workspace.current(), sessionID, automationID, limit: "32" }, { throwOnError: true })
-                    const rows = Array.isArray(history.data.history) ? history.data.history : []
-                    const text = rows.length === 0 ? "No occurrences recorded." : rows.map((item) => {
-                      const occurrence = item as Record<string, unknown>
+                    const rows = automationHistoryResponse(history.data)
+                    const text = rows.length === 0 ? "No occurrences recorded." : rows.map((occurrence) => {
                       return `${safeAutomationText(occurrence.scheduledAtMs)} · ${safeAutomationText(occurrence.status, 32)} · attempt ${safeAutomationText(occurrence.attempt, 8)} · ${safeAutomationText(occurrence.occurrenceID, 128)}`
                     }).join("\n")
                     void DialogAlert.show(dialog, `Automation history · ${automationID}`, text)
@@ -1211,14 +1259,14 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
         workspace: project.workspace.current(),
         sessionID,
       }, { throwOnError: true })
-      const checkpointIDs = response.data.checkpointIDs
+      const checkpointIDs = checkpointListResponse(response.data)
       if (checkpointIDs.length === 0) {
         void DialogAlert.show(dialog, "Checkpoints · Rust journal", "No durable checkpoints are recorded for this Session. Capture and rewind remain unavailable.")
         return
       }
       dialog.replace(() => <DialogSelect
         title="Checkpoints · Rust journal"
-        options={checkpointIDs.map((checkpointID, index): DialogSelectOption<string> => ({
+        options={checkpointIDs.map((checkpointID: string, index: number): DialogSelectOption<string> => ({
           title: `${index + 1}. ${safeAutomationText(checkpointID)}`,
           value: checkpointID,
           description: "Request a read-only, revision-bound restore preview. This does not restore files.",
@@ -1737,9 +1785,17 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
       {
         name: "opencode.debug",
         title: "View debug info",
-        slashName: "debug",
         run: () => {
           dialog.replace(() => <DialogDebug />)
+        },
+        category: "System",
+      },
+      {
+        name: "horizon.debug.effects",
+        title: "View effect diagnostics",
+        hidden: true,
+        run: () => {
+          dialog.replace(() => <DialogDebugEffects />)
         },
         category: "System",
       },

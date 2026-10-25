@@ -13,13 +13,14 @@ import { testEffect } from "./lib/effect"
 
 const cache = path.join(os.tmpdir(), `horizon-models-dev-${crypto.randomUUID()}`)
 const requests: string[] = []
+let responseStatus = 200
 const originalModelsPath = Flag.OPENCODE_MODELS_PATH
 const http = Layer.succeed(
   HttpClient.HttpClient,
   HttpClient.make((request) =>
     Effect.sync(() => {
       requests.push(request.url)
-      return HttpClientResponse.fromWeb(request, new Response("{}", { status: 200 }))
+      return HttpClientResponse.fromWeb(request, new Response("{}", { status: responseStatus }))
     }),
   ),
 )
@@ -50,6 +51,13 @@ runtime.live("service startup and a catalog read do not fetch or write a cache",
     expect(typeof snapshot.providers).toBe("object")
     expect(["bundled", "unavailable"]).toContain(snapshot.source)
     expect(["fresh", "unknown"]).toContain(snapshot.freshness)
+    expect(snapshot.provenance).toMatchObject({
+      project: "models.dev",
+      license: "MIT",
+      attribution: "Models.dev (https://models.dev)",
+    })
+    expect(snapshot.provenance?.retrievedAt).toBeUndefined()
+    expect(snapshot.provenance?.contentDigest).toBeUndefined()
     expect(requests).toEqual([])
     const cacheWritten = yield* Effect.promise(() =>
       fs.access(path.join(cache, "models.json")).then(
@@ -79,6 +87,14 @@ runtime.live("only an explicit refresh fetches and writes the catalog cache", ()
     const catalog = yield* models.getSnapshot()
     expect(catalog.source).toBe("cache")
     expect(catalog.freshness).toBe("fresh")
+    expect(catalog.provenance).toMatchObject({
+      project: "models.dev",
+      sourceURL: source,
+      license: "MIT",
+      attribution: "Models.dev (https://models.dev)",
+    })
+    expect(catalog.provenance?.retrievedAt).toBeNumber()
+    expect(catalog.provenance?.contentDigest).toMatch(/^sha256:[0-9a-f]{64}$/)
     const cacheWritten = yield* Effect.promise(() =>
       fs.access(path.join(cache, "models.json")).then(
         () => true,
@@ -86,6 +102,13 @@ runtime.live("only an explicit refresh fetches and writes the catalog cache", ()
       ),
     )
     expect(cacheWritten).toBe(true)
+    const metadataWritten = yield* Effect.promise(() =>
+      fs.access(path.join(cache, "models.json.meta.json")).then(
+        () => true,
+        () => false,
+      ),
+    )
+    expect(metadataWritten).toBe(true)
 
     const cachePath = path.join(cache, "models.json")
     yield* Effect.promise(() => fs.utimes(cachePath, new Date(0), new Date(0)))
@@ -96,3 +119,39 @@ runtime.live("only an explicit refresh fetches and writes the catalog cache", ()
   }),
 )
 
+runtime.live("a failed forced refresh preserves the last known-good catalog", () =>
+  Effect.acquireUseRelease(
+    Effect.sync(() => {
+      const previous = {
+        disabled: Flag.OPENCODE_DISABLE_MODELS_FETCH,
+        status: responseStatus,
+      }
+      Reflect.set(Flag, "OPENCODE_DISABLE_MODELS_FETCH", false)
+      responseStatus = 200
+      return previous
+    }),
+    () =>
+      Effect.gen(function* () {
+        const models = yield* ModelsDev.Service
+        yield* models.refresh(true)
+        const before = yield* models.getSnapshot()
+        expect(before.source).toBe("cache")
+        expect(before.provenance?.contentDigest).toMatch(/^sha256:[0-9a-f]{64}$/)
+
+        responseStatus = 503
+        yield* models.refresh(true)
+        const after = yield* models.getSnapshot()
+
+        expect(requests).toHaveLength(4)
+        expect(new Set(requests)).toEqual(new Set([`${Flag.OPENCODE_MODELS_URL || "https://models.opencode.ai"}/api.json`]))
+        expect(after.source).toBe("cache")
+        expect(after.providers).toEqual(before.providers)
+        expect(after.provenance?.contentDigest).toBe(before.provenance?.contentDigest)
+      }),
+    (previous) =>
+      Effect.sync(() => {
+        Reflect.set(Flag, "OPENCODE_DISABLE_MODELS_FETCH", previous.disabled)
+        responseStatus = previous.status
+      }),
+  ),
+)

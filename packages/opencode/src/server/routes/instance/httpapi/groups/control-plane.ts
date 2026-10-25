@@ -75,7 +75,7 @@ export const GoalReviewSnapshotPayload = Schema.Struct({
     name: Schema.String,
     roles: Schema.Array(Schema.String),
     capabilityCeiling: Schema.Array(Schema.String),
-    tokenBudget: Schema.NullOr(Schema.Int),
+    tokenBudget: Schema.NullOr(Schema.String),
   })),
   eligibleProfilesTruncated: Schema.Boolean,
   runs: Schema.Array(Schema.Struct({ runID: Schema.String, specID: Schema.String, runPhase: Schema.String })),
@@ -267,7 +267,7 @@ export const GoalVerificationPayloadV1 = Schema.Struct({
   })).check(Schema.isMaxLength(256))),
   /** Exact terminal accounting from Rust; absent on nonterminal/pre-provider results. */
   usageAccounting: Schema.optional(ManagedUsageSummaryPayloadV1),
-  dispatchSettlement: Schema.optional(Schema.Union(Schema.Struct({
+  dispatchSettlement: Schema.optional(Schema.Union([Schema.Struct({
     status: Schema.Literal("SETTLED"),
     goalID: Schema.String,
     runID: Schema.String,
@@ -315,7 +315,7 @@ export const GoalVerificationPayloadV1 = Schema.Struct({
     ownerLogEventDigest: Schema.String.check(Schema.isPattern(/^blake3:[a-f0-9]{64}$/)),
     workerPoolRevision: DecimalU64,
     receiptDigest: Schema.String.check(Schema.isPattern(/^blake3:[a-f0-9]{64}$/)),
-  }))),
+  })])),
   verificationRunID: Schema.String,
   reason: Schema.optional(Schema.Literals([
     "reviewer_denied",

@@ -297,9 +297,10 @@ impl DirectMessageJournalV1 {
         event.delivery_id = Some(delivery_id.clone());
         event.command_digest = Some(command_digest.clone());
         let receipt = self.log.append_batch(&delivery_id, &command_digest, &[event], self.cursor.as_ref())?;
+        let event_digest = receipt.owner_cursor.event_digest.clone();
         self.cursor = Some(receipt.owner_cursor);
         let _ = pins_digest;
-        Ok(receipt.owner_cursor.event_digest)
+        Ok(event_digest)
     }
 
     fn replay(&mut self) -> Result<(), OwnerLogError> {

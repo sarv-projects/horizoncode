@@ -40,7 +40,15 @@ export const configHandlers = HttpApiBuilder.group(InstanceHttpApi, "config", (h
       const locationRef = Location.Ref.make({ directory: AbsolutePath.make(instance.directory) })
       return yield* supervisor.directSessionPermissionModeSnapshot({ sessionID: ctx.query.sessionID, locationRef }).pipe(
         Effect.provideService(TrustedPrincipalContext, authenticated),
-        Effect.mapError(permissionFailure),
+        Effect.mapError((error) => {
+          // The read endpoint does not declare a conflict response. Keep
+          // authorization failures explicit; other snapshot failures mean the
+          // authoritative HostKernel posture could not be read.
+          if (error.stage === "authorization" || error.hostCode === "forbidden") {
+            return new ForbiddenError({ message: "Direct Session permission settings are not authorized" })
+          }
+          return new ServiceUnavailableError({ message: "HostKernel direct Session permission settings are unavailable", service: "HostKernel" })
+        }),
       )
     })
 

@@ -44,13 +44,13 @@ function run(target) {
   })
 }
 
-const envPath = process.env.OPENCODE_BIN_PATH
+const envPath = process.env.HORIZONCODE_BIN_PATH ?? process.env.OPENCODE_BIN_PATH
 
 const scriptPath = fs.realpathSync(fileURLToPath(import.meta.url))
 const scriptDir = path.dirname(scriptPath)
 
 //
-const cached = path.join(scriptDir, ".opencode")
+const cached = path.join(scriptDir, ".horizoncode")
 
 const platformMap = {
   darwin: "darwin",
@@ -77,8 +77,8 @@ let arch = archMap[os.arch()]
 if (!arch) {
   arch = os.arch()
 }
-const base = "opencode-" + platform + "-" + arch
-const binary = platform === "windows" ? "opencode.exe" : "opencode"
+const base = "horizoncode-" + platform + "-" + arch
+const binary = platform === "windows" ? "horizoncode.exe" : "horizoncode"
 
 function supportsAvx2() {
   if (arch !== "x64") return false

@@ -18,7 +18,7 @@ use horizoncode_kernel::protocol::{
 use horizoncode_kernel::unix_peer::{
     AuthenticatedUnixStream, UnixPeerPolicy, connect_authenticated,
 };
-use std::fs;
+use std::fs::{self, File};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -46,6 +46,17 @@ fn now_ms() -> u64 {
 
 fn sha(seed: char) -> String {
     format!("sha256:{}", seed.to_string().repeat(64))
+}
+
+fn session_link_digest(parts: [&str; 15]) -> String {
+    let mut preimage = b"horizoncode.session-link.source.v1\0".to_vec();
+    for part in parts {
+        preimage.extend_from_slice(&(part.len() as u64).to_be_bytes());
+        preimage.extend_from_slice(part.as_bytes());
+    }
+    let digest = ring::digest::digest(&ring::digest::SHA256, &preimage);
+    let hex = digest.as_ref().iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    format!("sha256:{hex}")
 }
 
 fn json_to_value(value: &serde_json::Value) -> Value {
@@ -83,6 +94,18 @@ fn profile_definition() -> Value {
     let fixture: serde_json::Value =
         serde_json::from_str(include_str!("fixtures/agent-profile-definition-v2.json")).unwrap();
     json_to_value(&fixture["definition"])
+}
+
+fn planned_profile_definition() -> Value {
+    let mut definition = profile_definition();
+    let Value::Map(fields) = &mut definition else {
+        panic!("profile definition must be a map");
+    };
+    let Some(Value::Map(limits)) = fields.get_mut("limits") else {
+        panic!("profile limits must be a map");
+    };
+    limits.insert("tokenBudget".to_owned(), string("4096"));
+    definition
 }
 
 fn persisted_profile_revision_ref() -> Value {
@@ -209,12 +232,10 @@ struct SocketTestDir(PathBuf);
 
 impl SocketTestDir {
     fn new() -> Self {
-        let tick = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        // Keep the private Unix socket path below Linux's SUN_LEN limit even
+        // when the repository-local TMPDIR itself is nested under a long path.
         let path = std::env::temp_dir().join(format!(
-            "hz-managed-review-{}-{tick}-{}",
+            "mci-{}-{}",
             std::process::id(),
             NEXT_ID.fetch_add(1, Ordering::Relaxed)
         ));
@@ -251,8 +272,10 @@ fn start_kernel_process(
     incarnation: &str,
 ) -> (KernelProcess, AuthenticatedUnixStream, u64) {
     let socket = state.join(socket_name);
+    let stderr_path = state.join(format!("{socket_name}.stderr"));
     let core_exe = fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
     let kernel_exe = fs::canonicalize(env!("CARGO_BIN_EXE_hz-kernel")).unwrap();
+    let stderr = File::create(&stderr_path).expect("create repo-local hz-kernel stderr capture");
     let mut child = KernelProcess(
         Command::new(env!("CARGO_BIN_EXE_hz-kernel"))
             .arg(format!("--state-dir={}", state.display()))
@@ -262,7 +285,7 @@ fn start_kernel_process(
             .arg(format!("--incarnation={incarnation}"))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::from(stderr))
             .spawn()
             .unwrap(),
     );
@@ -275,8 +298,17 @@ fn start_kernel_process(
         {
             break;
         }
-        if child.0.try_wait().unwrap().is_some() || Instant::now() >= deadline {
-            panic!("hz-kernel did not create a private owner-only socket");
+        if let Some(status) = child.0.try_wait().unwrap() {
+            let stderr = fs::read_to_string(&stderr_path).unwrap_or_else(|error| {
+                format!("<could not read {}: {error}>", stderr_path.display())
+            });
+            panic!("hz-kernel exited before private socket bind ({status}); stderr: {stderr}");
+        }
+        if Instant::now() >= deadline {
+            let stderr = fs::read_to_string(&stderr_path).unwrap_or_else(|error| {
+                format!("<could not read {}: {error}>", stderr_path.display())
+            });
+            panic!("hz-kernel did not create a private owner-only socket before timeout; stderr: {stderr}");
         }
         thread::sleep(Duration::from_millis(10));
     }
@@ -299,7 +331,7 @@ fn start_kernel_process(
             process_incarnation: incarnation.to_owned(),
             supervisor_nonce: nonce.to_owned(),
             required_features: Vec::new(),
-            optional_features: Vec::new(),
+            optional_features: vec!["effects.v2".to_owned()],
         })),
     )
     .unwrap();
@@ -1813,62 +1845,9 @@ fn real_socket_pause_resume_restart_and_cancel_remain_fenced_before_effect_boots
         Some("reviewer"),
     );
     assert_eq!(accepted.outcome, RpcOutcomeV1::Ok, "{:?}", accepted.error);
-    for (request_id, operation, body, delivery) in [
-        (
-            "req-lifecycle-start-run",
-            "start_run",
-            map([
-                ("goalID", string(GOAL)),
-                ("runID", string(RUN)),
-                ("specID", string(SPEC)),
-            ]),
-            "lifecycle-start-run",
-        ),
-        (
-            "req-lifecycle-add-task",
-            "add_task",
-            map([
-                ("goalID", string(GOAL)),
-                ("runID", string(RUN)),
-                ("taskID", string(TASK)),
-                ("dependencies", Value::Array(vec![])),
-                ("criterionIDs", strings(&["tests-pass"])),
-                ("requiredCapabilities", Value::Array(vec![])),
-                ("profileSelection", profile_selection()),
-                ("profileDefinition", profile_definition()),
-            ]),
-            "lifecycle-add-task",
-        ),
-        (
-            "req-lifecycle-ready-task",
-            "mark_task_ready",
-            map([
-                ("goalID", string(GOAL)),
-                ("runID", string(RUN)),
-                ("taskID", string(TASK)),
-            ]),
-            "lifecycle-ready-task",
-        ),
-    ] {
-        let response = socket_roundtrip(
-            &mut first_stream,
-            managed_socket_request(
-                first_epoch,
-                first_incarnation,
-                request_id,
-                operation,
-                body,
-                Some(delivery),
-            ),
-        );
-        assert_eq!(
-            response.outcome,
-            RpcOutcomeV1::Ok,
-            "{operation}: {:?}",
-            response.error
-        );
-    }
-    let register = RpcRequestV1 {
+    let workspace = state.join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let location_request = RpcRequestV1 {
         owner_epoch: first_epoch,
         process_incarnation: first_incarnation.to_owned(),
         request_id: "req-lifecycle-register-location".to_owned(),
@@ -1878,14 +1857,128 @@ fn real_socket_pause_resume_restart_and_cancel_remain_fenced_before_effect_boots
         expected_cursor: None,
         deadline_unix_ms: now_ms() + 30_000,
         trace_id: "trace-lifecycle-register-location".to_owned(),
-        body: map([]),
+        body: map([
+            ("canonicalRoot", string(workspace.to_str().unwrap())),
+            ("workspaceID", string("workspace-one")),
+        ]),
     };
-    // The real HostKernel process has not negotiated effects.v2. Location
-    // registration and Guarded dispatch must remain unavailable on this socket.
-    assert_eq!(
-        error_code(&socket_roundtrip(&mut first_stream, register)),
-        "feature_not_negotiated"
+    let registered = socket_roundtrip_as(
+        &mut first_stream,
+        location_request,
+        Some("reviewer"),
     );
+    assert_eq!(registered.outcome, RpcOutcomeV1::Ok, "{:?}", registered.error);
+
+    let planned = socket_roundtrip_as(
+        &mut first_stream,
+        managed_socket_request(
+            first_epoch,
+            first_incarnation,
+            "req-lifecycle-plan-run",
+            "plan_run",
+            map([
+                ("goalID", string(GOAL)),
+                ("runID", string(RUN)),
+                ("specID", string(SPEC)),
+                ("specDigest", string(&digest)),
+                ("expectedGoalRevision", string("3")),
+                ("idempotencyKey", string("lifecycle-plan-run")),
+                ("sessionID", string("ses_lifecycle")),
+                (
+                    "tasks",
+                    Value::Array(vec![map([
+                        ("taskID", string(TASK)),
+                        ("title", string("Lifecycle fencing")),
+                        ("purpose", string("Exercise accepted Run lifecycle")),
+                        ("dependencies", Value::Array(vec![])),
+                        ("criterionIDs", strings(&["tests-pass", "docs-match"])),
+                        ("requiredCapabilities", Value::Array(vec![])),
+                        ("profileSelection", profile_selection()),
+                        ("profileDefinition", planned_profile_definition()),
+                    ])]),
+                ),
+            ]),
+            Some("lifecycle-plan-run"),
+        ),
+        Some("reviewer"),
+    );
+    assert_eq!(planned.outcome, RpcOutcomeV1::Ok, "{:?}", planned.error);
+    let planned_body = planned.body.unwrap();
+    assert_eq!(field_text(&planned_body, "runPhase"), "PLAN_ONLY");
+    let start = socket_roundtrip_as(
+        &mut first_stream,
+        managed_socket_request(
+            first_epoch,
+            first_incarnation,
+            "req-lifecycle-start-planned-run",
+            "start_planned_run",
+            map([
+                ("goalID", string(GOAL)),
+                ("runID", string(RUN)),
+                ("specID", string(SPEC)),
+                ("specDigest", string(&digest)),
+                (
+                    "expectedGoalRevision",
+                    string(&field_unsigned(&planned_body, "revision").to_string()),
+                ),
+                ("sessionID", string("ses_lifecycle")),
+                (
+                    "idempotencyKey",
+                    string("lifecycle-start-planned-run"),
+                ),
+                (
+                    "sessionLink",
+                    map([
+                        ("sessionID", string("ses_lifecycle")),
+                        ("sourceStoreID", string("store_lifecycle")),
+                        ("sourceInstanceID", string("instance_lifecycle")),
+                        (
+                            "sourceCursor",
+                            map([
+                                ("ownerKind", string("session")),
+                                ("ownerId", string("ses_lifecycle")),
+                                ("seq", string("1")),
+                                ("eventDigest", string(&format!("blake3:{}", "b".repeat(64)))),
+                            ]),
+                        ),
+                        ("sourceEpoch", string("1")),
+                        ("latestObservedMessageID", Value::Nil),
+                        ("latestObservedPartID", Value::Nil),
+                (
+                    "sourceDigest",
+                    string(&session_link_digest([
+                        "ses_lifecycle",
+                        "store_lifecycle",
+                        "instance_lifecycle",
+                        "session",
+                        "ses_lifecycle",
+                        "1",
+                        &format!("blake3:{}", "b".repeat(64)),
+                        "1",
+                        "",
+                        "",
+                        "horizon.session-link.ids-only.v1",
+                        "1",
+                        GOAL,
+                        "project-one",
+                        "workspace-one",
+                    ])),
+                ),
+                        ("redactionProfile", string("horizon.session-link.ids-only.v1")),
+                        ("protocolVersion", Value::Unsigned(1)),
+                        ("goalID", string(GOAL)),
+                        ("projectID", string("project-one")),
+                        ("workspaceID", string("workspace-one")),
+                    ]),
+                ),
+            ]),
+            Some("lifecycle-start-planned-run"),
+        ),
+        Some("reviewer"),
+    );
+    assert_eq!(start.outcome, RpcOutcomeV1::Ok, "{:?}", start.error);
+    // The negotiated effect surface has a real Location, but no Guarded
+    // admission proof producer; managed Attempt admission must still fail closed.
     let snapshot = ok_body(socket_roundtrip(
         &mut first_stream,
         managed_socket_request(
@@ -1899,7 +1992,7 @@ fn real_socket_pause_resume_restart_and_cancel_remain_fenced_before_effect_boots
     ));
     let initial_revision = field_unsigned(&snapshot, "revision");
 
-    let paused = ok_body(socket_roundtrip(
+    let paused = ok_body(socket_roundtrip_as(
         &mut first_stream,
         managed_socket_request(
             first_epoch,
@@ -1913,10 +2006,11 @@ fn real_socket_pause_resume_restart_and_cancel_remain_fenced_before_effect_boots
             ]),
             Some("lifecycle-pause"),
         ),
+        Some("reviewer"),
     ));
     assert_eq!(field_text(&paused, "runPhase"), "PAUSED");
 
-    let resumed = ok_body(socket_roundtrip(
+    let resumed = ok_body(socket_roundtrip_as(
         &mut first_stream,
         managed_socket_request(
             first_epoch,
@@ -1933,6 +2027,7 @@ fn real_socket_pause_resume_restart_and_cancel_remain_fenced_before_effect_boots
             ]),
             Some("lifecycle-resume"),
         ),
+        Some("reviewer"),
     ));
     assert_eq!(field_text(&resumed, "runPhase"), "RUNNING");
 
@@ -1958,7 +2053,7 @@ fn real_socket_pause_resume_restart_and_cancel_remain_fenced_before_effect_boots
             Some("lifecycle-admit"),
         ),
     );
-    assert_eq!(error_code(&unavailable_admit), "capability_unavailable");
+    assert_eq!(error_code(&unavailable_admit), "invalid_effect_request");
     let before_restart = ok_body(socket_roundtrip(
         &mut first_stream,
         managed_socket_request(
@@ -2004,7 +2099,7 @@ fn real_socket_pause_resume_restart_and_cancel_remain_fenced_before_effect_boots
     assert!(matches!(field(&recovered, "attempts"), Value::Array(attempts) if attempts.is_empty()));
     assert_eq!(field_text(&only_run(&recovered), "phase"), "RUNNING");
 
-    let cancel = ok_body(socket_roundtrip(
+    let cancel = ok_body(socket_roundtrip_as(
         &mut second_stream,
         managed_socket_request(
             second_epoch,
@@ -2021,6 +2116,7 @@ fn real_socket_pause_resume_restart_and_cancel_remain_fenced_before_effect_boots
             ]),
             Some("lifecycle-cancel-unknown"),
         ),
+        Some("reviewer"),
     ));
     assert_eq!(field_text(&cancel, "runPhase"), "CANCELLED");
     drop(second_stream);

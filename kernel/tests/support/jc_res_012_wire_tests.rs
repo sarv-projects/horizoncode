@@ -6,17 +6,15 @@
 //! phase; the Rust half verified here is that a provider-cost/token reservation
 //! with a foreign or revoked owner epoch is denied before any capacity or
 //! reservation record exists, with no charged fallback. JC-RES-012.I's
-//! TypeScript consumer is not implemented yet; the frozen fixture records that
-//! gap explicitly instead of asserting a roundtrip that does not exist.
+//! TypeScript consumer is `packages/core/src/v1/resource-reservation-wire.ts`
+//! and is verified against this same frozen fixture by
+//! `packages/core/test/reservation-wire.test.ts`; this Rust test pins the
+//! canonical Rust tables to that fixture.
 
-#[path = "../src/resource_budget.rs"]
-mod resource_budget;
-#[path = "../src/resource_sampler.rs"]
-mod resource_sampler;
-#[path = "../src/worker_pool.rs"]
-mod worker_pool;
-#[path = "../src/worktree_pool.rs"]
-mod worktree_pool;
+use crate::resource_budget;
+use crate::resource_sampler;
+use crate::worker_pool;
+use crate::worktree_pool;
 
 use std::path::PathBuf;
 
@@ -172,11 +170,16 @@ fn jc_res_012_i_wire_vocabulary_is_strict_and_matches_the_frozen_fixture() {
         );
     }
 
-    // The fixture records the still-missing cross-language consumer honestly.
-    assert!(fixture["consumers"]["rust"].is_string());
-    assert!(
-        fixture["consumers"]["typescript"].is_null(),
-        "when the TypeScript consumer lands it must consume this exact fixture"
+    // The TypeScript consumer is the frozen vocabulary codec; it must be recorded
+    // here and consume this exact fixture (see packages/core/test/reservation-wire.test.ts).
+    assert_eq!(
+        fixture["consumers"]["rust"].as_str(),
+        Some("kernel/src/resource_budget.rs")
+    );
+    assert_eq!(
+        fixture["consumers"]["typescript"].as_str(),
+        Some("packages/core/src/v1/resource-reservation-wire.ts"),
+        "the TypeScript consumer must consume this exact fixture"
     );
 }
 

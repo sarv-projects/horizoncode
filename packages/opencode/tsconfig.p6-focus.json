@@ -1,0 +1,21 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "src/audio.d.ts",
+    "src/auth/*.ts",
+    "src/provider/*.ts",
+    "src/config/config.ts",
+    "src/server/routes/instance/httpapi/groups/config.ts",
+    "src/server/routes/instance/httpapi/groups/question.ts",
+    "test/auth/*.ts",
+    "test/provider/*.ts",
+    "test/question/*.ts",
+    "test/skill/identity.test.ts",
+    "test/config/config.test.ts",
+    "test/config/v2-compat.test.ts",
+    "test/server/httpapi-v2-question-live.test.ts",
+    "test/server/httpapi-instance-route-auth.test.ts",
+    "../server/src/handlers/question.ts",
+    "../protocol/src/groups/question.ts"
+  ]
+}

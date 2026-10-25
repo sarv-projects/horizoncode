@@ -200,6 +200,17 @@
           "type": "string",
           "maxLength": 65536
         },
+        "resultDigest": {
+          "type": "string",
+          "pattern": "^blake3:[a-f0-9]{64}$",
+          "description": "Digest of canonical MessagePack {output} under horizoncode.codemode-tool-result.v1\\0; independently recomputed by the strict receiver."
+        },
+        "outputBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65536,
+          "description": "Exact UTF-8 byte count of output, recomputed by the strict receiver."
+        },
         "receiptRef": {
           "$ref": "#/$defs/id"
         },
@@ -216,10 +227,13 @@
       },
       "allOf": [
         {"if": {"properties": {"status": {"enum": ["settled", "rejected", "cancelled"]}}, "required": ["status"]}, "then": {"required": ["receiptRef", "receiptKind", "receiptDigest"]}},
-        {"if": {"properties": {"status": {"const": "unknown"}}, "required": ["status"]}, "then": {"not": {"anyOf": [{"required": ["receiptRef"]}, {"required": ["receiptKind"]}, {"required": ["receiptDigest"]}, {"required": ["output"]}]}}},
-        {"if": {"properties": {"receiptKind": {"const": "host_decision"}}, "required": ["receiptKind"]}, "then": {"not": {"required": ["output"]}}}
+        {"if": {"properties": {"status": {"const": "unknown"}}, "required": ["status"]}, "then": {"not": {"anyOf": [{"required": ["receiptRef"]}, {"required": ["receiptKind"]}, {"required": ["receiptDigest"]}, {"required": ["output"]}, {"required": ["resultDigest"]}, {"required": ["outputBytes"]}, {"required": ["errorCode"]}]}}},
+        {"if": {"properties": {"receiptKind": {"enum": ["effect_receipt", "host_decision"]}}, "required": ["receiptKind"]}, "then": {"not": {"anyOf": [{"required": ["resultDigest"]}, {"required": ["outputBytes"]}]}}},
+        {"if": {"properties": {"receiptKind": {"const": "host_decision"}}, "required": ["receiptKind"]}, "then": {"not": {"required": ["output"]}}},
+        {"if": {"properties": {"receiptKind": {"const": "tool_result"}, "status": {"const": "settled"}}, "required": ["receiptKind", "status"]}, "then": {"required": ["output", "resultDigest", "outputBytes"]}},
+        {"if": {"properties": {"receiptKind": {"const": "tool_result"}, "status": {"enum": ["rejected", "cancelled"]}}, "required": ["receiptKind", "status"]}, "then": {"required": ["errorCode"], "not": {"anyOf": [{"required": ["resultDigest"]}, {"required": ["outputBytes"]}]}}}
       ],
-      "description": "Receipt fields are mandatory for every known terminal outcome and forbidden for UNKNOWN. effect_receipt is Guard effect provenance; host_decision is a durable pre-dispatch decision with no output claim; tool_result is explicitly Core-reported output, not independent evidence. UTF-8 output byte caps are enforced by the receiver, not JSON Schema maxLength."
+      "description": "Receipt fields are mandatory for every known terminal outcome and forbidden for UNKNOWN. effect_receipt is Guard effect provenance; host_decision is a durable pre-dispatch decision with no output claim; tool_result is explicitly Core-reported output, not independent evidence. Settled tool_result includes output plus its canonical MessagePack {output} BLAKE3 resultDigest and exact UTF-8 outputBytes; the receiver recomputes both."
     },
     "waveResult": {
       "type": "object",
@@ -413,7 +427,7 @@
     "receiver-recomputes-UTF8-source-output-and-canonical-argument-byte-counts;per-call-arguments-at-most-262144-bytes;aggregate-serialized-arguments-at-most-524288-bytes-per-wave-and-1048576-bytes-script-total-separate-from-tool-definitions-and-frame-cap",
     "max-64-total-calls-in-at-most-64-waves-of-32;one-30000ms-monotonic-deadline-and-65536-aggregate-output-bytes",
     "Core-dispatches-wave-using-authenticated-root-direct-Session-scope,an-actual-direct-child-DirectTurnScope-when-applicable,or-live-managed-Attempt-scope;never-synthesize-an-Attempt-for-a-root-Session",
-    "wave_result-results-match-the-exact-dispatched-callIds-count-and-order;every-known-terminal-result-carries-its-receiptRef-and-receiptDigest;UNKNOWN-carries-neither",
+    "wave_result-results-match-the-exact-dispatched-callIds-count-and-order;every-known-terminal-result-carries-its-receiptRef-and-receiptDigest;settled-tool_result-carries-recomputed-resultDigest-and-exact-UTF8-outputBytes;effect_receipt-and-host_decision-carry-neither;UNKNOWN-carries-none",
     "settled-wave-receiptDigest-is-recomputed-from-ordered-callId-ref-digest-tuples;UNKNOWN-wave-has-at-least-one-unknown-result-and-no-wave-receiptDigest;helper-cannot-assert-settlement",
     "a-wave-containing-UNKNOWN-terminates-CodeMode-and-is-never-presented-as-settled-or-resumed;outer-dispatch-remains-UNKNOWN-until-authoritative-reconciliation",
     "cancel-frame-is-advisory;Guard-and-ExecutionHost-cancellation-and-reaping-are-authoritative",

@@ -1407,6 +1407,9 @@ describe("ACP service sessions", () => {
         partID: "part_reasoning",
         field: "text",
         delta: "thinking",
+        sequence: 0,
+        offset: 0,
+        sourceGeneration: "test-generation-reasoning",
       },
     })
     response.resolve({

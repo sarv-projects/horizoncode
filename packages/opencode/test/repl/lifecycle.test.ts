@@ -1,6 +1,9 @@
 import { describe, expect, spyOn, test } from "bun:test"
 import path from "node:path"
 import { Effect, Schema } from "effect"
+import { Location } from "@opencode-ai/schema"
+import { AbsolutePath } from "@opencode-ai/core/schema"
+import { WorkspaceV2 } from "@opencode-ai/core/workspace"
 import {
   DEFAULT_IDLE_TTL_MS,
   CallbackAdmissionError,
@@ -92,7 +95,7 @@ const authority = {
 type CreateInput = Parameters<ReplLifecycle.Registry["create"]>[0]
 function createSession(
   registry: ReplLifecycle.Registry,
-  input: Omit<CreateInput, keyof typeof authority> & Partial<typeof authority>,
+  input: Omit<CreateInput, keyof typeof authority | "launchProfileRef"> & Partial<typeof authority>,
 ) {
   const scope = input.managedAttemptScope
     ? { directAttemptScope: undefined }
@@ -261,12 +264,26 @@ describe("repl.lifecycle generation lifecycle", () => {
       attemptID: "attempt-1",
       ownerEpoch: "7",
       expectedManagedRevision: "9",
+      requestSequence: "1",
+      requestID: "request-1",
+      contextSelectionDigest: "blake3:" + "9".repeat(64),
       locationID: "location-1",
       sessionID: "repl-1",
       workspaceRevision: authority.workspaceRevision,
       effectiveMaxTokens: "100000",
       remainingTokens: "100000",
       delegationBindingDigest: "blake3:" + "e".repeat(64),
+      permissionScopeDigest: "blake3:" + "a".repeat(64),
+      worktreeTarget: {
+        worktreeID: "worktree-1",
+        worktreeBaseRevision: "blake3:" + "5".repeat(64),
+        worktreePoolRevision: "3",
+        locationID: "location-1",
+        workspaceID: "ws-1",
+        workspaceRef: "worktree-1",
+        canonicalRoot: "/workspace/ws-1",
+        workspaceRevision: authority.workspaceRevision,
+      },
     }
     const session = createSession(makeRegistry(), {
       sessionID: "repl-1",
@@ -279,6 +296,73 @@ describe("repl.lifecycle generation lifecycle", () => {
     expect(session.managedAttemptScope).toEqual(managedAttemptScope)
     expect(session.managedAttemptScope).not.toBe(managedAttemptScope)
     expect(Object.isFrozen(session.managedAttemptScope)).toBe(true)
+  })
+
+  test("managed Attempt scopes missing the provider-request pin or worktree target are rejected", () => {
+    const registry = makeRegistry()
+    const full = {
+      goalID: "goal-1",
+      runID: "run-1",
+      taskID: "task-1",
+      attemptID: "attempt-1",
+      ownerEpoch: "7",
+      expectedManagedRevision: "9",
+      requestSequence: "1",
+      requestID: "request-1",
+      contextSelectionDigest: "blake3:" + "9".repeat(64),
+      locationID: "location-1",
+      sessionID: "repl-stale-scope",
+      workspaceRevision: authority.workspaceRevision,
+      effectiveMaxTokens: "100000",
+      remainingTokens: "100000",
+      delegationBindingDigest: "blake3:" + "e".repeat(64),
+      permissionScopeDigest: "blake3:" + "a".repeat(64),
+      worktreeTarget: {
+        worktreeID: "worktree-1",
+        worktreeBaseRevision: "blake3:" + "5".repeat(64),
+        worktreePoolRevision: "3",
+        locationID: "location-1",
+        workspaceID: "ws-1",
+        workspaceRef: "worktree-1",
+        canonicalRoot: "/workspace/ws-1",
+        workspaceRevision: authority.workspaceRevision,
+      },
+    }
+    const create = (managedAttemptScope: Record<string, unknown>) =>
+      () =>
+        registry.create({
+          ...authority,
+          launchProfileRef: { profileId: "repl-python", revision: "1", profileDigest: "blake3:" + "c".repeat(64) },
+          directAttemptScope: undefined,
+          sessionID: "repl-stale-scope",
+          language: "python",
+          scope: "workspace://ws-1",
+          nowMs: 1_000,
+          resourceLimits,
+          managedAttemptScope: managedAttemptScope as never,
+        })
+    // The pre-provider-pin 12-field shape must not be treated as authority.
+    const { requestSequence: _sequence, requestID: _id, contextSelectionDigest: _selection, ...legacy } = full
+    expect(create(legacy)).toThrow("exact ManagedAttemptScopeV1 fields")
+    // A malformed leased worktree target is rejected by its exact key set.
+    expect(create({
+      ...full,
+      worktreeTarget: { ...full.worktreeTarget, worktreeID: "" },
+    })).toThrow("worktreeTarget worktreeID is required")
+    expect(create({
+      ...full,
+      worktreeTarget: { ...full.worktreeTarget, pid: 1 },
+    })).toThrow("exact ManagedWorktreeTargetV1 fields")
+    // The request sequence stays inside the bounded HostKernel window.
+    expect(create({ ...full, requestSequence: "1025" })).toThrow("requestSequence must be within the HostKernel window")
+    expect(create({ ...full, requestSequence: "01" })).toThrow("canonical u64 decimal string")
+    // Every digest field is exact.
+    expect(create({ ...full, permissionScopeDigest: "sha256:" + "a".repeat(64) })).toThrow(
+      "permissionScopeDigest must be a BLAKE3 digest",
+    )
+    expect(create({ ...full, contextSelectionDigest: "sha256:" + "9".repeat(64) })).toThrow(
+      "contextSelectionDigest must be a BLAKE3 digest",
+    )
   })
 
   test("retained direct Attempt scope is an immutable copy", () => {
@@ -482,6 +566,27 @@ describe("repl.lifecycle generation lifecycle", () => {
     const newRef = { sessionID: "repl-1", generation: 2 }
     expect(registry.activate(newRef, 4_000).state).toBe("active")
     expect(registry.requireOwned(newRef, authorityFor(reset)).generation).toBe(2)
+  })
+
+  test("local reset and stop lifecycle never unlock REPL execution", () => {
+    const registry = makeRegistry()
+    const session = created(registry, 1_000)
+    const oldRef = { sessionID: session.sessionID, generation: session.generation }
+    registry.activate(oldRef, 1_000)
+
+    expect(replEffectRouteAvailable()).toBe(false)
+    const reset = registry.reset(oldRef, 2_000)
+    const currentRef = { sessionID: reset.sessionID, generation: reset.generation }
+    expect(reset.state).toBe("created")
+    expect(capture<ReplLifecycle.StaleRefError>(() => registry.requireOwned(oldRef, authority)).reason).toBe(
+      "generation_replaced",
+    )
+    registry.activate(currentRef, 3_000)
+    registry.stop(currentRef)
+    expect(capture<ReplLifecycle.StaleRefError>(() => registry.requireOwned(currentRef, authority)).reason).toBe(
+      "stopped",
+    )
+    expect(replEffectRouteAvailable()).toBe(false)
   })
 
   test("stop is terminal and session refs expire with it", () => {
@@ -712,7 +817,7 @@ describe("repl.lifecycle generation lifecycle", () => {
       resourceLimits,
     })
     expect(restarted.generation).toBe(2)
-    expect(registry.resolveOutputRefOwned(secondOutput, authority)).toMatchObject({
+    expect(registry.resolveOutputRefOwned(secondOutput, authorityFor(second))).toMatchObject({
       session: { sessionID: "repl-2", generation: 1 },
       artifactRef: "artifact-second",
     })
@@ -752,7 +857,7 @@ describe("repl.lifecycle generation lifecycle", () => {
     registry.activate(ref, 2_000)
 
     for (const artifactRef of ["", "   "]) {
-      expect(registry.bindOutputRef(ref, result(session.generation, { artifactRef }))).toBeUndefined()
+      expect(() => registry.bindOutputRef(ref, result(session.generation, { artifactRef }))).toThrow(ProtocolError)
     }
     expect(
       capture<ReplLifecycle.StaleRefError>(() =>
@@ -884,7 +989,7 @@ describe("repl.lifecycle generation lifecycle", () => {
     expect(() =>
       registry.bindOutputRef(ref, result(session.generation, { stdout: "12345", artifactRef: "artifact-1" })),
     ).toThrow(ReplLifecycle.OutputLimitError)
-    expect(registry.statusOwned(ref, authority).state).toBe("unknown")
+    expect(registry.statusOwned(ref, authorityFor(session)).state).toBe("unknown")
   })
 
   test("output reference binding quarantines an uncertain execution result", () => {
@@ -1156,12 +1261,26 @@ describe("repl.lifecycle canonical Guard effect route", () => {
       attemptID: "attempt-1",
       ownerEpoch: "7",
       expectedManagedRevision: "9",
+      requestSequence: "1",
+      requestID: "request-1",
+      contextSelectionDigest: "blake3:" + "9".repeat(64),
       locationID: "location-1",
       sessionID: "repl-1",
       workspaceRevision: authority.workspaceRevision,
       effectiveMaxTokens: "100000",
       remainingTokens: "100000",
       delegationBindingDigest: "blake3:" + "e".repeat(64),
+      permissionScopeDigest: "blake3:" + "a".repeat(64),
+      worktreeTarget: {
+        worktreeID: "worktree-1",
+        worktreeBaseRevision: "blake3:" + "5".repeat(64),
+        worktreePoolRevision: "3",
+        locationID: "location-1",
+        workspaceID: "ws-1",
+        workspaceRef: "worktree-1",
+        canonicalRoot: "/workspace/ws-1",
+        workspaceRevision: authority.workspaceRevision,
+      },
     }
     let received: ReplEffectRequest | undefined
     setReplEffectRoute({
@@ -1360,7 +1479,10 @@ describe("repl.lifecycle canonical Guard effect route", () => {
       ref,
       authority: authorityFor(session),
       operation: { kind: "execute", request: { generation: session.generation, code: "print(1)", deadlineMs: 1000 } },
-      locationRef: {} as never,
+      // The test authority's synthetic workspace ID is not a schema-valid
+      // WorkspaceV2.ID, so the trusted input is built directly (file-local
+      // fixture pattern) rather than through the validating constructor.
+      locationRef: { directory: "/workspace", workspaceID: "ws-1" } as never,
       supervisor: {
         authorizeReplOperation: (() => {
           guardCalled = true
@@ -1373,6 +1495,39 @@ describe("repl.lifecycle canonical Guard effect route", () => {
         throw new Error("must remain gated")
       },
     })).rejects.toThrow()
+    expect(guardCalled).toBe(false)
+    expect(hostCalled).toBe(false)
+  })
+
+  test("rejects a LocationRef for another workspace before the route gate and any Guard or HostKernel call", async () => {
+    const registry = makeRegistry()
+    const session = created(registry)
+    const ref = { sessionID: session.sessionID, generation: session.generation }
+    registry.bindProcessRefOwned(ref, authorityFor(session), interpreterProcessRef)
+    registry.activateOwned(ref, authorityFor(session), Date.now())
+    let guardCalled = false
+    let hostCalled = false
+    await expect(dispatchSupervisedReplOperationV1({
+      registry,
+      ref,
+      authority: authorityFor(session),
+      operation: { kind: "execute", request: { generation: session.generation, code: "print(1)", deadlineMs: 1000 } },
+      locationRef: Location.Ref.make({
+        directory: AbsolutePath.make("/workspace"),
+        workspaceID: WorkspaceV2.ID.make("wrk_foreign"),
+      }),
+      supervisor: {
+        authorizeReplOperation: (() => {
+          guardCalled = true
+          throw new Error("must not be reached")
+        }) as never,
+      },
+      runTrustedEffect: (effect) => Promise.resolve(effect as never),
+      requestHostKernel: async () => {
+        hostCalled = true
+        throw new Error("must not be reached")
+      },
+    })).rejects.toThrow("REPL operation location pin does not match the authenticated session workspace")
     expect(guardCalled).toBe(false)
     expect(hostCalled).toBe(false)
   })
@@ -1499,10 +1654,10 @@ describe("repl.lifecycle canonical Guard effect route", () => {
 
   test("keeps callback projection closed until HostKernel event and reply receipts exist", () => {
     const registry = makeRegistry()
-    const created = createSession(registry, { sessionID: "repl-1" })
-    const ref = { sessionID: created.sessionID, generation: created.generation }
-    registry.bindProcessRefOwned(ref, authorityFor(created), interpreterProcessRef)
-    const active = registry.activateOwned(ref, authorityFor(created), Date.now())
+    const session = created(registry)
+    const ref = { sessionID: session.sessionID, generation: session.generation }
+    registry.bindProcessRefOwned(ref, authorityFor(session), interpreterProcessRef)
+    const active = registry.activateOwned(ref, authorityFor(session), Date.now())
     expect(replCallbackIngressAvailable()).toBe(false)
     expect(() => projectReplCallbackInvocationV1({
       session: active,

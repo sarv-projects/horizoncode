@@ -87,6 +87,23 @@ omit numeric values; exact token counts identify their tokenizer. `complete` and
 select a provider route, or grant effect authority. See
 [`contracts-v2/context-ledger-v2.schema.json`](contracts-v2/context-ledger-v2.schema.json).
 
+**Contract correction (2026-10-24, arch owner ruling — schema artifacts realigned to this owner):**
+
+- `harnessRevision` is an **integer** (`number`), bounded `1..9007199254740991`. The TS toolset
+  producer enforces `Number.isSafeInteger` and `>= 1`; the Rust context-selection decoder requires
+  `Value::Unsigned` in `1..=9_007_199_254_740_991`; and the sibling
+  `context-ledger-v2` canonical already declared `{"type":"integer","minimum":1,"maximum":9007199254740991}`.
+  The `context-selection-v1` canonical artifact alone declared a positive-u64-decimal **string**, so
+  it was the single wrong side and has been corrected to integer. `sourceRevision` remains a
+  `DecimalU64` **string** — only `harnessRevision` changed. Acceptance: `NAME`-independent schema
+  parity cases below (`CTX-SEL-*` mirror bounds) plus the Rust decoder and TS producer must all
+  agree; any future re-typing of this field breaks TS↔Rust interop and is a §30-owner change.
+- `entries[].inclusionReason` now also requires `minLength: 1` in the canonical artifact, matching
+  the TS mirror: a reason cannot be the empty string. The mirror is intentionally stricter than it
+  was; `maxLength: 256` is unchanged. A coverage rule ("every selection source has an included
+  entry") remains producer-enforced in `compileContextLedgerV2` because JSON Schema cannot express
+  it structurally.
+
 Context bar segments:
 - system/control;
 - durable goal/criteria;

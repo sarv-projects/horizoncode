@@ -165,6 +165,25 @@ const select = (
   }
 }
 
+import {
+  planContextPruneV1,
+  planContextTrimV1,
+  planPressureRecoveryV1,
+} from "./context-compile-policy"
+
+export {
+  planContextPruneV1 as planPrune,
+  planContextTrimV1 as planTrim,
+  planPressureRecoveryV1 as planPressureRecovery,
+}
+export type {
+  PressureRecoveryPlanV1,
+  PruneCandidateV1,
+  PrunePlanV1,
+  TrimCandidateV1,
+  TrimPlanV1,
+} from "./context-compile-policy"
+
 export const buildPrompt = (input: { readonly previousSummary?: string; readonly context: readonly string[] }) => {
   const conversation = `Here is the conversation so far:\n\n<conversation>\n${input.context.join("\n\n")}\n</conversation>`
   if (!input.previousSummary)
@@ -249,8 +268,31 @@ export const make = (dependencies: Dependencies) => {
       return false
     return yield* compactAfterOverflow(input)
   })
+  const autoTrimmedEpochIDs = new Set<string>()
+  /**
+   * §30.4 step 0 preview. The caller applies the returned trim plan at the next
+   * compile boundary, then confirms with `autoTrimApplied` so this epoch never
+   * auto-trims twice. `show` remains available for `/trim` without pressure.
+   */
+  const pressureRecovery = Effect.fn("SessionCompaction.pressureRecovery")(function* (
+    input: Input & { readonly epochID: string; readonly autoTrimApplied?: boolean },
+  ) {
+    if (!/^[A-Za-z0-9._:-]{1,256}$/.test(input.epochID)) throw new TypeError("context epoch identity is invalid")
+    const plan = planPressureRecoveryV1({
+      entries: input.entries,
+      request: input.request,
+      model: input.model,
+      epochID: input.epochID,
+      autoTrimmedEpochIDs: [...autoTrimmedEpochIDs],
+    })
+    if (plan.status === "auto_trim" && input.autoTrimApplied === true) autoTrimmedEpochIDs.add(input.epochID)
+    return plan
+  })
   return {
     compactIfNeeded,
     compactAfterOverflow,
+    pressureRecovery,
+    trim: (entries: readonly Entry[]) => planContextTrimV1({ entries }),
+    prune: (entries: readonly Entry[], protectedRefs?: readonly string[]) => planContextPruneV1({ entries, protectedRefs }),
   }
 }

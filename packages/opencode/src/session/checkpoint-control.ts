@@ -69,12 +69,12 @@ const MAX_U64 = 0xffff_ffff_ffff_ffffn
 
 export type CheckpointPreviewV1 = {
   readonly checkpointID: string
-  readonly checkpointArtifact: { readonly artifactID: string; readonly digest: string; readonly byteLength: string; readonly mediaType: string; readonly classification: string }
+  readonly checkpointArtifact: { readonly artifactID: string; readonly digest: string; readonly byteLength: string; readonly mediaType: string; readonly classification: "public" | "workspace" | "sensitive" }
   readonly workspaceRevision: string
   readonly workspaceRevisionChanged: boolean
   readonly mode: "FULL" | "SELECTED_PATHS"
   readonly selectedPaths: readonly string[]
-  readonly actions: readonly { readonly path: string; readonly expectedBeforeDigest: string | null; readonly target: { readonly kind: "REGULAR_FILE"; readonly digest: string; readonly byteLength: string; readonly executable: boolean; readonly linkCount: "1" } }[]
+  readonly actions: readonly { readonly path: string; readonly expectedBeforeDigest: string | null; readonly target: { readonly kind: "REGULAR_FILE"; readonly digest: string; readonly byteLength: number; readonly executable: boolean; readonly linkCount: 1 } }[]
   readonly conflicts: readonly { readonly path?: string; readonly kind: "WORKSPACE_REVISION_CHANGED" | "DIRTY_PATH" | "UNTRACKED_PATH" | "WORKSPACE_STATUS_UNAVAILABLE" | "UNSAFE_PATH" }[]
   readonly previewDigest: string
 }
@@ -114,7 +114,7 @@ function decodePreview(operation: string, input: unknown): CheckpointPreviewV1 {
   const actionPaths = new Set<string>()
   let actionPathBytes = 0
   const requestedPathSet = new Set(selectedPaths)
-  const actions = value.actions.map((raw) => {
+  const actions = value.actions.map((raw): CheckpointPreviewV1["actions"][number] => {
     const action = raw as Record<string, unknown>
     const target = action?.target as Record<string, unknown>
     if (typeof action !== "object" || action === null || Array.isArray(action) ||
@@ -139,7 +139,7 @@ function decodePreview(operation: string, input: unknown): CheckpointPreviewV1 {
     }
     return { path: action.path, expectedBeforeDigest: typeof action.expectedBeforeDigest === "string" ? action.expectedBeforeDigest : null, target: {
       kind: "REGULAR_FILE" as const, digest: target.digest,
-      byteLength: String(target.byteLength), executable: target.executable, linkCount: "1" as const,
+      byteLength: target.byteLength, executable: target.executable, linkCount: 1,
     } }
   })
   const allowedConflicts = ["WORKSPACE_REVISION_CHANGED", "DIRTY_PATH", "UNTRACKED_PATH", "WORKSPACE_STATUS_UNAVAILABLE", "UNSAFE_PATH"]
@@ -171,7 +171,7 @@ function decodePreview(operation: string, input: unknown): CheckpointPreviewV1 {
   }
   return {
     checkpointID: identifier(operation, value.checkpointID, "checkpointID"),
-    checkpointArtifact: { artifactID: artifact.artifactID as string, digest: artifact.digest as string, byteLength: artifact.byteLength as string, mediaType: artifact.mediaType as string, classification: artifact.classification as string },
+    checkpointArtifact: { artifactID: artifact.artifactID as string, digest: artifact.digest as string, byteLength: artifact.byteLength as string, mediaType: artifact.mediaType as string, classification: artifact.classification as CheckpointPreviewV1["checkpointArtifact"]["classification"] },
     workspaceRevision: value.workspaceRevision, workspaceRevisionChanged: value.workspaceRevisionChanged,
     mode: value.mode as "FULL" | "SELECTED_PATHS", selectedPaths, actions, conflicts, previewDigest: value.previewDigest,
   }

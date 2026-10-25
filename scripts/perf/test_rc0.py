@@ -1,5 +1,6 @@
 import argparse
 import contextlib
+import hmac
 import io
 import json
 import os
@@ -192,6 +193,287 @@ class Rc0BaselineTests(unittest.TestCase):
         self.assertFalse(self.eligible())
 
 
+class Rc0AttestationCoverageTests(unittest.TestCase):
+    @staticmethod
+    def forged_attestation(**overrides):
+        """Build an adversarial in-process object; this is never owner evidence.
+
+        The payload digest is recomputed so these cases exercise the *coverage*
+        predicate rather than tripping the structural digest check. A signature is
+        attached only where a caller explicitly asks for one.
+        """
+        values = {
+            'source': 'untrusted-test-source',
+            'commit': 'abc123',
+            'session_ids': ('s1', 's2'),
+            'run_ids': ('r1', 'r2'),
+            'session_run_ids': (('s1', 'r1'), ('s2', 'r2')),
+            'session_owner_identities': (('s1', 101, '1'), ('s2', 102, '2')),
+            'host_run_receipt_refs': ('receipt-1', 'receipt-2'),
+            'independent_verifier_evidence_refs': ('evidence-1', 'evidence-2'),
+            'owner_log_event_digests': ('blake3:' + 'a' * 64, 'blake3:' + 'b' * 64),
+            'source_signature_digest': '',
+            'source_signature': '',
+        }
+        values.update(overrides)
+        result = object.__new__(rc0.AttestationV1)
+        for name, value in values.items():
+            object.__setattr__(result, name, value)
+        if not values['source_signature_digest']:
+            object.__setattr__(
+                result,
+                'source_signature_digest',
+                rc0.attestation_signature_digest(rc0.attestation_payload(result)),
+            )
+        return result
+
+    def test_attestation_must_bind_exact_selected_session_process_generations(self):
+        selected = [('s1', (101, 1)), ('s2', (102, 2))]
+        attestation = self.forged_attestation(
+            session_owner_identities=(('s1', 101, '999'), ('s2', 102, '2')),
+        )
+        self.assertFalse(rc0.attestation_covers(attestation, selected, 'abc123'))
+
+    def test_attestation_without_process_generation_binding_is_rejected(self):
+        selected = [('s1', (101, 1)), ('s2', (102, 2))]
+        attestation = self.forged_attestation()
+        object.__delattr__(attestation, 'session_owner_identities')
+        self.assertFalse(rc0.attestation_covers(attestation, selected, 'abc123'))
+
+    def test_missing_stale_or_untyped_attestation_never_covers_capture(self):
+        selected = [('s1', (101, 1)), ('s2', (102, 2))]
+        self.assertFalse(rc0.attestation_covers(None, selected, 'abc123'))
+        self.assertFalse(rc0.attestation_covers({'source': 'trusted'}, selected, 'abc123'))
+        stale = self.forged_attestation(commit='old-commit')
+        self.assertFalse(rc0.attestation_covers(stale, selected, 'abc123'))
+
+    def test_source_allowlist_and_verifier_registry_stay_empty(self):
+        self.assertEqual(rc0.TRUSTED_ATTESTATION_SOURCES, ())
+        self.assertEqual(rc0.TRUSTED_ATTESTATION_VERIFIERS, {})
+        self.assertEqual(rc0.ATTESTATION_SIGNATURE_ALGORITHMS, ('hmac-sha256',))
+
+    def test_test_only_candidate_must_match_session_run_and_process_generations(self):
+        # The temporary allowlist and verifier exist only to exercise the pure
+        # coverage predicate. No such source is configured in production and
+        # these in-memory candidates are never accepted as capture evidence.
+        selected = [('s1', (101, 1)), ('s2', (102, 2))]
+        key = b'\x5a' * 32
+        with patch.object(rc0, 'TRUSTED_ATTESTATION_SOURCES', ('test-only',)), \
+             patch.dict(rc0.TRUSTED_ATTESTATION_VERIFIERS,
+                        {'test-only': rc0.hmac_sha256_verifier(key)}):
+            exact = self.signed(self.forged_attestation(source='test-only'), key)
+            self.assertTrue(rc0.attestation_covers(exact, selected, 'abc123'))
+            cases = (
+                self.signed(self.forged_attestation(source='test-only', commit='stale-commit'), key),
+                self.signed(self.forged_attestation(
+                    source='test-only',
+                    session_owner_identities=(('s1', 101, '999'), ('s2', 102, '2')),
+                ), key),
+                self.signed(self.forged_attestation(
+                    source='test-only',
+                    session_owner_identities=(('s1', 101, '1'), ('s2', 999, '2')),
+                ), key),
+                self.signed(self.forged_attestation(
+                    source='test-only',
+                    session_run_ids=(('s1', 'foreign-run'), ('s2', 'r2')),
+                ), key),
+                self.signed(self.forged_attestation(
+                    source='test-only', host_run_receipt_refs=('', 'receipt-2'),
+                ), key),
+            )
+            for candidate in cases:
+                with self.subTest(candidate=candidate.commit):
+                    self.assertFalse(rc0.attestation_covers(candidate, selected, 'abc123'))
+
+    @staticmethod
+    def signed(attestation, key):
+        """Attach a keyed MAC over the canonical payload (test key only)."""
+        object.__setattr__(attestation, 'source_signature_digest',
+                           rc0.attestation_signature_digest(rc0.attestation_payload(attestation)))
+        object.__setattr__(attestation, 'source_signature', rc0.sign_attestation(attestation, key))
+        return attestation
+
+
+class Rc0AttestationSignatureTests(unittest.TestCase):
+    """A digest alone is not a signature; only keyed verification may attest."""
+
+    KEY = b'\x11' * 32
+    FOREIGN_KEY = b'\x22' * 32
+
+    def attestation(self, **overrides):
+        return Rc0AttestationCoverageTests.signed(
+            Rc0AttestationCoverageTests.forged_attestation(source='test-only', **overrides),
+            self.KEY,
+        )
+
+    def verify(self, attestation, key=None):
+        with patch.object(rc0, 'TRUSTED_ATTESTATION_SOURCES', ('test-only',)), \
+             patch.dict(rc0.TRUSTED_ATTESTATION_VERIFIERS,
+                        {'test-only': rc0.hmac_sha256_verifier(key or self.KEY)}):
+            return rc0.verify_attestation(attestation)
+
+    def test_keyed_signature_over_the_exact_payload_verifies(self):
+        self.assertTrue(self.verify(self.attestation()))
+
+    def test_forged_signature_hex_is_rejected(self):
+        forged = self.attestation()
+        object.__setattr__(forged, 'source_signature', 'hmac-sha256:' + 'f' * 64)
+        self.assertFalse(self.verify(forged))
+
+    def test_foreign_key_signature_is_rejected(self):
+        foreign = Rc0AttestationCoverageTests.signed(
+            Rc0AttestationCoverageTests.forged_attestation(source='test-only'),
+            self.FOREIGN_KEY,
+        )
+        self.assertFalse(self.verify(foreign))
+
+    def test_tampered_authority_field_after_signing_is_rejected(self):
+        for overrides in (
+            {'commit': 'other-commit'},
+            {'session_owner_identities': (('s1', 101, '1'), ('s2', 102, '3'))},
+            {'run_ids': ('r1', 'r3'), 'session_run_ids': (('s1', 'r1'), ('s2', 'r3'))},
+            {'owner_log_event_digests': ('blake3:' + 'c' * 64, 'blake3:' + 'b' * 64)},
+            {'independent_verifier_evidence_refs': ('evidence-1', 'evidence-forged')},
+        ):
+            with self.subTest(overrides=sorted(overrides)):
+                tampered = self.attestation()
+                for name, value in overrides.items():
+                    object.__setattr__(tampered, name, value)
+                self.assertFalse(self.verify(tampered))
+
+    def test_stale_commit_signature_is_valid_but_does_not_cover_the_capture(self):
+        stale = self.attestation(commit='old-commit')
+        selected = [('s1', (101, 1)), ('s2', (102, 2))]
+        with patch.object(rc0, 'TRUSTED_ATTESTATION_SOURCES', ('test-only',)), \
+             patch.dict(rc0.TRUSTED_ATTESTATION_VERIFIERS,
+                        {'test-only': rc0.hmac_sha256_verifier(self.KEY)}):
+            self.assertTrue(rc0.verify_attestation(stale))
+            self.assertFalse(rc0.attestation_covers(stale, selected, 'abc123'))
+
+    def test_revoked_source_or_missing_verifier_is_rejected(self):
+        attestation = self.attestation()
+        # Source removed from the allowlist: revoked.
+        with patch.dict(rc0.TRUSTED_ATTESTATION_VERIFIERS,
+                        {'test-only': rc0.hmac_sha256_verifier(self.KEY)}):
+            self.assertFalse(rc0.verify_attestation(attestation))
+        # Allowlisted source without a registered local verifier: unverifiable.
+        with patch.object(rc0, 'TRUSTED_ATTESTATION_SOURCES', ('test-only',)):
+            self.assertFalse(rc0.verify_attestation(attestation))
+
+    def test_unsupported_public_key_algorithm_is_rejected_not_trusted(self):
+        self.assertNotIn('ed25519', rc0.ATTESTATION_SIGNATURE_ALGORITHMS)
+        attestation = self.attestation()
+        object.__setattr__(attestation, 'source_signature', 'ed25519:' + 'a' * 64)
+        self.assertFalse(self.verify(attestation))
+
+    def test_broken_or_non_boolean_verifier_denies(self):
+        attestation = self.attestation()
+        selected = [('s1', (101, 1)), ('s2', (102, 2))]
+
+        def raising(_payload, _algorithm, _signature):
+            raise RuntimeError("verifier backend unavailable")
+
+        for verifier in (raising, lambda *_: 1, lambda *_: "true", lambda *_: None):
+            with self.subTest(verifier=getattr(verifier, '__name__', 'anonymous')):
+                with patch.object(rc0, 'TRUSTED_ATTESTATION_SOURCES', ('test-only',)), \
+                     patch.dict(rc0.TRUSTED_ATTESTATION_VERIFIERS, {'test-only': verifier}):
+                    self.assertFalse(rc0.verify_attestation(attestation))
+                    self.assertFalse(rc0.attestation_covers(attestation, selected, 'abc123'))
+
+    def test_signature_digest_must_cover_the_signed_payload(self):
+        attestation = self.attestation()
+        object.__setattr__(attestation, 'source_signature_digest',
+                           rc0.attestation_signature_digest(b'other'))
+        self.assertFalse(self.verify(attestation))
+
+    def test_constructor_rejects_missing_or_inconsistent_signature_material(self):
+        with patch.object(rc0, 'TRUSTED_ATTESTATION_SOURCES', ('test-only',)):
+            with self.assertRaisesRegex(ValueError, 'incomplete owner attestation'):
+                rc0.AttestationV1(
+                    source='test-only', commit='abc123',
+                    session_ids=('s1',), run_ids=('r1',),
+                    session_run_ids=(('s1', 'r1'),),
+                    session_owner_identities=(('s1', 101, '1'),),
+                    host_run_receipt_refs=('receipt-1',),
+                    independent_verifier_evidence_refs=('evidence-1',),
+                    owner_log_event_digests=('blake3:' + 'a' * 64,),
+                    source_signature_digest='sha256:' + 'c' * 64,
+                )
+            with self.assertRaisesRegex(ValueError, 'signature digest does not cover'):
+                rc0.AttestationV1(
+                    source='test-only', commit='abc123',
+                    session_ids=('s1',), run_ids=('r1',),
+                    session_run_ids=(('s1', 'r1'),),
+                    session_owner_identities=(('s1', 101, '1'),),
+                    host_run_receipt_refs=('receipt-1',),
+                    independent_verifier_evidence_refs=('evidence-1',),
+                    owner_log_event_digests=('blake3:' + 'a' * 64,),
+                    source_signature_digest='sha256:' + 'c' * 64,
+                    source_signature='hmac-sha256:' + 'd' * 64,
+                )
+
+
+class Rc0AttestationKeyLoaderTests(unittest.TestCase):
+    """Only private, repository-contained, bounded key material is loadable."""
+
+    def key_file(self, directory, material=None, mode=0o600):
+        directory = Path(directory)
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / 'attestation.key'
+        path.write_bytes(self.KEY if material is None else material)
+        path.chmod(mode)
+        return path
+
+    KEY = b'\x33' * 32
+
+    def test_private_repository_key_is_loaded_exactly(self):
+        with temporary_directory() as directory:
+            path = self.key_file(directory)
+            self.assertEqual(rc0.load_attestation_key(path), self.KEY)
+            verifier = rc0.hmac_sha256_verifier(rc0.load_attestation_key(path))
+            self.assertTrue(verifier(b'payload', 'hmac-sha256',
+                                     hmac.new(self.KEY, b'payload',
+                                              rc0.hashlib.sha256).hexdigest()))
+
+    def test_insecure_or_malformed_key_material_is_rejected(self):
+        with temporary_directory() as directory:
+            permissive = self.key_file(Path(directory) / 'permissive', mode=0o644)
+            with self.assertRaisesRegex(ValueError, 'private single-link'):
+                rc0.load_attestation_key(permissive)
+            short = self.key_file(Path(directory) / 'short', material=b'\x01' * 16)
+            with self.assertRaisesRegex(ValueError, 'size'):
+                rc0.load_attestation_key(short)
+            oversized = self.key_file(Path(directory) / 'oversized', material=b'\x01' * 65)
+            with self.assertRaisesRegex(ValueError, 'size'):
+                rc0.load_attestation_key(oversized)
+            zeroed = self.key_file(Path(directory) / 'zeroed', material=b'\x00' * 32)
+            with self.assertRaisesRegex(ValueError, 'all zeros'):
+                rc0.load_attestation_key(zeroed)
+            missing = Path(directory) / 'absent.key'
+            with self.assertRaisesRegex(ValueError, 'cannot be opened safely'):
+                rc0.load_attestation_key(missing)
+
+    def test_symlinked_or_external_key_paths_are_rejected(self):
+        with temporary_directory() as directory:
+            target = self.key_file(Path(directory) / 'target')
+            link = Path(directory) / 'link.key'
+            link.symlink_to(target)
+            with self.assertRaises(ValueError):
+                rc0.load_attestation_key(link)
+            with self.assertRaisesRegex(ValueError, 'inside the repository'):
+                rc0.load_attestation_key(
+                    Path(__file__).resolve().parents[3] / 'outside.key')
+            with self.assertRaisesRegex(ValueError, 'parent traversal'):
+                rc0.load_attestation_key('scripts/../../scripts/perf/attestation.key')
+
+    def test_hmac_verifier_refuses_wrong_algorithm_and_key_length(self):
+        with self.assertRaisesRegex(ValueError, 'exactly 32 bytes'):
+            rc0.hmac_sha256_verifier(b'\x01' * 16)
+        verifier = rc0.hmac_sha256_verifier(self.KEY)
+        self.assertFalse(verifier(b'payload', 'ed25519', 'a' * 64))
+        self.assertFalse(verifier(b'payload', 'hmac-sha256', 'a' * 64))
+
+
 class Rc0AggregateTests(unittest.TestCase):
     def test_process_tree_totals_sum_each_metric_without_losing_units(self):
         sample = {
@@ -227,6 +509,59 @@ class Rc0AggregateTests(unittest.TestCase):
         self.assertEqual(totals['quality'], 'UNKNOWN')
         self.assertIsNone(totals['metrics']['pss_bytes'])
         self.assertIsNone(totals['metrics']['rss_bytes'])
+
+    def test_aggregate_math_stays_exact_beyond_javascript_safe_integer(self):
+        # JC-RES-012.G analogue on the offline harness: PSS/RSS totals must be summed as
+        # exact integers (never floats) even above 2**53 and up to the u64 wire maximum.
+        above_safe = 2 ** 53 + 1
+        u64_max = 2 ** 64 - 1
+        sample = {
+            'quality': 'MEASURED', 'truncated': False,
+            'processes': [{
+                'identity_valid': True, 'quality': 'MEASURED',
+                'metrics': {'pss_bytes': above_safe, 'rss_bytes': u64_max, 'cpu_ns': 1,
+                            'thread_count': 1, 'fd_count': 1},
+            }],
+        }
+        totals = rc0.aggregate_process_tree(sample)
+        self.assertEqual(totals['quality'], 'MEASURED')
+        self.assertEqual(totals['metrics']['pss_bytes'], above_safe)
+        self.assertEqual(totals['metrics']['rss_bytes'], u64_max)
+        self.assertIsInstance(totals['metrics']['pss_bytes'], int)
+        self.assertEqual(json.loads(json.dumps(totals))['metrics']['pss_bytes'], above_safe)
+        self.assertEqual(rc0.is_canonical_decimal(str(u64_max)), True)
+
+    def test_aggregate_overflow_past_u64_wire_max_is_unknown(self):
+        u64_max = 2 ** 64 - 1
+        sample = {
+            'quality': 'MEASURED', 'truncated': False,
+            'processes': [
+                {'identity_valid': True, 'quality': 'MEASURED',
+                 'metrics': {'pss_bytes': u64_max, 'rss_bytes': 1, 'cpu_ns': 1,
+                             'thread_count': 1, 'fd_count': 1}},
+                {'identity_valid': True, 'quality': 'MEASURED',
+                 'metrics': {'pss_bytes': 1, 'rss_bytes': 1, 'cpu_ns': 1,
+                             'thread_count': 1, 'fd_count': 1}},
+            ],
+        }
+        totals = rc0.aggregate_process_tree(sample)
+        self.assertEqual(totals['quality'], 'UNKNOWN')
+        self.assertTrue(all(value is None for value in totals['metrics'].values()))
+
+    def test_boolean_or_float_metrics_are_unknown_not_summed(self):
+        for bad in (True, 1.5, -1, '10'):
+            with self.subTest(bad=bad):
+                sample = {
+                    'quality': 'MEASURED', 'truncated': False,
+                    'processes': [{
+                        'identity_valid': True, 'quality': 'MEASURED',
+                        'metrics': {'pss_bytes': bad, 'rss_bytes': 1, 'cpu_ns': 1,
+                                    'thread_count': 1, 'fd_count': 1},
+                    }],
+                }
+                totals = rc0.aggregate_process_tree(sample)
+                self.assertEqual(totals['quality'], 'UNKNOWN')
+                self.assertIsNone(totals['metrics']['pss_bytes'])
 
     def test_cross_tree_aggregation_rejects_shared_process_identity(self):
         first = measured_session('s1')['sample']
@@ -956,6 +1291,18 @@ class Rc0OwnerSampleAggregationTests(unittest.TestCase):
                 ingested['workers'][0]['source_revision'],
                 'blake3:' + 'b' * 64,
             )
+            claimed_attested = json.loads(json.dumps(snapshot))
+            claimed_attested['productAttestation'] = {
+                'status': 'ATTESTED',
+                'hostRunReceiptRef': 'caller-receipt',
+                'independentVerifierEvidenceRef': 'caller-evidence',
+                'sourceCommit': 'abc123',
+                'required': ['hostRunReceiptRef', 'independentVerifierEvidenceRef', 'sourceCommit'],
+            }
+            path.write_text(json.dumps(claimed_attested), encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, 'accurately state NOT_ATTESTED'):
+                rc0.load_owner_snapshot(path)
+
             duplicate_worker = json.loads(json.dumps(snapshot))
             duplicate_worker['workers'].append(json.loads(json.dumps(duplicate_worker['workers'][0])))
             path.write_text(json.dumps(duplicate_worker), encoding='utf-8')
@@ -1105,6 +1452,42 @@ class Rc0OwnerSampleAggregationTests(unittest.TestCase):
         self.assertEqual(result['attestation'], 'NOT_ATTESTED')
         self.assertEqual(result['product_attribution'], 'UNAVAILABLE')
 
+    def test_owner_sample_worker_and_combined_totals_reject_u64_overflow(self):
+        u64_max = str((1 << 64) - 1)
+        names = ('pssBytes', 'rssBytes', 'cpuNs', 'threadCount', 'fdCount', 'privateBytes')
+        measured = lambda value: {name: {'quality': 'MEASURED', 'value': value} for name in names}
+
+        worker_overflow = rc0.aggregate_owner_samples([{
+            'worker_count': 2,
+            'sample_sequence': 1,
+            'workers': [{'metrics': measured(u64_max)}, {'metrics': measured('1')}],
+            'process_identities': [
+                {'pid': 910, 'start_identity': '90'},
+                {'pid': 911, 'start_identity': '91'},
+            ],
+            'aggregate': measured(u64_max),
+            'session_process_owner': None,
+            'session_process_metrics': None,
+        }])
+        self.assertEqual(worker_overflow['metrics']['pssBytes']['quality'], 'UNKNOWN')
+        self.assertIsNone(worker_overflow['metrics']['pssBytes']['value'])
+
+        combined_overflow = rc0.aggregate_owner_samples([{
+            'worker_count': 1,
+            'sample_sequence': 1,
+            'workers': [{'metrics': measured('1')}],
+            'process_identities': [{'pid': 912, 'start_identity': '92'}],
+            'aggregate': measured(u64_max),
+            'session_process_owner': {
+                'pid': 901, 'start_identity': '77', 'owner_epoch': '4',
+                'process_incarnation': 'inc-4',
+                'executable_identity_digest': 'blake3:' + 'a' * 64,
+            },
+            'session_process_metrics': measured(u64_max),
+        }])
+        self.assertEqual(combined_overflow['combined_metrics']['pssBytes']['quality'], 'UNKNOWN')
+        self.assertIsNone(combined_overflow['combined_metrics']['pssBytes']['value'])
+
     def test_unknown_core_owner_keeps_combined_resource_truth_unknown(self):
         metrics = {name: {'quality': 'MEASURED', 'value': '0'} for name in (
             'pssBytes', 'rssBytes', 'cpuNs', 'threadCount', 'fdCount', 'privateBytes')}
@@ -1145,6 +1528,196 @@ class Rc0OwnerSampleAggregationTests(unittest.TestCase):
         self.assertEqual(result['session_process_owner_metrics']['pssBytes']['quality'], 'UNKNOWN')
         self.assertEqual(result['combined_metrics']['pssBytes']['quality'], 'UNKNOWN')
         self.assertEqual(result['quality'], 'UNKNOWN')
+
+
+class Rc0LeakSlopeTests(unittest.TestCase):
+    def test_constant_pss_reports_a_zero_slope(self):
+        slope = rc0.leak_slope([(1_000, 500), (2_000, 500), (3_000, 500)])
+        self.assertEqual(slope['quality'], 'MEASURED')
+        self.assertEqual(slope['slope_bytes_per_hour'], '0.0')
+        self.assertEqual(slope['sample_count'], 3)
+        self.assertEqual(slope['window_ms'], 2_000)
+
+    def test_growth_and_shrink_slopes_use_exact_integer_math(self):
+        # +150 bytes over 30 minutes -> 300.0 bytes/hour.
+        growth = rc0.leak_slope([(0, 100), (1_800_000, 250)])
+        self.assertEqual(growth['slope_bytes_per_hour'], '300.0')
+        # -90 bytes over 60 minutes -> -90.0 bytes/hour; shrink is never clamped.
+        shrink = rc0.leak_slope([(0, 500), (3_600_000, 410)])
+        self.assertEqual(shrink['slope_bytes_per_hour'], '-90.0')
+
+    def test_one_tenth_rounding_is_deterministic(self):
+        # 1 byte over 3600 s = 1.0 B/h; 1 byte over 7200 s = 0.5 B/h rounds
+        # through integer math, never floating point.
+        self.assertEqual(rc0.leak_slope([(0, 0), (3_600_000, 1)])['slope_bytes_per_hour'], '1.0')
+        self.assertEqual(rc0.leak_slope([(0, 0), (7_200_000, 1)])['slope_bytes_per_hour'], '0.5')
+        # 7 bytes over 8 hours = 0.875 B/h -> nearest tenth is 0.9.
+        self.assertEqual(rc0.leak_slope([(0, 0), (28_800_000, 7)])['slope_bytes_per_hour'], '0.9')
+
+    def test_single_or_empty_series_is_unknown_not_zero(self):
+        for series in ([], [(1_000, 10)]):
+            slope = rc0.leak_slope(series)
+            self.assertEqual(slope['quality'], 'UNKNOWN')
+            self.assertIsNone(slope['slope_bytes_per_hour'])
+
+    def test_non_increasing_timestamps_are_unknown(self):
+        slope = rc0.leak_slope([(2_000, 10), (2_000, 20)])
+        self.assertEqual(slope['quality'], 'UNKNOWN')
+
+    def test_negative_or_boolean_inputs_are_unknown(self):
+        self.assertEqual(rc0.leak_slope([(0, -1), (1_000, 5)])['quality'], 'UNKNOWN')
+        self.assertEqual(rc0.leak_slope([(0, True), (1_000, 5)])['quality'], 'UNKNOWN')
+        self.assertEqual(rc0.leak_slope([(False, 1), (1_000, 5)])['quality'], 'UNKNOWN')
+
+    def test_series_above_the_sample_bound_is_unknown(self):
+        series = [(index * 1_000, 10) for index in range(rc0.MAX_LEAK_SLOPE_SAMPLES + 1)]
+        self.assertEqual(rc0.leak_slope(series)['quality'], 'UNKNOWN')
+
+    def test_raw_endpoints_are_retained_for_review(self):
+        slope = rc0.leak_slope([(1_000, 10), (4_000, 40)])
+        self.assertEqual(slope['first'], {'timestamp_ms': '1000', 'pss_bytes': '10'})
+        self.assertEqual(slope['last'], {'timestamp_ms': '4000', 'pss_bytes': '40'})
+
+
+class Rc0DiskRootTests(unittest.TestCase):
+    def test_measures_regular_files_without_following_symlinks(self):
+        with temporary_directory() as tmp:
+            root = Path(tmp)
+            (root / 'build').mkdir()
+            (root / 'build' / 'a.bin').write_bytes(b'x' * 100)
+            (root / 'build' / 'nested').mkdir()
+            (root / 'build' / 'nested' / 'b.bin').write_bytes(b'y' * 250)
+            outside = root / 'outside.bin'
+            outside.write_bytes(b'z' * 1_000)
+            link = root / 'build' / 'escape'
+            try:
+                link.symlink_to(outside)
+            except OSError:
+                self.skipTest('symlinks are unavailable here')
+            result = rc0.repository_tree_bytes(root / 'build')
+        self.assertEqual(result['quality'], 'MEASURED')
+        self.assertEqual(result['bytes'], '350')
+        self.assertEqual(result['file_count'], '2')
+        self.assertEqual(result['special_entry_count'], '1', 'the symlink is counted, never followed')
+
+    def test_missing_root_is_unknown_not_zero(self):
+        result = rc0.repository_tree_bytes('scripts/perf/definitely-missing-dir')
+        self.assertEqual(result['quality'], 'UNKNOWN')
+        self.assertIsNone(result['bytes'])
+
+    def test_parent_traversal_and_outside_paths_are_rejected(self):
+        for path in ('../outside', '/etc'):
+            with self.assertRaises(ValueError, msg=path):
+                rc0.repository_tree_bytes(path)
+
+    def test_symlinked_root_is_unknown_not_followed(self):
+        with temporary_directory() as tmp:
+            root = Path(tmp)
+            real = root / 'real'
+            real.mkdir()
+            (real / 'f.bin').write_bytes(b'x' * 8)
+            link = root / 'link'
+            try:
+                link.symlink_to(real, target_is_directory=True)
+            except OSError:
+                self.skipTest('symlinks are unavailable here')
+            result = rc0.repository_tree_bytes(link)
+        self.assertEqual(result['quality'], 'UNKNOWN')
+
+
+class Rc0CacheEvidenceTests(unittest.TestCase):
+    def envelope(self, **overrides):
+        value = {
+            'schemaVersion': 1,
+            'producer': 'horizoncode.worker-owner.cache-registry',
+            'families': [{
+                'family': 'syntax', 'principal': 'principal-a', 'workspace': 'workspace-a',
+                'sourceGeneration': 'gen-1', 'buildVersion': 'build-1', 'generation': '1',
+                'allocatedBytes': '30', 'accountedSourceBytes': None, 'entryCount': '1',
+                'maxBytes': '1024', 'maxAccountedSourceBytes': '1024', 'maxEntries': '128',
+                'ttlMs': '100', 'lastUsedMs': '5', 'protection': 'DERIVED_READ_ONLY',
+                'ownerPinCount': '0', 'pinned': False, 'evictionPending': False,
+                'evictionOwner': rc0.CACHE_EVICTION_OWNER,
+            }],
+            'measuredBytes': '30', 'measuredEntries': '1', 'accountedSourceBytes': None,
+            'evictionOwner': rc0.CACHE_EVICTION_OWNER,
+            'reclaimedBytes': None,
+            'reclaimedBytesNote': 'physical reclaimed bytes remain unknown until the next '
+                                  'authenticated post-retirement observation',
+        }
+        value.update(overrides)
+        return value
+
+    def write(self, tmp, value):
+        path = Path(tmp) / 'cache-evidence.json'
+        path.write_text(json.dumps(value), encoding='utf-8')
+        return path
+
+    def test_valid_envelope_ingests_with_bounds_and_owner(self):
+        with temporary_directory() as tmp:
+            envelope = rc0.load_cache_evidence(self.write(tmp, self.envelope()))
+        row = envelope['families'][0]
+        self.assertEqual(row['maxBytes'], '1024')
+        self.assertEqual(row['maxEntries'], '128')
+        self.assertEqual(row['evictionOwner'], rc0.CACHE_EVICTION_OWNER)
+        self.assertIsNone(envelope['reclaimedBytes'])
+
+    def test_unknown_allocation_stays_null_never_zero(self):
+        envelope = self.envelope()
+        envelope['families'][0]['allocatedBytes'] = None
+        envelope['families'][0]['entryCount'] = None
+        envelope['measuredBytes'] = None
+        envelope['measuredEntries'] = None
+        with temporary_directory() as tmp:
+            loaded = rc0.load_cache_evidence(self.write(tmp, envelope))
+        self.assertIsNone(loaded['families'][0]['allocatedBytes'])
+        self.assertIsNone(loaded['measuredBytes'])
+
+    def test_reclaimed_bytes_claim_is_rejected(self):
+        with temporary_directory() as tmp:
+            with self.assertRaisesRegex(ValueError, 'reclaimed'):
+                rc0.load_cache_evidence(self.write(tmp, self.envelope(reclaimedBytes='10')))
+
+    def test_wrong_eviction_owner_is_rejected(self):
+        envelope = self.envelope()
+        envelope['families'][0]['evictionOwner'] = 'caller-chosen-owner'
+        with temporary_directory() as tmp:
+            with self.assertRaisesRegex(ValueError, 'eviction owner'):
+                rc0.load_cache_evidence(self.write(tmp, envelope))
+
+    def test_allocation_over_declared_bound_is_rejected(self):
+        envelope = self.envelope()
+        envelope['families'][0]['allocatedBytes'] = '2048'
+        envelope['measuredBytes'] = '2048'
+        with temporary_directory() as tmp:
+            with self.assertRaisesRegex(ValueError, 'exceeds'):
+                rc0.load_cache_evidence(self.write(tmp, envelope))
+
+    def test_noncanonical_protection_class_is_rejected(self):
+        envelope = self.envelope()
+        envelope['families'][0]['protection'] = 'DERIVED'
+        with temporary_directory() as tmp:
+            with self.assertRaisesRegex(ValueError, 'protection'):
+                rc0.load_cache_evidence(self.write(tmp, envelope))
+
+    def test_duplicate_family_key_is_rejected(self):
+        envelope = self.envelope()
+        envelope['families'] = [envelope['families'][0], dict(envelope['families'][0])]
+        with temporary_directory() as tmp:
+            with self.assertRaisesRegex(ValueError, 'repeats one family key'):
+                rc0.load_cache_evidence(self.write(tmp, envelope))
+
+    def test_duplicate_json_properties_are_rejected(self):
+        raw = ('{"schemaVersion": 1, "producer": "horizoncode.worker-owner.cache-registry",'
+               ' "families": [], "measuredBytes": null, "measuredEntries": null,'
+               ' "accountedSourceBytes": null, "evictionOwner": "hostkernel.cache-owner",'
+               ' "reclaimedBytes": null, "reclaimedBytesNote": "note",'
+               ' "reclaimedBytes": null}')
+        with temporary_directory() as tmp:
+            path = Path(tmp) / 'dup.json'
+            path.write_text(raw, encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, 'duplicate'):
+                rc0.load_cache_evidence(path)
 
 
 if __name__ == '__main__':

@@ -375,7 +375,8 @@ check('DESIGN-RESERVED' in catalog and '## 33.30 ' in catalog,
 root_license=has_first_party_root_notice(R,tracked_root_paths(R))
 check((R/'opencode/LICENSE').is_file(),
       'DOC-006 pinned upstream MIT license/permission notice missing')
-# DOC-015: package metadata must not invent an outbound rights grant.
+# DOC-015: package metadata must not invent an outbound rights grant before a
+# first-party license/notice is tracked in the Git index.
 if not root_license:
     check(root_package.get('license') == 'UNLICENSED' and root_package.get('private') is True,
           'DOC-015 root package declares a distribution license despite no tracked first-party root notice')

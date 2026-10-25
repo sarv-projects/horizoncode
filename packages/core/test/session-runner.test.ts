@@ -36,12 +36,13 @@ import { SessionRunCoordinator } from "@opencode-ai/core/session/run-coordinator
 import { SessionRunner } from "@opencode-ai/core/session/runner"
 import * as SessionRunnerLLM from "@opencode-ai/core/session/runner/llm"
 import { SessionRunnerModel } from "@opencode-ai/core/session/runner/model"
-import { SessionSupervisor, SessionSupervisorError } from "@opencode-ai/core/session/supervisor"
+import { SessionSupervisor, SessionSupervisorError, type Interface as SessionSupervisorInterface } from "@opencode-ai/core/session/supervisor"
 import type { EffectAdmission, GuardedToolCall } from "@opencode-ai/core/session/supervisor"
 import { sameTrustedPrincipal, TrustedPrincipalContext, type TrustedPrincipal } from "@opencode-ai/core/trusted-principal"
 import { ToolRegistry } from "@opencode-ai/core/tool/registry"
 import { ApplicationTools } from "@opencode-ai/core/tool/application-tools"
 import { AgentV2 } from "@opencode-ai/core/agent"
+import type * as AgentProfileV2 from "@opencode-ai/schema/agent-profile-v2"
 import { Config } from "@opencode-ai/core/config"
 import { ConfigCompaction } from "@opencode-ai/core/config/compaction"
 import { Tool } from "@opencode-ai/core/tool/tool"
@@ -52,6 +53,7 @@ import {
   SessionMessageTable,
   SessionTable,
 } from "@opencode-ai/core/session/sql"
+import { DirectProviderRequestTable } from "@opencode-ai/core/session/sql"
 import { SessionStore } from "@opencode-ai/core/session/store"
 import { SystemContext } from "@opencode-ai/core/system-context"
 import { SystemContextRegistry } from "@opencode-ai/core/system-context/registry"
@@ -68,6 +70,49 @@ import path from "node:path"
 import { testEffect } from "./lib/effect"
 
 const requests: LLMRequest[] = []
+// Trusted catalog route projection consumed by the runner's direct-provider
+// admission. The mock transport pins and dispatches through the real journal
+// exactly like P6's pinned provider fetch: PINNED -> DISPATCHING, and EventV2
+// Step.Ended settlement commits SETTLED in the same transaction.
+const directRoute = {
+  routeID: `llm_${"a".repeat(64)}`,
+  routeRevision: `llm_${"a".repeat(64)}`,
+  endpointRevision: `blake3:${"e".repeat(64)}`,
+  endpointBase: "https://api.opencode.ai/v1",
+}
+const transportRequestDigest = `blake3:${"b".repeat(64)}`
+const journalDispatches: string[] = []
+// Test-only adversarial pins for the direct-provider fail-closed journeys.
+let pinEndpointOverride: string | undefined
+let profileModelOverride: { readonly providerId: string; readonly modelId: string } | undefined
+type MockExecutorContext = {
+  readonly directContext: {
+    readonly pin: (input: {
+      readonly endpointRevision: string
+      readonly transportRequestDigest: string
+    }) => Effect.Effect<{
+      readonly beginDispatch: () => Effect.Effect<{
+        readonly state: "DISPATCHING"
+        readonly pinDigest: string
+        readonly transportRequestDigest: string
+      }>
+    }>
+  }
+}
+const dispatchJournal = (executorContext?: MockExecutorContext) =>
+  executorContext?.directContext
+    ? executorContext.directContext
+        .pin({ endpointRevision: pinEndpointOverride ?? directRoute.endpointRevision, transportRequestDigest })
+        .pipe(
+          Effect.flatMap((binding) => binding.beginDispatch()),
+          Effect.tap((dispatch) =>
+            Effect.sync(() => {
+              journalDispatches.push("dispatched")
+              return dispatch
+            }),
+          ),
+        )
+    : Effect.void
 let response: LLMEvent[] = []
 let responses: LLMEvent[][] | undefined
 let responseStream: Stream.Stream<LLMEvent, LLMError> | undefined
@@ -83,23 +128,36 @@ const client = Layer.succeed(
   LLMClient.Service,
   LLMClient.Service.of({
     prepare: () => Effect.die("unused"),
-    stream: ((request: LLMRequest) => {
+    stream: ((request: LLMRequest, executorContext?: MockExecutorContext) => {
       requests.push(request)
+      let events: Stream.Stream<LLMEvent, LLMError>
+      // Journal the direct request exactly like P6's pinned provider fetch for
+      // every real scripted provider response. A scripted transport failure or
+      // an empty no-op response models a pre-dispatch local failure, which
+      // never reaches the durable DISPATCHING transition.
+      let shouldDispatch = false
       if (responseStream) {
         const stream = responseStream
         responseStream = undefined
-        return stream
+        events = stream
+        shouldDispatch = true
+      } else if (streamFailure) {
+        events = Stream.fail(streamFailure)
+      } else {
+        const scripted = responses === undefined ? response : (responses.shift() ?? [])
+        events = Stream.fromIterable(scripted)
+        shouldDispatch = scripted.length > 0
       }
-      const events = streamFailure
-        ? Stream.fail(streamFailure)
-        : Stream.fromIterable(responses === undefined ? response : (responses.shift() ?? []))
-      if (!streamGate) return events
-      return Stream.unwrap(
-        (streamStarted ? Deferred.succeed(streamStarted, undefined) : Effect.void).pipe(
-          Effect.andThen(Deferred.await(streamGate)),
-          Effect.as(events),
-        ),
-      )
+      if (streamGate) {
+        const gated = events
+        events = Stream.unwrap(
+          (streamStarted ? Deferred.succeed(streamStarted, undefined) : Effect.void).pipe(
+            Effect.andThen(Deferred.await(streamGate)),
+            Effect.as(gated),
+          ),
+        )
+      }
+      return shouldDispatch ? Stream.unwrap(dispatchJournal(executorContext).pipe(Effect.as(events))) : events
     }) as unknown as LLMClientShape["stream"],
     generate: () => Effect.die("unused"),
   }),
@@ -140,12 +198,41 @@ const permission = Layer.succeed(
     policySnapshotDigest: () => Effect.succeed(permissionPolicyDigest),
   }),
 )
+const defaultPermissionScopeDigest = `blake3:${"1".repeat(64)}`
 const supervisor = Layer.succeed(
   SessionSupervisor.Service,
   SessionSupervisor.Service.of({
     open: () => Effect.die("unused"),
     openForSession: () => Effect.succeed({ status: "unavailable", reason: "unused" }),
-    prepareToolBatch: (input) =>
+    // HostKernel-authored direct permission-mode provenance. The direct
+    // provider authority resolver (opencode LLM) requires the authenticated
+    // ServerAuth principal carried by the runner context and this exact
+    // host-derived snapshot; it must never fall back to a default posture.
+    directSessionPermissionModeSnapshot: (input: { readonly sessionID: string; readonly locationRef: unknown }) =>
+      Effect.succeed({
+        schemaVersion: 1 as const,
+        sessionId: input.sessionID,
+        ownerEpoch: "1",
+        locationId: "loc_direct",
+        workspaceId: "wrk_runner_test",
+        workspaceRootDigest: `blake3:${"a".repeat(64)}`,
+        executionBackendId: "horizon.host",
+        policyDigest: permissionPolicyDigest,
+        sandboxMode: "read-only" as const,
+        approvalPolicy: "on-request" as const,
+        source: "default" as const,
+        revision: "1",
+        digest: defaultPermissionScopeDigest,
+      }),
+    directProviderPermissionScope: (input: { readonly sessionID: string }) =>
+      Effect.succeed({
+        sessionID: input.sessionID,
+        locationID: "loc_direct",
+        ownerEpoch: "1",
+        permissionScopeDigest: defaultPermissionScopeDigest,
+        policyDigest: permissionPolicyDigest,
+      }),
+    prepareToolBatch: (input: { readonly calls: ReadonlyArray<GuardedToolCall>; readonly turnContextDigest: string }) =>
       Effect.sync(() => {
         effectBatches.push([...input.calls])
         effectTurnContextDigests.push(input.turnContextDigest)
@@ -167,12 +254,12 @@ const supervisor = Layer.succeed(
     awaitManagedVerifierApprovals: () => Effect.die("unused"),
     executePatch: () => Effect.die("unused"),
     runPatch: () => Effect.die("unused"),
-    executeWrite: (input) =>
+    executeWrite: (input: { readonly lease: { readonly effectID: string }; readonly content: string }) =>
       Effect.sync(() => {
         writeExecutionCalls++
         const admission = preparedEffectAdmission
         if (admission?.status !== "prepared_batch") throw new Error("unexpected Rust write execution")
-        const member = admission.calls.find((entry) => entry.lease.effectID === input.lease.effectID)
+        const member = admission.calls.find((entry) => entry.lease?.effectID === input.lease.effectID)
         const call = effectBatches.at(-1)?.find((entry) => entry.callID === member?.callID)
         const args = call?.arguments
         if (!member || !call || typeof args !== "object" || args === null || !("path" in args) || typeof args.path !== "string") {
@@ -194,7 +281,9 @@ const supervisor = Layer.succeed(
     hostOwnerEpoch: () => Effect.die("unused"),
     subscribeHostKernelEvents: () => Stream.empty,
     watchSession: () => Effect.void,
-  }),
+    // The runner exercises only the members implemented above; every other
+    // supervisor operation is a hard test failure if unexpectedly reached.
+  } as unknown as SessionSupervisorInterface),
 )
 const echo = Layer.effectDiscard(
   ToolRegistry.Service.use((registry) =>
@@ -231,8 +320,77 @@ const echo = Layer.effectDiscard(
 const echoNode = makeLocationNode({ name: "test/session-runner-tools", layer: echo, deps: [ToolRegistry.node] })
 let modelResolveHook = Effect.void
 let currentModel = model
-const models = SessionRunnerModel.layerWith((session) =>
-  modelResolveHook.pipe(Effect.as(session.model?.id === "replacement" ? replacementModel : currentModel)),
+let resolvedModelForProfile = model
+const resolveModel = (session: { readonly model?: { readonly id: string } | undefined }) =>
+  session.model?.id === "replacement" ? replacementModel : currentModel
+const models = Layer.succeed(
+  SessionRunnerModel.Service,
+  SessionRunnerModel.Service.of({
+    resolve: (session) => modelResolveHook.pipe(Effect.as(resolveModel(session))),
+    resolveSelection: (session) =>
+      modelResolveHook.pipe(
+        Effect.map(() => {
+          const resolved = resolveModel(session)
+          resolvedModelForProfile = resolved
+          return {
+            model: resolved,
+            directProviderRoute: {
+              providerID: resolved.provider,
+              modelID: resolved.id,
+              ...directRoute,
+            },
+          }
+        }),
+      ),
+  }),
+)
+// The runner admits direct provider requests only through the trusted primary
+// AgentProfileV2 pin; the profile tracks the exact catalog-selected model.
+const runnerProfile = () =>
+  ({
+    schemaVersion: 2,
+    profileId: "user.runner",
+  revision: 1,
+  name: "Runner",
+  description: "Runner test profile",
+  source: "user",
+  roles: ["main"],
+  purpose: "Exercise the runner",
+  whenToUse: "In tests",
+  whenNotToUse: "Never",
+  adapter: { kind: "native", adapterId: "horizon.native" },
+  model: profileModelOverride ?? { providerId: resolvedModelForProfile.provider, modelId: resolvedModelForProfile.id },
+  harness: "native-minimal",
+  reasoning: "low",
+  variants: [],
+  instructions: { extraRefs: [], maxCompiledTokens: 4096 },
+  tools: [],
+  allowedSkillIds: [],
+  deniedSkillIds: [],
+  allowedMcpServers: [],
+  allowedMcpToolPatterns: [],
+  allowedSubagentIds: [],
+  deniedSubagentIds: [],
+  pathRules: [],
+  context: { isolation: "fresh", allowImages: false, allowDocuments: false, allowArtifacts: false },
+  inputMode: "read_only",
+  memoryPolicy: "none",
+  isolation: "read_only",
+  lifecycleHooks: [],
+  capabilityCeiling: [],
+  limits: { maxDepth: 1, maxActiveChildren: 1, maxTotalChildren: 1, maxPendingMessages: 1, maxMessageBytes: 4096 },
+  maxParallelChildren: 1,
+  enabled: true,
+}) as unknown as AgentProfileV2.AgentProfileDefinitionV2
+const agentProfiles = Layer.succeed(
+  Config.AgentProfileService,
+  Config.AgentProfileService.of({
+    agentProfiles: () => Effect.die("unused"),
+    agentProfileSelectors: () => Effect.die("unused"),
+    agentProfile: () => Effect.die("unused"),
+    agentProfileSelector: () => Effect.die("unused"),
+    primaryAgentProfile: () => Effect.sync(runnerProfile),
+  }),
 )
 const systemContextKey = SystemContext.Key.make("test/context")
 let systemBaseline = "Initial context"
@@ -288,6 +446,9 @@ const referenceGuidance = Layer.mock(ReferenceGuidance.Service, { load: () => Ef
 const config = Layer.succeed(
   Config.Service,
   Config.Service.of({
+    trustedGitExecutable: () => Effect.succeed(undefined),
+    workspaceCommandProfiles: () => Effect.die("unused"),
+    workspaceCommandProfile: () => Effect.die("unused"),
     turnSnapshot: () =>
       Effect.sync(() => {
         try {
@@ -308,7 +469,7 @@ const config = Layer.succeed(
           }),
         }),
       ]),
-  }),
+  } as unknown as Config.Interface),
 )
 const locationDirectory = mkdtempSync(path.join(tmpdir(), "horizoncode-session-runner-"))
 afterAll(() => rmSync(locationDirectory, { recursive: true, force: true }))
@@ -318,11 +479,12 @@ const runnerLayer = AppNodeBuilder.build(SessionRunnerLLM.node, [
   [SessionSupervisor.node, supervisor],
   [SessionRunnerModel.node, models],
   [SystemContextRegistry.node, systemContext],
-  [Location.node, Location.boundNode({ directory: AbsolutePath.make("/project") })],
+  [Location.node, Location.boundNode({ directory: AbsolutePath.make(locationDirectory) })],
   [SkillGuidance.node, skillGuidance],
   [ReferenceGuidance.node, referenceGuidance],
   [PermissionV2.node, permission],
   [Config.node, config],
+  [Config.agentProfileNode, agentProfiles],
 ])
 const execution = Layer.effect(
   SessionExecution.Service,
@@ -385,6 +547,7 @@ const it = testEffect(
       [Snapshot.node, Snapshot.noopLayer],
       [SessionExecution.node, execution],
       [Config.node, config],
+      [Config.agentProfileNode, agentProfiles],
     ],
   ),
 )
@@ -405,6 +568,9 @@ const insertSession = (id: SessionV2.ID) =>
         directory: locationDirectory,
         title: "test",
         version: "test",
+        // Direct provider requests are bound to the authenticated Session owner;
+        // the fixture must carry the exact server_auth principal the runner context provides.
+        metadata: { horizonPrincipalOwner: { kind: "server_auth", subject: sessionTestPrincipal.subject } },
       })
       .onConflictDoNothing()
       .run()
@@ -421,6 +587,9 @@ const setup = Effect.gen(function* () {
   systemLoadHook = Effect.void
   modelResolveHook = Effect.void
   currentModel = model
+  pinEndpointOverride = undefined
+  profileModelOverride = undefined
+  journalDispatches.length = 0
   skillBaselines.clear()
   effectBatches.length = 0
   effectTurnContextDigests.length = 0
@@ -608,14 +777,19 @@ const verifyEphemeralDeltas = (kind: FragmentKind) =>
     }>
     expect(streamed).toHaveLength(32)
     const expectedSequences: number[] = []
+    const expectedOffsets: number[] = []
     let sequence = 0
+    let offset = 0
     for (const chunk of chunks) {
       expectedSequences.push(sequence)
-      sequence += chunk.length
+      expectedOffsets.push(offset)
+      sequence += 1
+      offset += chunk.length
     }
     expect(streamed.map((event) => event.data.sequence)).toEqual(expectedSequences)
-    expect(new Set(streamed.map((event) => event.data.sourceGeneration))).toEqual(
-      new Set([`${streamed[0].data.assistantMessageID}:${fragmentID(kind, "many")}`]),
+    expect((streamed as Array<{ data: { offset?: number } }>).map((event) => event.data.offset)).toEqual(expectedOffsets)
+    expect((streamed as Array<{ data: { sourceGeneration?: string } }>).map((event) => event.data.sourceGeneration)).toEqual(
+      Array.from({ length: streamed.length }, () => streamed[0]!.data.sourceGeneration),
     )
     expect(deltas).toHaveLength(0)
     expect(yield* session.context(sessionID)).toMatchObject(expectedContext)
@@ -726,13 +900,13 @@ describe("SessionRunnerLLM", () => {
 
       expect(requests[0]?.tools.map((tool) => tool.name)).toContain("application_context")
       expect(contexts).toEqual([
-        {
+        expect.objectContaining({
           sessionID,
           agent: AgentV2.ID.make("build"),
           assistantMessageID: expect.stringMatching(/^msg_/),
           toolCallID: "call-application",
           trustedPrincipal: { kind: "server_auth", subject: "core-test-user" },
-        },
+        }),
       ])
       const projected = yield* session.context(sessionID)
       expect(projected).toMatchObject([
@@ -1026,6 +1200,60 @@ describe("SessionRunnerLLM", () => {
       expect(yield* session.messages({ sessionID })).toMatchObject([
         { id: message.id, type: "user", text: "Run automatically" },
       ])
+    }),
+  )
+
+  it.effect("binds the resolved context compile policy into the published ledger", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const events = yield* EventV2.Service
+      requests.length = 0
+      responses = undefined
+      streamGate = undefined
+      streamStarted = undefined
+      response = fragmentFixture("text", "text-compile-policy", ["policy"]).completeEvents
+
+      // ContextLedger is an in-process (non-durable) projection: it reaches
+      // live subscribers only, never the durable EventTable rows.
+      const live = yield* events
+        .subscribe(SessionEvent.ContextLedger)
+        .pipe(Stream.take(1), Stream.runCollect, Effect.forkScoped)
+      yield* Effect.yieldNow
+
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Compile policy probe" }), resume: false })
+      yield* session.resume(sessionID)
+
+      const collected = Array.from(yield* Fiber.join(live))
+      expect(collected).toHaveLength(1)
+      const payload = collected[0]!
+      const data: Record<string, unknown> = payload.data
+      if (typeof data.ledger !== "object" || data.ledger === null || !("compilePolicy" in data.ledger)) {
+        throw new Error("context ledger is missing its compilePolicy binding")
+      }
+      const policyRaw: unknown = data.ledger.compilePolicy
+      if (typeof policyRaw !== "object" || policyRaw === null ||
+        !("schemaVersion" in policyRaw) || !("requested" in policyRaw) || !("prefixCacheSupport" in policyRaw)) {
+        throw new Error("context compile policy is missing required fields")
+      }
+      const policy = policyRaw as Record<string, unknown>
+      expect(policy.schemaVersion).toBe(1)
+      expect(policy.requested).toBe("auto")
+      // The route prefix-cache capability producer is P6-owned and has not
+      // landed; the runner must fail closed to `unknown` instead of guessing.
+      expect(policy.prefixCacheSupport).toBe("unknown")
+      // §30.26 catalog provenance is *advisory*: it must never become a
+      // blocking prerequisite of a direct turn, and it must never resolve a
+      // cache tier on its own. With no authenticated catalog row bound to this
+      // route the runner pins the contract's fail-closed provenance, so
+      // `catalog_hint` stays ineligible and the effective tier stays
+      // `minimize_tokens`.
+      const hints = policy.catalogHints as Record<string, unknown> | undefined
+      if (typeof hints !== "object" || hints === null) throw new Error("context compile policy is missing its catalog hints")
+      expect(hints.catalogSource).toBe("unavailable")
+      expect(hints.catalogFreshness).toBe("unknown")
+      expect(policy.effective).toBe("minimize_tokens")
+      expect(policy.resolvedFrom).toBe("conservative_default")
     }),
   )
 
@@ -3671,6 +3899,13 @@ describe("SessionRunnerLLM", () => {
         { type: "user", text: "Interrupt blocked tool" },
         { type: "assistant", content: [{ type: "tool", id: "call-before-interrupt", state: { status: "error" } }] },
       ])
+      // The interrupted dispatch is recovered as an UNKNOWN outcome and is
+      // surfaced once; it is never replayed. A later accepted continuation
+      // journals a new request ID instead of reusing the lost one.
+      const unknownExit = yield* session.resume(sessionID).pipe(Effect.exit)
+      expect(
+        Exit.isFailure(unknownExit) && String(Cause.squash(unknownExit.cause)).includes("UNKNOWN outcome"),
+      ).toBe(true)
       requests.length = 0
       responseStream = undefined
       response = []
@@ -4148,6 +4383,7 @@ describe("SessionRunnerLLM", () => {
     Effect.gen(function* () {
       yield* setup
       const session = yield* SessionV2.Service
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Duplicate text start" }), resume: false })
       responses = undefined
       streamGate = undefined
       streamStarted = undefined
@@ -4163,6 +4399,7 @@ describe("SessionRunnerLLM", () => {
     Effect.gen(function* () {
       yield* setup
       const session = yield* SessionV2.Service
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Reused text part" }), resume: false })
       responses = undefined
       streamGate = undefined
       streamStarted = undefined
@@ -4213,6 +4450,7 @@ describe("SessionRunnerLLM", () => {
     Effect.gen(function* () {
       yield* setup
       const session = yield* SessionV2.Service
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Malformed tool input" }), resume: false })
       responses = undefined
       streamGate = undefined
       streamStarted = undefined
@@ -4221,6 +4459,123 @@ describe("SessionRunnerLLM", () => {
       expect(yield* session.resume(sessionID).pipe(Effect.catchDefect(Effect.succeed))).toBe(
         "Tool input delta before start: call-1",
       )
+    }),
+  )
+
+  it.effect("settles the direct provider journal with the canonical assistant step", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const { db } = yield* Database.Service
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Settle the journal" }), resume: false })
+      response = fragmentFixture("text", "text-settle", ["done"]).completeEvents
+
+      yield* session.resume(sessionID)
+
+      const rows = yield* db
+        .select()
+        .from(DirectProviderRequestTable)
+        .where(eq(DirectProviderRequestTable.session_id, sessionID))
+        .all()
+        .pipe(Effect.orDie)
+      expect(rows).toHaveLength(1)
+      expect(rows[0]!.state).toBe("SETTLED")
+      expect(rows[0]!.request_id).toBe(String(requests.at(-1)!.id))
+      expect(rows[0]!.provider_id).toBe("fake")
+      expect(rows[0]!.model_id).toBe("fake-model")
+      expect(rows[0]!.route_revision).toBe(directRoute.routeRevision)
+      expect(rows[0]!.endpoint_revision).toBe(directRoute.endpointRevision)
+      expect(rows[0]!.transport_request_digest).toBe(transportRequestDigest)
+      expect(journalDispatches).toHaveLength(1)
+    }),
+  )
+
+  it.effect("rejects a selected-route endpoint mismatch before any durable provider pin", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const { db } = yield* Database.Service
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Route mismatch" }), resume: false })
+      pinEndpointOverride = `blake3:${"0".repeat(64)}`
+      response = [LLMEvent.stepStart({ index: 0 }), LLMEvent.finish({ reason: "stop" })]
+
+      const exit = yield* session.resume(sessionID).pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit) && String(Cause.squash(exit.cause)).includes("endpoint differs from the trusted route projection")).toBe(true)
+      const rows = yield* db
+        .select()
+        .from(DirectProviderRequestTable)
+        .where(eq(DirectProviderRequestTable.session_id, sessionID))
+        .all()
+        .pipe(Effect.orDie)
+      expect(rows).toHaveLength(0)
+      expect(journalDispatches).toHaveLength(0)
+    }),
+  )
+
+  it.effect("fails closed when the trusted profile pin does not match the selected model", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const { db } = yield* Database.Service
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Profile mismatch" }), resume: false })
+      profileModelOverride = { providerId: "fake", modelId: "other-model" }
+
+      const exit = yield* session.resume(sessionID).pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit) && String(Cause.squash(exit.cause)).includes("authenticated permission scope, selected-route, AgentProfileV2, or ContextSelection pins")).toBe(true)
+      const rows = yield* db
+        .select()
+        .from(DirectProviderRequestTable)
+        .where(eq(DirectProviderRequestTable.session_id, sessionID))
+        .all()
+        .pipe(Effect.orDie)
+      expect(rows).toHaveLength(0)
+      expect(journalDispatches).toHaveLength(0)
+    }),
+  )
+
+  it.effect("marks a lost dispatched response UNKNOWN and requires an explicit fresh continuation", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const { db } = yield* Database.Service
+      const journalRows = () =>
+        db
+          .select()
+          .from(DirectProviderRequestTable)
+          .where(eq(DirectProviderRequestTable.session_id, sessionID))
+          .all()
+          .pipe(Effect.orDie)
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Lost response" }), resume: false })
+      // The dispatch is durable, but the provider response is lost before any
+      // canonical terminal event: the request can never be settled or replayed.
+      responseStream = Stream.concat(
+        Stream.fromIterable([LLMEvent.stepStart({ index: 0 })]),
+        Stream.fail(providerUnavailable()),
+      )
+
+      const firstExit = yield* session.resume(sessionID).pipe(Effect.exit)
+      expect(firstExit._tag).toBe("Failure")
+      const dispatchedID = String(requests.at(-1)!.id)
+      expect((yield* journalRows()).map((row) => [row.request_id, row.state])).toEqual([[dispatchedID, "DISPATCHING"]])
+
+      const unknownExit = yield* session.resume(sessionID).pipe(Effect.exit)
+      expect(
+        Exit.isFailure(unknownExit) && String(Cause.squash(unknownExit.cause)).includes("UNKNOWN outcome"),
+      ).toBe(true)
+      expect((yield* journalRows()).map((row) => [row.request_id, row.state])).toEqual([[dispatchedID, "UNKNOWN"]])
+
+      // The surfaced UNKNOWN requires an explicit fresh continuation: the next
+      // accepted turn journals a new request ID and the lost one is never replayed.
+      responseStream = undefined
+      response = fragmentFixture("text", "text-after-unknown", ["fresh"]).completeEvents
+      yield* session.resume(sessionID)
+      const freshID = String(requests.at(-1)!.id)
+      expect(freshID).not.toBe(dispatchedID)
+      expect(
+        (yield* journalRows()).map((row) => [row.request_id, row.state]).toSorted(),
+      ).toEqual([[dispatchedID, "UNKNOWN"], [freshID, "SETTLED"]].toSorted())
     }),
   )
 })

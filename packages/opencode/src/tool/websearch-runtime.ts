@@ -44,16 +44,9 @@ export function prepareSearchEffectArguments(input: {
   if (typeof rawLimit !== "number" || !Number.isSafeInteger(rawLimit) || rawLimit < 1 || rawLimit > 10) {
     throw new Error("Web-search result limit is outside the supported range")
   }
-  let domains: string[] | undefined
+  let domains: readonly string[] | undefined
   if (Object.hasOwn(model, "domains")) {
-    if (!Array.isArray(model.domains) || model.domains.length > 100 ||
-      !model.domains.every((domain) => typeof domain === "string" && domain.length >= 1 && domain.length <= 253 &&
-        /^[A-Za-z0-9.*-]+(?:\.[A-Za-z0-9.*-]+)*$/.test(domain) &&
-        /^(\*\.)?[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/.test(domain)) ||
-      new Set(model.domains).size !== model.domains.length) {
-      throw new Error("Web-search domain filters are invalid or exceed their bounds")
-    }
-    domains = [...model.domains] as string[]
+    domains = boundedDomainFilters(model.domains)
   }
   const settings = normalizeSearchCascadeSettings(input.settings)
   const supportedProviders = input.supportedProviders.filter((route) =>
@@ -73,6 +66,108 @@ export function prepareSearchEffectArguments(input: {
     ...(plan.credentialRefsByRoute.length ? { credentialRefsByRoute: plan.credentialRefsByRoute.slice(0, 10) } : {}),
   }
   return { arguments: arguments_, execution: arguments_ }
+}
+
+/** Exact model-requested domain filters; bounded and duplicate-free. */
+function boundedDomainFilters(value: unknown): readonly string[] {
+  if (!Array.isArray(value) || value.length > 100 ||
+    !value.every((domain) => typeof domain === "string" && domain.length >= 1 && domain.length <= 253 &&
+      /^[A-Za-z0-9.*-]+(?:\.[A-Za-z0-9.*-]+)*$/.test(domain) &&
+      /^(\*\.)?[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/.test(domain)) ||
+    new Set(value).size !== value.length) {
+    throw new Error("Web-search domain filters are invalid or exceed their bounds")
+  }
+  return value as readonly string[]
+}
+
+export type WebSearchCascadeRequestV1 = SearchEffectArgumentsV1 & {
+  sessionID: string
+  effectID: string
+  capabilityLeaseDigest: string
+}
+
+const BLAKE3_DIGEST = /^blake3:[0-9a-f]{64}$/
+
+/** Bounded identifier rule shared by SecretBroker's `Identifier` schema: no
+ * whitespace and no ASCII control characters. */
+function trustedOpID(value: unknown): value is string {
+  if (typeof value !== "string" || !value || value.length > 256) return false
+  for (const character of value) {
+    const code = character.codePointAt(0) ?? 0
+    if (code < 0x20 || code === 0x7f || character.trim() === "") return false
+  }
+  return true
+}
+
+/**
+ * Trusted aggregate HostKernel request projection for the admitted
+ * `execute_search_cascade` operation. It carries the exact ordered route plan
+ * plus the opaque BYO SecretBroker references that P6's transport consumes;
+ * those references are metadata-only and never credential bytes. The projection
+ * is closed: identities, lease digest, query/limit bounds, route order and the
+ * per-route credential references all come from trusted Core state, and every
+ * referenced BYO route must be an admitted route so no reference can be
+ * smuggled into the guarded operation before Guard admission.
+ */
+export function webSearchCascadeRequestV1(input: WebSearchCascadeRequestV1): WebSearchCascadeRequestV1 {
+  if (typeof input !== "object" || input === null) throw new Error("HostKernel web-search request is invalid")
+  const boundedID = (value: unknown, name: string) => {
+    if (!trustedOpID(value)) throw new Error(`HostKernel web-search ${name} is invalid`)
+    return value
+  }
+  const sessionID = boundedID(input.sessionID, "sessionID")
+  const effectID = boundedID(input.effectID, "effectID")
+  if (typeof input.capabilityLeaseDigest !== "string" || !BLAKE3_DIGEST.test(input.capabilityLeaseDigest)) {
+    throw new Error("HostKernel web-search capability lease digest is invalid")
+  }
+  if (typeof input.query !== "string" || !input.query.trim() || new TextEncoder().encode(input.query).byteLength > 2_000) {
+    throw new Error("HostKernel web-search query is invalid or exceeds its UTF-8 byte limit")
+  }
+  if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 10) {
+    throw new Error("HostKernel web-search result limit is outside the supported range")
+  }
+  const domains = input.domains === undefined ? undefined : boundedDomainFilters(input.domains)
+  const supportedRoutes = new Set<string>(SEARCH_ROUTE_IDS)
+  if (!Array.isArray(input.routes) || input.routes.length < 1 || input.routes.length > 10) {
+    throw new Error("HostKernel web-search route plan is empty or exceeds its bound")
+  }
+  const admitted = new Set<string>()
+  for (const route of input.routes) {
+    if (typeof route !== "object" || route === null ||
+      typeof route.routeKey !== "string" || !supportedRoutes.has(route.routeKey) ||
+      route.attemptCount !== 2) {
+      throw new Error("HostKernel web-search route plan contains an unsupported route or attempt count")
+    }
+    if (admitted.has(route.routeKey)) throw new Error("HostKernel web-search route plan contains a duplicate route")
+    admitted.add(route.routeKey)
+  }
+  let credentialRefsByRoute: WebSearchCascadeRequestV1["credentialRefsByRoute"]
+  if (input.credentialRefsByRoute !== undefined) {
+    if (!Array.isArray(input.credentialRefsByRoute) || input.credentialRefsByRoute.length > 10) {
+      throw new Error("HostKernel web-search credential reference plan exceeds its bound")
+    }
+    const referenced = new Set<string>()
+    for (const entry of input.credentialRefsByRoute) {
+      if (typeof entry !== "object" || entry === null ||
+        typeof entry.routeKey !== "string" || !admitted.has(entry.routeKey) ||
+        !trustedOpID(entry.secretRef)) {
+        throw new Error("HostKernel web-search credential reference does not match an admitted route")
+      }
+      if (referenced.has(entry.routeKey)) throw new Error("HostKernel web-search credential reference is duplicated")
+      referenced.add(entry.routeKey)
+    }
+    credentialRefsByRoute = input.credentialRefsByRoute
+  }
+  return {
+    sessionID,
+    effectID,
+    capabilityLeaseDigest: input.capabilityLeaseDigest,
+    query: input.query,
+    limit: input.limit,
+    ...(domains === undefined ? {} : { domains: input.domains }),
+    routes: input.routes.map((route) => ({ routeKey: route.routeKey, attemptCount: 2 as const })),
+    ...(credentialRefsByRoute === undefined ? {} : { credentialRefsByRoute }),
+  }
 }
 
 export type SearchCascadeScopeV1 = {
@@ -199,12 +294,19 @@ export function validateCascadeResponseRoutes(
   execution: SearchEffectArgumentsV1,
 ): SearchCascadeResponseV1 {
   const routeIndexes = new Map(execution.routes.map((route, index) => [route.routeKey, index]))
+  const seenReceiptRefs = new Set<string>()
   let previousIndex = -1
   let previousAttempt = 0
   let previousStatus: SearchCascadeAttemptReceiptV1["status"] | undefined
   let previousNotDispatchedFailure: SearchCascadeAttemptReceiptV1["notDispatchedFailure"] = null
   let previousHttpStatus: number | undefined
   for (const item of response.attempts) {
+    if (item.receiptRef !== undefined) {
+      if (seenReceiptRefs.has(item.receiptRef)) {
+        throw new Error("HostKernel reused a web-search route receipt reference")
+      }
+      seenReceiptRefs.add(item.receiptRef)
+    }
     if (previousStatus === "SUCCEEDED" || previousStatus === "UNKNOWN" ||
       (previousStatus === "NOT_DISPATCHED" && previousNotDispatchedFailure === "cancelled")) {
       throw new Error("HostKernel continued the web-search cascade after a terminal route outcome")
@@ -383,7 +485,7 @@ export function decodeSuccessfulCascadeResults(
   return results
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/WebSearchRuntime") {}
+export class Service extends Context.Service<Service, Interface>()("@horizoncode/WebSearchRuntime") {}
 
 export function parseCascadeResponse(value: Readonly<Record<string, unknown>>): SearchCascadeResponseV1 {
   const allowed = new Set(["status", "selectedProvider", "body", "attempts", "receiptRef", "managedAttempt", "attemptScopeTransition", "cascadeRef", "cascadeDigest", "routePlanDigest", "routeIndex", "nextRoute"])
@@ -411,7 +513,7 @@ export function parseCascadeResponse(value: Readonly<Record<string, unknown>>): 
       (status === "NOT_DISPATCHED"
         ? item.notDispatchedFailure !== "cancelled" && item.notDispatchedFailure !== "timed_out" && item.notDispatchedFailure !== "transport_failure"
         : item.notDispatchedFailure !== null) ||
-      typeof observedAt !== "string" || observedAt.length > 64) {
+       typeof observedAt !== "string" || observedAt.trim().length === 0 || observedAt.length > 64) {
       throw new Error("HostKernel returned an invalid route receipt")
     }
     const optionalInt = (key: string, max: number) => {
@@ -421,7 +523,7 @@ export function parseCascadeResponse(value: Readonly<Record<string, unknown>>): 
       return field as number
     }
     const receiptRef = item.receiptRef
-    if (receiptRef !== undefined && receiptRef !== null && (typeof receiptRef !== "string" || receiptRef.length > 256)) {
+    if (receiptRef !== undefined && receiptRef !== null && (typeof receiptRef !== "string" || receiptRef.trim().length === 0 || receiptRef.length > 256)) {
       throw new Error("HostKernel returned an invalid route receipt reference")
     }
     if (status !== "UNKNOWN" && typeof receiptRef !== "string") {
@@ -485,7 +587,7 @@ export function parseCascadeResponse(value: Readonly<Record<string, unknown>>): 
     throw new Error("HostKernel returned an invalid selected web-search route")
   }
   if (value.receiptRef !== undefined && value.receiptRef !== null &&
-    (typeof value.receiptRef !== "string" || value.receiptRef.length > 256)) throw new Error("HostKernel returned an invalid aggregate receipt reference")
+    (typeof value.receiptRef !== "string" || value.receiptRef.trim().length === 0 || value.receiptRef.length > 256)) throw new Error("HostKernel returned an invalid aggregate receipt reference")
   const routePlanDigest = value.routePlanDigest
   if (routePlanDigest !== undefined && routePlanDigest !== null &&
     (typeof routePlanDigest !== "string" || !/^blake3:[a-f0-9]{64}$/.test(routePlanDigest))) {
@@ -516,7 +618,7 @@ export function parseCascadeResponse(value: Readonly<Record<string, unknown>>): 
   }
   let cascade: Pick<SearchCascadeResponseV1, "cascadeRef" | "cascadeDigest" | "routePlanDigest" | "routeIndex" | "nextRoute"> = {}
   if (value.status === "WAITING_SECRET") {
-    if (typeof value.cascadeRef !== "string" || value.cascadeRef.length > 128 ||
+    if (typeof value.cascadeRef !== "string" || value.cascadeRef.trim().length === 0 || value.cascadeRef.length > 128 ||
       typeof value.cascadeDigest !== "string" || !/^blake3:[a-f0-9]{64}$/.test(value.cascadeDigest) ||
       typeof value.routePlanDigest !== "string" || !/^blake3:[a-f0-9]{64}$/.test(value.routePlanDigest) ||
       !Number.isSafeInteger(value.routeIndex) || (value.routeIndex as number) < 0 || (value.routeIndex as number) > 9 ||
@@ -614,6 +716,7 @@ const guardedLayer = Layer.effect(
   Effect.gen(function* () {
     const supervisor = yield* SessionSupervisor.Service
     const auth = yield* Auth.Service
+    const config = yield* Config.Service
     return Service.of(make({
       // Route-specific release gates control plan admission. The operation
       // still checks HostKernel feature negotiation before any dispatch.
@@ -666,20 +769,23 @@ const guardedLayer = Layer.effect(
         const challengeID = input.challenge?.challengeID ?? leasePins.challengeID
         const locationID = input.challenge?.approval?.locationID ?? leasePins.locationID
         const body = {
-          sessionID: input.sessionID,
-          effectID: input.lease.effectID,
-          capabilityLeaseDigest: input.lease.capabilityLeaseDigest,
-          query: input.query,
-          limit: input.limit,
-          ...(input.domains === undefined ? {} : { domains: input.domains }),
-          routes: input.routes,
+          ...webSearchCascadeRequestV1({
+            sessionID: input.sessionID,
+            effectID: input.lease.effectID,
+            capabilityLeaseDigest: input.lease.capabilityLeaseDigest,
+            query: input.query,
+            limit: input.limit,
+            ...(input.domains === undefined ? {} : { domains: input.domains }),
+            routes: input.routes,
+            ...(input.credentialRefsByRoute?.length ? { credentialRefsByRoute: input.credentialRefsByRoute } : {}),
+          }),
           ...(challengeID ? { challengeID } : {}),
           ...(locationID ? { locationID } : {}),
           ...(input.directAttempt ? { directAttempt: input.directAttempt } : {}),
           ...(input.managedAttempt ? { managedAttempt: input.managedAttempt } : {}),
         }
         const request = supervisor.requestHostKernel("execution.v1", "execute_search_cascade", body, { cancelOnInterrupt: true })
-        let response: Readonly<Record<string, unknown>>
+        let response: Readonly<Record<string, unknown>> | undefined
         try {
           response = input.signal
             ? await Effect.runPromise(request, { signal: input.signal })
@@ -696,7 +802,6 @@ const guardedLayer = Layer.effect(
           const approval = challenge?.approval
           const routePlanDigest = approval?.consent.routePlanDigest
           const locationID = approval?.locationID ?? leasePins.locationID
-          let reconciledInitialResponse = false
           // Reconcile only with HostKernel-minted pins from the exact challenge
           // and consumed lease. Missing pins leave the result UNKNOWN; Core must
           // never reconstruct authority from model arguments or retry dispatch.
@@ -727,13 +832,12 @@ const guardedLayer = Layer.effect(
               // recovered prepared cursor follows the original ordered route
               // plan instead of being surfaced as a terminal UNKNOWN result.
               response = reconciled
-              reconciledInitialResponse = true
             } catch {
               // A missing or conflicting durable row cannot authorize replay.
               // Preserve UNKNOWN so the caller stops the rest of the batch.
             }
           }
-          if (!reconciledInitialResponse) {
+          if (response === undefined) {
             throw new SearchRuntimeError(
               "Search dispatch outcome is unknown; no route was retried.",
               [],
@@ -742,6 +846,13 @@ const guardedLayer = Layer.effect(
               typeof routePlanDigest === "string" && /^blake3:[0-9a-f]{64}$/.test(routePlanDigest) ? routePlanDigest : undefined,
             )
           }
+        }
+        if (response === undefined) {
+          throw new SearchRuntimeError(
+            "Search dispatch outcome is unknown; no route was retried.",
+            [],
+            "UNKNOWN",
+          )
         }
         let cascade = parseAndValidateCascadeResponse(
           response,
@@ -947,15 +1058,15 @@ const guardedLayer = Layer.effect(
         }
         return cascade
       },
-    }))
+    }, config))
   }),
 )
 
-export const node = LayerNode.make({ service: Service, layer: guardedLayer, deps: [SessionSupervisor.node, Auth.node] })
+export const node = LayerNode.make({ service: Service, layer: guardedLayer, deps: [SessionSupervisor.node, Auth.node, Config.node] })
 
 /** Injectable transport seam for isolated contracts; production uses the HostKernel node above. */
 export function layerFor(capability: WebSearchGuardedCapability) {
-  return Layer.succeed(Service, Service.of(make(capability)))
+  return Layer.effect(Service, Effect.map(Config.Service, (config) => Service.of(make(capability, config))))
 }
 
 function attemptProjection(attempts: readonly SearchCascadeAttemptReceiptV1[]): SearchRouteAttempt[] {
@@ -1002,19 +1113,18 @@ function attemptProjection(attempts: readonly SearchCascadeAttemptReceiptV1[]): 
 }
 
 /** Convert one host-owned aggregate cascade into the existing result contract. */
-export function make(capability: WebSearchGuardedCapability): Interface {
+export function make(capability: WebSearchGuardedCapability, config: Config.Interface): Interface {
   const routeReady = (route: SearchRouteID) =>
     capability.ready && capability.supportedProviders.includes(route) &&
     (capability.runtimeReady?.[route] ?? searchRouteRuntimeReady(route))
   return {
     inspect(input) {
       return Effect.gen(function* () {
-        const config = yield* Config.Service
         const current = yield* config.get()
         const credentialRefs = yield* Effect.tryPromise({
-          try: async () => await capability.credentialRefs().catch(() => ({} as SearchCredentialRefs)),
-          catch: () => ({} as SearchCredentialRefs),
-        })
+          try: () => capability.credentialRefs(),
+          catch: () => new Error("Search credential references are unavailable."),
+        }).pipe(Effect.catch(() => Effect.succeed({} as SearchCredentialRefs)))
         const settings = normalizeSearchCascadeSettings(input.settings ?? current.websearch)
         // Inspection covers every locally supported route, including disabled
         // routes. Using the executable cascade plan here hid a saved BYO
@@ -1044,10 +1154,9 @@ export function make(capability: WebSearchGuardedCapability): Interface {
     },
     prepareEffectArguments(modelArgs) {
       return Effect.gen(function* () {
-        const config = yield* Config.Service
         const current = yield* config.get()
         const credentialRefs = yield* Effect.tryPromise({
-          try: async () => await capability.credentialRefs().catch(() => ({} as SearchCredentialRefs)),
+          try: () => capability.credentialRefs(),
           catch: () => new Error("SecretBroker route references are unavailable."),
         })
         return prepareSearchEffectArguments({

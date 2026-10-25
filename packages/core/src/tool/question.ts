@@ -23,7 +23,9 @@ Usage notes:
 - If you recommend a specific option, make that the first option in the list and add "(Recommended)" at the end of the label`
 
 export const Input = Schema.Struct({
-  questions: Schema.Array(QuestionV2.Prompt)
+  // `Info` (not `Prompt`) so the model can explicitly disable free-form custom
+  // answers per question; reply validation honors that exact request.
+  questions: Schema.Array(QuestionV2.Info)
     .check(Schema.isMinLength(1))
     .check(Schema.isMaxLength(8))
     .annotate({ description: "One to eight questions to ask" }),
@@ -35,7 +37,7 @@ export const Output = Schema.Struct({
 export type Output = typeof Output.Type
 
 export const toModelOutput = (
-  questions: ReadonlyArray<QuestionV2.Prompt>,
+  questions: ReadonlyArray<QuestionV2.Info>,
   answers: ReadonlyArray<QuestionV2.Answer>,
 ) => {
   const formatted = questions

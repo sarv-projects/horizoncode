@@ -24,7 +24,10 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const PRINCIPAL: &str = "host_os_uid:1000";
+// Root direct-session admission resolves the typed ServerAuth subject from
+// the host binding (§14/DEC-V1-28); the same subject that registered the
+// Location fronts every request so the owner binding matches.
+const PRINCIPAL: &str = "server_auth:tool-batch-location-owner";
 const INCARNATION: &str = "inc_tool_batch_matrix";
 const SESSION_A: &str = "ses_matrix_a";
 const SESSION_B: &str = "ses_matrix_b";
@@ -45,8 +48,10 @@ impl Fixture {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
+        // SUN_LEN budget: the kernel socket beneath base/state must fit within
+        // ~108 bytes on a repository-local TMPDIR.
         let base = std::env::temp_dir().join(format!(
-            "hz-tool-batch-matrix-{}-{nonce}",
+            "p1tbm-{}-{nonce}",
             std::process::id()
         ));
         let state = base.join("state");
@@ -62,7 +67,12 @@ impl Fixture {
         let response = host.handle_request(
             &request(
                 "register_location",
-                value_map([("canonicalRoot", string(workspace.to_str().unwrap()))]),
+                value_map([
+                    ("canonicalRoot", string(workspace.to_str().unwrap())),
+                    // Direct-session admission requires a Location bound
+                    // to a registered workspace, not just a canonical root.
+                    ("workspaceID", string("wrk_tool_batch_matrix")),
+                ]),
                 1,
             ),
             "server_auth:tool-batch-location-owner",
@@ -141,6 +151,9 @@ fn terminal_call(call_id: &str, shell_profile_id: &str, workspace: &Path, comman
         (
             "arguments",
             value_map([
+                // Plain-shell launch contract: every terminal argument set is
+                // mode-typed (`shell` vs `workspace_profile`).
+                ("mode", string("shell")),
                 ("shellProfileID", string(shell_profile_id)),
                 ("command", string(command)),
                 ("cwd", string(cwd.to_str().unwrap())),
@@ -333,12 +346,17 @@ fn multi_call_tool_batch_is_admitted_atomically_without_dispatching_effects() {
     let Value::Map(body) = response.body.unwrap() else {
         panic!("batch response map")
     };
-    assert_eq!(body.get("status"), Some(&string("needs_approval")));
+    // The default direct-session mode is workspace-write + on-request. These
+    // writes resolve inside the registered workspace, so Guard admits the
+    // complete batch quietly and returns one exact lease per call rather than
+    // prompting for approval. The leases authorize later execution only; this
+    // prepare request itself must not dispatch either write.
+    assert_eq!(body.get("status"), Some(&string("admitted_batch")));
+    assert_eq!(body.get("batchID"), Some(&string("batch_matrix_multi")));
     let Some(Value::Array(calls)) = body.get("calls") else {
         panic!("batch members")
     };
     assert_eq!(calls.len(), 2);
-    let mut challenges = std::collections::BTreeSet::new();
     for (index, member) in calls.iter().enumerate() {
         assert_eq!(
             value_string(member, "callId"),
@@ -347,28 +365,11 @@ fn multi_call_tool_batch_is_admitted_atomically_without_dispatching_effects() {
         assert_eq!(value_string(member, "capabilityId"), "files.write");
         assert_eq!(value_string(member, "locationID"), fixture.location_id);
         assert!(!value_string(member, "policySummary").is_empty());
-        assert!(challenges.insert(value_string(member, "challengeId").to_owned()));
-        let approved = fixture.host.handle_request(
-            &request(
-                "resolve_approval",
-                value_map([
-                    ("challengeID", string(value_string(member, "challengeId"))),
-                    ("decision", string("allow_once")),
-                ]),
-                50 + index as u64,
-            ),
-            PRINCIPAL,
-            &fixture.fence,
-        );
-        assert_eq!(approved.outcome, RpcOutcomeV1::Ok, "{:?}", approved.error);
-        assert_eq!(
-            value_string(approved.body.as_ref().unwrap(), "effectID"),
-            value_string(member, "effectId")
-        );
-        assert!(
-            value_string(approved.body.as_ref().unwrap(), "capabilityLeaseDigest")
-                .starts_with("blake3:")
-        );
+        let lease = member
+            .get("lease")
+            .unwrap_or_else(|| panic!("admitted call {index} has no lease"));
+        assert_eq!(value_string(lease, "effectID"), value_string(member, "effectId"));
+        assert!(value_string(lease, "capabilityLeaseDigest").starts_with("blake3:"));
     }
     assert!(!fixture.workspace.join("marker-multi-a.txt").exists());
     assert!(!fixture.workspace.join("marker-multi-b.txt").exists());
@@ -390,10 +391,8 @@ fn multi_call_tool_batch_is_admitted_atomically_without_dispatching_effects() {
         &fixture.fence,
     );
     assert_eq!(follow_up.outcome, RpcOutcomeV1::Ok, "{:?}", follow_up.error);
-    assert_eq!(
-        value_string(follow_up.body.as_ref().unwrap(), "status"),
-        "needs_approval"
-    );
+    assert_eq!(value_string(follow_up.body.as_ref().unwrap(), "status"), "prepared");
+    assert!(value_string(follow_up.body.as_ref().unwrap(), "capabilityLeaseDigest").starts_with("blake3:"));
     assert_eq!(fixture.durable_challenge_count("batch_matrix_follow_up"), 1);
     assert_eq!(fixture.durable_challenge_count("batch_matrix_multi"), 2);
     fixture.cleanup();
@@ -792,22 +791,30 @@ fn files_write_lease_cannot_execute_a_terminal_run() {
     );
     assert_eq!(prepared.outcome, RpcOutcomeV1::Ok, "{:?}", prepared.error);
     let body = prepared.body.unwrap();
-    let challenge_id = value_string(&body, "challengeID").to_owned();
     let effect_id = value_string(&body, "effectID").to_owned();
-    let approved = fixture.host.handle_request(
-        &request(
-            "resolve_approval",
-            value_map([
-                ("challengeID", string(&challenge_id)),
-                ("decision", string("allow_once")),
-            ]),
-            51,
-        ),
-        PRINCIPAL,
-        &fixture.fence,
-    );
-    assert_eq!(approved.outcome, RpcOutcomeV1::Ok, "{:?}", approved.error);
-    let lease = value_string(approved.body.as_ref().unwrap(), "capabilityLeaseDigest").to_owned();
+    let lease = match value_string(&body, "status") {
+        // Quiet direct-mode candidates already carry the exact one-use lease;
+        // they do not have a challenge to resolve.
+        "prepared" => value_string(&body, "capabilityLeaseDigest").to_owned(),
+        "needs_approval" => {
+            let challenge_id = value_string(&body, "challengeID").to_owned();
+            let approved = fixture.host.handle_request(
+                &request(
+                    "resolve_approval",
+                    value_map([
+                        ("challengeID", string(&challenge_id)),
+                        ("decision", string("allow_once")),
+                    ]),
+                    51,
+                ),
+                PRINCIPAL,
+                &fixture.fence,
+            );
+            assert_eq!(approved.outcome, RpcOutcomeV1::Ok, "{:?}", approved.error);
+            value_string(approved.body.as_ref().unwrap(), "capabilityLeaseDigest").to_owned()
+        }
+        status => panic!("unexpected files.write admission status: {status}"),
+    };
 
     let marker = fixture.workspace.join("marker-capability-swap.txt");
     let cwd = fs::canonicalize(&fixture.workspace).unwrap();

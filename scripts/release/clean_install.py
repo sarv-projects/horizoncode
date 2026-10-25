@@ -34,7 +34,10 @@ CLI_COMMAND = "horizoncode"
 CLI_ALIAS = "hzcode"
 TIMEOUT_SECONDS = 45
 SANDBOX_STARTUP_TIMEOUT_SECONDS = 10
-TUI_STARTUP_SECONDS = 1.0
+# Cold, network-isolated launches of a full CLI can take several seconds before
+# the first terminal frame. Bound the wait, then drain a short settle window.
+TUI_STARTUP_SECONDS = 10.0
+TUI_FRAME_SETTLE_SECONDS = 1.0
 # The shutdown window applies to the sandboxed app's own SIGINT handling. Under
 # CPU oversubscription a clean shutdown was observed to take >3s (P9 evidence,
 # 2026-10-17), so the window is bounded but generous; the observed exit code,
@@ -115,13 +118,15 @@ def _ensure_approved_temp_root() -> Path:
 
 def _require_regular_executable(path: Path, checkout: Path, label: str) -> Path:
     requested = Path(os.path.abspath(path))
+    if path.is_symlink() or not requested.is_file() or not os.access(requested, os.X_OK):
+        raise ValueError(f"{label} must be a regular executable file: {path}")
     if not _inside(requested, checkout):
-        raise ValueError(f"{label} must be lexically inside the repository-local checkout: {path}")
+        raise ValueError(f"{label} must be inside the separate checkout: {path}")
     _reject_symlink_components(requested, checkout, label)
     resolved = path.resolve()
     if not _inside(resolved, checkout):
         raise ValueError(f"{label} must be inside the separate checkout: {path}")
-    if path.is_symlink() or not resolved.is_file() or not os.access(resolved, os.X_OK):
+    if not resolved.is_file() or not os.access(resolved, os.X_OK):
         raise ValueError(f"{label} must be a regular executable file: {path}")
     return resolved
 
@@ -636,10 +641,15 @@ def _tui_smoke(
         os.close(slave_fd)
         slave_fd = -1
         deadline = time.monotonic() + TUI_STARTUP_SECONDS
-        while time.monotonic() < deadline:
+        first_frame_at: float | None = None
+        while True:
+            now = time.monotonic()
             if process.poll() is not None:
                 break
-            ready, _, _ = select.select([master_fd], [], [], min(0.1, max(0.0, deadline - time.monotonic())))
+            window_end = deadline if first_frame_at is None else min(deadline, first_frame_at + TUI_FRAME_SETTLE_SECONDS)
+            if now >= window_end:
+                break
+            ready, _, _ = select.select([master_fd], [], [], min(0.1, max(0.0, window_end - now)))
             if ready:
                 try:
                     chunk = os.read(master_fd, 65536)
@@ -648,11 +658,15 @@ def _tui_smoke(
                 if not chunk:
                     break
                 output_bytes += len(chunk)
-                if output_bytes <= TUI_OUTPUT_LIMIT_BYTES:
-                    output_hash.update(chunk)
-                else:
+                if output_bytes > TUI_OUTPUT_LIMIT_BYTES:
                     output_limit_exceeded = True
                     break
+                output_hash.update(chunk)
+                if first_frame_at is None:
+                    # First terminal bytes prove the interactive surface is
+                    # painting. Keep draining for a short settle window so the
+                    # app can finish initializing before the shutdown signal.
+                    first_frame_at = time.monotonic()
         startup_complete = process.poll() is None
         locate_failed = False
         shutdown_performed = False
@@ -727,6 +741,12 @@ def _tui_smoke(
                     timed_out = True
             exit_code = process.poll()
         leftover_processes = _group_members(process.pid)
+        # SIGKILL delivery is asynchronous. Give the kernel a bounded window to
+        # reap a killed group before treating a member as a leaked descendant.
+        reap_deadline = time.monotonic() + 2.0
+        while leftover_processes and time.monotonic() < reap_deadline:
+            time.sleep(0.05)
+            leftover_processes = _group_members(process.pid)
         if leftover_processes:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
@@ -776,6 +796,7 @@ def _tui_smoke(
         "command": [str(binary), "--mini", "--no-replay"],
         "tty_detected": tty_detected,
         "startup_window_seconds": TUI_STARTUP_SECONDS,
+        "first_frame_settle_seconds": TUI_FRAME_SETTLE_SECONDS,
         "startup_completed": startup_complete,
         "startup_output_bytes": output_bytes,
         "startup_output_sha256": output_hash.hexdigest(),
@@ -851,6 +872,7 @@ def run_matrix(
     expected_model: str | None,
     state_root: Path,
     require_clean_checkout: bool = True,
+    dry_run: bool = False,
 ) -> dict:
     if not sys.platform.startswith("linux"):
         raise ValueError("the release install matrix currently runs only on Linux/WSL")
@@ -879,24 +901,23 @@ def run_matrix(
         assert previous_sha256 is not None
     if migration_fixture is not None:
         requested_fixture = Path(os.path.abspath(migration_fixture))
+        if migration_fixture.is_symlink() or not migration_fixture.is_file():
+            raise ValueError(f"migration fixture must be a regular file: {migration_fixture}")
         if not _inside(requested_fixture, checkout):
             raise ValueError("migration fixture must be inside the repository-local candidate checkout")
         _reject_symlink_components(requested_fixture, checkout, "migration fixture")
     fixture = migration_fixture.resolve() if migration_fixture else None
     if fixture is not None and not _inside(fixture, checkout):
         raise ValueError("resolved migration fixture escapes the repository-local candidate checkout")
-    if migration_fixture and (migration_fixture.is_symlink() or not migration_fixture.is_file()):
-        raise ValueError(f"migration fixture must be a regular file: {migration_fixture}")
     fixture = migration_fixture.absolute() if migration_fixture else None
     if (fixture is None) != (expected_model is None):
         raise ValueError("migration fixture and expected model must be supplied together")
     if previous and candidate == previous:
         raise ValueError("previous and candidate artifacts must be different files")
     state_root = _validated_state_root(state_root)
-    if _inside(checkout, state_root) or _inside(state_root, checkout):
+    if not dry_run and (_inside(checkout, state_root) or _inside(state_root, checkout)):
         raise ValueError("source checkout and evidence root must be separate, non-overlapping directories")
     sandbox_facts = _sandbox_preflight()
-    _create_state_root(state_root)
     kernel_release = os.uname().release.lower()
     wsl_hint = bool(os.environ.get("WSL_INTEROP") or os.environ.get("WSL_DISTRO_NAME"))
     wsl = "microsoft" in kernel_release or wsl_hint
@@ -940,6 +961,21 @@ def run_matrix(
         ],
     }
 
+    if dry_run:
+        report["status"] = "DRY_RUN"
+        report["dry_run"] = True
+        report["planned_scenarios"] = [
+            "clean_install",
+            "tui_launch",
+            "upgrade" if previous is not None else "upgrade:not-run",
+            "migration" if fixture is not None else "migration:not-run",
+            "rollback" if fixture is not None and previous is not None else "rollback:not-run",
+            "artifact_integrity",
+        ]
+        report["limitations"].append("Dry run validates inputs and isolation only; it executes no installer or product binary.")
+        return report
+
+    _create_state_root(state_root)
     all_passed = True
     profiles_unchanged = True
     clean_home = state_root / "clean" / "home"
@@ -1162,6 +1198,7 @@ def main() -> int:
     parser.add_argument("--migration-fixture", type=Path, help="legacy TOML config fixture; runs `debug config` in isolated state")
     parser.add_argument("--expected-model", help="model value expected after config migration")
     parser.add_argument("--state-root", type=Path, help="new evidence directory under kernel/target/horizoncode-release; never reused/deleted")
+    parser.add_argument("--dry-run", action="store_true", help="validate checkout, artifacts, and isolation without creating state or executing the installer")
     args = parser.parse_args()
     state_root = args.state_root or (APPROVED_TEMP_ROOT / f"horizoncode-p9-{uuid.uuid4().hex}")
     try:
@@ -1172,6 +1209,7 @@ def main() -> int:
             migration_fixture=args.migration_fixture,
             expected_model=args.expected_model,
             state_root=state_root,
+            dry_run=args.dry_run,
         )
     except (OSError, ValueError) as error:
         print(f"release install matrix blocked: {error}", file=sys.stderr)
@@ -1180,7 +1218,7 @@ def main() -> int:
         f"release install matrix: {report['status']}; evidence={report['evidence_root']}; "
         f"checkout={report['source_checkout'].get('revision') or 'unknown'}"
     )
-    return {"PASS": 0, "PARTIAL": 2, "FAIL": 1}.get(report["status"], 3)
+    return {"PASS": 0, "PARTIAL": 2, "DRY_RUN": 0, "FAIL": 1}.get(report["status"], 3)
 
 
 if __name__ == "__main__":

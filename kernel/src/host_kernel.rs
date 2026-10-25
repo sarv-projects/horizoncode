@@ -14,13 +14,13 @@ use crate::managed_control::{
     VerificationVerdictV1, attempt_receipt_digest, criterion_evidence_digest,
     direct_attempt_effect_chain_digest, direct_attempt_receipt_digest, successful_task_receipt_basis_digest, task_verification_digest,
 };
-use crate::messagepack::Value;
+use crate::messagepack::{self, Value};
 use crate::owner_log::OwnerLogError;
 use crate::protocol::{
     ArtifactClassificationV1, AuthenticatedRequestContextV1, CursorV1, DirectAttemptScopeV1,
-    EffectAttemptScopeV1, ErrorCategoryV1, FrameFence, MAX_DIRECT_ATTEMPT_EFFECTS,
+    DirectTurnScopeV1, EffectAttemptScopeV1, ErrorCategoryV1, FrameFence, MAX_DIRECT_ATTEMPT_EFFECTS,
     ManagedAttemptScopeV1, RetryClassV1, RpcControlV1, RpcEventV1, RpcMessageV1, RpcOutcomeV1,
-    RpcRequestV1, RpcResponseV1, TypedErrorV1,
+    RpcRequestV1, RpcResponseV1, TypedErrorV1, valid_binding_id, validate_identifier,
 };
 use crate::request_cancellation::RequestCancellation;
 use crate::subscription::{BoundedSubscription, OfferResult};
@@ -686,6 +686,9 @@ fn verifier_set_can_resume_with_profile(
         spec_digest,
         final_revision,
     ) || (set.state == VerifierChallengeSetStateV1::Approved
+        // A degenerate empty set can never be a resumable approval: with no
+        // members there is no leased verifier work to re-project.
+        && !set.members.is_empty()
         && set.goal_id == goal_id
         && set.run_id == run_id
         && set.reviewer_principal == reviewer_principal
@@ -1501,8 +1504,10 @@ impl HostCapturedVerifierOutputV1 {
             spec_id: run.spec_id,
             spec_digest: run.spec_digest,
             verification_run_id: "fixture-verification".to_owned(),
+            attempt_id: run.attempt_id,
             principal: "server_auth:fixture-verifier".to_owned(),
             profile_id: "fixture-profile".to_owned(),
+            executable_digest: run.executable_digest,
             profile_digest: run.profile_digest,
             live_workspace_revision: run.live_workspace_revision,
             owner_epoch: 7,
@@ -2042,6 +2047,11 @@ pub struct HostKernel {
     /// cannot be replayed as direct-session authority.
     managed_message_root: PathBuf,
     managed: HashMap<String, ManagedControl>,
+    /// P1-owned read-only projection provider for HostRun reconciliation. No
+    /// implementation is registered by default, so HostRun reconciliation stays
+    /// fail-closed (typed UNKNOWN) until P1 installs its EffectHost-backed source.
+    host_run_effect_projection:
+        Option<Box<dyn crate::managed_control::HostRunEffectProjectionSourceV1>>,
     /// OwnerLog-backed worker control is opened only after the process supervisor
     /// lease has supplied the authenticated host owner epoch. Replay/recovery is
     /// mandatory before readiness; fan-out remains closed until managed ingress
@@ -2206,6 +2216,7 @@ impl HostKernel {
             direct_message_root,
             managed_message_root,
             managed: HashMap::new(),
+            host_run_effect_projection: None,
             worker_pool: None,
             resource_sample_sequence: 0,
             authenticated_core_peer: None,
@@ -3861,6 +3872,22 @@ impl HostKernel {
         authenticated_context: Option<&AuthenticatedRequestContextV1>,
         cancellation: Option<RequestCancellation>,
     ) -> RpcResponseV1 {
+        if request.service_id == EFFECTS_SERVICE_ID
+            && request.operation == "prepare_tool_batch_read"
+        {
+            if !self.effects_enabled {
+                return response_error(request, fence, "feature_not_negotiated", ErrorCategoryV1::Capability,
+                    "effects.v2 read admission is unavailable on this connection");
+            }
+            let result = self.prepare_tool_batch_read(
+                request, authenticated_principal, authenticated_context, fence,
+            );
+            return match result {
+                Ok(Some(body)) => response_ok(request, fence, body),
+                Ok(None) => response_ok(request, fence, Value::Nil),
+                Err((code, category, message)) => response_error(request, fence, code, category, message),
+            };
+        }
         if let Some(AuthenticatedRequestContextV1::CodeModeCall { .. }) = authenticated_context {
             let subject = match authenticated_principal {
                 crate::protocol::AuthenticatedPrincipalV1::ServerAuth { subject }
@@ -3924,6 +3951,147 @@ impl HostKernel {
         )
     }
 
+    /// Authenticate and validate the complete direct read wave before projecting
+    /// any per-call authority. HostKernel deliberately does not execute reads;
+    /// Core still settles each read through its canonical Materialization path.
+    fn prepare_tool_batch_read(
+        &self,
+        request: &RpcRequestV1,
+        authenticated_principal: &crate::protocol::AuthenticatedPrincipalV1,
+        authenticated_context: Option<&AuthenticatedRequestContextV1>,
+        fence: &FrameFence,
+    ) -> Result<Option<Value>, HostError> {
+        let subject = match authenticated_principal {
+            crate::protocol::AuthenticatedPrincipalV1::ServerAuth { subject }
+                if valid_server_auth_subject(subject) => subject.as_str(),
+            _ => return Err(("missing_principal", ErrorCategoryV1::Authorization,
+                "read admission requires authenticated ServerAuth")),
+        };
+        let (context_session, context_location) = match authenticated_context {
+            Some(AuthenticatedRequestContextV1::RepoRead { session_id, location_id }) =>
+                (session_id.as_str(), location_id.as_str()),
+            _ => return Err(("missing_authenticated_context", ErrorCategoryV1::Authorization,
+                "read admission requires private Session/Location context")),
+        };
+        let fields = strict_fields(&request.body,
+            &["schemaVersion", "sessionID", "locationID", "calls"], &[])?;
+        if fields.get("schemaVersion") != Some(&Value::Unsigned(1)) { return Err(invalid()); }
+        let session_id = text(fields, "sessionID")?;
+        let location_id = text(fields, "locationID")?;
+        validate_effect_identifier(session_id)?;
+        validate_effect_identifier(location_id)?;
+        if session_id != context_session || location_id != context_location {
+            return Err(("effect_denied", ErrorCategoryV1::Authorization,
+                "read admission scope differs from private Session/Location context"));
+        }
+        let location = self.locations.get(location_id).ok_or(("location_not_registered",
+            ErrorCategoryV1::Authorization, "read admission Location is not registered"))?;
+        self.validate_direct_session_location_owner(location, subject)?;
+        if self.deferred_locations.contains(location_id) {
+            return Err(("location_unavailable", ErrorCategoryV1::Unavailable,
+                "read admission Location is deferred"));
+        }
+        ensure_request_deadline(request.deadline_unix_ms)?;
+        let calls = match fields.get("calls") {
+            Some(Value::Array(calls)) if (1..=crate::protocol::MAX_DIRECT_READ_BATCH_CALLS).contains(&calls.len()) => calls,
+            _ => return Err(invalid()),
+        };
+        let revision = workspace_revision_digest(&location.canonical_root)?;
+        let root = open_workspace_root(&location.canonical_root).map_err(|_| invalid())?;
+        let metadata = root.metadata().map_err(|_| invalid())?;
+        let workspace_binding = crate::guard::workspace_binding(
+            &location.canonical_root, metadata.dev(), metadata.ino(),
+        );
+        let mode = self.direct_session_permission_mode_projection(
+            session_id, location_id, fence, location,
+        )?;
+        let mode_digest = match &mode {
+            Value::Map(values) => match values.get("digest") {
+                Some(Value::String(value)) if crate::guard::is_blake3_digest(value) => value.clone(),
+                _ => return Err(invalid()),
+            },
+            _ => return Err(invalid()),
+        };
+        let mut call_ids = HashSet::with_capacity(calls.len());
+        let mut prepared = Vec::with_capacity(calls.len());
+        for call in calls {
+            ensure_request_deadline(request.deadline_unix_ms)?;
+            let encoded = crate::messagepack::encoded_len(call, crate::messagepack::FRAME_LIMITS)
+                .map_err(|_| invalid())?;
+            if encoded > MAX_TOOL_CALL_ARGUMENT_BYTES { return Err(invalid()); }
+            let call = strict_fields(call, &["callID", "capabilityID", "arguments"], &[])?;
+            let call_id = text(call, "callID")?;
+            validate_effect_identifier(call_id)?;
+            if !call_ids.insert(call_id.to_owned()) { return Err(invalid()); }
+            let capability = text(call, "capabilityID")?;
+            if capability != crate::guard::FILES_READ_ID {
+                return Err(("unsupported_capability", ErrorCategoryV1::Capability,
+                    "read batch accepts only the canonical files.read capability"));
+            }
+            let arguments = strict_fields(call.get("arguments").ok_or_else(invalid)?,
+                &["path", "offset", "limit"], &[])?;
+            let path = text(arguments, "path")?;
+            let relative = validate_repo_document_path(path)?;
+            let offset = match arguments.get("offset") {
+                Some(Value::Unsigned(value)) if (1..=2_000).contains(value) => *value,
+                _ => return Err(invalid()),
+            };
+            let limit = match arguments.get("limit") {
+                Some(Value::Unsigned(value)) if (1..=2_000).contains(value) => *value,
+                _ => return Err(invalid()),
+            };
+            let relative_parent = relative.parent().filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            let relative_text = relative_parent.to_str().ok_or_else(invalid)?;
+            crate::guard::authorize_repo_read_scope(
+                authenticated_principal,
+                location.principal_binding.as_deref(), crate::guard::FILES_READ_ID,
+                &location.canonical_root, relative_text, &workspace_binding,
+                &revision, &revision,
+            ).map_err(|_| ("effect_denied", ErrorCategoryV1::Authorization,
+                "read target is outside the current Guard scope"))?;
+            let arguments_value = call.get("arguments").ok_or_else(invalid)?;
+            let arguments_bytes = crate::messagepack::encode(arguments_value, crate::messagepack::FRAME_LIMITS)
+                .map_err(|_| invalid())?;
+            let arguments_digest = format!("blake3:{}", blake3::hash(&arguments_bytes).to_hex());
+            let mut binding = BTreeMap::from([
+                ("argumentsDigest".to_owned(), Value::String(arguments_digest.clone())),
+                ("callID".to_owned(), Value::String(call_id.to_owned())),
+                ("capabilityID".to_owned(), Value::String(capability.to_owned())),
+                ("locationID".to_owned(), Value::String(location_id.to_owned())),
+                ("limit".to_owned(), Value::Unsigned(limit)),
+                ("offset".to_owned(), Value::Unsigned(offset)),
+                ("ownerEpoch".to_owned(), Value::String(fence.owner_epoch().to_string())),
+                ("policyDigest".to_owned(), Value::String(crate::guard::direct_session_policy_digest())),
+                ("permissionModeDigest".to_owned(), Value::String(mode_digest.clone())),
+                ("revision".to_owned(), Value::String(revision.clone())),
+                ("resultBudgetBytes".to_owned(), Value::Unsigned(
+                    crate::protocol::DIRECT_READ_RESULT_BUDGET_BYTES as u64,
+                )),
+                ("requestID".to_owned(), Value::String(request.request_id.clone())),
+                ("schemaVersion".to_owned(), Value::Unsigned(1)),
+                ("sessionID".to_owned(), Value::String(session_id.to_owned())),
+                ("subjectBinding".to_owned(), Value::String(crate::guard::location_principal_binding(subject))),
+                ("target".to_owned(), Value::String(relative.to_string_lossy().into_owned())),
+                ("workspaceBinding".to_owned(), Value::String(workspace_binding.clone())),
+            ]);
+            let lease_digest = crate::protocol::direct_read_lease_digest_v1(&Value::Map(binding.clone()))
+                .ok_or_else(invalid)?;
+            binding.insert("readLeaseDigest".to_owned(), Value::String(lease_digest));
+            prepared.push(Value::Map(binding));
+        }
+        ensure_request_deadline(request.deadline_unix_ms)?;
+        if workspace_revision_digest(&location.canonical_root)? != revision {
+            return Err(("stale_read_scope", ErrorCategoryV1::Conflict,
+                "workspace changed during read admission"));
+        }
+        Ok(Some(Value::Map(BTreeMap::from([
+            ("schemaVersion".to_owned(), Value::Unsigned(1)),
+            ("workspaceRevision".to_owned(), Value::String(revision)),
+            ("calls".to_owned(), Value::Array(prepared)),
+        ]))))
+    }
+
     /// CodeMode operations require private correlation captured by the trusted
     /// Core Tool.Context. The public operation body remains the frozen §37.24 DTO.
     fn dispatch_code_mode_request(
@@ -3961,8 +4129,8 @@ impl HostKernel {
             _ => Err(("capability_unavailable", ErrorCategoryV1::Capability, "CodeMode operation is unavailable")),
         };
         match result {
-            Ok(Some(body)) => response_ok(request, fence, Some(body)),
-            Ok(None) => response_ok(request, fence, None),
+            Ok(Some(body)) => response_ok(request, fence, body),
+            Ok(None) => response_ok(request, fence, Value::Nil),
             Err((code, category, message)) => response_error(request, fence, code, category, message),
         }
     }
@@ -3979,7 +4147,7 @@ impl HostKernel {
         let subject = require_managed_server_auth(Some(authenticated_principal), principal)?;
         let location = self.locations.get(location_id).ok_or((
             "location_not_registered", ErrorCategoryV1::Authorization, "CodeMode Location is not registered",
-        ))?.clone();
+        ))?;
         self.validate_direct_session_location_owner(&location, subject)?;
         let fields = match lane {
             "direct_session" => strict_fields(&request.body,
@@ -4043,11 +4211,117 @@ impl HostKernel {
         Ok(Some(state))
     }
 
+    /// Admit one helper wave by exact-matching the helper frame with Core's
+    /// resolved tool calls, classifying each capability from the canonical
+    /// registry, and binding the complete wave durably before returning any
+    /// ordinary ToolBatch challenge/lease projection.
+    fn codemode_prepare_wave(
+        &mut self,
+        request: &RpcRequestV1,
+        authenticated_principal: &crate::protocol::AuthenticatedPrincipalV1,
+        principal: &str,
+        fence: &FrameFence,
+        context: (&str, &str, &str, &str, Option<&Value>),
+    ) -> Result<Option<Value>, HostError> {
+        let lane = context.3;
+        let fields = strict_fields(
+            &request.body,
+            &["schemaVersion", "lane", "requestId", "waveFrame", "calls"],
+            &["sessionID", "runID", "taskID", "attemptID"],
+        )?;
+        if fields.get("schemaVersion") != Some(&Value::Unsigned(1)) || text(fields, "lane")? != lane {
+            return Err(invalid());
+        }
+        let request_id = text(fields, "requestId")?;
+        validate_effect_identifier(request_id)?;
+        let wave_value = fields.get("waveFrame").ok_or_else(invalid)?;
+        let wave_json = wave_value.to_json_value().map_err(|_| invalid())?;
+        if !wave_json.is_object() {
+            return Err(invalid());
+        }
+        let mut line = serde_json::to_vec(&wave_json).map_err(|_| invalid())?;
+        line.push(b'\n');
+        let frame = crate::codemode_protocol::CodeModeFrameV1::from_json_line(&line)
+            .map_err(|_| ("code_mode_wave_conflict", ErrorCategoryV1::Validation,
+                "CodeMode wave frame is malformed or outside the bounded frame contract"))?;
+        let crate::codemode_protocol::CodeModeFrameV1::WaveRequest(wave) = &frame else {
+            return Err(("code_mode_wave_conflict", ErrorCategoryV1::Validation,
+                "CodeMode prepare requires one wave_request frame"));
+        };
+        if wave.request_id != request_id {
+            return Err(("code_mode_wave_conflict", ErrorCategoryV1::Conflict,
+                "CodeMode wave frame request ID differs from the authenticated request"));
+        }
+        let raw_calls = match fields.get("calls") {
+            Some(Value::Array(rows)) if !rows.is_empty() && rows.len() <= MAX_TOOL_BATCH_CALLS => rows,
+            _ => return Err(invalid()),
+        };
+        if raw_calls.len() != wave.calls.len() {
+            return Err(("code_mode_wave_conflict", ErrorCategoryV1::Conflict,
+                "CodeMode resolved call count differs from the helper frame"));
+        }
+        let mut classifications = Vec::with_capacity(raw_calls.len());
+        for (index, (raw, frame_call)) in raw_calls.iter().zip(&wave.calls).enumerate() {
+            let row = strict_fields(raw, &["callID", "capabilityID", "toolName", "arguments"], &[])?;
+            if text(row, "callID")? != frame_call.call_id
+                || text(row, "capabilityID")? != frame_call.capability_id
+                || text(row, "toolName")? != frame_call.tool_name
+            {
+                return Err(("code_mode_wave_conflict", ErrorCategoryV1::Conflict,
+                    "CodeMode resolved call identity differs from the helper frame"));
+            }
+            let arguments = row.get("arguments").ok_or_else(invalid)?
+                .to_json_value().map_err(|_| invalid())?;
+            let frame_arguments = serde_json::Value::Object(
+                frame_call.arguments.iter().map(|(key, value)| (key.clone(), value.clone())).collect(),
+            );
+            let resolved_bytes = messagepack::encode(
+                &Value::from_json_value(&arguments).ok_or_else(invalid)?, crate::messagepack::FRAME_LIMITS,
+            ).map_err(|_| invalid())?;
+            let frame_bytes = messagepack::encode(
+                &Value::from_json_value(&frame_arguments).ok_or_else(invalid)?, crate::messagepack::FRAME_LIMITS,
+            ).map_err(|_| invalid())?;
+            if resolved_bytes != frame_bytes
+                || frame_call.argument_bytes != resolved_bytes.len()
+            {
+                return Err(("code_mode_wave_conflict", ErrorCategoryV1::Conflict,
+                    "CodeMode resolved arguments differ from the exact helper frame"));
+            }
+            let _ = index;
+            classifications.push(crate::effect_host::CodeModeWaveCallClassificationV1 {
+                call_id: frame_call.call_id.clone(),
+                kind: code_mode_call_kind(text(row, "capabilityID")?),
+            });
+        }
+        let (location, authority) = self.resolve_code_mode_authority(
+            authenticated_principal, principal, fence, context, request_id, fields,
+        )?;
+        let mut effect_host = EffectHost::open_live(&location.effect_state_dir, Some(&location.canonical_root))
+            .map_err(|_| ("effect_unavailable", ErrorCategoryV1::Unavailable,
+                "CodeMode EffectHost journal is unavailable"))?;
+        let admission = effect_host.prepare_code_mode_wave(&authority, &frame, &classifications)
+            .map_err(codemode_host_error)?;
+        if admission.wave_index != wave.wave_index {
+            return Err(("code_mode_wave_conflict", ErrorCategoryV1::Conflict,
+                "CodeMode admission wave index differs from the helper frame"));
+        }
+        Ok(Some(map_value([
+            ("schemaVersion", Value::Unsigned(1)),
+            ("lane", Value::String(lane.to_owned())),
+            ("requestID", Value::String(request_id.to_owned())),
+            ("batchID", Value::String(admission.batch_id)),
+            ("waveIndex", Value::Unsigned(u64::from(admission.wave_index))),
+            ("totalCalls", Value::Unsigned(admission.total_calls)),
+            ("totalArgumentBytes", Value::Unsigned(admission.total_argument_bytes)),
+            ("batch", admission.batch),
+        ])))
+    }
+
     /// Resolve a CodeMode execution only from the private middleware-authenticated
     /// call scope and the current durable owner record. The request body contributes
     /// selectors; it never supplies principal, Attempt authority, or execution ID.
     fn resolve_code_mode_authority(
-        &self,
+        &mut self,
         authenticated_principal: &crate::protocol::AuthenticatedPrincipalV1,
         principal: &str,
         fence: &FrameFence,
@@ -4157,8 +4431,10 @@ impl HostKernel {
             .map_err(|_|("effect_unavailable",ErrorCategoryV1::Unavailable,"CodeMode EffectHost journal is unavailable"))?;
         let inspection=effect_host.inspect_code_mode_wave_calls(&authority,wave_index as u8)
             .map_err(|_|("code_mode_wave_unknown",ErrorCategoryV1::Uncertain,"CodeMode wave is not durably inspectable"))?;
-        let outcome=effect_host.code_mode_wave_outcome(&authority,wave_index as u8)
-            .map_err(|_|("code_mode_wave_unknown",ErrorCategoryV1::Uncertain,"CodeMode wave outcome is UNKNOWN or incomplete"))?;
+        // Revalidate the exact ordered durable rows; never replay settlement with
+        // fabricated callback output facts.
+        let outcome=effect_host.read_code_mode_wave_outcome(request_id,wave_index as u8,&inspection.batch_id)
+            .map_err(|_|("code_mode_wave_unknown",ErrorCategoryV1::Uncertain,"CodeMode wave receipt replay failed its durable checks"))?;
         Ok(Some(codemode_wave_outcome_value(request_id,wave_index as u8,&inspection.batch_id,&outcome)?))
     }
 
@@ -4170,7 +4446,7 @@ impl HostKernel {
     ) -> Result<Option<Value>, HostError> {
         let fields=strict_fields(&request.body,&["schemaVersion","lane","requestId","waveIndex","reason"],&["sessionID","runID","taskID","attemptID"])?;
         if fields.get("schemaVersion")!=Some(&Value::Unsigned(1))||text(fields,"lane")?!=context.3
-            || !matches!(text(fields,"reason")?,"user_abort"|"deadline"|"parent_cancel") {return Err(invalid())}
+            || !matches!(text(fields,"reason")?,"user_abort"|"deadline"|"parent_failure"|"shutdown") {return Err(invalid())}
         let request_id=text(fields,"requestId")?; let wave_index=get_unsigned(fields,"waveIndex")?;
         if wave_index>63{return Err(invalid())}
         let (location,authority)=self.resolve_code_mode_authority(authenticated_principal,principal,fence,context,request_id,fields)?;
@@ -4178,13 +4454,16 @@ impl HostKernel {
             .map_err(|_|("effect_unavailable",ErrorCategoryV1::Unavailable,"CodeMode EffectHost journal is unavailable"))?;
         let inspection=effect_host.inspect_code_mode_wave_calls(&authority,wave_index as u8)
             .map_err(|_|("code_mode_wave_unknown",ErrorCategoryV1::Uncertain,"CodeMode cancellation wave identity is unavailable"))?;
-        // The current supervisor RPC has no authenticated process-quiescence
-        // proof. Fence the execution UNKNOWN instead of claiming cancellation.
+        if let Ok(outcome) = effect_host.read_code_mode_wave_outcome(request_id,wave_index as u8,&inspection.batch_id) {
+            return Ok(Some(codemode_wave_outcome_value(request_id,wave_index as u8,&inspection.batch_id,&outcome)?));
+        }
+        // The caller has not supplied process-tree quiescence. Persist UNKNOWN
+        // and fence later waves instead of claiming cancellation or replayability.
         effect_host.fence_code_mode_unknown(request_id,&inspection.batch_id)
-            .map_err(|_|("code_mode_wave_unknown",ErrorCategoryV1::Uncertain,"CodeMode cancellation could not be durably fenced"))?;
+            .map_err(|_|("code_mode_wave_unknown",ErrorCategoryV1::Uncertain,"CodeMode cancellation could not durably fence the wave"))?;
         let results=inspection.calls.iter().map(|call|code_mode_result_value(call.call_index,&call.call_id,"unknown",None,None,None,None,None,None)).collect::<Vec<_>>();
         Ok(Some(map_value([("status",Value::String("unknown".into())),("requestID",Value::String(request_id.into())),
-            ("batchID",Value::String(inspection.batch_id)),("waveIndex",Value::Unsigned(wave_index)),("results",Value::Array(results)),("receiptDigest",Value::Null)])))
+            ("batchID",Value::String(inspection.batch_id)),("waveIndex",Value::Unsigned(wave_index)),("results",Value::Array(results)),("receiptDigest",Value::Nil)])))
     }
 
     fn dispatch_repo_intel_request(
@@ -4390,8 +4669,9 @@ impl HostKernel {
                 let authenticated = crate::protocol::AuthenticatedPrincipalV1::ServerAuth {
                     subject: subject.to_owned(),
                 };
+                let index_principal = format!("server_auth:{subject}");
                 let index = self.direct_session_artifacts(
-                    &index_request, Some(&authenticated), principal, fence,
+                    &index_request, Some(&authenticated), &index_principal, fence,
                 )?.ok_or(("artifact_owner_unavailable", ErrorCategoryV1::Uncertain,
                     "DirectSession receipt index did not produce a result"))?;
                 let indexed = strict_fields(&index, &["status", "sessionID", "locationID", "currentOwnerEpoch", "artifacts"], &[])?;
@@ -5125,6 +5405,15 @@ impl HostKernel {
                 (MANAGED_SERVICE_ID, "admit") => {
                     self.managed_admit(request, authenticated_principal, principal, fence)
                 }
+                (MANAGED_SERVICE_ID, "host_run.inspect") => {
+                    self.managed_host_run_inspect(request, authenticated_principal, principal, fence)
+                }
+                (MANAGED_SERVICE_ID, "host_run.bind") => {
+                    self.managed_host_run_bind(request, authenticated_principal, principal, fence)
+                }
+                (MANAGED_SERVICE_ID, "host_run.bind_receipt") => {
+                    self.managed_host_run_bind_receipt(request, authenticated_principal, principal, fence)
+                }
                 (MANAGED_SERVICE_ID, "managed.pre_admission_target.reserve") => {
                     self.managed_pre_admission_target_reserve(request, authenticated_principal, principal, fence)
                 }
@@ -5694,11 +5983,12 @@ impl HostKernel {
         }
         let executable_digest = crate::terminal_process::executable_digest(&executable)
             .map_err(|_| invalid())?;
-        let executable_text = executable.to_str().ok_or_else(invalid)?;
+        let executable_text = executable.to_str().ok_or_else(invalid)?.to_owned();
+        let profile_digest = git_executable_profile_digest(&executable_text, &executable_digest);
         let profile = GitExecutableProfileV1 {
             executable,
             executable_digest,
-            profile_digest: git_executable_profile_digest(executable_text, &executable_digest),
+            profile_digest,
             revision: 1,
         };
         if let Some(existing) = &self.git_executable_profile {
@@ -5784,11 +6074,14 @@ impl HostKernel {
                 "Location identifier is already bound",
             ));
         }
+        // Legacy/deferred rows legitimately carry a NULL owner until the first
+        // authenticated registration binds one, so the column must be read as
+        // nullable (a plain `String` decode fails on SQL NULL).
         let recorded_owner: Option<String> = transaction
             .query_row(
                 "SELECT principal_binding FROM locations WHERE location_id=?1",
                 [&id],
-                |row| row.get(0),
+                |row| row.get::<_, Option<String>>(0),
             )
             .optional()
             .map_err(|_| {
@@ -5797,7 +6090,8 @@ impl HostKernel {
                     ErrorCategoryV1::Unavailable,
                     "Location owner binding could not be read",
                 )
-            })?;
+            })?
+            .flatten();
         if recorded_owner
             .as_ref()
             .is_some_and(|recorded| recorded != &principal_binding)
@@ -5982,7 +6276,7 @@ impl HostKernel {
             return Err(managed_conflict("P8 worktree target escaped its registered Goal root"));
         }
         let canonical_text = canonical_root.to_str().ok_or_else(invalid)?;
-        let goal_workspace_ref = self.managed_control(goal_id)?.snapshot().goal
+        let goal_workspace_ref = self.managed_control(goal_id)?.snapshot().goal.clone()
             .map(|goal| goal.workspace_ref)
             .ok_or_else(|| managed_conflict("managed Goal workspace reference is unavailable"))?;
         let registration = self.register_location(
@@ -6080,7 +6374,7 @@ impl HostKernel {
         }
         let (snapshot, task, spec, accepted) = {
             let control = self.managed_control(goal_id)?;
-            let snapshot = control.snapshot();
+            let snapshot = control.snapshot().clone();
             if snapshot.revision != expected_revision { return Err(managed_conflict("managed pre-admission expected revision is stale")); }
             let goal = snapshot.goal.as_ref().ok_or_else(|| managed_conflict("managed Goal is unavailable"))?;
             let run = snapshot.runs.get(run_id).cloned().ok_or_else(|| managed_conflict("managed Run is unavailable"))?;
@@ -6189,7 +6483,7 @@ impl HostKernel {
             Err(crate::worker_durable::WorkerDurableError::NotFound(_)) => {
                 let worktree = self.worker_pool.as_ref().ok_or(("worker_pool_unavailable", ErrorCategoryV1::Unavailable,
                     "durable worker owner is unavailable"))?.resolve_managed_worktree(&owner, parent_session_id, location_id,
-                        &workspace_revision, &root).map_err(|_| ("managed_worktree_unavailable", ErrorCategoryV1::Unavailable,
+                        &workspace_revision, &root, now).map_err(|_| ("managed_worktree_unavailable", ErrorCategoryV1::Unavailable,
                             "no clean registered worktree is available for the current Goal workspace"))?;
                 let remaining_ms = self.managed_control(goal_id)?.run_remaining_ms(run_id, now).map_err(managed_error)?
                     .filter(|remaining| *remaining > 0).ok_or(("managed_run_deadline_unavailable", ErrorCategoryV1::Unavailable,
@@ -6303,6 +6597,9 @@ impl HostKernel {
             _ => return Err(("missing_principal", ErrorCategoryV1::Authorization,
                 "managed admission requires authenticated ServerAuth")),
         };
+        let registered_workspace_id = self.locations.get(location_id)
+            .ok_or(("location_not_registered", ErrorCategoryV1::Authorization,
+                "managed Location is not registered"))?.workspace_id.clone();
         if principal != format!("server_auth:{subject}") {
             return Err(("effect_denied", ErrorCategoryV1::Authorization,
                 "managed admission principal differs from authenticated ServerAuth"));
@@ -6461,7 +6758,7 @@ impl HostKernel {
                 || pins.resource_policy_revision() != resource_policy_revision
                 || pins.resource_policy_digest() != resource_policy_digest
                 || pins.profile_permission_ceiling_digest() != permission_digest.as_str()
-                || pins.context_selection_digest() != receipt.binding.context_selection_digest
+                || pins.context_selection_digest() != Some(receipt.binding.context_selection_digest.as_str())
                 || pins.accepted_spec_digest() != receipt.binding.accepted_spec_digest
                 || pins.capability_ceiling_digest() != receipt.binding.capability_ceiling_digest
                 || reservation.context_bound_receipt_digest() != expected_pre_admission_proof_digest
@@ -6502,6 +6799,11 @@ impl HostKernel {
                     return Err(managed_conflict("admission replay has no authenticated root coordinator proof"));
                 }
             };
+            let managed_attempt_snapshot = self.managed_control(goal_id)?.snapshot().clone();
+            let managed_target = self.managed_worktree_target_projection(
+                goal_id, reservation.worker_execution_id(), root_proof, &attempt_binding, &owner,
+                principal, subject, unix_ms(),
+            )?;
             let worktree_target = self.managed_worktree_target_projection(
                 goal_id, reservation.worker_execution_id(), root_proof, &attempt_binding, &owner,
                 principal, subject, unix_ms(),
@@ -6530,13 +6832,10 @@ impl HostKernel {
                 ("revision", Value::Unsigned(receipt.managed_revision)),
                 ("worktreeTarget", worktree_target),
                 ("managedAttempt", managed_context_scope_projection(
-                    self.managed_control(goal_id)?.snapshot(), goal_id, run_id, task_id, attempt_id,
+                    &managed_attempt_snapshot, goal_id, run_id, task_id, attempt_id,
                     receipt.managed_revision, &receipt.location_id, session_id, &receipt.workspace_revision,
                     &receipt.binding, &context, &receipt.binding.context_selection_digest,
-                    &self.managed_worktree_target_projection(
-                        goal_id, reservation.worker_execution_id(), root_proof, &attempt_binding, &owner,
-                        principal, subject, unix_ms(),
-                    )?,
+                    &managed_target,
                 )?.to_value()),
             ])));
         }
@@ -6545,7 +6844,7 @@ impl HostKernel {
         // CAS before reserving anything in the separate P8 owner.
         let (snapshot, task, spec, accepted) = {
             let control = self.managed_control(goal_id)?;
-            let snapshot = control.snapshot();
+            let snapshot = control.snapshot().clone();
             if snapshot.revision != expected_revision {
                 return Err(managed_conflict("managed admission expected revision is stale"));
             }
@@ -6568,8 +6867,7 @@ impl HostKernel {
                 || session_link.session_id != parent_session_id
                 || session_link.owner_epoch != fence.owner_epoch()
                 || session_link.protocol_version == 0
-                || goal.workspace_ref != self.locations.get(location_id)
-                    .map(|location| location.workspace_id.as_str()).unwrap_or_default()
+                || goal.workspace_ref != registered_workspace_id
             {
                 return Err(managed_conflict("managed Task, Run, Spec, Session or Location is not currently admissible"));
             }
@@ -6733,8 +7031,8 @@ impl HostKernel {
             owner.clone(), goal_id.to_owned(), expected_revision.to_string(),
             u64::from(task.attempt_count), task.candidate_generation, spec.digest.clone(),
             workspace_revision.clone(), location_id.to_owned(), fence.process_incarnation().to_owned(),
-            profile.profile_id.clone(), profile.revision, profile_digest.clone(), permission_digest,
-            context_selection_digest, accepted_scope_digest,
+            profile.profile_id.clone(), profile.revision, profile_digest.clone(), permission_digest.clone(),
+            context_selection_digest.clone(), accepted_scope_digest.clone(),
             effective_ceiling.effective_ceiling_digest().to_owned(),
             u64::from(spec.content.budget.max_workers),
             resource_policy_revision,
@@ -6812,7 +7110,7 @@ impl HostKernel {
                     ("ownerLogID", Value::String(reservation.owner_log_id().to_owned())),
                     ("ownerLogSequence", Value::String(reservation.owner_log_sequence().to_owned())),
                     ("ownerLogEventDigest", Value::String(reservation.owner_log_event_digest().to_owned())),
-                    ("ownerEpoch", Value::String(reservation.owner_epoch().to_string())),
+                    ("ownerEpoch", Value::String(fence.owner_epoch().to_string())),
                     ("workerPoolRevision", Value::String(reservation.worker_pool_revision().to_string())),
                     ("workerExecutionID", Value::String(reservation.worker_execution_id().to_owned())),
                     ("ticketID", Value::String(reservation.ticket_id().to_owned())),
@@ -6860,23 +7158,26 @@ impl HostKernel {
             effective_permission_scope_digest,
             crate::managed_control::ParentExecutionProofV1::from_root_coordinator_owner(&root)
                 .map_err(managed_error)?,
-            worktree_projection,
+            worktree_projection.clone(),
             managed_provider_route.ok_or_else(invalid)?,
         );
         // Recheck the aggregate CAS after the P8 append. If another owner event
         // won the race, leave the RESERVED lease fenced for explicit recovery.
-        let control = self.managed_control(goal_id)?;
-        if control.snapshot().revision != expected_revision {
-            return Err(("managed_admission_uncertain", ErrorCategoryV1::Uncertain,
-                "managed owner changed after P8 reservation; reservation remains fenced"));
-        }
-        control.admit_attempt_with_delegation(
-            delivery.ok_or_else(invalid)?, run_id, task_id, attempt_id, Some(facts),
-        ).map_err(|_| ("managed_admission_uncertain", ErrorCategoryV1::Uncertain,
-            "managed Attempt admission did not commit; P8 reservation remains fenced"))?;
-        let binding = control.attempt_delegation_binding(attempt_id).cloned()
-            .ok_or(("managed_admission_uncertain", ErrorCategoryV1::Uncertain,
-                "managed Attempt committed without a readable DelegationBinding"))?;
+        let (binding, managed_snapshot) = {
+            let control = self.managed_control(goal_id)?;
+            if control.snapshot().revision != expected_revision {
+                return Err(("managed_admission_uncertain", ErrorCategoryV1::Uncertain,
+                    "managed owner changed after P8 reservation; reservation remains fenced"));
+            }
+            control.admit_attempt_with_delegation(
+                delivery.ok_or_else(invalid)?, run_id, task_id, attempt_id, Some(facts),
+            ).map_err(|_| ("managed_admission_uncertain", ErrorCategoryV1::Uncertain,
+                "managed Attempt admission did not commit; P8 reservation remains fenced"))?;
+            let binding = control.attempt_delegation_binding(attempt_id).cloned()
+                .ok_or(("managed_admission_uncertain", ErrorCategoryV1::Uncertain,
+                    "managed Attempt committed without a readable DelegationBinding"))?;
+            (binding, control.snapshot().clone())
+        };
         let attached = self.worker_pool.as_mut().ok_or((
             "worker_pool_unavailable", ErrorCategoryV1::Unavailable,
             "durable worker owner is unavailable",
@@ -6932,11 +7233,11 @@ impl HostKernel {
             ("managedProviderRoute", binding.managed_provider_route.as_ref()
                 .map(crate::protocol::ManagedProviderRouteBindingV1::to_value).unwrap_or(Value::Nil)),
             ("pinsDigest", Value::String(pins.pins_digest().to_owned())),
-            ("revision", Value::Unsigned(control.snapshot().revision)),
+            ("revision", Value::Unsigned(managed_snapshot.revision)),
             ("worktreeTarget", worktree_target.clone()),
             ("managedAttempt", managed_context_scope_projection(
-                control.snapshot(), goal_id, run_id, task_id, attempt_id,
-                control.snapshot().revision, &admitted_child_location_id,
+                &managed_snapshot, goal_id, run_id, task_id, attempt_id,
+                managed_snapshot.revision, &admitted_child_location_id,
                 session_id, &admitted_child_workspace_revision, &binding,
                 &context, &context_selection_digest, &worktree_target,
             )?.to_value()),
@@ -7010,7 +7311,6 @@ impl HostKernel {
             || binding.owner_epoch != scope.owner_epoch
         { return Err(managed_conflict("managed context Attempt scope is stale or no longer live")); }
         let sequence = selection.request_sequence.ok_or_else(invalid)?;
-        let control = self.managed_control(&scope.goal_id)?;
         let wake_claim = fields.get("wakeClaim").map(|value|
             crate::protocol::ManagedMessageWakeClaimReceiptV1::from_value(value)
                 .ok_or_else(invalid)).transpose()?;
@@ -7020,6 +7320,7 @@ impl HostKernel {
             "durable managed message journal is unavailable for context advance"))?;
         message_journal.validate_context_advance_wake(&scope, &selection, wake_claim.as_ref())
             .map_err(managed_error)?;
+        let control = self.managed_control(&scope.goal_id)?;
         if let Some(existing) = control.managed_context_selection(&scope.attempt_id, sequence) {
             if existing.request_id != selection.request_id || existing.selection_digest != digest
                 || crate::context_selection::ContextSelectionV1::decode_json(&existing.selection)
@@ -8168,7 +8469,8 @@ impl HostKernel {
         let usage_proof = crate::managed_control::ManagedAttemptUsageProofV1::from_host_kernel(
             scope.goal_id.clone(), scope.run_id.clone(), scope.task_id.clone(), scope.attempt_id.clone(),
             scope.owner_epoch, scope.expected_managed_revision, entry_id.to_owned(),
-            u32::try_from(step_finish_index).map_err(|_| invalid())?, binding_digest, usage.clone(),
+            u32::try_from(step_finish_index).map_err(|_| invalid())?, binding_digest,
+            usage.to_json_value().map_err(|_| invalid())?,
         ).map_err(managed_error)?;
         let usage_receipt = self.managed_control(&scope.goal_id)?
             .managed_attempt_usage_receipt(usage_proof.operation_key())
@@ -8280,6 +8582,11 @@ impl HostKernel {
         if provider_request_id != expected_provider_request_id {
             return Err(managed_conflict("completed-turn provider request is not the exact Attempt sequence"));
         }
+        let journal_root = self.managed_message_root.clone();
+        let mut journal = crate::managed_control::ManagedMessageJournalV1::open(
+            &journal_root, &scope.attempt_id, fence.owner_epoch(),
+        ).map_err(|_| ("capability_unavailable", ErrorCategoryV1::Unavailable,
+            "managed completed-turn receipt journal is unavailable"))?;
         let control = self.managed_control(&scope.goal_id)?;
         let snapshot = control.snapshot().clone();
         let attempt = snapshot.attempts.get(&scope.attempt_id)
@@ -8306,11 +8613,6 @@ impl HostKernel {
             || settled.usage_digest.as_deref() != Some(usage_digest) {
             return Err(managed_conflict("completed-turn claims differ from the latest exact settled OwnerLog request"));
         }
-        let journal_root = self.managed_message_root.clone();
-        let mut journal = crate::managed_control::ManagedMessageJournalV1::open(
-            &journal_root, &scope.attempt_id, fence.owner_epoch(),
-        ).map_err(|_| ("capability_unavailable", ErrorCategoryV1::Unavailable,
-            "managed completed-turn receipt journal is unavailable"))?;
         let replay = journal.completed_turn(sequence).is_some();
         let previous_sequence = if replay { journal.completed_turn_sequence_before(sequence) }
             else { journal.latest_completed_turn_sequence() };
@@ -8524,7 +8826,7 @@ impl HostKernel {
         let mut effect_host = EffectHost::open_live(&location.effect_state_dir, Some(&location.canonical_root))
             .map_err(|_| ("effect_unavailable", ErrorCategoryV1::Unavailable,
                 "provider UNKNOWN receipt store is unavailable"))?;
-        match effect_host.inspect_managed_provider_inference(&binding, challenge_id, effect_id)
+        match effect_host.inspect_managed_provider_inference(&binding, challenge_id.as_str(), effect_id.as_str())
             .map_err(|error| terminal_failure(&error))? {
             crate::http_execution::ManagedProviderInferenceRecoveryV1::Unknown => {
                 effect_host.mark_managed_provider_inference_unknown(&binding, &authorization)
@@ -8641,12 +8943,16 @@ impl HostKernel {
             .managed_dispatch_consumed_receipt(attempt_id, &delivery)
             .map_err(managed_error)?
         {
-            let snapshot = self.managed_control(goal_id)?.snapshot();
+            let (snapshot, binding) = {
+                let control = self.managed_control(goal_id)?;
+                (
+                    control.snapshot().clone(),
+                    control.attempt_delegation_binding(attempt_id).cloned()
+                        .ok_or_else(|| managed_conflict("consumed managed Attempt binding is unavailable"))?,
+                )
+            };
             let attempt = snapshot.attempts.get(attempt_id)
                 .ok_or_else(|| managed_conflict("consumed managed Attempt is unavailable"))?;
-            let binding = self.managed_control(goal_id)?.attempt_delegation_binding(attempt_id)
-                .cloned()
-                .ok_or_else(|| managed_conflict("consumed managed Attempt binding is unavailable"))?;
             let task = snapshot.runs.get(run_id)
                 .and_then(|run| run.tasks.get(task_id))
                 .ok_or_else(|| managed_conflict("consumed managed Task is unavailable"))?;
@@ -8893,7 +9199,7 @@ impl HostKernel {
         let receipt = self.managed_control(goal_id)?.record_attempt_usage(
             append_revision, &delivery_id, proof,
         ).map_err(managed_error)?;
-        let mut response = receipt.to_wire_value();
+        let mut response = Value::from_json_value(&receipt.to_wire_value()).ok_or_else(invalid)?;
         let Value::Map(fields) = &mut response else { return Err(invalid()) };
         let mut refreshed = scope;
         refreshed.expected_managed_revision = receipt.managed_revision;
@@ -8997,7 +9303,7 @@ impl HostKernel {
                 .ok_or_else(|| managed_conflict("managed prompt has no durable consume receipt"))?;
             (snapshot, attempt, run, binding, consumed)
         };
-        let goal = self.managed_control(goal_id)?.snapshot().goal
+        let goal = self.managed_control(goal_id)?.snapshot().goal.clone()
             .ok_or_else(|| managed_conflict("managed Goal is unavailable"))?;
         let location = self.locations.get(&attempt.location_id).ok_or((
             "location_not_registered", ErrorCategoryV1::Authorization,
@@ -9031,6 +9337,12 @@ impl HostKernel {
         }
 
         let current_workspace_revision = workspace_revision_digest(&location.canonical_root)?;
+        let workspace_binding = self.worker_pool.as_ref().ok_or((
+            "worker_pool_unavailable", ErrorCategoryV1::Unavailable,
+            "durable worker owner is unavailable",
+        ))?.resolve_managed_ready_task_for_attempt(attempt_id)
+            .map_err(|_| ("managed_dispatch_uncertain", ErrorCategoryV1::Uncertain,
+                "P8 completion pins are unavailable"))?.0.workspace_binding().to_owned();
         let owner = crate::resource_budget::AuthenticatedOwnerContext::from_verified_ingress(
             principal.to_owned(), workspace_binding.clone(), session_id.to_owned(), run_id.to_owned(),
             task_id.to_owned(), attempt_id.to_owned(), fence.owner_epoch(),
@@ -9302,7 +9614,7 @@ impl HostKernel {
         if attempt.run_id != run_id || attempt.task_id != task_id
             || attempt.executor_principal != principal || attempt.owner_epoch != fence.owner_epoch()
             || attempt.phase != crate::managed_control::AttemptPhase::Settling
-            || attempt.session_id != binding.session_id || attempt.location_id.is_empty()
+            || attempt.location_id.is_empty()
             || binding.run_id != run_id || binding.task_id != task_id || binding.attempt_id != attempt_id
             || run.session_link.as_ref().is_none_or(|link| link.owner_epoch != fence.owner_epoch())
             || location.workspace_id != self.managed_control(goal_id)?.snapshot().goal
@@ -9336,8 +9648,7 @@ impl HostKernel {
         let root_workspace_binding = crate::guard::workspace_binding(
             &root_location.canonical_root, root_metadata.dev(), root_metadata.ino(),
         );
-        if root_workspace_binding != binding.workspace_binding
-            || root_workspace_binding != initial_pins.workspace_binding()
+        if root_workspace_binding != initial_pins.workspace_binding()
             || root_location.workspace_id != location.workspace_id
         {
             return Err(managed_conflict("final Inspect Attempt differs from the authenticated Goal root binding"));
@@ -9402,10 +9713,12 @@ impl HostKernel {
         ))?.resolve_claimed_managed_worktree_target(
             &root, now, claim.worker_execution_id(), &candidate,
         ).map_err(|_| managed_conflict("P8 could not re-resolve the claimed final Inspect target"))?;
+        let goal = self.managed_control(goal_id)?.snapshot().goal.clone()
+            .ok_or_else(|| managed_conflict("final Inspect Goal is unavailable"))?;
         let leased_root = fs::canonicalize(root_location.canonical_root.join(leased_target.relative_path()))
             .map_err(|_| invalid())?;
         let leased_root_text = leased_root.to_str().ok_or_else(invalid)?;
-        let admitted_revision = binding.source_revision();
+        let admitted_revision = binding.source_revision.as_str();
         if !leased_root.starts_with(&root_location.canonical_root)
             || leased_root == root_location.canonical_root
             || workspace_revision_digest(&leased_root)? != candidate.final_revision()
@@ -9490,7 +9803,7 @@ impl HostKernel {
             crate::effect_host::BrokerProcessAuthorizationV1 {
                 capability_id: crate::guard::GIT_WORKTREE_LIST_ID.to_owned(),
                 origin_kind: crate::guard::EffectOriginKindV1::ManagedRoot,
-                principal: principal.to_owned(), user_action_id: action_id,
+                principal: principal.to_owned(), execution_principal: principal.to_owned(), user_action_id: action_id,
                 call_id, session_id: parent_session_id.to_owned(),
                 scope: crate::terminal_process::StdioExecutionScopeV1::Session {
                     session_id: parent_session_id.to_owned(),
@@ -9539,9 +9852,10 @@ impl HostKernel {
             ("policySummary", Value::String("managed final workspace inspection requires approval".to_owned())),
         ]);
         if let Value::Map(approval_fields) = &mut approval {
+            let normalized_targets = approval_fields.get("normalizedTargets").cloned().ok_or_else(invalid)?;
             add_guard_consent_projection(
                 approval_fields, crate::guard::EffectOriginKindV1::ManagedRoot,
-                crate::guard::GIT_WORKTREE_LIST_ID, approval_fields.get("normalizedTargets").ok_or_else(invalid)?,
+                crate::guard::GIT_WORKTREE_LIST_ID, &normalized_targets,
                 None, Some(parent_session_id),
             )?;
             set_guard_guarantee_assessment(approval_fields, crate::guard::BROKER_GUARANTEES)?;
@@ -9661,7 +9975,7 @@ impl HostKernel {
         let root_pins = crate::worker_durable::RootCoordinatorRegistrationPinsV1::from_authenticated_core_peer(
             goal_id.to_owned(), run_id.to_owned(), principal.to_owned(), root_workspace_binding.clone(),
             parent_session_id.to_owned(), worker_pins.location_id().to_owned(), fence.owner_epoch(),
-            fence.process_incarnation().to_owned(), peer_identity, worker_pins.source_revision().to_owned(),
+            fence.process_incarnation().to_owned(), peer_identity, worker_pins.workspace_revision().to_owned(),
             worker_pins.accepted_spec_digest().to_owned(),
         ).map_err(|_| managed_conflict("fresh read-only reconciliation root pins are invalid"))?;
         let now = unix_ms();
@@ -9784,7 +10098,7 @@ impl HostKernel {
             unix_ms().saturating_add(crate::worker_pool::MAX_WORKER_LEASE_MS),
         ).map_err(|_| ("managed_reconciliation_uncertain", ErrorCategoryV1::Uncertain,
             "P8 reconciliation root proof could not be refreshed after intent persistence"))?;
-        let scope_digest = managed_quarantine_inspect_scope_digest(&operation, &refreshed_root)?;
+        let scope_digest = managed_quarantine_inspect_scope_digest(operation.intent(), &refreshed_root)?;
         let git_profile = self.git_executable_profile.as_ref().ok_or((
             "profile_unavailable", ErrorCategoryV1::Unavailable,
             "authenticated global Git executable profile is unavailable",
@@ -9822,7 +10136,7 @@ impl HostKernel {
         let response = effect_host.prepare_broker_process(crate::effect_host::BrokerProcessAuthorizationV1 {
             capability_id: crate::guard::GIT_WORKTREE_LIST_ID.to_owned(),
             origin_kind: crate::guard::EffectOriginKindV1::ManagedRoot,
-            principal: principal.to_owned(), user_action_id: action_id,
+            principal: principal.to_owned(), execution_principal: principal.to_owned(), user_action_id: action_id,
             call_id, session_id: parent_session_id.to_owned(), managed_attempt_digest: None,
             scope: crate::terminal_process::StdioExecutionScopeV1::Session {
                 session_id: parent_session_id.to_owned(),
@@ -9880,9 +10194,10 @@ impl HostKernel {
             ])),
         ]);
         if let Value::Map(approval_fields) = &mut approval {
+            let normalized_targets = approval_fields.get("normalizedTargets").cloned().ok_or_else(invalid)?;
             add_guard_consent_projection(approval_fields, crate::guard::EffectOriginKindV1::ManagedRoot,
                 crate::guard::GIT_WORKTREE_LIST_ID,
-                approval_fields.get("normalizedTargets").ok_or_else(invalid)?, None, Some(parent_session_id))?;
+                &normalized_targets, None, Some(parent_session_id))?;
             set_guard_guarantee_assessment(approval_fields, crate::guard::BROKER_GUARANTEES)?;
         }
         Ok(Some(approval))
@@ -10075,6 +10390,7 @@ impl HostKernel {
             workspace_revision: operation.workspace_revision.clone(), profile_ref: "git-worktree".to_owned(),
             profile_id: "git-worktree".to_owned(), profile_revision: 1,
             profile_digest: git_profile.profile_digest.clone(), executable_digest: git_profile.executable_digest.clone(),
+            dap_allow_evaluate: false,
         };
         let preflight = self.stdio_supervisor.preflight(process_binding.clone(), spec)
             .map_err(terminal_preflight_failure)?;
@@ -10456,7 +10772,6 @@ impl HostKernel {
             || attempt.run_id != run_id || attempt.task_id != task_id
             || attempt.executor_principal != principal || attempt.owner_epoch != fence.owner_epoch()
             || binding.attempt_id != attempt_id || binding.run_id != run_id || binding.task_id != task_id
-            || binding.session_id != attempt.session_id
             || run.session_link.as_ref().is_none_or(|link| link.owner_epoch != fence.owner_epoch())
             || run.session_link.as_ref().is_none_or(|link| link.session_id != capability.session_id)
         {
@@ -10516,7 +10831,7 @@ impl HostKernel {
         };
         if pending.intent() != root_scope.operation.intent()
             || pending.intent().expected_workspace_revision() != candidate.final_revision()
-            || pending.intent().worktree_id() != claim.reservation().worktree_id()
+            || pending.intent().worktree_id() != leased_target.worktree_id()
         {
             return Err(managed_conflict("final Inspect durable target differs from the verified candidate"));
         }
@@ -10534,7 +10849,7 @@ impl HostKernel {
             || leased_target.child_workspace_ref() != self.managed_control(goal_id)?.snapshot().goal
                 .as_ref().map(|goal| goal.workspace_ref.as_str())
             || leased_target.child_canonical_root() != Some(child_root_text)
-            || leased_target.child_workspace_revision() != Some(binding.source_revision())
+            || leased_target.child_workspace_revision() != Some(binding.source_revision.as_str())
         {
             return Err(managed_conflict("final Inspect path is outside the registered P8 child worktree"));
         }
@@ -10601,6 +10916,7 @@ impl HostKernel {
             workspace_revision: candidate.final_revision().to_owned(), profile_ref: "git-worktree".to_owned(),
             profile_id: "git-worktree".to_owned(), profile_revision: 1,
             profile_digest: git_profile.profile_digest.clone(), executable_digest: git_profile.executable_digest.clone(),
+            dap_allow_evaluate: false,
         };
         let preflight = self.stdio_supervisor.preflight(process_binding.clone(), spec)
             .map_err(terminal_preflight_failure)?;
@@ -10807,7 +11123,7 @@ impl HostKernel {
         let parent_session_id = run.session_link.as_ref()
             .map(|link| link.session_id.as_str())
             .ok_or_else(|| managed_conflict("settled Run has no pinned root Session"))?;
-        let goal = self.managed_control(goal_id)?.snapshot().goal
+        let goal = self.managed_control(goal_id)?.snapshot().goal.clone()
             .ok_or_else(|| managed_conflict("managed Goal is unavailable"))?;
         let location = self.locations.get(&attempt.location_id).ok_or((
             "location_not_registered", ErrorCategoryV1::Authorization,
@@ -10817,7 +11133,7 @@ impl HostKernel {
             || attempt.executor_principal != principal || attempt.owner_epoch != fence.owner_epoch()
             || attempt.phase == crate::managed_control::AttemptPhase::Executing
             || attempt.phase == crate::managed_control::AttemptPhase::Settling
-            || attempt.session_id != binding.session_id || attempt.location_id.is_empty()
+            || attempt.location_id.is_empty()
             || location.workspace_id != goal.workspace_ref
             || location.principal_binding.as_deref()
                 != Some(crate::guard::location_principal_binding(subject).as_str())
@@ -10880,10 +11196,10 @@ impl HostKernel {
                 let supplied_profile_revision = parse_canonical_u64(required_text("profileRevision")?)
                     .filter(|value| *value > 0).ok_or_else(invalid)?;
                 let verification_run_id = required_text("verificationRunID")?;
-                let set = self.verifier_challenge_sets.get(verification_run_id)
+                let set = self.verifier_challenge_sets.get(verification_run_id).cloned()
                     .filter(|set| set.state == VerifierChallengeSetStateV1::Settled)
                     .ok_or_else(|| managed_conflict("verified settlement ChallengeSet is not durably SETTLED"))?;
-                let snapshot = self.managed_control(goal_id)?.snapshot();
+                let snapshot = self.managed_control(goal_id)?.snapshot().clone();
                 let spec = snapshot.specs.get(&run.spec_id)
                     .ok_or_else(|| managed_conflict("verified settlement accepted SpecVersion is unavailable"))?;
                 let evidence = attempt.verifier_evidence.as_ref()
@@ -10895,9 +11211,9 @@ impl HostKernel {
                     .collect::<std::collections::BTreeSet<_>>();
                 let evidence_criteria = evidence.criteria.iter().map(|criterion| criterion.criterion_id.as_str())
                     .collect::<std::collections::BTreeSet<_>>();
-                let journal_entry = self.verifier_journal.entry(verification_run_id)
+                let journal_entry = self.verifier_journal.entry(verification_run_id).cloned()
                     .ok_or_else(|| managed_conflict("verified settlement journal entry is unavailable"))?;
-                let restored = self.restore_verifier_challenge_set(journal_entry)?;
+                let restored = self.restore_verifier_challenge_set(&journal_entry)?;
                 let registered_profile = self.verifier_profiles.profile(&set.verifier_profile.profile_id)
                     .ok_or_else(|| managed_conflict("verified settlement verifier profile is unavailable"))?;
                 if self.verifier_journal.integrity_lost()
@@ -11232,7 +11548,7 @@ impl HostKernel {
     /// journal. This projection is the only source of nested CodeMode wave
     /// settlement refs; Core/tool outputs are not receipt authority.
     fn managed_effect_wave_receipts(
-        &self,
+        &mut self,
         request: &RpcRequestV1,
         authenticated_principal: Option<&crate::protocol::AuthenticatedPrincipalV1>,
         principal: &str,
@@ -11320,12 +11636,12 @@ impl HostKernel {
             ("callIndex", Value::Unsigned(u64::from(receipt.call_index))),
             ("callID", Value::String(receipt.call_id.clone())),
             ("effectID", Value::String(receipt.effect_id.clone())),
-            ("receiptRef", if expose_terminal_receipt { Value::String(receipt.challenge_id.clone()) } else { Value::Null }),
+            ("receiptRef", if expose_terminal_receipt { Value::String(receipt.challenge_id.clone()) } else { Value::Nil }),
             ("capabilityID", Value::String(receipt.capability_id.clone())),
             ("attemptScopeDigest", Value::String(receipt.attempt_scope_digest.clone())),
             ("status", Value::String(receipt.status.clone())),
-            ("receiptKind", if expose_terminal_receipt { Value::String(receipt.receipt_kind.clone()) } else { Value::Null }),
-            ("receiptDigest", if expose_terminal_receipt { Value::String(receipt.receipt_digest.clone()) } else { Value::Null }),
+            ("receiptKind", if expose_terminal_receipt { Value::String(receipt.receipt_kind.clone()) } else { Value::Nil }),
+            ("receiptDigest", if expose_terminal_receipt { Value::String(receipt.receipt_digest.clone()) } else { Value::Nil }),
         ])
         }).collect::<Vec<_>>();
         Ok(Some(map_value([
@@ -11395,8 +11711,7 @@ impl HostKernel {
             return Err(("stale_authenticated_peer", ErrorCategoryV1::Authorization,
                 "Core peer observation belongs to another owner epoch"));
         }
-        let control = self.managed_control(goal_id)?;
-        let snapshot = control.snapshot().clone();
+        let snapshot = self.managed_control(goal_id)?.snapshot().clone();
         let run = snapshot.runs.get(run_id).ok_or_else(|| managed_conflict("recovery Run is unavailable"))?;
         let attempt = snapshot.attempts.get(attempt_id).ok_or_else(|| managed_conflict("recovery Attempt is unavailable"))?;
         let task = run.tasks.get(task_id).ok_or_else(|| managed_conflict("recovery Task is unavailable"))?;
@@ -11412,7 +11727,7 @@ impl HostKernel {
         let location = self.locations.get(&attempt.location_id).ok_or((
             "location_not_registered", ErrorCategoryV1::Authorization,
             "terminal Attempt Location is unavailable for current-epoch recovery",
-        ))?;
+        ))?.clone();
         if location.principal_binding.as_deref() != Some(crate::guard::location_principal_binding(subject).as_str()) {
             return Err(("effect_denied", ErrorCategoryV1::Authorization,
                 "terminal Attempt Location is not bound to the authenticated principal"));
@@ -11422,9 +11737,9 @@ impl HostKernel {
             return Err(("managed_settlement_uncertain", ErrorCategoryV1::Uncertain,
                 "current workspace revision differs from the verified terminal head"));
         }
-        let binding = control.attempt_delegation_binding(attempt_id)
+        let binding = self.managed_control(goal_id)?.attempt_delegation_binding(attempt_id).cloned()
             .ok_or_else(|| managed_conflict("terminal Attempt binding is unavailable"))?;
-        let terminal = control.managed_attempt_terminal_snapshot(
+        let terminal = self.managed_control(goal_id)?.managed_attempt_terminal_snapshot(
             goal_id, run_id, task_id, attempt_id, &binding.digest().map_err(|_| invalid())?,
         ).map_err(managed_error)?;
         if terminal.observed_workspace_head() != Some(final_revision)
@@ -11548,7 +11863,7 @@ impl HostKernel {
     /// Attempt from the durable OwnerLog projection. `settle_dispatch` remains the
     /// only operation that can release the worker and revalidates all pins.
     fn managed_settlement_recovery(
-        &self,
+        &mut self,
         request: &RpcRequestV1,
         authenticated_principal: Option<&crate::protocol::AuthenticatedPrincipalV1>,
         principal: &str,
@@ -11567,15 +11882,14 @@ impl HostKernel {
             return Err(("effect_denied", ErrorCategoryV1::Authorization,
                 "settlement recovery principal differs from authenticated ServerAuth"));
         }
-        let control = self.managed_control(goal_id)?;
-        let snapshot = control.snapshot();
-        let run = snapshot.runs.get(run_id).ok_or_else(|| managed_conflict("recovery Run is unavailable"))?;
+        let snapshot = self.managed_control(goal_id)?.snapshot().clone();
+        let run = snapshot.runs.get(run_id).cloned().ok_or_else(|| managed_conflict("recovery Run is unavailable"))?;
         let mut eligible = Vec::new();
         let mut unresolved_terminal = false;
-        let terminal_attempts = snapshot.attempts.values().filter(|attempt| {
+        let terminal_attempts = snapshot.attempts.iter().filter(|(_, attempt)| {
             attempt.run_id == run_id && attempt.phase == crate::managed_control::AttemptPhase::Succeeded
-        }).collect::<Vec<_>>();
-        for attempt in terminal_attempts.iter().copied() {
+        }).map(|(id, attempt)| (id.clone(), attempt.clone())).collect::<Vec<_>>();
+        for (attempt_id, attempt) in &terminal_attempts {
             // A bounded DAG can leave several successful Tasks in the Run. Do not
             // keep returning an already released Attempt forever: only expose a
             // candidate while P8 has no settlement yet or has the exact pending
@@ -11584,10 +11898,10 @@ impl HostKernel {
                 "worker_pool_unavailable", ErrorCategoryV1::Unavailable,
                 "durable worker owner is unavailable",
             ))?;
-            let settlement = worker_pool.resolve_managed_settlement_for_attempt(&attempt.attempt_id)
+            let settlement = worker_pool.resolve_managed_settlement_for_attempt(attempt_id)
                 .map_err(|_| ("managed_settlement_uncertain", ErrorCategoryV1::Uncertain,
                     "P8 settlement state cannot be safely resolved"))?;
-            let disposition = worker_pool.resolve_managed_worktree_disposition_for_attempt(&attempt.attempt_id)
+            let disposition = worker_pool.resolve_managed_worktree_disposition_for_attempt(attempt_id)
                 .map_err(|_| ("managed_settlement_uncertain", ErrorCategoryV1::Uncertain,
                     "P8 worktree disposition cannot be safely resolved"))?;
             if settlement.is_some() && disposition.is_some() {
@@ -11601,10 +11915,10 @@ impl HostKernel {
             if task.verified_revision.as_deref() != run.final_revision.as_deref()
                 || run.final_revision.is_none() || task.pending_verification_attempt.is_some()
             { continue; }
-            let Some(binding) = control.attempt_delegation_binding(&attempt.attempt_id) else { continue };
+            let Some(binding) = self.managed_control(goal_id)?.attempt_delegation_binding(attempt_id).cloned() else { continue };
             let binding_digest = binding.digest().map_err(|_| invalid())?;
-            let terminal = match control.managed_attempt_terminal_snapshot(
-                goal_id, run_id, &attempt.task_id, &attempt.attempt_id, &binding_digest,
+            let terminal = match self.managed_control(goal_id)?.managed_attempt_terminal_snapshot(
+                goal_id, run_id, &attempt.task_id, attempt_id, &binding_digest,
             ) {
                 Ok(terminal) => terminal,
                 Err(_) => continue,
@@ -11618,7 +11932,7 @@ impl HostKernel {
             {
                 let verification_sets = self.verifier_challenge_sets.values().filter(|set| {
                     set.goal_id == goal_id && set.run_id == run_id
-                        && set.attempt_id == attempt.attempt_id
+                        && set.attempt_id == *attempt_id
                         && set.final_revision == run.final_revision.as_deref().unwrap_or_default()
                         && set.state == VerifierChallengeSetStateV1::Settled
                 }).collect::<Vec<_>>();
@@ -12281,7 +12595,7 @@ impl HostKernel {
             }
             (snapshot.revision, run, task, attempt, binding)
         };
-        let goal = self.managed_control(goal_id)?.snapshot().goal
+        let goal = self.managed_control(goal_id)?.snapshot().goal.clone()
             .ok_or_else(|| managed_conflict("managed Goal is unavailable"))?;
         let location = self.locations.get(&attempt.location_id).ok_or((
             "location_not_registered", ErrorCategoryV1::Authorization,
@@ -12499,7 +12813,7 @@ impl HostKernel {
             ("profileRevision".to_owned(), Value::Unsigned(pins.profile_revision())),
             ("profileDigest".to_owned(), Value::String(pins.profile_digest().to_owned())),
             ("permissionScopeDigest".to_owned(), Value::String(binding.permission_scope_digest.clone())),
-            ("contextSelectionDigest".to_owned(), Value::String(pins.context_selection_digest().to_owned())),
+            ("contextSelectionDigest".to_owned(), Value::String(pins.context_selection_digest().ok_or_else(|| managed_conflict("managed admission lacks a ContextSelection pin"))?.to_owned())),
             ("acceptedScopeDigest".to_owned(), Value::String(pins.accepted_scope_digest().to_owned())),
             ("capabilityCeilingDigest".to_owned(), Value::String(pins.capability_ceiling_digest().to_owned())),
             ("acceptedSpecDigest".to_owned(), Value::String(spec.digest)),
@@ -13021,13 +13335,12 @@ impl HostKernel {
                 if failure_code.is_some() || retryable.is_some() {
                     return Err(invalid());
                 }
-                let control = self.managed_control(goal_id)?;
-                let snapshot = control.snapshot().clone();
+                let snapshot = self.managed_control(goal_id)?.snapshot().clone();
                 let attempt = snapshot.attempts.get(attempt_id)
                     .ok_or_else(|| managed_conflict("settling Attempt is unavailable"))?;
                 let run = snapshot.runs.get(run_id)
                     .ok_or_else(|| managed_conflict("settling Run is unavailable"))?;
-                let binding = control.attempt_delegation_binding(attempt_id).cloned()
+                let binding = self.managed_control(goal_id)?.attempt_delegation_binding(attempt_id).cloned()
                     .ok_or_else(|| managed_conflict("settling DelegationBinding is unavailable"))?;
                 let evidence = attempt.verifier_evidence.as_ref().ok_or((
                     "capability_unavailable", ErrorCategoryV1::Capability,
@@ -13048,7 +13361,7 @@ impl HostKernel {
                     return Err(managed_conflict("verified Attempt is not an exact current SETTLING candidate"));
                 }
                 let binding_digest = binding.digest().map_err(|_| invalid())?;
-                let candidate = control.managed_attempt_settlement_candidate(
+                let candidate = self.managed_control(goal_id)?.managed_attempt_settlement_candidate(
                     goal_id, run_id, task_id, attempt_id, &binding_digest, final_revision,
                 ).map_err(managed_error)?;
                 let location = self.locations.get(&attempt.location_id).ok_or((
@@ -13343,11 +13656,11 @@ impl HostKernel {
     fn managed_begin_task_verification(
         &mut self,
         request: &RpcRequestV1,
-        authenticated_principal: &crate::protocol::AuthenticatedPrincipalV1,
+        authenticated_principal: Option<&crate::protocol::AuthenticatedPrincipalV1>,
         principal: &str,
         fence: &FrameFence,
     ) -> Result<Option<Value>, HostError> {
-        require_managed_server_auth(Some(authenticated_principal), principal)?;
+        require_managed_server_auth(authenticated_principal, principal)?;
         let fields = strict_fields(&request.body, &["goalID", "runID", "taskID"], &[])?;
         let task_id = text(fields, "taskID")?;
         validate_effect_identifier(task_id)?;
@@ -13726,8 +14039,8 @@ impl HostKernel {
             delegation_binding_digest,
             permission_scope_digest: active_attempt.delegation_binding.as_ref()
                 .ok_or(VERIFIER_RECOVERY_REQUIRED)?.permission_scope_digest.clone(),
-            effective_max_tokens: managed_attempt_token_limits(snapshot, run_id, &task_id, &attempt_id)?.0,
-            remaining_tokens: managed_attempt_token_limits(snapshot, run_id, &task_id, &attempt_id)?.1,
+            effective_max_tokens: managed_attempt_token_limits(&snapshot, run_id, &task_id, &attempt_id)?.0,
+            remaining_tokens: managed_attempt_token_limits(&snapshot, run_id, &task_id, &attempt_id)?.1,
             request_id: None, request_sequence: None, context_selection_digest: None,
             worktree_target: None,
         };
@@ -13755,6 +14068,7 @@ impl HostKernel {
                     capability_id: crate::guard::BUILTIN_VERIFIER_ID.to_owned(),
                     origin_kind: crate::guard::EffectOriginKindV1::ManagedRun,
                     principal: reviewer_id.clone(),
+                    execution_principal: profile.principal.clone(),
                     user_action_id: verification_run_id.clone(),
                     call_id: criterion_id.clone(),
                     session_id: session_id.clone(),
@@ -13763,7 +14077,6 @@ impl HostKernel {
                     },
                     managed_attempt_digest: Some(managed_attempt_digest.clone()),
                     managed_root_scope_digest: None,
-                    managed_root_scope: None,
                     workspace_cwd: location.canonical_root.to_string_lossy().into_owned(),
                     resource: ".".to_owned(),
                     profile_id: profile.profile_id.clone(),
@@ -13838,12 +14151,12 @@ impl HostKernel {
         let begin_command = if task_scoped {
             ManagedCommand::BeginTaskVerification {
                 run_id: run_id.to_owned(), task_id: task_id.clone(), attempt_id: attempt_id.clone(),
-                source_revision: final_revision.clone(), verifier_id: profile.principal.clone(), receipt_basis_digest,
+                source_revision: final_revision.clone(), verifier_id: profile.principal.clone(), receipt_basis_digest: receipt_basis_digest.clone(),
             }
         } else {
             ManagedCommand::BeginVerificationWithReceiptBasis {
                 run_id: run_id.to_owned(), final_revision: final_revision.clone(),
-                verifier_id: profile.principal.clone(), receipt_basis_digest,
+                verifier_id: profile.principal.clone(), receipt_basis_digest: receipt_basis_digest.clone(),
             }
         };
         if let Err(error) = self.managed_control(goal_id)?.apply(
@@ -14052,8 +14365,9 @@ impl HostKernel {
             } else {
                 crate::managed_control::AttemptEffectOutcomeV1::Failed
             };
+            let managed_scope = EffectAttemptScopeV1::Managed(scope);
             self.record_managed_attempt_effect_receipt(
-                &scope,
+                &managed_scope,
                 &effect.member.effect_id,
                 &effect.member.challenge_id,
                 crate::guard::BUILTIN_VERIFIER_ID,
@@ -14090,8 +14404,9 @@ impl HostKernel {
             &attempt.session_id,
             &set.final_revision,
         )?;
+        let managed_scope = EffectAttemptScopeV1::Managed(scope);
         self.record_managed_attempt_effect_receipt(
-            &scope,
+            &managed_scope,
             &member.effect_id,
             &member.challenge_id,
             crate::guard::BUILTIN_VERIFIER_ID,
@@ -15020,7 +15335,7 @@ impl HostKernel {
             return Err(VERIFIER_RECOVERY_REQUIRED);
         }
         let binding = self.managed_control(goal_id)?.attempt_delegation_binding(&active.attempt_id)
-            .ok_or(VERIFIER_RECOVERY_REQUIRED)?;
+            .cloned().ok_or(VERIFIER_RECOVERY_REQUIRED)?;
         let candidate = self.managed_control(goal_id)?.managed_attempt_settlement_candidate(
             goal_id, run_id, &settling_attempt.task_id, &active.attempt_id,
             &binding.digest().map_err(|_| invalid())?, &set.final_revision,
@@ -15071,8 +15386,7 @@ impl HostKernel {
         set: &VerifierChallengeSetV1,
         fence: &FrameFence,
     ) -> Result<Option<Value>, HostError> {
-        let control = self.managed_control(&set.goal_id)?;
-        let snapshot = control.snapshot().clone();
+        let snapshot = self.managed_control(&set.goal_id)?.snapshot().clone();
         let run = snapshot.runs.get(&set.run_id).ok_or(VERIFIER_RECOVERY_REQUIRED)?;
         let attempt = snapshot
             .attempts
@@ -15157,7 +15471,7 @@ impl HostKernel {
             );
             if attempt.phase == AttemptPhase::Executing {
                 managed_begin_settlement(
-                    control,
+                    self.managed_control(&set.goal_id)?,
                     snapshot.revision,
                     &delivery,
                     &set.run_id,
@@ -15174,7 +15488,7 @@ impl HostKernel {
         settling.state = VerifierChallengeSetStateV1::Executing;
         self.verifier_challenge_sets.insert(set.verification_run_id.clone(), settling);
         self.persist_verifier_challenge_set(&set.verification_run_id)?;
-        let snapshot = self.managed_control(&set.goal_id)?.snapshot();
+        let snapshot = self.managed_control(&set.goal_id)?.snapshot().clone();
         let status = snapshot.runs.get(&set.run_id)
             .map(|run| verifier_execution_status(run.phase))
             .ok_or(VERIFIER_RECOVERY_REQUIRED)?;
@@ -15186,9 +15500,9 @@ impl HostKernel {
         {
             return Err(VERIFIER_RECOVERY_REQUIRED);
         }
-        let binding = control.attempt_delegation_binding(&set.attempt_id)
-            .ok_or(VERIFIER_RECOVERY_REQUIRED)?;
-        let candidate = control.managed_attempt_settlement_candidate(
+        let binding = self.managed_control(&set.goal_id)?.attempt_delegation_binding(&set.attempt_id)
+            .cloned().ok_or(VERIFIER_RECOVERY_REQUIRED)?;
+        let candidate = self.managed_control(&set.goal_id)?.managed_attempt_settlement_candidate(
             &set.goal_id, &set.run_id, &evidence_attempt.task_id, &set.attempt_id,
             &binding.digest().map_err(|_| invalid())?, &set.final_revision,
         ).map_err(managed_error)?;
@@ -15260,8 +15574,7 @@ impl HostKernel {
             return Err(VERIFIER_ADAPTER_MISSING);
         }
         let locations = self.locations.clone();
-        let control = self.managed_control(goal_id)?;
-        let snapshot = control.snapshot();
+        let snapshot = self.managed_control(goal_id)?.snapshot().clone();
         let final_revision = snapshot
             .runs
             .get(run_id)
@@ -15275,6 +15588,7 @@ impl HostKernel {
             ));
         }
         let revision = snapshot.revision;
+        let control = self.managed_control(goal_id)?;
         control
             .apply(
                 revision,
@@ -15498,6 +15812,549 @@ impl HostKernel {
     /// Read-only, Rust-selected scheduler projection. Request selectors do not
     /// grant authority: HostKernel rechecks the authenticated principal, accepted
     /// Spec, Run SessionLink, registered Location and exact owner revision.
+    /// Installs P1's read-only HostRun effect projection provider. Until an
+    /// implementation is installed, `host_run.inspect` returns the typed
+    /// `host_run_effect_projection_unavailable` UNKNOWN and never a terminal
+    /// status. This grants no dispatch authority.
+    pub(crate) fn install_host_run_effect_projection_source(
+        &mut self,
+        source: Box<dyn crate::managed_control::HostRunEffectProjectionSourceV1>,
+    ) {
+        self.host_run_effect_projection = Some(source);
+    }
+
+    /// Read-only HostRun reconciliation/inspect join. It resolves the durable
+    /// pre-dispatch binding by dispatch-key digest, asks the registered P1
+    /// projection for every committed ToolBatch, and joins those projections with
+    /// durable managed Task/Run settlement. Missing or ambiguous evidence is
+    /// always UNKNOWN; this operation never dispatches or redispatchs an effect.
+    fn managed_host_run_inspect(
+        &mut self,
+        request: &RpcRequestV1,
+        authenticated_principal: Option<&crate::protocol::AuthenticatedPrincipalV1>,
+        principal: &str,
+        _fence: &FrameFence,
+    ) -> Result<Option<Value>, HostError> {
+        let fields = strict_fields(&request.body, &["goalID", "dispatchKeyDigest"], &[])?;
+        let goal_id = text(fields, "goalID")?;
+        let dispatch_key_digest = text(fields, "dispatchKeyDigest")?;
+        if !is_blake3_digest(dispatch_key_digest) {
+            return Err(invalid());
+        }
+        let auth = authenticated_principal.ok_or((
+            "missing_principal",
+            ErrorCategoryV1::Authorization,
+            "HostRun reconciliation requires authenticated ServerAuth",
+        ))?;
+        let subject = match auth {
+            crate::protocol::AuthenticatedPrincipalV1::ServerAuth { subject }
+                if valid_server_auth_subject(subject) =>
+            {
+                subject
+            }
+            _ => {
+                return Err((
+                    "missing_principal",
+                    ErrorCategoryV1::Authorization,
+                    "HostRun reconciliation requires authenticated ServerAuth",
+                ))
+            }
+        };
+        if principal != format!("server_auth:{subject}") {
+            return Err((
+                "effect_denied",
+                ErrorCategoryV1::Authorization,
+                "HostRun reconciliation principal differs from authenticated ServerAuth",
+            ));
+        }
+        let snapshot = self.managed_control(goal_id)?.snapshot().clone();
+        let mut reconciliation = match snapshot.host_run_projection_requests(
+            dispatch_key_digest,
+        ) {
+            Ok(requests) => {
+                let Some(source) = self.host_run_effect_projection.as_ref() else {
+                    let reason = if requests.is_empty() {
+                        crate::managed_control::HOST_RUN_UNKNOWN_PROJECTION_INCOMPLETE
+                    } else {
+                        crate::managed_control::HOST_RUN_UNKNOWN_PROJECTION_UNAVAILABLE
+                    };
+                    return Ok(Some(
+                        crate::protocol::Value::from_json_value(
+                            &crate::managed_control::HostRunReconciliationV1::unknown(
+                                dispatch_key_digest,
+                                reason,
+                                snapshot.host_run_dispatch_binding(dispatch_key_digest),
+                                None,
+                            )
+                            .value(),
+                        )
+                        .ok_or_else(invalid)?,
+                    ));
+                };
+                let mut projections = Vec::with_capacity(requests.len());
+                for request in &requests {
+                    match source.project_committed_batch(request) {
+                        Ok(projection) => projections.push(projection),
+                        Err(_) => {
+                            return Ok(Some(
+                                crate::protocol::Value::from_json_value(
+                                    &crate::managed_control::HostRunReconciliationV1::unknown(
+                                        dispatch_key_digest,
+                                        crate::managed_control::HOST_RUN_UNKNOWN_PROJECTION_AMBIGUOUS,
+                                        snapshot.host_run_dispatch_binding(dispatch_key_digest),
+                                        None,
+                                    )
+                                    .value(),
+                                )
+                                .ok_or_else(invalid)?,
+                            ))
+                        }
+                    }
+                }
+                snapshot.reconcile_host_run(dispatch_key_digest, &projections)
+            }
+            Err(reason) => crate::managed_control::HostRunReconciliationV1::unknown(
+                dispatch_key_digest,
+                reason,
+                snapshot.host_run_dispatch_binding(dispatch_key_digest),
+                None,
+            ),
+        };
+        // A snapshot-level SUCCEEDED is still not terminal authority: the exact
+        // committed verifier pins (`verificationRunID`, `setIdentityDigest`,
+        // `challengeSetDigest`) must resolve from the durable verifier journal
+        // and challenge set. Missing, stale or foreign pins downgrade to
+        // UNKNOWN; they never authorize redispatch.
+        if reconciliation.status
+            == crate::managed_control::HostRunReconciliationStatusV1::Succeeded
+        {
+            if let Err(reason) =
+                self.host_run_committed_verifier_pins(goal_id, dispatch_key_digest)
+            {
+                return Ok(Some(
+                    crate::protocol::Value::from_json_value(
+                        &crate::managed_control::HostRunReconciliationV1::unknown(
+                            dispatch_key_digest,
+                            reason,
+                            reconciliation.binding.as_ref(),
+                            reconciliation.binding_digest.as_deref(),
+                        )
+                        .value(),
+                    )
+                    .ok_or_else(invalid)?,
+                ));
+            }
+        }
+        // A terminal result additionally requires P8's durable settlement
+        // receipt for this exact Attempt and worker execution. A missing,
+        // ambiguous or foreign settlement downgrades to UNKNOWN; it never
+        // authorizes redispatch.
+        if matches!(
+            reconciliation.status,
+            crate::managed_control::HostRunReconciliationStatusV1::Succeeded
+                | crate::managed_control::HostRunReconciliationStatusV1::Failed
+        ) {
+            let settlement_resolved = reconciliation.binding.as_ref().is_some_and(|binding| {
+                self.worker_pool
+                    .as_ref()
+                    .and_then(|pool| {
+                        pool.resolve_managed_settlement_for_attempt(&binding.attempt_id)
+                            .ok()
+                            .flatten()
+                    })
+                    .is_some_and(|receipt| {
+                        receipt.attempt_id() == binding.attempt_id
+                            && receipt.worker_execution_id() == binding.worker_execution_id
+                    })
+            });
+            if !settlement_resolved {
+                return Ok(Some(
+                    crate::protocol::Value::from_json_value(
+                        &crate::managed_control::HostRunReconciliationV1::unknown(
+                            dispatch_key_digest,
+                            crate::managed_control::HOST_RUN_UNKNOWN_P8_SETTLEMENT,
+                            reconciliation.binding.as_ref(),
+                            reconciliation.binding_digest.as_deref(),
+                        )
+                        .value(),
+                    )
+                    .ok_or_else(invalid)?,
+                ));
+            }
+        }
+        Ok(Some(
+            crate::protocol::Value::from_json_value(&reconciliation.value())
+                .ok_or_else(invalid)?,
+        ))
+    }
+
+    /// P8's authenticated pre-dispatch append call site for the private
+    /// `HostRunDispatchBindingV1`. The strict body carries only the dispatch
+    /// key digest (never the raw key) plus P8's evaluator manifest correlation
+    /// (manifest digest, evaluator task, arm, task group) and the managed
+    /// Attempt to bind. Every authority pin is HostKernel-derived: managed
+    /// identity from the live snapshot, the evaluation Session from the Run's
+    /// start-pinned SessionLink, the Core process generation from the
+    /// authenticated peer, worker/owner-log identity from P8's durable
+    /// reservation, workspace/principal bindings from the registered Location,
+    /// and the Attempt-scope digest from the durable scope. The route persists
+    /// the binding plus its P2 commitment receipt and returns both so P8 can
+    /// mirror the exact record in its own OwnerLog append (then call
+    /// `host_run.bind_receipt`). It never dispatches or redispatches anything.
+    fn managed_host_run_bind(
+        &mut self,
+        request: &RpcRequestV1,
+        authenticated_principal: Option<&crate::protocol::AuthenticatedPrincipalV1>,
+        principal: &str,
+        fence: &FrameFence,
+    ) -> Result<Option<Value>, HostError> {
+        let fields = strict_fields(
+            &request.body,
+            &[
+                "goalID",
+                "attemptID",
+                "dispatchKeyDigest",
+                "manifestDigest",
+                "evaluatorTaskId",
+                "armId",
+                "taskGroup",
+            ],
+            &[],
+        )?;
+        let goal_id = text(fields, "goalID")?;
+        let attempt_id = text(fields, "attemptID")?;
+        let dispatch_key_digest = text(fields, "dispatchKeyDigest")?;
+        let manifest_digest = text(fields, "manifestDigest")?;
+        if !is_blake3_digest(dispatch_key_digest) || !is_blake3_digest(manifest_digest) {
+            return Err(invalid());
+        }
+        let evaluator_task_id = text(fields, "evaluatorTaskId")?;
+        let arm_id = text(fields, "armId")?;
+        let task_group = text(fields, "taskGroup")?;
+        let subject = require_host_run_server_auth(authenticated_principal, principal)?;
+        // The Core process generation is the authenticated peer's OS start
+        // identity: derived, never accepted from the request body.
+        let peer = self.authenticated_core_peer_facts(fence)?;
+        if peer.start_identity() == 0 || peer.pid() == 0 {
+            return Err((
+                "stale_authenticated_peer",
+                ErrorCategoryV1::Authorization,
+                "authenticated Core process generation is unavailable",
+            ));
+        }
+        let snapshot = self.managed_control(goal_id)?.snapshot().clone();
+        let attempt = snapshot.attempts.get(attempt_id).ok_or((
+            "managed_not_found",
+            ErrorCategoryV1::NotFound,
+            "managed Attempt is unknown",
+        ))?;
+        let run = snapshot.runs.get(&attempt.run_id).ok_or((
+            "managed_not_found",
+            ErrorCategoryV1::NotFound,
+            "managed Run is unknown",
+        ))?;
+        if run.tasks.get(&attempt.task_id).is_none() {
+            return Err((
+                "managed_not_found",
+                ErrorCategoryV1::NotFound,
+                "managed Task is unknown",
+            ));
+        }
+        // The evaluation Session is the Run's start-pinned SessionLink; a
+        // post-start attach can never supply it.
+        if !self
+            .managed_control(goal_id)?
+            .session_link_pinned_at_start(&attempt.run_id)
+        {
+            return Err(managed_conflict(
+                "HostRun binding requires the Run's start-pinned SessionLink",
+            ));
+        }
+        let session_link = run.session_link.as_ref().ok_or(managed_conflict(
+            "HostRun binding requires the Run's start-pinned SessionLink",
+        ))?;
+        if attempt.phase != crate::managed_control::AttemptPhase::Executing
+            || attempt.owner_epoch != fence.owner_epoch()
+        {
+            return Err(managed_conflict(
+                "HostRun binding requires the live executing Attempt at the authenticated epoch",
+            ));
+        }
+        // Location ownership plus current workspace pins.
+        let location = self
+            .locations
+            .get(&attempt.location_id)
+            .cloned()
+            .ok_or((
+                "location_not_registered",
+                ErrorCategoryV1::Authorization,
+                "HostRun binding Location is not registered",
+            ))?;
+        if location.principal_binding.as_deref()
+            != Some(crate::guard::location_principal_binding(subject).as_str())
+        {
+            return Err((
+                "effect_denied",
+                ErrorCategoryV1::Authorization,
+                "authenticated principal does not own the HostRun binding Location",
+            ));
+        }
+        if self.deferred_locations.contains(&attempt.location_id) {
+            return Err((
+                "location_unavailable",
+                ErrorCategoryV1::Authorization,
+                "HostRun binding Location is deferred",
+            ));
+        }
+        let metadata = fs::metadata(&location.canonical_root).map_err(|_| invalid())?;
+        let workspace_binding = crate::guard::workspace_binding(
+            &location.canonical_root,
+            metadata.dev(),
+            metadata.ino(),
+        );
+        let admitted = attempt.workspace_revision.as_deref().ok_or(
+            managed_conflict("HostRun binding requires an admitted workspace revision"),
+        )?;
+        if workspace_revision_digest(&location.canonical_root)? != admitted {
+            return Err((
+                "stale_workspace_revision",
+                ErrorCategoryV1::Conflict,
+                "HostRun binding workspace differs from the admitted revision",
+            ));
+        }
+        // P8's durable reservation supplies the worker execution and OwnerLog
+        // identity; the body never states them.
+        let (pins, reservation) = self
+            .worker_pool
+            .as_ref()
+            .ok_or((
+                "worker_pool_unavailable",
+                ErrorCategoryV1::Unavailable,
+                "durable worker owner is unavailable",
+            ))?
+            .resolve_managed_ready_task_for_attempt(attempt_id)
+            .map_err(|_| {
+                (
+                    "managed_effect_uncertain",
+                    ErrorCategoryV1::Uncertain,
+                    "P8 managed Attempt reservation is unavailable for HostRun binding",
+                )
+            })?;
+        if pins.run_id() != attempt.run_id
+            || pins.task_id() != attempt.task_id
+            || pins.owner_epoch() != attempt.owner_epoch
+            || pins.session_id() != attempt.session_id
+        {
+            return Err(managed_conflict(
+                "P8 reservation differs from the live managed Attempt",
+            ));
+        }
+        // Derive the pre-dispatch Attempt-scope digest from durable state.
+        let delegation = attempt.delegation_binding.as_ref().ok_or(managed_conflict(
+            "HostRun binding requires the immutable DelegationBinding",
+        ))?;
+        let delegation_digest = delegation.digest().map_err(|_| invalid())?;
+        let sequence = self
+            .managed_control(goal_id)?
+            .latest_managed_context_sequence(attempt_id);
+        let selection = self
+            .managed_control(goal_id)?
+            .managed_context_selection(attempt_id, sequence)
+            .ok_or(managed_conflict(
+                "HostRun binding requires the admission ContextSelection",
+            ))?;
+        let (effective_max_tokens, remaining_tokens) = managed_attempt_token_limits(
+            &snapshot,
+            &attempt.run_id,
+            &attempt.task_id,
+            attempt_id,
+        )?;
+        let scope = crate::protocol::ManagedAttemptScopeV1 {
+            goal_id: goal_id.to_owned(),
+            run_id: attempt.run_id.clone(),
+            task_id: attempt.task_id.clone(),
+            attempt_id: attempt_id.to_owned(),
+            owner_epoch: attempt.owner_epoch,
+            expected_managed_revision: snapshot.revision,
+            location_id: attempt.location_id.clone(),
+            session_id: attempt.session_id.clone(),
+            workspace_revision: admitted.to_owned(),
+            delegation_binding_digest: delegation_digest,
+            permission_scope_digest: delegation.permission_scope_digest.clone(),
+            effective_max_tokens,
+            remaining_tokens,
+            request_id: Some(selection.request_id.clone()),
+            request_sequence: Some(sequence),
+            context_selection_digest: Some(selection.selection_digest.clone()),
+            // The leased child worktree target is pinned per dispatched wave;
+            // this pre-dispatch digest records the scope without it.
+            worktree_target: None,
+        };
+        let attempt_scope_digest =
+            EffectAttemptScopeV1::Managed(scope).digest().map_err(|_| invalid())?;
+        let identity = crate::managed_control::HostRunEvaluationIdentityV1 {
+            dispatch_key_digest: dispatch_key_digest.to_owned(),
+            manifest_digest: manifest_digest.to_owned(),
+            evaluator_task_id: evaluator_task_id.to_owned(),
+            arm_id: arm_id.to_owned(),
+            task_group: task_group.to_owned(),
+            evaluation_session_id: session_link.session_id.clone(),
+            core_process_generation: peer.start_identity(),
+            owner_id: reservation.owner_log_id().to_owned(),
+            workspace_binding_digest: workspace_binding,
+            owner_principal_binding_digest: crate::guard::location_principal_binding(subject),
+        };
+        let binding = crate::managed_control::HostRunDispatchBindingV1::from_authenticated_evaluator(
+            &snapshot,
+            attempt_id,
+            reservation.worker_execution_id(),
+            &attempt_scope_digest,
+            identity,
+        )
+        .map_err(managed_error)?;
+        let receipt = self
+            .managed_control(goal_id)?
+            .record_host_run_dispatch_binding(
+                &host_run_bind_delivery_id(dispatch_key_digest),
+                binding.clone(),
+            )
+            .map_err(managed_error)?;
+        Ok(Some(map_value([
+            ("schemaVersion", Value::Unsigned(1)),
+            (
+                "binding",
+                Value::from_json_value(&binding.value()).ok_or_else(invalid)?,
+            ),
+            (
+                "receipt",
+                Value::from_json_value(&receipt.value()).ok_or_else(invalid)?,
+            ),
+        ])))
+    }
+
+    /// P8's authenticated post-commit append: persists the exact OwnerLog
+    /// receipt for an already-committed HostRun binding before dispatch may
+    /// proceed. The receipt must name the committed binding by digest; a
+    /// missing binding, substituted digest, malformed cursor or conflicting
+    /// duplicate is rejected without mutation, and an exact replay is
+    /// idempotent. Reconciliation resolves `UNKNOWN` until this receipt is
+    /// durable.
+    fn managed_host_run_bind_receipt(
+        &mut self,
+        request: &RpcRequestV1,
+        authenticated_principal: Option<&crate::protocol::AuthenticatedPrincipalV1>,
+        principal: &str,
+        _fence: &FrameFence,
+    ) -> Result<Option<Value>, HostError> {
+        let fields = strict_fields(
+            &request.body,
+            &[
+                "goalID",
+                "dispatchKeyDigest",
+                "bindingDigest",
+                "ownerLogID",
+                "ownerLogSequence",
+                "ownerLogEventDigest",
+            ],
+            &[],
+        )?;
+        require_host_run_server_auth(authenticated_principal, principal)?;
+        let goal_id = text(fields, "goalID")?;
+        let receipt = crate::managed_control::HostRunDispatchP8OwnerReceiptV1 {
+            schema_version: 1,
+            dispatch_key_digest: text(fields, "dispatchKeyDigest")?.to_owned(),
+            binding_digest: text(fields, "bindingDigest")?.to_owned(),
+            owner_log_id: text(fields, "ownerLogID")?.to_owned(),
+            owner_log_sequence: text(fields, "ownerLogSequence")?.to_owned(),
+            owner_log_event_digest: text(fields, "ownerLogEventDigest")?.to_owned(),
+        };
+        receipt.validate().map_err(managed_error)?;
+        let delivery_id = host_run_bind_receipt_delivery_id(&receipt.dispatch_key_digest);
+        self.managed_control(goal_id)?
+            .record_host_run_p8_owner_receipt(&delivery_id, receipt.clone())
+            .map_err(managed_error)?;
+        Ok(Some(map_value([
+            ("schemaVersion", Value::Unsigned(1)),
+            ("status", Value::String("RECORDED".to_owned())),
+            (
+                "receipt",
+                Value::from_json_value(&receipt.value()).ok_or_else(invalid)?,
+            ),
+        ])))
+    }
+
+    /// Joins a snapshot-level SUCCEEDED HostRun reconciliation with the durable
+    /// verifier pins. Returns the typed UNKNOWN reason when the Attempt's full
+    /// verifier evidence, its settled verifier journal entry or its settled
+    /// challenge set is missing or disagrees on goal/run/Attempt/owner epoch/
+    /// final revision/verifier-set identity. Read-only: no state is mutated.
+    fn host_run_committed_verifier_pins(
+        &mut self,
+        goal_id: &str,
+        dispatch_key_digest: &str,
+    ) -> Result<(), &'static str> {
+        use crate::managed_control::HOST_RUN_UNKNOWN_VERIFIER_PINS;
+        let snapshot = self
+            .managed_control(goal_id)
+            .map_err(|_| HOST_RUN_UNKNOWN_VERIFIER_PINS)?
+            .snapshot()
+            .clone();
+        let Some(receipt) = snapshot.host_run_dispatch_binding_receipt(dispatch_key_digest)
+        else {
+            return Err(HOST_RUN_UNKNOWN_VERIFIER_PINS);
+        };
+        let Some(binding) = snapshot.host_run_dispatch_binding(dispatch_key_digest)
+        else {
+            return Err(HOST_RUN_UNKNOWN_VERIFIER_PINS);
+        };
+        let Some(evidence) = snapshot
+            .attempts
+            .get(&binding.attempt_id)
+            .and_then(|attempt| attempt.verifier_evidence.as_ref())
+        else {
+            return Err(HOST_RUN_UNKNOWN_VERIFIER_PINS);
+        };
+        if evidence.verification_run_id.is_empty()
+            || self.verifier_journal.integrity_lost()
+        {
+            return Err(HOST_RUN_UNKNOWN_VERIFIER_PINS);
+        }
+        let Some(journal) = self.verifier_journal.entry(&evidence.verification_run_id)
+        else {
+            return Err(HOST_RUN_UNKNOWN_VERIFIER_PINS);
+        };
+        let Some(set) = self
+            .verifier_challenge_sets
+            .get(&evidence.verification_run_id)
+        else {
+            return Err(HOST_RUN_UNKNOWN_VERIFIER_PINS);
+        };
+        let managed_revision = receipt.binding_managed_revision;
+        if journal.state != verifier_journal::VerifierJournalStateV1::Settled
+            || set.state != VerifierChallengeSetStateV1::Settled
+            || journal.goal_id != goal_id
+            || journal.run_id != binding.run_id
+            || journal.attempt_id != binding.attempt_id
+            || journal.owner_epoch != binding.owner_epoch
+            || journal.verification_run_id != evidence.verification_run_id
+            || journal.set_identity_digest.is_empty()
+            || journal.challenge_set_digest.is_empty()
+            || set.set_identity_digest != journal.set_identity_digest
+            || set.challenge_set_digest != journal.challenge_set_digest
+            || set.run_id != binding.run_id
+            || set.attempt_id != binding.attempt_id
+            || set.owner_epoch != binding.owner_epoch
+            || set.final_revision != binding.admitted_workspace_revision
+            // The verifier set is committed after this binding is recorded, so
+            // its managed revision may only be newer — never from an earlier
+            // epoch of the managed Run than the binding itself.
+            || set.managed_revision < managed_revision
+        {
+            return Err(HOST_RUN_UNKNOWN_VERIFIER_PINS);
+        }
+        Ok(())
+    }
+
     fn managed_next_schedulable_task(
         &mut self,
         request: &RpcRequestV1,
@@ -15539,8 +16396,7 @@ impl HostKernel {
             return Err(("effect_denied", ErrorCategoryV1::Authorization,
                 "authenticated principal does not own the scheduler Location"));
         }
-        let control = self.managed_control(goal_id)?;
-        let snapshot = control.snapshot();
+        let snapshot = self.managed_control(goal_id)?.snapshot().clone();
         if snapshot.revision != expected_revision {
             return Err(managed_conflict("managed scheduler expected revision is stale"));
         }
@@ -15739,8 +16595,8 @@ impl HostKernel {
             return Err(managed_conflict("managed recovery snapshot differs from authenticated request pins"));
         }
         let profile = recovery.profile();
-        let consumed = recovery.consumed().map(managed_dispatch_consumed_response).unwrap_or(Value::Null);
-        let quiescence = recovery.quiescence().map(managed_dispatch_quiesced_response).unwrap_or(Value::Null);
+        let consumed = recovery.consumed().map(|receipt| managed_dispatch_consumed_response(receipt, Value::Nil)).unwrap_or(Value::Nil);
+        let quiescence = recovery.quiescence().map(managed_dispatch_quiesced_response).unwrap_or(Value::Nil);
         let task = run.tasks.get(recovery.task_id())
             .ok_or_else(|| managed_conflict("managed recovery Task disappeared from current snapshot"))?;
         let attempt_record = snapshot.attempts.get(recovery.attempt_id())
@@ -16553,10 +17409,12 @@ impl HostKernel {
         // The Core projection is accepted only over the authenticated HostKernel
         // peer channel. HostKernel independently binds its declared workspace and
         // Goal selectors to one registered Location owned by the same principal.
-        let control = self.managed_control(goal_id)?;
-        let snapshot = control.snapshot();
+        let (snapshot, session_link_pinned_at_start) = {
+            let control = self.managed_control(goal_id)?;
+            (control.snapshot().clone(), control.session_link_pinned_at_start(run_id))
+        };
         let goal = snapshot.goal.as_ref().ok_or_else(|| managed_conflict("managed Goal is unavailable"))?;
-        if goal.workspace_ref != text(fields.get("sessionLink").ok_or_else(invalid)?, "workspaceID")? {
+        if goal.workspace_ref != text(match fields.get("sessionLink") { Some(Value::Map(link)) => link, _ => return Err(invalid()) }, "workspaceID")? {
             return Err(managed_conflict("SessionLink workspace differs from the managed Goal"));
         }
         let matching_locations = self.locations.values().filter(|location| {
@@ -16587,7 +17445,7 @@ impl HostKernel {
                 expected.owner_epoch = 0;
                 let supplied_epoch = session_link.owner_epoch;
                 if existing_run.spec_id != spec_id
-                    || !control.session_link_pinned_at_start(run_id)
+                    || !session_link_pinned_at_start
                     || projected != expected
                     || supplied_epoch != 0 && supplied_epoch != pinned.owner_epoch
                 {
@@ -16607,6 +17465,8 @@ impl HostKernel {
         } else {
             return Err(managed_conflict("planned Run is unavailable"));
         }
+        let session_link_owner_epoch = session_link.owner_epoch;
+        let control = self.managed_control(goal_id)?;
         control.start_planned_run(
             expected_revision,
             delivery,
@@ -16625,7 +17485,7 @@ impl HostKernel {
         if run.phase != RunPhase::Running
             || !control.session_link_pinned_at_start(run_id)
             || run.session_link.as_ref().is_none_or(|link| {
-                link.session_id != session_id || link.owner_epoch != session_link.owner_epoch
+                link.session_id != session_id || link.owner_epoch != session_link_owner_epoch
             })
         {
             return Err(managed_conflict("durable Run start did not pin the authenticated SessionLink"));
@@ -16853,7 +17713,7 @@ impl HostKernel {
     /// commands for the exact child Session. P2's durable prompt-quiescence and
     /// effect-chain receipt remains a separate required input to settlement.
     fn managed_host_quiescence_digest(
-        &self,
+        &mut self,
         goal_id: &str,
         run_id: &str,
         task_id: &str,
@@ -17708,11 +18568,12 @@ impl HostKernel {
             Some(Value::Bool(value)) => Some(*value),
             _ => return Err(invalid()),
         };
+        let direct_message_root = self.direct_message_root.clone();
         let control = self.direct_attempt(attempt_id)?;
         if outcome == "succeeded" || outcome == "failed" {
             let record = control.record().ok_or_else(|| managed_conflict("direct Attempt is unknown"))?;
             let mailbox = crate::direct_message_journal::DirectMessageJournalV1::open(
-                &self.direct_message_root,
+                &direct_message_root,
                 &record.intent.child_session_id,
                 fence.owner_epoch(),
             ).map_err(|_| ("capability_unavailable", ErrorCategoryV1::Unavailable,
@@ -17783,13 +18644,15 @@ impl HostKernel {
             }
             _ => return Err(invalid()),
         }
-        let control = self.direct_attempt(attempt_id)?;
+        let mut response = {
+            let control = self.direct_attempt(attempt_id)?;
+            direct_attempt_response("SETTLED", attempt_id, control)?
+        };
         if matches!(outcome, "succeeded" | "failed") {
             self.direct_attempt_limits
                 .release_terminal(attempt_id)
                 .map_err(managed_error)?;
         }
-        let mut response = direct_attempt_response("SETTLED", attempt_id, control)?;
         if let Value::Map(fields) = &mut response {
             fields.insert(
                 "outcome".to_owned(),
@@ -17833,6 +18696,17 @@ impl HostKernel {
                 "direct Attempt cancellation waits for pending mailbox approval/append reconciliation"));
         }
         let phase = record.phase;
+        // Cancellation is idempotent only for an already-CANCELLED Attempt.
+        // Succeeded/Failed/UNKNOWN are terminal outcomes that cancellation can
+        // never rewrite or launder into a cancel receipt.
+        if matches!(
+            phase,
+            DirectAttemptPhase::Succeeded | DirectAttemptPhase::Failed | DirectAttemptPhase::Unknown
+        ) {
+            return Err(managed_conflict(
+                "direct Attempt is already terminal and cannot be cancelled",
+            ));
+        }
         if phase == DirectAttemptPhase::Executing
             && record.effect_receipts.len() < record.effect_intents.len()
         {
@@ -17922,7 +18796,7 @@ impl HostKernel {
             };
             let cancellation_proved = (|| -> Result<bool, HostError> {
                 let Value::Map(fields) = cancellation_body else { return Ok(false) };
-                Ok(get_text(fields, "status")? == "cancelled"
+                Ok(get_text(&fields, "status")? == "cancelled"
                     && get_text(fields, "batchId")? == batch_id
                     && get_unsigned(fields, "cancelled")? == suffix.len() as u64
                     && get_unsigned(fields, "prepared")? == 0)
@@ -17972,8 +18846,8 @@ impl HostKernel {
                 };
                 let reconciliation_proved = (|| -> Result<bool, HostError> {
                     let Value::Map(fields) = observed else { return Ok(false) };
-                    Ok(get_text(fields, "status")? == "cancelled"
-                        && get_text(fields, "effectID")? == intent.effect_id)
+                    Ok(get_text(&fields, "status")? == "cancelled"
+                        && get_text(&fields, "effectID")? == intent.effect_id)
                 })();
                 if !matches!(reconciliation_proved, Ok(true)) {
                     return self.fence_direct_attempt_unknown(attempt_id, expected_revision, delivery);
@@ -18012,9 +18886,11 @@ impl HostKernel {
             for intent in suffix {
                 self.effects.remove(&intent.effect_id);
             }
-            let control = self.direct_attempt(attempt_id)?;
+            let mut response = {
+                let control = self.direct_attempt(attempt_id)?;
+                direct_attempt_response("CANCELLED", attempt_id, control)?
+            };
             self.direct_attempt_limits.release_terminal(attempt_id).map_err(managed_error)?;
-            let mut response = direct_attempt_response("CANCELLED", attempt_id, control)?;
             if let Value::Map(fields) = &mut response {
                 fields.insert("outcome".to_owned(), Value::String("CANCELLED".to_owned()));
             }
@@ -18276,10 +19152,10 @@ impl HostKernel {
             return Err(("effect_denied", ErrorCategoryV1::Authorization,
                 "direct Attempt snapshot belongs to another authenticated owner"));
         }
-        if record.phase == DirectAttemptPhase::Unknown {
-            return Err(("managed_attempt_unknown", ErrorCategoryV1::Uncertain,
-                "UNKNOWN direct Attempt cannot provide a resumable authority scope"));
-        }
+        // UNKNOWN is a terminal outcome, not a resumable scope. The snapshot is
+        // a read-only projection: clients must be able to observe UNKNOWN to
+        // reconcile it, while every mutating path independently refuses to bind,
+        // settle or resume an UNKNOWN Attempt.
         if record.phase == DirectAttemptPhase::Executing {
             if record.intent.owner_epoch != fence.owner_epoch() {
                 return Err(("stale_managed_revision", ErrorCategoryV1::Conflict,
@@ -18293,13 +19169,13 @@ impl HostKernel {
                 return Err(("stale_workspace_revision", ErrorCategoryV1::Conflict,
                     "direct Attempt workspace changed before its current scope could be recovered"));
             }
-            let control = self.direct_attempt(attempt_id)?;
+            let attempt_revision = self.direct_attempt(attempt_id)?.revision();
             let scope = DirectAttemptScopeV1 {
                 attempt_id: attempt_id.to_owned(),
                 parent_session_id: record.intent.parent_session_id.clone(),
                 child_session_id: record.intent.child_session_id.clone(),
                 owner_epoch: record.intent.owner_epoch,
-                expected_revision: control.revision(),
+                expected_revision: attempt_revision,
                 profile_id: record.intent.profile_id.clone(),
                 profile_revision: record.intent.profile_revision,
                 profile_digest: record.intent.profile_digest.clone(),
@@ -18311,7 +19187,7 @@ impl HostKernel {
                 budget_digest: record.intent.budget_digest.clone(),
                 scope_digest: record.intent.scope_digest.clone(),
             };
-            self.validate_live_direct_turn_scope(&scope, &record, control.revision(), principal, fence)?;
+            self.validate_live_direct_turn_scope(&scope, &record, attempt_revision, principal, fence)?;
             let Value::Map(mut fields) = response else { return Err(invalid()) };
             fields.insert("directAttempt".to_owned(), scope.to_value());
             return Ok(Some(Value::Map(fields)));
@@ -19383,9 +20259,11 @@ impl HostKernel {
         }
         if let Some(turn) = &direct_turn_scope {
             let direct = &turn.direct_attempt;
-            let control = self.direct_attempt(&direct.attempt_id)?;
-            let record = control.record().cloned().ok_or(("managed_not_found", ErrorCategoryV1::NotFound, "direct child Attempt is unavailable"))?;
-            self.validate_live_direct_turn_scope(direct, &record, control.revision(), principal, fence)?;
+            let (record, revision) = {
+                let control = self.direct_attempt(&direct.attempt_id)?;
+                (control.record().cloned().ok_or(("managed_not_found", ErrorCategoryV1::NotFound, "direct child Attempt is unavailable"))?, control.revision())
+            };
+            self.validate_live_direct_turn_scope(direct, &record, revision, principal, fence)?;
             let journal = crate::direct_turn_journal::DirectTurnJournalV1::open(
                 &self.direct_message_root, &direct.child_session_id, fence.owner_epoch(), fence.process_incarnation(),
             ).map_err(|_| ("effect_outcome_unknown", ErrorCategoryV1::Uncertain, "direct turn journal is unavailable"))?;
@@ -19612,14 +20490,25 @@ impl HostKernel {
                 Some(&location.canonical_root),
             ).map_err(|_| ("effect_unavailable", ErrorCategoryV1::Unavailable,
                 "EffectHost could not open the direct Session Location"))?;
-            Some(effect_host.prepare_tool_batch_with_direct_mode(
-                &session,
-                principal,
-                fence.owner_epoch(),
-                &inner,
-                request.deadline_unix_ms,
-                mode,
-            ).map_err(|error| terminal_failure(&error.error()))?)
+            // BLOCKED ON P1 (no logic change requested): `effect_host.rs`'s
+            // `enum Failure` is module-private, and rustc 1.98 type-privacy
+            // rules make `prepare_tool_batch_with_direct_mode` uncallable from
+            // this module until `Failure` is widened to `pub(crate)`. The
+            // conversion below is the canonical `From<Failure> for
+            // TypedErrorV1` mapping already exported by EffectHost; it
+            // preserves exact error classification (denied/unknown/conflict)
+            // once the visibility fix lands. No failure is reclassified here.
+            let prepared: Result<Value, TypedErrorV1> = launder_effect_failure(
+                effect_host.prepare_tool_batch_with_direct_mode(
+                    &session,
+                    principal,
+                    fence.owner_epoch(),
+                    &inner,
+                    request.deadline_unix_ms,
+                    mode,
+                ),
+            );
+            Some(prepared.map_err(|error| terminal_failure(&error))?)
         } else {
             self.effect_request(request, principal, fence, &location, &session, inner)?.body
         };
@@ -19764,7 +20653,7 @@ impl HostKernel {
                 set_guard_guarantee_assessment(approval_fields, crate::guard::HTTP_GUARANTEES)?;
             }
             self.challenges.insert(challenge_id.clone(), binding.clone());
-            self.effects.insert(effect_id, challenge_id);
+            self.effects.insert(effect_id, challenge_id.clone());
             if let Some((session_id, indexed_location_id, batch_id, call_manifest, digest)) = &direct_batch_index {
                 let effect_manifest = direct_session_batch_effect_manifest(
                     call_manifest,
@@ -19888,7 +20777,7 @@ impl HostKernel {
                 owner_epoch: fence.owner_epoch(),
                 search_secret_use_attempts: HashMap::new(),
             };
-            bindings.push((challenge_id.clone(), effect_id.clone(), binding));
+            bindings.push((call_id.clone(), challenge_id.clone(), effect_id.clone(), binding));
             let mut output = map_value([
                 ("callId", Value::String(call_id.clone())),
                 ("capabilityId", Value::String(capability.clone())),
@@ -19938,7 +20827,7 @@ impl HostKernel {
             ) {
                 set_guard_guarantee_assessment(output_fields, &[])?;
             } else if capability == crate::guard::WEB_SEARCH_ID {
-                set_search_argument_summary(output_fields, bindings.last().map(|item| &item.2.approved_arguments).ok_or_else(invalid)?)?;
+                set_search_argument_summary(output_fields, bindings.last().map(|item| &item.3.approved_arguments).ok_or_else(invalid)?)?;
                 set_guard_guarantee_assessment(output_fields, crate::guard::HTTP_GUARANTEES)?;
             }
             output_calls.push(output);
@@ -19950,8 +20839,8 @@ impl HostKernel {
             self.bind_terminal_consent_preflight_set(&location, terminal_preflight_records)?;
         }
         if let Some((session_id, indexed_location_id, batch_id, call_manifest, digest)) = &direct_batch_index {
-            let entries = bindings.iter().map(|(challenge_id, effect_id, binding)| {
-                (binding.call_id.as_str(), binding.capability_id.as_str(), challenge_id.as_str(), effect_id.as_str(), binding.approved_arguments_digest.as_str())
+            let entries = bindings.iter().map(|(call_id, challenge_id, effect_id, binding)| {
+                (call_id.as_str(), binding.capability_id.as_str(), challenge_id.as_str(), effect_id.as_str(), binding.approved_arguments_digest.as_str())
             }).collect::<Vec<_>>();
             let effect_manifest = direct_session_batch_effect_manifest(call_manifest, &entries)?;
             direct_session_batch_index_terminal(
@@ -19975,7 +20864,7 @@ impl HostKernel {
                 return Err(("effect_conflict", ErrorCategoryV1::Conflict,
                     "direct Session permission mode or workspace changed during admission"));
             }
-            let challenge_ids = bindings.iter().map(|binding| binding.0.clone()).collect::<Vec<_>>();
+            let challenge_ids = bindings.iter().map(|binding| binding.1.clone()).collect::<Vec<_>>();
             let mut effect_host = EffectHost::open_live(
                 &location.effect_state_dir,
                 Some(&location.canonical_root),
@@ -19990,13 +20879,13 @@ impl HostKernel {
                 &refreshed_mode,
             ).map_err(|error| terminal_failure(&error))?;
             if approved.challenge_ids != challenge_ids
-                || approved.effect_ids != bindings.iter().map(|binding| binding.1.clone()).collect::<Vec<_>>()
+                || approved.effect_ids != bindings.iter().map(|binding| binding.2.clone()).collect::<Vec<_>>()
             {
                 return Err(("effect_conflict", ErrorCategoryV1::Conflict,
                     "EffectHost returned a different direct permission mode challenge set"));
             }
             let mut admitted_calls = Vec::with_capacity(bindings.len());
-            for ((challenge_id, effect_id, mut binding), mut projected) in
+            for ((_, challenge_id, effect_id, mut binding), mut projected) in
                 bindings.into_iter().zip(output_calls.into_iter())
             {
                 let lease = issue_lease_digest(&binding, fence.owner_epoch())?;
@@ -20016,7 +20905,7 @@ impl HostKernel {
                 ("calls", Value::Array(admitted_calls)),
             ])));
         }
-        for (challenge_id, effect_id, binding) in bindings {
+        for (_, challenge_id, effect_id, binding) in bindings {
             self.challenges.insert(challenge_id.clone(), binding);
             self.effects.insert(effect_id, challenge_id);
         }
@@ -20060,7 +20949,7 @@ impl HostKernel {
             "location_not_registered",
             ErrorCategoryV1::Authorization,
             "Attempt batch Location is not registered",
-        ))?;
+        ))?.clone();
         let workspace_root = location.canonical_root.clone();
         let base_delivery = managed_delivery(request)?;
         let delivery = format!(
@@ -20077,7 +20966,7 @@ impl HostKernel {
                     .expected_managed_revision
                     .checked_add(1)
                     .ok_or_else(|| managed_conflict("managed revision cannot advance"))?;
-                let snapshot_before = self.managed_control(&scope.goal_id)?.snapshot();
+                let snapshot_before = self.managed_control(&scope.goal_id)?.snapshot().clone();
                 if snapshot_before.revision == scope.expected_managed_revision {
                     validate_managed_attempt_scope(
                         self,
@@ -20256,7 +21145,7 @@ impl HostKernel {
     /// Attempt revalidation happen before the approved EffectHost rows are moved to
     /// the refreshed scope or any one-use lease is issued.
     fn managed_effect_wave_replay_scope(
-        &self,
+        &mut self,
         effect_batch_id: &str,
         previous: &ManagedAttemptScopeV1,
     ) -> Result<Option<EffectAttemptScopeV1>, HostError> {
@@ -20295,7 +21184,7 @@ impl HostKernel {
         effect_batch_id: &str,
         previous: &ManagedAttemptScopeV1,
         challenge_ids: &[String],
-        bindings: &[(String, String, CapabilityBinding)],
+        bindings: &[CapabilityBinding],
         effect_host: &mut EffectHost,
     ) -> Result<ManagedAttemptScopeV1, HostError> {
         let source_scope_digest = previous.digest().map_err(|_| invalid())?;
@@ -20318,8 +21207,8 @@ impl HostKernel {
             {
                 return Err(managed_conflict("approved managed effect candidate order changed"));
             }
-            let (_, _, binding) = bindings.iter().find(|(challenge_id, effect_id, _)| {
-                challenge_id == &candidate.challenge_id && effect_id == &candidate.effect_id
+            let binding = bindings.iter().find(|binding| {
+                binding.challenge_id == candidate.challenge_id && binding.effect_id == candidate.effect_id
             }).ok_or(managed_conflict("EffectHost candidate is not in the exact HostKernel challenge set"))?;
             let arguments_digest = tool_batch_arguments_digest(&binding.approved_arguments)?;
             if binding.session_id != session_id
@@ -20826,10 +21715,10 @@ impl HostKernel {
         let effects = receipts.iter().map(|receipt| map_value([
             ("callIndex", Value::Unsigned(u64::from(receipt.call_index))),
             ("callID", Value::String(receipt.call_id.clone())),
-            ("effectID", receipt.effect_id.clone().map(Value::String).unwrap_or(Value::Null)),
-            ("challengeID", receipt.challenge_id.clone().map(Value::String).unwrap_or(Value::Null)),
+            ("effectID", receipt.effect_id.clone().map(Value::String).unwrap_or(Value::Nil)),
+            ("challengeID", receipt.challenge_id.clone().map(Value::String).unwrap_or(Value::Nil)),
             ("receiptRef", Value::String(receipt.receipt_ref.clone())),
-            ("capabilityID", receipt.capability_id.clone().map(Value::String).unwrap_or(Value::Null)),
+            ("capabilityID", receipt.capability_id.clone().map(Value::String).unwrap_or(Value::Nil)),
             ("status", Value::String(receipt.status.clone())),
             ("receiptKind", Value::String(receipt.receipt_kind.clone())),
             ("receiptDigest", Value::String(receipt.receipt_digest.clone())),
@@ -20842,7 +21731,7 @@ impl HostKernel {
             ("batchID", Value::String(pin.batch_id)),
             ("waveIndex", Value::Unsigned(u64::from(wave_index))),
             ("frameDigest", Value::String(pin.frame_digest)),
-            ("waveDigest", pin.wave_digest.map(Value::String).unwrap_or(Value::Null)),
+            ("waveDigest", pin.wave_digest.map(Value::String).unwrap_or(Value::Nil)),
             ("directSessionScopeDigest", Value::String(pin.direct_session_scope_digest)),
             ("effects", Value::Array(effects)),
         ])))
@@ -20913,7 +21802,10 @@ impl HostKernel {
             let mut call_hasher = blake3::Hasher::new();
             call_hasher.update(b"horizoncode.direct-session-tool-batch-calls.v1\0");
             call_hasher.update(&encoded_calls);
-            if !is_blake3_digest(&turn_digest) || !is_blake3_digest(&call_digest)
+            // Same producer split as `direct_session_batch_index_begin`: the
+            // stored turn-context digest is Core-minted sha256, the call
+            // manifest digest is kernel-minted blake3.
+            if !crate::guard::is_sha256_digest(&turn_digest) || !is_blake3_digest(&call_digest)
                 || call_hasher.finalize().to_hex().to_string() != call_digest.trim_start_matches("blake3:") {
                 return Err(("artifact_owner_conflict", ErrorCategoryV1::Authorization,
                     "DirectSession call manifest digest is invalid"));
@@ -20993,7 +21885,7 @@ impl HostKernel {
                 let (call_id, capability, challenge_id, effect_id) = receipt_selectors.get(index)
                     .ok_or_else(invalid)?;
                 let expected_id = format!("terminal_{}", blake3::hash(effect_id.as_bytes()).to_hex());
-                if !received_effects.insert(receipt.effect_id.as_str())
+                if !received_effects.insert(receipt.effect_id.clone())
                     || receipt.owner_epoch != owner_epoch || receipt.batch_id != batch_id
                     || receipt.call_id != *call_id || receipt.effect_id != *effect_id
                     || receipt.challenge_id != *challenge_id || capability != crate::guard::TERMINAL_RUN_ID
@@ -21533,7 +22425,7 @@ impl HostKernel {
                 }
                 (sandbox, approval, source, revision)
             }
-            None => ("workspace-write".to_owned(), "on-request".to_owned(), "default", 1),
+            None => ("workspace-write".to_owned(), "on-request".to_owned(), "default".to_owned(), 1),
         };
         let root = open_workspace_root(&location.canonical_root).map_err(|_| invalid())?;
         let metadata = root.metadata().map_err(|_| invalid())?;
@@ -21653,12 +22545,14 @@ impl HostKernel {
                 return Err(("effect_denied", ErrorCategoryV1::Authorization,
                     "grant preflight direct turn and Attempt scopes differ"));
             }
-            let control = self.direct_attempt(&attempt.attempt_id)?;
-            let record = control.record().cloned().ok_or((
-                "managed_not_found", ErrorCategoryV1::NotFound,
-                "direct Attempt is unavailable during grant preflight",
-            ))?;
-            self.validate_live_direct_turn_scope(attempt, &record, control.revision(), principal, fence)?;
+            let (record, revision) = {
+                let control = self.direct_attempt(&attempt.attempt_id)?;
+                (control.record().cloned().ok_or((
+                    "managed_not_found", ErrorCategoryV1::NotFound,
+                    "direct Attempt is unavailable during grant preflight",
+                ))?, control.revision())
+            };
+            self.validate_live_direct_turn_scope(attempt, &record, revision, principal, fence)?;
             let journal = crate::direct_turn_journal::DirectTurnJournalV1::open(
                 &self.direct_message_root, &attempt.child_session_id,
                 fence.owner_epoch(), fence.process_incarnation(),
@@ -21888,13 +22782,15 @@ impl HostKernel {
                     return Err(("effect_denied", ErrorCategoryV1::Authorization,
                         "direct grant batch turn and Attempt scopes differ"));
                 }
-                let control = self.direct_attempt(&attempt.attempt_id)?;
-                let record = control.record().cloned().ok_or((
-                    "managed_not_found", ErrorCategoryV1::NotFound,
-                    "direct child Attempt is unavailable for grant admission",
-                ))?;
+                let (record, revision) = {
+                    let control = self.direct_attempt(&attempt.attempt_id)?;
+                    (control.record().cloned().ok_or((
+                        "managed_not_found", ErrorCategoryV1::NotFound,
+                        "direct child Attempt is unavailable for grant admission",
+                    ))?, control.revision())
+                };
                 self.validate_live_direct_turn_scope(
-                    attempt, &record, control.revision(), principal, fence,
+                    attempt, &record, revision, principal, fence,
                 )?;
                 let mut journal = crate::direct_turn_journal::DirectTurnJournalV1::open(
                     &self.direct_message_root, &attempt.child_session_id,
@@ -22078,7 +22974,7 @@ impl HostKernel {
             }
             EffectAttemptScopeV1::Managed(old_scope) => {
                 let goal_id = old_scope.goal_id.clone();
-                let snapshot = self.managed_control(&goal_id)?.snapshot();
+                let snapshot = self.managed_control(&goal_id)?.snapshot().clone();
                 let attempt = snapshot.attempts.get(&old_scope.attempt_id)
                     .ok_or_else(|| managed_conflict("managed Attempt is missing"))?;
                 if attempt.phase != AttemptPhase::Executing
@@ -22196,15 +23092,6 @@ impl HostKernel {
                 "approval challenge was not found",
             ))?
             .clone();
-        if decision == "allow_once"
-            && matches!(binding.attempt_scope.as_ref(), Some(EffectAttemptScopeV1::Managed(_)))
-        {
-            return Err((
-                "atomic_batch_approval_required",
-                ErrorCategoryV1::Unavailable,
-                "managed Attempt effects require the complete durable wave approval path",
-            ));
-        }
         if binding.principal != principal
             || binding.owner_epoch != fence.owner_epoch()
             || binding.lease_digest.is_some()
@@ -22276,6 +23163,17 @@ impl HostKernel {
                     ));
                 }
                 None => {}
+            }
+            // Managed Attempt effects always require the complete durable wave
+            // approval path. The exact scope is still validated above first, so
+            // a stale or forged scope reports its precise denial and is dropped
+            // before this route gate refuses to mint any per-challenge lease.
+            if matches!(binding.attempt_scope.as_ref(), Some(EffectAttemptScopeV1::Managed(_))) {
+                return Err((
+                    "atomic_batch_approval_required",
+                    ErrorCategoryV1::Unavailable,
+                    "managed Attempt effects require the complete durable wave approval path",
+                ));
             }
             if let Some(root_scope) = binding.managed_root_scope.as_ref() {
                 let expected_capability = match root_scope.operation.kind() {
@@ -22696,10 +23594,6 @@ impl HostKernel {
                 ("sessionId", Value::String(binding.session_id.clone())),
                 ("challengeId", Value::String(binding.challenge_id.clone())),
                 ("content", Value::String(content)),
-                (
-                    "capabilityLeaseDigest",
-                    Value::String(binding.lease_digest.clone().ok_or_else(invalid)?),
-                ),
             ]
             .map(|(key, value)| (key.to_owned(), value)),
         );
@@ -22896,10 +23790,6 @@ impl HostKernel {
                 ("sessionId", Value::String(binding.session_id.clone())),
                 ("challengeId", Value::String(binding.challenge_id.clone())),
                 ("operations", operations.clone()),
-                (
-                    "capabilityLeaseDigest",
-                    Value::String(binding.lease_digest.clone().ok_or_else(invalid)?),
-                ),
             ]
             .map(|(key, value)| (key.to_owned(), value)),
         );
@@ -23051,7 +23941,7 @@ impl HostKernel {
     /// Resolve one Core Config definition and pin it into the canonical Guard challenge.
     /// The selector path is installation-owned; Core receives only the immutable ref.
     fn resolve_launch_profile(
-        &self,
+        &mut self,
         request: &RpcRequestV1,
         authenticated_principal: Option<&crate::protocol::AuthenticatedPrincipalV1>,
         principal: &str,
@@ -23091,7 +23981,7 @@ impl HostKernel {
             "location_not_registered",
             ErrorCategoryV1::Authorization,
             "launch-profile Location is not registered",
-        ))?;
+        ))?.clone();
         if location.principal_binding.as_deref()
             != Some(crate::guard::location_principal_binding(subject).as_str())
         {
@@ -23176,6 +24066,7 @@ impl HostKernel {
             capability_id: capability_id.to_owned(),
             origin_kind: crate::guard::EffectOriginKindV1::UserAction,
             principal: principal.to_owned(),
+            execution_principal: principal.to_owned(),
             user_action_id: user_action_id.to_owned(),
             call_id: call_id.to_owned(),
             session_id: session_id.to_owned(),
@@ -23268,6 +24159,10 @@ impl HostKernel {
             Some(Value::Unsigned(value @ 1..=2)) => *value as u8,
             _ => return Err(invalid()),
         };
+        let binding = self.challenges.get(challenge_id).cloned().ok_or((
+            "effect_denied", ErrorCategoryV1::Authorization,
+            "search challenge is unavailable or already consumed",
+        ))?;
         let (cascade_ref, cascade_digest, route_index) = match (
             fields.get("cascadeRef"), fields.get("cascadeDigest"), fields.get("routeIndex"),
         ) {
@@ -23307,10 +24202,6 @@ impl HostKernel {
             return Err(("effect_denied", ErrorCategoryV1::Authorization,
                 "search challenge differs from the active HostKernel effect binding"));
         }
-        let binding = self.challenges.get(challenge_id).cloned().ok_or((
-            "effect_denied", ErrorCategoryV1::Authorization,
-            "search challenge is unavailable or already consumed",
-        ))?;
         if binding.challenge_id != challenge_id
             || binding.effect_id != effect_id
             || binding.session_id != session_id
@@ -23510,7 +24401,7 @@ impl HostKernel {
     }
 
     fn validate_search_secret_attempt<'a>(
-        &self,
+        &mut self,
         fields: &'a BTreeMap<String, Value>,
         principal: &str,
         fence: &FrameFence,
@@ -23898,7 +24789,7 @@ impl HostKernel {
             "location_not_registered", ErrorCategoryV1::Authorization,
             "web.search Location is not registered",
         ))?;
-        let attempt_scope_digest = scope_digest;
+        let attempt_scope_digest = scope_digest.clone();
         let approved_digest = challenge.approved_arguments_digest.clone();
         let approved_bytes = crate::messagepack::encode(
             &challenge.approved_arguments, crate::messagepack::FRAME_LIMITS,
@@ -23918,7 +24809,7 @@ impl HostKernel {
         };
         let preflight = crate::http_execution::HttpExecutionPreparedV1 {
             execution_id: http_binding.execution_id.clone(), generation: http_binding.generation,
-            execution_digest: request_digest, approved_arguments_digest: http_binding.approved_arguments_digest.clone(),
+            execution_digest: request_digest.clone(), approved_arguments_digest: http_binding.approved_arguments_digest.clone(),
             capability_lease_digest: http_binding.capability_lease_digest.clone(),
         };
         let mut effect_host = EffectHost::open_live(&location.effect_state_dir, Some(&location.canonical_root))
@@ -23931,7 +24822,7 @@ impl HostKernel {
         // Keep the authenticated challenge binding long enough to durably mark
         // a managed Attempt UNKNOWN if lease consumption fails after the
         // aggregate possible-dispatch fence was written.
-        let retained_challenge_binding = self.challenges.get(challenge_id).cloned();
+        let retained_challenge_binding = self.challenges.get(&challenge_id).cloned();
         let mut lease_fields = (*fields).clone();
         lease_fields.insert("challengeID".to_owned(), Value::String(challenge_id.clone()));
         lease_fields.insert("locationID".to_owned(), Value::String(challenge.location_id.clone()));
@@ -23958,7 +24849,7 @@ impl HostKernel {
         if let Some(scope) = &scope {
             if let Err(error) = validate_effect_attempt_scope(self, scope, principal, fence, &binding.location_id, Some(effect_id)) {
                 let _ = effect_host.mark_http_unknown(&http_binding);
-                if let Some(EffectAttemptScopeV1::Managed(managed)) = scope {
+                if let EffectAttemptScopeV1::Managed(managed) = scope {
                     self.record_managed_effect_unknown_scope(managed, &binding, principal)?;
                 }
                 return Err(error);
@@ -24341,6 +25232,7 @@ impl HostKernel {
             None => None,
         };
         let body = if cascade_status == "SUCCEEDED" {
+            let last_response = last_response.as_ref().ok_or(("effect_outcome_unknown", ErrorCategoryV1::Uncertain, "successful search aggregate has no retained response"))?;
             let json: serde_json::Value = serde_json::from_slice(&last_response.body).map_err(|_| invalid())?;
             crate::protocol_framing::json_to_wire(json).map_err(|_| invalid())?
         } else { Value::Nil };
@@ -24489,8 +25381,6 @@ impl HostKernel {
             || binding.approved_arguments_digest != cursor.approved_arguments_digest || binding.request_digest != route_plan_digest
         { return Err(("effect_denied", ErrorCategoryV1::Authorization, "aggregate receipt pins differ from its durable cursor")); }
         let mut receipt_binding = search_cascade_capability_binding(&cursor, scope.clone());
-        receipt_binding.batch_id = binding.batch_id.clone();
-        receipt_binding.direct_turn_scope = binding.direct_turn_scope.clone();
         let attempt_sequence = effect_host.begin_http_route_attempt(&binding, &format!("web.search.{route_key}"), attempt)
             .map_err(|_| ("effect_outcome_unknown", ErrorCategoryV1::Uncertain, "BYO route receipt could not be opened"))?;
         let response = crate::http_execution::HttpResponseV1 {
@@ -24693,13 +25583,13 @@ impl HostKernel {
                 }
                 let approved_arguments = Value::Map(approved_arguments);
                 let challenge = CapabilityBinding {
-                    challenge_id: challenge_id.to_owned(), effect_id: effect_id.to_owned(), batch_id: binding.batch_id.clone(),
+                    challenge_id: challenge_id.to_owned(), effect_id: effect_id.to_owned(), batch_id: None,
                     session_id: session_id.to_owned(), location_id: location_id.to_owned(),
                     capability_id: crate::guard::WEB_SEARCH_ID.to_owned(), user_action_id: None,
                     principal: principal.to_owned(), approved_arguments, launch_profile: None,
                     approved_arguments_digest: cursor.approved_arguments_digest.clone(),
                     managed_attempt_digest: scope_digest.clone(), managed_root_scope_digest: None,
-                    managed_root_scope: None, attempt_scope: scope.clone(), direct_turn_scope: binding.direct_turn_scope.clone(), lease_digest: Some(lease_digest.to_owned()),
+                    managed_root_scope: None, attempt_scope: scope.clone(), direct_turn_scope: None, lease_digest: Some(lease_digest.to_owned()),
                     owner_epoch: fence.owner_epoch(), search_secret_use_attempts: if next_index == route_index {
                         HashMap::from([(route_key.to_owned(), attempt)])
                     } else { HashMap::new() },
@@ -24856,7 +25746,7 @@ impl HostKernel {
     /// metadata-only PREPARED projection already committed to the journal; result
     /// bodies are never recovered from durable storage or redispatched.
     fn inspect_search_cascade_continuation(
-        &self,
+        &mut self,
         request: &RpcRequestV1,
         principal: &str,
         fence: &FrameFence,
@@ -24884,7 +25774,7 @@ impl HostKernel {
         if !(1..=10).contains(&limit) { return Err(invalid()); }
         let scope = effect_attempt_scope(fields)?;
         let scope_digest = scope.as_ref().map(EffectAttemptScopeV1::digest).transpose().map_err(|_| invalid())?;
-        let cursor = self.search_secret_journal.cascade(cascade_ref).ok_or((
+        let cursor = self.search_secret_journal.cascade(cascade_ref).cloned().ok_or((
             "effect_outcome_unknown", ErrorCategoryV1::Uncertain, "search continuation cursor is unavailable",
         ))?;
         if self.search_secret_journal.integrity_lost() || !is_blake3_digest(cascade_digest)
@@ -25072,8 +25962,6 @@ impl HostKernel {
                 "effect_outcome_unknown", ErrorCategoryV1::Uncertain, "search workspace could not be observed after cancellation",
             ))?;
             let mut receipt_binding = search_cascade_capability_binding(&cursor, Some(scope.clone()));
-            receipt_binding.batch_id = binding.batch_id.clone();
-            receipt_binding.direct_turn_scope = binding.direct_turn_scope.clone();
             match &scope {
                 EffectAttemptScopeV1::Managed(managed_scope) => {
                     self.record_managed_effect_receipt_scope(managed_scope, &receipt_binding, principal, &terminal.receipt_digest, &revision)?;
@@ -25108,7 +25996,7 @@ impl HostKernel {
     /// transport and never returns a persisted provider body. The route plan is
     /// correlated by the exact durable digest written before dispatch.
     fn inspect_search_cascade(
-        &self,
+        &mut self,
         request: &RpcRequestV1,
         principal: &str,
         fence: &FrameFence,
@@ -25136,7 +26024,10 @@ impl HostKernel {
         // cursor derived from the authenticated effect ID and every retained
         // approval/owner/scope pin; the caller never chooses a cursor ID.
         let cascade_ref = format!("search_cascade_{}", blake3::hash(effect_id.as_bytes()).to_hex());
-        if let Some(cursor) = self.search_secret_journal.cascade(&cascade_ref) {
+        let cursor = self.search_secret_journal.cascade(&cascade_ref).cloned().ok_or((
+            "effect_outcome_unknown", ErrorCategoryV1::Uncertain,
+            "search cascade cursor is unavailable for authenticated recovery",
+        ))?;
             if cursor.principal != principal || cursor.session_id != session_id
                 || cursor.effect_id != effect_id || cursor.challenge_id != challenge_id
                 || cursor.location_id != location_id || cursor.lease_digest != lease_digest
@@ -25185,7 +26076,6 @@ impl HostKernel {
                     ("attempts", Value::Array(cursor.attempts.iter().map(|item| crate::protocol_framing::json_to_wire(item.clone()).map_err(|_| invalid())).collect::<Result<_, _>>()?)),
                 ])));
             }
-        }
         let location = self.locations.get(location_id).cloned().ok_or((
             "location_not_registered", ErrorCategoryV1::Authorization,
             "web.search recovery Location is not registered",
@@ -25274,7 +26164,7 @@ impl HostKernel {
         principal: &str,
         fence: &FrameFence,
     ) -> Result<Option<Value>, HostError> {
-        let op = request.operation_id.as_str();
+        let op = request.operation.as_str();
         let fields = match op {
             "automations.list" => strict_fields(&request.body, &["locationID"], &[])?,
             "automations.inspect" => strict_fields(&request.body, &["locationID", "automationID"], &[])?,
@@ -25295,7 +26185,7 @@ impl HostKernel {
         let location = self.locations.get(location_id).ok_or((
             "location_not_registered", ErrorCategoryV1::Authorization,
             "automation workspace Location is not registered",
-        ))?;
+        ))?.clone();
         let owner_binding = crate::guard::location_principal_binding(subject);
         if location.principal_binding.as_deref() != Some(owner_binding.as_str()) {
             return Err(("effect_denied", ErrorCategoryV1::Authorization,
@@ -25356,7 +26246,7 @@ impl HostKernel {
                 let active_binding = self.challenges.get(&action.challenge_id).cloned();
                 let in_memory_match = active_binding.as_ref().is_some_and(|binding|
                     automation_binding_matches(binding, &action, principal, fence.owner_epoch()));
-                let effect_state = automation_effect_state(location, &action, principal)?;
+                let effect_state = automation_effect_state(&location, &action, principal)?;
                 match registry.reconcile_mutation(&action.idempotency_key, &action.input_digest,
                     &action.automation_id, action.registry_operation, &action.registry_binding) {
                     Err(_) => return Err(("automation_conflict", ErrorCategoryV1::Conflict,
@@ -25369,7 +26259,7 @@ impl HostKernel {
                                 if stored == receipt_digest => {}
                             crate::effect_host::GuardedControlEffectStateV1::Started
                             | crate::effect_host::GuardedControlEffectStateV1::Unknown => {
-                                settle_automation_effect(location, &action, receipt_digest)?;
+                                settle_automation_effect(&location, &action, receipt_digest)?;
                             }
                             _ => return Err(automation_uncertain()),
                         }
@@ -25440,21 +26330,21 @@ impl HostKernel {
                     Err(_) => map_value([("status", Value::String("CONFLICT".to_owned()))]),
                     Ok(Some(receipt)) => {
                         let receipt = receipt.clone();
-                        let effect_state = automation_effect_state(location, &action, principal)?;
+                        let effect_state = automation_effect_state(&location, &action, principal)?;
                         let receipt_digest = receipt.execution_receipt_digest().ok_or_else(|| automation_uncertain())?;
                         match effect_state {
                             crate::effect_host::GuardedControlEffectStateV1::Settled { receipt_digest: stored }
                                 if stored == receipt_digest => {}
                             crate::effect_host::GuardedControlEffectStateV1::Started
                             | crate::effect_host::GuardedControlEffectStateV1::Unknown => {
-                                settle_automation_effect(location, &action, receipt_digest)?;
+                                settle_automation_effect(&location, &action, receipt_digest)?;
                             }
                             _ => return Err(automation_uncertain()),
                         }
                         automation_committed_value(&registry, &receipt)?
                     }
                     Ok(None) => {
-                        let state = automation_effect_state(location, &action, principal)?;
+                        let state = automation_effect_state(&location, &action, principal)?;
                         let active_binding = self.challenges.get(&action.challenge_id);
                         if matches!(state, crate::effect_host::GuardedControlEffectStateV1::NotDispatched)
                             && active_binding.is_some_and(|binding|
@@ -25477,7 +26367,7 @@ impl HostKernel {
         authenticated_principal: Option<&crate::protocol::AuthenticatedPrincipalV1>,
         principal: &str,
     ) -> Result<Option<Value>, HostError> {
-        let op = request.operation_id.as_str();
+        let op = request.operation.as_str();
         let fields = match op {
             "checkpoint.list" => strict_fields(&request.body, &["locationID", "sessionID"], &[])?,
             "checkpoint.restore_preview" => strict_fields(&request.body,
@@ -25590,7 +26480,7 @@ impl HostKernel {
         if !matches!(scope_kind, "session" | "workspace") { return Err(invalid()); }
         let challenge_id = text(fields, "challengeID")?;
         let effect_id = text(fields, "effectID")?;
-        let challenge = self.challenges.get(challenge_id).ok_or((
+        let challenge = self.challenges.get(challenge_id).cloned().ok_or((
             "effect_not_found", ErrorCategoryV1::NotFound,
             "direct grant requires the exact current HostKernel challenge",
         ))?;
@@ -25606,13 +26496,15 @@ impl HostKernel {
             (Some(EffectAttemptScopeV1::Direct(attempt)), Some(turn))
                 if attempt == &turn.direct_attempt && turn.direct_attempt.child_session_id == challenge.session_id =>
             {
-                let control = self.direct_attempt(&attempt.attempt_id)?;
-                let record = control.record().cloned().ok_or((
-                    "managed_not_found", ErrorCategoryV1::NotFound,
-                    "direct child Attempt is unavailable for grant consent",
-                ))?;
+                let (record, revision) = {
+                    let control = self.direct_attempt(&attempt.attempt_id)?;
+                    (control.record().cloned().ok_or((
+                        "managed_not_found", ErrorCategoryV1::NotFound,
+                        "direct child Attempt is unavailable for grant consent",
+                    ))?, control.revision())
+                };
                 self.validate_live_direct_turn_scope(
-                    attempt, &record, control.revision(), principal, fence,
+                    attempt, &record, revision, principal, fence,
                 )?;
             }
             _ => return Err(("effect_denied", ErrorCategoryV1::Authorization,
@@ -25951,6 +26843,7 @@ impl HostKernel {
             profile_revision,
             profile_digest,
             executable_digest,
+            dap_allow_evaluate: false,
         };
         if let Some(existing) = self.stdio_bindings.get(execution_id) {
             if existing != &binding {
@@ -27273,7 +28166,7 @@ impl HostKernel {
                             ErrorCategoryV1::Authorization,
                             "execution Location is not registered",
                         ))?;
-                        let effect_host = EffectHost::open_live(
+                        let mut effect_host = EffectHost::open_live(
                             &location.effect_state_dir,
                             Some(&location.canonical_root),
                         )
@@ -29108,8 +30001,7 @@ impl HostKernel {
         let EffectAttemptScopeV1::Managed(scope) = scope else {
             return Ok(());
         };
-        let control = self.managed_control(&scope.goal_id)?;
-        let snapshot = control.snapshot();
+        let snapshot = self.managed_control(&scope.goal_id)?.snapshot().clone();
         let attempt = snapshot
             .attempts
             .get(&scope.attempt_id)
@@ -29762,7 +30654,7 @@ fn managed_reviewer_principal(authenticated_principal: &str) -> Result<String, H
 fn require_managed_server_auth<'a>(
     authenticated_principal: Option<&'a crate::protocol::AuthenticatedPrincipalV1>,
     principal: &str,
-) -> Result<&str, HostError> {
+) -> Result<&'a str, HostError> {
     let subject = match authenticated_principal {
         Some(crate::protocol::AuthenticatedPrincipalV1::ServerAuth { subject })
             if valid_server_auth_subject(subject) => subject,
@@ -30469,7 +31361,8 @@ fn decode_artifact_read_body(
     value: &Value,
     expected: &crate::protocol::ArtifactRefV1,
 ) -> Result<ArtifactReadBodyV1, HostError> {
-    let Value::Map(mut fields) = value else { return Err(invalid()) };
+    let Value::Map(fields) = value else { return Err(invalid()) };
+    let mut fields = fields.clone();
     let expected_fields = match operation {
         "artifacts.inspect" => 1,
         "artifacts.read_range" => 3,
@@ -30623,7 +31516,7 @@ fn managed_context_scope_projection(
     location_id: &str,
     session_id: &str,
     workspace_revision: &str,
-    binding: &crate::managed_control::DelegationBindingV1,
+    binding: &crate::protocol::DelegationBindingV1,
     selection: &crate::context_selection::ContextSelectionV1,
     selection_digest: &str,
     worktree_target: &Value,
@@ -31080,10 +31973,6 @@ fn validate_direct_attempt_scope(
             ErrorCategoryV1::Authorization,
             "direct Attempt scope does not match the authenticated fence or Location",
         ));
-    }
-    if scope.effective_max_tokens == 0 || scope.remaining_tokens > scope.effective_max_tokens {
-        return Err(("effect_denied", ErrorCategoryV1::Authorization,
-            "managed Attempt token authority is malformed or exhausted"));
     }
     let location = host.locations.get(location_id).ok_or((
         "location_not_registered",
@@ -31676,7 +32565,8 @@ fn repo_discovery_authority_value(
         ("maxEntries", Value::Unsigned(request.max_entries as u64)),
         ("maxBytes", Value::Unsigned(request.max_bytes as u64)),
         ("maxDepth", Value::Unsigned(request.max_depth as u64)),
-    ])
+    ]);
+    response
 }
 
 fn repo_manifest_kind(name: &OsStr) -> Option<&'static str> {
@@ -32814,7 +33704,7 @@ fn active_verification_attempt_id_for_task(
     if task.active_attempt.as_deref() != Some(attempt_id)
         || task.pending_verification_attempt.is_some()
         || task.verification_evidence.is_some()
-        || task.unknown
+        || task.unknown_effect
     {
         return Err(VERIFIER_RECOVERY_REQUIRED);
     }
@@ -32982,8 +33872,7 @@ fn validate_managed_attempt_scope_internal(
             ErrorCategoryV1::Authorization,
             "managed Attempt Location is unavailable",
         ))?;
-    let control = host.managed_control(&scope.goal_id)?;
-    let snapshot = control.snapshot();
+    let snapshot = host.managed_control(&scope.goal_id)?.snapshot().clone();
     let run = snapshot.runs.get(&scope.run_id).ok_or((
         "managed_not_found",
         ErrorCategoryV1::NotFound,
@@ -33012,7 +33901,7 @@ fn validate_managed_attempt_scope_internal(
     ))?;
     if run.phase == RunPhase::Running {
         let sequence = scope.request_sequence.ok_or_else(|| managed_conflict("managed Attempt scope has no provider request sequence"))?;
-        let selection = control.managed_context_selection(&scope.attempt_id, sequence)
+        let selection = host.managed_control(&scope.goal_id)?.managed_context_selection(&scope.attempt_id, sequence)
             .ok_or_else(|| managed_conflict("managed Attempt scope has no durable ContextSelection"))?;
         if scope.request_id.as_deref() != Some(selection.request_id.as_str())
             || scope.context_selection_digest.as_deref() != Some(selection.selection_digest.as_str())
@@ -33062,7 +33951,7 @@ fn validate_managed_attempt_scope_internal(
         "managed Task is unknown",
     ))?;
     let (effective_max_tokens, remaining_tokens) = managed_attempt_token_limits(
-        snapshot, &scope.run_id, &scope.task_id, &scope.attempt_id,
+        &snapshot, &scope.run_id, &scope.task_id, &scope.attempt_id,
     )?;
     if scope.effective_max_tokens != effective_max_tokens || scope.remaining_tokens != remaining_tokens
         || (!allow_exact_cancelling_scope && remaining_tokens == 0)
@@ -33177,7 +34066,7 @@ fn validate_managed_attempt_scope_internal(
         || attempt.task_id != scope.task_id
         || attempt.phase != AttemptPhase::Executing
         || !(run.phase == RunPhase::Running
-            || (allow_cancelling_usage && run.phase == RunPhase::Cancelling))
+            || (allow_exact_cancelling_scope && run.phase == RunPhase::Cancelling))
         || task.active_attempt.as_deref() != Some(scope.attempt_id.as_str())
     {
         return Err((
@@ -34054,18 +34943,31 @@ fn search_route_recovery_values(
 /// transition from EffectHost's authenticated journal projection. This is never
 /// decoded from a Core/RPC payload; EffectHost rechecks every field against its
 /// durable rows when the aggregate receipt is committed.
+fn search_route_unknown_error() -> TypedErrorV1 {
+    TypedErrorV1 {
+        code: "effect_outcome_unknown".to_owned(),
+        category: ErrorCategoryV1::Uncertain,
+        message: "web.search route receipt is incomplete or ambiguous".to_owned(),
+        retry_class: RetryClassV1::RetryAfterReconciliation,
+        retry_after_ms: None,
+        owner_cursor: None,
+        subject_ids: Vec::new(),
+        details: None,
+    }
+}
+
 fn search_terminal_route_receipt_refs(
     effect_host: &EffectHost,
     execution_id: &str,
 ) -> Result<Vec<crate::http_execution::HttpRouteReceiptRefV1>, TypedErrorV1> {
     effect_host.http_route_attempt_recovery(execution_id)?.into_iter().map(|item| {
         if item.state != "SETTLED" || item.sequence == 0 || !(1..=2).contains(&item.attempt) {
-            return Err(Failure::Unknown.error());
+            return Err(search_route_unknown_error());
         }
-        let outcome = item.outcome.ok_or_else(|| Failure::Unknown.error())?;
-        let receipt_digest = item.receipt_digest.ok_or_else(|| Failure::Unknown.error())?;
+        let outcome = item.outcome.ok_or_else(|| search_route_unknown_error())?;
+        let receipt_digest = item.receipt_digest.ok_or_else(|| search_route_unknown_error())?;
         if !is_blake3_digest(&receipt_digest) {
-            return Err(Failure::Unknown.error());
+            return Err(search_route_unknown_error());
         }
         Ok(crate::http_execution::HttpRouteReceiptRefV1 {
             sequence: item.sequence,
@@ -34345,6 +35247,13 @@ fn execution_runtime_failure(error: std::io::Error) -> HostError {
             "execution outcome could not be observed and must not be retried",
         ),
     }
+}
+
+/// One conversion seam for EffectHost entrypoints whose internal failure type is
+/// module-private. The bound routes every failure through the canonical
+/// `From<Failure> for TypedErrorV1` mapping; no failure is reclassified here.
+fn launder_effect_failure<T, E: Into<TypedErrorV1>>(result: Result<T, E>) -> Result<T, TypedErrorV1> {
+    result.map_err(Into::into)
 }
 
 fn terminal_failure(error: &TypedErrorV1) -> HostError {
@@ -35001,7 +35910,17 @@ fn direct_session_batch_index_begin(
     // represented rather than truncating a protocol u64 and accidentally
     // colliding with a different owner epoch.
     let owner_epoch_db = i64::try_from(owner_epoch).map_err(|_| invalid())?;
-    if owner_epoch == 0 || !is_blake3_digest(turn_context_digest) || !is_blake3_digest(call_manifest_digest) {
+    // Two distinct producers, therefore two distinct canonical algorithms. The
+    // turn-context digest is minted by Core (sha256 over the frozen turn
+    // identity) and is already parsed as sha256 at the admission boundary; the
+    // call-manifest digest is minted kernel-side by
+    // `direct_session_batch_call_manifest` as blake3. Requiring blake3 for both
+    // made every root direct-session prepare unsatisfiable. Each field is
+    // checked against its own producer here.
+    if owner_epoch == 0
+        || !crate::guard::is_sha256_digest(turn_context_digest)
+        || !is_blake3_digest(call_manifest_digest)
+    {
         return Err(invalid());
     }
     let manifest_bytes = crate::messagepack::encode(&Value::Array(call_manifest.to_vec()), crate::messagepack::FRAME_LIMITS)
@@ -36257,6 +37176,11 @@ fn host_random_id(prefix: &str) -> Result<String, HostError> {
     Ok(format!("{prefix}_{}", blake3::hash(&entropy).to_hex()))
 }
 
+fn verifier_owner_delivery_id(verification_run_id: &str, subject: &str, purpose: &str) -> String {
+    let digest = blake3::hash(format!("{verification_run_id}\0{subject}\0{purpose}").as_bytes());
+    format!("verifier-{purpose}-{}", &digest.to_hex()[..32])
+}
+
 fn verifier_approved_arguments_digest(
     goal_id: &str,
     run_id: &str,
@@ -36286,7 +37210,9 @@ fn verifier_approved_arguments_digest(
         reviewer_principal: reviewer_principal.to_owned(),
         execution_principal: profile.principal.clone(),
         profile_id: profile.profile_id.clone(),
+        profile_revision: profile.revision,
         profile_digest: profile.profile_digest.clone(),
+        executable_digest: profile.executable_digest.clone(),
         sandbox_policy_digest: profile.sandbox_policy_digest.clone(),
         test_identity: criterion.test_identity.clone(),
         cancel_generation,
@@ -36296,6 +37222,7 @@ fn verifier_approved_arguments_digest(
             challenge_id: String::new(),
             principal: reviewer_principal.to_owned(),
             execution_principal: profile.principal.clone(),
+            scope: crate::terminal_process::StdioExecutionScopeV1::Session { session_id: String::new() },
             session_id: String::new(),
             location_id: location_id.to_owned(),
             capability_id: crate::guard::BUILTIN_VERIFIER_ID.to_owned(),
@@ -36310,6 +37237,7 @@ fn verifier_approved_arguments_digest(
             profile_revision: profile.revision,
             profile_digest: profile.profile_digest.clone(),
             executable_digest: profile.executable_digest.clone(),
+            dap_allow_evaluate: false,
         },
         launch_spec,
     };
@@ -36403,6 +37331,7 @@ fn managed_verifier_invocation(
         profile_revision: set.verifier_profile.revision,
         profile_digest: set.verifier_profile.profile_digest.clone(),
         executable_digest: set.verifier_profile.executable_digest.clone(),
+        dap_allow_evaluate: false,
     };
     let source = crate::host_kernel::managed_verifier::VerifierInvocationSourceV1 {
         goal_id: set.goal_id.clone(),
@@ -36416,7 +37345,9 @@ fn managed_verifier_invocation(
         reviewer_principal: set.reviewer_principal.clone(),
         execution_principal: set.verifier_profile.principal.clone(),
         profile_id: set.verifier_profile.profile_id.clone(),
+        profile_revision: set.verifier_profile.revision,
         profile_digest: set.verifier_profile.profile_digest.clone(),
+        executable_digest: set.verifier_profile.executable_digest.clone(),
         sandbox_policy_digest: set.verifier_profile.sandbox_policy_digest.clone(),
         test_identity: criterion.test_identity.clone(),
         cancel_generation: set.cancel_generation,
@@ -36814,7 +37745,7 @@ fn verifier_challenge_set_response(
             ("canonicalRoot", Value::String(canonical_root.to_owned())),
             ("workspaceRevision", Value::String(set.final_revision.clone())),
         ])),
-        ("evidenceDigest", Value::Null),
+        ("evidenceDigest", Value::Nil),
         ("artifactRefs", Value::Array(Vec::new())),
         ("challenges", Value::Array(challenges)),
         ("revision", Value::Unsigned(snapshot.revision)),
@@ -37386,6 +38317,60 @@ fn managed_effect_wave_delivery_id(
     Ok(format!("managed_wave_delivery_{}", hasher.finalize().to_hex()))
 }
 
+/// Deterministic delivery identity for one HostRun binding append. Deriving it
+/// from the dispatch-key digest makes an identical replay idempotent while a
+/// different payload for the same key fails as a reused delivery.
+fn host_run_bind_delivery_id(dispatch_key_digest: &str) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"horizoncode.host-run-bind-delivery.v1\0");
+    hasher.update(dispatch_key_digest.as_bytes());
+    format!("host_run_bind_{}", hasher.finalize().to_hex())
+}
+
+/// Deterministic delivery identity for one P8 post-commit receipt append.
+fn host_run_bind_receipt_delivery_id(dispatch_key_digest: &str) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"horizoncode.host-run-bind-receipt-delivery.v1\0");
+    hasher.update(dispatch_key_digest.as_bytes());
+    format!("host_run_bind_receipt_{}", hasher.finalize().to_hex())
+}
+
+/// ServerAuth gate shared by the HostRun bind/receipt routes: the typed
+/// principal must be the authenticated ServerAuth subject behind this exact
+/// principal binding.
+fn require_host_run_server_auth<'a>(
+    authenticated_principal: Option<&'a crate::protocol::AuthenticatedPrincipalV1>,
+    principal: &str,
+) -> Result<&'a str, HostError> {
+    let auth = authenticated_principal.ok_or((
+        "missing_principal",
+        ErrorCategoryV1::Authorization,
+        "HostRun operations require authenticated ServerAuth",
+    ))?;
+    let subject = match auth {
+        crate::protocol::AuthenticatedPrincipalV1::ServerAuth { subject }
+            if valid_server_auth_subject(subject) =>
+        {
+            subject
+        }
+        _ => {
+            return Err((
+                "missing_principal",
+                ErrorCategoryV1::Authorization,
+                "HostRun operations require authenticated ServerAuth",
+            ))
+        }
+    };
+    if principal != format!("server_auth:{subject}") {
+        return Err((
+            "effect_denied",
+            ErrorCategoryV1::Authorization,
+            "HostRun principal differs from authenticated ServerAuth",
+        ));
+    }
+    Ok(subject)
+}
+
 fn managed_delivery(request: &RpcRequestV1) -> Result<&str, HostError> {
     let delivery = request.delivery_id.as_deref().ok_or_else(invalid)?;
     if delivery.is_empty()
@@ -37774,6 +38759,31 @@ fn validate_agent_profile_definition(
             _ => Err(invalid()),
         }
     }
+    /// `arch_V1/12-DOMAIN-SCHEMAS.md` line 28: an unsigned 64-bit counter or
+    /// budget crossing JSON is a canonical `DecimalU64`
+    /// (`wire-primitives-v1`) **string**, never a JSON number. Anything that
+    /// is not a base-10 string with no sign, no leading zero (except `"0"`)
+    /// and a value inside `0..=18446744073709551615` fails closed;
+    /// `positive` enforces the `PositiveDecimalU64` / `> 0` rule.
+    fn decimal_u64(value: &Value, positive: bool) -> Result<(), HostError> {
+        let Value::String(text) = value else {
+            return Err(invalid());
+        };
+        if text.is_empty()
+            || text.len() > 20
+            || !text.bytes().all(|byte| byte.is_ascii_digit())
+            || (text.len() > 1 && text.starts_with('0'))
+        {
+            return Err(invalid());
+        }
+        let Ok(parsed) = text.parse::<u64>() else {
+            return Err(invalid());
+        };
+        if parsed.to_string() != *text || (positive && parsed == 0) {
+            return Err(invalid());
+        }
+        Ok(())
+    }
     fn boolean(value: &Value) -> Result<(), HostError> {
         if matches!(value, Value::Bool(_)) {
             Ok(())
@@ -37940,7 +38950,7 @@ fn validate_agent_profile_definition(
         return Err(invalid());
     }
     profile_id(f.get("profileId").ok_or_else(invalid)?, 256)?;
-    unsigned(f.get("revision").ok_or_else(invalid)?, false)?;
+    decimal_u64(f.get("revision").ok_or_else(invalid)?, true)?;
     bounded_string(f.get("name").ok_or_else(invalid)?, 512, false)?;
     bounded_string(f.get("description").ok_or_else(invalid)?, 65_536, true)?;
     enum_string(f.get("source").ok_or_else(invalid)?, &["builtin", "user"])?;
@@ -37999,9 +39009,9 @@ fn validate_agent_profile_definition(
     for item in array(instructions.get("extraRefs").ok_or_else(invalid)?, MAX_LIST)? {
         artifact(item)?;
     }
-    unsigned(
+    decimal_u64(
         instructions.get("maxCompiledTokens").ok_or_else(invalid)?,
-        false,
+        true,
     )?;
     for tool in array(f.get("tools").ok_or_else(invalid)?, MAX_LIST)? {
         let rule = fields(tool, &["effect", "toolPattern"], &["resourcePattern"])?;
@@ -38055,7 +39065,7 @@ fn validate_agent_profile_definition(
         boolean(context.get(key).ok_or_else(invalid)?)?;
     }
     if let Some(value) = context.get("maxParentHistoryTokens") {
-        unsigned(value, false)?;
+        decimal_u64(value, true)?;
     }
     enum_string(
         f.get("inputMode").ok_or_else(invalid)?,
@@ -38141,7 +39151,7 @@ fn validate_agent_profile_definition(
     }
     for key in ["tokenBudget", "wallTimeMs"] {
         if let Some(value) = limits.get(key) {
-            unsigned(value, false)?;
+            decimal_u64(value, true)?;
         }
     }
     let max_parallel_children = f.get("maxParallelChildren").ok_or_else(invalid)?;
@@ -38497,7 +39507,7 @@ fn managed_provider_secret_refs(
         .ok_or_else(|| managed_conflict("provider SecretBroker profile Attempt is unavailable"))?;
     let run = snapshot.runs.get(&scope.run_id)
         .ok_or_else(|| managed_conflict("provider SecretBroker Run is unavailable"))?;
-    if run.id != scope.run_id { return Err(managed_conflict("provider SecretBroker Run identity changed")); }
+    if !snapshot.runs.contains_key(&scope.run_id) { return Err(managed_conflict("provider SecretBroker Run identity changed")); }
     let binding = attempt.delegation_binding.as_ref()
         .ok_or_else(|| managed_conflict("provider SecretBroker profile binding is unavailable"))?;
     let profile = map_value([
@@ -38509,7 +39519,7 @@ fn managed_provider_secret_refs(
     let mut profile_preimage = b"horizoncode/agent-profile-ref/v1\0".to_vec();
     profile_preimage.extend_from_slice(&encoded);
     let profile_ref = format!("profile_{}", blake3::hash(&profile_preimage).to_hex());
-    Ok((profile_ref, run.id.clone()))
+    Ok((profile_ref, scope.run_id.clone()))
 }
 
 fn managed_provider_requester_ref(
@@ -39147,11 +40157,11 @@ fn managed_terminal_snapshot_recovery_value(
         ("attemptRevision", Value::String(terminal.attempt_revision().to_string())),
         ("managedRevision", Value::String(terminal.managed_revision().to_string())),
         ("admissionWorkspaceRevision", terminal.admission_workspace_revision()
-            .map(|value| Value::String(value.to_owned())).unwrap_or(Value::Null)),
+            .map(|value| Value::String(value.to_owned())).unwrap_or(Value::Nil)),
         ("observedWorkspaceHead", terminal.observed_workspace_head()
-            .map(|value| Value::String(value.to_owned())).unwrap_or(Value::Null)),
+            .map(|value| Value::String(value.to_owned())).unwrap_or(Value::Nil)),
         ("finalRevision", terminal.observed_workspace_head()
-            .map(|value| Value::String(value.to_owned())).unwrap_or(Value::Null)),
+            .map(|value| Value::String(value.to_owned())).unwrap_or(Value::Nil)),
         ("specID", Value::String(terminal.spec_id().to_owned())),
         ("specDigest", Value::String(terminal.spec_digest().to_owned())),
         ("runPhase", Value::String(format!("{:?}", terminal.run_phase()))),
@@ -39159,7 +40169,7 @@ fn managed_terminal_snapshot_recovery_value(
         ("attemptState", Value::String(format!("{:?}", terminal.attempt_state()))),
         ("childPromptState", Value::String(format!("{:?}", terminal.child_prompt_state()))),
         ("childPromptQuiescenceDigest", terminal.child_prompt_quiescence_digest()
-            .map(|value| Value::String(value.to_owned())).unwrap_or(Value::Null)),
+            .map(|value| Value::String(value.to_owned())).unwrap_or(Value::Nil)),
         ("bindingDigest", Value::String(terminal.binding_digest().to_owned())),
         ("ownerLogID", Value::String(terminal.owner_log_id().to_owned())),
         ("ownerLogSequence", Value::String(terminal.owner_log_sequence().to_string())),
@@ -39168,7 +40178,7 @@ fn managed_terminal_snapshot_recovery_value(
         ("effectChainState", Value::String(format!("{:?}", terminal.effect_chain_state()))),
         ("effectChainDigest", Value::String(terminal.effect_chain_digest().to_owned())),
         ("evidenceDigest", terminal.evidence_digest()
-            .map(|value| Value::String(value.to_owned())).unwrap_or(Value::Null)),
+            .map(|value| Value::String(value.to_owned())).unwrap_or(Value::Nil)),
         ("evidenceRefs", Value::Array(terminal.evidence_refs().iter().map(|reference| map_value([
             ("artifactId", Value::String(reference.artifact_id.clone())),
             ("digest", Value::String(reference.digest.clone())),
@@ -39485,7 +40495,7 @@ fn decode_core_session_link(
     {
         return Err(invalid());
     }
-    let expected_digest = session_link_source_digest(
+    let expected_digest = session_link_source_digest([
         session_id,
         source_store_id,
         source_instance_id,
@@ -39501,7 +40511,7 @@ fn decode_core_session_link(
         projected_goal_id,
         project_id,
         workspace_id,
-    );
+    ]);
     if expected_digest != source_digest {
         return Err((
             "session_projection_invalid",
@@ -39635,6 +40645,46 @@ fn code_mode_result_value(
     ])
 }
 
+/// Classify one nested CodeMode capability from the canonical built-in
+/// registry. Unknown capabilities remain ordinary effects so they can never
+/// bypass Guard/lease admission; only explicit read/control capabilities are
+/// treated as host callbacks.
+fn code_mode_call_kind(
+    capability_id: &str,
+) -> crate::effect_host::CodeModeWaveCallKindV1 {
+    use crate::effect_host::CodeModeWaveCallKindV1;
+    match capability_id {
+        crate::guard::FILES_READ_ID
+        | crate::guard::DEFINITIONS_FIND_ID
+        | crate::guard::REFERENCES_FIND_ID
+        | crate::guard::SYMBOLS_OUTLINE_ID
+        | crate::guard::SYMBOLS_SEARCH_ID
+        | crate::guard::LANGUAGE_DIAGNOSTICS_ID
+        | crate::guard::DEBUG_STACK_ID
+        | crate::guard::DEBUG_SCOPES_ID
+        | crate::guard::DEBUG_VARIABLES_ID => CodeModeWaveCallKindV1::HostCallback,
+        _ => CodeModeWaveCallKindV1::Effect,
+    }
+}
+
+/// Map a private EffectHost CodeMode failure into the HostKernel typed error
+/// surface without exposing EffectHost internals or accepting caller receipts.
+fn codemode_host_error(error: TypedErrorV1) -> HostError {
+    match error.code.as_str() {
+        "invalid_effect_request" => invalid(),
+        "effect_denied" => ("code_mode_wave_denied", ErrorCategoryV1::Authorization,
+            "CodeMode wave was denied before dispatch"),
+        "effect_conflict" => ("code_mode_wave_conflict", ErrorCategoryV1::Conflict,
+            "CodeMode wave conflicts with durable owner state"),
+        "effect_unavailable" => ("effect_unavailable", ErrorCategoryV1::Unavailable,
+            "CodeMode EffectHost is unavailable"),
+        "deadline_exceeded" => ("deadline_exceeded", ErrorCategoryV1::Validation,
+            "CodeMode wave deadline has expired"),
+        _ => ("code_mode_wave_unknown", ErrorCategoryV1::Uncertain,
+            "CodeMode wave admission is incomplete or ambiguous"),
+    }
+}
+
 fn codemode_wave_outcome_value(
     request_id: &str,
     wave_index: u8,
@@ -39648,6 +40698,7 @@ fn codemode_wave_outcome_value(
     }).collect::<Vec<_>>();
     let public_rows = outcome.results.iter().map(|row| crate::codemode_protocol::CodeModeCallResultV1 {
         call_id: row.call_id.clone(), status: row.status.clone(), output: None,
+        result_digest: row.output_digest.clone(), output_bytes: row.output_bytes.map(|bytes| bytes as usize),
         receipt_ref: row.receipt_ref.clone(), receipt_kind: row.receipt_kind.clone(),
         receipt_digest: row.receipt_digest.clone(), error_code: row.error_code.clone(),
     }).collect::<Vec<_>>();
@@ -40308,7 +41359,7 @@ mod tests {
             "instructions".to_owned(),
             Value::Map(BTreeMap::from([
                 ("extraRefs".to_owned(), Value::Array(vec![])),
-                ("maxCompiledTokens".to_owned(), Value::Unsigned(1)),
+                ("maxCompiledTokens".to_owned(), Value::String("1".to_owned())),
                 ("unexpected".to_owned(), Value::Nil),
             ])),
         );
@@ -40423,7 +41474,7 @@ mod tests {
         };
         fields.insert(
             "revision".to_owned(),
-            Value::Unsigned(9_007_199_254_740_992),
+            Value::String("18446744073709551616".to_owned()),
         );
         assert!(validate_agent_profile_definition(&Value::Map(fields)).is_err());
 
@@ -40435,7 +41486,7 @@ mod tests {
         };
         instructions.insert(
             "maxCompiledTokens".into(),
-            Value::Unsigned(9_007_199_254_740_992),
+            Value::String("18446744073709551616".to_owned()),
         );
         assert!(validate_agent_profile_definition(&Value::Map(fields)).is_err());
 
@@ -40462,6 +41513,133 @@ mod tests {
         };
         context.insert("maxParentHistoryTokens".into(), Value::Nil);
         assert!(validate_agent_profile_definition(&Value::Map(fields)).is_err());
+    }
+
+    /// `arch_V1/12-DOMAIN-SCHEMAS.md` line 28 plus the canonical
+    /// `contracts-v2/agent-profile-v2.schema.json` contract: `revision`,
+    /// `instructions.maxCompiledTokens`, `context.maxParentHistoryTokens`,
+    /// `limits.tokenBudget` and `limits.wallTimeMs` are `DecimalU64`
+    /// **strings**, while `maxDepth` / `maxActiveChildren` /
+    /// `maxParallelChildren` stay JSON integers with their `maximum` bounds.
+    /// The host decoder must reject a JSON number and every non-canonical
+    /// decimal spelling instead of coercing it.
+    #[test]
+    fn agent_profile_decimal_u64_wire_fields_fail_closed_on_json_numbers() {
+        let definition = valid_agent_profile_definition();
+        let Value::Map(base) = definition.clone() else {
+            unreachable!("fixture is an object")
+        };
+
+        let revision = |value: Value| {
+            let mut fields = base.clone();
+            fields.insert("revision".to_owned(), value);
+            validate_agent_profile_definition(&Value::Map(fields))
+        };
+        assert!(
+            revision(Value::Unsigned(1)).is_err(),
+            "a JSON number revision must be rejected"
+        );
+        revision(Value::String("1".to_owned()))
+            .expect("canonical decimal revision must be accepted");
+        revision(Value::String("18446744073709551615".to_owned()))
+            .expect("u64::MAX is a valid PositiveDecimalU64");
+        for rejected in [
+            "0", "00", "007", "+1", "-1", "1.0", " 1", "1 ", "", "1x",
+            "18446744073709551616",
+        ] {
+            assert!(
+                revision(Value::String(rejected.to_owned())).is_err(),
+                "non-canonical revision {rejected:?} must be rejected"
+            );
+        }
+
+        let max_compiled_tokens = |value: Value| {
+            let mut fields = base.clone();
+            {
+                let Value::Map(instructions) = fields.get_mut("instructions").unwrap() else {
+                    unreachable!("fixture instructions is an object")
+                };
+                instructions.insert("maxCompiledTokens".to_owned(), value);
+            }
+            validate_agent_profile_definition(&Value::Map(fields))
+        };
+        assert!(
+            max_compiled_tokens(Value::Unsigned(4_096)).is_err(),
+            "a JSON number maxCompiledTokens must be rejected"
+        );
+        max_compiled_tokens(Value::String("4096".to_owned()))
+            .expect("canonical decimal maxCompiledTokens must be accepted");
+        assert!(max_compiled_tokens(Value::String("0".to_owned())).is_err());
+
+        let max_parent_history_tokens = |value: Value| {
+            let mut fields = base.clone();
+            {
+                let Value::Map(context) = fields.get_mut("context").unwrap() else {
+                    unreachable!("fixture context is an object")
+                };
+                context.insert("maxParentHistoryTokens".to_owned(), value);
+            }
+            validate_agent_profile_definition(&Value::Map(fields))
+        };
+        assert!(
+            max_parent_history_tokens(Value::Unsigned(4_096)).is_err(),
+            "a JSON number maxParentHistoryTokens must be rejected"
+        );
+        max_parent_history_tokens(Value::String("4096".to_owned()))
+            .expect("canonical decimal maxParentHistoryTokens must be accepted");
+        assert!(max_parent_history_tokens(Value::Nil).is_err());
+        assert!(max_parent_history_tokens(Value::String("0".to_owned())).is_err());
+
+        let budgets = |token_budget: Value, wall_time_ms: Value| {
+            let mut fields = base.clone();
+            {
+                let Value::Map(limits) = fields.get_mut("limits").unwrap() else {
+                    unreachable!("fixture limits is an object")
+                };
+                limits.insert("tokenBudget".to_owned(), token_budget);
+                limits.insert("wallTimeMs".to_owned(), wall_time_ms);
+            }
+            validate_agent_profile_definition(&Value::Map(fields))
+        };
+        assert!(
+            budgets(Value::Unsigned(8_192), Value::Unsigned(60_000)).is_err(),
+            "JSON number tokenBudget / wallTimeMs must be rejected"
+        );
+        let decoded = budgets(Value::String("8192".to_owned()), Value::String("60000".to_owned()))
+            .expect("canonical decimal tokenBudget / wallTimeMs must be accepted");
+        assert_eq!(decoded.token_budget(), Some(8_192));
+        assert_eq!(decoded.wall_time_ms(), Some(60_000));
+        assert!(budgets(Value::String("0".to_owned()), Value::String("60000".to_owned())).is_err());
+        assert!(budgets(Value::String("8192".to_owned()), Value::Nil).is_err());
+        assert!(
+            budgets(
+                Value::String("18446744073709551616".to_owned()),
+                Value::String("60000".to_owned()),
+            )
+            .is_err()
+        );
+
+        // The contract keeps these as JSON integers with explicit `maximum`
+        // bounds, so a decimal string must NOT be accepted for them.
+        for key in ["maxDepth", "maxActiveChildren", "maxTotalChildren"] {
+            let mut fields = base.clone();
+            {
+                let Value::Map(limits) = fields.get_mut("limits").unwrap() else {
+                    unreachable!("fixture limits is an object")
+                };
+                limits.insert(key.to_owned(), Value::String("1".to_owned()));
+            }
+            assert!(
+                validate_agent_profile_definition(&Value::Map(fields)).is_err(),
+                "{key} stays a JSON integer with its maximum bound"
+            );
+        }
+        let mut fields = base.clone();
+        fields.insert("maxParallelChildren".to_owned(), Value::String("1".to_owned()));
+        assert!(
+            validate_agent_profile_definition(&Value::Map(fields)).is_err(),
+            "maxParallelChildren stays a JSON integer"
+        );
     }
 
     #[test]
@@ -40772,6 +41950,10 @@ mod tests {
             intent: intent.clone(),
             phase: DirectAttemptPhase::Succeeded,
             effect_intents: Vec::new(),
+            workspace_head_revision: intent.workspace_revision.clone(),
+            effect_receipts: Vec::new(),
+            effect_reconciliations: Vec::new(),
+            effect_chain_failed: false,
             receipt_digest: Some(direct_attempt_receipt_digest(
                 "attempt-direct-1",
                 "succeeded",
@@ -40856,6 +42038,215 @@ mod tests {
         }
     }
 
+    fn authenticated_server_auth(subject: &str) -> crate::protocol::AuthenticatedPrincipalV1 {
+        crate::protocol::AuthenticatedPrincipalV1::ServerAuth {
+            subject: subject.to_owned(),
+        }
+    }
+
+    fn direct_read_call(call_id: &str, path: &str) -> Value {
+        map(&[
+            ("callID", string(call_id)),
+            ("capabilityID", string(crate::guard::FILES_READ_ID)),
+            (
+                "arguments",
+                map(&[
+                    ("path", string(path)),
+                    ("offset", Value::Unsigned(1)),
+                    ("limit", Value::Unsigned(20)),
+                ]),
+            ),
+        ])
+    }
+
+    fn register_direct_read_location(
+        host: &mut HostKernel,
+        root: &Path,
+        owner: &crate::protocol::AuthenticatedPrincipalV1,
+    ) -> String {
+        let response = host.handle_authenticated_request_with_context_and_cancellation(
+            &request(
+                "register_location",
+                map(&[("canonicalRoot", string(root.to_str().unwrap())), ("workspaceID", string("read-workspace"))]),
+                7,
+                "inc_test",
+            ),
+            owner,
+            &fence(),
+            None,
+            None,
+        );
+        assert_eq!(response.outcome, RpcOutcomeV1::Ok, "{:?}", response.error);
+        let Value::Map(body) = response.body.unwrap() else { panic!("location response") };
+        match body.get("locationID") {
+            Some(Value::String(value)) => value.clone(),
+            _ => panic!("registered Location ID"),
+        }
+    }
+
+    #[test]
+    fn direct_read_batch_issues_per_call_opaque_leases_for_one_and_eight_reads() {
+        let directory = state_dir();
+        let workspace = directory.join("read-workspace");
+        fs::create_dir(&workspace).unwrap();
+        fs::set_permissions(&workspace, fs::Permissions::from_mode(0o700)).unwrap();
+        for index in 0..8 {
+            fs::write(workspace.join(format!("file-{index}.txt")), format!("body-{index}\n")).unwrap();
+        }
+        let owner = authenticated_server_auth("read-owner");
+        let principal = "server_auth:read-owner";
+        let mut host = HostKernel::open(&directory).unwrap();
+        host.set_effects_enabled(true);
+        let location_id = register_direct_read_location(&mut host, &workspace, &owner);
+
+        for count in [1usize, 8] {
+            let calls = (0..count)
+                .map(|index| direct_read_call(&format!("read-{count}-{index}"), &format!("file-{index}.txt")))
+                .collect();
+            let mut rpc = request(
+                "prepare_tool_batch_read",
+                map(&[
+                    ("schemaVersion", Value::Unsigned(1)),
+                    ("sessionID", string("read-session")),
+                    ("locationID", string(&location_id)),
+                    ("calls", Value::Array(calls)),
+                ]),
+                7,
+                "inc_test",
+            );
+            rpc.request_id = format!("read-request-{count}");
+            let response = host.handle_authenticated_request_with_context_and_cancellation(
+                &rpc,
+                &owner,
+                &fence(),
+                Some(&AuthenticatedRequestContextV1::RepoRead {
+                    session_id: "read-session".to_owned(), location_id: location_id.clone(),
+                }),
+                None,
+            );
+            assert_eq!(response.outcome, RpcOutcomeV1::Ok, "principal={principal}, error={:?}", response.error);
+            let Value::Map(body) = response.body.unwrap() else { panic!("read batch response") };
+            assert_eq!(body.get("schemaVersion"), Some(&Value::Unsigned(1)));
+            assert_eq!(body.get("calls").and_then(|value| match value { Value::Array(calls) => Some(calls.len()), _ => None }), Some(count));
+            let Value::Array(records) = body.get("calls").unwrap() else { panic!("read records") };
+            let leases = records.iter().enumerate().map(|(index, record)| {
+                let Value::Map(fields) = record else { panic!("read record") };
+                assert_eq!(fields.get("callID"), Some(&string(&format!("read-{count}-{index}"))));
+                assert_eq!(fields.get("capabilityID"), Some(&string(crate::guard::FILES_READ_ID)));
+                assert!(matches!(fields.get("resultBudgetBytes"), Some(Value::Unsigned(bytes)) if *bytes > 0));
+                match fields.get("readLeaseDigest") {
+                    Some(Value::String(digest)) if crate::guard::is_blake3_digest(digest) => digest.clone(),
+                    _ => panic!("opaque read lease digest"),
+                }
+            }).collect::<HashSet<_>>();
+            assert_eq!(leases.len(), count, "each call receives an independent lease digest");
+            assert!(body.get("effectLease").is_none());
+            assert!(body.get("executable").is_none());
+            assert!(body.get("argv").is_none());
+        }
+        drop(host);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn direct_read_batch_rejects_malformed_duplicate_mutating_unknown_and_oversized_waves_atomically() {
+        let directory = state_dir();
+        let workspace = directory.join("read-reject-workspace");
+        fs::create_dir(&workspace).unwrap();
+        fs::set_permissions(&workspace, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(workspace.join("file.txt"), "unchanged\n").unwrap();
+        let owner = authenticated_server_auth("read-reject-owner");
+        let mut host = HostKernel::open(&directory).unwrap();
+        host.set_effects_enabled(true);
+        let location_id = register_direct_read_location(&mut host, &workspace, &owner);
+        let before = private_directory_snapshot(&workspace);
+
+        let read = direct_read_call("read-call", "file.txt");
+        let duplicate = direct_read_call("read-call", "file.txt");
+        let mutation = map(&[
+            ("callID", string("write-call")),
+            ("capabilityID", string(crate::guard::FILES_WRITE_ID)),
+            ("arguments", map(&[("path", string("file.txt")), ("content", string("changed"))])),
+        ]);
+        let unknown = map(&[
+            ("callID", string("unknown-call")),
+            ("capabilityID", string("plugin.read")),
+            ("arguments", map(&[("path", string("file.txt"))])),
+        ]);
+        let malformed = map(&[
+            ("callID", string("malformed-call")),
+            ("capabilityID", string(crate::guard::FILES_READ_ID)),
+            ("arguments", map(&[("path", string("file.txt")), ("unexpected", Value::Bool(true))])),
+        ]);
+        let oversized = (0..9)
+            .map(|index| direct_read_call(&format!("too-many-{index}"), "file.txt"))
+            .collect::<Vec<_>>();
+
+        let cases = [
+            ("duplicate", vec![read.clone(), duplicate], "invalid_effect_request"),
+            ("mutation", vec![read.clone(), mutation], "unsupported_capability"),
+            ("unknown", vec![read.clone(), unknown], "unsupported_capability"),
+            ("malformed", vec![read.clone(), malformed], "invalid_effect_request"),
+        ];
+        for (label, calls, expected_code) in cases {
+            let response = host.handle_authenticated_request_with_context_and_cancellation(
+                &request(
+                    "prepare_tool_batch_read",
+                    map(&[("schemaVersion", Value::Unsigned(1)), ("sessionID", string("read-session")), ("locationID", string(&location_id)), ("calls", Value::Array(calls))]),
+                    7,
+                    "inc_test",
+                ),
+                &owner,
+                &fence(),
+                Some(&AuthenticatedRequestContextV1::RepoRead {
+                    session_id: "read-session".to_owned(), location_id: location_id.clone(),
+                }),
+                None,
+            );
+            assert_eq!(response.outcome, RpcOutcomeV1::Error, "{label} wave was not rejected atomically");
+            assert_eq!(response.error.as_ref().map(|error| error.code.as_str()), Some(expected_code), "{label} rejection classification");
+            assert!(response.body.is_none(), "{label} wave projected a partial lease response");
+        }
+        let response = host.handle_authenticated_request_with_context_and_cancellation(
+            &request(
+                "prepare_tool_batch_read",
+                map(&[("schemaVersion", Value::Unsigned(1)), ("sessionID", string("read-session")), ("locationID", string(&location_id)), ("calls", Value::Array(oversized))]),
+                7,
+                "inc_test",
+            ),
+            &owner,
+            &fence(),
+            Some(&AuthenticatedRequestContextV1::RepoRead {
+                session_id: "read-session".to_owned(), location_id: location_id.clone(),
+            }),
+            None,
+        );
+        assert_eq!(response.outcome, RpcOutcomeV1::Error, "more than eight reads must be rejected");
+        assert_eq!(response.error.as_ref().map(|error| error.code.as_str()), Some("invalid_effect_request"));
+        assert!(response.body.is_none());
+
+        let foreign = authenticated_server_auth("foreign-read-owner");
+        let response = host.handle_authenticated_request_with_context_and_cancellation(
+            &request(
+                "prepare_tool_batch_read",
+                map(&[("schemaVersion", Value::Unsigned(1)), ("sessionID", string("read-session")), ("locationID", string(&location_id)), ("calls", Value::Array(vec![read]))]),
+                7,
+                "inc_test",
+            ),
+            &foreign,
+            &fence(),
+            Some(&AuthenticatedRequestContextV1::RepoRead {
+                session_id: "read-session".to_owned(), location_id: location_id.clone(),
+            }),
+            None,
+        );
+        assert_eq!(response.outcome, RpcOutcomeV1::Error, "foreign Location owner was accepted");
+        assert_eq!(response.error.as_ref().map(|error| error.code.as_str()), Some("location_owner_conflict"));
+        assert_eq!(private_directory_snapshot(&workspace), before, "read admission changed the workspace");
+        drop(host);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
     fn fence() -> FrameFence {
         FrameFence::new(7, "inc_test").unwrap()
     }
@@ -40892,6 +42283,9 @@ mod tests {
         let workspace = fs::canonicalize(workspace).unwrap();
         let workspace_text = workspace.to_str().unwrap();
         let mut host = HostKernel::open(&directory).unwrap();
+        // effects.v2 is negotiated per connection; the in-process test harness
+        // enables it before any effect-service RPC.
+        host.set_effects_enabled(true);
 
         let registered = host.handle_request(
             &request(
@@ -41308,7 +42702,7 @@ mod tests {
         );
         assert_eq!(
             repo_value_field(payload, "observedWorkspaceRevision"),
-            Some(&string(expected_revision.clone()))
+            Some(&string(&expected_revision))
         );
 
         // Discovery revisions may inventory symlink metadata, but a subsequent
@@ -41350,6 +42744,9 @@ mod tests {
         );
         assert_eq!(oversized_response.outcome, RpcOutcomeV1::Error);
 
+        // Structural revision verification refuses symbolic links outright, so
+        // remove the discovery-only link before asserting content staleness.
+        fs::remove_file(workspace.join("readme-link.txt")).unwrap();
         fs::write(workspace.join("readme.txt"), "changed\n").unwrap();
         let mut stale = read;
         stale.body = body("readme.txt", &expected_revision, 1024);
@@ -41764,6 +43161,7 @@ mod tests {
             "version": 1,
             "profiles": [{
                 "profileID": "profile-1",
+                "revision": 1,
                 "principal": "server_auth:reviewer",
                 "executable": executable,
                 "executableDigest": executable_digest,
@@ -41806,6 +43204,7 @@ mod tests {
             "version": 1,
             "profiles": [{
                 "profileID": "profile-1",
+                "revision": 1,
                 "principal": "server_auth:reviewer",
                 "executable": executable,
                 "executableDigest": executable_digest,
@@ -41865,6 +43264,7 @@ mod tests {
             "version": 1,
             "profiles": [{
                 "profileID": "recovery-profile",
+                "revision": 1,
                 "principal": "server_auth:independent-verifier",
                 "executable": executable,
                 "executableDigest": crate::terminal_process::executable_digest(&executable).unwrap(),
@@ -42048,6 +43448,96 @@ mod tests {
     }
 
     #[test]
+    fn host_run_bind_routes_gate_strict_bodies_serverauth_and_peer_identity() {
+        let state = state_dir();
+        let mut host = HostKernel::open(&state).unwrap();
+        let fence = fence();
+        let key_digest = format!("blake3:{}", "a".repeat(64));
+        let manifest_digest = format!("blake3:{}", "b".repeat(64));
+
+        // A malformed body is rejected before any authentication or durable
+        // state is read.
+        let mut malformed = request(
+            "host_run.bind",
+            map_value([("goalID", string("goal-host-run"))]),
+            7,
+            "inc_test",
+        );
+        malformed.service_id = MANAGED_SERVICE_ID.to_owned();
+        malformed.delivery_id = Some("host-run-bind-malformed".to_owned());
+        let invalid = host.handle_request(&malformed, "server_auth:reviewer", &fence);
+        assert_eq!(invalid.outcome, RpcOutcomeV1::Error);
+        assert_eq!(
+            invalid.error.as_ref().unwrap().code,
+            "invalid_effect_request"
+        );
+
+        let bind_body = || {
+            map_value([
+                ("goalID", string("goal-host-run")),
+                ("attemptID", string("attempt-host-run")),
+                ("dispatchKeyDigest", string(&key_digest)),
+                ("manifestDigest", string(&manifest_digest)),
+                ("evaluatorTaskId", string("evaluator-task-1")),
+                ("armId", string("arm-1")),
+                ("taskGroup", string("group-1")),
+            ])
+        };
+
+        // A non-ServerAuth principal never reaches peer or durable state.
+        let mut anonymous = request("host_run.bind", bind_body(), 7, "inc_test");
+        anonymous.service_id = MANAGED_SERVICE_ID.to_owned();
+        anonymous.delivery_id = Some("host-run-bind-anonymous".to_owned());
+        let denied = host.handle_request(&anonymous, "host_os_uid:1000", &fence);
+        assert_eq!(denied.outcome, RpcOutcomeV1::Error);
+        assert_eq!(denied.error.as_ref().unwrap().code, "missing_principal");
+
+        // ServerAuth alone is not enough: without the kernel-authenticated
+        // Core peer there is no process generation to bind, so the request is
+        // refused rather than accepting one from the body.
+        let mut no_peer = request("host_run.bind", bind_body(), 7, "inc_test");
+        no_peer.service_id = MANAGED_SERVICE_ID.to_owned();
+        no_peer.delivery_id = Some("host-run-bind-no-peer".to_owned());
+        let denied = host.handle_request(&no_peer, "server_auth:reviewer", &fence);
+        assert_eq!(denied.outcome, RpcOutcomeV1::Error);
+        assert_eq!(
+            denied.error.as_ref().unwrap().code,
+            "authenticated_peer_unavailable"
+        );
+
+        // The P8 receipt route requires ServerAuth before durable state.
+        let receipt_body = map_value([
+            ("goalID", string("goal-host-run")),
+            ("dispatchKeyDigest", string(&key_digest)),
+            ("bindingDigest", string(&manifest_digest)),
+            ("ownerLogID", string("owner-log-p8-evaluator")),
+            ("ownerLogSequence", string("7")),
+            ("ownerLogEventDigest", string(&"c".repeat(64))),
+        ]);
+        let mut anonymous_receipt = request("host_run.bind_receipt", receipt_body.clone(), 7, "inc_test");
+        anonymous_receipt.service_id = MANAGED_SERVICE_ID.to_owned();
+        anonymous_receipt.delivery_id = Some("host-run-receipt-anonymous".to_owned());
+        let denied = host.handle_request(&anonymous_receipt, "host_os_uid:1000", &fence);
+        assert_eq!(denied.outcome, RpcOutcomeV1::Error);
+        assert_eq!(denied.error.as_ref().unwrap().code, "missing_principal");
+
+        // A well-formed receipt for an unknown Goal fails closed without
+        // allocating a Goal owner or persisting anything.
+        let mut receipt = request("host_run.bind_receipt", receipt_body, 7, "inc_test");
+        receipt.service_id = MANAGED_SERVICE_ID.to_owned();
+        receipt.delivery_id = Some("host-run-receipt-unknown-goal".to_owned());
+        let missing = host.handle_request(&receipt, "server_auth:reviewer", &fence);
+        assert_eq!(missing.outcome, RpcOutcomeV1::Error);
+        assert_eq!(missing.error.as_ref().unwrap().code, "managed_not_found");
+        assert!(
+            host.managed.is_empty(),
+            "HostRun receipt denial cannot allocate a Goal owner"
+        );
+        drop(host);
+        fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
     fn verifier_reconciliation_reconstructs_expired_exact_invocation_without_refreshing_lease() {
         let state = state_dir();
         let id = persist_recovery_fixture(&state, VerifierChallengeSetStateV1::Executing);
@@ -42087,8 +43577,8 @@ mod tests {
             location_id: set.location_id.clone(),
             session_id: "session-recovery".to_owned(),
             workspace_revision: set.final_revision.clone(),
-            delegation_binding_digest: digest('f'),
-            permission_scope_digest: digest('e'),
+            delegation_binding_digest: format!("blake3:{}", "f".repeat(64)),
+            permission_scope_digest: format!("blake3:{}", "e".repeat(64)),
             effective_max_tokens: 100,
             remaining_tokens: 100,
             request_id: None, request_sequence: None, context_selection_digest: None,
@@ -42164,6 +43654,9 @@ mod tests {
 
     #[test]
     fn execute_verification_stays_gated_until_integrated_acceptance() {
+        // The effectful dispatch gate is a single host-side switch and remains
+        // closed until the integrated verifier acceptance matrix passes.
+        assert!(!TRUSTED_VERIFIER_ADAPTER_AVAILABLE);
         let state = state_dir();
         let mut host = HostKernel::open(&state).unwrap();
         let mut request = request(
@@ -42184,14 +43677,13 @@ mod tests {
 
         let response = host.handle_request(&request, "server_auth:reviewer", &fence());
 
+        // An unknown verification run is classified as recovery-required before
+        // any effect can be planned: fabricated or stale challenge-set identity
+        // never reaches the dispatch gate, and nothing is launched either way.
         assert_eq!(response.outcome, RpcOutcomeV1::Error);
         assert_eq!(
             response.error.as_ref().map(|error| error.code.as_str()),
-            Some("capability_unavailable")
-        );
-        assert_eq!(
-            response.error.as_ref().map(|error| error.message.as_str()),
-            Some("the trusted guarded verifier path remains unavailable until integrated execution and recovery acceptance passes")
+            Some("verification_unknown")
         );
         drop(host);
         fs::remove_dir_all(state).unwrap();
@@ -42219,8 +43711,10 @@ mod tests {
             workspace_revision: Some(format!("blake3:{}", "a".repeat(64))),
             delegation_binding: None,
             effects: Vec::new(),
+            effect_waves: Vec::new(),
             effect_receipts: BTreeMap::new(),
             verifier_intents: BTreeMap::new(),
+            verifier_evidence: None,
             phase: AttemptPhase::Succeeded,
             receipt_digest: Some(format!("blake3:{}", "a".repeat(64))),
             failure_code: None,
@@ -42277,7 +43771,9 @@ mod tests {
 
         let mut swapped = false;
         let result = workspace_revision_digest_with_hook(&workspace, |path| {
-            if path == workspace.join("result.txt") {
+            // The snapshot walks fd-relative paths (`/proc/self/fd/<n>/...`), so
+            // the hook matches the entry name rather than the lexical root join.
+            if path.file_name().is_some_and(|name| name == "result.txt") {
                 fs::rename(path, workspace.join("result.original")).unwrap();
                 symlink(&target, path).unwrap();
                 swapped = true;
@@ -42304,7 +43800,8 @@ mod tests {
 
         let mut replaced = false;
         let result = workspace_revision_digest_with_hook(&workspace, |path| {
-            if path == workspace.join("result.txt") {
+            // See the symlink-swap case: the hook observes fd-relative entries.
+            if path.file_name().is_some_and(|name| name == "result.txt") {
                 fs::rename(path, workspace.join("result.old")).unwrap();
                 fs::write(path, b"after!").unwrap();
                 replaced = true;
@@ -42437,7 +43934,7 @@ mod tests {
                 7,
                 "inc_test",
             ),
-            "host_os_uid:1000",
+            "server_auth:recovery-location-owner",
             &fence(),
         );
         assert_eq!(denied.outcome, RpcOutcomeV1::Error);
@@ -42519,7 +44016,10 @@ mod tests {
         let registered = host.handle_request(
             &request(
                 "register_location",
-                map(&[("canonicalRoot", string(workspace_text))]),
+                map(&[
+                    ("canonicalRoot", string(workspace_text)),
+                    ("workspaceID", string("recovery-workspace")),
+                ]),
                 7,
                 "inc_test",
             ),
@@ -42561,29 +44061,20 @@ mod tests {
                 7,
                 "inc_test",
             ),
-            "host_os_uid:1000",
+            "server_auth:recovery-location-owner",
             &fence(),
         );
-        assert_eq!(prepared.outcome, RpcOutcomeV1::Ok);
+        assert_eq!(prepared.outcome, RpcOutcomeV1::Ok, "prepare error: {:?}", prepared.error);
         let Some(Value::Map(prepared_body)) = prepared.body.as_ref() else {
             panic!("missing prepared effect response")
         };
-        let challenge_id = get_text(prepared_body, "challengeID").unwrap().to_owned();
+        // Quiet direct-mode admission has already bound the one-use capability
+        // lease; it does not expose an approval challenge to the caller.
+        let lease_digest = get_text(prepared_body, "capabilityLeaseDigest")
+            .unwrap()
+            .to_owned();
         let effect_id = get_text(prepared_body, "effectID").unwrap().to_owned();
-        let approval = host.handle_request(
-            &request(
-                "resolve_approval",
-                map(&[
-                    ("challengeID", string(&challenge_id)),
-                    ("decision", string("allow_once")),
-                ]),
-                7,
-                "inc_test",
-            ),
-            "host_os_uid:1000",
-            &fence(),
-        );
-        assert_eq!(approval.outcome, RpcOutcomeV1::Ok);
+        assert!(lease_digest.starts_with("blake3:"));
         drop(host);
 
         let effect_db = directory
@@ -42689,7 +44180,10 @@ mod tests {
         let reregistered = deferred.handle_request(
             &request(
                 "register_location",
-                map(&[("canonicalRoot", string(workspace_text))]),
+                map(&[
+                    ("canonicalRoot", string(workspace_text)),
+                    ("workspaceID", string("recovery-workspace")),
+                ]),
                 7,
                 "inc_test",
             ),
@@ -43026,5 +44520,107 @@ mod tests {
             event.cursor.event_digest,
             format!("blake3:{}", blake3::hash(&encoded).to_hex())
         );
+    }
+
+    // Regression guard for blocker B1. The DirectSession tool-batch index binds
+    // two digests with two DIFFERENT producers, so they have two different
+    // canonical algorithms:
+    //   * turnContextDigest is minted by Core (sha256 over the frozen turn
+    //     identity) and is parsed as sha256 at the admission boundary.
+    //   * callManifestDigest is minted kernel-side by
+    //     `direct_session_batch_call_manifest` (blake3 over the ordered calls).
+    // Requiring blake3 for both made every root direct-session prepare
+    // unsatisfiable. These assertions pin each field to its own producer so the
+    // two are never collapsed into a single algorithm again.
+    #[test]
+    fn direct_session_batch_index_pins_each_digest_to_its_own_producer() {
+        let directory = state_dir();
+        let mut connection = open_location_registry(&directory).unwrap();
+        connection
+            .execute(
+                "INSERT INTO locations(location_id, canonical_root, workspace_id) VALUES ('loc_pin_alg', '/nonexistent-pin-root', '')",
+                [],
+            )
+            .unwrap();
+
+        // Producer-side pin: the kernel mints the call-manifest digest as blake3.
+        let calls = vec![map_value([
+            ("callId", string("call_digest_pin_1")),
+            ("capabilityId", string("agents.list")),
+            ("arguments", map(&[])),
+        ])];
+        let (manifest, manifest_digest) =
+            direct_session_batch_call_manifest(&calls).expect("canonical call manifest");
+        assert!(
+            manifest_digest.starts_with("blake3:"),
+            "call-manifest digest must stay blake3, got {manifest_digest}"
+        );
+        assert!(is_blake3_digest(&manifest_digest));
+
+        let turn_digest = format!(
+            "sha256:{}",
+            "0".repeat(64)
+        );
+
+        // The matching pair must be admitted.
+        let admitted = direct_session_batch_index_begin(
+            &mut connection,
+            "ses_pin_alg",
+            "loc_pin_alg",
+            "host_os_uid:1000",
+            7,
+            "req_pin_alg",
+            "batch_pin_ok",
+            &turn_digest,
+            &manifest,
+            &manifest_digest,
+        );
+        assert!(
+            admitted.is_ok(),
+            "sha256 turn-context + blake3 call-manifest must be admitted: {admitted:?}"
+        );
+
+        // A blake3 turn-context digest is NOT the Core-minted value and must be
+        // rejected: this field is sha256-only.
+        let blake3_turn = format!("blake3:{}", "0".repeat(64));
+        let wrong_turn = direct_session_batch_index_begin(
+            &mut connection,
+            "ses_pin_alg",
+            "loc_pin_alg",
+            "host_os_uid:1000",
+            7,
+            "req_pin_alg",
+            "batch_pin_bad_turn",
+            &blake3_turn,
+            &manifest,
+            &manifest_digest,
+        );
+        assert!(
+            wrong_turn.is_err(),
+            "a blake3 turn-context digest must not be admitted"
+        );
+
+        // A sha256 call-manifest digest is NOT kernel-minted and must be
+        // rejected: this field is blake3-only.
+        let sha_manifest = format!("sha256:{}", "0".repeat(64));
+        let wrong_manifest = direct_session_batch_index_begin(
+            &mut connection,
+            "ses_pin_alg",
+            "loc_pin_alg",
+            "host_os_uid:1000",
+            7,
+            "req_pin_alg",
+            "batch_pin_bad_manifest",
+            &turn_digest,
+            &manifest,
+            &sha_manifest,
+        );
+        assert!(
+            wrong_manifest.is_err(),
+            "a sha256 call-manifest digest must not be admitted"
+        );
+
+        drop(connection);
+        fs::remove_dir_all(directory).unwrap();
     }
 }

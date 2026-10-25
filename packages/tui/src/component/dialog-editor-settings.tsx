@@ -1,6 +1,9 @@
 import { createMemo, createSignal, onMount, Show } from "solid-js"
 import type { ExternalEditorProfileDefinitionV1, ExternalEditorProfileRefV1, ExternalEditorProfilesProjectionV1 } from "@opencode-ai/sdk/v2"
-import * as ExternalEditorProfile from "@opencode-ai/schema/external-editor-profile-v1"
+// The TUI package does not currently declare @opencode-ai/schema as a
+// dependency. Import the canonical schema source directly so this surface
+// cannot fork its own decoder; packaging must add the workspace dependency.
+import * as ExternalEditorProfile from "../../../schema/src/external-editor-profile-v1"
 import { DialogSelect, type DialogSelectOption } from "../ui/dialog-select"
 import { useProject } from "../context/project"
 import { useSDK } from "../context/sdk"

@@ -98,7 +98,7 @@ async function mount(source: string, complete: boolean, renderer: ReturnType<typ
         <Harness />
       </TestTuiContexts>
     ),
-    { kittyKeyboard: true },
+    { kittyKeyboard: true, width: 100, height: 80 },
   )
   return { app, tmp }
 }
@@ -112,7 +112,7 @@ test("renders the bounded isolated frame while keeping the inert original source
     await waitFor(() => renderer.stats().completed === 1)
     const ready = await waitForFrame(
       app,
-      (frame) => frame.includes("####") && !frame.includes("isolated worker; "),
+      (frame) => frame.includes("Derived artifact preview: FULL") && frame.includes("####") && !frame.includes("isolated worker; "),
     )
     expect(ready).toContain("svg")
     expect(ready).toContain("rect")
@@ -134,7 +134,11 @@ test("shows the inert source and a pending marker while the isolated worker is b
     const frame = await waitForFrame(app, (value) => value.includes("pending in the isolated worker"))
     expect(frame).toContain("svg")
     expect(frame).toContain("rect")
-    expect(frame).toContain("Derived artifact preview: SAMPLE")
+    expect(frame).toContain("Derived artifact preview: FAILED")
+    // A complete source whose isolated frame is still pending is not FULL and
+    // not SAMPLE (SAMPLE is reserved for an incomplete streaming source).
+    expect(frame).not.toContain("Derived artifact preview: FULL")
+    expect(frame).not.toContain("Derived artifact preview: SAMPLE")
     expect(renderer.stats()).toMatchObject({ requests: 1, completed: 0, failed: 0 })
   } finally {
     app.renderer.destroy()

@@ -1529,18 +1529,29 @@ it.instance("permission config preserves user key order", () =>
     })
 
     const config = yield* Config.use.get()
+    // Ancestor project layers may contribute their own tool-derived permission
+    // defaults (`.opencode/opencode.jsonc` `tools` → permission, projected by
+    // Config.projectToolPermissions). The contract under test is that the
+    // USER-written keys keep their exact written order — never canonicalised —
+    // and that user values win over any projected default.
+    const written: Record<string, "allow" | "ask" | "deny"> = {
+      "*": "deny",
+      edit: "ask",
+      write: "ask",
+      external_directory: "ask",
+      read: "allow",
+      todowrite: "allow",
+      "thoughts_*": "allow",
+      "reasoning_model_*": "allow",
+      "tools_*": "allow",
+      "pr_comments_*": "allow",
+    }
+    const derived = Config.projectToolPermissions(config.tools ?? {})
     expect(Object.keys(config.permission!)).toEqual([
-      "*",
-      "edit",
-      "write",
-      "external_directory",
-      "read",
-      "todowrite",
-      "thoughts_*",
-      "reasoning_model_*",
-      "tools_*",
-      "pr_comments_*",
+      ...Object.keys(derived),
+      ...Object.keys(written).filter((key) => !Object.hasOwn(derived, key)),
     ])
+    expect(config.permission!).toEqual({ ...derived, ...written })
   }),
 )
 
@@ -1608,6 +1619,47 @@ it.instance(
       })
     }),
   { config: { compaction: { auto: true, prune: true } } },
+  30_000,
+)
+
+it.instance(
+  "FEAT-013: a stale expectedEnabled write fails with a typed conflict and never overwrites unrelated config",
+  () =>
+    Effect.gen(function* () {
+      const instance = yield* TestInstance
+      const fsys = yield* FSUtil.Service
+      const file = path.join(instance.directory, "config.json")
+      // Concurrent writer already changed compaction.auto and touched siblings
+      // after this process read the setting: the stale conditional write
+      // (expectedEnabled: false) must be rejected and leave every value intact.
+      yield* fsys.writeWithDirs(
+        file,
+        JSON.stringify({
+          compaction: { auto: true, prune: true },
+          model: "keep/me",
+          custom: { retained: "value" },
+        }),
+      )
+
+      const failure = yield* Config.use
+        .updateFeature({ featureId: "compaction.auto", expectedEnabled: false, enabled: false })
+        .pipe(Effect.flip)
+      expect(failure).toBeInstanceOf(Config.FeatureSettingConflict)
+
+      const after = yield* Effect.promise(() => Bun.file(file).json())
+      expect(after).toEqual({
+        compaction: { auto: true, prune: true },
+        model: "keep/me",
+        custom: { retained: "value" },
+      })
+
+      // The fresh conditional write still succeeds after the stale attempt.
+      yield* Config.use.updateFeature({ featureId: "compaction.auto", expectedEnabled: true, enabled: false })
+      const applied = yield* Effect.promise(() => Bun.file(file).json())
+      expect((applied as { compaction?: { auto?: boolean } }).compaction?.auto).toBe(false)
+      expect((applied as { model?: string }).model).toBe("keep/me")
+    }),
+  { config: {} },
   30_000,
 )
 

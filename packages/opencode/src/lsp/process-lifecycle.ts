@@ -100,6 +100,7 @@ export type EditorProcessLeaseV1 = EffectLease & {
 export type RequestExecutionHostV1 = (
   serviceID: "execution.v1",
   operation: "resolve_launch_profile" | "prepare" | "launch" | "status" | "read" | "cancel" |
+    "protocol_op" | "protocol_read" | "protocol_reply" |
     "repl_next_sequence" | "repl_op" | "repl_callback_read" | "repl_callback_reply",
   body: Readonly<Record<string, unknown>>,
 ) => Promise<unknown>
@@ -322,7 +323,7 @@ export async function launchApprovedEditorProcessV1(input: {
   const generation = decimal(preparedRaw.generation, "prepared process generation")
   if (digest(preparedRaw.capabilityLeaseDigest, "prepared capability lease") !== lease.capabilityLeaseDigest ||
       typeof preparedRaw.executionDigest !== "string" || !/^blake3:[0-9a-f]{64}$/.test(preparedRaw.executionDigest) ||
-      digest(preparedRaw.approvedArgumentsDigest, "approvedArgumentsDigest") !== input.approval.inputDigest ||
+      digest(preparedRaw.approvedArgumentsDigest, "approvedArgumentsDigest") !== input.approval.approval.inputDigest ||
       typeof preparedRaw.confinementRecord !== "string" || !preparedRaw.confinementRecord || preparedRaw.confinementRecord.length > 4096) {
     throw new TypeError("HostKernel prepared process does not match its approved lease or confinement record")
   }
@@ -416,10 +417,10 @@ export async function cancelEditorProcessV1(input: {
   readonly scope: EditorProcessLifecycleScopeV1
   readonly requestHostKernel: RequestExecutionHostV1
 }): Promise<EditorProcessStatusV1> {
-  assertLanguageServiceProcessAllowed(processRef.kind === "language_server" ? "server.stop"
-    : processRef.kind === "debug_adapter" ? "debug.stop" : "repl.stop")
   const scope = validateScope(input.scope)
   const processRef = validateHostProcessRef(input.processRef)
+  assertLanguageServiceProcessAllowed(processRef.kind === "language_server" ? "server.stop"
+    : processRef.kind === "debug_adapter" ? "debug.stop" : "repl.stop")
   const kind = processKind(processRef.kind === "language_server" ? "language.start"
     : processRef.kind === "debug_adapter" ? "debug.start" : "repl.start")
   if (processRef.kind !== kind || ((scope.managedAttempt !== undefined || scope.directAttempt !== undefined) &&

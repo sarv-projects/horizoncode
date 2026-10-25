@@ -2,6 +2,7 @@ export * as Tool from "./tool"
 
 import { ToolDefinition, ToolFailure, ToolOutput, type ToolCall } from "@opencode-ai/llm"
 import { Effect, JsonSchema, Schema } from "effect"
+import type { Ref as LocationRef } from "@opencode-ai/schema/location"
 import type { AgentV2 } from "../agent"
 import type { SessionMessage } from "../session/message"
 import type { SessionSchema } from "../session/schema"
@@ -17,6 +18,9 @@ export type Capability = {
 export type EffectLease = {
   readonly effectID: string
   readonly capabilityLeaseDigest: string
+  /** HostKernel-minted scope carried only inside the local call path, never model JSON. */
+  readonly directAttempt?: import("../session/supervisor").DirectAttemptScopeV1
+  readonly managedAttempt?: import("../session/supervisor").ManagedAttemptScopeV1
 }
 
 export interface Context {
@@ -31,7 +35,7 @@ export interface Context {
   readonly guardedCall?: import("../session/supervisor").GuardedToolCall
   /** Private trusted Config projection correlated to a workspace-profile terminal call. */
   readonly workspaceCommandProfile?: import("../pty").WorkspaceCommandProfileBindingV1
-  readonly locationRef?: import("@opencode-ai/schema/location").Ref.Type
+  readonly locationRef?: LocationRef
   /**
    * Runner-owned nested batch seam for bounded orchestration tools. Until the
    * HostKernel CodeMode lifecycle API is wired, the supplied callback fails

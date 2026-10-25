@@ -9,7 +9,7 @@
 //! clearing a store discards every partial upload, which is the only restart
 //! behavior this library can establish.
 
-use crate::{BaseGeneration, GenerationPack, IndexError, DEFAULT_MAX_PACK_BYTES};
+use crate::{BaseGeneration, DEFAULT_MAX_PACK_BYTES, GenerationPack, IndexError};
 use std::collections::BTreeMap;
 use std::fmt;
 

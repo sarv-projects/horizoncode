@@ -38,11 +38,11 @@ describe("CheckpointControl.list", () => {
       ["../outside"],
       Array.from({ length: 33 }, (_, index) => `checkpoint-${index}`),
     ]) {
-      const result = await Effect.runPromise(Effect.either(
+      const result = await Effect.runPromise(Effect.result(
         list(scope).pipe(Effect.provide(supervisor({ checkpointIDs }))),
       ))
-      expect(result._tag).toBe("Left")
-      if (result._tag === "Left") expect(result.left).toBeInstanceOf(CheckpointControlError)
+      expect(result._tag).toBe("Failure")
+      if (result._tag === "Failure") expect(result.failure).toBeInstanceOf(CheckpointControlError)
     }
   })
 })
@@ -50,10 +50,10 @@ describe("CheckpointControl.list", () => {
 describe("CheckpointControl.previewRestore", () => {
   const preview = {
     checkpointID: "checkpoint-1",
-    checkpointArtifact: { artifactID: "artifact-1", digest: `blake3:${"a".repeat(64)}`, byteLength: "42", mediaType: "application/vnd.horizoncode.checkpoint+json", classification: "workspace" },
+    checkpointArtifact: { artifactID: "artifact-1", digest: `blake3:${"a".repeat(64)}`, byteLength: "42", mediaType: "application/vnd.horizoncode.checkpoint+json", classification: "workspace" as const },
     workspaceRevision: `blake3:${"b".repeat(64)}`,
     workspaceRevisionChanged: false,
-    mode: "FULL",
+    mode: "FULL" as const,
     selectedPaths: [],
     actions: [],
     conflicts: [{ path: null, kind: "WORKSPACE_STATUS_UNAVAILABLE" }],
@@ -92,11 +92,11 @@ describe("CheckpointControl.previewRestore", () => {
       { ...preview, previewDigest: "bad" },
     ]
     for (const response of cases) {
-      const result = await Effect.runPromise(Effect.either(previewRestore(scope, {
+      const result = await Effect.runPromise(Effect.result(previewRestore(scope, {
         checkpointID: "checkpoint-1", mode: "FULL", selectedPaths: [],
       }).pipe(Effect.provide(supervisor(response)))))
-      expect(result._tag).toBe("Left")
-      if (result._tag === "Left") expect(result.left).toBeInstanceOf(CheckpointControlError)
+      expect(result._tag).toBe("Failure")
+      if (result._tag === "Failure") expect(result.failure).toBeInstanceOf(CheckpointControlError)
     }
   })
 
@@ -111,11 +111,11 @@ describe("CheckpointControl.previewRestore", () => {
       { ...preview, mode: "SELECTED_PATHS", selectedPaths: ["../outside"], conflicts: [{ path: null, kind: "WORKSPACE_STATUS_UNAVAILABLE" }] },
     ]
     for (const response of responses) {
-      const result = await Effect.runPromise(Effect.either(
+      const result = await Effect.runPromise(Effect.result(
         previewRestore(scope, selectedRequest).pipe(Effect.provide(supervisor(response))),
       ))
-      expect(result._tag).toBe("Left")
-      if (result._tag === "Left") expect(result.left).toBeInstanceOf(CheckpointControlError)
+      expect(result._tag).toBe("Failure")
+      if (result._tag === "Failure") expect(result.failure).toBeInstanceOf(CheckpointControlError)
     }
   })
 
@@ -129,11 +129,11 @@ describe("CheckpointControl.previewRestore", () => {
       [{ ...action("src/a.ts"), target: { ...action("src/a.ts").target, linkCount: 2 } }],
       [{ ...action("src/a.ts"), target: { ...action("src/a.ts").target, kind: "ABSENT", digest: null } }],
     ]) {
-      const result = await Effect.runPromise(Effect.either(previewRestore(scope, selectedRequest).pipe(
+      const result = await Effect.runPromise(Effect.result(previewRestore(scope, selectedRequest).pipe(
         Effect.provide(supervisor({ ...selectedBase, actions })),
       )))
-      expect(result._tag).toBe("Left")
-      if (result._tag === "Left") expect(result.left).toBeInstanceOf(CheckpointControlError)
+      expect(result._tag).toBe("Failure")
+      if (result._tag === "Failure") expect(result.failure).toBeInstanceOf(CheckpointControlError)
     }
   })
 
@@ -156,11 +156,11 @@ describe("CheckpointControl.previewRestore", () => {
 
   test("rejects duplicate selected paths before asking HostKernel", async () => {
     let dispatched = false
-    const result = await Effect.runPromise(Effect.either(previewRestore(scope, {
+    const result = await Effect.runPromise(Effect.result(previewRestore(scope, {
       checkpointID: "checkpoint-1", mode: "SELECTED_PATHS", selectedPaths: ["src/a.ts", "src/a.ts"],
-    }).pipe(Effect.provide(supervisor(preview, () => { dispatched = true }))))))
-    expect(result._tag).toBe("Left")
-    if (result._tag === "Left") expect(result.left).toBeInstanceOf(CheckpointControlError)
+    }).pipe(Effect.provide(supervisor(preview, () => { dispatched = true })))))
+    expect(result._tag).toBe("Failure")
+    if (result._tag === "Failure") expect(result.failure).toBeInstanceOf(CheckpointControlError)
     expect(dispatched).toBe(false)
   })
 
@@ -169,14 +169,14 @@ describe("CheckpointControl.previewRestore", () => {
     for (const selectedPath of ["../outside", "/absolute", "a\\b", "a//b"]) {
       const service = supervisor(preview, () => { dispatched = true })
       const result = await Effect.runPromise(
-        Effect.either(
+        Effect.result(
           previewRestore(scope, {
             checkpointID: "checkpoint-1", mode: "SELECTED_PATHS", selectedPaths: [selectedPath],
           }).pipe(Effect.provide(service)),
         ),
       )
-      expect(result._tag).toBe("Left")
-      if (result._tag === "Left") expect(result.left).toBeInstanceOf(CheckpointControlError)
+      expect(result._tag).toBe("Failure")
+      if (result._tag === "Failure") expect(result.failure).toBeInstanceOf(CheckpointControlError)
     }
     expect(dispatched).toBe(false)
   })
@@ -187,13 +187,13 @@ describe("CheckpointControl.previewRestore", () => {
       conflicts: Array.from({ length: 1_025 }, () => ({ path: "x".repeat(4_096), kind: "UNSAFE_PATH" })),
     }
     const result = await Effect.runPromise(
-      Effect.either(
+      Effect.result(
         previewRestore(scope, {
           checkpointID: "checkpoint-1", mode: "FULL", selectedPaths: [],
         }).pipe(Effect.provide(supervisor(response))),
       ),
     )
-    expect(result._tag).toBe("Left")
-    if (result._tag === "Left") expect(result.left).toBeInstanceOf(CheckpointControlError)
+    expect(result._tag).toBe("Failure")
+    if (result._tag === "Failure") expect(result.failure).toBeInstanceOf(CheckpointControlError)
   })
 })

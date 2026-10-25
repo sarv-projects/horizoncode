@@ -1,4 +1,4 @@
-import { Agent } from "@/agent/agent"
+import { Agent, isAgentProfileDirectoryError } from "@/agent/agent"
 import { Command } from "@/command"
 import { InstanceRef } from "@/effect/instance-ref"
 import { InstanceBootstrap } from "@/project/bootstrap"
@@ -52,9 +52,9 @@ export interface Interface {
   readonly variants: (snapshot: Snapshot, model: DefaultModel) => ModelVariants | undefined
 }
 
-export class Loader extends Context.Service<Loader, LoaderInterface>()("@opencode/ACPDirectoryLoader") {}
+export class Loader extends Context.Service<Loader, LoaderInterface>()("@horizoncode/ACPDirectoryLoader") {}
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/ACPDirectory") {}
+export class Service extends Context.Service<Service, Interface>()("@horizoncode/ACPDirectory") {}
 
 export const modelKey = (model: DefaultModel) => `${model.providerID}/${model.modelID}`
 
@@ -151,6 +151,17 @@ export const loaderLayer = Layer.effect(
         })
           .pipe(Effect.provideService(InstanceRef, ctx))
           .pipe(Effect.catchTag("SessionSupervisorError", supervisorUnavailable))
+          .pipe(
+            Effect.catchIf(isAgentProfileDirectoryError, (error) =>
+              Effect.fail(
+                new ACPError.ServiceFailureError({
+                  safeMessage: error.message,
+                  service: "agent-profiles",
+                  errorName: "AgentProfileDirectoryError",
+                }),
+              ),
+            ),
+          )
       }),
     })
   }),

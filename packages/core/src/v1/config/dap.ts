@@ -25,3 +25,5 @@ export const Entry = Schema.Union([
 
 export const Info = Schema.Union([Schema.Boolean, Schema.Record(Schema.String, Entry)])
 export type Info = Schema.Schema.Type<typeof Info>
+
+export * as ConfigDAPV1 from "./dap"

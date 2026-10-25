@@ -1,6 +1,7 @@
 import { describe, expect } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { FSUtil } from "@opencode-ai/core/fs-util"
+import { ModelsDev } from "@opencode-ai/core/models-dev"
 import { Effect, Layer } from "effect"
 import path from "path"
 import { resetDatabase } from "../fixture/db"
@@ -16,7 +17,17 @@ const testStateLayer = Layer.effectDiscard(
   ),
 )
 
-const it = testEffect(Layer.mergeAll(testStateLayer, LayerNode.compile(FSUtil.node), httpApiLayer))
+// This provider-projection test uses the shared production HTTP route graph
+// (`httpapi-layer`), which now resolves the real guarded WebSearchRuntime from
+// the app LayerNode group; no test here invokes web search.
+const it = testEffect(
+  Layer.mergeAll(
+    testStateLayer,
+    LayerNode.compile(FSUtil.node),
+    LayerNode.compile(ModelsDev.node),
+    httpApiLayer,
+  ),
+)
 const projectOptions = { config: { formatter: false, lsp: false } }
 const providerID = "test-oauth-parity"
 
@@ -38,6 +49,12 @@ function hasProviderWithFetch(input: unknown, key: "all" | "providers") {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function expectUnavailable(body: string, message: string, service: string) {
+  const value: unknown = JSON.parse(body)
+  if (!isRecord(value)) throw new Error("HTTP error response was not a JSON object")
+  expect(value).toEqual({ _tag: "ServiceUnavailableError", message, service })
 }
 
 function providerList(input: unknown, key: "all" | "providers") {
@@ -213,23 +230,24 @@ describe("provider HttpApi", () => {
         method: 0,
         headers,
       })
-      const denied = {
-        name: "ProviderAuthValidationFailed",
-        data: {
-          field: "credentialStorage",
-          message: "Secure credential storage is unavailable; provider sign-in is disabled",
-        },
-      }
-      expect(api.status).toBe(400)
-      expect(JSON.parse(api.body)).toEqual(denied)
+      expect(api.status).toBe(503)
+      expectUnavailable(
+        api.body,
+        "Provider credential entry is unavailable until Guarded SecretBroker input is integrated",
+        "provider-credential-write",
+      )
 
       const oauth = yield* requestAuthorize({
         providerID,
         method: 1,
         headers,
       })
-      expect(oauth.status).toBe(400)
-      expect(JSON.parse(oauth.body)).toEqual(denied)
+      expect(oauth.status).toBe(503)
+      expectUnavailable(
+        oauth.body,
+        "Provider credential entry is unavailable until Guarded SecretBroker input is integrated",
+        "provider-credential-write",
+      )
     }),
     projectOptions,
     30000,
@@ -246,14 +264,12 @@ describe("provider HttpApi", () => {
         headers: { "x-opencode-directory": directory, "content-type": "application/json" },
       })
 
-      expect(response.status).toBe(400)
-      expect(JSON.parse(response.body)).toEqual({
-        name: "ProviderAuthValidationFailed",
-        data: {
-          field: "credentialStorage",
-          message: "Secure credential storage is unavailable; provider sign-in is disabled",
-        },
-      })
+      expect(response.status).toBe(503)
+      expectUnavailable(
+        response.body,
+        "Provider credential entry is unavailable until Guarded SecretBroker input is integrated",
+        "provider-credential-write",
+      )
     }),
     projectOptions,
     30000,
@@ -269,14 +285,12 @@ describe("provider HttpApi", () => {
         headers: { "x-opencode-directory": directory, "content-type": "application/json" },
       })
 
-      expect(response.status).toBe(400)
-      expect(JSON.parse(response.body)).toEqual({
-        name: "ProviderAuthValidationFailed",
-        data: {
-          field: "credentialStorage",
-          message: "Secure credential storage is unavailable; provider sign-in is disabled",
-        },
-      })
+      expect(response.status).toBe(503)
+      expectUnavailable(
+        response.body,
+        "Provider credential callbacks are unavailable until Guarded SecretBroker input is integrated",
+        "provider-credential-write",
+      )
     }),
     projectOptions,
     30000,
@@ -301,9 +315,23 @@ describe("provider HttpApi", () => {
 
       const providerBody = yield* providerResponse.json
       const configBody = yield* configResponse.json
+      if (!isRecord(providerBody)) throw new Error("provider endpoint returned a non-object JSON body")
+      const snapshot = yield* ModelsDev.Service.use((service) => service.getSnapshot())
       expect(hasProviderWithFetch(providerBody, "all")).toBe(false)
       expect(hasProviderWithFetch(configBody, "providers")).toBe(false)
       expect(hasNonZeroModelCost(providerBody, "all", "google")).toBe(true)
+      const catalogSnapshot = providerBody.catalogSnapshot
+      if (!isRecord(catalogSnapshot)) throw new Error("provider endpoint omitted its catalog snapshot")
+      expect(catalogSnapshot).toEqual({
+        source: snapshot.source,
+        freshness: snapshot.freshness,
+        ...(snapshot.updatedAt === undefined ? {} : { updatedAt: snapshot.updatedAt }),
+        ...(snapshot.provenance?.sourceURL === undefined ? {} : { sourceURL: snapshot.provenance.sourceURL }),
+        ...(snapshot.provenance?.retrievedAt === undefined ? {} : { retrievedAt: snapshot.provenance.retrievedAt }),
+        ...(snapshot.provenance?.contentDigest === undefined ? {} : { contentDigest: snapshot.provenance.contentDigest }),
+        ...(snapshot.provenance?.license === undefined ? {} : { license: snapshot.provenance.license }),
+        ...(snapshot.provenance?.attribution === undefined ? {} : { attribution: snapshot.provenance.attribution }),
+      })
       expect(providerByID(configBody, "providers", "google")).toBeUndefined()
     }),
     { ...projectOptions, init: writeFunctionOptionsPlugin },

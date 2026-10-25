@@ -26,6 +26,24 @@ type ListedModelLimits = {
 
 const tokenLimitFormatter = new Intl.NumberFormat("en-US")
 
+export function catalogProvenanceLabel(snapshot: {
+  source: string
+  freshness: string
+  sourceURL?: string
+  retrievedAt?: number
+  contentDigest?: string
+  license?: string
+  attribution?: string
+}) {
+  const parts = [`Catalog ${snapshot.source}/${snapshot.freshness}`]
+  if (snapshot.sourceURL) parts.push(snapshot.sourceURL)
+  if (snapshot.retrievedAt !== undefined) parts.push(`retrieved ${new Date(snapshot.retrievedAt).toISOString()}`)
+  if (snapshot.contentDigest) parts.push(`digest ${snapshot.contentDigest.slice(0, 12)}`)
+  if (snapshot.license) parts.push(`license ${snapshot.license}`)
+  if (snapshot.attribution) parts.push(snapshot.attribution)
+  return parts.join(" · ")
+}
+
 function tokenLimit(value: number | undefined) {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
     ? tokenLimitFormatter.format(value)
@@ -141,7 +159,7 @@ export function DialogModel(props: { providerID?: string }) {
               cost: model.cost,
               capabilities: model.capabilities,
               limits: model.limit,
-            })} · Catalog metadata ${sync.data.provider_next.catalogSnapshot.source}/${sync.data.provider_next.catalogSnapshot.freshness}`,
+            })} · ${catalogProvenanceLabel(sync.data.provider_next.catalogSnapshot)}`,
             onSelect: () => {
               onSelect(provider.id, model.id)
             },
@@ -202,7 +220,7 @@ export function DialogModel(props: { providerID?: string }) {
               cost: info.cost,
               capabilities: info.capabilities,
               limits: info.limit,
-            })} · Catalog metadata ${sync.data.provider_next.catalogSnapshot.source}/${sync.data.provider_next.catalogSnapshot.freshness}`,
+            })} · ${catalogProvenanceLabel(sync.data.provider_next.catalogSnapshot)}`,
             onSelect() {
               onSelect(provider.id, model)
             },

@@ -37,6 +37,10 @@ export const HostProcessRefV1 = Schema.Struct({
 }).annotate({ identifier: "HostProcessRefV1" })
 export type HostProcessRefV1 = typeof HostProcessRefV1.Type
 
+/** Exact current `ManagedAttemptScopeV1` key set (see
+ * `@/session/managed-control` and kernel `ManagedAttemptScopeV1::from_value`).
+ * HostKernel projections always carry the provider-request pin trio and the
+ * leased worktree target; a shorter scope is rejected fail-closed. */
 const MANAGED_SCOPE_KEYS = [
   "goalID",
   "runID",
@@ -44,12 +48,29 @@ const MANAGED_SCOPE_KEYS = [
   "attemptID",
   "ownerEpoch",
   "expectedManagedRevision",
+  "requestSequence",
+  "requestID",
+  "contextSelectionDigest",
   "locationID",
   "sessionID",
   "workspaceRevision",
   "effectiveMaxTokens",
   "remainingTokens",
   "delegationBindingDigest",
+  "permissionScopeDigest",
+  "worktreeTarget",
+] as const
+
+/** Exact `ManagedWorktreeTargetV1` keys; the Rust decoder rejects any other set. */
+const WORKTREE_TARGET_KEYS = [
+  "worktreeID",
+  "worktreeBaseRevision",
+  "worktreePoolRevision",
+  "locationID",
+  "workspaceID",
+  "workspaceRef",
+  "canonicalRoot",
+  "workspaceRevision",
 ] as const
 
 const DIRECT_SCOPE_KEYS = [
@@ -100,6 +121,60 @@ function digest(value: unknown, name: string): asserts value is string {
   }
 }
 
+/** Exact HostKernel `ManagedWorktreeTargetV1` wire shape; the Rust decoder
+ * rejects any other key set, so Core must too. Text fields follow the Rust
+ * `text()` rule (non-empty, no NUL) rather than the tighter ID rule. */
+function validateManagedWorktreeTarget(input: unknown): void {
+  if (!record(input) || !exactKeys(input, WORKTREE_TARGET_KEYS)) {
+    throw new TypeError("managed process scope worktreeTarget must use the exact ManagedWorktreeTargetV1 fields")
+  }
+  for (const field of ["worktreeID", "locationID", "workspaceID", "workspaceRef", "canonicalRoot"] as const) {
+    const value = input[field]
+    if (typeof value !== "string" || value.length === 0 || value.includes("\0")) {
+      throw new TypeError(`managed process scope worktreeTarget ${field} is required`)
+    }
+  }
+  if (typeof input.worktreeBaseRevision !== "string" || input.worktreeBaseRevision.length === 0 ||
+      input.worktreeBaseRevision.includes("\0")) {
+    throw new TypeError("managed process scope worktreeTarget worktreeBaseRevision is required")
+  }
+  u64(input.worktreePoolRevision, "managed process scope worktreeTarget worktreePoolRevision", true)
+  if (typeof input.workspaceRevision !== "string" || input.workspaceRevision.length === 0 ||
+      input.workspaceRevision.includes("\0")) {
+    throw new TypeError("managed process scope worktreeTarget workspaceRevision is required")
+  }
+}
+
+/** Exact `ManagedAttemptScopeV1` field contract, independent of the process
+ * scope it is attached to. Shared by HostKernel process-scope admission and
+ * trusted launch-profile resolution so the two boundaries can never drift into
+ * different key sets; a shorter or malformed scope is rejected fail-closed. */
+export function validateManagedAttemptScopeFieldsV1(attempt: ManagedAttemptScopeV1): void {
+  if (!record(attempt) || !exactKeys(attempt, MANAGED_SCOPE_KEYS)) {
+    throw new TypeError("managed process scope must use the exact ManagedAttemptScopeV1 fields")
+  }
+  for (const field of ["goalID", "runID", "taskID", "attemptID", "locationID", "sessionID"] as const) {
+    if (!nonEmptyID(attempt[field])) throw new TypeError(`managed process scope ${field} is required`)
+  }
+  u64(attempt.ownerEpoch, "managed process scope ownerEpoch", false)
+  u64(attempt.expectedManagedRevision, "managed process scope expectedManagedRevision", true)
+  u64(attempt.effectiveMaxTokens, "managed process scope effectiveMaxTokens", false)
+  u64(attempt.remainingTokens, "managed process scope remainingTokens", false)
+  if (BigInt(attempt.remainingTokens) > BigInt(attempt.effectiveMaxTokens)) {
+    throw new TypeError("managed process scope token remainder exceeds its effective budget")
+  }
+  digest(attempt.workspaceRevision, "managed process scope workspaceRevision")
+  digest(attempt.delegationBindingDigest, "managed process scope delegationBindingDigest")
+  digest(attempt.permissionScopeDigest, "managed process scope permissionScopeDigest")
+  digest(attempt.contextSelectionDigest, "managed process scope contextSelectionDigest")
+  if (!nonEmptyID(attempt.requestID)) throw new TypeError("managed process scope requestID is required")
+  u64(attempt.requestSequence, "managed process scope requestSequence", false)
+  if (BigInt(attempt.requestSequence) > 1024n) {
+    throw new TypeError("managed process scope requestSequence must be within the HostKernel window")
+  }
+  validateManagedWorktreeTarget(attempt.worktreeTarget)
+}
+
 export function validateHostProcessScope(input: HostProcessScopeV1): HostProcessScopeV1 {
   if (!nonEmptyID(input.sessionID)) throw new TypeError("process scope sessionID is required")
   if (!nonEmptyID(input.locationID)) throw new TypeError("process scope locationID is required")
@@ -112,21 +187,7 @@ export function validateHostProcessScope(input: HostProcessScopeV1): HostProcess
     throw new TypeError("a process request cannot claim both managed and direct Attempt authority")
   }
   if (attempt !== undefined) {
-    if (!record(attempt) || !exactKeys(attempt, MANAGED_SCOPE_KEYS)) {
-      throw new TypeError("managed process scope must use the exact ManagedAttemptScopeV1 fields")
-    }
-    for (const field of ["goalID", "runID", "taskID", "attemptID", "locationID", "sessionID"] as const) {
-      if (!nonEmptyID(attempt[field])) throw new TypeError(`managed process scope ${field} is required`)
-    }
-    u64(attempt.ownerEpoch, "managed process scope ownerEpoch", false)
-    u64(attempt.expectedManagedRevision, "managed process scope expectedManagedRevision", true)
-    u64(attempt.effectiveMaxTokens, "managed process scope effectiveMaxTokens", false)
-    u64(attempt.remainingTokens, "managed process scope remainingTokens", false)
-    if (BigInt(attempt.remainingTokens) > BigInt(attempt.effectiveMaxTokens)) {
-      throw new TypeError("managed process scope token remainder exceeds its effective budget")
-    }
-    digest(attempt.workspaceRevision, "managed process scope workspaceRevision")
-    digest(attempt.delegationBindingDigest, "managed process scope delegationBindingDigest")
+    validateManagedAttemptScopeFieldsV1(attempt)
     if (
       attempt.sessionID !== input.sessionID ||
       attempt.locationID !== input.locationID ||

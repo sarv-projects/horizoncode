@@ -25,6 +25,7 @@ import { useSDK } from "./sdk"
 import { useEvent } from "./event"
 import { createSignal, onCleanup, onMount } from "solid-js"
 import { createUiEventMux } from "./ui-event-mux"
+import { inspectUtf8ByteLength } from "../util/utf8"
 
 type LocationData = {
   agent?: AgentV2Info[]
@@ -64,6 +65,29 @@ export type SessionQuestionRequest =
   | { lane: "legacy"; request: QuestionRequest }
   | { lane: "v2"; request: QuestionV2Request }
 
+/**
+ * The generated V2 union omits this server-emitted ephemeral projection even
+ * though its payload exists in the SDK/schema. Keep a local exact shape: the
+ * ledger is display-only and never authorizes or blocks a provider send.
+ */
+type SessionContextLedgerEventV2 = {
+  id: string
+  metadata?: { [key: string]: unknown }
+  type: "session.context_ledger"
+  location?: LocationRef
+  data: {
+    timestamp: number
+    sessionID: string
+    requestID: string
+    sourceRevision: string
+    sourceGeneration: string
+    ledger: Record<string, unknown>
+    ledgerDigest: string
+  }
+}
+
+type TuiEvent = V2Event | SessionContextLedgerEventV2
+
 type StreamDeltaEvent =
   | Extract<V2Event, { type: "session.next.text.delta" }>
   | Extract<V2Event, { type: "session.next.reasoning.delta" }>
@@ -94,7 +118,7 @@ function replaySeedKey(sessionID: string, partID: string, sourceGeneration: stri
   return JSON.stringify([sessionID, partID, sourceGeneration])
 }
 
-function streamDelta(event: V2Event): StreamDelta | undefined {
+function streamDelta(event: TuiEvent): StreamDelta | undefined {
   if ("durable" in event && event.durable) return
   switch (event.type) {
     case "session.next.text.delta":
@@ -136,7 +160,7 @@ function streamDelta(event: V2Event): StreamDelta | undefined {
   }
 }
 
-function eventSessionID(event: V2Event) {
+function eventSessionID(event: TuiEvent) {
   const data = event.data
   if (typeof data !== "object" || data === null) return
   const sessionID = (data as { sessionID?: unknown }).sessionID
@@ -246,7 +270,7 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
       },
     }
 
-    function handleEvent(event: V2Event) {
+    function handleEvent(event: TuiEvent) {
       switch (event.type) {
         case "catalog.updated":
           void Promise.all([
@@ -305,6 +329,8 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
           const activeGeneration = latestPromptGeneration.get(data.sessionID)
           const previous = store.session.contextLedger[data.sessionID]
           const priorSequence = previous?.requestSequence
+          const previousRevision = previous?.sourceRevision
+          const sameGeneration = previous !== undefined && previous.sourceGeneration === data.sourceGeneration
           const selection = typeof ledger === "object" && ledger !== null && !Array.isArray(ledger)
             ? (ledger as Record<string, unknown>).contextSelection
             : undefined
@@ -335,11 +361,11 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
             (ledger.lane === "managed" && (typeof requestSequence !== "string" || !isU64(requestSequence) ||
               typeof selectionRecord.attemptID !== "string")) ||
             (requestSequence !== undefined && (typeof requestSequence !== "string" || !isU64(requestSequence))) ||
-            (previous?.sourceGeneration === data.sourceGeneration && compareDecimal(data.sourceRevision, previous.sourceRevision) < 0) ||
-            (previous?.sourceGeneration === data.sourceGeneration && data.sourceRevision === previous.sourceRevision &&
+            (sameGeneration && previousRevision !== undefined && compareDecimal(data.sourceRevision, previousRevision) < 0) ||
+            (sameGeneration && previousRevision !== undefined && data.sourceRevision === previousRevision &&
               (ledger.lane === "managed"
                 ? (typeof requestSequence !== "string" || (priorSequence !== undefined && compareDecimal(requestSequence, priorSequence) <= 0))
-                : (previous.requestID === data.requestID || data.timestamp < previous.timestamp))) ||
+                : (previous!.requestID === data.requestID || data.timestamp < previous!.timestamp))) ||
             ledgerBytes > 48 * 1024
           ) break
           setStore("session", "contextLedger", data.sessionID, {
@@ -456,11 +482,11 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
             const match = message.latestText(message.assistant(draft, event.data.assistantMessageID), event.data.textID)
             if (match) match.text = event.data.text
           })
-          const partID = streamKey("session.next.text.delta", event.data.assistantMessageID, event.data.textID)
+          const endedPartID = streamKey("session.next.text.delta", event.data.assistantMessageID, event.data.textID)
           if (event.data.sourceGeneration && event.data.sequence !== undefined) {
-            streamMux.seedStream({ sessionID: event.data.sessionID, partID, sourceGeneration: event.data.sourceGeneration, sequence: event.data.sequence })
-            streamMux.sealStream({ sessionID: event.data.sessionID, partID, sourceGeneration: event.data.sourceGeneration, sequence: event.data.sequence })
-          } else streamMux.forgetStream(event.data.sessionID, partID)
+            streamMux.seedStream({ sessionID: event.data.sessionID, partID: endedPartID, sourceGeneration: event.data.sourceGeneration, sequence: event.data.sequence })
+            streamMux.sealStream({ sessionID: event.data.sessionID, partID: endedPartID, sourceGeneration: event.data.sourceGeneration, sequence: event.data.sequence })
+          } else streamMux.forgetStream(event.data.sessionID, endedPartID)
           break
         case "session.next.tool.input.started":
           message.update(event.data.sessionID, (draft) => {
@@ -489,11 +515,11 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
             const match = message.latestTool(message.assistant(draft, event.data.assistantMessageID), event.data.callID)
             if (match?.state.status === "pending") match.state.input = event.data.text
           })
-          const partID = streamKey("session.next.tool.input.delta", event.data.assistantMessageID, event.data.callID)
+          const inputEndedPartID = streamKey("session.next.tool.input.delta", event.data.assistantMessageID, event.data.callID)
           if (event.data.sourceGeneration && event.data.sequence !== undefined) {
-            streamMux.seedStream({ sessionID: event.data.sessionID, partID, sourceGeneration: event.data.sourceGeneration, sequence: event.data.sequence })
-            streamMux.sealStream({ sessionID: event.data.sessionID, partID, sourceGeneration: event.data.sourceGeneration, sequence: event.data.sequence })
-          } else streamMux.forgetStream(event.data.sessionID, partID)
+            streamMux.seedStream({ sessionID: event.data.sessionID, partID: inputEndedPartID, sourceGeneration: event.data.sourceGeneration, sequence: event.data.sequence })
+            streamMux.sealStream({ sessionID: event.data.sessionID, partID: inputEndedPartID, sourceGeneration: event.data.sourceGeneration, sequence: event.data.sequence })
+          } else streamMux.forgetStream(event.data.sessionID, inputEndedPartID)
           break
         case "session.next.tool.called":
           message.update(event.data.sessionID, (draft) => {
@@ -586,11 +612,11 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
               if (event.data.providerMetadata !== undefined) match.providerMetadata = event.data.providerMetadata
             }
           })
-          const partID = streamKey("session.next.reasoning.delta", event.data.assistantMessageID, event.data.reasoningID)
+          const reasoningEndedPartID = streamKey("session.next.reasoning.delta", event.data.assistantMessageID, event.data.reasoningID)
           if (event.data.sourceGeneration && event.data.sequence !== undefined) {
-            streamMux.seedStream({ sessionID: event.data.sessionID, partID, sourceGeneration: event.data.sourceGeneration, sequence: event.data.sequence })
-            streamMux.sealStream({ sessionID: event.data.sessionID, partID, sourceGeneration: event.data.sourceGeneration, sequence: event.data.sequence })
-          } else streamMux.forgetStream(event.data.sessionID, partID)
+            streamMux.seedStream({ sessionID: event.data.sessionID, partID: reasoningEndedPartID, sourceGeneration: event.data.sourceGeneration, sequence: event.data.sequence })
+            streamMux.sealStream({ sessionID: event.data.sessionID, partID: reasoningEndedPartID, sourceGeneration: event.data.sourceGeneration, sequence: event.data.sequence })
+          } else streamMux.forgetStream(event.data.sessionID, reasoningEndedPartID)
           break
         case "session.next.retried":
         case "session.next.compaction.started":
@@ -860,7 +886,7 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
       sessionID: (event) => event.sessionID,
       key: (event) => event.key,
       merge: (previous, next) => ({ ...previous, text: previous.text + next.text }),
-      size: (event) => new TextEncoder().encode(event.text).byteLength,
+      size: (event) => inspectUtf8ByteLength(event.text, 64 * 1024).byteLength,
       sizeProvenance: "measured",
       cursor: (event) => {
         if (
@@ -965,7 +991,7 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
           ...event,
           data: event.properties,
           location: { directory: metadata.directory, workspaceID: metadata.workspace },
-        } as V2Event
+        } as TuiEvent
         const delta = streamDelta(mapped)
         if (delta) {
           if (!rememberDeltaEventID(mapped.id)) return

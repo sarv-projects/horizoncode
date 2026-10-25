@@ -145,22 +145,20 @@ Exit: user intent is independently verified on final integrated revision.
 
 ## 10.12 Post-V1 / separately gated
 
-Web and desktop applications, browser/desktop interaction, remote/cloud continuation, shared live collaboration, autonomous self-improvement, broad voice/media features, hosted image generation, external ACP/VIS/DEP journeys, and full product identity/build migration remain post-V1 unless a later §17 decision promotes them.
+Web and desktop applications, browser/desktop interaction, remote/cloud continuation, shared live collaboration, autonomous self-improvement, broad voice/media features, hosted image generation and external ACP/VIS/DEP journeys remain post-V1 unless a later §17 decision promotes them. **Amended 2026-10-23 by §17.7:** the complete HorizonCode-owned product identity migration is V1 work; the pinned OpenCode tree, genuine vendor/package/API identifiers, legal attribution and compatibility facts remain protected.
 
-**Targeted adapted-code identity during V1:** newly adapted first-party modules, packages, folders and configuration identifiers use HorizonCode naming as they are created. Preserve upstream notices and genuine dependency names. This does not mean a wholesale rename of the pinned OpenCode-derived source or a public package migration during V1.
+**First-party identity during V1:** new and existing HorizonCode-owned package/build/typecheck/generated/user-facing identities migrate to HorizonCode in staged, tested steps under §17.7 and §20.17. Keep upstream source provenance and genuine vendor/API names unchanged; distinguish product-facing identity from source compatibility and legal attribution. This does not authorize rewriting the pinned `opencode/` snapshot or public distribution.
 
 ### Deferred engineering TODO — after V1 implementation and verification only
 
-Do **not** start the broad migration during P1–P9 or use it to block core V1 delivery. (Amended 2026-10-18: the user directed the narrow CLI naming refactor — launcher, installer, user-visible command names — to begin during V1; both `horizoncode` and `hzcode` start the same CLI.) Once V1 is implemented, its end-to-end acceptance gates pass, and there is a stable release/build baseline:
+The 2026-10-23 §17.7 amendment promotes HorizonCode-owned identity migration into V1. The following *build-architecture optimization* remains a post-V1 TODO and must not be confused with the required naming migration:
 
-- [ ] Refactor the TypeScript workspace/build/typecheck/test architecture for HorizonCode ownership: package boundaries, project references, build graph, caching and incremental checks; retain full CI/release verification while making routine development checks faster.
-- [ ] Migrate public npm/package, executable, product, generated-client, artifact, script, environment/config, CI/workflow, release and displayed identifiers consistently to **HorizonCode** (public npm and canonical user-facing CLI name: `horizoncode`; `hzcode` is the shipped short command for the same entrypoint). Preserve private upstream workspace package IDs and genuine OpenCode dependency names until a separately tested migration. Remove obsolete OpenCode *product branding* where owned by HorizonCode.
-- [ ] Where feasible, migrate first-party TypeScript package scopes, internal import aliases and generated declarations away from `@opencode-ai/*` behind compatibility shims, in a versioned, staged manner; never blindly rename genuine upstream dependencies or break the pinned-source hydration model.
+- [ ] Refactor the TypeScript workspace/build/typecheck/test architecture for incremental performance: project references, build graph, caching and focused checks; retain full CI/release verification. This performance modernization remains after V1 unless separately promoted.
 - [ ] Preserve upstream OpenCode copyright/license/notices and source attribution even if HorizonCode's product-facing identity is unified. Never falsify authorship or strip legally required metadata.
 - [ ] Test Linux/Windows clean install, executable launch, full builds, monorepo and affected-package typechecks, tests/Guard flows, update/migration, npm publish dry-run/tarball contents, backward compatibility and rollback at the final integrated revision.
 - [ ] Remove temporary compatibility paths only after their replacement is validated and migration is documented. Avoid unnecessary duplicate builds, disk growth or concurrent heavy compilers.
 
-**Exit:** supported HorizonCode-facing naming is consistent, no legacy product-name leaks remain outside genuine upstream dependency/license references, development validation is efficient, and clean-install/release tests pass. Treat the global migration as a **deferred post-V1 TODO**; the targeted naming rule for new adapted modules is in force during V1.
+**V1 identity exit:** all HorizonCode-owned product/package/build/typecheck/generated identifiers and first-party non-legal prose follow §17.7; legacy aliases are tested against the same runtime, genuine upstream/vendor/legal/compatibility identifiers are preserved, and `NAME-001..004` pass on the exact candidate. The separate incremental-build architecture optimization remains post-V1; it is not a prerequisite for the naming exit unless required to make the V1 check reproducible.
 
 ## 10.13 Current gate
 

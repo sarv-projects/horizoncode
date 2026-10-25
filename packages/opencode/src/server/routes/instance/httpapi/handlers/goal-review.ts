@@ -46,6 +46,136 @@ export const goalReviewHandlers = HttpApiBuilder.group(InstanceHttpApi, "goalRev
         : undefined
     })
 
+    /** Project managed verification execution statuses onto the route's wire union. */
+    const verificationWireStatus = (
+      status: string,
+    ):
+      | "ABORTED"
+      | "CANCELLED"
+      | "CANCELLING"
+      | "FAILED"
+      | "NEEDS_YOU"
+      | "SUCCEEDED"
+      | "UNKNOWN"
+      | "VERIFYING"
+      | undefined => {
+      const table: Record<string, "ABORTED" | "CANCELLED" | "CANCELLING" | "FAILED" | "NEEDS_YOU" | "SUCCEEDED" | "UNKNOWN" | "VERIFYING"> = {
+        ABORTED: "ABORTED",
+        CANCELLED: "CANCELLED",
+        CANCELLING: "CANCELLING",
+        FAILED: "FAILED",
+        NEEDS_YOU: "NEEDS_YOU",
+        SUCCEEDED: "SUCCEEDED",
+        UNKNOWN: "UNKNOWN",
+        VERIFYING: "VERIFYING",
+        // In-progress settlement is reported as verifying on this route.
+        SETTLING: "VERIFYING",
+      }
+      for (const [key, value] of Object.entries(table)) {
+        if (key === status) return value
+      }
+      return undefined
+    }
+
+    // The public control-plane schema admits only the fixed usage-status
+    // vocabulary and the five canonical metric keys. ManagedControl keeps its
+    // HostKernel projections loose (string) because Rust owns the vocabulary;
+    // the HTTP boundary is where that projection must be proven wire-safe.
+    type UsageStatusWire = "provider-reported" | "measured" | "estimated" | "unknown" | "mixed"
+    type UsageRemainderWire = "KNOWN" | "ESTIMATED" | "UNKNOWN"
+    type UsageAccountingWire = {
+      readonly accountingCursor: string
+      readonly tokenKnownSubtotal: string
+      readonly costKnownSubtotalMicros: string
+      readonly tokenRemainderStatus: UsageRemainderWire
+      readonly costRemainderStatus: UsageRemainderWire
+      readonly usageState: UsageRemainderWire
+      readonly stopReason: "NONE" | "TOKEN_CEILING" | "COST_CEILING" | "USAGE_UNCERTAIN"
+      readonly ceilingDigest: string
+      readonly costStatus: UsageStatusWire
+      readonly metricStatuses: Readonly<Record<"input" | "output" | "reasoning" | "cache.read" | "cache.write", UsageStatusWire>>
+      readonly receiptCount: string
+      readonly receiptChainDigest: string
+    }
+    const usageStatusWire = (value: string): UsageStatusWire | undefined => {
+      switch (value) {
+        case "provider-reported":
+        case "measured":
+        case "estimated":
+        case "unknown":
+        case "mixed":
+          return value
+        default:
+          return undefined
+      }
+    }
+    const usageRemainderWire = (value: string): UsageRemainderWire | undefined => {
+      switch (value) {
+        case "KNOWN":
+        case "ESTIMATED":
+        case "UNKNOWN":
+          return value
+        default:
+          return undefined
+      }
+    }
+    const canonicalDecimal = (value: string) => /^(0|[1-9][0-9]{0,19})$/.test(value) && BigInt(value) <= 0xffff_ffff_ffff_ffffn
+    const blake3Digest = (value: string) => /^blake3:[0-9a-f]{64}$/.test(value)
+    type VerificationUsageAccounting = {
+      readonly accountingCursor: string
+      readonly tokenKnownSubtotal: string
+      readonly costKnownSubtotalMicros: string
+      readonly tokenRemainderStatus: string
+      readonly costRemainderStatus: string
+      readonly usageState: string
+      readonly stopReason: string
+      readonly ceilingDigest: string
+      readonly costStatus: string
+      readonly metricStatuses: Readonly<Record<string, string>>
+      readonly receiptCount: string
+      readonly receiptChainDigest: string
+    }
+    const verificationUsageAccountingWire = (
+      value: VerificationUsageAccounting,
+    ): UsageAccountingWire | undefined => {
+      const tokenRemainderStatus = usageRemainderWire(value.tokenRemainderStatus)
+      const costRemainderStatus = usageRemainderWire(value.costRemainderStatus)
+      const usageState = usageRemainderWire(value.usageState)
+      const costStatus = usageStatusWire(value.costStatus)
+      const metricKeys = ["input", "output", "reasoning", "cache.read", "cache.write"] as const
+      if (Object.keys(value.metricStatuses).toSorted().join("\0") !== [...metricKeys].toSorted().join("\0")) return undefined
+      const metrics = metricKeys.map((key) => usageStatusWire(value.metricStatuses[key] ?? ""))
+      if (!tokenRemainderStatus || !costRemainderStatus || !usageState || !costStatus ||
+        metrics.some((status) => status === undefined) ||
+        (value.stopReason !== "NONE" && value.stopReason !== "TOKEN_CEILING" &&
+          value.stopReason !== "COST_CEILING" && value.stopReason !== "USAGE_UNCERTAIN") ||
+        !canonicalDecimal(value.accountingCursor) || !canonicalDecimal(value.tokenKnownSubtotal) ||
+        !canonicalDecimal(value.costKnownSubtotalMicros) || !canonicalDecimal(value.receiptCount) ||
+        !blake3Digest(value.ceilingDigest) || !blake3Digest(value.receiptChainDigest)) {
+        return undefined
+      }
+      return {
+        accountingCursor: value.accountingCursor,
+        tokenKnownSubtotal: value.tokenKnownSubtotal,
+        costKnownSubtotalMicros: value.costKnownSubtotalMicros,
+        tokenRemainderStatus,
+        costRemainderStatus,
+        usageState,
+        stopReason: value.stopReason,
+        ceilingDigest: value.ceilingDigest,
+        costStatus,
+        metricStatuses: {
+          input: metrics[0]!,
+          output: metrics[1]!,
+          reasoning: metrics[2]!,
+          "cache.read": metrics[3]!,
+          "cache.write": metrics[4]!,
+        },
+        receiptCount: value.receiptCount,
+        receiptChainDigest: value.receiptChainDigest,
+      }
+    }
+
     const failure = (
       error: ManagedControlError,
     ):
@@ -312,9 +442,51 @@ export const goalReviewHandlers = HttpApiBuilder.group(InstanceHttpApi, "goalRev
         Effect.provideService(SessionSupervisor.Service, supervisor),
         // The principal is supplied only from the authenticated HTTP middleware projection.
         Effect.provideService(TrustedPrincipalContext, TrustedPrincipalContext.of({ principal: trustedPrincipal })),
-        Effect.mapError(failure),
+        // Verification can surface a HostKernel/session supervisor failure next to
+        // the managed-control failure; both become route-level Api errors here.
+        Effect.mapError((error) =>
+          error._tag === "SessionSupervisorError"
+            ? new ApiGoalReviewUnavailableError({
+                name: "GoalReviewUnavailableError",
+                data: { code: error.hostCode ?? "managed_unavailable", reason: error.reason },
+              })
+            : failure(error)),
       )
-      return { schemaVersion: 1 as const, ...result }
+      const status = verificationWireStatus(result.status)
+      if (status === undefined) {
+        return yield* Effect.fail(
+          new ApiGoalReviewError({
+            name: "GoalReviewError",
+            data: {
+              code: "managed_protocol",
+              reason: `verification status "${String(result.status)}" is not representable on this route`,
+            },
+          }),
+        )
+      }
+      const usageAccounting = "usageAccounting" in result ? result.usageAccounting : undefined
+      const usageAccountingWire = usageAccounting === undefined
+        ? undefined
+        : verificationUsageAccountingWire(usageAccounting)
+      if (usageAccounting !== undefined && usageAccountingWire === undefined) {
+        return yield* Effect.fail(
+          new ApiGoalReviewError({
+            name: "GoalReviewError",
+            data: {
+              code: "managed_protocol",
+              reason: "verification usage accounting is not representable on this route",
+            },
+          }),
+        )
+      }
+      // The spread keeps the authenticated verifier projection, while status
+      // and usageAccounting are replaced by their proven wire-safe forms.
+      return {
+        schemaVersion: 1 as const,
+        ...result,
+        status,
+        usageAccounting: usageAccountingWire,
+      }
     })
 
     const goalRunControl = Effect.fn("GoalReviewHttpApi.goalRunControl")(function* (ctx: {
@@ -499,7 +671,11 @@ export const goalReviewHandlers = HttpApiBuilder.group(InstanceHttpApi, "goalRev
         }))
       }
       const rootSession = yield* sessions.get(ctx.payload.sessionID as SessionID).pipe(
-        Effect.mapError(() => new ManagedControlError({ operation: "start_planned_run", code: "managed_not_found", reason: "selected root Session does not exist" })),
+        Effect.mapError(() =>
+          new ApiGoalReviewNotFoundError({
+            name: "GoalReviewNotFoundError",
+            data: { code: "managed_not_found", reason: "selected root Session does not exist" },
+          })),
       )
       if (rootSession.parentID || rootSession.projectID !== scope.projectRef || rootSession.workspaceID !== scope.workspaceRef) {
         return yield* Effect.fail(new ApiGoalReviewNotFoundError({
@@ -594,7 +770,13 @@ export const goalReviewHandlers = HttpApiBuilder.group(InstanceHttpApi, "goalRev
       // Complete Core's local projection only after Rust confirms the atomic
       // Run+SessionLink transition. A crash between the Rust append and this
       // metadata write is safely repairable by the exact start replay.
-      const persistedRoot = yield* sessions.get(rootSession.id)
+      const persistedRoot = yield* sessions.get(rootSession.id).pipe(
+        Effect.mapError(() =>
+          new ApiGoalReviewUnavailableError({
+            name: "GoalReviewUnavailableError",
+            data: { code: "managed_unavailable", reason: "confirmed root Session could not be re-read for the durable binding check" },
+          })),
+      )
       const persistedBinding = persistedRoot.metadata?.horizonManagedRoot
       if (persistedBinding !== undefined && (typeof persistedBinding !== "object" || persistedBinding === null ||
         Array.isArray(persistedBinding) || persistedBinding.goalID !== ctx.payload.goalID ||
@@ -663,8 +845,8 @@ export const goalReviewHandlers = HttpApiBuilder.group(InstanceHttpApi, "goalRev
           rootSessionID: rootSession.id,
           locationID,
           expectedRevision: result.revision,
-        }).pipe(Effect.either)
-        dispatchStatus = dispatch._tag === "Left" ? "UNAVAILABLE" : dispatch.right.status
+        }).pipe(Effect.result)
+        dispatchStatus = dispatch._tag === "Failure" ? "UNAVAILABLE" : dispatch.success.status
       }
       return { schemaVersion: 1 as const, ...result, sessionID: rootSession.id, dispatchStatus }
     })

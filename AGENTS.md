@@ -288,9 +288,13 @@ Before reporting a phase verified (or a material phase checkpoint as partial), s
 - current disk/build-output sanity check if the phase/work was build-heavy;
 - which phase acceptance criteria remain open, and which dependent phases are newly unblocked.
 
-## Deferred TODO — ONLY after V1 is built and verified
+## HorizonCode first-party identity migration (V1, user decision 2026-10-23)
 
-Do not spend V1 implementation time on a broad branding/build rewrite. **New adapted first-party modules** must use HorizonCode naming as they are added, while preserving legal notices and genuine upstream dependency names. Both `horizoncode` (canonical) and `hzcode` (short command) start the same CLI entrypoint and runtime; never add a second runtime or implementation for either name. The narrow launcher/installer/user-visible CLI naming refactor is current V1 scope per the 2026-10-18 user direction. Once V1 end-to-end acceptance, regressions, Guard and release baseline all pass, execute the **Post-V1 HorizonCode-only TypeScript/build/naming refactor** specified in `arch_V1/10-DELIVERY.md §10.12` and the final deferred gate in the operative implementation plan. That migration must retain `horizoncode` as the canonical CLI command (with `hzcode` as its shipped short command) while delivering faster incremental TypeScript build/typecheck/test workflows, complete CI/release validation, clean installs and migration tests. Preserve legitimate upstream `@opencode-ai/*` dependencies and required legal attributions until tested migration; never mass-rename them mid-V1. The broad migration (package scopes, internal imports, generated clients, build metadata) remains a **validated staged migration**, not a mid-V1 mass rename.
+Complete the HorizonCode-owned product/package/build/typecheck/generated-identifier and first-party non-legal prose migration during V1 in staged, tested dependency layers, following `arch_V1/17` §17.7, `arch_V1/20` §20.17, `arch_V1/32` NAME-001..004 and `arch_V1/10` §10.12. This supersedes the earlier post-V1 timing for identity migration only. Keep `horizoncode` canonical and `hzcode` its short command for the same entrypoint/runtime; no duplicate implementation/runtime.
+
+Before each layer, map workspace dependencies, callers, generated clients and lockfile edges; use TDD/focused checks, full HorizonCode typecheck at the final stage, and preserve rollback/compatibility until validated. Never rewrite the pinned `opencode/` snapshot. Preserve genuine upstream/vendor package/API identifiers, source pins, legal attribution and factual compatibility/config paths; do not falsify authorship, strip notices or treat identity work as a license grant. Keep distribution, paid calls and remote publication under their separate authorization gates.
+
+The separate TypeScript project-reference/build-graph/cache optimization for faster routine checks remains post-V1 unless promoted by a distinct user decision. It must not be conflated with the V1 naming migration or weaken final CI/release validation.
 
 ## Safety/repository operations
 

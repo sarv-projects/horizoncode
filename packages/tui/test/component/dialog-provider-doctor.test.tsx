@@ -36,10 +36,10 @@ async function waitFor(fn: () => boolean, timeout = 2000) {
 async function waitForFrame(app: { renderOnce: () => Promise<unknown>; captureCharFrame: () => string }) {
   const start = Date.now()
   let frame = ""
-  while (!frame.includes("Provider Doctor")) {
+  while (!frame.includes("Full tier")) {
     await app.renderOnce()
     frame = app.captureCharFrame().replace(/\s+/g, " ")
-    if (Date.now() > start + 2000) throw new Error(`timed out waiting for Provider Doctor frame: ${frame}`)
+    if (Date.now() > start + 2000) throw new Error(`timed out waiting for complete Provider Doctor frame: ${frame}`)
     await Bun.sleep(10)
   }
   return frame
@@ -117,14 +117,12 @@ test("offline Doctor TUI entry makes no provider or credential request", async (
     expect(frame).toContain("Provider Doctor")
     expect(frame).toContain("Offline")
     expect(frame).toContain("Configuration: UNKNOWN")
-    expect(frame).toContain("Local catalog snapshot: UNKNOWN")
-    expect(frame).toContain("Credentials: NOT_READ")
-    expect(frame).toContain("Remote entitlement, quota, and service: UNCHECKED")
-    expect(frame).toContain("Provider requests: 0")
-    expect(frame).toContain("Offline tier: available · zero provider requests · credentials not read · no charge.")
-    expect(frame).toContain("Catalog tier: unavailable · requires an authenticated network grant and Guarded dispatch; no requests are sent.")
-    expect(frame).toContain("Full tier: unavailable · selected-model inference may incur cost; it requires a separate network grant, explicit spend consent, and Guarded dispatch. No provider fallback is used.")
-    expect(frame).toContain("Consent alone cannot enable a probe.")
+    expect(frame).toContain("Local catalog snapshot: UNKNOWN · Credentials: NOT_READ")
+    expect(frame).toContain("Remote: UNCHECKED · Requests: 0 · Cost: NOT_APPLICABLE")
+    expect(frame).toContain("Offline tier: available · 0 requests · no credentials · no charge; diagnostics never contact a provider.")
+    expect(frame).toContain("Catalog tier: unavailable · Guarded network access is required. No requests are sent.")
+    expect(frame).toContain("Full tier: unavailable · may incur cost; requires separate network grant and explicit spend consent.")
+    expect(frame).toContain("Guarded dispatch only. No provider fallback. Consent alone cannot enable a probe.")
     expect(requests.filter((request) => request.endsWith("/provider/doctor/offline")).length).toBe(1)
     expect(requests.some((request) => request.includes("/auth/") || request.includes("/oauth/"))).toBe(false)
   } finally {

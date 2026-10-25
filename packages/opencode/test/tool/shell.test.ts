@@ -8,12 +8,14 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { makeGlobalNode } from "@opencode-ai/core/effect/app-node"
 import { Database } from "@opencode-ai/core/database/database"
 import { Location } from "@opencode-ai/core/location"
+import type { EventV2 } from "@opencode-ai/core/event"
 import { buildLocationServiceMap, LocationServiceMap, locationServiceMapNode } from "@opencode-ai/core/location-services"
 import { Pty } from "@opencode-ai/core/pty"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import {
   GuardApprovalRequested,
   SessionSupervisor,
+  type Interface as SessionSupervisorInterface,
   type GuardApprovalRequest,
 } from "@opencode-ai/core/session/supervisor"
 import { TrustedPrincipalContext } from "@opencode-ai/core/trusted-principal"
@@ -244,8 +246,8 @@ const withLiveShell = liveRustAvailable ? liveIt.live : liveIt.live.skip
 const liveTurnContextDigest = `sha256:${"a".repeat(64)}`
 
 const liveApprovalResponder = (
-  events: EventV2Bridge.Interface,
-  supervisor: SessionSupervisor.Interface,
+  events: EventV2.Interface,
+  supervisor: SessionSupervisorInterface,
   decision: "allow_once" | "deny",
 ) =>
   Effect.gen(function* () {
@@ -386,4 +388,3 @@ describe("tool.shell live Guard admission", () => {
     { timeout: 120_000 },
   )
 })
-

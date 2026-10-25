@@ -183,7 +183,7 @@ export const RepoIntelPatchFenceV1 = Schema.Struct({
     (ref.fileDigest !== undefined) !== (ref.expectedAbsent === true)
       ? undefined
       : "RepoIntel source ref must name existing content or an expected-absent destination",
-  ))).check(Schema.isBetween({ minimum: 1, maximum: 64 })),
+  ))).check(Schema.isMinLength(1)).check(Schema.isMaxLength(64)),
 })
   .annotate({ identifier: "Horizon.RepoIntelligenceV1.RepoIntelPatchFenceV1" })
   .check(Schema.makeFilter((fence) => {
@@ -210,7 +210,7 @@ export const RepoStructureQueryV1 = Schema.Struct({
       ? undefined
       : "structure selector exceeds the combined symbol and node reference limit",
   )),
-  cursor: optional(RepoStructureCursorLeaseRefV1),
+  cursor: optional(Schema.String.check(Schema.isNonEmpty()).check(Schema.isMaxLength(MAX_STRUCTURE_CURSOR_BYTES))),
   maxNodes: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: MAX_STRUCTURE_NODES })),
   maxBytes: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: MAX_STRUCTURE_BYTES })),
   maxDepth: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: MAX_STRUCTURE_DEPTH })),
@@ -232,9 +232,9 @@ export const RepoStructureQueryV1 = Schema.Struct({
 
 export interface RepoStructureCoverageV1 extends Schema.Schema.Type<typeof RepoStructureCoverageV1> {}
 export const RepoStructureCoverageV1 = Schema.Struct({
-  files: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 4_096 })),
-  nodes: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: MAX_STRUCTURE_NODES })),
-  bytes: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: MAX_STRUCTURE_BYTES })),
+    files: Composition.UInt64Decimal,
+    nodes: Composition.UInt64Decimal,
+    bytes: Composition.UInt64Decimal,
 }).annotate({ identifier: "Horizon.RepoIntelligenceV1.RepoStructureCoverageV1" })
 
 export interface RepoStructureFallbackV1 extends Schema.Schema.Type<typeof RepoStructureFallbackV1> {}
@@ -271,7 +271,7 @@ export const RepoStructurePageV1 = Schema.Struct({
   coverage: RepoStructureCoverageV1,
   nodes: Schema.Array(RepoNodeRefV1).check(Schema.isMaxLength(MAX_STRUCTURE_NODES)),
   fallback: optional(RepoStructureFallbackV1),
-  nextCursor: optional(RepoStructureCursorLeaseRefV1),
+  nextCursor: optional(Schema.String.check(Schema.isNonEmpty()).check(Schema.isMaxLength(MAX_STRUCTURE_CURSOR_BYTES))),
 })
   .annotate({ identifier: "Horizon.RepoIntelligenceV1.RepoStructurePageV1" })
   .check(
@@ -290,9 +290,6 @@ export const RepoStructurePageV1 = Schema.Struct({
       }
       if (page.status === "UNAVAILABLE" && page.nodes.length !== 0) {
         return "unavailable pages must not contain node references"
-      }
-      if (page.coverage.nodes !== page.nodes.length) {
-        return "page node coverage must equal the returned node count"
       }
       if (page.sourceKind === "none" && page.status !== "UNAVAILABLE") {
         return "pages without a source must be unavailable"
@@ -341,8 +338,8 @@ export const RepoGenerationPinV1 = Schema.Struct({
   sourceRevision: Composition.Digest,
   sourceKind: Schema.Literals(["symbol_index", "parser", "lexical", "lsp", "none", "unknown"]),
   coverage: Schema.Struct({
-    files: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 4_096 })),
-    bytes: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 67_108_864 })),
+    files: Composition.UInt64Decimal,
+    bytes: Composition.UInt64Decimal,
   }),
   expiresAt: Composition.Timestamp,
 }).annotate({ identifier: "Horizon.RepoIntelligenceV1.RepoGenerationPinV1" })
@@ -447,10 +444,10 @@ export const RepoDocumentReadResponseV1 = Schema.Struct({
 }).annotate({ identifier: "Horizon.RepoIntelligenceV1.RepoDocumentReadResponseV1" })
 
 /** Digest algorithm used by HostKernel for the exact UTF-8 document bytes. */
-export const repoDocumentContentDigest = (text: string): string => {
+export const repoDocumentContentDigest = (text: string): Composition.Digest => {
   const digest = blake3(new TextEncoder().encode(text))
   const hex = Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("")
-  return `blake3:${hex}`
+  return Composition.Digest.make(`blake3:${hex}`)
 }
 
 /** Must match Guard::location_principal_binding for response-pin comparison. */

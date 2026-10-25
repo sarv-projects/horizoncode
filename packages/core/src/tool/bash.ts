@@ -5,6 +5,7 @@ import { Effect, Layer, Schema } from "effect"
 import { makeLocationNode } from "../effect/app-node"
 import { PositiveInt } from "../schema"
 import { Pty } from "../pty"
+import { TrustedPrincipalContext } from "../trusted-principal"
 import { ToolRegistry } from "./registry"
 import { Tool } from "./tool"
 import { Tools } from "./tools"
@@ -49,11 +50,14 @@ const Output = Schema.Struct({
  * Terminal execution has no process-spawn fallback. This leaf can run only with
  * the exact HostKernel-normalized call and one-use lease admitted by the runner.
  */
-const layer = Layer.effectDiscard(
-  Effect.gen(function* () {
-    const tools = yield* Tools.Service
-    const pty = yield* Pty.Service
-    const guardedBash = Tool.make({
+type TerminalRunner = Pick<Pty.Interface, "runTool">
+
+/**
+ * Builds the guarded terminal leaf over a terminal runner. Extracted so the
+ * fail-closed trusted-principal contract at this execution boundary can be
+ * exercised directly without assembling the full Location node graph.
+ */
+export const makeTool = (pty: TerminalRunner) => Tool.make({
       description: "Run a bounded shell command through HorizonCode Guard, or invoke a trusted workspace build/test profile.",
       capability: { id: "terminal.run", effectClass: "effect" },
       input: Input,
@@ -73,13 +77,23 @@ const layer = Layer.effectDiscard(
             !lease || !lease.effectID || !/^blake3:[0-9a-f]{64}$/.test(lease.capabilityLeaseDigest) || !locationRef) {
           return yield* Effect.fail(new ToolFailure({ message: "Terminal execution requires the exact Guard-admitted call, lease, and Location" }))
         }
+        // Fail closed without the runner-captured authenticated principal: the
+        // leaf itself binds it into TrustedPrincipalContext for the guarded
+        // terminal dispatch instead of depending on ambient context, so the
+        // execution boundary never runs unattributed.
+        const principal = context.trustedPrincipal
+        if (!principal)
+          return yield* Effect.fail(new ToolFailure({ message: "Terminal execution requires an authenticated trusted principal" }))
         const ptyResult = yield* pty.runTool({
           sessionID: context.sessionID,
           locationRef,
           lease,
           call,
           ...(context.workspaceCommandProfile ? { workspaceCommandProfile: context.workspaceCommandProfile } : {}),
-        }).pipe(Effect.mapError(() => new ToolFailure({ message: "Guarded terminal execution failed" })))
+        }).pipe(
+          Effect.provideService(TrustedPrincipalContext, { principal }),
+          Effect.mapError(() => new ToolFailure({ message: "Guarded terminal execution failed" })),
+        )
         if (ptyResult.status === "unknown" || ptyResult.status === "cancelled") {
           return yield* Effect.fail(new ToolFailure({ message: `Terminal outcome is ${ptyResult.status}; inspect the durable receipt before retrying` }))
         }
@@ -95,7 +109,12 @@ const layer = Layer.effectDiscard(
           warnings,
         }
       }),
-    })
+})
+
+const layer = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const tools = yield* Tools.Service
+    const guardedBash = makeTool(yield* Pty.Service)
     markBuiltinBash(guardedBash)
     yield* tools.register({ [name]: guardedBash }).pipe(Effect.orDie)
   }),

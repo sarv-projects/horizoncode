@@ -9,6 +9,7 @@ import {
   type LLMRequest,
 } from "@opencode-ai/llm"
 import { AgentV2 } from "@opencode-ai/core/agent"
+import { Config as CoreConfig } from "@opencode-ai/core/config"
 import { Database } from "@opencode-ai/core/database/database"
 import { makeGlobalNode } from "@opencode-ai/core/effect/app-node"
 import { LayerNodePlatform } from "@opencode-ai/core/effect/app-node-platform"
@@ -17,12 +18,15 @@ import { Location } from "@opencode-ai/core/location"
 import { SessionSupervisor, SessionSupervisorError } from "@opencode-ai/core/session/supervisor"
 import { SessionRunnerModel } from "@opencode-ai/core/session/runner/model"
 import { AbsolutePath } from "@opencode-ai/core/schema"
+import { Snapshot } from "@opencode-ai/core/snapshot"
+import type * as AgentProfileV2 from "@opencode-ai/schema/agent-profile-v2"
 import { Permission } from "@opencode-ai/schema/permission"
-import { Config, Deferred, Effect, Layer, Queue, Schema, Stream } from "effect"
+import { Config, ConfigProvider, Deferred, Effect, Layer, Queue, Schema, Stream } from "effect"
 import { HttpClient, HttpClientRequest, HttpClientResponse, HttpRouter, HttpServer } from "effect/unstable/http"
 import { layerWebSocketConstructorGlobal } from "effect/unstable/socket/Socket"
 import { OpenAIChat } from "@opencode-ai/llm/protocols/openai-chat"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
+import { ServerAuth } from "../../src/server/auth"
 import { disposeAllInstances, tmpdirScoped } from "../fixture/fixture"
 import { testEffect, pollWithTimeout } from "../lib/effect"
 import { mkdtempSync, rmSync } from "node:fs"
@@ -38,18 +42,115 @@ const testDatabase = makeGlobalNode({
 })
 
 const model = Model.make({ id: "question-live-model", provider: "question-live", route: OpenAIChat.route })
-const modelLayer = SessionRunnerModel.layerWith(() => Effect.succeed(model))
+// Trusted catalog route projection consumed by the runner's direct-provider
+// admission. The mock transport pins and dispatches through the real journal
+// exactly like the production pinned provider fetch (PINNED -> DISPATCHING),
+// and Step.Ended settlement commits SETTLED in the same transaction.
+const directRoute = {
+  routeID: `llm_${"a".repeat(64)}`,
+  routeRevision: `llm_${"a".repeat(64)}`,
+  endpointRevision: `blake3:${"e".repeat(64)}`,
+  endpointBase: "https://api.opencode.ai/v1",
+}
+const transportRequestDigest = `blake3:${"b".repeat(64)}`
+const modelLayer = Layer.succeed(
+  SessionRunnerModel.Service,
+  SessionRunnerModel.Service.of({
+    resolve: () => Effect.succeed(model),
+    resolveSelection: () =>
+      Effect.succeed({
+        model,
+        directProviderRoute: {
+          providerID: model.provider,
+          modelID: model.id,
+          ...directRoute,
+        },
+      }),
+  }),
+)
 let scriptedResponses: LLMEventType[][] = []
 const llmRequests: LLMRequest[] = []
+type MockExecutorContext = {
+  readonly directContext: {
+    readonly pin: (input: {
+      readonly endpointRevision: string
+      readonly transportRequestDigest: string
+    }) => Effect.Effect<{
+      readonly beginDispatch: () => Effect.Effect<{
+        readonly state: "DISPATCHING"
+        readonly pinDigest: string
+        readonly transportRequestDigest: string
+      }>
+    }>
+  }
+}
 const clientLayer = Layer.succeed(
   LLMClient.Service,
   LLMClient.Service.of({
     prepare: () => Effect.die("unused"),
-    stream: ((request: LLMRequest) => {
+    stream: ((request: LLMRequest, executorContext?: MockExecutorContext) => {
       llmRequests.push(request)
-      return Stream.fromIterable(scriptedResponses.shift() ?? [])
+      const events = Stream.fromIterable(scriptedResponses.shift() ?? [])
+      // A scripted provider response is a real transport dispatch: journal the
+      // exact direct-provider request before the stream can emit.
+      return Stream.unwrap(
+        executorContext!.directContext
+          .pin({ endpointRevision: directRoute.endpointRevision, transportRequestDigest })
+          .pipe(
+            Effect.flatMap((binding) => binding.beginDispatch()),
+            Effect.as(events),
+          ),
+      )
     }) as unknown as LLMClientShape["stream"],
     generate: () => Effect.die("unused"),
+  }),
+)
+
+// The direct-provider admission requires the canonical primary AgentProfileV2
+// pin for the exact catalog-selected model and a trusted host permission scope.
+const primaryProfile = {
+  schemaVersion: 2,
+  profileId: "user.question-live",
+  revision: 1,
+  name: "Question live",
+  description: "Question live test profile",
+  source: "user",
+  roles: ["main"],
+  purpose: "Exercise the question live path",
+  whenToUse: "In tests",
+  whenNotToUse: "Never",
+  adapter: { kind: "native", adapterId: "horizon.native" },
+  model: { providerId: model.provider, modelId: model.id },
+  harness: "native-minimal",
+  reasoning: "low",
+  variants: [],
+  instructions: { extraRefs: [], maxCompiledTokens: 4096 },
+  tools: [],
+  allowedSkillIds: [],
+  deniedSkillIds: [],
+  allowedMcpServers: [],
+  allowedMcpToolPatterns: [],
+  allowedSubagentIds: [],
+  deniedSubagentIds: [],
+  pathRules: [],
+  context: { isolation: "fresh", allowImages: false, allowDocuments: false, allowArtifacts: false },
+  inputMode: "read_only",
+  memoryPolicy: "none",
+  isolation: "read_only",
+  lifecycleHooks: [],
+  capabilityCeiling: [],
+  limits: { maxDepth: 1, maxActiveChildren: 1, maxTotalChildren: 1, maxPendingMessages: 1, maxMessageBytes: 4096 },
+  maxParallelChildren: 1,
+  enabled: true,
+} as unknown as AgentProfileV2.AgentProfileDefinitionV2
+const agentProfilesLayer = Layer.succeed(
+  CoreConfig.AgentProfileService,
+  CoreConfig.AgentProfileService.of({
+    agentProfiles: () => Effect.die("unused"),
+    agentProfileSelectors: () => Effect.die("unused"),
+    agentProfile: () => Effect.die("unused"),
+    agentProfileSelector: () => Effect.die("unused"),
+    primaryAgentProfile: () => Effect.sync(() => primaryProfile),
   }),
 )
 
@@ -64,10 +165,21 @@ const agentLayer = Layer.mock(AgentV2.Service, {
   resolve: () => Effect.succeed(buildAgent),
 })
 
+const permissionPolicyDigest = `sha256:${"0".repeat(64)}`
+const permissionScopeDigest = `blake3:${"1".repeat(64)}`
 // The question path has no host effects; satisfy the local Session runner's
-// observer-readiness handshake without starting a second Rust process here.
+// observer-readiness handshake and direct provider permission scope without
+// starting a second Rust process here.
 const observerLayer = Layer.mock(SessionSupervisor.Service, {
   watchSession: (_sessionID, _source, _workspaceRoot, _turnComplete, ready) => Deferred.succeed(ready, undefined),
+  directProviderPermissionScope: (input: { readonly sessionID: string }) =>
+    Effect.succeed({
+      sessionID: input.sessionID,
+      locationID: "loc_direct",
+      ownerEpoch: "1",
+      permissionScopeDigest,
+      policyDigest: permissionPolicyDigest,
+    }),
 })
 
 const replacements = [
@@ -76,16 +188,29 @@ const replacements = [
   [SessionRunnerModel.node, modelLayer],
   [AgentV2.node, agentLayer],
   [SessionSupervisor.node, observerLayer],
+  [CoreConfig.agentProfileNode, agentProfilesLayer],
+  [Snapshot.node, Snapshot.noopLayer],
 ] as const
 
-const servedRoutes: Layer.Layer<
-  never,
-  Config.ConfigError | SessionSupervisorError,
-  HttpServer.HttpServer
-> = HttpRouter.serve(
-  HttpApiApp.createRoutes(undefined, replacements),
-  { disableListenLog: true, disableLogger: true },
-)
+// The production app LayerNode group exposes `WebSearchRuntime.node`, so the
+// committed HttpApi route tree builds the real guarded service with no
+// boundary stub. This test's prompt turn is answered entirely by the question
+// tool, so websearch is never invoked here; an accidental invocation would use
+// the real Guard/HostKernel-gated runtime rather than a test double.
+
+// The live question path is a security/authorization acceptance: a foreign
+// Session must be denied and question events are only visible to their
+// authenticated owner. Configured server auth is therefore part of the tested
+// topology, so every request carries the same authenticated principal.
+const serverPassword = "question-live-secret"
+const authorization = ServerAuth.header({ username: "opencode", password: serverPassword }) ?? ""
+const authLayer = ConfigProvider.layer(ConfigProvider.fromUnknown({ OPENCODE_SERVER_PASSWORD: serverPassword }))
+
+const servedRoutes: Layer.Layer<never, Config.ConfigError | SessionSupervisorError, HttpServer.HttpServer> =
+  HttpRouter.serve(
+    HttpApiApp.createRoutes(undefined, replacements).pipe(Layer.provide(authLayer)),
+    { disableListenLog: true, disableLogger: true },
+  )
 const httpApiLayer = servedRoutes.pipe(
   Layer.provide(layerWebSocketConstructorGlobal),
   Layer.provideMerge(NodeHttpServer.layerTest),
@@ -103,6 +228,7 @@ const Event = Schema.Struct({
 function request(route: string, directory: string, init: RequestInit = {}) {
   const headers = new Headers(init.headers)
   headers.set("x-opencode-directory", directory)
+  headers.set("authorization", authorization)
   if (init.body !== undefined && !headers.has("content-type")) headers.set("content-type", "application/json")
   const url = new URL(route, "http://localhost")
   return HttpClientRequest.fromWeb(new Request(url, { ...init, headers })).pipe(
@@ -164,6 +290,7 @@ function toolCall(
     header: string
     options: ReadonlyArray<{ label: string; description: string }>
     multiple?: boolean
+    custom?: boolean
   }>,
 ) {
   return [

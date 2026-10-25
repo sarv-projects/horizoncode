@@ -100,6 +100,8 @@ export function update(adapter: Adapter, event: SessionEvent.Event) {
 
   return Effect.gen(function* () {
     yield* SessionEvent.All.match(event, {
+      // Ephemeral UI projection: never materializes a Session message row.
+      "session.context_ledger": () => Effect.void,
       "session.next.agent.switched": (event) => {
         return adapter.appendMessage(
           SessionMessage.AgentSwitched.make({
@@ -157,6 +159,9 @@ export function update(adapter: Adapter, event: SessionEvent.Event) {
           }),
         )
       },
+      // Imported history reuses the canonical append writer, never the live
+      // prompt/stream event family, so it cannot dispatch or grant authority.
+      "session.import.restored": (event) => adapter.appendMessage(event.data.message),
       "session.next.shell.started": (event) => {
         return adapter.appendMessage(
           SessionMessage.Shell.make({

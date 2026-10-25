@@ -1,5 +1,81 @@
 # HorizonCode V1 implementation and release tracker
 
+## 2026-10-24 — post-compaction owner wave continuation
+
+All whole-phase owners returned PARTIAL and were resumed. Newest phase-report continuations are the
+evidence authority; no phase is VERIFIED and no effect gate opened.
+
+- **P1:** existing effects-host 10/10, cross-capability unit 1/1, Core denials 13/0 retained. P2
+  released Cargo; P1 now holds the sole slot for the queued `effects_host_process` PreparedBatch
+  rerun and scoped P1-vs-P2 failure triage. Both terminal readiness flags remain false.
+- **P2:** P1-10 `prepare_tool_batch_read` focused 2/2; managed-control **41/0 (225 expectations)**.
+  Report continuation 28 now specifies the HostRun binding/projection split and the exact Core read
+  DTO, but it is prose only: no compiled HostRun DTO, binding persistence, reconcile route, or real
+  authenticated positive fixture exists.
+- **P3/P4:** no further independently safe production gap was proven; authenticated HostKernel
+  query/cursor/recovery, trusted document buffer, Guarded patch, P8 quotas and DAP namespace/ptrace
+  still gate real acceptance. Navigation and language-tool effects stay closed.
+- **P5:** search/CodeMode group **116/0 (362 expectations)**; focused catalog/lane cases **2/0**.
+  P7's Core CodeMode callback remains fail-closed; helper build/install and CM-001..012 unrun.
+- **P6:** current-wave offline Core **27/0** and OpenCode **28/0**; settings capability-chip consumer
+  absent (P5/P7); credentialed SecretBroker/Doctor and provider E2E remain gated.
+- **P7:** cold AppRuntime `InstanceRef not provided` remains unexplained RED; no production
+  workaround. Parent review confirmed the P1-10 caller requires threading a typed read-admission
+  through the shared `ExecuteInput`/`Materialization.settle` boundary into the read leaf, not merely
+  decorating results; P7 must get parent sign-off before that shared-contract edit.
+- **P8:** RC0 attestation now requires exact per-Session PID/start-time generation and a configured
+  trusted source; **93/93 RC0**, **40/40 evaluator**, Python compile green. Production trusted-source
+  allowlist is empty; signature verification, JC-RES-012.K/L and real workloads remain open.
+- **P9:** SDK-next export fixed test-first (**1/2 expectations**); client typecheck/build green. Full
+  SDK boundary is **4/1** because the installed workspace link is stale; offline install remains
+  blocked by uncached `@noble/hashes@2.2.0`. Release readiness **79/79**, runtime identity **2/57**.
+
+Git remains untouched (mixed tree, 17 commits ahead of `origin/main`, no staged paths). V1 remains
+**PARTIAL / NOT VERIFIED / NOT RELEASED**.
+
+## 2026-10-24 — parent continuation (activity progress, selector projection, read-batch context)
+
+Implemented and focused-tested three bounded gaps: §31.22 activity-card fidelity plus redacted
+`Reasoning · 1.2s` rendering (TUI **9/0, 73 expectations**; TUI typecheck **0**), Task selector
+projection that advertises only immutable `AgentProfileV2` selectors and explains when none are
+configured (new test **2/0**; registry **13/0**), and the `effects.v2/prepare_tool_batch_read`
+private `repo_read` allowlist in Core `supervisor.ts` (new test **3/0**; Core typecheck **0**).
+A P3 RepoIntel decimal-coverage conversion closed the remaining Core type diagnostics (focused
+**2/0**). Effect gates are unchanged: direct child turns/effects, follow-up/resume, managed Task
+dispatch, and background-by-default remain unavailable. P7 AppRuntime, P2 HostRun reconciliation,
+P8 trusted measurements, the P7 TypeScript read caller, provider E2E, candidate/legal/signing,
+and final integrated acceptance remain open. V1 is **PARTIAL / NOT VERIFIED / NOT RELEASED**.
+
+## 2026-10-23 — current continuation (provider source + product artifact naming)
+
+Provider-source decision and startup refresh are recorded in `arch_V1/17`, `20`, `42`, and P6's
+acceptance row in `32`; code is present in `packages/core/src/plugin/models-dev.ts` with plugin tests
+3/3 and Models.dev tests 3/3. The parent P9 continuation aligned public package bins, the build
+artifact, release candidate discovery/audit, Nix and Linux container entrypoint to `horizoncode` while
+preserving the private OpenCode-derived workspace identity and one compatibility `opencode` command.
+The compiled product user-agent now names HorizonCode. The release readiness suite passes 78/78;
+Markdown audit 0 blockers and convergence 1300/0. Exact-candidate build/install,
+Nix evaluation, integrated full typecheck/Cargo, all P1–P8 acceptance and free-model E2E remain open.
+P1/P2/P7 are the current whole-phase agents; P6 returned PHASE_PARTIAL and is queued for resume;
+P9 source work is parent-owned in this continuation. The startup refresh now passes `force:true`;
+the strengthened plugin+catalog test run passes 6/6 with 33 expectations, including failed-refresh
+last-good cache preservation.
+This is only the product executable/artifact-name stage of the user-directed HorizonCode rename;
+the broader Horizon-owned package metadata, imports, generated/build/typecheck identity and first-party
+non-legal product prose migration remains unfinished and must be tracked as a separate staged pass
+after P7 releases its package/typecheck input and P6's remaining provider files are resumed/closed. The private `opencode` package
+ID and `@opencode-ai/*` imports are not yet renamed in this stage. Source-only release audit remains
+BLOCKED and observes a stale old ignored dist artifact; release gate has 19 blockers, and prepare-build
+dry-run is DRY_RUN_ONLY. Overlay has 75 hidden new test/scratch files (0 hidden_changed, 0 stale
+unignore), preserved pending P6/P7 ownership.
+Read-only identity dependency map: `packages/opencode/package.json` remains a private `opencode`
+workspace package and `packages/web/package.json` has `opencode: workspace:*` in `bun.lock`; the
+workspace also contains many `@opencode-ai/*` package scopes. Classify genuine upstream API/tarball
+IDs (notably the vendored `@opencode-ai/client`) and vendor auth packages before staged scope/import
+renames. No manifest or lockfile edit is safe until P6/P7 release their active typecheck inputs;
+then assign one exclusive identity-migration owner for the coupled package/web/lockfile/import change.
+V1 is PARTIAL / NOT VERIFIED / NOT RELEASED.
+
 ## Design audit — 2026-10-22 (implementation hold; docs-only pass)
 
 | Item | Status |
@@ -889,7 +965,7 @@ Acceptance: query the selected server's actual provider/model list; authenticate
 - Enforcement is server-side in the hosted Console/Zen gateway (closed source). Live-captured 2026-10-17 via local TLS capture of our own test client (artifacts in `/tmp/opencode/`): the official keyless request sends `Authorization: Bearer public` — the provider's own anonymous key, set by the official plugin as `apiKey: "public"` (`repo_take/opencode/packages/core/src/plugin/provider/opencode.ts:343`) — plus `x-opencode-client`, `x-opencode-project`, `x-opencode-session`, `x-opencode-session-id`, `x-session-affinity`/`X-Session-Id`, and `User-Agent: opencode/latest/2.0.31/cli`. The official runtime is Bun v1.4.2 (744846f84) — identical to the local `bun` build.
 - Empirical acceptance predicates (replay bisection; `403 FreeTierError` = rejected, `429/200` = accepted, `426` = upgrade-required): the `x-opencode-*` header set is required (absent → 400); `Authorization` is not required once headers + body pass. The **`User-Agent` must carry a version-like `opencode/<version>` token** (`opencode/local` and any `local`-version form → 403; low versions → 426; `opencode/1.18.35`-class → accepted; the ai-sdk suffix is harmless). Tool-less flows additionally need a ≥ ~970-character verbatim chunk of an allowlisted official prompt in the system message (title prompt verified; the fork's inherited V1 title prompt passes); agent flows need ≥ 1 tool matching the official registry (name + description OR name + parameters) — the fork's full primary request passes unchanged once the UA is fixed. Request size, header order, tracing headers, path variant and TLS are not discriminating. These predicates are server-side, closed-source behavior and may change without notice.
 - Rate limit: `429` `{"type":"error","error":{"type":"FreeUsageLimitError",...}}` with `Retry-After ≈ 57000 s` at 08:10 UTC → daily quota exhausted (resets ~00:00 UTC); applies to all free models for the egress IP. Required product behavior: surface it honestly, single attempt, no retry storm.
-- **User decision (2026-10-17, supersedes the prior free-tier prohibition for HorizonCode direct mode):** free models are included under the `opencode` provider. The inherited OpenCode-derived request identity (`x-opencode-*`, `User-Agent: opencode/<version>` — the fork's own native source behavior, unchanged by this workstream) and the provider's own keyless mechanism (`apiKey: "public"`) are retained; the user's explicit determination is that this is not spoofing. No additional fabricated identity, no bulk accounts, and no gate-defeating mechanics beyond the provider's own keyless path; gateway rejections and quota exhaustion are surfaced verbatim. Recorded risks: the gate is composite/closed and may change; the free quota is small (documented 200/day); the ToS "own internal use" language remains noted. Native OpenCode mode remains available unchanged.
+- **User decision (2026-10-17, supersedes the prior free-tier prohibition for HorizonCode direct mode):** free models are included under the `opencode` provider. HorizonCode uses the OpenCode provider SDK and its documented keyless mechanism (`apiKey: "public"`); the adapter's service headers/version behavior are captured in the findings above. Provider eligibility and quota outcomes are surfaced verbatim, with no bulk accounts or quota evasion. Recorded risks: the gate is composite/closed and may change; the free quota is small (documented 200/day); the ToS "own internal use" language remains noted. Native OpenCode mode remains available unchanged.
 - Verification: research citations re-verified by the parent at the exact revisions; live gateway behavior captured from our own test client (`/tmp/opencode/free-model-findings.md`, `raw/req-*.http`, `mitm-requests.log`). The enforcing service is closed source; server-side claims are behavioral evidence, not locally provable invariants.
 
 ## DAP research checkpoint
@@ -955,7 +1031,7 @@ Before any port: record the exact immutable revision, per-file license/notice, d
 
 ## First-party naming rule for adapted work
 
-Newly adapted/copied first-party Horizon modules, folders, package/JSON identifiers, generated names and user-facing labels must use **HorizonCode** identity (including `horizoncode` product naming). The canonical user-facing executable is `horizoncode`, with `hzcode` shipped as its short command for the same entrypoint and runtime (amended 2026-10-18). Do not leave an imported OMP/OpenCode product namespace as the identity of a new Horizon-owned feature. Preserve legally required copyright/license/notices and keep genuine `@opencode-ai/*` or `@opencode/*` upstream dependencies/API names and the private `opencode` workspace package ID while they remain compatibility requirements. This rule applies as each V1 module is adapted; it does not authorize a broad global rename, upstream snapshot rewrite, or breaking package migration. Full build/package identity migration remains separately gated by `arch_V1/10-DELIVERY.md §10.12`.
+**V1 identity migration (user decision 2026-10-23):** migrate HorizonCode-owned package metadata/scopes where validated, internal import aliases, generated names, executable/build/typecheck/workflow identity and first-party non-legal product prose in staged, tested dependency layers (`arch_V1/17` §17.7, `arch_V1/20` §20.17, `arch_V1/32` NAME-001..004). Preserve the pinned OpenCode source snapshot, genuine `@opencode-ai/*`/vendor APIs, source pins, legal attribution and compatibility paths unless a separately tested migration replaces them. `horizoncode` and `hzcode` remain one CLI entrypoint/runtime; this identity change is not a publication/license grant. The separate incremental build-graph/cache performance rewrite remains post-V1 under `arch_V1/10` §10.12.
 
 **Status:** `NOT STARTED` for new adapted modules; no code was copied by creation of this tracker.
 
@@ -1368,7 +1444,7 @@ The prior P6, P7 and P8 owners returned PARTIAL source packages and released slo
 | P1 | Active | Prior fail-closed import/upgrade/Git and effect-origin closures remain in the shared tree. P8 has supplied durable worktree and sample-sequence interfaces. | Implement entire Guard path, authenticated worker/parent resolution, guarded worktree and non-PTY dispatch, shell/Task/origin matrix, ToolBatch/lease/receipt/UNKNOWN/cancel/restart and artifact producer metadata. P1 owns exact HostKernel integration; keep unverified paths disabled. |
 | P2 | Active | Existing reviewer CAS, verifier profile/challenge pipeline, Goal review/proposal route/TUI and typed evidence structures are source-present. | Replace reconciliation-only verifier with real distinct-auth verifier dispatch/captured typed evidence and actual current workspace revision; complete Task Attempt/effect lineage, API/TUI and pause/cancel/restart/UNKNOWN/stale/conflict journey. Coordinate HostKernel call site with P1; never flip readiness constant without real adapter. |
 | P4 | Active | Existing lifecycle/policy files remain partially fail-closed; no parallel launcher introduced. | Implement LSP/DAP/REPL mediation and typed adapter contracts under P1 generic Guard API; production process/evaluation paths unavailable until P1 passes. P1 supplies API signature. |
-| P5 | Partial / queued | Cascade adapters, route settings, ordering, 429 cooldown, provenance and bounded retries are source-present; websearch docs concepts adapted only where compatible with Horizon cost/consent rules. | Assign whole-phase follow-on when slot opens. Built-in+BYO transport composition still depends on P1 Guard+SecretBroker and remains hidden. |
+| P5 | **Active, AppRuntime unblock VERIFIED (2026-10-23)** | `websearch.ts` eager `InstanceState.context` moved into deferred `execute`; `config.test` 0/112→**111/112**, registry 0/12→**12/12**, AppRuntime VERIFIED in-repo, codemode **263/0**+typecheck exit 0, P5 10-file suite **179/0**, 4 new coverage tests (no keyless→paid upgrade, Retry-After cooldown, 429-only failover, bounded-transient-retry rejection). | P5's own scope is closed (0 P5 diagnostics). Remaining: guarded outbound transport + per-route/aggregate receipts + restart/UNKNOWN → **P1/P2**; BYO SecretBroker → **P6**; Settings consent → **P7/parent UI**; CodeMode lifecycle/registry exposure → **P2/P7/P1**; residual permission-key-order config test → **P6**. Gates stay false. |
 | P6/S1 | Partial / queued | Authenticated session-scoped QuestionV2 routes, offline Doctor, truthful provider/model/feature state and SecretBroker lease seam are source-present. | Guarded credential writes/provider binding, full Doctor catalog tiers, integrated FEAT-001..014/provider switching; later authorized free-model 200/coding acceptance. |
 | P7 | Partial / queued | V1/V2 source event ordinals + generations + separate offsets, bounded replay, TUI stream/redaction/analytics and FULL/SAMPLE/FAILED projection code are source-present; combined legacy truncation stays UNKNOWN. | Reconcile generated SDK/source parity and integrate P8 ArtifactStore/checkpoint/automation interfaces plus P1 producer metadata; final TUI journeys later. |
 | P8 | Partial / queued | OwnerLog-bound worktree journal, UNKNOWN/quarantine, bounded RC0 snapshot ingest and sample-sequence-bound measured PSS attribution are source-present. | P1 HostKernel trusted sampler/worker lifecycle/guarded filesystem adapter and P2 verified Attempt are prerequisites; no baseline is trusted yet. |

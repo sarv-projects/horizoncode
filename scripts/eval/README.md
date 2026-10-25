@@ -98,9 +98,11 @@ independent-verifier and RC0 evidence integrations plus explicit live-run author
 The `taskPartitions` field freezes development, smoke, and heldout task IDs and
 rejects overlap within a manifest bundle. Each pair shares one digest-bound
 provider/model, repository image, prompt, oracle, permissions, sampling, tool
-allowlist, and budget configuration. Only the declared baseline-versus-HorizonCode
-harness factor differs. The frozen comparison contract also supports full-versus-one
-predeclared ablation (`delegation`, `repointel`, `codemode`, or `verification_retry`);
+allowlist, and budget configuration. The frozen bundle also declares exactly one
+`modelClass` (`strong`, `small`, or `local`): strong, small, and local models are
+separate frozen bundles with separate run digests, never pooled into one score.
+Only the declared baseline-versus-HorizonCode harness factor differs. The frozen
+comparison contract also supports full-versus-one predeclared ablation (`delegation`, `repointel`, `codemode`, or `verification_retry`);
 reference/candidate roles and the ablated feature are reported explicitly. This is
 manifest/report support only: the executable remains fake-provider-only and cannot
 launch those product configurations.

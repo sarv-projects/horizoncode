@@ -17,7 +17,7 @@
 //! wired into a running service.
 
 use crate::{
-    validate_path, BaseGeneration, Digest, FileSnapshot, GenerationPins, IndexError, OpaquePin,
+    BaseGeneration, Digest, FileSnapshot, GenerationPins, IndexError, OpaquePin, validate_path,
 };
 use crate::{
     MAX_BASE_CONTENT_BYTES, MAX_BASE_FILES, MAX_BASE_PATH_BYTES, MAX_FILE_BYTES, MAX_PATH_BYTES,

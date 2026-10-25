@@ -89,7 +89,7 @@ export function externalEditorLaunchRequestV1(input: {
   readonly sourceRevision: string
   readonly contentDigest: string
 }): ExternalEditorLaunchRequestV1 {
-  return Schema.decodeUnknownSync(ExternalEditorLaunchRequestV1, {
+  return Schema.decodeUnknownSync(ExternalEditorLaunchRequestV1)({
     schemaVersion: 1,
     sessionId: input.sessionId,
     locationId: input.locationId,
@@ -109,7 +109,7 @@ export function externalEditorPromptScratchRequestV1(input: {
   readonly profileRef: ExternalEditorProfileRefV1
   readonly workspaceRevision: string
 }): ExternalEditorLaunchRequestV1 {
-  return Schema.decodeUnknownSync(ExternalEditorLaunchRequestV1, {
+  return Schema.decodeUnknownSync(ExternalEditorLaunchRequestV1)({
     schemaVersion: 1,
     sessionId: input.sessionId,
     locationId: input.locationId,
@@ -166,7 +166,7 @@ export function externalEditorLaunchResultV1(
   value: unknown,
   expectedProfile?: ExternalEditorProfileRefV1,
 ): ExternalEditorLaunchResultV1 {
-  const result = Schema.decodeUnknownSync(ExternalEditorLaunchResultV1, value, { onExcessProperty: "error" })
+  const result = Schema.decodeUnknownSync(ExternalEditorLaunchResultV1)(value, { onExcessProperty: "error" })
   if (result.executionID !== result.processRef.executionID) throw new TypeError("editor outcome process identity differs from execution ID")
   if (expectedProfile && (result.processRef.profileID !== expectedProfile.profileId ||
       result.processRef.profileRevision !== expectedProfile.revision || result.processRef.profileDigest !== expectedProfile.profileDigest)) {

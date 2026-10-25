@@ -21,6 +21,7 @@ task evidence.
 import argparse
 import errno
 import hashlib
+import hmac
 import json
 import os
 import platform
@@ -28,6 +29,7 @@ import subprocess
 import re
 import sys
 import stat
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,6 +43,7 @@ MAX_OUTCOMES_BYTES = 1_048_576
 MAX_SESSION_ID_BYTES = 128
 MAX_CAPTURE_OUTPUT_BYTES = 64 * 1_048_576
 MAX_CAPTURE_FILE_BYTES = 256 * 1_048_576
+MAX_U64 = (1 << 64) - 1
 SCENARIOS = (1, 5, 10, 20)
 REQUIRED_LINUX_METRICS = ("pss_bytes", "rss_bytes", "cpu_ns", "thread_count", "fd_count")
 AGGREGATE_LINUX_METRICS = REQUIRED_LINUX_METRICS + ("private_bytes",)
@@ -64,10 +67,11 @@ def append_capture_output(path, payload):
     if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY") or os.open not in os.supports_dir_fd:
         raise ValueError("safe descriptor-relative RC0 output is unavailable on this platform")
     root_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
-    parent_fd = os.open(root, root_flags)
-    parent_device = os.fstat(parent_fd).st_dev
+    parent_fd = -1
     output_fd = -1
     try:
+        parent_fd = os.open(root, root_flags)
+        parent_device = os.fstat(parent_fd).st_dev
         for component in parts[:-1]:
             child_fd = os.open(component, root_flags, dir_fd=parent_fd)
             child_stat = os.fstat(child_fd)
@@ -106,6 +110,11 @@ def append_capture_output(path, payload):
                 raise OSError(errno.EIO, "short RC0 output append")
             view = view[written:]
         os.fsync(output_fd)
+    except OSError as exc:
+        # Every kernel-level failure (symlink target, replaced descriptor,
+        # cross-device directory, lock conflict) is reported as a typed input
+        # rejection rather than an unhandled host error.
+        raise ValueError(f"RC0 output operation failed safely: {exc.__class__.__name__}") from exc
     finally:
         if output_fd >= 0:
             os.close(output_fd)
@@ -119,12 +128,130 @@ def append_capture_output(path, payload):
 # integrated yet, so this allowlist is empty and no CLI flag or JSON payload can create
 # a valid AttestationV1. Fill it only together with the owning implementation and its
 # independent verification procedure -- never with an invented key or authority.
+#
+# Cryptographic verification status (audited 2026-10-24):
+#   * ``source_signature_digest`` alone is only a payload digest and proves nothing.
+#   * :func:`verify_attestation` additionally requires a *keyed* MAC over the exact
+#     canonical payload and a verifier registered for the exact source. Only
+#     ``hmac-sha256`` is implemented locally (stdlib ``hmac``/``hashlib``).
+#   * A public-key signature (Ed25519/RSA-PSS) is deliberately NOT hand-rolled and no
+#     vetted asymmetric verifier exists in the Python stdlib, so ``ed25519:*`` and any
+#     other algorithm are rejected as unsupported rather than trusted.
+#   * ``hmac-sha256`` is a shared-secret MAC: it proves possession of the local key,
+#     not OS-verified Session ownership. The producer and verifier therefore run as the
+#     same local user, and the key must be provisioned by the P1/P2 owner source that
+#     already performed the authenticated peer/fence and independent-verifier checks.
+#   * No production source, key, or verifier is configured here, so RC0 remains
+#     NOT_ATTESTED and every capture stays ``release_eligible: False``.
 TRUSTED_ATTESTATION_SOURCES = ()
+TRUSTED_ATTESTATION_VERIFIERS = {}
+ATTESTATION_SIGNATURE_ALGORITHMS = ("hmac-sha256",)
+MIN_ATTESTATION_KEY_BYTES = 32
+MAX_ATTESTATION_KEY_BYTES = 64
+ATTESTATION_PAYLOAD_DOMAIN = "horizoncode.rc0.owner-attestation.v1"
 ATTESTATION_BLOCKED_REASON = (
     "no locally verifiable owner-backed attestation source is configured; live Horizon "
     "Session ownership and Run-attested task outcomes must come from the Core/Rust session "
     "owner before any baseline can be release-eligible"
 )
+
+
+def attestation_payload(attestation):
+    """Canonical, domain-separated bytes covering every authority-bearing field.
+
+    The signature and the signature digest are excluded: they authenticate this payload
+    and cannot authenticate themselves. Values are normalized exactly as coverage
+    comparison does (Session/PID/start identity joined by :func:`identity_key`) so a
+    producer and verifier at different revisions cannot silently disagree.
+    """
+    fields = {
+        "domain": ATTESTATION_PAYLOAD_DOMAIN,
+        "source": attestation.source,
+        "commit": attestation.commit,
+        "session_ids": [str(session) for session in attestation.session_ids],
+        "run_ids": [str(run) for run in attestation.run_ids],
+        "session_run_ids": [[str(session), str(run)]
+                            for session, run in attestation.session_run_ids],
+        "session_owner_identities": [[str(session), str(pid), str(start)]
+                                     for session, pid, start in attestation.session_owner_identities],
+        "host_run_receipt_refs": [str(ref) for ref in attestation.host_run_receipt_refs],
+        "independent_verifier_evidence_refs": [
+            str(ref) for ref in attestation.independent_verifier_evidence_refs
+        ],
+        "owner_log_event_digests": [str(digest) for digest in attestation.owner_log_event_digests],
+    }
+    return json.dumps(fields, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=True).encode("ascii")
+
+
+def attestation_signature_digest(payload):
+    """SHA-256 of the canonical payload; binds the struct fields to the signature."""
+    return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
+def sign_attestation(attestation, key):
+    """Produce the local ``hmac-sha256`` MAC over the canonical payload.
+
+    This exists so the owner source and the offline tests can sign with the same exact
+    encoding the verifier checks. It is not an authority: signing requires the configured
+    key, and :func:`attestation_covers` still requires the registered verifier.
+    """
+    return "hmac-sha256:" + hmac.new(bytes(key), attestation_payload(attestation),
+                                     hashlib.sha256).hexdigest()
+
+
+def hmac_sha256_verifier(key):
+    """Verifier for a locally provisioned 32-byte shared secret."""
+    if not isinstance(key, (bytes, bytearray)) or len(key) != 32:
+        raise ValueError("hmac-sha256 attestation keys must be exactly 32 bytes")
+    secret = bytes(key)
+
+    def verify(payload, algorithm, signature):
+        if algorithm != "hmac-sha256":
+            return False
+        expected = hmac.new(secret, payload, hashlib.sha256).hexdigest()
+        return hmac.compare_digest(expected, signature)
+
+    return verify
+
+
+def load_attestation_key(path):
+    """Load bounded, private, repository-contained key material without following links.
+
+    No production key is loaded by this module; tests create ephemeral 32-byte files.
+    """
+    root = Path(__file__).resolve().parents[2]
+    requested = Path(path)
+    if ".." in requested.parts:
+        raise ValueError("attestation key path cannot contain parent traversal")
+    candidate = Path(os.path.abspath(requested if requested.is_absolute() else root / requested))
+    try:
+        candidate.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("attestation key must remain inside the repository") from exc
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise ValueError("no-follow attestation key loading is unavailable on this platform")
+    try:
+        fd = os.open(candidate, flags)
+    except OSError as exc:
+        raise ValueError(
+            f"attestation key cannot be opened safely: {exc.__class__.__name__}") from exc
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or info.st_mode & 0o077):
+            raise ValueError("attestation key must be a private single-link regular file")
+        if not MIN_ATTESTATION_KEY_BYTES <= info.st_size <= MAX_ATTESTATION_KEY_BYTES:
+            raise ValueError("attestation key size is outside the supported range")
+        material = os.read(fd, MAX_ATTESTATION_KEY_BYTES + 1)
+    finally:
+        os.close(fd)
+    if len(material) != info.st_size:
+        raise ValueError("attestation key changed while it was read")
+    if not material or not any(material):
+        raise ValueError("attestation key material must not be all zeros")
+    return material
 
 
 @dataclass(frozen=True)
@@ -133,7 +260,8 @@ class AttestationV1:
 
     Constructible only for sources listed in :data:`TRUSTED_ATTESTATION_SOURCES`. A
     caller-supplied dictionary or CLI value cannot pass this constructor, so fabricated
-    inputs can never make a capture release-eligible.
+    inputs can never make a capture release-eligible. Construction alone is insufficient:
+    :func:`verify_attestation` must also find a registered keyed verifier.
     """
 
     source: str
@@ -141,10 +269,15 @@ class AttestationV1:
     session_ids: tuple
     run_ids: tuple
     session_run_ids: tuple = ()
+    # Exact selected Linux PID/start-time generations, joined to Session by the
+    # trusted source. A Session ID alone is not process ownership proof.
+    session_owner_identities: tuple = ()
     host_run_receipt_refs: tuple = ()
     independent_verifier_evidence_refs: tuple = ()
     owner_log_event_digests: tuple = ()
     source_signature_digest: str = ""
+    # Keyed MAC over :func:`attestation_payload`; only ``hmac-sha256`` is implemented.
+    source_signature: str = ""
 
     def __post_init__(self):
         if self.source not in TRUSTED_ATTESTATION_SOURCES:
@@ -155,12 +288,18 @@ class AttestationV1:
                 or len(self.session_ids) != len(set(self.session_ids))
                 or len(self.run_ids) != len(set(self.run_ids))
                 or len(self.session_run_ids) != len(self.session_ids)
+                or len(self.session_owner_identities) != len(self.session_ids)
                 or len(self.host_run_receipt_refs) != len(self.session_ids)
                 or len(self.independent_verifier_evidence_refs) != len(self.session_ids)
                 or len(self.owner_log_event_digests) != len(self.session_ids)
-                or not re.fullmatch(r"sha256:[0-9a-f]{64}", self.source_signature_digest)):
+                or not re.fullmatch(r"sha256:[0-9a-f]{64}", self.source_signature_digest)
+                or not re.fullmatch(r"hmac-sha256:[0-9a-f]{64}", self.source_signature)):
             raise ValueError("incomplete owner attestation")
         if (set(session for session, _run in self.session_run_ids) != set(self.session_ids)
+                or set(session for session, _pid, _start in self.session_owner_identities)
+                != set(self.session_ids)
+                or any(identity_key({'pid': pid, 'start_identity': start}) is None
+                       for _session, pid, start in self.session_owner_identities)
                 or set(run for _session, run in self.session_run_ids) != set(self.run_ids)
                 or any(not isinstance(ref, str) or not ref or len(ref) > 256 for ref in (
                     *self.host_run_receipt_refs,
@@ -169,22 +308,94 @@ class AttestationV1:
                 or any(not re.fullmatch(r"blake3:[0-9a-f]{64}", digest)
                        for digest in self.owner_log_event_digests)):
             raise ValueError("owner attestation evidence does not cover exact Session/Run and OwnerLog state")
+        if self.source_signature_digest != attestation_signature_digest(attestation_payload(self)):
+            raise ValueError("owner attestation signature digest does not cover its exact fields")
+
+
+def verify_attestation(attestation):
+    """Require a registered keyed verifier to accept the exact signed payload.
+
+    Fail-closed for: untyped/foreign objects, revoked (non-allowlisted) or unverifiable
+    (no registered verifier) sources, payload-digest mismatch, tampered fields, forged or
+    foreign-key MACs, unsupported algorithms (e.g. ``ed25519``), and any verifier error.
+    """
+    if not isinstance(attestation, AttestationV1):
+        return False
+    if attestation.source not in TRUSTED_ATTESTATION_SOURCES:
+        return False
+    verifier = TRUSTED_ATTESTATION_VERIFIERS.get(attestation.source)
+    if verifier is None:
+        return False
+    try:
+        payload = attestation_payload(attestation)
+        if attestation.source_signature_digest != attestation_signature_digest(payload):
+            return False
+        signature = attestation.source_signature
+        if not isinstance(signature, str):
+            return False
+        match = re.fullmatch(r"(?P<algorithm>hmac-sha256):(?P<signature>[0-9a-f]{64})",
+                             signature)
+        if match is None:
+            return False
+        try:
+            result = verifier(payload, match.group("algorithm"), match.group("signature"))
+        except Exception:
+            # A broken or hostile verifier must deny, never crash the capture path
+            # into treating the attestation as accepted.
+            return False
+        return result is True
+    except (AttributeError, TypeError, ValueError):
+        return False
 
 
 def attestation_covers(attestation, selected, commit):
-    """True only for a typed owner attestation covering these sessions at this commit."""
-    if not isinstance(attestation, AttestationV1):
+    """True only for a typed, cryptographically verified attestation covering these sessions."""
+    if not verify_attestation(attestation):
         return False
-    if attestation.commit != commit:
+    if attestation.source not in TRUSTED_ATTESTATION_SOURCES or attestation.commit != commit:
         return False
-    expected = {session for session, _identity in selected}
-    return (
-        set(attestation.session_ids) == expected
-        and {session for session, _run in attestation.session_run_ids} == expected
-        and len(attestation.host_run_receipt_refs) == len(expected)
-        and len(attestation.independent_verifier_evidence_refs) == len(expected)
-        and len(attestation.owner_log_event_digests) == len(expected)
-    )
+    try:
+        expected = {
+            session: identity_key({'pid': identity[0], 'start_identity': identity[1]})
+            for session, identity in selected
+        }
+        if (not expected or len(expected) != len(selected)
+                or any(identity is None for identity in expected.values())):
+            return False
+        attested_sessions = tuple(attestation.session_ids)
+        session_runs = tuple(attestation.session_run_ids)
+        session_owners = tuple(attestation.session_owner_identities)
+        run_ids = tuple(attestation.run_ids)
+        if (len(set(attested_sessions)) != len(attested_sessions)
+                or set(attested_sessions) != set(expected)
+                or len(session_runs) != len(expected)
+                or len({session for session, _run in session_runs}) != len(session_runs)
+                or {session for session, _run in session_runs} != set(expected)
+                or len(run_ids) != len(expected)
+                or len(set(run_ids)) != len(run_ids)
+                or {run for _session, run in session_runs} != set(run_ids)
+                or len(session_owners) != len(expected)
+                or len({session for session, _pid, _start in session_owners}) != len(session_owners)):
+            return False
+        owner_identities = {
+            session: identity_key({'pid': pid, 'start_identity': start})
+            for session, pid, start in session_owners
+        }
+        if owner_identities != expected or any(identity is None for identity in owner_identities.values()):
+            return False
+        return (
+            len(attestation.host_run_receipt_refs) == len(expected)
+            and all(isinstance(ref, str) and ref for ref in attestation.host_run_receipt_refs)
+            and len(attestation.independent_verifier_evidence_refs) == len(expected)
+            and all(isinstance(ref, str) and ref
+                    for ref in attestation.independent_verifier_evidence_refs)
+            and len(attestation.owner_log_event_digests) == len(expected)
+            and all(isinstance(value, str)
+                    and re.fullmatch(r'blake3:[0-9a-f]{64}', value)
+                    for value in attestation.owner_log_event_digests)
+        )
+    except (AttributeError, TypeError, ValueError):
+        return False
 
 
 
@@ -490,11 +701,11 @@ def aggregate_process_tree(sample):
         values = [process.get("metrics", {}).get(metric) for process in processes]
         if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in values):
             continue
-        if metric in REQUIRED_LINUX_METRICS:
-            metrics[metric] = sum(values)
-        else:
-            # Private bytes are useful where available but are not substituted for PSS/RSS.
-            metrics[metric] = sum(values)
+        total = sum(values)
+        if total <= MAX_U64:
+            # Wire counters are canonical u64 values. Python's unbounded integers must not
+            # let an aggregate claim a value the Rust/resource contract cannot represent.
+            metrics[metric] = total
 
     complete = all(metrics.get(metric) is not None for metric in REQUIRED_LINUX_METRICS)
     if not complete:
@@ -729,6 +940,12 @@ def is_canonical_decimal(value, *, positive=False):
     if not isinstance(value, str) or re.fullmatch(r"(?:0|[1-9][0-9]*)", value) is None:
         return False
     return not positive or int(value) > 0
+
+
+def _sum_u64(values):
+    """Sum exact counter values only when the result fits the Rust u64 wire type."""
+    total = sum(values)
+    return total if total <= MAX_U64 else None
 
 
 def load_owner_snapshot(path):
@@ -1065,6 +1282,210 @@ def read_repository_input(path, limit, label):
         os.close(parent_fd)
 
 
+MAX_LEAK_SLOPE_SAMPLES = 32
+MAX_SETTLE_SAMPLE_COUNT = 8
+MIN_SETTLE_INTERVAL_MS = 1_000
+MAX_SETTLE_INTERVAL_MS = 60_000
+MAX_DISK_TREE_ENTRIES = 200_000
+MAX_CACHE_EVIDENCE_BYTES = 1_048_576
+MAX_CACHE_FAMILIES = 512
+CACHE_EVICTION_OWNER = "hostkernel.cache-owner"
+CACHE_PROTECTION_NAMES = ("DERIVED_READ_ONLY", "REPLACEABLE_UI_PAINT", "IMMUTABLE_INDEX", "CANONICAL_STATE")
+
+
+def leak_slope(records):
+    """Exact-integer per-session PSS leak slope from MEASURED time-ordered samples.
+
+    `records` is a list of ``(timestamp_ms, pss_bytes)`` pairs, all from
+    MEASURED process-tree totals of one session identity. The slope is reported
+    in bytes per hour as a canonical decimal string using integer arithmetic
+    only (nearest-tenths rounding through integer math, never floats), alongside
+    the raw first/last samples so a reviewer can recompute it. Fewer than two
+    samples, non-increasing timestamps or a zero-width window yields UNKNOWN
+    quality; a real negative slope (shrink) is reported as measured, not clamped.
+    """
+    unknown = {"quality": "UNKNOWN", "slope_bytes_per_hour": None,
+               "sample_count": len(records) if isinstance(records, list) else 0}
+    if not isinstance(records, list) or not 2 <= len(records) <= MAX_LEAK_SLOPE_SAMPLES:
+        return unknown
+    pairs = []
+    for record in records:
+        if (not isinstance(record, (tuple, list)) or len(record) != 2
+                or isinstance(record[0], bool) or isinstance(record[1], bool)
+                or not isinstance(record[0], int) or not isinstance(record[1], int)
+                or record[0] < 0 or record[1] < 0):
+            return unknown
+        pairs.append((record[0], record[1]))
+    for (prior_ms, _), (next_ms, _zip) in zip(pairs, pairs[1:]):
+        if next_ms <= prior_ms:
+            return unknown
+    span_ms = pairs[-1][0] - pairs[0][0]
+    if span_ms <= 0:
+        return unknown
+    delta_bytes = pairs[-1][1] - pairs[0][1]
+    # bytes/hour * 10 for one-decimal precision, then exact integer rounding.
+    scaled = delta_bytes * 3_600_000 * 10
+    if scaled >= 0:
+        tenth = (scaled + span_ms // 2) // span_ms
+    else:
+        tenth = -(((-scaled) + span_ms // 2) // span_ms)
+    sign = "-" if tenth < 0 else ""
+    magnitude = -tenth if tenth < 0 else tenth
+    slope = f"{sign}{magnitude // 10}.{magnitude % 10}"
+    return {
+        "quality": "MEASURED",
+        "slope_bytes_per_hour": slope,
+        "sample_count": len(pairs),
+        "window_ms": span_ms,
+        "first": {"timestamp_ms": str(pairs[0][0]), "pss_bytes": str(pairs[0][1])},
+        "last": {"timestamp_ms": str(pairs[-1][0]), "pss_bytes": str(pairs[-1][1])},
+        "method": "endpoint delta over the exact observed window; integer arithmetic only",
+    }
+
+
+def repository_tree_bytes(relative_path):
+    """Bounded, no-follow byte/entry count of one repository-contained directory.
+
+    Tracks §18.17 disk/build-output growth (for example a Cargo target tree)
+    with the same repository-only boundary as every other harness input. The
+    walk never follows symlinks, never leaves the checkout and stops with
+    UNKNOWN quality at the entry bound instead of reporting a partial total as
+    measured. Only regular files contribute bytes; symlinks, sockets and other
+    special entries are counted separately and never dereferenced.
+    """
+    root = Path(__file__).resolve().parents[2]
+    requested = Path(relative_path)
+    if ".." in requested.parts:
+        raise ValueError("disk root path cannot contain parent traversal")
+    candidate = Path(os.path.abspath(requested if requested.is_absolute() else root / requested))
+    try:
+        relative = candidate.relative_to(root)
+    except ValueError as error:
+        raise ValueError("disk root must remain inside the repository") from error
+    parts = relative.parts
+    if any(part in ("", ".", "..") for part in parts):
+        raise ValueError("disk root parts are invalid")
+    if not candidate.exists():
+        return {"quality": "UNKNOWN", "reason": "disk root does not exist",
+                "root": str(relative), "bytes": None, "file_count": None, "entry_count": None}
+    if not candidate.is_dir() or candidate.is_symlink():
+        return {"quality": "UNKNOWN", "reason": "disk root is not a plain directory",
+                "root": str(relative), "bytes": None, "file_count": None, "entry_count": None}
+    total_bytes = 0
+    files = 0
+    entries = 0
+    specials = 0
+    try:
+        stack = [candidate]
+        while stack:
+            directory = stack.pop()
+            with os.scandir(directory) as iterator:
+                for entry in iterator:
+                    entries += 1
+                    if entries > MAX_DISK_TREE_ENTRIES:
+                        return {"quality": "UNKNOWN",
+                                "reason": f"entry bound of {MAX_DISK_TREE_ENTRIES} exceeded",
+                                "root": str(relative), "bytes": None, "file_count": None,
+                                "entry_count": None}
+                    if entry.is_symlink():
+                        specials += 1
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(Path(entry.path))
+                    elif entry.is_file(follow_symlinks=False):
+                        total_bytes += entry.stat(follow_symlinks=False).st_size
+                        files += 1
+                    else:
+                        specials += 1
+    except OSError as error:
+        return {"quality": "UNKNOWN", "reason": f"walk failed safely: {error.__class__.__name__}",
+                "root": str(relative), "bytes": None, "file_count": None, "entry_count": None}
+    return {"quality": "MEASURED", "reason": None, "root": str(relative),
+            "bytes": str(total_bytes), "file_count": str(files),
+            "entry_count": str(entries), "special_entry_count": str(specials),
+            "method": "no-follow regular-file sizes under the repository root"}
+
+
+def _cache_evidence_row(row):
+    """Validate one cache-family evidence row from the Rust registry projection."""
+    if not isinstance(row, dict):
+        raise ValueError("cache family row is not an object")
+    for key in ("family", "principal", "workspace", "sourceGeneration", "buildVersion"):
+        if not isinstance(row.get(key), str) or not row[key] or len(row[key]) > 256:
+            raise ValueError(f"cache family {key} is invalid")
+    if not is_canonical_decimal(row.get("generation"), positive=True):
+        raise ValueError("cache family generation is invalid")
+    for key in ("maxBytes", "maxAccountedSourceBytes", "maxEntries", "ttlMs", "lastUsedMs", "ownerPinCount"):
+        if not is_canonical_decimal(row.get(key), positive=False):
+            raise ValueError(f"cache family {key} is invalid")
+    if int(row["maxBytes"]) == 0 or int(row["maxEntries"]) == 0:
+        raise ValueError("cache family bounds must be positive")
+    for key in ("allocatedBytes", "accountedSourceBytes", "entryCount"):
+        value = row.get(key)
+        if value is not None and not is_canonical_decimal(value):
+            raise ValueError(f"cache family {key} must be a decimal string or null")
+    if row.get("allocatedBytes") is not None and int(row["allocatedBytes"]) > int(row["maxBytes"]):
+        raise ValueError("cache family allocation exceeds its declared bound")
+    if row.get("entryCount") is not None and int(row["entryCount"]) > int(row["maxEntries"]):
+        raise ValueError("cache family entry count exceeds its declared bound")
+    if row.get("protection") not in CACHE_PROTECTION_NAMES:
+        raise ValueError("cache family protection class is not canonical")
+    if not isinstance(row.get("pinned"), bool) or not isinstance(row.get("evictionPending"), bool):
+        raise ValueError("cache family pin/eviction flags are invalid")
+    if row.get("evictionOwner") != CACHE_EVICTION_OWNER:
+        raise ValueError("cache family does not name the canonical eviction owner")
+    return row
+
+
+def load_cache_evidence(path):
+    """Bounded ingestion of the Rust cache-registry evidence projection.
+
+    Caller-supplied accounting metadata only: byte/entry bounds, TTL,
+    protection class, live pins and the named eviction owner per family. This
+    is never an attestation, never triggers retirement, and a missing
+    allocation stays null (UNKNOWN), never zero. ``reclaimedBytes`` must be
+    null here; only a fresh authenticated post-retirement observation may ever
+    populate a reclaimed figure, and this envelope is not that observation.
+    """
+    data = read_repository_input(path, MAX_CACHE_EVIDENCE_BYTES, "cache evidence")
+    try:
+        value = json.loads(
+            data.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_json_properties,
+            parse_constant=lambda constant: (_ for _ in ()).throw(
+                ValueError(f"invalid JSON constant: {constant}")
+            ),
+        )
+    except RecursionError as error:
+        raise ValueError("cache evidence JSON nesting exceeds parser bounds") from error
+    if (not isinstance(value, dict) or type(value.get("schemaVersion")) is not int
+            or value.get("schemaVersion") != 1
+            or value.get("producer") != "horizoncode.worker-owner.cache-registry"):
+        raise ValueError("cache evidence envelope is not the P8 registry schema")
+    families = value.get("families")
+    if not isinstance(families, list) or len(families) > MAX_CACHE_FAMILIES:
+        raise ValueError("cache evidence family list is invalid or over the bound")
+    for row in families:
+        _cache_evidence_row(row)
+    seen = set()
+    for row in families:
+        key = (row["family"], row["principal"], row["workspace"], row["sourceGeneration"], row["buildVersion"])
+        if key in seen:
+            raise ValueError("cache evidence repeats one family key")
+        seen.add(key)
+    for key in ("measuredBytes", "measuredEntries", "accountedSourceBytes"):
+        if value.get(key) is not None and not is_canonical_decimal(value[key]):
+            raise ValueError(f"cache evidence {key} must be a decimal string or null")
+    if value.get("evictionOwner") != CACHE_EVICTION_OWNER:
+        raise ValueError("cache evidence does not name the canonical eviction owner")
+    if value.get("reclaimedBytes") is not None:
+        raise ValueError("cache evidence must never carry a reclaimed-bytes claim")
+    note = value.get("reclaimedBytesNote")
+    if not isinstance(note, str) or not note or len(note) > 512:
+        raise ValueError("cache evidence reclaimed-bytes note is invalid")
+    return value
+
+
 def aggregate_owner_samples(samples):
     """Sum worker trees and count each reported shared Core process once.
 
@@ -1089,8 +1510,9 @@ def aggregate_owner_samples(samples):
                 values.append(int(metric["value"]))
             if not complete:
                 break
-        totals[name] = ({"quality": "MEASURED", "value": str(sum(values))}
-                        if complete else {"quality": "UNKNOWN", "value": None})
+        total = _sum_u64(values) if complete else None
+        totals[name] = ({"quality": "MEASURED", "value": str(total)}
+                        if total is not None else {"quality": "UNKNOWN", "value": None})
     identities = set()
     overlap = False
     for sample in samples:
@@ -1134,9 +1556,10 @@ def aggregate_owner_samples(samples):
                 values = []
                 break
             values.append(int(metric["value"]))
+        total = _sum_u64(values) if values and not core_conflict else None
         core_totals[name] = (
-            {"quality": "MEASURED", "value": str(sum(values))}
-            if values and not core_conflict else {"quality": "UNKNOWN", "value": None}
+            {"quality": "MEASURED", "value": str(total)}
+            if total is not None else {"quality": "UNKNOWN", "value": None}
         )
     if overlap:
         totals = {name: {"quality": "UNKNOWN", "value": None} for name in totals}
@@ -1146,10 +1569,9 @@ def aggregate_owner_samples(samples):
         core_metric = core_totals[name]
         if (worker_metric["quality"] == "MEASURED"
                 and core_metric["quality"] == "MEASURED" and not core_overlap):
-            combined[name] = {
-                "quality": "MEASURED",
-                "value": str(int(worker_metric["value"]) + int(core_metric["value"])),
-            }
+            total = _sum_u64((int(worker_metric["value"]), int(core_metric["value"])))
+            combined[name] = ({"quality": "MEASURED", "value": str(total)}
+                              if total is not None else {"quality": "UNKNOWN", "value": None})
         else:
             combined[name] = {"quality": "UNKNOWN", "value": None}
     return {
@@ -1197,7 +1619,7 @@ def capture_command_template(selected, args, outcomes_path):
         parts.append(f"--local-inference-identity {model}={pid}:{start}")
     if outcomes_path:
         parts.append(f"--outcomes {outcomes_path}")
-    for snapshot in args.owner_snapshot:
+    for snapshot in getattr(args, "owner_snapshot", None) or ():
         parts.append(f"--owner-snapshot {snapshot}")
     if args.output:
         parts.append(f"--output {args.output}")
@@ -1315,6 +1737,8 @@ def preflight(selected, outcomes, args, commit, clean_tree, machine, min_session
         "baseline_eligible": False,
         "blocked_reason": ATTESTATION_BLOCKED_REASON,
         "trusted_attestation_sources": list(TRUSTED_ATTESTATION_SOURCES),
+        "trusted_attestation_verifiers": sorted(TRUSTED_ATTESTATION_VERIFIERS),
+        "attestation_signature_algorithms": list(ATTESTATION_SIGNATURE_ALGORITHMS),
         "captured_at": datetime.now(timezone.utc).isoformat(),
         "platform": platform_name(),
         "commit": commit,
@@ -1400,6 +1824,14 @@ def main():
     parser.add_argument("--outcomes", type=Path, help="JSON object mapping sessions to expected/actual/status task outcomes (caller-supplied, unverified: Run attestation is required for eligibility)")
     parser.add_argument("--owner-snapshot", type=Path, action="append", default=[],
                         help="bounded P8 Rust owner-sampler JSON envelope; ingestion only, NOT an attestation; repeat once per Session")
+    parser.add_argument("--cache-evidence", type=Path, action="append", default=[],
+                        help="bounded P8 Rust cache-registry evidence envelope (byte/entry bounds + eviction owner); accounting metadata only, never an attestation or retirement trigger")
+    parser.add_argument("--disk-root", action="append", default=[],
+                        help="repository-contained directory to measure for §18.17 disk/build-output growth (e.g. kernel/target-p2); repeatable")
+    parser.add_argument("--settle-samples", type=int, default=0,
+                        help="with the capture path: re-measure each selected session tree this many extra times (2..8) to compute a real per-session PSS leak slope from harness-owned samples")
+    parser.add_argument("--settle-interval-ms", type=int, default=1_000,
+                        help="milliseconds between settle samples (1000..60000, default 1000)")
     parser.add_argument("--scenario", help="real workload/task description")
     parser.add_argument("--build", help="build profile and compiler/runtime identifiers")
     parser.add_argument("--warm-cold", choices=("warm", "cold"))
@@ -1435,6 +1867,28 @@ def main():
         parser.error("at most 20 --identity values are supported for the 1/5/10/20 matrix")
     if args.preflight and not 1 <= args.min_sessions <= 20:
         parser.error("--min-sessions must be between 1 and 20")
+    if not 0 <= args.settle_samples <= MAX_SETTLE_SAMPLE_COUNT:
+        parser.error(f"--settle-samples must be between 0 and {MAX_SETTLE_SAMPLE_COUNT}")
+    if args.settle_samples and args.settle_samples < 2:
+        parser.error("--settle-samples needs at least 2 to compute a slope")
+    if not MIN_SETTLE_INTERVAL_MS <= args.settle_interval_ms <= MAX_SETTLE_INTERVAL_MS:
+        parser.error(f"--settle-interval-ms must be between {MIN_SETTLE_INTERVAL_MS} and {MAX_SETTLE_INTERVAL_MS}")
+    if args.settle_samples and args.preflight:
+        parser.error("--settle-samples measures real samples and is not part of --preflight")
+    if len(args.cache_evidence) > MAX_OWNER_SNAPSHOTS:
+        parser.error(f"at most {MAX_OWNER_SNAPSHOTS} cache evidence envelopes may be ingested")
+    if len(args.disk_root) > 8:
+        parser.error("at most 8 --disk-root values may be measured")
+    cache_evidence = []
+    try:
+        cache_evidence = [load_cache_evidence(path) for path in args.cache_evidence]
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+        parser.error(f"invalid --cache-evidence: {error}")
+    disk_roots = []
+    try:
+        disk_roots = [repository_tree_bytes(path) for path in args.disk_root]
+    except ValueError as error:
+        parser.error(f"invalid --disk-root: {error}")
     outcomes = {}
     if args.outcomes:
         try:
@@ -1482,6 +1936,38 @@ def main():
             "owner_identity": {"pid": pid, "start_identity": str(start)},
             "sample": sample_tree(pid, start),
         }
+
+    # §18.17 teardown/long-run leak slope: harness-owned repeated samples of
+    # the same session trees, not caller-supplied numbers. Any UNKNOWN round
+    # makes that session's slope UNKNOWN; no partial series is ever fitted.
+    leak_slopes = {}
+    settle_series = {}
+    if args.settle_samples >= 2 and grouped:
+        for round_index in range(args.settle_samples):
+            if round_index:
+                time.sleep(args.settle_interval_ms / 1000)
+            now_ms = int(time.time() * 1000)
+            for session, (pid, start) in sorted(grouped.items()):
+                totals = sample_tree(pid, start).get("process_tree_totals", {})
+                if totals.get("quality") != "MEASURED":
+                    settle_series.setdefault(session, []).append(None)
+                    continue
+                pss = totals.get("metrics", {}).get("pss_bytes")
+                if not isinstance(pss, int) or isinstance(pss, bool) or pss < 0:
+                    settle_series.setdefault(session, []).append(None)
+                    continue
+                settle_series.setdefault(session, []).append((now_ms, pss))
+        for session, series in settle_series.items():
+            if any(point is None for point in series):
+                leak_slopes[session] = {
+                    "quality": "UNKNOWN",
+                    "slope_bytes_per_hour": None,
+                    "sample_count": len(series),
+                    "reason": "at least one settle round was not a MEASURED tree total",
+                }
+            else:
+                leak_slopes[session] = leak_slope(series)
+                leak_slopes[session]["reason"] = None
 
     records = []
     ordered_sessions = sorted(grouped.items())
@@ -1538,6 +2024,16 @@ def main():
                 "workers", "product_attestation", "session_process_owner")}
                 for sample in selected_owner_samples],
             "owner_worker_aggregate": aggregate_owner_samples(selected_owner_samples),
+            "leak_slopes": {session: leak_slopes[session] for session in sorted(selected_sessions)
+                            if session in leak_slopes},
+            "leak_slope_provenance": ("HARNESS_MEASURED_SETTLE_SAMPLES" if leak_slopes
+                                      else "NOT_MEASURED"),
+            "disk_roots": disk_roots,
+            "cache_evidence": [{
+                "envelope": envelope,
+                "provenance": "UNVERIFIED_CALLER_SUPPLIED",
+                "attestation": "NOT_ATTESTED",
+            } for envelope in cache_evidence],
             "sessions": session_results})
     serialized_records = [json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
                           for record in records]

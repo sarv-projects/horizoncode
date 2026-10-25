@@ -35,10 +35,10 @@
 use std::fmt;
 
 use crate::{
-    Digest, FileSnapshot, GenerationPack, IndexError, OpaquePin, OverlayChange, RepoIntelOperation,
-    SearchCursor, SearchMatch, SearchTruncation, DEFAULT_MAX_PACK_BYTES, MAX_OVERLAY_CHANGES,
+    DEFAULT_MAX_PACK_BYTES, Digest, FileSnapshot, GenerationPack, IndexError, MAX_OVERLAY_CHANGES,
     MAX_OVERLAY_CONTENT_BYTES, MAX_PATH_BYTES, MAX_PIN_BYTES, MAX_QUERY_BYTES, MAX_QUERY_RESULTS,
-    MAX_SEARCH_CURSOR_BYTES,
+    MAX_SEARCH_CURSOR_BYTES, OpaquePin, OverlayChange, RepoIntelOperation, SearchCursor,
+    SearchMatch, SearchTruncation,
 };
 
 /// Envelope version of every transport frame.
@@ -696,7 +696,7 @@ impl TransportRequest {
                             return Err(TransportError::UnknownTag {
                                 field: "overlay_change_kind",
                                 tag,
-                            })
+                            });
                         }
                     }
                 }
@@ -954,7 +954,7 @@ impl QueryResponse {
                         return Err(TransportError::UnknownTag {
                             field: "truncated_by",
                             tag,
-                        })
+                        });
                     }
                 };
                 Ok(Self::Partial {

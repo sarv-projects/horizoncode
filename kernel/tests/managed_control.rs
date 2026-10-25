@@ -1,13 +1,19 @@
 #![cfg(target_os = "linux")]
 
 use horizoncode_kernel::managed_control::{
-    AcceptanceCriterion, AttemptPhase, GoalDraft, ManagedCommand, ManagedControl, ManagedError,
-    RunPhase, SessionLink, SpecBudget, SpecVersionDraft,
+    attempt_receipt_digest, successful_task_receipt_basis_digest, verification_evidence_digest,
+    AcceptanceCriterion, AttemptEffectOutcomeV1, AttemptPhase, CriterionTestEvidenceV1,
+    CriterionVerifierProcessEvidenceV1, GoalDraft, ManagedAttemptEffectReceiptProofV1,
+    ManagedAttemptVerifierIntentV1, ManagedCommand, ManagedControl, ManagedError, PlannedTaskV1,
+    ProfileRevisionRefV1, RunPhase, SessionLink, SpecBudget, SpecVersionDraft,
+    VerificationEvidenceV1, VerificationVerdictV1, VerifierProfileEvidenceV1,
 };
 use horizoncode_kernel::owner_log::{
     DurabilityProfile, OwnerEventInput, OwnerIdentity, OwnerLogV2,
 };
-use horizoncode_kernel::protocol::{CursorV1, DelegationBindingV1};
+use horizoncode_kernel::protocol::{
+    ArtifactClassificationV1, ArtifactRefV1, CursorV1, DelegationBindingV1,
+};
 use serde_json::json;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -49,6 +55,118 @@ fn sha(seed: char) -> String {
 
 fn b3(seed: char) -> String {
     format!("blake3:{}", seed.to_string().repeat(64))
+}
+
+/// Trusted fixture profile pin for planned Tasks. The reducer validates its
+/// exact shape (canonical ID, positive revision, BLAKE3 definition digest) and
+/// the scheduler additionally requires the pinned positive token budget; the
+/// fixture never fabricates authority beyond these trusted test facts.
+fn fixture_profile_revision() -> ProfileRevisionRefV1 {
+    ProfileRevisionRefV1 {
+        profile_id: "fixture-profile".into(),
+        revision: 1,
+        definition_digest: b3('a'),
+    }
+}
+
+fn fixture_planned_task(
+    task_id: &str,
+    dependencies: &[&str],
+    criterion_ids: &[&str],
+) -> PlannedTaskV1 {
+    PlannedTaskV1 {
+        task_id: task_id.into(),
+        title: Some(format!("Fixture task {task_id}")),
+        purpose: Some(format!("Managed fixture work for {task_id}")),
+        dependencies: dependencies
+            .iter()
+            .map(|dependency| (*dependency).to_owned())
+            .collect(),
+        criterion_ids: criterion_ids
+            .iter()
+            .map(|criterion| (*criterion).to_owned())
+            .collect(),
+        required_capabilities: vec![],
+        agent_profile_revision: fixture_profile_revision(),
+        profile_token_budget: 16_000,
+        profile_owner_binding_digest: b3('b'),
+    }
+}
+
+/// Planned Task whose execution pins the canonical supervised-test capability
+/// that the typed verifier intent requires; used by every Task that settles
+/// through the hardened success path.
+fn fixture_verifier_task(
+    task_id: &str,
+    dependencies: &[&str],
+    criterion_ids: &[&str],
+) -> PlannedTaskV1 {
+    let mut task = fixture_planned_task(task_id, dependencies, criterion_ids);
+    task.required_capabilities = vec!["test.run".into()];
+    task
+}
+
+/// Valid root SessionLink pinned by the explicit authenticated planned-run
+/// start; the reducer validates every correlation field before pinning it.
+fn fixture_session_link(session_id: &str, owner_epoch: u64) -> SessionLink {
+    SessionLink {
+        session_id: session_id.into(),
+        source_store_id: "store-fixture".into(),
+        source_instance_id: "instance-fixture".into(),
+        source_cursor: CursorV1 {
+            owner_kind: "session".into(),
+            owner_id: session_id.into(),
+            seq: "1".into(),
+            event_digest: b3('c'),
+        },
+        source_epoch: 1,
+        latest_observed_message_id: None,
+        latest_observed_part_id: None,
+        source_digest: sha('c'),
+        redaction_profile: "session-redacted-v1".into(),
+        owner_epoch,
+        protocol_version: 1,
+    }
+}
+
+/// Exact replica of the kernel's planned-Task-set digest (schema v3) over the
+/// same fixture facts, in the same field order the reducer serializes and in
+/// the durable plan's `BTreeMap` (task-ID) order. The `StartPlannedRun`
+/// transition recomputes this digest from the durable plan and refuses a Run
+/// whose task set does not match it byte-for-byte.
+fn fixture_plan_digest(tasks: &[PlannedTaskV1]) -> String {
+    let mut sorted = tasks.to_vec();
+    sorted.sort_by(|left, right| left.task_id.cmp(&right.task_id));
+    let values = sorted
+        .iter()
+        .map(|task| {
+            let mut value = json!({
+                "taskId": task.task_id,
+                "dependencies": task.dependencies,
+                "criterionIds": task.criterion_ids,
+                "requiredCapabilities": task.required_capabilities,
+                "agentProfileRevision": {
+                    "profileId": task.agent_profile_revision.profile_id,
+                    "revision": task.agent_profile_revision.revision.to_string(),
+                    "definitionDigest": task.agent_profile_revision.definition_digest,
+                },
+                "profileOwnerBindingDigest": task.profile_owner_binding_digest,
+            });
+            value["profileTokenBudget"] = json!(task.profile_token_budget.to_string());
+            value["title"] = json!(task.title);
+            value["purpose"] = json!(task.purpose);
+            value
+        })
+        .collect::<Vec<_>>();
+    format!(
+        "blake3:{}",
+        blake3::hash(
+            json!({"schemaVersion": 3, "tasks": values})
+                .to_string()
+                .as_bytes()
+        )
+        .to_hex()
+    )
 }
 
 fn goal() -> GoalDraft {
@@ -179,10 +297,20 @@ fn bind_test_delegation(store: &mut ManagedControl, attempt_id: &str) {
         profile_id: "fixture-profile".into(),
         profile_revision: 1,
         profile_digest: b3('a'),
+        // Trusted fixture authority: the planned Task pins this exact profile
+        // revision and positive token budget, so the delegation binding
+        // carries the same budget; no managed provider route exists for the
+        // fixture, and provider/model identities name the fixture profile's
+        // declared selection and never authorize dispatch.
+        provider_id: "fixture-provider".into(),
+        model_id: "fixture-model".into(),
+        managed_provider_route: None,
+        profile_token_budget: Some(16_000),
         criteria_ids,
         workspace_lease_id: "fixture-workspace-lease".into(),
         source_revision: workspace_revision,
         capability_ceiling_digest: sha('b'),
+        permission_scope_digest: b3('d'),
         context_selection_digest: b3('c'),
         budget_lease_id: "fixture-budget-lease".into(),
         resource_lease_ids: vec![],
@@ -213,17 +341,22 @@ fn accepted_run(store: &mut ManagedControl) {
     accepted_run_with_workers(store, 1);
 }
 
-fn accepted_run_with_workers(store: &mut ManagedControl, max_workers: u16) {
+fn accepted_spec(store: &mut ManagedControl, draft: SpecVersionDraft) {
+    let mut draft = draft;
+    // Typed settlement's verifier intent runs a supervised test process; the
+    // canonical capability must be in the accepted scope for planned Tasks
+    // that pin it.
+    if draft.capability_scope.is_empty() {
+        draft.capability_scope = vec!["test.run".into()];
+    }
     send(store, "goal1", ManagedCommand::CreateGoal { goal: goal() });
-    let mut spec = spec("server_auth.author", 2);
-    spec.budget.max_workers = max_workers;
-    let spec_digest = spec.digest();
+    let spec_digest = draft.digest();
     send(
         store,
         "spec1",
         ManagedCommand::ProposeSpec {
             spec_id: "spec-v1".into(),
-            spec,
+            spec: draft,
             spec_digest: spec_digest.clone(),
         },
     );
@@ -237,6 +370,12 @@ fn accepted_run_with_workers(store: &mut ManagedControl, max_workers: u16) {
             accepted_at_ms: 1,
         },
     );
+}
+
+fn accepted_run_with_workers(store: &mut ManagedControl, max_workers: u16) {
+    let mut spec = spec("server_auth.author", 2);
+    spec.budget.max_workers = max_workers;
+    accepted_spec(store, spec);
     send(
         store,
         "run1",
@@ -245,6 +384,51 @@ fn accepted_run_with_workers(store: &mut ManagedControl, max_workers: u16) {
             spec_id: "spec-v1".into(),
         },
     );
+}
+
+/// Hardened planned-run start: the complete Task set (with immutable profile
+/// pins, positive token budgets and delivery text) is durably planned in one
+/// command, then the explicit authenticated start pins the root SessionLink
+/// that the admission and scheduler gates require. Legacy `AddTask` Tasks
+/// carry no profile pin or budget and are never schedulable, so every
+/// lifecycle/admission/scheduler test starts its Run through this path.
+fn plan_and_start_run(store: &mut ManagedControl, run_id: &str, tasks: Vec<PlannedTaskV1>) {
+    let spec_digest = store.snapshot().specs["spec-v1"].digest.clone();
+    let plan_digest = fixture_plan_digest(&tasks);
+    send(
+        store,
+        &format!("plan-{run_id}"),
+        ManagedCommand::PlanRun {
+            run_id: run_id.into(),
+            spec_id: "spec-v1".into(),
+            spec_digest: spec_digest.clone(),
+            tasks,
+        },
+    );
+    send(
+        store,
+        &format!("start-{run_id}"),
+        ManagedCommand::StartPlannedRun {
+            run_id: run_id.into(),
+            spec_id: "spec-v1".into(),
+            spec_digest,
+            plan_digest,
+            expected_goal_revision: store.snapshot().revision,
+            started_by: "server_auth.reviewer".into(),
+            session_link: Some(fixture_session_link(&format!("ses-{run_id}"), 1)),
+        },
+    );
+}
+
+fn accepted_planned_run(
+    store: &mut ManagedControl,
+    max_workers: u16,
+    tasks: Vec<PlannedTaskV1>,
+) {
+    let mut spec = spec("server_auth.author", 2);
+    spec.budget.max_workers = max_workers;
+    accepted_spec(store, spec);
+    plan_and_start_run(store, "run-v1", tasks);
 }
 
 #[test]
@@ -321,14 +505,73 @@ fn goal_proposal_is_one_durable_transaction_and_failed_spec_can_retry_cleanly() 
     assert_eq!(reopened.snapshot().specs.len(), 1);
 }
 
+/// Exact trusted verifier evidence fixture for one supervised criterion run.
+/// The reducer recomputes the digest binding and revalidates every pin against
+/// the persisted per-criterion intent before accepting it.
+fn fixture_verification_evidence(
+    attempt_id: &str,
+    criterion_id: &str,
+    source_revision: &str,
+) -> VerificationEvidenceV1 {
+    let mut evidence = VerificationEvidenceV1 {
+        verification_run_id: format!("vrun-{attempt_id}"),
+        verifier_id: "server_auth.verifier".into(),
+        source_revision: source_revision.into(),
+        profile: VerifierProfileEvidenceV1 {
+            profile_id: "fixture-verifier".into(),
+            owner_epoch: 1,
+            executable_digest: b3('9'),
+            profile_digest: b3('8'),
+        },
+        aggregate_output_bytes: 512,
+        aggregate_duration_ms: 1_000,
+        criteria: vec![CriterionTestEvidenceV1 {
+            criterion_id: criterion_id.into(),
+            verdict: VerificationVerdictV1::Pass,
+            test_identity: format!("fixture-test-{attempt_id}"),
+            test_run_id: format!("vtest-{attempt_id}"),
+            process: CriterionVerifierProcessEvidenceV1 {
+                execution_id: format!("vexec-{attempt_id}"),
+                generation: 1,
+                exit_code: 0,
+                stdout_digest: b3('6'),
+                stderr_digest: b3('7'),
+                output_bytes: 512,
+                duration_ms: 1_000,
+                truncated: false,
+            },
+            artifact_refs: vec![ArtifactRefV1 {
+                artifact_id: format!("artifact-{attempt_id}"),
+                digest: b3('5'),
+                byte_length: "128".into(),
+                media_type: "text/plain".into(),
+                classification: ArtifactClassificationV1::Workspace,
+            }],
+        }],
+        evidence_digest: String::new(),
+    };
+    evidence.evidence_digest = verification_evidence_digest(&evidence);
+    evidence
+}
+
+/// Drives one admitted Attempt through the full hardened settlement contract:
+/// EXECUTING, a bound coding effect with its authoritative target receipt, the
+/// live task-scoped verification start over the exact observed workspace head,
+/// a verifier edge carrying one immutable verifier intent and its read-only
+/// receipt, typed independent verifier evidence, and finally settlement under
+/// the kernel-computed Attempt receipt. Every proof is built from the same
+/// trusted fixture facts the reducer revalidates; returns the exact receipt
+/// digest the reducer derived so callers can assert durable equality.
 fn settle_attempt_success(
     store: &mut ManagedControl,
     delivery_prefix: &str,
+    goal_id: &str,
     run_id: &str,
     task_id: &str,
     attempt_id: &str,
     receipt_seed: char,
-) {
+    source_revision: &str,
+) -> String {
     send(
         store,
         &format!("{delivery_prefix}-executing"),
@@ -338,6 +581,28 @@ fn settle_attempt_success(
             attempt_id: attempt_id.into(),
         },
     );
+
+    let snapshot = store.snapshot();
+    let attempt = &snapshot.attempts[attempt_id];
+    let executor_principal = attempt.executor_principal.clone();
+    let owner_epoch = attempt.owner_epoch;
+    let location_id = attempt.location_id.clone();
+    let session_id = attempt.session_id.clone();
+    let criterion_ids = snapshot.runs[run_id].tasks[task_id].criterion_ids.clone();
+    let criterion_id = criterion_ids
+        .first()
+        .expect("settlement fixture Task requires an accepted criterion")
+        .clone();
+    assert_eq!(
+        criterion_ids.len(),
+        1,
+        "the fixture binds exactly one verifier intent per settlement"
+    );
+
+    // One coding edge, settled with its authoritative target receipt. The
+    // trusted fixture authority binds the pre-admission workspace revision
+    // just before this first edge.
+    let coding_effect_id = format!("eff-{delivery_prefix}-coding");
     send(
         store,
         &format!("{delivery_prefix}-effect"),
@@ -345,11 +610,144 @@ fn settle_attempt_success(
             run_id: run_id.into(),
             task_id: task_id.into(),
             attempt_id: attempt_id.into(),
-            effect_id: format!("eff-{delivery_prefix}"),
-            location_id: "loc-test".into(),
-            session_id: "ses-test".into(),
+            effect_id: coding_effect_id.clone(),
+            location_id: location_id.clone(),
+            session_id: session_id.clone(),
         },
     );
+    let coding_state = store.snapshot();
+    let coding_bound_revision = coding_state.revision;
+    let workspace_revision = coding_state.attempts[attempt_id]
+        .workspace_revision
+        .clone()
+        .expect("effect fixture Attempt has a bound workspace revision");
+    send(
+        store,
+        &format!("{delivery_prefix}-coding-receipt"),
+        ManagedCommand::RecordAttemptEffectReceipt {
+            proof: ManagedAttemptEffectReceiptProofV1 {
+                goal_id: goal_id.into(),
+                run_id: run_id.into(),
+                task_id: task_id.into(),
+                attempt_id: attempt_id.into(),
+                effect_id: coding_effect_id.clone(),
+                executor_principal: executor_principal.clone(),
+                owner_epoch,
+                bound_revision: coding_bound_revision,
+                location_id: location_id.clone(),
+                session_id: session_id.clone(),
+                capability_id: "test.run".into(),
+                capability_lease_digest: b3('2'),
+                outcome: AttemptEffectOutcomeV1::Succeeded,
+                target_receipt_digest: Some(b3(receipt_seed)),
+                before_workspace_revision: workspace_revision,
+                after_workspace_revision: Some(source_revision.into()),
+            },
+        },
+    );
+
+    // Live task-scoped verification over the exact observed coding head.
+    let receipt_basis = successful_task_receipt_basis_digest(
+        run_id,
+        &store.snapshot().runs[run_id],
+        &store.snapshot().attempts,
+    )
+    .expect("fixture verification receipt basis is well formed");
+    send(
+        store,
+        &format!("{delivery_prefix}-begin-task-verification"),
+        ManagedCommand::BeginTaskVerification {
+            run_id: run_id.into(),
+            task_id: task_id.into(),
+            attempt_id: attempt_id.into(),
+            source_revision: source_revision.into(),
+            verifier_id: "server_auth.verifier".into(),
+            receipt_basis_digest: receipt_basis,
+        },
+    );
+
+    // A read-only verifier edge bound after the coding lineage, carrying the
+    // immutable per-criterion verifier intent and its observed receipt.
+    let verifier_effect_id = format!("eff-{delivery_prefix}-verifier");
+    send(
+        store,
+        &format!("{delivery_prefix}-verifier-effect"),
+        ManagedCommand::BindAttemptEffect {
+            run_id: run_id.into(),
+            task_id: task_id.into(),
+            attempt_id: attempt_id.into(),
+            effect_id: verifier_effect_id.clone(),
+            location_id: location_id.clone(),
+            session_id: session_id.clone(),
+        },
+    );
+    let verifier_bound_revision = store.snapshot().revision;
+    send(
+        store,
+        &format!("{delivery_prefix}-verifier-intent"),
+        ManagedCommand::BindAttemptVerifierIntent {
+            intent: ManagedAttemptVerifierIntentV1 {
+                goal_id: goal_id.into(),
+                run_id: run_id.into(),
+                task_id: task_id.into(),
+                attempt_id: attempt_id.into(),
+                effect_id: verifier_effect_id.clone(),
+                reviewer_principal: "server_auth.reviewer".into(),
+                verifier_principal: "server_auth.verifier".into(),
+                owner_epoch,
+                bound_revision: verifier_bound_revision,
+                location_id: location_id.clone(),
+                session_id: session_id.clone(),
+                capability_id: "test.run".into(),
+                verifier_profile_id: "fixture-verifier".into(),
+                executable_digest: b3('9'),
+                profile_digest: b3('8'),
+                criterion_id: criterion_id.clone(),
+                test_identity: format!("fixture-test-{attempt_id}"),
+                arguments_digest: b3('3'),
+                attempt_scope_digest: None,
+                source_workspace_revision: source_revision.into(),
+                max_duration_ms: 1_000,
+                max_output_bytes: 4_096,
+            },
+        },
+    );
+    send(
+        store,
+        &format!("{delivery_prefix}-verifier-receipt"),
+        ManagedCommand::RecordAttemptEffectReceipt {
+            proof: ManagedAttemptEffectReceiptProofV1 {
+                goal_id: goal_id.into(),
+                run_id: run_id.into(),
+                task_id: task_id.into(),
+                attempt_id: attempt_id.into(),
+                effect_id: verifier_effect_id.clone(),
+                executor_principal: "server_auth.verifier".into(),
+                owner_epoch,
+                bound_revision: verifier_bound_revision,
+                location_id: location_id.clone(),
+                session_id: session_id.clone(),
+                capability_id: "test.run".into(),
+                capability_lease_digest: b3('2'),
+                outcome: AttemptEffectOutcomeV1::Succeeded,
+                target_receipt_digest: Some(b3('4')),
+                before_workspace_revision: source_revision.into(),
+                after_workspace_revision: Some(source_revision.into()),
+            },
+        },
+    );
+
+    let mut evidence =
+        fixture_verification_evidence(attempt_id, &criterion_id, source_revision);
+    send(
+        store,
+        &format!("{delivery_prefix}-verifier-evidence"),
+        ManagedCommand::RecordAttemptVerifierEvidence {
+            attempt_id: attempt_id.into(),
+            evidence,
+        },
+    );
+
     send(
         store,
         &format!("{delivery_prefix}-settling"),
@@ -359,6 +757,13 @@ fn settle_attempt_success(
             attempt_id: attempt_id.into(),
         },
     );
+    let attempt_record = store.snapshot().attempts[attempt_id].clone();
+    let mut settled = vec![
+        (coding_effect_id, b3(receipt_seed)),
+        (verifier_effect_id, b3('4')),
+    ];
+    settled.sort_by(|left, right| left.0.cmp(&right.0));
+    let receipt_digest = attempt_receipt_digest(goal_id, &attempt_record, &settled);
     send(
         store,
         &format!("{delivery_prefix}-receipt"),
@@ -366,9 +771,38 @@ fn settle_attempt_success(
             run_id: run_id.into(),
             task_id: task_id.into(),
             attempt_id: attempt_id.into(),
-            receipt_digest: b3(receipt_seed),
+            receipt_digest: receipt_digest.clone(),
         },
     );
+    receipt_digest
+}
+
+/// Exact replica of the reducer's typed task-verification evidence digest over
+/// the same durable facts, so tests can assert the kernel-derived value.
+fn typed_task_verification_digest(
+    task_id: &str,
+    attempt_id: &str,
+    receipt_digest: &str,
+    criterion_ids: &[String],
+    evidence: &VerificationEvidenceV1,
+) -> String {
+    let mut preimage = b"horizoncode.task-verification-evidence.v1\0".to_vec();
+    let mut extend = |value: &str| {
+        preimage.extend_from_slice(&(value.len() as u32).to_be_bytes());
+        preimage.extend_from_slice(value.as_bytes());
+    };
+    extend(task_id);
+    extend(attempt_id);
+    extend(receipt_digest);
+    extend(&evidence.source_revision);
+    extend(&evidence.verifier_id);
+    extend(&evidence.evidence_digest);
+    let mut sorted = criterion_ids.to_vec();
+    sorted.sort();
+    for criterion_id in sorted {
+        extend(&criterion_id);
+    }
+    format!("blake3:{}", blake3::hash(&preimage).to_hex())
 }
 
 #[test]
@@ -894,25 +1328,10 @@ fn session_link_replay_preserves_only_bounded_correlation_metadata() {
 fn retry_exhaustion_fences_attempt_admission_and_requires_user() {
     let root = PrivateRoot::new();
     let mut store = ManagedControl::open(root.path(), "goal-retries").unwrap();
-    accepted_run(&mut store);
-    send(
+    accepted_planned_run(
         &mut store,
-        "task",
-        ManagedCommand::AddTask {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-            dependencies: vec![],
-            criterion_ids: vec!["tests-pass".into()],
-            required_capabilities: vec![],
-        },
-    );
-    send(
-        &mut store,
-        "ready",
-        ManagedCommand::MarkTaskReady {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-        },
+        1,
+        vec![fixture_planned_task("task-a", &[], &["tests-pass"])],
     );
     send(
         &mut store,
@@ -1020,25 +1439,10 @@ fn retry_exhaustion_fences_attempt_admission_and_requires_user() {
 fn immutable_delegation_binding_is_atomic_replayable_and_required_for_effect_intents() {
     let root = PrivateRoot::new();
     let mut store = ManagedControl::open(root.path(), "goal-delegation-binding").unwrap();
-    accepted_run(&mut store);
-    send(
+    accepted_planned_run(
         &mut store,
-        "task",
-        ManagedCommand::AddTask {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-            dependencies: vec![],
-            criterion_ids: vec!["tests-pass".into()],
-            required_capabilities: vec![],
-        },
-    );
-    send(
-        &mut store,
-        "ready",
-        ManagedCommand::MarkTaskReady {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-        },
+        1,
+        vec![fixture_planned_task("task-a", &[], &["tests-pass"])],
     );
     send(
         &mut store,
@@ -1098,10 +1502,20 @@ fn immutable_delegation_binding_is_atomic_replayable_and_required_for_effect_int
         profile_id: "profile-v1".into(),
         profile_revision: 1,
         profile_digest: b3('a'),
+        // Trusted fixture authority: the planned Task pins this exact profile
+        // revision and positive token budget, so the delegation binding
+        // carries the same budget; no managed provider route exists for the
+        // fixture, and provider/model identities name the fixture profile's
+        // declared selection and never authorize dispatch.
+        provider_id: "provider-v1".into(),
+        model_id: "model-v1".into(),
+        managed_provider_route: None,
+        profile_token_budget: Some(16_000),
         criteria_ids: vec!["tests-pass".into()],
         workspace_lease_id: "workspace-lease-1".into(),
         source_revision,
         capability_ceiling_digest: sha('b'),
+        permission_scope_digest: b3('e'),
         context_selection_digest: b3('d'),
         budget_lease_id: "budget-lease-1".into(),
         resource_lease_ids: vec![],
@@ -1144,10 +1558,13 @@ fn immutable_delegation_binding_is_atomic_replayable_and_required_for_effect_int
         store.attempt_effect_bound_revision("attempt-one", "effect-one"),
         Some(effect_edge_revision)
     );
+    // A live executing Attempt is never suspended by pause under the
+    // hardened admission-fence semantics, so the subsequent run-level command
+    // is cancellation; it must not rewrite the durable effect edge either.
     send(
         &mut store,
-        "pause-after-effect-edge",
-        ManagedCommand::PauseRun {
+        "cancel-after-effect-edge",
+        ManagedCommand::RequestCancel {
             run_id: "run-v1".into(),
         },
     );
@@ -1197,25 +1614,10 @@ fn immutable_delegation_binding_is_atomic_replayable_and_required_for_effect_int
 fn new_final_revision_invalidates_previous_verification_evidence() {
     let root = PrivateRoot::new();
     let mut store = ManagedControl::open(root.path(), "goal-manual-edit").unwrap();
-    accepted_run(&mut store);
-    send(
+    accepted_planned_run(
         &mut store,
-        "task",
-        ManagedCommand::AddTask {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-            dependencies: vec![],
-            criterion_ids: vec!["tests-pass".into()],
-            required_capabilities: vec![],
-        },
-    );
-    send(
-        &mut store,
-        "ready",
-        ManagedCommand::MarkTaskReady {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-        },
+        1,
+        vec![fixture_verifier_task("task-a", &[], &["tests-pass"])],
     );
     send(
         &mut store,
@@ -1230,25 +1632,17 @@ fn new_final_revision_invalidates_previous_verification_evidence() {
             session_id: "test-session".into(),
         },
     );
+    // Settlement itself carries the typed independent verification that marks
+    // the Task verified at the exact observed workspace head.
     settle_attempt_success(
         &mut store,
         "first-task-attempt",
+        "goal-manual-edit",
         "run-v1",
         "task-a",
         "attempt-one",
         'e',
-    );
-    send(
-        &mut store,
-        "verified-task",
-        ManagedCommand::VerifyTask {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-            attempt_id: "attempt-one".into(),
-            verifier_id: "server_auth.verifier".into(),
-            source_revision: sha('a'),
-            evidence_digest: sha('d'),
-        },
+        sha('a').as_str(),
     );
     send(
         &mut store,
@@ -1316,18 +1710,19 @@ fn new_final_revision_invalidates_previous_verification_evidence() {
             )
             .is_err()
     );
-    assert!(
-        store
-            .apply(
-                store.snapshot().revision,
-                "stale-finalize",
-                ManagedCommand::FinalizeRun {
-                    run_id: "run-v1".into(),
-                    final_revision: sha('b'),
-                }
-            )
-            .is_err()
-    );
+    let revision = store.snapshot().revision;
+    // The superseded sha('a') final can never finalize after the rebind.
+    assert!(matches!(
+        store.apply(
+            revision,
+            "stale-finalize",
+            ManagedCommand::FinalizeRun {
+                run_id: "run-v1".into(),
+                final_revision: sha('a'),
+            }
+        ),
+        Err(ManagedError::Conflict(_))
+    ));
     send(
         &mut store,
         "fresh-criterion-b",
@@ -1339,44 +1734,41 @@ fn new_final_revision_invalidates_previous_verification_evidence() {
             verifier_id: "server_auth.verifier".into(),
         },
     );
-    let revision = store.snapshot().revision;
-    assert!(matches!(
-        store.apply(
-            revision,
-            "final-b-with-digest-only-evidence",
-            ManagedCommand::FinalizeRun {
-                run_id: "run-v1".into(),
-                final_revision: sha('b'),
-            }
-        ),
-        Err(ManagedError::Conflict(_))
-    ));
-    assert_eq!(store.snapshot().runs["run-v1"].phase, RunPhase::Verifying);
+    // Finalization is the typed per-Task aggregate, not the run-level
+    // digest-only criterion audit trail; with every Task carrying typed
+    // independent proof the exact frozen revision finalizes.
+    send(
+        &mut store,
+        "final-b-typed-aggregate",
+        ManagedCommand::FinalizeRun {
+            run_id: "run-v1".into(),
+            final_revision: sha('b'),
+        },
+    );
+    assert_eq!(store.snapshot().runs["run-v1"].phase, RunPhase::Succeeded);
+    // SUCCEEDED is terminal: a fresh finalization key cannot reenter it.
+    assert!(
+        store
+            .apply(
+                store.snapshot().revision,
+                "finalize-after-terminal",
+                ManagedCommand::FinalizeRun {
+                    run_id: "run-v1".into(),
+                    final_revision: sha('b'),
+                }
+            )
+            .is_err()
+    );
 }
 
 #[test]
 fn admitted_attempt_cannot_pass_task_verification_without_a_settled_receipt() {
     let root = PrivateRoot::new();
     let mut store = ManagedControl::open(root.path(), "goal-attempt-receipt").unwrap();
-    accepted_run(&mut store);
-    send(
+    accepted_planned_run(
         &mut store,
-        "task",
-        ManagedCommand::AddTask {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-            dependencies: vec![],
-            criterion_ids: vec!["tests-pass".into()],
-            required_capabilities: vec![],
-        },
-    );
-    send(
-        &mut store,
-        "ready",
-        ManagedCommand::MarkTaskReady {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-        },
+        1,
+        vec![fixture_verifier_task("task-a", &[], &["tests-pass"])],
     );
     send(
         &mut store,
@@ -1433,25 +1825,15 @@ fn admitted_attempt_cannot_pass_task_verification_without_a_settled_receipt() {
         Some("attempt-one")
     );
 
-    settle_attempt_success(
+    let receipt_digest = settle_attempt_success(
         &mut store,
         "settle-attempt",
+        "goal-attempt-receipt",
         "run-v1",
         "task-a",
         "attempt-one",
         'e',
-    );
-    send(
-        &mut store,
-        "verify-settled-task",
-        ManagedCommand::VerifyTask {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-            attempt_id: "attempt-one".into(),
-            verifier_id: "server_auth.verifier".into(),
-            source_revision: sha('a'),
-            evidence_digest: sha('d'),
-        },
+        sha('a').as_str(),
     );
     assert_eq!(
         store.snapshot().attempts["attempt-one"].phase,
@@ -1461,15 +1843,26 @@ fn admitted_attempt_cannot_pass_task_verification_without_a_settled_receipt() {
         store.snapshot().attempts["attempt-one"]
             .receipt_digest
             .as_deref(),
-        Some(b3('e').as_str())
+        Some(receipt_digest.as_str())
     );
+    let expected_evidence =
+        fixture_verification_evidence("attempt-one", "tests-pass", sha('a').as_str());
     let verification = store.snapshot().runs["run-v1"].tasks["task-a"]
         .verification_evidence
         .as_ref()
         .expect("Task verification evidence should be durable");
     assert_eq!(verification.attempt_id, "attempt-one");
     assert_eq!(verification.source_revision, sha('a'));
-    assert_eq!(verification.evidence_digest, sha('d'));
+    assert_eq!(
+        verification.evidence_digest,
+        typed_task_verification_digest(
+            "task-a",
+            "attempt-one",
+            receipt_digest.as_str(),
+            &["tests-pass".to_owned()],
+            &expected_evidence,
+        )
+    );
     drop(store);
 
     let restored = ManagedControl::open(root.path(), "goal-attempt-receipt").unwrap();
@@ -1477,7 +1870,7 @@ fn admitted_attempt_cannot_pass_task_verification_without_a_settled_receipt() {
         restored.snapshot().attempts["attempt-one"]
             .receipt_digest
             .as_deref(),
-        Some(b3('e').as_str())
+        Some(receipt_digest.as_str())
     );
     let verification = restored.snapshot().runs["run-v1"].tasks["task-a"]
         .verification_evidence
@@ -1485,32 +1878,26 @@ fn admitted_attempt_cannot_pass_task_verification_without_a_settled_receipt() {
         .expect("replayed Task verification evidence should be durable");
     assert_eq!(verification.attempt_id, "attempt-one");
     assert_eq!(verification.source_revision, sha('a'));
-    assert_eq!(verification.evidence_digest, sha('d'));
+    assert_eq!(
+        verification.evidence_digest,
+        typed_task_verification_digest(
+            "task-a",
+            "attempt-one",
+            receipt_digest.as_str(),
+            &["tests-pass".to_owned()],
+            &expected_evidence,
+        )
+    );
 }
 
 #[test]
 fn settled_attempt_rejects_missing_or_wrong_format_receipt_reference() {
     let root = PrivateRoot::new();
     let mut store = ManagedControl::open(root.path(), "goal-missing-receipt").unwrap();
-    accepted_run(&mut store);
-    send(
+    accepted_planned_run(
         &mut store,
-        "task",
-        ManagedCommand::AddTask {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-            dependencies: vec![],
-            criterion_ids: vec!["tests-pass".into()],
-            required_capabilities: vec![],
-        },
-    );
-    send(
-        &mut store,
-        "ready",
-        ManagedCommand::MarkTaskReady {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-        },
+        1,
+        vec![fixture_planned_task("task-a", &[], &["tests-pass"])],
     );
     send(
         &mut store,
@@ -1582,25 +1969,10 @@ fn settled_attempt_rejects_missing_or_wrong_format_receipt_reference() {
 fn managed_attempt_accepts_host_receipt_reference_encoding() {
     let root = PrivateRoot::new();
     let mut store = ManagedControl::open(root.path(), "goal-host-receipt-format").unwrap();
-    accepted_run(&mut store);
-    send(
+    accepted_planned_run(
         &mut store,
-        "task",
-        ManagedCommand::AddTask {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-            dependencies: vec![],
-            criterion_ids: vec!["tests-pass".into()],
-            required_capabilities: vec![],
-        },
-    );
-    send(
-        &mut store,
-        "ready",
-        ManagedCommand::MarkTaskReady {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-        },
+        1,
+        vec![fixture_verifier_task("task-a", &[], &["tests-pass"])],
     );
     send(
         &mut store,
@@ -1615,77 +1987,37 @@ fn managed_attempt_accepts_host_receipt_reference_encoding() {
             session_id: "test-session".into(),
         },
     );
-    send(
-        &mut store,
-        "executing",
-        ManagedCommand::StartAttempt {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-            attempt_id: "attempt-one".into(),
-        },
-    );
-    // The Attempt-to-effect edge is durable only while the Attempt is EXECUTING, so
-    // it is recorded before settlement begins (matching the shared helper).
-    send(
-        &mut store,
-        "bind-host-receipt-effect",
-        ManagedCommand::BindAttemptEffect {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-            attempt_id: "attempt-one".into(),
-            effect_id: "eff-attempt-one".into(),
-            location_id: "loc-test".into(),
-            session_id: "ses-test".into(),
-        },
-    );
-    send(
-        &mut store,
-        "settling",
-        ManagedCommand::BeginAttemptSettlement {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-            attempt_id: "attempt-one".into(),
-        },
-    );
-    send(
+    // The reducer accepts the HostKernel's exact BLAKE3 receipt reference only
+    // when it equals the kernel-computed digest over the durable per-effect
+    // target receipts, which the typed settlement helper derives.
+    let receipt_digest = settle_attempt_success(
         &mut store,
         "record-host-receipt-reference",
-        ManagedCommand::SettleAttempt {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-            attempt_id: "attempt-one".into(),
-            receipt_digest: b3('a'),
-        },
+        "goal-host-receipt-format",
+        "run-v1",
+        "task-a",
+        "attempt-one",
+        'a',
+        sha('a').as_str(),
     );
 
     let attempt = &store.snapshot().attempts["attempt-one"];
     assert_eq!(attempt.phase, AttemptPhase::Succeeded);
-    assert_eq!(attempt.receipt_digest.as_deref(), Some(b3('a').as_str()));
+    assert_eq!(
+        attempt.receipt_digest.as_deref(),
+        Some(receipt_digest.as_str())
+    );
+    assert!(receipt_digest.starts_with("blake3:"));
 }
 
 #[test]
 fn post_dispatch_failure_requires_settled_receipt_before_retry_or_needs_you() {
     let root = PrivateRoot::new();
     let mut store = ManagedControl::open(root.path(), "goal-settled-failure").unwrap();
-    accepted_run(&mut store);
-    send(
+    accepted_planned_run(
         &mut store,
-        "task",
-        ManagedCommand::AddTask {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-            dependencies: vec![],
-            criterion_ids: vec!["tests-pass".into()],
-            required_capabilities: vec![],
-        },
-    );
-    send(
-        &mut store,
-        "ready",
-        ManagedCommand::MarkTaskReady {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-        },
+        1,
+        vec![fixture_planned_task("task-a", &[], &["tests-pass"])],
     );
     send(
         &mut store,
@@ -1944,25 +2276,10 @@ fn idempotent_delivery_replays_same_command_without_duplicate_effects() {
 fn cancellation_fences_task_admission_durably_across_restart() {
     let root = PrivateRoot::new();
     let mut store = ManagedControl::open(root.path(), "goal-cancel").unwrap();
-    accepted_run(&mut store);
-    send(
+    accepted_planned_run(
         &mut store,
-        "task1",
-        ManagedCommand::AddTask {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-            dependencies: vec![],
-            criterion_ids: vec![],
-            required_capabilities: vec![],
-        },
-    );
-    send(
-        &mut store,
-        "ready",
-        ManagedCommand::MarkTaskReady {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-        },
+        1,
+        vec![fixture_planned_task("task-a", &[], &["tests-pass"])],
     );
     send(
         &mut store,
@@ -2015,25 +2332,10 @@ fn cancellation_fences_task_admission_durably_across_restart() {
 fn cancelling_run_preserves_unknown_attempt_and_cancel_fence_after_restart() {
     let root = PrivateRoot::new();
     let mut store = ManagedControl::open(root.path(), "goal-cancel-unknown").unwrap();
-    accepted_run(&mut store);
-    send(
+    accepted_planned_run(
         &mut store,
-        "task",
-        ManagedCommand::AddTask {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-            dependencies: vec![],
-            criterion_ids: vec![],
-            required_capabilities: vec![],
-        },
-    );
-    send(
-        &mut store,
-        "ready",
-        ManagedCommand::MarkTaskReady {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-        },
+        1,
+        vec![fixture_planned_task("task-a", &[], &["tests-pass"])],
     );
     send(
         &mut store,
@@ -2134,25 +2436,10 @@ fn cancelling_run_preserves_unknown_attempt_and_cancel_fence_after_restart() {
 fn unknown_settling_attempt_replays_and_remains_fenced_after_restart() {
     let root = PrivateRoot::new();
     let mut store = ManagedControl::open(root.path(), "goal-settling-unknown").unwrap();
-    accepted_run(&mut store);
-    send(
+    accepted_planned_run(
         &mut store,
-        "task",
-        ManagedCommand::AddTask {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-            dependencies: vec![],
-            criterion_ids: vec![],
-            required_capabilities: vec![],
-        },
-    );
-    send(
-        &mut store,
-        "ready",
-        ManagedCommand::MarkTaskReady {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-        },
+        1,
+        vec![fixture_planned_task("task-a", &[], &["tests-pass"])],
     );
     send(
         &mut store,
@@ -2278,25 +2565,10 @@ fn unknown_settling_attempt_replays_and_remains_fenced_after_restart() {
 fn unknown_attempt_blocks_retries_and_remains_unknown_after_replay() {
     let root = PrivateRoot::new();
     let mut store = ManagedControl::open(root.path(), "goal-unknown").unwrap();
-    accepted_run(&mut store);
-    send(
+    accepted_planned_run(
         &mut store,
-        "task",
-        ManagedCommand::AddTask {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-            dependencies: vec![],
-            criterion_ids: vec![],
-            required_capabilities: vec![],
-        },
-    );
-    send(
-        &mut store,
-        "ready",
-        ManagedCommand::MarkTaskReady {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-        },
+        1,
+        vec![fixture_planned_task("task-a", &[], &["tests-pass"])],
     );
     send(
         &mut store,
@@ -2363,24 +2635,44 @@ fn unknown_attempt_blocks_retries_and_remains_unknown_after_replay() {
 fn unknown_attempt_during_pause_moves_run_to_reconciliation_and_blocks_resume() {
     let root = PrivateRoot::new();
     let mut store = ManagedControl::open(root.path(), "goal-paused-unknown").unwrap();
-    accepted_run(&mut store);
+    accepted_planned_run(
+        &mut store,
+        1,
+        vec![fixture_planned_task("task-a", &[], &["tests-pass"])],
+    );
+    // Pause is a durable admission fence taken before dispatch; the hardened
+    // reducer never suspends a live Attempt, so the UNKNOWN Attempt is
+    // admitted only after the fence is explicitly resumed.
     send(
         &mut store,
-        "task",
-        ManagedCommand::AddTask {
+        "pause",
+        ManagedCommand::PauseRun {
             run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-            dependencies: vec![],
-            criterion_ids: vec![],
-            required_capabilities: vec![],
         },
+    );
+    assert_eq!(store.snapshot().runs["run-v1"].phase, RunPhase::Paused);
+    assert!(
+        store
+            .apply(
+                store.snapshot().revision,
+                "blocked-attempt",
+                ManagedCommand::AdmitAttempt {
+                    run_id: "run-v1".into(),
+                    task_id: "task-a".into(),
+                    attempt_id: "attempt-one".into(),
+                    executor_principal: "server_auth.executor".into(),
+                    owner_epoch: 1,
+                    location_id: "test-location".into(),
+                    session_id: "test-session".into(),
+                }
+            )
+            .is_err()
     );
     send(
         &mut store,
-        "ready",
-        ManagedCommand::MarkTaskReady {
+        "resume",
+        ManagedCommand::ResumeRun {
             run_id: "run-v1".into(),
-            task_id: "task-a".into(),
         },
     );
     send(
@@ -2396,14 +2688,6 @@ fn unknown_attempt_during_pause_moves_run_to_reconciliation_and_blocks_resume() 
             session_id: "test-session".into(),
         },
     );
-    send(
-        &mut store,
-        "pause",
-        ManagedCommand::PauseRun {
-            run_id: "run-v1".into(),
-        },
-    );
-    assert_eq!(store.snapshot().runs["run-v1"].phase, RunPhase::Paused);
     send(
         &mut store,
         "unknown",
@@ -2438,28 +2722,13 @@ fn unknown_attempt_during_pause_moves_run_to_reconciliation_and_blocks_resume() 
 fn dependencies_are_not_claimed_passed_from_worker_or_model_output() {
     let root = PrivateRoot::new();
     let mut store = ManagedControl::open(root.path(), "goal-deps").unwrap();
-    accepted_run(&mut store);
-    send(
+    accepted_planned_run(
         &mut store,
-        "task-a",
-        ManagedCommand::AddTask {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-            dependencies: vec![],
-            criterion_ids: vec![],
-            required_capabilities: vec![],
-        },
-    );
-    send(
-        &mut store,
-        "task-b",
-        ManagedCommand::AddTask {
-            run_id: "run-v1".into(),
-            task_id: "task-b".into(),
-            dependencies: vec!["task-a".into()],
-            criterion_ids: vec![],
-            required_capabilities: vec![],
-        },
+        1,
+        vec![
+            fixture_planned_task("task-a", &[], &["tests-pass"]),
+            fixture_planned_task("task-b", &["task-a"], &[]),
+        ],
     );
     assert!(
         store
@@ -2514,28 +2783,16 @@ fn dependencies_are_not_claimed_passed_from_worker_or_model_output() {
 fn spec_max_workers_caps_concurrent_attempt_admission() {
     let root = PrivateRoot::new();
     let mut store = ManagedControl::open(root.path(), "goal-worker-cap").unwrap();
-    accepted_run(&mut store);
-    for task_id in ["task-a", "task-b"] {
-        send(
-            &mut store,
-            &format!("propose-{task_id}"),
-            ManagedCommand::AddTask {
-                run_id: "run-v1".into(),
-                task_id: task_id.into(),
-                dependencies: vec![],
-                criterion_ids: vec!["tests-pass".into()],
-                required_capabilities: vec![],
-            },
-        );
-        send(
-            &mut store,
-            &format!("ready-{task_id}"),
-            ManagedCommand::MarkTaskReady {
-                run_id: "run-v1".into(),
-                task_id: task_id.into(),
-            },
-        );
-    }
+    // The planned set covers the single accepted criterion exactly once; the
+    // second Task is unpinned-criteria work that never settles in this test.
+    accepted_planned_run(
+        &mut store,
+        1,
+        vec![
+            fixture_planned_task("task-a", &[], &["tests-pass"]),
+            fixture_planned_task("task-b", &[], &[]),
+        ],
+    );
     send(
         &mut store,
         "attempt-one",
@@ -2604,28 +2861,17 @@ fn spec_max_workers_caps_concurrent_attempt_admission() {
 fn managed_single_attempt_gate_prevents_fanout_even_when_spec_budget_allows_it() {
     let root = PrivateRoot::new();
     let mut store = ManagedControl::open(root.path(), "goal-single-attempt").unwrap();
-    accepted_run_with_workers(&mut store, 2);
-    for task_id in ["task-a", "task-b"] {
-        send(
-            &mut store,
-            &format!("propose-{task_id}"),
-            ManagedCommand::AddTask {
-                run_id: "run-v1".into(),
-                task_id: task_id.into(),
-                dependencies: vec![],
-                criterion_ids: vec!["tests-pass".into()],
-                required_capabilities: vec![],
-            },
-        );
-        send(
-            &mut store,
-            &format!("ready-{task_id}"),
-            ManagedCommand::MarkTaskReady {
-                run_id: "run-v1".into(),
-                task_id: task_id.into(),
-            },
-        );
-    }
+    // The fanout fence is the distinct-Location invariant, not the worker
+    // budget: both fixture Attempts deliberately name the same Location, so
+    // the second admission must fail even with two worker slots.
+    accepted_planned_run(
+        &mut store,
+        2,
+        vec![
+            fixture_verifier_task("task-a", &[], &["tests-pass"]),
+            fixture_planned_task("task-b", &[], &[]),
+        ],
+    );
 
     send(
         &mut store,
@@ -2660,45 +2906,26 @@ fn managed_single_attempt_gate_prevents_fanout_even_when_spec_budget_allows_it()
     assert_eq!(store.snapshot().revision, revision);
     assert!(!store.snapshot().attempts.contains_key("attempt-two"));
 
+    // Typed settlement carries the independent verification atomically: there
+    // is no durable settled-but-unverified state, so the fanout fence is the
+    // live Attempt itself, and only the verified settlement frees the slot.
     settle_attempt_success(
         &mut store,
         "settle-attempt-one",
+        "goal-single-attempt",
         "run-v1",
         "task-a",
         "attempt-one",
         'e',
+        sha('a').as_str(),
     );
-    let pending_verification_revision = store.snapshot().revision;
-    assert!(matches!(
-        store.apply(
-            pending_verification_revision,
-            "attempt-two-before-independent-verification",
-            ManagedCommand::AdmitAttempt {
-                run_id: "run-v1".into(),
-                task_id: "task-b".into(),
-                attempt_id: "attempt-two".into(),
-                executor_principal: "server_auth.executor".into(),
-                owner_epoch: 1,
-                location_id: "test-location".into(),
-                session_id: "test-session".into(),
-            }
-        ),
-        Err(ManagedError::Conflict(_))
-    ));
-    assert_eq!(store.snapshot().revision, pending_verification_revision);
+    assert_eq!(
+        store.snapshot().runs["run-v1"].tasks["task-a"]
+            .verified_revision
+            .as_deref(),
+        Some(sha('a').as_str())
+    );
 
-    send(
-        &mut store,
-        "verify-attempt-one",
-        ManagedCommand::VerifyTask {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-            attempt_id: "attempt-one".into(),
-            verifier_id: "server_auth.verifier".into(),
-            source_revision: sha('a'),
-            evidence_digest: sha('d'),
-        },
-    );
     send(
         &mut store,
         "attempt-two-after-independent-verification",
@@ -2724,28 +2951,17 @@ fn managed_single_attempt_gate_prevents_fanout_even_when_spec_budget_allows_it()
 fn scheduler_selects_one_deterministic_ready_task_only_after_prior_verification() {
     let root = PrivateRoot::new();
     let mut store = ManagedControl::open(root.path(), "goal-scheduler-candidate").unwrap();
-    accepted_run_with_workers(&mut store, 2);
-    for task_id in ["task-b", "task-a"] {
-        send(
-            &mut store,
-            &format!("propose-{task_id}"),
-            ManagedCommand::AddTask {
-                run_id: "run-v1".into(),
-                task_id: task_id.into(),
-                dependencies: vec![],
-                criterion_ids: vec!["tests-pass".into()],
-                required_capabilities: vec![],
-            },
-        );
-        send(
-            &mut store,
-            &format!("ready-{task_id}"),
-            ManagedCommand::MarkTaskReady {
-                run_id: "run-v1".into(),
-                task_id: task_id.into(),
-            },
-        );
-    }
+    // Single-worker fixture: the deterministic selector must offer nothing
+    // while the prior Attempt is live, and only its independently verified
+    // settlement frees the slot for the next candidate.
+    accepted_planned_run(
+        &mut store,
+        1,
+        vec![
+            fixture_verifier_task("task-a", &[], &["tests-pass"]),
+            fixture_planned_task("task-b", &[], &[]),
+        ],
+    );
     assert_eq!(
         store.snapshot().next_schedulable_task("run-v1"),
         Some("task-a".into())
@@ -2765,26 +2981,17 @@ fn scheduler_selects_one_deterministic_ready_task_only_after_prior_verification(
         },
     );
     assert_eq!(store.snapshot().next_schedulable_task("run-v1"), None);
+    // Typed settlement verifies the completed Task atomically; only then does
+    // the deterministic selector offer the next ready candidate.
     settle_attempt_success(
         &mut store,
         "settle-attempt-one",
+        "goal-scheduler-candidate",
         "run-v1",
         "task-a",
         "attempt-one",
         'e',
-    );
-    assert_eq!(store.snapshot().next_schedulable_task("run-v1"), None);
-    send(
-        &mut store,
-        "verify-attempt-one",
-        ManagedCommand::VerifyTask {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-            attempt_id: "attempt-one".into(),
-            verifier_id: "server_auth.verifier".into(),
-            source_revision: sha('a'),
-            evidence_digest: sha('d'),
-        },
+        sha('a').as_str(),
     );
     assert_eq!(
         store.snapshot().next_schedulable_task("run-v1"),
@@ -2804,36 +3011,13 @@ fn scheduler_selects_one_deterministic_ready_task_only_after_prior_verification(
 fn scheduler_skips_lexically_first_task_until_dependency_is_verified() {
     let root = PrivateRoot::new();
     let mut store = ManagedControl::open(root.path(), "goal-scheduler-dependency").unwrap();
-    accepted_run(&mut store);
-    send(
+    accepted_planned_run(
         &mut store,
-        "source-task",
-        ManagedCommand::AddTask {
-            run_id: "run-v1".into(),
-            task_id: "task-z-source".into(),
-            dependencies: vec![],
-            criterion_ids: vec!["tests-pass".into()],
-            required_capabilities: vec![],
-        },
-    );
-    send(
-        &mut store,
-        "dependent-task",
-        ManagedCommand::AddTask {
-            run_id: "run-v1".into(),
-            task_id: "task-a-dependent".into(),
-            dependencies: vec!["task-z-source".into()],
-            criterion_ids: vec![],
-            required_capabilities: vec![],
-        },
-    );
-    send(
-        &mut store,
-        "ready-source",
-        ManagedCommand::MarkTaskReady {
-            run_id: "run-v1".into(),
-            task_id: "task-z-source".into(),
-        },
+        1,
+        vec![
+            fixture_verifier_task("task-z-source", &[], &["tests-pass"]),
+            fixture_planned_task("task-a-dependent", &["task-z-source"], &[]),
+        ],
     );
     assert!(
         store
@@ -2865,34 +3049,21 @@ fn scheduler_skips_lexically_first_task_until_dependency_is_verified() {
             session_id: "test-session".into(),
         },
     );
+    // The typed settlement verifies the source Task and derives the dependent
+    // Task's readiness from that durable PASS evidence in the same transition.
     settle_attempt_success(
         &mut store,
         "settle-source-attempt",
+        "goal-scheduler-dependency",
         "run-v1",
         "task-z-source",
         "source-attempt",
         'e',
+        sha('a').as_str(),
     );
-    assert_eq!(store.snapshot().next_schedulable_task("run-v1"), None);
-    send(
-        &mut store,
-        "verify-source-task",
-        ManagedCommand::VerifyTask {
-            run_id: "run-v1".into(),
-            task_id: "task-z-source".into(),
-            attempt_id: "source-attempt".into(),
-            verifier_id: "server_auth.verifier".into(),
-            source_revision: sha('a'),
-            evidence_digest: sha('d'),
-        },
-    );
-    send(
-        &mut store,
-        "ready-dependent-after-verification",
-        ManagedCommand::MarkTaskReady {
-            run_id: "run-v1".into(),
-            task_id: "task-a-dependent".into(),
-        },
+    assert!(
+        store.snapshot().runs["run-v1"].tasks["task-a-dependent"]
+            .ready
     );
     assert_eq!(
         store.snapshot().next_schedulable_task("run-v1"),
@@ -2904,25 +3075,10 @@ fn scheduler_skips_lexically_first_task_until_dependency_is_verified() {
 fn pause_is_a_durable_admission_fence_and_resume_restores_only_safe_work() {
     let root = PrivateRoot::new();
     let mut store = ManagedControl::open(root.path(), "goal-paused").unwrap();
-    accepted_run(&mut store);
-    send(
+    accepted_planned_run(
         &mut store,
-        "task",
-        ManagedCommand::AddTask {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-            dependencies: vec![],
-            criterion_ids: vec![],
-            required_capabilities: vec![],
-        },
-    );
-    send(
-        &mut store,
-        "ready",
-        ManagedCommand::MarkTaskReady {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-        },
+        1,
+        vec![fixture_planned_task("task-a", &[], &["tests-pass"])],
     );
     send(
         &mut store,
@@ -2978,25 +3134,10 @@ fn pause_is_a_durable_admission_fence_and_resume_restores_only_safe_work() {
 fn restarting_with_admitted_but_unsettled_attempt_fences_execution_as_unknown() {
     let root = PrivateRoot::new();
     let mut store = ManagedControl::open(root.path(), "goal-crash").unwrap();
-    accepted_run(&mut store);
-    send(
+    accepted_planned_run(
         &mut store,
-        "task",
-        ManagedCommand::AddTask {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-            dependencies: vec![],
-            criterion_ids: vec![],
-            required_capabilities: vec![],
-        },
-    );
-    send(
-        &mut store,
-        "ready",
-        ManagedCommand::MarkTaskReady {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-        },
+        1,
+        vec![fixture_planned_task("task-a", &[], &["tests-pass"])],
     );
     send(
         &mut store,
@@ -3056,28 +3197,22 @@ fn restarting_with_admitted_but_unsettled_attempt_fences_execution_as_unknown() 
 fn verified_task_unblocks_dependency_but_digest_only_evidence_cannot_finalize_run() {
     let root = PrivateRoot::new();
     let mut store = ManagedControl::open(root.path(), "goal-verified").unwrap();
-    accepted_run(&mut store);
-    send(
+    // Both Tasks settle through the effect/delegation fixture, so each must
+    // carry an accepted criterion, and the planned set covers every accepted
+    // criterion exactly once.
+    let mut two_criteria = spec("server_auth.author", 2);
+    two_criteria.criteria.push(AcceptanceCriterion {
+        id: "docs-match".into(),
+        description: "The fixture documentation matches the change".into(),
+    });
+    accepted_spec(&mut store, two_criteria);
+    plan_and_start_run(
         &mut store,
-        "task-a",
-        ManagedCommand::AddTask {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-            dependencies: vec![],
-            criterion_ids: vec!["tests-pass".into()],
-            required_capabilities: vec![],
-        },
-    );
-    send(
-        &mut store,
-        "task-b",
-        ManagedCommand::AddTask {
-            run_id: "run-v1".into(),
-            task_id: "task-b".into(),
-            dependencies: vec!["task-a".into()],
-            criterion_ids: vec!["tests-pass".into()],
-            required_capabilities: vec![],
-        },
+        "run-v1",
+        vec![
+            fixture_verifier_task("task-a", &[], &["tests-pass"]),
+            fixture_verifier_task("task-b", &["task-a"], &["docs-match"]),
+        ],
     );
     assert!(
         store
@@ -3093,14 +3228,6 @@ fn verified_task_unblocks_dependency_but_digest_only_evidence_cannot_finalize_ru
     );
     send(
         &mut store,
-        "ready-a",
-        ManagedCommand::MarkTaskReady {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-        },
-    );
-    send(
-        &mut store,
         "attempt-a",
         ManagedCommand::AdmitAttempt {
             run_id: "run-v1".into(),
@@ -3112,26 +3239,21 @@ fn verified_task_unblocks_dependency_but_digest_only_evidence_cannot_finalize_ru
             session_id: "test-session".into(),
         },
     );
-    settle_attempt_success(&mut store, "task-a-attempt", "run-v1", "task-a", "a-1", 'e');
-    send(
+    // Typed settlement verifies task-a and derives task-b's readiness from
+    // that durable PASS evidence in the same transition.
+    settle_attempt_success(
         &mut store,
-        "verified-a",
-        ManagedCommand::VerifyTask {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-            attempt_id: "a-1".into(),
-            verifier_id: "server_auth.verifier".into(),
-            source_revision: sha('a'),
-            evidence_digest: sha('c'),
-        },
+        "task-a-attempt",
+        "goal-verified",
+        "run-v1",
+        "task-a",
+        "a-1",
+        'e',
+        sha('a').as_str(),
     );
-    send(
-        &mut store,
-        "ready-b",
-        ManagedCommand::MarkTaskReady {
-            run_id: "run-v1".into(),
-            task_id: "task-b".into(),
-        },
+    assert_eq!(
+        store.snapshot().runs["run-v1"].tasks["task-b"].ready,
+        true
     );
     send(
         &mut store,
@@ -3159,18 +3281,16 @@ fn verified_task_unblocks_dependency_but_digest_only_evidence_cannot_finalize_ru
             )
             .is_err()
     );
-    settle_attempt_success(&mut store, "task-b-attempt", "run-v1", "task-b", "b-1", 'd');
-    send(
+    // The second typed settlement verifies task-b at its own observed head.
+    settle_attempt_success(
         &mut store,
-        "verified-b",
-        ManagedCommand::VerifyTask {
-            run_id: "run-v1".into(),
-            task_id: "task-b".into(),
-            attempt_id: "b-1".into(),
-            verifier_id: "server_auth.verifier".into(),
-            source_revision: sha('b'),
-            evidence_digest: sha('d'),
-        },
+        "task-b-attempt",
+        "goal-verified",
+        "run-v1",
+        "task-b",
+        "b-1",
+        'd',
+        sha('b').as_str(),
     );
     send(
         &mut store,
@@ -3181,18 +3301,9 @@ fn verified_task_unblocks_dependency_but_digest_only_evidence_cannot_finalize_ru
             verifier_id: "server_auth.verifier".into(),
         },
     );
-    assert!(
-        store
-            .apply(
-                store.snapshot().revision,
-                "premature",
-                ManagedCommand::FinalizeRun {
-                    run_id: "run-v1".into(),
-                    final_revision: sha('b'),
-                }
-            )
-            .is_err()
-    );
+    // The typed per-Task aggregate is the finalization basis; run-level
+    // digest-only criterion evidence is an audit trail, not the proof, so
+    // there is no settled-but-unfinalizable gap at this point.
     assert!(
         store
             .apply(
@@ -3237,21 +3348,6 @@ fn verified_task_unblocks_dependency_but_digest_only_evidence_cannot_finalize_ru
         restored.snapshot().runs["run-v1"].phase,
         RunPhase::Verifying
     );
-    assert!(matches!(
-        restored.apply(
-            restored.snapshot().revision,
-            "final-with-digest-only-evidence",
-            ManagedCommand::FinalizeRun {
-                run_id: "run-v1".into(),
-                final_revision: sha('b'),
-            }
-        ),
-        Err(ManagedError::Conflict(_))
-    ));
-    assert_eq!(
-        restored.snapshot().runs["run-v1"].phase,
-        RunPhase::Verifying
-    );
     assert_eq!(
         restored.snapshot().attempts["a-1"].phase,
         AttemptPhase::Succeeded
@@ -3260,23 +3356,44 @@ fn verified_task_unblocks_dependency_but_digest_only_evidence_cannot_finalize_ru
         restored.snapshot().attempts["b-1"].phase,
         AttemptPhase::Succeeded
     );
+    // Finalization replays the typed per-Task aggregate; the run-level
+    // digest-only criterion audit trail is never the deciding proof.
     send(
         &mut restored,
-        "cancel-incomplete-verification",
-        ManagedCommand::RequestCancel {
+        "final-with-typed-aggregate",
+        ManagedCommand::FinalizeRun {
             run_id: "run-v1".into(),
-        },
-    );
-    send(
-        &mut restored,
-        "complete-cancel-incomplete-verification",
-        ManagedCommand::CompleteCancel {
-            run_id: "run-v1".into(),
+            final_revision: sha('b'),
         },
     );
     assert_eq!(
         restored.snapshot().runs["run-v1"].phase,
-        RunPhase::Cancelled
+        RunPhase::Succeeded
+    );
+    // SUCCEEDED is terminal: neither a fresh finalization key nor a late
+    // cancellation can reenter the finished Run.
+    assert!(
+        restored
+            .apply(
+                restored.snapshot().revision,
+                "finalize-after-terminal",
+                ManagedCommand::FinalizeRun {
+                    run_id: "run-v1".into(),
+                    final_revision: sha('b'),
+                }
+            )
+            .is_err()
+    );
+    assert!(
+        restored
+            .apply(
+                restored.snapshot().revision,
+                "cancel-after-terminal",
+                ManagedCommand::RequestCancel {
+                    run_id: "run-v1".into(),
+                }
+            )
+            .is_err()
     );
 }
 
@@ -3284,25 +3401,10 @@ fn verified_task_unblocks_dependency_but_digest_only_evidence_cannot_finalize_ru
 fn a_run_with_unsettled_unknown_attempt_cannot_enter_verification() {
     let root = PrivateRoot::new();
     let mut store = ManagedControl::open(root.path(), "goal-verify-unknown").unwrap();
-    accepted_run(&mut store);
-    send(
+    accepted_planned_run(
         &mut store,
-        "task",
-        ManagedCommand::AddTask {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-            dependencies: vec![],
-            criterion_ids: vec![],
-            required_capabilities: vec![],
-        },
-    );
-    send(
-        &mut store,
-        "ready",
-        ManagedCommand::MarkTaskReady {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-        },
+        1,
+        vec![fixture_planned_task("task-a", &[], &["tests-pass"])],
     );
     send(
         &mut store,
@@ -3345,25 +3447,10 @@ fn a_run_with_unsettled_unknown_attempt_cannot_enter_verification() {
 fn cancelling_run_unknown_attempt_cannot_settle_verify_or_finalize() {
     let root = PrivateRoot::new();
     let mut store = ManagedControl::open(root.path(), "goal-cancel-settle").unwrap();
-    accepted_run(&mut store);
-    send(
+    accepted_planned_run(
         &mut store,
-        "task",
-        ManagedCommand::AddTask {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-            dependencies: vec![],
-            criterion_ids: vec![],
-            required_capabilities: vec![],
-        },
-    );
-    send(
-        &mut store,
-        "ready",
-        ManagedCommand::MarkTaskReady {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-        },
+        1,
+        vec![fixture_planned_task("task-a", &[], &["tests-pass"])],
     );
     send(
         &mut store,
@@ -3637,7 +3724,7 @@ fn cancelling_run_unknown_attempt_cannot_settle_verify_or_finalize() {
 fn cancel_fence_matches_lifecycle_from_paused_verifying_and_needs_you() {
     let root = PrivateRoot::new();
     let mut store = ManagedControl::open(root.path(), "goal-cancel-matrix").unwrap();
-    accepted_run(&mut store);
+    accepted_spec(&mut store, spec("server_auth.author", 2));
 
     // PAUSED -> CANCELLING is a lifecycle transition; resume must not revive it.
     send(
@@ -3679,32 +3766,10 @@ fn cancel_fence_matches_lifecycle_from_paused_verifying_and_needs_you() {
     );
 
     // VERIFYING -> CANCELLING freezes criterion evidence and finalization.
-    send(
+    plan_and_start_run(
         &mut store,
-        "start-verifying",
-        ManagedCommand::StartRun {
-            run_id: "run-verifying".into(),
-            spec_id: "spec-v1".into(),
-        },
-    );
-    send(
-        &mut store,
-        "task-verifying",
-        ManagedCommand::AddTask {
-            run_id: "run-verifying".into(),
-            task_id: "task-v".into(),
-            dependencies: vec![],
-            criterion_ids: vec!["tests-pass".into()],
-            required_capabilities: vec![],
-        },
-    );
-    send(
-        &mut store,
-        "ready-verifying",
-        ManagedCommand::MarkTaskReady {
-            run_id: "run-verifying".into(),
-            task_id: "task-v".into(),
-        },
+        "run-verifying",
+        vec![fixture_verifier_task("task-v", &[], &["tests-pass"])],
     );
     send(
         &mut store,
@@ -3719,25 +3784,17 @@ fn cancel_fence_matches_lifecycle_from_paused_verifying_and_needs_you() {
             session_id: "test-session".into(),
         },
     );
+    // Typed settlement itself carries the independent verification that marks
+    // task-v verified at the observed head.
     settle_attempt_success(
         &mut store,
         "verifying-attempt",
+        "goal-cancel-matrix",
         "run-verifying",
         "task-v",
         "attempt-v",
         'e',
-    );
-    send(
-        &mut store,
-        "pass-verifying",
-        ManagedCommand::VerifyTask {
-            run_id: "run-verifying".into(),
-            task_id: "task-v".into(),
-            attempt_id: "attempt-v".into(),
-            verifier_id: "server_auth.verifier".into(),
-            source_revision: sha('a'),
-            evidence_digest: sha('c'),
-        },
+        sha('a').as_str(),
     );
     send(
         &mut store,
@@ -3944,33 +4001,18 @@ fn stale_revision_invalid_delivery_and_reuse_fail_closed_without_mutation() {
 fn attempt_ids_are_global_and_settlement_requires_exact_ownership() {
     let root = PrivateRoot::new();
     let mut store = ManagedControl::open(root.path(), "goal-ownership").unwrap();
-    accepted_run(&mut store);
-    send(
+    accepted_spec(&mut store, spec("server_auth.author", 2));
+    // Attempt identity is owner-log global, but the worker budget is per Run;
+    // both Runs are independently planned and pinned by explicit start.
+    plan_and_start_run(
         &mut store,
-        "second-run",
-        ManagedCommand::StartRun {
-            run_id: "run-v2".into(),
-            spec_id: "spec-v1".into(),
-        },
+        "run-v1",
+        vec![fixture_planned_task("task-a", &[], &["tests-pass"])],
     );
-    send(
+    plan_and_start_run(
         &mut store,
-        "task-one",
-        ManagedCommand::AddTask {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-            dependencies: vec![],
-            criterion_ids: vec![],
-            required_capabilities: vec![],
-        },
-    );
-    send(
-        &mut store,
-        "ready-one",
-        ManagedCommand::MarkTaskReady {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-        },
+        "run-v2",
+        vec![fixture_planned_task("task-a", &[], &["tests-pass"])],
     );
     send(
         &mut store,
@@ -3983,25 +4025,6 @@ fn attempt_ids_are_global_and_settlement_requires_exact_ownership() {
             owner_epoch: 1,
             location_id: "test-location".into(),
             session_id: "test-session".into(),
-        },
-    );
-    send(
-        &mut store,
-        "task-two",
-        ManagedCommand::AddTask {
-            run_id: "run-v2".into(),
-            task_id: "task-a".into(),
-            dependencies: vec![],
-            criterion_ids: vec![],
-            required_capabilities: vec![],
-        },
-    );
-    send(
-        &mut store,
-        "ready-two",
-        ManagedCommand::MarkTaskReady {
-            run_id: "run-v2".into(),
-            task_id: "task-a".into(),
         },
     );
     // Attempt identity is unique across the whole owner log, not per Run.
@@ -4042,16 +4065,21 @@ fn attempt_ids_are_global_and_settlement_requires_exact_ownership() {
         Some("attempt-two")
     );
 
-    // Settlement must name the Task that owns the active Attempt.
+    // Settlement must name the Task that owns the active Attempt. A Task
+    // added after the explicit start still pins its immutable profile and
+    // positive budget at creation, and is not ready until marked.
     send(
         &mut store,
         "task-b",
-        ManagedCommand::AddTask {
+        ManagedCommand::AddTaskPinnedProfile {
             run_id: "run-v1".into(),
             task_id: "task-b".into(),
             dependencies: vec![],
             criterion_ids: vec![],
             required_capabilities: vec![],
+            agent_profile_revision: fixture_profile_revision(),
+            profile_token_budget: 16_000,
+            profile_owner_binding_digest: b3('b'),
         },
     );
     send(
@@ -4169,36 +4197,13 @@ fn attempt_ids_are_global_and_settlement_requires_exact_ownership() {
 fn task_depending_on_unknown_effect_task_never_becomes_ready() {
     let root = PrivateRoot::new();
     let mut store = ManagedControl::open(root.path(), "goal-unknown-dep").unwrap();
-    accepted_run(&mut store);
-    send(
+    accepted_planned_run(
         &mut store,
-        "task-a",
-        ManagedCommand::AddTask {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-            dependencies: vec![],
-            criterion_ids: vec![],
-            required_capabilities: vec![],
-        },
-    );
-    send(
-        &mut store,
-        "task-b",
-        ManagedCommand::AddTask {
-            run_id: "run-v1".into(),
-            task_id: "task-b".into(),
-            dependencies: vec!["task-a".into()],
-            criterion_ids: vec![],
-            required_capabilities: vec![],
-        },
-    );
-    send(
-        &mut store,
-        "ready-a",
-        ManagedCommand::MarkTaskReady {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-        },
+        1,
+        vec![
+            fixture_planned_task("task-a", &[], &["tests-pass"]),
+            fixture_planned_task("task-b", &["task-a"], &[]),
+        ],
     );
     // A dependency is satisfied only by an independent PASS, never by presence.
     assert!(
@@ -4473,35 +4478,13 @@ fn derived_spec_requires_accepted_parent_and_activation_is_explicit() {
 fn cancellation_completes_only_after_every_attempt_settles_and_is_terminal() {
     let root = PrivateRoot::new();
     let mut store = ManagedControl::open(root.path(), "goal-cancel-complete").unwrap();
-    accepted_run(&mut store);
+    accepted_spec(&mut store, spec("server_auth.author", 2));
 
     // An unsettled admitted Attempt keeps CANCELLING fenced.
-    send(
+    plan_and_start_run(
         &mut store,
-        "start-blocked",
-        ManagedCommand::StartRun {
-            run_id: "run-blocked".into(),
-            spec_id: "spec-v1".into(),
-        },
-    );
-    send(
-        &mut store,
-        "task-blocked",
-        ManagedCommand::AddTask {
-            run_id: "run-blocked".into(),
-            task_id: "task-a".into(),
-            dependencies: vec![],
-            criterion_ids: vec![],
-            required_capabilities: vec![],
-        },
-    );
-    send(
-        &mut store,
-        "ready-blocked",
-        ManagedCommand::MarkTaskReady {
-            run_id: "run-blocked".into(),
-            task_id: "task-a".into(),
-        },
+        "run-blocked",
+        vec![fixture_planned_task("task-a", &[], &["tests-pass"])],
     );
     send(
         &mut store,
@@ -4565,32 +4548,10 @@ fn cancellation_completes_only_after_every_attempt_settles_and_is_terminal() {
     );
 
     // Once every admitted Attempt has settled, cancellation completes.
-    send(
+    plan_and_start_run(
         &mut store,
-        "start-settled",
-        ManagedCommand::StartRun {
-            run_id: "run-settled".into(),
-            spec_id: "spec-v1".into(),
-        },
-    );
-    send(
-        &mut store,
-        "task-settled",
-        ManagedCommand::AddTask {
-            run_id: "run-settled".into(),
-            task_id: "task-b".into(),
-            dependencies: vec![],
-            criterion_ids: vec![],
-            required_capabilities: vec![],
-        },
-    );
-    send(
-        &mut store,
-        "ready-settled",
-        ManagedCommand::MarkTaskReady {
-            run_id: "run-settled".into(),
-            task_id: "task-b".into(),
-        },
+        "run-settled",
+        vec![fixture_planned_task("task-b", &[], &["tests-pass"])],
     );
     send(
         &mut store,
@@ -4784,25 +4745,10 @@ fn cancellation_completes_only_after_every_attempt_settles_and_is_terminal() {
 fn verification_can_rebind_after_restart_only_without_current_revision_evidence() {
     let root = PrivateRoot::new();
     let mut store = ManagedControl::open(root.path(), "goal-verification-rebind").unwrap();
-    accepted_run(&mut store);
-    send(
+    accepted_planned_run(
         &mut store,
-        "task",
-        ManagedCommand::AddTask {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-            dependencies: vec![],
-            criterion_ids: vec!["tests-pass".into()],
-            required_capabilities: vec![],
-        },
-    );
-    send(
-        &mut store,
-        "ready",
-        ManagedCommand::MarkTaskReady {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-        },
+        1,
+        vec![fixture_verifier_task("task-a", &[], &["tests-pass"])],
     );
     send(
         &mut store,
@@ -4817,18 +4763,16 @@ fn verification_can_rebind_after_restart_only_without_current_revision_evidence(
             session_id: "test-session".into(),
         },
     );
-    settle_attempt_success(&mut store, "settle", "run-v1", "task-a", "attempt-one", 'e');
-    send(
+    // Typed settlement itself marks task-a verified at the observed head.
+    settle_attempt_success(
         &mut store,
-        "verify-task",
-        ManagedCommand::VerifyTask {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-            attempt_id: "attempt-one".into(),
-            verifier_id: "server_auth.verifier".into(),
-            source_revision: sha('a'),
-            evidence_digest: sha('d'),
-        },
+        "settle",
+        "goal-verification-rebind",
+        "run-v1",
+        "task-a",
+        "attempt-one",
+        'e',
+        sha('a').as_str(),
     );
     send(
         &mut store,
@@ -4911,25 +4855,10 @@ fn verification_can_rebind_after_restart_only_without_current_revision_evidence(
 fn fail_run_from_verifying_records_bounded_code_and_is_terminal() {
     let root = PrivateRoot::new();
     let mut store = ManagedControl::open(root.path(), "goal-fail-verify").unwrap();
-    accepted_run(&mut store);
-    send(
+    accepted_planned_run(
         &mut store,
-        "task",
-        ManagedCommand::AddTask {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-            dependencies: vec![],
-            criterion_ids: vec!["tests-pass".into()],
-            required_capabilities: vec![],
-        },
-    );
-    send(
-        &mut store,
-        "ready",
-        ManagedCommand::MarkTaskReady {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-        },
+        1,
+        vec![fixture_verifier_task("task-a", &[], &["tests-pass"])],
     );
     send(
         &mut store,
@@ -4944,25 +4873,16 @@ fn fail_run_from_verifying_records_bounded_code_and_is_terminal() {
             session_id: "test-session".into(),
         },
     );
+    // Typed settlement itself marks task-a verified at the observed head.
     settle_attempt_success(
         &mut store,
         "verifying-attempt",
+        "goal-fail-verify",
         "run-v1",
         "task-a",
         "attempt-one",
         'e',
-    );
-    send(
-        &mut store,
-        "verified",
-        ManagedCommand::VerifyTask {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-            attempt_id: "attempt-one".into(),
-            verifier_id: "server_auth.verifier".into(),
-            source_revision: sha('a'),
-            evidence_digest: sha('d'),
-        },
+        sha('a').as_str(),
     );
     send(
         &mut store,
@@ -5140,25 +5060,11 @@ fn fail_run_from_verifying_records_bounded_code_and_is_terminal() {
 fn fail_run_is_fenced_by_unsettled_attempts_and_wrong_phases() {
     let root = PrivateRoot::new();
     let mut store = ManagedControl::open(root.path(), "goal-fail-fenced").unwrap();
-    accepted_run(&mut store);
-    send(
+    accepted_spec(&mut store, spec("server_auth.author", 2));
+    plan_and_start_run(
         &mut store,
-        "task-a",
-        ManagedCommand::AddTask {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-            dependencies: vec![],
-            criterion_ids: vec![],
-            required_capabilities: vec![],
-        },
-    );
-    send(
-        &mut store,
-        "ready-a",
-        ManagedCommand::MarkTaskReady {
-            run_id: "run-v1".into(),
-            task_id: "task-a".into(),
-        },
+        "run-v1",
+        vec![fixture_planned_task("task-a", &[], &["tests-pass"])],
     );
     send(
         &mut store,
@@ -5223,32 +5129,10 @@ fn fail_run_is_fenced_by_unsettled_attempts_and_wrong_phases() {
     ));
 
     // CANCELLING can only complete cancellation, never fail.
-    send(
+    plan_and_start_run(
         &mut store,
-        "start-cancelling",
-        ManagedCommand::StartRun {
-            run_id: "run-cancelling".into(),
-            spec_id: "spec-v1".into(),
-        },
-    );
-    send(
-        &mut store,
-        "task-c",
-        ManagedCommand::AddTask {
-            run_id: "run-cancelling".into(),
-            task_id: "task-c".into(),
-            dependencies: vec![],
-            criterion_ids: vec![],
-            required_capabilities: vec![],
-        },
-    );
-    send(
-        &mut store,
-        "ready-c",
-        ManagedCommand::MarkTaskReady {
-            run_id: "run-cancelling".into(),
-            task_id: "task-c".into(),
-        },
+        "run-cancelling",
+        vec![fixture_planned_task("task-c", &[], &["tests-pass"])],
     );
     send(
         &mut store,

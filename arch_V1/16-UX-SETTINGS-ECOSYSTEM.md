@@ -153,6 +153,15 @@ populate a picker but cannot establish current pricing, free status, endpoint he
 or route availability. Refresh is bounded and its result is inspectable; a missing or stale source
 is shown as such rather than silently treated as current.
 
+**Provider-source note (2026-10-23, A-V2-27 amendment):** the provider/model list and every
+connection recipe (OAuth/device/browser login, API key, declared environment-source name, endpoint
+and header handling, bundled adapters) are sourced from the pinned OpenCode provider layer as a
+standalone SDK boundary (§20.16, §42 SRC-027). Models.dev supplies the advisory metadata and
+freshness projection (costs, consumption, capabilities) described above (§42 SRC-028); one bounded
+refresh is attempted at startup with last-known-good cache fallback. `opencode` (OpenCode Default)
+and `opencode-go` (OpenCode Go) keep their explicit provider identities. Neither source can enable
+a route or bypass Guard/SecretBroker.
+
 For compatible models, V1 selects `harness.native-rich` by default and begins with a curated common
 coding tool surface. Every projected tool is filtered by current authorization, runtime availability
 and model compatibility; the full tool catalog is never sent by default. Long-tail tool schemas are

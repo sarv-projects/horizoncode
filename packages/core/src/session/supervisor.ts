@@ -501,11 +501,42 @@ export function directAttemptScopeFromWire(value: unknown): DirectAttemptScopeV1
     throw fail("protocol", "host direct Attempt scope is malformed")
   }
   const raw = value as Record<string, unknown>
-  return directAttemptScopeToWire({
+  const scope = {
     ...raw,
     ownerEpoch: hostU64String(raw.ownerEpoch, "direct Attempt ownerEpoch"),
     expectedRevision: hostU64String(raw.expectedRevision, "direct Attempt expectedRevision"),
-  } as DirectAttemptScopeV1)
+  } as DirectAttemptScopeV1
+  // Validate the complete exact shape through the canonical wire projection,
+  // then return the decimal-string Core form the callers retain.
+  directAttemptScopeToWire(scope)
+  return scope
+}
+
+const MANAGED_ATTEMPT_SCOPE_FIELDS = [
+  "goalID", "runID", "taskID", "attemptID", "ownerEpoch", "expectedManagedRevision",
+  "requestSequence", "requestID", "contextSelectionDigest", "locationID", "sessionID",
+  "workspaceRevision", "effectiveMaxTokens", "remainingTokens", "delegationBindingDigest",
+  "permissionScopeDigest",
+] as const
+const MANAGED_WORKTREE_TARGET_FIELDS = [
+  "worktreeID", "worktreeBaseRevision", "worktreePoolRevision", "locationID", "workspaceID",
+  "workspaceRef", "canonicalRoot", "workspaceRevision",
+] as const
+
+/** Exact full-field equality of two Core-form managed Attempt scopes, including the
+ * worktree target. Invalid scopes compare as unequal (fail closed). */
+export function sameManagedAttemptScopeCore(
+  left: ManagedAttemptScopeV1,
+  right: ManagedAttemptScopeV1,
+): boolean {
+  try {
+    const a = managedAttemptScopeToWire(left)
+    const b = managedAttemptScopeToWire(right)
+    return MANAGED_ATTEMPT_SCOPE_FIELDS.every((field) => a[field] === b[field]) &&
+      MANAGED_WORKTREE_TARGET_FIELDS.every((field) => a.worktreeTarget[field] === b.worktreeTarget[field])
+  } catch {
+    return false
+  }
 }
 
 export function isNextDirectAttemptScopeCore(
@@ -871,6 +902,17 @@ export type ToolBatchRelayPort = {
 export type EffectAdmission =
   | { readonly status: "prepared"; readonly lease: EffectLease; readonly directAttempt?: DirectAttemptScopeV1; readonly directTurnScope?: DirectTurnScopeV1; readonly managedAttempt?: ManagedAttemptScopeV1; readonly attemptScopeTransition?: "batch_bind" }
   | { readonly status: "admitted"; readonly challenge: EffectChallenge }
+  /** Mode-approved multi-call batch: HostKernel already issued each exact one-use
+   * lease without a user approval round; each member stays bound to its challenge. */
+  | {
+      readonly status: "admitted_batch"
+      readonly calls: ReadonlyArray<{
+        readonly callID: string
+        readonly capabilityID: string
+        readonly challenge: EffectChallenge
+        readonly lease: EffectLease
+      }>
+    }
   | {
       readonly status: "prepared_batch"
       readonly calls: ReadonlyArray<ToolBatchCallLease>
@@ -1134,7 +1176,9 @@ export type AuthenticatedRequestContextV1 =
       readonly sessionID: string
       readonly locationID: string
       readonly artifactRef: ArtifactRefWireV1
-      readonly managedAttempt: ManagedAttemptScopeV1
+      readonly managedAttempt?: ManagedAttemptScopeV1
+      /** HostKernel requires the unsigned-integer wire projection for direct Attempt scopes. */
+      readonly directAttempt?: DirectAttemptScopeWireV1
     }
   | {
       readonly kind: "artifact_scope_resolve"
@@ -1190,8 +1234,18 @@ function validArtifactReadRequest(serviceID: string, operation: string, body: Re
     if (typeof body.maxBytes !== "number" || !Number.isSafeInteger(body.maxBytes) || body.maxBytes < 1 || body.maxBytes > 768 * 1024) return false
   }
   try {
-    const scope = managedAttemptScopeToWire(context.managedAttempt)
-    if (scope.sessionID !== context.sessionID || scope.locationID !== context.locationID) return false
+    // The kernel accepts exactly one Attempt lane on artifact_read (never both);
+    // Core keeps requiring one so a scope-free context can never widen the read.
+    if ((context.managedAttempt === undefined) === (context.directAttempt === undefined)) return false
+    if (context.managedAttempt !== undefined) {
+      const scope = managedAttemptScopeToWire(context.managedAttempt)
+      if (scope.sessionID !== context.sessionID || scope.locationID !== context.locationID) return false
+    } else {
+      // The context carries the unsigned-integer wire projection; the FromWire
+      // parser accepts that form and returns the validated Core decimal-string scope.
+      const scope = directAttemptScopeFromWire(context.directAttempt!)
+      if (scope.childSessionID !== context.sessionID || scope.locationID !== context.locationID) return false
+    }
   } catch {
     return false
   }
@@ -1221,6 +1275,17 @@ function validDirectSessionArtifactReadRequest(serviceID: string, operation: str
     if (typeof body.maxBytes !== "number" || !Number.isSafeInteger(body.maxBytes) || body.maxBytes < 1 || body.maxBytes > 768 * 1024) return false
   }
   return true
+}
+
+export function validDirectReadBatchAuthenticatedRequest(
+  serviceID: string,
+  operation: string,
+  body: Readonly<Record<string, unknown>>,
+  context: AuthenticatedRequestContextV1,
+) {
+  if (serviceID !== "effects.v2" || operation !== "prepare_tool_batch_read" || context.kind !== "repo_read") return false
+  if (body.schemaVersion !== 1 || body.sessionID !== context.sessionID || body.locationID !== context.locationID) return false
+  return Array.isArray(body.calls) && body.calls.length >= 1 && body.calls.length <= 8
 }
 
 function validCodeModeAuthenticatedRequest(serviceID: string, operation: string, body: Readonly<Record<string, unknown>>, context: AuthenticatedRequestContextV1) {
@@ -1602,6 +1667,14 @@ export interface Interface {
     readonly batchID: string
     readonly turnContextDigest: string
     readonly calls: ReadonlyArray<GuardedToolCall>
+    /** Authenticated Core Config projection for `terminal.run` workspace profiles.
+     * This is private RPC metadata and is never part of model tool arguments. */
+    readonly workspaceCommandProfiles?: ReadonlyArray<{
+      readonly callID: string
+      readonly reference: { readonly profileId: string; readonly revision: string; readonly profileDigest: string; readonly action: "build" | "test" }
+      readonly definition: unknown
+      readonly resolvedEnvironment: Readonly<Record<string, string>>
+    }>
     readonly directTurnScope?: DirectTurnScopeV1
     readonly managedAttempt?: ManagedAttemptScopeV1
   }) => Effect.Effect<EffectAdmission, SessionSupervisorError, TrustedPrincipalContext>
@@ -1644,8 +1717,14 @@ export interface Interface {
       readonly deliveryID?: string
       /** Delegated identity captured from TrustedPrincipalContext middleware. */
       readonly trustedPrincipal?: TrustedPrincipal
-      /** Private authenticated envelope context; only bounded RepoIntel and artifact reads are allowed. */
+      /** Private authenticated envelope context; only bounded RepoIntel, artifact and direct read-batch reads are allowed. */
       readonly authenticatedContext?: AuthenticatedRequestContextV1
+      /**
+       * Optional canonical envelope `requestID` (1..256 of `[A-Za-z0-9._:-]`).
+       * Reserved for the P1-10 direct read path, which binds every projection row
+       * to it; absent, the client mints its own `req_<uuid>` as before.
+       */
+      readonly requestID?: string
     },
   ) => Effect.Effect<Readonly<Record<string, unknown>>, SessionSupervisorError>
   /** Read-only handshake projection; effect adapters must fail closed when absent. */
@@ -2118,11 +2197,21 @@ export function validateManagedVerifierChallenges(
       capabilityID: "builtin.verifier" as const,
       locationID,
       inputDigest,
-      normalizedTargets: targets,
+      normalizedTargets: targets as ReadonlyArray<unknown>,
       expiresAtUnixMs: value.expiresAtUnixMs as number,
       policySummary,
-      ...consent,
-    }
+      origin: consent.origin,
+      source: consent.source,
+      policyID: consent.policyID,
+      policyDigest: consent.policyDigest,
+      normalizedAction: "builtin.verifier" as const,
+      argumentSummary: consent.argumentSummary,
+      requestedGuarantees: consent.requestedGuarantees,
+      guaranteeAssessment: consent.guaranteeAssessment,
+      runID: consent.runID,
+      noResponse: "deny_and_expire" as const,
+      allowEnabled: false as const,
+    } satisfies ManagedVerifierGuardChallengeV1
   })
   return validated
 }
@@ -2181,18 +2270,19 @@ export function validateManagedRootGuardChallenge(
     throw fail("protocol", "managed-root Guard challenge does not match the exact final Inspect policy")
   }
   return {
+    ...consent,
     challengeID,
     effectID,
-    capabilityID: "git.worktree.list",
+    capabilityID: "git.worktree.list" as const,
     locationID,
     inputDigest,
-    normalizedTargets,
+    normalizedTargets: normalizedTargets as ReadonlyArray<unknown>,
     expiresAtUnixMs,
     policySummary,
     origin: "managed_root",
     source: "host.managed_worktree",
-    ...consent,
-  }
+    normalizedAction: "git.worktree.list" as const,
+  } satisfies ManagedRootGuardChallengeV1
 }
 
 // Nested scopes from one backend share a lease; a second backend fails closed.
@@ -2684,7 +2774,13 @@ function validateWorkspaceCommandProjections(
     if (!item.resolvedEnvironment || typeof item.resolvedEnvironment !== "object" || Array.isArray(item.resolvedEnvironment)) {
       throw fail("protocol", "workspace command profile environment is invalid")
     }
-    const allowedNames = new Set(Array.isArray(definition.environment?.allowedNames) ? definition.environment.allowedNames : [])
+    const environment = definition.environment as Record<string, unknown> | null | undefined
+    const allowedNames = new Set<unknown>(
+      environment !== null && environment !== undefined && typeof environment === "object" && !Array.isArray(environment) &&
+        Array.isArray(environment.allowedNames)
+        ? environment.allowedNames
+        : [],
+    )
     for (const [name, value] of Object.entries(item.resolvedEnvironment)) {
       if (!allowedNames.has(name) || typeof value !== "string" || value.includes("\0") || Buffer.byteLength(value, "utf8") > 4096) {
         throw fail("protocol", "workspace command profile environment exceeds its configured allowlist")
@@ -3531,9 +3627,84 @@ export function sessionSupervisorArgs(input: {
 
 const SOCKET_PERMISSION_SETTLE_MS = 200
 const SOCKET_POLL_INTERVAL_MS = 10
+const STARTUP_STDERR_CAPTURE_BYTES = 8 * 1024
+const STARTUP_DIAGNOSTIC_TIMEOUT_MS = 500
+
+/** Resolves with the promise's value, or `undefined` after a bounded wait. Never rejects. */
+function diagnosticRace<A>(promise: Promise<A>): Promise<A | undefined> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(undefined), STARTUP_DIAGNOSTIC_TIMEOUT_MS)
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      () => {
+        clearTimeout(timer)
+        resolve(undefined)
+      },
+    )
+  })
+}
+
+/**
+ * Drains a freshly spawned child's stderr into a bounded buffer so a
+ * `Session supervisor startup failed` failure can say *why* the child died.
+ *
+ * Two independent reasons, both hit by the free-model E2E run:
+ * - a piped-but-never-read stderr fills the OS pipe and eventually blocks the
+ *   child, so the drain has to start as soon as the child is spawned;
+ * - reporting only `exited before binding its socket (...)` is undiagnosable —
+ *   four attempts (including `--print-logs --log-level DEBUG`) were spent on a
+ *   message that never surfaced the child's own output.
+ *
+ * The buffer is bounded and marked truncated rather than unbounded, and reads
+ * are raced against `STARTUP_DIAGNOSTIC_TIMEOUT_MS` so a diagnostic can never
+ * hang the failure path itself.
+ */
+function captureChildStderr(child: ChildProcessHandle): () => Promise<string> {
+  if (!child.stderr) return async () => ""
+  const chunks: Uint8Array[] = []
+  let bytes = 0
+  let truncated = false
+  const drained = diagnosticRace(
+    Effect.runPromise(
+      Effect.scoped(
+        Stream.runForEach(child.stderr, (chunk: Uint8Array) =>
+          Effect.sync(() => {
+            if (bytes >= STARTUP_STDERR_CAPTURE_BYTES) {
+              truncated = true
+              return
+            }
+            const slice = chunk.subarray(0, STARTUP_STDERR_CAPTURE_BYTES - bytes)
+            chunks.push(slice)
+            bytes += slice.length
+            if (slice.length < chunk.length) truncated = true
+          }),
+        ),
+      ),
+    ),
+  )
+  return async () => {
+    await drained
+    const text = Buffer.concat(chunks).toString("utf8").trimEnd()
+    return truncated ? `${text}\n… (stderr truncated at ${STARTUP_STDERR_CAPTURE_BYTES} bytes)` : text
+  }
+}
+
+/** `; exit code N; stderr: …` — never throws, never hangs past the bound. */
+async function describeChildExit(child: ChildProcessHandle, stderrTail: () => Promise<string>): Promise<string> {
+  const exitCode = child.exitCode ? await diagnosticRace(Effect.runPromise(child.exitCode).catch(() => undefined)) : undefined
+  const parts = [exitCode === undefined ? "exit status unavailable" : `exit code ${exitCode}`]
+  const tail = await stderrTail()
+  if (tail.length > 0) parts.push(`stderr: ${tail}`)
+  return `; ${parts.join("; ")}`
+}
 
 export function waitForSocket(path: string, child: ChildProcessHandle, signal: AbortSignal, timeoutMs: number) {
   const deadline = Date.now() + timeoutMs
+  const stderrTail = captureChildStderr(child)
+  const diagnose = () => describeChildExit(child, stderrTail)
   return new Promise<void>((resolve, reject) => {
     let permissionMismatchSince: number | undefined
     let pendingSocketIdentity: string | undefined
@@ -3557,14 +3728,14 @@ export function waitForSocket(path: string, child: ChildProcessHandle, signal: A
           if (Date.now() - permissionMismatchSince >= SOCKET_PERMISSION_SETTLE_MS)
             return reject(fail("authentication", "supervisor socket permissions or owner are invalid"))
           const running = await Effect.runPromise(child.isRunning).catch(() => false)
-          if (!running) return reject(fail("startup", `supervisor exited before securing its socket (${path})`))
+          if (!running) return reject(fail("startup", `supervisor exited before securing its socket (${path})${await diagnose()}`))
           setTimeout(inspect, SOCKET_POLL_INTERVAL_MS)
           return
         }
         return resolve()
       } catch {
         const running = await Effect.runPromise(child.isRunning).catch(() => false)
-        if (!running) return reject(fail("startup", `supervisor exited before binding its socket (${path})`))
+        if (!running) return reject(fail("startup", `supervisor exited before binding its socket (${path})${await diagnose()}`))
         setTimeout(inspect, SOCKET_POLL_INTERVAL_MS)
       }
     }
@@ -3819,7 +3990,9 @@ function openHostKernel(input: {
         ChildProcess.make(input.binary, args, {
           stdin: "ignore",
           stdout: "ignore",
-          stderr: "ignore",
+          // Piped so a startup failure can report why the child died; the
+          // drain starts in `waitForSocket` so the pipe never back-pressures.
+          stderr: "pipe",
           extendEnv: false,
         }),
       )
@@ -3985,8 +4158,21 @@ type HostEventSubscription = {
   readonly unsubscribe: () => Promise<void>
 }
 
-class HostKernelClientImpl {
-  #channel: MessageChannel
+/**
+ * Transport surface `HostKernelClientImpl` actually drives. Production always
+ * negotiates a `MessageChannel` over the host socket; the shape is exported only
+ * so the client's pre-send admission gates can be exercised over a test double.
+ */
+export type HostKernelTransport = {
+  send(value: Record<string, unknown>): Promise<void>
+  receive(): Promise<unknown>
+  end(): void
+  isClosed(): boolean
+  destroy(): void
+}
+
+export class HostKernelClientImpl {
+  #channel: HostKernelTransport
   #child: ChildProcessHandle
   #pendingRequests = new Map<string, PendingRpc>()
   #expiredRequestIDs: string[] = []
@@ -3999,7 +4185,7 @@ class HostKernelClientImpl {
   readonly enabledFeatures: ReadonlyArray<string>
 
   constructor(
-    channel: MessageChannel,
+    channel: HostKernelTransport,
     child: ChildProcessHandle,
     ownerEpoch: number,
     enabledFeatures: ReadonlyArray<string> = [],
@@ -4020,6 +4206,15 @@ class HostKernelClientImpl {
     deliveryID?: string,
     trustedPrincipal?: TrustedPrincipal,
     authenticatedContext?: AuthenticatedRequestContextV1,
+    options?: {
+      /**
+       * Optional canonical envelope `requestID` (1..256 of `[A-Za-z0-9._:-]`).
+       * Supplied only by the P1-10 direct read path so Core can bind every
+       * projection row to an identity it already knows; absent, the client keeps
+       * minting `req_<uuid>` exactly as before.
+       */
+      readonly requestID?: string
+    },
   ) {
     if (this.#closed) throw fail("effect", "host kernel channel is closed")
     if (!serviceID || serviceID.length > 128 || !operation || operation.length > 128)
@@ -4037,17 +4232,32 @@ class HostKernelClientImpl {
     }
     const isRepoIntelRead =
       serviceID === "repo-intel.v1" && (operation === "query_structure" || operation === "ensure_generation" || operation === "read_document" || operation === "discover")
+    /** The one allowlisted `effects.v2` read-only projection RPC (P1-10 direct read batch). */
+    const isDirectReadBatch = serviceID === "effects.v2" && operation === "prepare_tool_batch_read"
     const isArtifactRead = serviceID === "artifact.v1" && (operation === "artifacts.inspect" || operation === "artifacts.read_range")
     const isArtifactScopeResolve = serviceID === "artifact.v1" && operation === "artifacts.resolve_scope"
     const isCodeModeOperation = serviceID === "execution.v1" &&
       ["codemode_enablement", "codemode_start", "codemode_resume", "codemode_cancel", "codemode_cancel_wave", "codemode_inspect", "codemode_prepare_wave", "codemode_settle_tool_results", "codemode_wave_receipts"].includes(operation)
-    if (isRepoIntelRead || isArtifactRead || isArtifactScopeResolve || isCodeModeOperation || authenticatedContext) {
+    // Only the direct read path may pin the envelope `requestID` so Core can bind
+    // every projection row to an identity it already knows; any other caller-supplied
+    // ID fails closed here, before a frame is written.
+    if (
+      options?.requestID !== undefined &&
+      (!isDirectReadBatch || !/^[A-Za-z0-9._:-]{1,256}$/.test(options.requestID))
+    ) {
+      throw fail("protocol", "RPC request id is invalid")
+    }
+    if (isRepoIntelRead || isDirectReadBatch || isArtifactRead || isArtifactScopeResolve || isCodeModeOperation || authenticatedContext) {
       if (
         !authenticatedContext ||
         trustedPrincipal?.kind !== "server_auth" ||
         (authenticatedContext.kind === "repo_read" && (
-          !isRepoIntelRead ||
-          !this.enabledFeatures.includes(REPO_INTEL_READ_CONTEXT_FEATURE) ||
+          (!isRepoIntelRead && !isDirectReadBatch) ||
+          (isRepoIntelRead && !this.enabledFeatures.includes(REPO_INTEL_READ_CONTEXT_FEATURE)) ||
+          (isDirectReadBatch && (
+            !this.enabledFeatures.includes("effects.v2") ||
+            !validDirectReadBatchAuthenticatedRequest(serviceID, operation, body, authenticatedContext)
+          )) ||
           !/^ses_[A-Za-z0-9_-]{1,128}$/.test(authenticatedContext.sessionID) ||
           !/^loc_[0-9a-f]{64}$/.test(authenticatedContext.locationID)
         )) ||
@@ -4074,7 +4284,7 @@ class HostKernelClientImpl {
       }
     }
     if (this.#pendingRequests.size >= 16) throw fail("effect", "too many pending host requests")
-    const requestID = `req_${randomUUID().replaceAll("-", "")}`
+    const requestID = options?.requestID ?? `req_${randomUUID().replaceAll("-", "")}`
     let resolve!: (value: Record<string, unknown>) => void
     let reject!: (error: SessionSupervisorError) => void
     const response = new Promise<Record<string, unknown>>((resolvePromise, rejectPromise) => {
@@ -4136,15 +4346,43 @@ class HostKernelClientImpl {
                     sessionID: authenticatedContext.sessionID,
                     locationID: authenticatedContext.locationID,
                   }
-                : {
-                    kind: "artifact_read",
-                    sessionID: authenticatedContext.sessionID,
-                    locationID: authenticatedContext.locationID,
-                    artifactRef: authenticatedContext.artifactRef,
-                    ...(authenticatedContext.managedAttempt
-                      ? { managedAttempt: managedAttemptScopeToWire(authenticatedContext.managedAttempt) }
-                      : {}),
-                  },
+                : authenticatedContext.kind === "artifact_read"
+                  ? {
+                      kind: "artifact_read",
+                      sessionID: authenticatedContext.sessionID,
+                      locationID: authenticatedContext.locationID,
+                      artifactRef: authenticatedContext.artifactRef,
+                      ...(authenticatedContext.managedAttempt
+                        ? { managedAttempt: managedAttemptScopeToWire(authenticatedContext.managedAttempt) }
+                        : {}),
+                      ...(authenticatedContext.directAttempt
+                        ? { directAttempt: authenticatedContext.directAttempt }
+                        : {}),
+                    }
+                  : authenticatedContext.kind === "artifact_scope_resolve"
+                    ? {
+                        kind: "artifact_scope_resolve",
+                        sessionID: authenticatedContext.sessionID,
+                        locationID: authenticatedContext.locationID,
+                        artifactRef: authenticatedContext.artifactRef,
+                      }
+                    : authenticatedContext.kind === "direct_session_artifact_read"
+                      ? {
+                          kind: "direct_session_artifact_read",
+                          sessionID: authenticatedContext.sessionID,
+                          locationID: authenticatedContext.locationID,
+                          artifactRef: authenticatedContext.artifactRef,
+                        }
+                      : {
+                          kind: "code_mode_call",
+                          sessionID: authenticatedContext.sessionID,
+                          locationID: authenticatedContext.locationID,
+                          callID: authenticatedContext.callID,
+                          lane: authenticatedContext.lane,
+                          ...(authenticatedContext.managedAttempt
+                            ? { managedAttempt: managedAttemptScopeToWire(authenticatedContext.managedAttempt) }
+                            : {}),
+                        },
             }),
         body,
       })
@@ -4349,6 +4587,10 @@ const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const appProcess = yield* AppProcess.Service
+    // Capture the active Core database once at layer construction. `open` binds the
+    // observer source authority to this exact database path; holding the closure
+    // value keeps `open`'s Effect requirement at Scope only for its consumers.
+    const database = yield* Database.Service
     const events = yield* EventV2.Service
     const runtime = yield* RuntimeConfig
     const pendingApprovals = new Map<string, PendingGuardApproval>()
@@ -4443,7 +4685,6 @@ const layer = Layer.effect(
       // A caller-supplied absolute path is not source authority. Bind the observer
       // to the live Core database selected by Database, then pin that exact file
       // identity before AppProcess can dispatch the child.
-      const database = yield* Database.Service
       let canonicalSource: string
       try {
         canonicalSource = realpathSync(options.source)
@@ -4517,7 +4758,9 @@ const layer = Layer.effect(
           ChildProcess.make(binary, args, {
             stdin: "ignore",
             stdout: "ignore",
-            stderr: "ignore",
+            // Piped so a startup failure can report why the child died; the
+            // drain starts in `waitForSocket` so the pipe never back-pressures.
+            stderr: "pipe",
             extendEnv: false,
           }),
         )
@@ -4594,6 +4837,8 @@ const layer = Layer.effect(
         readonly deliveryID?: string
         readonly trustedPrincipal?: TrustedPrincipal
         readonly authenticatedContext?: AuthenticatedRequestContextV1
+        /** Canonical envelope `requestID`; reserved for the P1-10 direct read path. */
+        readonly requestID?: string
       },
     ) {
       if (!hostKernelClient) return yield* Effect.fail(fail("host-kernel", "host kernel is unavailable"))
@@ -4613,19 +4858,22 @@ const layer = Layer.effect(
       }
       const isRepoIntelRead =
         serviceID === "repo-intel.v1" && (operation === "query_structure" || operation === "ensure_generation" || operation === "read_document" || operation === "discover")
+      const isDirectReadBatch = serviceID === "effects.v2" && operation === "prepare_tool_batch_read"
       const isArtifactRead = serviceID === "artifact.v1" && (operation === "artifacts.inspect" || operation === "artifacts.read_range")
       const isArtifactScopeResolve = serviceID === "artifact.v1" && operation === "artifacts.resolve_scope"
       const isCodeModeOperation = serviceID === "execution.v1" &&
         ["codemode_enablement", "codemode_start", "codemode_resume", "codemode_cancel", "codemode_cancel_wave", "codemode_inspect", "codemode_prepare_wave", "codemode_settle_tool_results", "codemode_wave_receipts"].includes(operation)
-      if (isRepoIntelRead || isArtifactRead || isArtifactScopeResolve || isCodeModeOperation || options?.authenticatedContext) {
+      if (isRepoIntelRead || isDirectReadBatch || isArtifactRead || isArtifactScopeResolve || isCodeModeOperation || options?.authenticatedContext) {
         const context = options?.authenticatedContext
         const validCodeModeContext = !!context && options?.trustedPrincipal?.kind === "server_auth" &&
           validCodeModeAuthenticatedRequest(serviceID, operation, body, context)
         const valid = !!context && options?.trustedPrincipal?.kind === "server_auth" && (
           context.kind === "repo_read"
-            ? isRepoIntelRead && hostKernelClient.enabledFeatures.includes(REPO_INTEL_READ_CONTEXT_FEATURE) &&
-              /^ses_[A-Za-z0-9_-]{1,128}$/.test(context.sessionID) && /^loc_[0-9a-f]{64}$/.test(context.locationID)
-          : context.kind === "artifact_read"
+            ? ((isRepoIntelRead && hostKernelClient.enabledFeatures.includes(REPO_INTEL_READ_CONTEXT_FEATURE)) ||
+                (isDirectReadBatch && hostKernelClient.enabledFeatures.includes("effects.v2"))) &&
+              /^ses_[A-Za-z0-9_-]{1,128}$/.test(context.sessionID) && /^loc_[0-9a-f]{64}$/.test(context.locationID) &&
+              (!isDirectReadBatch || validDirectReadBatchAuthenticatedRequest(serviceID, operation, body, context))
+            : context.kind === "artifact_read"
             ? isArtifactRead && hostKernelClient.enabledFeatures.includes(ARTIFACT_READ_CONTEXT_FEATURE) &&
               validArtifactReadRequest(serviceID, operation, body, context)
             : context.kind === "artifact_scope_resolve"
@@ -4650,6 +4898,7 @@ const layer = Layer.effect(
             options?.deliveryID,
             options?.trustedPrincipal,
             options?.authenticatedContext,
+            options?.requestID === undefined ? undefined : { requestID: options.requestID },
           ),
         catch: (error) =>
           error instanceof SessionSupervisorError ? error : fail("host-kernel", "host kernel request failed"),
@@ -5459,14 +5708,16 @@ const layer = Layer.effect(
           catch: () => fail("protocol", "HostKernel returned an invalid RepoIntel generation pin"),
         })
         const pinExpiresAt = Date.parse(generationPin.expiresAt)
+        const coverageFiles = Number(generationPin.coverage.files)
+        const coverageBytes = Number(generationPin.coverage.bytes)
         if (
           generationPin.requestId !== requestId ||
           !Number.isFinite(pinExpiresAt) ||
           pinExpiresAt <= now ||
           pinExpiresAt > now + 5 * 60_000 ||
           pinExpiresAt > deadlineAt ||
-          generationPin.coverage.files > 4096 ||
-          generationPin.coverage.bytes > 67_108_864
+          !Number.isSafeInteger(coverageFiles) || coverageFiles < 0 || coverageFiles > 4096 ||
+          !Number.isSafeInteger(coverageBytes) || coverageBytes < 0 || coverageBytes > 67_108_864
         ) {
           return yield* Effect.fail(fail("stale-generation", "RepoIntel generation pin or deadline expired", undefined, "stale_generation"))
         }
@@ -6074,6 +6325,7 @@ const layer = Layer.effect(
           return yield* Effect.fail(fail("protocol", "Known CodeMode wave lacks its aggregate receipt digest"))
         }
         const tuples = results.map((item, index) => [
+          input.waveIndex,
           index,
           item.callID as string,
           item.status as "settled" | "rejected" | "cancelled",
@@ -6084,11 +6336,11 @@ const layer = Layer.effect(
         const encoded = encodeCanonicalMessagePackV1(tuples, {
           maxEncodedBytes: 1024 * MAX_TOOL_BATCH_CALLS,
           maxDepth: 4,
-          maxNodes: 1 + MAX_TOOL_BATCH_CALLS * 7,
+          maxNodes: 1 + MAX_TOOL_BATCH_CALLS * 8,
           maxCollectionItems: 1 + MAX_TOOL_BATCH_CALLS,
           maxScalarBytes: MAX_IDENTIFIER_BYTES,
         })
-        const domain = new TextEncoder().encode("horizoncode.codemode-receipts.v1\0")
+        const domain = new TextEncoder().encode("horizoncode.codemode-wave-receipts.v2\0")
         const bytes = new Uint8Array(domain.byteLength + encoded.byteLength)
         bytes.set(domain)
         bytes.set(encoded, domain.byteLength)
@@ -6270,7 +6522,9 @@ const layer = Layer.effect(
           (input.managedAttempt !== undefined && input.directAttempt !== undefined)) {
           return yield* Effect.fail(fail("protocol", "editor protocol authorization cannot combine Attempt scopes"))
         }
-        const scope: EditorProtocolAttemptWireV1 = yield* Effect.try({
+        // The HostKernel MessagePack parser requires unsigned integers for the
+        // direct Attempt u64 fields, so the RPC body carries the wire projection.
+        const scope: { readonly managedAttempt?: ManagedAttemptScopeV1; readonly directAttempt?: DirectAttemptScopeWireV1 } = yield* Effect.try({
           try: () => input.managedAttempt !== undefined
             ? { managedAttempt: managedAttemptScopeToWire(input.managedAttempt) }
             : input.directAttempt !== undefined
@@ -6281,15 +6535,29 @@ const layer = Layer.effect(
         const attemptScope = input.managedAttempt !== undefined ? scope.managedAttempt : scope.directAttempt
         const attemptSessionID = input.managedAttempt?.sessionID ?? input.directAttempt?.childSessionID
         const attemptOwnerEpoch = input.managedAttempt?.ownerEpoch ?? input.directAttempt?.ownerEpoch
+        // The authorization subject above strictly validated HostProcessRef with a
+        // canonical decimal-string ownerEpoch; re-extract it fail-closed for the
+        // exact epoch comparisons below.
+        const authorizationOwnerEpoch = yield* Effect.try({
+          try: () => {
+            const processRef = record(authorization.hostProcessRef)
+            const ownerEpoch = processRef.ownerEpoch
+            if (typeof ownerEpoch !== "string" || !/^(0|[1-9][0-9]{0,19})$/.test(ownerEpoch) || BigInt(ownerEpoch) > 0xffff_ffff_ffff_ffffn) {
+              throw fail("protocol", "editor protocol HostProcessRef ownerEpoch is invalid")
+            }
+            return ownerEpoch
+          },
+          catch: (error) => error instanceof SessionSupervisorError ? error : fail("protocol", "editor protocol HostProcessRef is invalid"),
+        })
         if (authorization.sessionID !== input.sessionID || authorization.locationID !== locationID ||
           (attemptScope !== undefined && (attemptSessionID !== input.sessionID || attemptScope.locationID !== locationID ||
             authorization.workspaceRevision !== attemptScope.workspaceRevision ||
-            authorization.hostProcessRef.ownerEpoch !== attemptOwnerEpoch))) {
+            authorizationOwnerEpoch !== attemptOwnerEpoch))) {
           return yield* Effect.fail(fail("authorization", "editor protocol subject differs from its authenticated Session scope"))
         }
         if (attemptScope === undefined) {
           const currentOwnerEpoch = yield* hostOwnerEpoch()
-          if (authorization.hostProcessRef.ownerEpoch !== String(currentOwnerEpoch)) {
+          if (authorizationOwnerEpoch !== String(currentOwnerEpoch)) {
             return yield* Effect.fail(fail("authorization", "root Session protocol process belongs to a stale HostKernel epoch"))
           }
         }
@@ -6352,7 +6620,7 @@ const layer = Layer.effect(
               locationID,
               challengeID: challenge.challengeID,
             }, { trustedPrincipal: trusted.principal }).pipe(
-              Effect.catchAll(() => Effect.succeed(undefined)),
+              Effect.catch(() => Effect.succeed(undefined)),
             ).pipe(Effect.map((response) => {
               const expectedDigest = directGrantChallengeSetDigest([challenge.challengeID])
               return response !== undefined &&
@@ -6376,7 +6644,7 @@ const layer = Layer.effect(
         }, { trustedPrincipal: trusted.principal })
         const resolved = directGrantPreflightDigest === undefined
           ? yield* resolveApproval()
-          : yield* resolveApproval(directGrantPreflightDigest).pipe(Effect.catchAll((error) =>
+          : yield* resolveApproval(directGrantPreflightDigest).pipe(Effect.catch((error) =>
               error instanceof SessionSupervisorError && error.hostCode === "effect_conflict"
                 ? Effect.gen(function* () {
                     // The persisted grant changed after preflight. Restore the
@@ -6400,7 +6668,14 @@ const layer = Layer.effect(
         if (lease.effectID !== challenge.effectID) return yield* Effect.fail(fail("protocol", "editor protocol lease differs from its Guard challenge"))
         return {
           ...lease,
-          ...scope,
+          // The durable lease echoes the caller's canonical decimal-string Attempt
+          // scope (already shape-validated above); only the RPC body uses the
+          // unsigned-integer wire projection.
+          ...(input.managedAttempt !== undefined
+            ? { managedAttempt: input.managedAttempt }
+            : input.directAttempt !== undefined
+              ? { directAttempt: input.directAttempt }
+              : {}),
           locationID,
           userActionID,
           challengeID: challenge.challengeID,
@@ -6486,7 +6761,9 @@ const layer = Layer.effect(
             (input.managedAttempt !== undefined && input.directAttempt !== undefined)) {
           return yield* Effect.fail(fail("protocol", "REPL authorization cannot combine Attempt scopes"))
         }
-        const scope: EditorProtocolAttemptWireV1 = yield* Effect.try({
+        // The HostKernel MessagePack parser requires unsigned integers for the
+        // direct Attempt u64 fields, so the RPC body carries the wire projection.
+        const scope: { readonly managedAttempt?: ManagedAttemptScopeV1; readonly directAttempt?: DirectAttemptScopeWireV1 } = yield* Effect.try({
           try: () => input.managedAttempt !== undefined
             ? { managedAttempt: managedAttemptScopeToWire(input.managedAttempt) }
             : input.directAttempt !== undefined
@@ -6497,15 +6774,29 @@ const layer = Layer.effect(
         const attemptScope = input.managedAttempt !== undefined ? scope.managedAttempt : scope.directAttempt
         const attemptSessionID = input.managedAttempt?.sessionID ?? input.directAttempt?.childSessionID
         const attemptOwnerEpoch = input.managedAttempt?.ownerEpoch ?? input.directAttempt?.ownerEpoch
+        // The authorization subject above strictly validated HostProcessRef with a
+        // canonical decimal-string ownerEpoch; re-extract it fail-closed for the
+        // exact epoch comparisons below.
+        const authorizationOwnerEpoch = yield* Effect.try({
+          try: () => {
+            const processRef = record(authorization.hostProcessRef)
+            const ownerEpoch = processRef.ownerEpoch
+            if (typeof ownerEpoch !== "string" || !/^(0|[1-9][0-9]{0,19})$/.test(ownerEpoch) || BigInt(ownerEpoch) > 0xffff_ffff_ffff_ffffn) {
+              throw fail("protocol", "REPL HostProcessRef ownerEpoch is invalid")
+            }
+            return ownerEpoch
+          },
+          catch: (error) => error instanceof SessionSupervisorError ? error : fail("protocol", "REPL HostProcessRef is invalid"),
+        })
         if (authorization.sessionID !== input.sessionID || authorization.locationID !== locationID ||
             (attemptScope !== undefined && (attemptSessionID !== input.sessionID || attemptScope.locationID !== locationID ||
               authorization.workspaceRevision !== attemptScope.workspaceRevision ||
-              authorization.hostProcessRef.ownerEpoch !== attemptOwnerEpoch))) {
+              authorizationOwnerEpoch !== attemptOwnerEpoch))) {
           return yield* Effect.fail(fail("authorization", "REPL operation differs from its authenticated Session scope"))
         }
         if (attemptScope === undefined) {
           const currentOwnerEpoch = yield* hostOwnerEpoch()
-          if (authorization.hostProcessRef.ownerEpoch !== String(currentOwnerEpoch)) {
+          if (authorizationOwnerEpoch !== String(currentOwnerEpoch)) {
             return yield* Effect.fail(fail("authorization", "root Session REPL process belongs to a stale HostKernel epoch"))
           }
         }
@@ -6568,7 +6859,14 @@ const layer = Layer.effect(
         if (lease.effectID !== challenge.effectID) return yield* Effect.fail(fail("protocol", "REPL lease differs from its Guard challenge"))
         return {
           ...lease,
-          ...scope,
+          // The durable lease echoes the caller's canonical decimal-string Attempt
+          // scope (already shape-validated above); only the RPC body uses the
+          // unsigned-integer wire projection.
+          ...(input.managedAttempt !== undefined
+            ? { managedAttempt: input.managedAttempt }
+            : input.directAttempt !== undefined
+              ? { directAttempt: input.directAttempt }
+              : {}),
           locationID,
           userActionID,
           challengeID: challenge.challengeID,
@@ -6785,7 +7083,7 @@ const layer = Layer.effect(
         resolved.providerRequestID !== `mpr_${scope.attemptID}_${scope.requestSequence}` ||
         resolved.prepareDigest === undefined || typeof resolved.prepareDigest !== "string" ||
         !/^blake3:[0-9a-f]{64}$/.test(resolved.prepareDigest) || resolved.revision !== scope.expectedManagedRevision ||
-        !sameManagedAttemptScope(scope, managedAttemptScopeFromWire(resolved.managedAttempt))) {
+        !sameManagedAttemptScopeCore(scope, managedAttemptScopeFromWire(resolved.managedAttempt))) {
         return yield* Effect.fail(fail("authorization", "HostKernel did not durably resolve the exact provider Guard decision"))
       }
       return {
@@ -6872,6 +7170,7 @@ const layer = Layer.effect(
         readonly callID: string
         readonly reference: { readonly profileId: string; readonly revision: string; readonly profileDigest: string; readonly action: "build" | "test" }
         readonly definition: unknown
+        readonly resolvedEnvironment: Readonly<Record<string, string>>
       }>
       readonly directTurnScope?: DirectTurnScopeV1
       readonly managedAttempt?: ManagedAttemptScopeV1
@@ -7065,13 +7364,14 @@ const layer = Layer.effect(
               challengeIDs: request.challengeIDs,
             })
             const serialAttempt = resolved.nextLeaseRequired === true
+            const approvedLeases: ReadonlyArray<unknown> | undefined = Array.isArray(resolved.leases) ? resolved.leases : undefined
             if (resolved.status !== "approved_set" || resolved.batchID !== request.batchID ||
-              !Array.isArray(resolved.leases) ||
-              resolved.leases.length !== (serialAttempt ? 1 : request.challengeIDs.length)) {
+              approvedLeases === undefined ||
+              approvedLeases.length !== (serialAttempt ? 1 : request.challengeIDs.length)) {
               return yield* Effect.fail(fail("authorization", "HostKernel rejected the complete Guard approval set"))
             }
             const leases = yield* Effect.try({
-              try: () => resolved.leases.map((raw) => {
+              try: () => approvedLeases.map((raw) => {
                 const item = record(raw)
                 const challengeID = stringField(item, "challengeID")
                 if (!request.challengeIDs.includes(challengeID)) throw fail("protocol", "HostKernel returned an unknown challenge")
@@ -7249,6 +7549,7 @@ const layer = Layer.effect(
               }).pipe(Effect.asVoid),
           },
         )
+        if (relayed.status !== "prepared_batch") return relayed
         return {
           ...relayed,
           ...(relayed.directAttempt ? { directAttempt: relayed.directAttempt } : {}),
@@ -7357,11 +7658,12 @@ const layer = Layer.effect(
       if (decision !== "allow_once") {
         return { status: "denied" as const, reason: "Guard approval was denied" }
       }
-      if (input.managedAttempt && (resolved.status !== "approved_set" || !Array.isArray(resolved.leases) || resolved.leases.length !== 1) ||
+      const approvedLeases: ReadonlyArray<unknown> | undefined = Array.isArray(resolved.leases) ? resolved.leases : undefined
+      if (input.managedAttempt && (resolved.status !== "approved_set" || approvedLeases === undefined || approvedLeases.length !== 1) ||
         !input.managedAttempt && resolved.status !== "approved") {
         return yield* Effect.fail(fail("authorization", "host rejected Guard approval"))
       }
-      const leaseResponse = input.managedAttempt ? record(resolved.leases![0]) : resolved
+      const leaseResponse = input.managedAttempt ? record(approvedLeases![0]) : resolved
       if (input.managedAttempt && stringField(leaseResponse, "challengeID") !== challenge.challengeID) {
         return yield* Effect.fail(fail("protocol", "managed wave lease does not match its approved challenge"))
       }

@@ -1,0 +1,168 @@
+warning: unnecessary `unsafe` block
+    --> /home/sarvesh/business_Dev/agentx/horizoncode-sandbox/src/lib.rs:1275:39
+     |
+1258 |             unsafe {
+     |             ------ because it's nested under this `unsafe` block
+...
+1275 |                         let current = unsafe { current.assume_init() };
+     |                                       ^^^^^^ unnecessary `unsafe` block
+     |
+     = note: `#[warn(unused_unsafe)]` (part of `#[warn(unused)]`) on by default
+
+warning: unnecessary `unsafe` block
+    --> /home/sarvesh/business_Dev/agentx/horizoncode-sandbox/src/lib.rs:1288:40
+     |
+1258 |             unsafe {
+     |             ------ because it's nested under this `unsafe` block
+...
+1288 |                         let verified = unsafe { verified.assume_init() };
+     |                                        ^^^^^^ unnecessary `unsafe` block
+
+warning: `horizoncode-sandbox` (lib) generated 2 warnings
+    Checking horizoncode-kernel v0.1.0 (/home/sarvesh/business_Dev/agentx/kernel)
+src/host_kernel.rs:34180:24: error[E0433]: cannot find type `Failure` in this scope: use of undeclared type `Failure`
+src/host_kernel.rs:34182:50: error[E0433]: cannot find type `Failure` in this scope: use of undeclared type `Failure`
+src/host_kernel.rs:34183:64: error[E0433]: cannot find type `Failure` in this scope: use of undeclared type `Failure`
+src/host_kernel.rs:34185:24: error[E0433]: cannot find type `Failure` in this scope: use of undeclared type `Failure`
+src/host_kernel.rs:14:52: warning: unused imports: `criterion_evidence_digest` and `task_verification_digest`
+src/managed_verifier.rs:9:5: warning: unused import: `std::path::PathBuf`
+src/http_execution.rs:854:10: warning: variable does not need to be mutable
+src/host_kernel.rs:3964:59: error[E0308]: mismatched types: expected `Value`, found `Option<Value>`
+src/host_kernel.rs:4266:33: error[E0599]: no method named `code_mode_wave_outcome` found for struct `EffectHost` in the current scope
+src/host_kernel.rs:4289:21: error[E0624]: method `fence_code_mode_unknown` is private: private method
+src/host_kernel.rs:9903:68: error[E0308]: mismatched types: expected `&WorktreeOperationIntentV1`, found `&WorktreeLifecycleOperationPinV1`
+src/host_kernel.rs:10180:31: error[E0063]: missing field `dap_allow_evaluate` in initializer of `StdioExecutionBindingV1`: missing `dap_allow_evaluate`
+src/host_kernel.rs:10704:31: error[E0063]: missing field `dap_allow_evaluate` in initializer of `StdioExecutionBindingV1`: missing `dap_allow_evaluate`
+src/host_kernel.rs:13997:33: error[E0425]: cannot find function `verifier_owner_delivery_id` in this scope: not found in this scope
+src/host_kernel.rs:14044:35: error[E0425]: cannot find function `verifier_owner_delivery_id` in this scope: not found in this scope
+src/host_kernel.rs:15270:28: error[E0425]: cannot find function `verifier_owner_delivery_id` in this scope: not found in this scope
+src/host_kernel.rs:15859:48: error[E0593]: function is expected to take 1 argument, but it takes 2 arguments: expected function that takes 1 argument
+src/host_kernel.rs:18092:33: error[E0308]: mismatched types: expected `&BTreeMap<String, Value>`, found `BTreeMap<String, Value>`
+src/host_kernel.rs:18093:37: error[E0308]: mismatched types: expected `&BTreeMap<String, Value>`, found `BTreeMap<String, Value>`
+src/host_kernel.rs:19739:51: error[E0308]: mismatched types: expected `TypedErrorV1`, found `Failure`
+src/host_kernel.rs:24079:77: error[E0599]: the method `as_ref` exists for reference `&EffectAttemptScopeV1`, but its trait bounds were not satisfied: method cannot be called on `&EffectAttemptScopeV1` due to unsatisfied trait bounds
+src/host_kernel.rs:24080:62: error[E0308]: mismatched types: expected `&ManagedAttemptScopeV1`, found `ManagedAttemptScopeV1`
+src/host_kernel.rs:24813:111: error[E0609]: no field `batch_id` on type `HttpExecutionBindingV1`: unknown field
+src/host_kernel.rs:24819:104: error[E0609]: no field `direct_turn_scope` on type `HttpExecutionBindingV1`: unknown field
+src/host_kernel.rs:25192:48: error[E0609]: no field `batch_id` on type `HttpExecutionBindingV1`: unknown field
+src/host_kernel.rs:25193:57: error[E0609]: no field `direct_turn_scope` on type `HttpExecutionBindingV1`: unknown field
+src/host_kernel.rs:26050:23: error[E0063]: missing field `dap_allow_evaluate` in initializer of `StdioExecutionBindingV1`: missing `dap_allow_evaluate`
+src/host_kernel.rs:36410:18: error[E0063]: missing fields `dap_allow_evaluate` and `scope` in initializer of `StdioExecutionBindingV1`: missing `dap_allow_evaluate` and `scope`
+src/host_kernel.rs:36394:18: error[E0063]: missing fields `executable_digest` and `profile_revision` in initializer of `VerifierInvocationSourceV1`: missing `executable_digest` and `profile_revision`
+src/host_kernel.rs:36500:19: error[E0063]: missing field `dap_allow_evaluate` in initializer of `StdioExecutionBindingV1`: missing `dap_allow_evaluate`
+src/host_kernel.rs:36524:18: error[E0063]: missing fields `executable_digest` and `profile_revision` in initializer of `VerifierInvocationSourceV1`: missing `executable_digest` and `profile_revision`
+src/protocol_framing.rs:175:9: error[E0308]: mismatched types: expected `&Value`, found `Value`
+src/terminal_process.rs:14:27: warning: unused import: `Write`
+src/direct_session_grant.rs:86:31: warning: value assigned to `location_id` is never read: this value is reassigned later and never used
+src/direct_session_grant.rs:87:32: warning: value assigned to `workspace_id` is never read: this value is reassigned later and never used
+src/direct_session_grant.rs:88:41: warning: value assigned to `workspace_root_digest` is never read: this value is reassigned later and never used
+src/direct_session_grant.rs:89:40: warning: value assigned to `execution_backend_id` is never read: this value is reassigned later and never used
+src/direct_session_grant.rs:90:40: warning: value assigned to `guarantee_set_digest` is never read: this value is reassigned later and never used
+src/effect_host.rs:8296:56: warning: unused variable: `plan_digest`: help: if this is intentional, prefix it with an underscore: `_plan_digest`
+src/verifier_journal.rs:565:9: warning: variable does not need to be mutable
+src/host_kernel.rs:228:9: warning: variable does not need to be mutable
+src/host_kernel.rs:314:13: warning: variable does not need to be mutable
+src/host_kernel.rs:473:13: warning: variable does not need to be mutable
+src/host_kernel.rs:4190:32: error[E0596]: cannot borrow `*self` as mutable, as it is behind a `&` reference: `self` is a `&` reference, so it cannot be borrowed as mutable
+src/host_kernel.rs:6093:34: error[E0507]: cannot move out of a shared reference: move occurs because value has type `std::option::Option<Goal>`, which does not implement the `Copy` trait
+src/host_kernel.rs:6062:9: warning: unused variable: `principal`: help: if this is intentional, prefix it with an underscore: `_principal`
+src/host_kernel.rs:6235:24: error[E0502]: cannot borrow `*self` as immutable because it is also borrowed as mutable: immutable borrow occurs here
+src/host_kernel.rs:6243:20: error[E0502]: cannot borrow `*self` as immutable because it is also borrowed as mutable: immutable borrow occurs here
+src/host_kernel.rs:6250:20: error[E0502]: cannot borrow `self.worker_pool` as immutable because it is also borrowed as mutable: immutable borrow occurs here
+src/host_kernel.rs:6266:24: error[E0502]: cannot borrow `self.worker_pool` as immutable because it is also borrowed as mutable: immutable borrow occurs here
+src/host_kernel.rs:6298:32: error[E0502]: cannot borrow `self.worker_pool` as immutable because it is also borrowed as mutable: immutable borrow occurs here
+src/host_kernel.rs:6302:36: error[E0499]: cannot borrow `*self` as mutable more than once at a time: second mutable borrow occurs here
+src/host_kernel.rs:6319:29: error[E0499]: cannot borrow `self.worker_pool` as mutable more than once at a time: second mutable borrow occurs here
+src/host_kernel.rs:6323:39: error[E0502]: cannot borrow `self.worker_pool` as immutable because it is also borrowed as mutable: immutable borrow occurs here
+src/host_kernel.rs:6332:22: error[E0499]: cannot borrow `*self` as mutable more than once at a time: second mutable borrow occurs here
+src/host_kernel.rs:6644:22: error[E0499]: cannot borrow `*self` as mutable more than once at a time: second mutable borrow occurs here
+src/host_kernel.rs:6679:42: error[E0502]: cannot borrow `self.locations` as immutable because it is also borrowed as mutable: immutable borrow occurs here
+src/host_kernel.rs:6872:119: error[E0382]: borrow of moved value: `permission_digest`: value borrowed here after move
+src/host_kernel.rs:6873:56: error[E0382]: borrow of moved value: `accepted_scope_digest`: value borrowed here after move
+src/host_kernel.rs:6891:71: error[E0382]: borrow of moved value: `context_selection_digest`: value borrowed here after move
+src/host_kernel.rs:6988:24: error[E0499]: cannot borrow `self.worker_pool` as mutable more than once at a time: second mutable borrow occurs here
+src/host_kernel.rs:6991:71: error[E0382]: borrow of moved value: `worktree_projection`: value borrowed here after move
+src/host_kernel.rs:7000:30: error[E0502]: cannot borrow `self.worker_pool` as immutable because it is also borrowed as mutable: immutable borrow occurs here
+src/host_kernel.rs:7011:31: error[E0499]: cannot borrow `*self` as mutable more than once at a time: second mutable borrow occurs here
+src/host_kernel.rs:6654:14: warning: unused variable: `snapshot`: help: if this is intentional, prefix it with an underscore: `_snapshot`
+src/host_kernel.rs:7126:13: error[E0502]: cannot borrow `self.managed_message_root` as immutable because it is also borrowed as mutable: immutable borrow occurs here
+src/host_kernel.rs:7392:13: warning: value assigned to `record` is never read
+src/host_kernel.rs:8418:28: error[E0502]: cannot borrow `self.managed_message_root` as immutable because it is also borrowed as mutable: immutable borrow occurs here
+src/host_kernel.rs:8756:27: error[E0499]: cannot borrow `*self` as mutable more than once at a time: second mutable borrow occurs here
+src/host_kernel.rs:8768:28: error[E0502]: cannot borrow `self.locations` as immutable because it is also borrowed as mutable: immutable borrow occurs here
+src/host_kernel.rs:8776:39: error[E0502]: cannot borrow `self.worker_pool` as immutable because it is also borrowed as mutable: immutable borrow occurs here
+src/host_kernel.rs:8782:33: error[E0502]: cannot borrow `self.locations` as immutable because it is also borrowed as mutable: immutable borrow occurs here
+src/host_kernel.rs:8797:24: error[E0502]: cannot borrow `*self` as immutable because it is also borrowed as mutable: immutable borrow occurs here
+src/host_kernel.rs:8793:17: warning: unused variable: `workspace_binding`: help: if this is intentional, prefix it with an underscore: `_workspace_binding`
+src/host_kernel.rs:9109:20: error[E0507]: cannot move out of a shared reference: move occurs because value has type `std::option::Option<Goal>`, which does not implement the `Copy` trait
+src/host_kernel.rs:9093:14: warning: unused variable: `snapshot`: help: if this is intentional, prefix it with an underscore: `_snapshot`
+src/host_kernel.rs:9196:13: warning: unused variable: `root`: help: if this is intentional, prefix it with an underscore: `_root`
+src/host_kernel.rs:9254:13: warning: unused variable: `host_quiescence_digest`: help: if this is intentional, prefix it with an underscore: `_host_quiescence_digest`
+src/host_kernel.rs:9519:20: error[E0507]: cannot move out of a shared reference: move occurs because value has type `std::option::Option<Goal>`, which does not implement the `Copy` trait
+src/host_kernel.rs:9658:13: error[E0502]: cannot borrow `*approval_fields` as mutable because it is also borrowed as immutable: mutable borrow occurs here
+src/host_kernel.rs:10925:20: error[E0507]: cannot move out of a shared reference: move occurs because value has type `std::option::Option<Goal>`, which does not implement the `Copy` trait
+src/host_kernel.rs:11001:32: error[E0502]: cannot borrow `*self` as mutable because it is also borrowed as immutable: mutable borrow occurs here
+src/host_kernel.rs:11013:37: error[E0502]: cannot borrow `self.verifier_journal` as immutable because it is also borrowed as mutable: immutable borrow occurs here
+src/host_kernel.rs:11015:32: error[E0502]: cannot borrow `*self` as immutable because it is also borrowed as mutable: immutable borrow occurs here
+src/host_kernel.rs:11016:42: error[E0502]: cannot borrow `self.verifier_profiles` as immutable because it is also borrowed as mutable: immutable borrow occurs here
+src/host_kernel.rs:11018:20: error[E0502]: cannot borrow `self.verifier_journal` as immutable because it is also borrowed as mutable: immutable borrow occurs here
+src/host_kernel.rs:11122:13: warning: unused variable: `workspace_binding`: help: if this is intentional, prefix it with an underscore: `_workspace_binding`
+src/host_kernel.rs:11374:24: error[E0596]: cannot borrow `*self` as mutable, as it is behind a `&` reference: `self` is a `&` reference, so it cannot be borrowed as mutable
+src/host_kernel.rs:11527:24: error[E0502]: cannot borrow `self.locations` as immutable because it is also borrowed as mutable: immutable borrow occurs here
+src/host_kernel.rs:11536:39: error[E0502]: cannot borrow `self.locations` as immutable because it is also borrowed as mutable: immutable borrow occurs here
+src/host_kernel.rs:11685:23: error[E0596]: cannot borrow `*self` as mutable, as it is behind a `&` reference: `self` is a `&` reference, so it cannot be borrowed as mutable
+src/host_kernel.rs:12399:20: error[E0507]: cannot move out of a shared reference: move occurs because value has type `std::option::Option<Goal>`, which does not implement the `Copy` trait
+src/host_kernel.rs:12417:13: warning: unused variable: `workspace_binding`: help: if this is intentional, prefix it with an underscore: `_workspace_binding`
+src/host_kernel.rs:12756:13: warning: variable does not need to be mutable
+src/host_kernel.rs:13156:26: error[E0502]: cannot borrow `self.locations` as immutable because it is also borrowed as mutable: immutable borrow occurs here
+src/host_kernel.rs:15141:25: error[E0499]: cannot borrow `*self` as mutable more than once at a time: second mutable borrow occurs here
+src/host_kernel.rs:15684:9: error[E0502]: cannot borrow `*self` as immutable because it is also borrowed as mutable: immutable borrow occurs here
+src/host_kernel.rs:16679:34: error[E0502]: cannot borrow `self.locations` as immutable because it is also borrowed as mutable: immutable borrow occurs here
+src/host_kernel.rs:16691:9: error[E0502]: cannot borrow `*self` as immutable because it is also borrowed as mutable: immutable borrow occurs here
+src/host_kernel.rs:16744:53: error[E0382]: borrow of moved value: `session_link.owner_epoch`: value borrowed here after move
+src/host_kernel.rs:17079:26: error[E0596]: cannot borrow `self.stdio_supervisor` as mutable, as it is behind a `&` reference: `self` is a `&` reference, so it cannot be borrowed as mutable
+src/host_kernel.rs:17832:17: error[E0502]: cannot borrow `self.direct_message_root` as immutable because it is also borrowed as mutable: immutable borrow occurs here
+src/host_kernel.rs:17905:13: error[E0499]: cannot borrow `self.direct_attempt_limits` as mutable more than once at a time: second mutable borrow occurs here
+src/host_kernel.rs:18288:13: warning: variable does not need to be mutable
+src/host_kernel.rs:18431:13: error[E0499]: cannot borrow `*self` as mutable more than once at a time: second mutable borrow occurs here
+src/host_kernel.rs:20200:25: error[E0499]: cannot borrow `*self` as mutable more than once at a time: second mutable borrow occurs here
+src/host_kernel.rs:20192:21: warning: unused variable: `old_digest`: help: if this is intentional, prefix it with an underscore: `_old_digest`
+src/host_kernel.rs:20276:21: warning: unused variable: `old_digest`: help: if this is intentional, prefix it with an underscore: `_old_digest`
+src/host_kernel.rs:20380:24: error[E0596]: cannot borrow `*self` as mutable, as it is behind a `&` reference: `self` is a `&` reference, so it cannot be borrowed as mutable
+src/host_kernel.rs:21113:45: error[E0597]: `receipt.effect_id` does not live long enough: borrowed value does not live long enough
+src/host_kernel.rs:21169:48: error[E0505]: cannot move out of `receipt.effect_id` because it is borrowed: move out of `receipt.effect_id` occurs here
+src/host_kernel.rs:21824:26: warning: variable does not need to be mutable
+src/host_kernel.rs:21778:13: error[E0499]: cannot borrow `*self` as mutable more than once at a time: second mutable borrow occurs here
+src/host_kernel.rs:22016:21: warning: variable does not need to be mutable
+src/host_kernel.rs:22013:17: error[E0499]: cannot borrow `*self` as mutable more than once at a time: second mutable borrow occurs here
+src/host_kernel.rs:22228:32: error[E0502]: cannot borrow `self.locations` as immutable because it is also borrowed as mutable: immutable borrow occurs here
+src/host_kernel.rs:23248:13: error[E0502]: cannot borrow `*self` as mutable because it is also borrowed as immutable: mutable borrow occurs here
+src/host_kernel.rs:23415:17: warning: variable does not need to be mutable
+src/host_kernel.rs:23610:13: warning: variable does not need to be mutable
+src/host_kernel.rs:24910:9: warning: unused variable: `effect_id`: help: if this is intentional, prefix it with an underscore: `_effect_id`
+src/host_kernel.rs:24911:9: warning: unused variable: `challenge_id`: help: if this is intentional, prefix it with an underscore: `_challenge_id`
+src/host_kernel.rs:24912:9: warning: unused variable: `lease_digest`: help: if this is intentional, prefix it with an underscore: `_lease_digest`
+src/host_kernel.rs:24928:81: warning: unused variable: `failure`: help: try ignoring the field: `failure: _`
+src/host_kernel.rs:25021:9: error[E0502]: cannot borrow `*self` as mutable because it is also borrowed as immutable: mutable borrow occurs here
+src/host_kernel.rs:25275:47: error[E0502]: cannot borrow `*self` as mutable because it is also borrowed as immutable: mutable borrow occurs here
+src/host_kernel.rs:25514:44: error[E0502]: cannot borrow `*self` as mutable because it is also borrowed as immutable: mutable borrow occurs here
+src/host_kernel.rs:25635:13: warning: variable does not need to be mutable
+src/host_kernel.rs:25728:31: error[E0502]: cannot borrow `*self` as mutable because it is also borrowed as immutable: mutable borrow occurs here
+src/host_kernel.rs:25733:17: error[E0499]: cannot borrow `*self` as mutable more than once at a time: second mutable borrow occurs here
+src/host_kernel.rs:27400:25: error[E0596]: cannot borrow `effect_host` as mutable, as it is not declared as mutable: cannot borrow as mutable
+src/host_kernel.rs:29314:9: error[E0499]: cannot borrow `*self` as mutable more than once at a time: second mutable borrow occurs here
+src/host_kernel.rs:31782:9: warning: variable does not need to be mutable
+src/host_kernel.rs:33207:26: error[E0502]: cannot borrow `host.locations` as immutable because it is also borrowed as mutable: immutable borrow occurs here
+src/host_kernel.rs:33222:34: error[E0502]: cannot borrow `host.worker_pool` as immutable because it is also borrowed as mutable: immutable borrow occurs here
+src/host_kernel.rs:33243:21: error[E0502]: cannot borrow `host.worker_pool` as immutable because it is also borrowed as mutable: immutable borrow occurs here
+src/host_kernel.rs:33250:30: error[E0502]: cannot borrow `host.locations` as immutable because it is also borrowed as mutable: immutable borrow occurs here
+src/host_kernel.rs:38615:9: warning: unused variable: `run`: help: if this is intentional, prefix it with an underscore: `_run`
+src/managed_control.rs:3622:22: warning: unused variable: `value`: help: if this is intentional, prefix it with an underscore: `_value`
+src/managed_control.rs:12436:13: warning: variable does not need to be mutable
+src/managed_control.rs:12436:13: warning: unused variable: `effects`: help: if this is intentional, prefix it with an underscore: `_effects`
+src/worker_durable.rs:6027:13: warning: unused variable: `old_owner_digest`: help: if this is intentional, prefix it with an underscore: `_old_owner_digest`
+src/worker_durable.rs:6070:13: warning: unused variable: `release_receipt_ref`: help: if this is intentional, prefix it with an underscore: `_release_receipt_ref`
+src/worker_durable.rs:6839:9: warning: unused variable: `now_ms`: help: if this is intentional, prefix it with an underscore: `_now_ms`
+src/worker_durable.rs:11261:29: warning: unused variable: `create`: help: if this is intentional, prefix it with an underscore: `_create`
+warning: `horizoncode-kernel` (lib) generated 45 warnings
+error: could not compile `horizoncode-kernel` (lib) due to 99 previous errors; 45 warnings emitted

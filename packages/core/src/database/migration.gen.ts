@@ -47,5 +47,7 @@ export const migrations = (
     import("./migration/20261021100000_managed_subagent_inbox"),
     import("./migration/20261021110000_managed_subagent_consumption"),
     import("./migration/20261022120000_direct_provider_request_journal"),
+    import("./migration/20261023120000_managed_subagent_inbox_consumption_proof"),
+    import("./migration/20261025022602_cheerful_gamma_corps"),
   ])
 ).map((module) => module.default) satisfies DatabaseMigration.Migration[]

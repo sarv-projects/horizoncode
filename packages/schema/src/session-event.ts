@@ -137,6 +137,28 @@ export const Synthetic = Event.define({
 })
 export type Synthetic = typeof Synthetic.Type
 
+/**
+ * Durable restoration of one settled message into an imported NEW Session.
+ *
+ * Imported history is deliberately not a `session.next.*` stream event: it is
+ * never replayed through the prompt/turn lifecycle and cannot mint provider,
+ * tool, or effect authority. The projector appends exactly this message through
+ * the same canonical Session message writer as live events, and transfer commit
+ * publishes the whole import inside one transaction so a partial restore is
+ * impossible.
+ */
+export const Imported = Event.define({
+  type: "session.import.restored",
+  ...options,
+  schema: {
+    ...Base,
+    /** Digest of the exact validated transfer payload these messages came from. */
+    sourceDigest: Schema.String.check(Schema.isPattern(/^blake3:[0-9a-f]{64}$/)),
+    message: SessionMessage.Message,
+  },
+})
+export type Imported = typeof Imported.Type
+
 export namespace Shell {
   export const Started = Event.define({
     type: "session.next.shell.started",
@@ -491,6 +513,7 @@ export const DurableDefinitions = Event.inventory(
   PromptAdmitted,
   ContextUpdated,
   Synthetic,
+  Imported,
   Shell.Started,
   Shell.Ended,
   Step.Started,
@@ -523,6 +546,7 @@ export const Definitions = Event.inventory(
   ContextUpdated,
   ContextLedger,
   Synthetic,
+  Imported,
   Shell.Started,
   Shell.Ended,
   Step.Started,

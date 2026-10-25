@@ -25,13 +25,25 @@ const Range = Schema.Struct({ start: Position, end: Position })
 export const TextEdit = Schema.Struct({ range: Range, newText: Schema.String })
 export type TextEdit = typeof TextEdit.Type
 
+/** A bounded, versioned `TextDocumentEdit` exactly as LSP emits it. Keeping
+ * the standard nested shape avoids inventing a second proposal dialect; the
+ * canonical `files.patch` bridge flattens it below. */
 export const VersionedDocumentEdits = Schema.Struct({
-  uri: Schema.String,
-  /** LSP textDocument.version; null/unversioned edits are deliberately refused. */
-  version: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  textDocument: Schema.Struct({
+    uri: Schema.String,
+    /** LSP textDocument.version; null/unversioned edits are deliberately refused. */
+    version: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  }),
   edits: Schema.Array(TextEdit),
 })
 export type VersionedDocumentEdits = typeof VersionedDocumentEdits.Type
+
+/** Flattened batch document used by the Guarded files.patch intermediary. */
+export type GuardedDocumentEdits = Readonly<{
+  uri: string
+  version: number
+  edits: readonly TextEdit[]
+}>
 
 /** Only versioned, text-only WorkspaceEdit documents survive projection. */
 export type VersionedWorkspaceEditV1 = Readonly<{
@@ -43,7 +55,11 @@ export const GuardedEditBatch = Schema.Struct({
   workspaceRevision: Schema.String,
   effectIntentDigest: Schema.String,
   capabilityLeaseDigest: Schema.String,
-  documents: Schema.Array(VersionedDocumentEdits),
+  documents: Schema.Array(Schema.Struct({
+    uri: Schema.String,
+    version: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+    edits: Schema.Array(TextEdit),
+  })),
 })
 export type GuardedEditBatch = typeof GuardedEditBatch.Type
 
@@ -52,6 +68,7 @@ export type EditFailureReason =
   | "stale_service"
   | "stale_workspace"
   | "lease_mismatch"
+  | "lease_already_consumed"
   | "unsupported_source"
   | "outside_workspace"
   | "unversioned"
@@ -69,6 +86,7 @@ export class EditValidationError extends Schema.TaggedErrorClass<EditValidationE
     "stale_service",
     "stale_workspace",
     "lease_mismatch",
+    "lease_already_consumed",
     "unsupported_source",
     "outside_workspace",
     "unversioned",
@@ -195,6 +213,18 @@ export function validateGuardedEditBatch(
   try {
     batch = decodeBatch(input)
   } catch {
+    if (
+      typeof input === "object" &&
+      input !== null &&
+      "documents" in input &&
+      Array.isArray(input.documents) &&
+      input.documents.some(
+        (document) =>
+          typeof document === "object" && document !== null && "version" in document && document.version === null,
+      )
+    ) {
+      return fail("unversioned")
+    }
     return fail("malformed")
   }
   if (batch.serviceGeneration !== expected.serviceGeneration) return fail("stale_service")
@@ -273,13 +303,17 @@ export function validateGuardedEditBatch(
   })
 }
 
-/**
- * Validate an LSP-produced workspace edit against the currently authenticated
+/** Validate an LSP-produced workspace edit against the currently authenticated
  * broker generation. The host supplies Guard-issued intent/lease digests and
  * the authenticated workspace root; this helper never accepts a caller's
  * claimed generation or revision as authority. A later Rust `files.patch`
  * admission must still recheck the exact workspace revision and consume this
  * same one-use lease before any write.
+ *
+ * The returned batch reserves `(effectIntentDigest, capabilityLeaseDigest)`
+ * for this ledger so the same Guard decision cannot be replayed as two
+ * independent edit batches. Core-side reservation is defense in depth; Rust
+ * remains the authority that actually consumes the one-use lease.
  */
 export function validatePreparedEdits(
   input: unknown,
@@ -294,10 +328,14 @@ export function validatePreparedEdits(
 ): GuardedEditBatch {
   const snapshot = authority.ledger.require(authority.ref, authority.binding)
   if (snapshot.source.kind === "external") return fail("unsupported_source")
-  const documents = lspWorkspaceEditDocuments(input)
+  const documents = lspWorkspaceEditDocuments(input).map((document) => ({
+    uri: document.textDocument.uri,
+    version: document.textDocument.version,
+    edits: document.edits,
+  }))
   // Add the Guard metadata from the trusted host. LSP output is untrusted and
   // cannot author an effect intent or one-use lease.
-  return validateGuardedEditBatch({
+  const prepared = validateGuardedEditBatch({
     serviceGeneration: snapshot.generation,
     workspaceRevision: snapshot.workspaceRevision,
     effectIntentDigest: authority.effectIntentDigest,
@@ -310,6 +348,29 @@ export function validatePreparedEdits(
     effectIntentDigest: authority.effectIntentDigest,
     capabilityLeaseDigest: authority.capabilityLeaseDigest,
   })
+  reservePreparedLease(authority.ledger, prepared.effectIntentDigest, prepared.capabilityLeaseDigest)
+  return prepared
+}
+
+const MAX_RESERVED_LEASES = 4096
+const reservedPreparedLeases = new WeakMap<Ledger, Set<string>>()
+
+function reservePreparedLease(ledger: Ledger, effectIntentDigest: string, capabilityLeaseDigest: string): void {
+  let reserved = reservedPreparedLeases.get(ledger)
+  if (!reserved) {
+    reserved = new Set()
+    reservedPreparedLeases.set(ledger, reserved)
+  }
+  const key = `${effectIntentDigest}\0${capabilityLeaseDigest}`
+  if (reserved.has(key)) return fail("lease_already_consumed")
+  // Bounded bookkeeping: the oldest reservation is forgotten rather than
+  // growing without limit. Rust consumes the actual lease, so forgetting a
+  // Core reservation cannot grant one.
+  if (reserved.size >= MAX_RESERVED_LEASES) {
+    const oldest = reserved.values().next().value
+    if (oldest !== undefined) reserved.delete(oldest)
+  }
+  reserved.add(key)
 }
 
 const MAX_LSP_REQUEST_BYTES = 256 * 1024
@@ -499,7 +560,10 @@ function lspWorkspaceEditDocuments(input: unknown): VersionedDocumentEdits[] {
       if (textUnits > MAX_EDIT_BATCH_BYTES) return fail("too_many_bytes")
       edits.push(edit as TextEdit)
     }
-    documents.push({ uri: textDocument.uri, version: textDocument.version as number, edits })
+    documents.push({
+      textDocument: { uri: textDocument.uri, version: textDocument.version as number },
+      edits,
+    })
   }
   return documents
 }

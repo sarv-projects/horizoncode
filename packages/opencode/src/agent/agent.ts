@@ -32,7 +32,12 @@ import { Reference } from "@opencode-ai/core/reference"
 import { Location } from "@opencode-ai/core/location"
 import { PluginV2 } from "@opencode-ai/core/plugin"
 import { SessionSupervisorError } from "@opencode-ai/core/session/supervisor"
-import { AgentProfileService } from "@opencode-ai/core/config"
+import {
+  AgentProfileService,
+  AgentProfileConflictError,
+  AgentProfileNotFoundError,
+  AgentProfileSelectorConflictError,
+} from "@opencode-ai/core/config"
 import * as AgentProfileV2 from "@opencode-ai/schema/agent-profile-v2"
 import { builtinHarnessProfileV1 } from "@opencode-ai/core/harness-profile"
 
@@ -67,8 +72,14 @@ const GeneratedAgent = Schema.Struct({
 
 export interface Interface {
   readonly get: (agent: string) => Effect.Effect<Info, SessionSupervisorError>
-  readonly getProfile: (profileID: string, revision: number) => Effect.Effect<Info, SessionSupervisorError>
-  readonly list: () => Effect.Effect<Info[], SessionSupervisorError>
+  readonly getProfile: (profileID: string, revision: string | number) => Effect.Effect<Info, SessionSupervisorError>
+  readonly list: () => Effect.Effect<
+    Info[],
+    | SessionSupervisorError
+    | AgentProfileConflictError
+    | AgentProfileNotFoundError
+    | AgentProfileSelectorConflictError
+  >
   readonly defaultInfo: () => Effect.Effect<Info, SessionSupervisorError>
   readonly defaultAgent: () => Effect.Effect<string, SessionSupervisorError>
   /** The exact global Config-selected main profile, if explicitly configured. No display-name fallback. */
@@ -82,11 +93,37 @@ export interface Interface {
       whenToUse: string
       systemPrompt: string
     },
-    Provider.DefaultModelError | SessionSupervisorError
+    Provider.DefaultModelError | SessionSupervisorError | Provider.CredentialTransportUnavailableError
   >
 }
 
-type State = Omit<Interface, "generate" | "getProfile" | "primaryProfileDefinition">
+/** Core AgentProfileV2 directory/config failures surfaced by `Agent.list()`. */
+export type AgentProfileDirectoryError =
+  | AgentProfileConflictError
+  | AgentProfileNotFoundError
+  | AgentProfileSelectorConflictError
+
+export const isAgentProfileDirectoryError = (error: unknown): error is AgentProfileDirectoryError =>
+  error instanceof AgentProfileConflictError ||
+  error instanceof AgentProfileNotFoundError ||
+  error instanceof AgentProfileSelectorConflictError
+
+/**
+ * Execution seams that historically declared only the host-runtime channel
+ * cannot silently drop an AgentProfileV2 directory failure. Collapse it into
+ * the typed supervisor channel with its own stage instead of dying or widening
+ * every downstream contract.
+ */
+export const agentProfileDirectoryFailure = (error: AgentProfileDirectoryError): SessionSupervisorError =>
+  new SessionSupervisorError({
+    stage: "agent-profile",
+    reason: `AgentProfileV2 directory is unavailable: ${error.message}`,
+  })
+
+type State = Omit<Interface, "generate" | "getProfile" | "primaryProfileDefinition" | "list"> & {
+  /** The in-memory built-in registry itself cannot fail; profile selection is added by `list`. */
+  readonly list: () => Effect.Effect<Info[]>
+}
 
 // AgentProfileV2 uses canonical capability IDs. The direct-session permission
 // engine still evaluates OpenCode tool IDs, so translate only the capability IDs
@@ -160,7 +197,7 @@ function profileAgent(profile: AgentProfileV2.AgentProfileDefinitionV2): Info {
   }
 }
 
-export class Service extends Context.Service<Service, Interface>()("@opencode/Agent") {}
+export class Service extends Context.Service<Service, Interface>()("@horizoncode/Agent") {}
 
 export const use = serviceUse(Service)
 
@@ -184,8 +221,20 @@ const layer = Layer.effect(
         const skillDirs = yield* skill.dirs()
         const referenceDirs = Object.keys(cfg.references ?? cfg.reference ?? {}).length
           ? yield* Effect.gen(function* () {
-              yield* (yield* PluginV2.Service).wait(PluginV2.ID.make("core/config-reference"))
-              return (yield* (yield* Reference.Service).list()).map((reference) => reference.path)
+              // Both services are location-scoped: they exist only where the
+              // location service map actually materialises them. Reading them
+              // optionally keeps `Agent.node`'s own graph unchanged (these
+              // nodes are `Location`-bound, so restating them as node deps
+              // would make every root compile unbound) while still taking the
+              // full reference whitelist whenever the map supplies them. A map
+              // that does not expose them has no materialized reference set to
+              // whitelist, and the default `ask` rule keeps governing those
+              // paths.
+              const plugin = yield* Effect.serviceOption(PluginV2.Service)
+              const reference = yield* Effect.serviceOption(Reference.Service)
+              if (Option.isNone(plugin) || Option.isNone(reference)) return [] as string[]
+              yield* plugin.value.wait(PluginV2.ID.make("core/config-reference"))
+              return (yield* reference.value.list()).map((reference) => reference.path)
             }).pipe(Effect.provide(locations.get(Location.Ref.make({ directory: AbsolutePath.make(ctx.directory) }))))
           : []
         const whitelistedDirs = [
@@ -441,11 +490,13 @@ const layer = Layer.effect(
       }),
     )
 
-    return Service.of({
-      get: Effect.fn("Agent.get")(function* (agent: string) {
-        return yield* InstanceState.useEffect(state, (s) => s.get(agent))
-      }),
-      getProfile: Effect.fn("Agent.getProfile")(function* (profileID: string, revision: number) {
+    // Extract the profile projection so `list` can reuse it without yielding
+    // its own Service tag (which would make the whole Agent layer recursively
+    // require itself).
+    const projectProfile = Effect.fn("Agent.projectProfile")(function* (
+      profileID: string,
+      revision: string,
+    ) {
         const ctx = yield* InstanceState.context
         return yield* Effect.gen(function* () {
           const profiles = yield* AgentProfileService
@@ -508,6 +559,14 @@ const layer = Layer.effect(
         }).pipe(
           Effect.provide(locations.get(Location.Ref.make({ directory: AbsolutePath.make(ctx.directory) }))),
         )
+    })
+
+    return Service.of({
+      get: Effect.fn("Agent.get")(function* (agent: string) {
+        return yield* InstanceState.useEffect(state, (s) => s.get(agent))
+      }),
+      getProfile: Effect.fn("Agent.getProfile")(function* (profileID: string, revision: string | number) {
+        return yield* projectProfile(profileID, String(revision))
       }),
       list: Effect.fn("Agent.list")(function* () {
         const ordinary = yield* InstanceState.useEffect(state, (s) => s.list())
@@ -522,7 +581,7 @@ const layer = Layer.effect(
         const configured: Info[] = []
         for (const selection of profileSelectors) {
           if (!selection.profile.enabled || !selection.profile.roles.includes("subagent")) continue
-          const projection = yield* (yield* Service).getProfile(selection.profile.profileId, selection.profile.revision).pipe(
+          const projection = yield* projectProfile(selection.profile.profileId, selection.profile.revision).pipe(
             Effect.option,
           )
           if (Option.isSome(projection)) configured.push({ ...projection.value, name: selection.selector })

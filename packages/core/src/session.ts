@@ -189,13 +189,14 @@ export interface Interface {
       files?: boolean
     }) => Effect.Effect<
       Revert.State,
-      NotFoundError | SessionRevert.FileChangesUnavailableError | SessionRevert.MessageNotFoundError | SessionSupervisorError,
-      TrustedPrincipalContext
+      NotFoundError | SessionRevert.FileChangesUnavailableError | SessionRevert.MessageNotFoundError | SessionSupervisorError
     >
     readonly clear: (
       sessionID: SessionSchema.ID,
-    ) => Effect.Effect<void, NotFoundError | SessionRevert.FileChangesUnavailableError | SessionSupervisorError, TrustedPrincipalContext>
-    readonly commit: (sessionID: SessionSchema.ID) => Effect.Effect<void, NotFoundError>
+    ) => Effect.Effect<void, NotFoundError | SessionRevert.FileChangesUnavailableError | SessionSupervisorError>
+    readonly commit: (
+      sessionID: SessionSchema.ID,
+    ) => Effect.Effect<void, NotFoundError | SessionSupervisorError>
   }
 }
 
@@ -497,6 +498,16 @@ const layer = Layer.effect(
       ),
       revert: {
         stage: Effect.fn("V2Session.revert.stage")(function* (input) {
+          // Fail closed: the server projects TrustedPrincipalContext only on its
+          // authenticated branches. A missing service is a typed denial, never a
+          // type-level R that pushes unauthenticated callers to fabricate authority.
+          const trusted = yield* Effect.serviceOption(TrustedPrincipalContext)
+          if (Option.isNone(trusted)) {
+            return yield* new SessionSupervisorError({
+              stage: "authorization",
+              reason: "Authenticated principal required to stage a Session revert",
+            })
+          }
           const session = yield* result.get(input.sessionID)
           if ((yield* execution.active).has(input.sessionID)) {
             return yield* new SessionRevert.FileChangesUnavailableError({
@@ -511,6 +522,13 @@ const layer = Layer.effect(
           )
         }),
         clear: Effect.fn("V2Session.revert.clear")(function* (sessionID) {
+          const trusted = yield* Effect.serviceOption(TrustedPrincipalContext)
+          if (Option.isNone(trusted)) {
+            return yield* new SessionSupervisorError({
+              stage: "authorization",
+              reason: "Authenticated principal required to clear a Session revert",
+            })
+          }
           const session = yield* result.get(sessionID)
           if ((yield* execution.active).has(sessionID)) {
             return yield* new SessionRevert.FileChangesUnavailableError({
@@ -525,6 +543,19 @@ const layer = Layer.effect(
           )
         }),
         commit: Effect.fn("V2Session.revert.commit")(function* (sessionID) {
+          // Fail closed first: `SessionRevert.commit` publishes
+          // `revert.committed`, whose projector deletes every message after the
+          // boundary and nulls the staged revert — none of which an
+          // unauthenticated caller may trigger. Same mechanism as stage/clear:
+          // absence is a typed denial, never a type-level `R` that pushes
+          // callers to fabricate authority.
+          const trusted = yield* Effect.serviceOption(TrustedPrincipalContext)
+          if (Option.isNone(trusted)) {
+            return yield* new SessionSupervisorError({
+              stage: "authorization",
+              reason: "Authenticated principal required to commit a Session revert",
+            })
+          }
           const session = yield* result.get(sessionID)
           yield* SessionRevert.commit(session).pipe(Effect.provideService(EventV2.Service, events))
         }),

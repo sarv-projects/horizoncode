@@ -1,11 +1,11 @@
-import { afterEach, describe, expect } from "bun:test"
+import { describe, expect } from "bun:test"
 import path from "path"
 import fs from "fs/promises"
 import { Effect, Layer } from "effect"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { ToolRegistry } from "@/tool/registry"
 import { hostProtocolRouteAvailable, languageServiceProcessRouteAvailable } from "@/lsp/launch"
-import { disposeAllInstances, TestInstance } from "../fixture/fixture"
+import { TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { TestConfig } from "../fixture/config"
 import { Config } from "@/config/config"
@@ -13,6 +13,8 @@ import { Agent } from "@/agent/agent"
 import { InstanceState } from "@/effect/instance-state"
 
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { InstanceRef } from "@/effect/instance-ref"
+import { ProjectV2 } from "@opencode-ai/core/project"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { MCP } from "@/mcp"
@@ -21,6 +23,9 @@ import { Permission } from "@/permission"
 import { Plugin } from "@/plugin"
 import { Provider } from "@/provider/provider"
 import { Session } from "@/session/session"
+import { SessionStatus } from "@/session/status"
+import { SessionSupervisor } from "@opencode-ai/core/session/supervisor"
+import { WebSearchRuntime } from "@/tool/websearch-runtime"
 import { MessageID, SessionID } from "@/session/schema"
 import { SessionTools } from "@/session/tools"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
@@ -30,13 +35,45 @@ const configLayer = TestConfig.layer({
   directories: () => InstanceState.directory.pipe(Effect.map((dir) => [path.join(dir, ".opencode")])),
 })
 
-const root = LayerNode.group([ToolRegistry.node, Agent.node])
+// The unit tests exercise registry filtering, not the Rust host boundary: a
+// real SessionSupervisor would construct a host-kernel client at layer build
+// (forking work that needs the production bootstrap scope), so both graphs mock
+// every supervisor operation with the host features closed.
+const supervisorNode = LayerNode.make({
+  service: SessionSupervisor.Service,
+  layer: Layer.mock(SessionSupervisor.Service, {
+    hostFeatureEnabled: () => Effect.succeed(false),
+    queryRepoStructure: () => Effect.fail({ _tag: "SessionSupervisorError", code: "host-kernel-feature" } as never),
+    discoverRepo: () => Effect.fail({ _tag: "SessionSupervisorError", code: "host-kernel-feature" } as never),
+    readRepoDocument: () => Effect.fail({ _tag: "SessionSupervisorError", code: "host-kernel-feature" } as never),
+  }),
+  deps: [],
+})
+
+// TaskTool.init requires SessionStatus.Service and WebSearchTool.init reads the
+// instance context at layer-build time; in the full app graph both arrive from
+// the root-group ordering/bootstrap scope, so this test graph supplies them
+// explicitly (SessionStatus before ToolRegistry; a build-scope InstanceRef).
+// The build-scope context is captured by tool init effects but never used for
+// filesystem access by these tests; keep the path repo-contained anyway.
+const fixtureInstanceRef = Layer.succeed(InstanceRef, {
+  directory: "/home/sarvesh/business_Dev/agentx/.p7-fixture",
+  worktree: "/home/sarvesh/business_Dev/agentx/.p7-fixture",
+  project: {
+    id: ProjectV2.ID.make("proj_registry-fixture"),
+    worktree: "/home/sarvesh/business_Dev/agentx/.p7-fixture",
+    time: { created: 0, updated: 0 },
+    sandboxes: [],
+  },
+})
+
+const root = LayerNode.group([SessionStatus.node, Agent.node, ToolRegistry.node, supervisorNode])
 const replacements = [
   [Config.node, configLayer],
   [RuntimeFlags.node, RuntimeFlags.layer()],
 ] as const
 
-const it = testEffect(LayerNode.compile(root, replacements))
+const it = testEffect(LayerNode.compile(root, replacements).pipe(Layer.provide(fixtureInstanceRef)))
 const withCodeMode = testEffect(
   LayerNode.compile(root, [
     [Config.node, configLayer],
@@ -58,13 +95,13 @@ const withCodeMode = testEffect(
         clients: () => Effect.succeed({ weather: {} as any }),
       }),
     ],
-  ]),
+  ]).pipe(Layer.provide(fixtureInstanceRef)),
 )
 const withLspEnabled = testEffect(
   LayerNode.compile(root, [
     [Config.node, configLayer],
     [RuntimeFlags.node, RuntimeFlags.layer({ experimentalLspTool: true })],
-  ]),
+  ]).pipe(Layer.provide(fixtureInstanceRef)),
 )
 const withEmptyCodeMode = testEffect(
   LayerNode.compile(root, [
@@ -77,7 +114,7 @@ const withEmptyCodeMode = testEffect(
         clients: () => Effect.succeed({}),
       }),
     ],
-  ]),
+  ]).pipe(Layer.provide(fixtureInstanceRef)),
 )
 
 // SessionTools.resolve yields Permission and FSUtil without executing a request
@@ -94,8 +131,11 @@ const permissionStub = Layer.succeed(
 // The origin-exposure variants expose FSUtil, MCP, and RuntimeFlags as roots so the
 // test body observes the same instances the registry uses internally.
 const originRoot = LayerNode.group([
-  ToolRegistry.node,
+  SessionStatus.node,
   Agent.node,
+  ToolRegistry.node,
+  supervisorNode,
+  WebSearchRuntime.node,
   FSUtil.node,
   MCP.node,
   RuntimeFlags.node,
@@ -108,7 +148,7 @@ const exposure = testEffect(
       [RuntimeFlags.node, RuntimeFlags.layer()],
     ]),
     permissionStub,
-  ),
+  ).pipe(Layer.provide(fixtureInstanceRef)),
 )
 const withSearchEnabled = testEffect(
   Layer.mergeAll(
@@ -117,7 +157,7 @@ const withSearchEnabled = testEffect(
       [RuntimeFlags.node, RuntimeFlags.layer({ enableExa: true })],
     ]),
     permissionStub,
-  ),
+  ).pipe(Layer.provide(fixtureInstanceRef)),
 )
 const withCodeModeDisabledMcp = testEffect(
   Layer.mergeAll(
@@ -126,7 +166,7 @@ const withCodeModeDisabledMcp = testEffect(
       [RuntimeFlags.node, RuntimeFlags.layer({ experimentalCodeMode: true })],
     ]),
     permissionStub,
-  ),
+  ).pipe(Layer.provide(fixtureInstanceRef)),
 )
 
 // A hostile internal plugin that rewrites every tool definition and attempts to
@@ -145,7 +185,7 @@ const withHostilePlugin = testEffect(
     [Config.node, configLayer],
     [RuntimeFlags.node, RuntimeFlags.layer()],
     [Plugin.node, Layer.mock(Plugin.Service, { trigger: hostileTrigger })],
-  ]),
+  ]).pipe(Layer.provide(fixtureInstanceRef)),
 )
 
 const exposureSessionID = SessionID.make("ses_origin_exposure")
@@ -187,10 +227,6 @@ const resolveExposure = Effect.fnUntraced(function* () {
     promptOps: {} as never,
   })
   return { defs, resolved }
-})
-
-afterEach(async () => {
-  await disposeAllInstances()
 })
 
 describe("tool.registry", () => {
@@ -326,6 +362,19 @@ describe("tool.registry", () => {
 })
 
 describe("tool.registry origin exposure", () => {
+  it.instance("projects deferred discovery candidates through the canonical Coding capability tiers", () =>
+    Effect.sync(() => {
+    expect(SessionTools.exposeCodingProfileToolIDsV1({
+      capabilities: [
+        { id: "files.read", effectClass: "read_only" },
+        { id: "tools.search", effectClass: "read_only" },
+        { id: "codemode.execute", effectClass: "effect" },
+        { id: "browser.navigate", effectClass: "effect" },
+      ],
+    })).toEqual(["files.read", "tools.search", "codemode.execute"])
+    }),
+  )
+
   withHostilePlugin.instance(
     "plugin tool.definition rewrites cannot change Guard authority",
     () =>

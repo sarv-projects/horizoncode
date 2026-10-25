@@ -11,6 +11,7 @@ import { ToolRegistry } from "@/tool/registry"
 import type { TaskPromptOps } from "@/tool/task"
 import { type Tool as AITool, tool, jsonSchema, type ToolExecutionOptions } from "ai"
 import { Effect, Option, Schema } from "effect"
+import type { JSONSchema7 } from "@ai-sdk/provider"
 import { Session } from "./session"
 import { SessionProcessor } from "./processor"
 import { PartID } from "./schema"
@@ -22,6 +23,7 @@ import path from "node:path"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { WebSearchRuntime } from "@/tool/websearch-runtime"
 import { builtinHarnessProfileV1, projectHarnessToolIDsV1 } from "@opencode-ai/core/harness-profile"
+import { HorizonCodingProfile } from "@opencode-ai/core/config/coding-profile"
 import {
   searchToolDescriptorsV1,
   toolSchemaRecordV1,
@@ -37,10 +39,10 @@ import {
   requireToolExecution,
   resolveToolBatchLease,
   type DirectAttemptAuthority,
-  type ManagedAttemptAuthority,
   type ToolBatchDefinition,
   toolCallOutcome,
 } from "./tool-batch"
+import type { ManagedAttemptAuthority } from "./managed-control"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { preparePatchBatch } from "@/tool/apply_patch"
 import { TrustedPrincipalContext } from "@opencode-ai/core/trusted-principal"
@@ -51,6 +53,27 @@ import {
   type CodeModeToolV1,
 } from "@/tool/code-mode"
 import { codeModeToolContextFromBatchContext } from "./tool-batch"
+
+
+// Mirrors the per-tool description bound enforced by the CodeMode start-frame
+// validator (code-mode-protocol.ts validTool); the wire limit is normative and
+// shared with kernel/src/codemode_protocol.rs.
+const CODE_MODE_TOOL_DESCRIPTION_MAX_BYTES = 4096
+
+/** Project the canonical tier policy over candidates that already passed registry and permission checks. */
+export function exposeCodingProfileToolIDsV1(input: {
+  readonly capabilities: readonly Tool.Capability[]
+  readonly platform?: "linux" | "windows" | "darwin"
+}): readonly string[] {
+  return HorizonCodingProfile.exposeCapabilityIDsV1({
+    available: input.capabilities.map((capability) => ({
+      id: capability.id,
+      implementationStatus: "wired" as const,
+    })),
+    skillCatalogSize: 0,
+    platform: input.platform,
+  })
+}
 
 
 export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
@@ -278,7 +301,8 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
     throw new RangeError("Harness registry exceeds the bounded tool-discovery candidate count")
   }
 
-  const harnessID = input.agent.options.horizonHarness ?? "native-rich"
+  const configuredHarness = input.agent.options.horizonHarness
+  const harnessID = typeof configuredHarness === "string" ? configuredHarness : "native-rich"
   const harness = builtinHarnessProfileV1(harnessID)
   if (!harness) throw new Error(`Unknown HorizonCode harness profile: ${harnessID}`)
 
@@ -302,6 +326,13 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
     }))
     .filter((item) => item.batch && item.batch.internal !== true && item.batch.capability.effectClass !== "unknown" &&
       permissionAction(item.name, item.batch.capability.id) !== "deny")
+
+  const codingProfileIDs = new Set(exposeCodingProfileToolIDsV1({
+    capabilities: candidates.map((item) => item.batch.capability),
+  }))
+  for (let index = candidates.length - 1; index >= 0; index--) {
+    if (!codingProfileIDs.has(candidates[index]!.batch.capability.id)) candidates.splice(index, 1)
+  }
 
   if (candidates.length > TOOL_DISCOVERY_LIMITS_V1.maxCandidates) {
     throw new RangeError("Authorized tool registry exceeds the bounded tool-discovery candidate count")
@@ -332,7 +363,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   const deferredCapabilities = new Set(projection.deferred)
   const stagedCapabilities = new Set<string>()
   const descriptors: ToolDiscoveryDescriptorV1[] = [...deferredCapabilities]
-    .map((id) => {
+    .map((id): ToolDiscoveryDescriptorV1 => {
       const item = byCapability.get(id)!
       const action = permissionAction(item.name, item.batch.capability.id)
       return {
@@ -353,19 +384,18 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   const descriptorByID = new Map(descriptors.map((descriptor) => [descriptor.id, descriptor]))
   for (const message of input.messages) {
     for (const part of message.parts) {
-      if (part.type !== "tool" || part.name !== "tools_search" || part.state.status !== "completed") continue
-      for (const item of part.state.content) {
-        if (item.type !== "text" || typeof item.text !== "string" || item.text.length > 32 * 1024) continue
-        try {
-          const result: unknown = JSON.parse(item.text)
-          if (!isRecord(result) || !Array.isArray(result.tools)) continue
-          for (const descriptor of result.tools) {
-            if (!isRecord(descriptor) || typeof descriptor.id !== "string" || typeof descriptor.schemaDigest !== "string") continue
-            if (descriptorByID.get(descriptor.id)?.schemaDigest === descriptor.schemaDigest) activeCapabilities.add(descriptor.id)
-          }
-        } catch {
-          // Malformed or legacy tool output cannot expand the current registry projection.
+      if (part.type !== "tool" || part.tool !== "tools_search" || part.state.status !== "completed") continue
+      const output = part.state.output
+      if (typeof output !== "string" || output.length > 32 * 1024) continue
+      try {
+        const result: unknown = JSON.parse(output)
+        if (!isRecord(result) || !Array.isArray(result.tools)) continue
+        for (const descriptor of result.tools) {
+          if (!isRecord(descriptor) || typeof descriptor.id !== "string" || typeof descriptor.schemaDigest !== "string") continue
+          if (descriptorByID.get(descriptor.id)?.schemaDigest === descriptor.schemaDigest) activeCapabilities.add(descriptor.id)
         }
+      } catch {
+        // Malformed or legacy tool output cannot expand the current registry projection.
       }
     }
   }
@@ -402,16 +432,22 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
           inputSchema: item.batch.schema,
           internal: item.batch.internal,
         }
-      }))),
+      // A tool whose description cannot fit the bounded wire frame stays in the
+      // normal provider tool list but is withheld from the nested CodeMode
+      // catalog; the strict frame validator rejects the whole set otherwise.
+      }).filter((tool) => Buffer.byteLength(tool.description, "utf8") <= CODE_MODE_TOOL_DESCRIPTION_MAX_BYTES))),
       codeModeExecutors: Object.fromEntries([...byCapability.values()].map((item) => [item.name, allTools[item.name]!])) as Readonly<Record<string, AITool>>,
     }
   }
 
   if (harness.toolProjection === "minimal" && descriptors.length > 0 && !byCapability.has("tools.search") &&
+    exposeCodingProfileToolIDsV1({
+      capabilities: [...candidates.map((item) => item.batch.capability), { id: "tools.search", effectClass: "read_only" }],
+    }).includes("tools.search") &&
     permissionAction("tools_search", "tools.search") !== "deny") {
     if (allTools.tools_search !== undefined) throw new Error("Built-in tools.search collides with a registry tool")
     const searchCapability = { id: "tools.search", effectClass: "read_only" as const }
-    const searchSchema = {
+    const searchSchema: JSONSchema7 = {
       type: "object",
       properties: {
         query: { type: "string", minLength: 1, maxLength: 256 },

@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test"
+import { Schema } from "effect"
+import * as RepoIntelligenceSchema from "@opencode-ai/schema/repo-intelligence-v1"
 import { projectRepoIntelGenerationCacheObservation } from "../src/session/repo-intel-cache-owner"
 
 const digest = `blake3:${"a".repeat(64)}`
 const now = Date.parse("2026-10-20T10:00:00.000Z")
-const generation = {
+const generation = Schema.decodeUnknownSync(RepoIntelligenceSchema.RepoGenerationPinV1)({
   schemaVersion: 1 as const,
   messageType: "generation" as const,
   requestId: "query-123",
@@ -11,9 +13,9 @@ const generation = {
   sourceGeneration: digest,
   sourceRevision: digest,
   sourceKind: "none" as const,
-  coverage: { files: 3, bytes: 128 },
+  coverage: { files: "3", bytes: "128" },
   expiresAt: "2026-10-20T10:00:20.000Z",
-}
+})
 
 describe("RepoIntel cache-owner metadata projection", () => {
   test("projects only authenticated owner and HostKernel generation facts", () => {
@@ -29,7 +31,7 @@ describe("RepoIntel cache-owner metadata projection", () => {
       schemaVersion: 1,
       kind: "repo_intel_generation",
       registryStatus: "unavailable",
-      unavailableReason: "host_build_identity_not_projected",
+      unavailableReason: "core_projection_not_host_cache_authority",
       owner: {
         principal: "server_auth:authenticated-core",
         sessionID: "ses_123",
@@ -67,18 +69,20 @@ describe("RepoIntel cache-owner metadata projection", () => {
         principal: { kind: "server_auth", subject: "bad\nsubject" },
       }),
     ).toBeUndefined()
+    const withExpiresAt = (expiresAt: string) =>
+      Schema.decodeUnknownSync(RepoIntelligenceSchema.RepoGenerationPinV1)({ ...generation, expiresAt })
     expect(
       projectRepoIntelGenerationCacheObservation({
         ...base,
         principal: { kind: "server_auth", subject: "authenticated-core" },
-        generation: { ...generation, expiresAt: "2026-10-20T09:59:59.999Z" },
+        generation: withExpiresAt("2026-10-20T09:59:59.999Z"),
       }),
     ).toBeUndefined()
     expect(
       projectRepoIntelGenerationCacheObservation({
         ...base,
         principal: { kind: "server_auth", subject: "authenticated-core" },
-        generation: { ...generation, expiresAt: "2026-10-20T10:00:30.001Z" },
+        generation: withExpiresAt("2026-10-20T10:00:30.001Z"),
       }),
     ).toBeUndefined()
   })

@@ -29,7 +29,7 @@ use crate::terminal_process::{
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -56,7 +56,7 @@ const MAX_TERMINAL_CAPTURE_BYTES: u64 = 100 * 1024 * 1024;
 const BOM: &[u8; 3] = b"\xef\xbb\xbf";
 
 #[derive(Clone, Copy, Debug)]
-enum Failure {
+pub(crate) enum Failure {
     Invalid,
     DeadlineExceeded,
     FeatureNotNegotiated,
@@ -174,10 +174,10 @@ fn parse_direct_code_mode_enablement(value: &Value) -> Result<DirectCodeModeEnab
         || session_id.len() > 132 || session_id.len() < 5
         || !session_id[4..].bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
     { return Err(Failure::Invalid.error()); }
-    for digest in [&principal_digest, &helper_digest] {
+    for digest in [principal_digest.as_str(), helper_digest] {
         if !guard::is_sha256_digest(digest) { return Err(Failure::Invalid.error()); }
     }
-    for digest in [&resource_profile_digest, &guarantee_digest, &policy_digest, &enablement_digest] {
+    for digest in [resource_profile_digest, guarantee_digest, policy_digest, enablement_digest.as_str()] {
         if !is_blake3_digest(digest) { return Err(Failure::Invalid.error()); }
     }
     let decimal = |key: &str| -> Result<u64, TypedErrorV1> {
@@ -320,6 +320,15 @@ impl Failure {
     }
 }
 
+/// One canonical conversion so internal EffectHost failures can cross the typed
+/// RPC boundary with `?` instead of ad-hoc mapping at every call site. The mapping
+/// is exactly `Failure::error`; no failure is silently reclassified.
+impl From<Failure> for TypedErrorV1 {
+    fn from(value: Failure) -> Self {
+        value.error()
+    }
+}
+
 #[derive(Debug)]
 struct Challenge {
     challenge_id: String,
@@ -348,6 +357,13 @@ struct Challenge {
     /// HostKernel-issued authority digest persisted before target dispatch so an
     /// authenticated Attempt receipt can be reconciled after owner restart.
     capability_lease_digest: Option<String>,
+    /// Durable direct-session grant that authorized this effect, when the effect
+    /// was admitted under a direct grant instead of an explicit approval.
+    direct_session_grant_digest: Option<String>,
+    /// Terminal receipt digest written when this challenge settled. Recovery and
+    /// idempotent settlement compare this exact value; it is never re-derived
+    /// from caller input.
+    receipt_digest: Option<String>,
 }
 
 /// Host-only launch-specific preflight metadata. The execution handle itself remains in
@@ -1698,6 +1714,7 @@ impl EffectHost {
                     output_bytes INTEGER,
                     truncated INTEGER NOT NULL DEFAULT 0 CHECK (truncated IN (0,1)),
                     receipt_digest TEXT,
+                    dap_allow_evaluate INTEGER NOT NULL DEFAULT 0 CHECK (dap_allow_evaluate IN (0,1)),
                     created_at_ms INTEGER NOT NULL,
                     updated_at_ms INTEGER NOT NULL
                 );
@@ -2075,21 +2092,21 @@ impl EffectHost {
             "SELECT COUNT(*) FROM pragma_table_info('http_executions') WHERE name='outcome'",
             [],
             |row| row.get(0),
-        ).map_err(|_| Failure::Unavailable)?;
+        ).map_err(|_| "HTTP execution schema could not be inspected".to_owned())?;
         if has_http_execution_outcome == 0 {
             connection.execute_batch(
                 "ALTER TABLE http_executions ADD COLUMN outcome TEXT;",
-            ).map_err(|_| Failure::Unavailable)?;
+            ).map_err(|_| "HTTP execution schema could not be upgraded".to_owned())?;
         }
         let has_http_route_plan_digest: i64 = connection.query_row(
             "SELECT COUNT(*) FROM pragma_table_info('http_executions') WHERE name='route_plan_digest'",
             [],
             |row| row.get(0),
-        ).map_err(|_| Failure::Unavailable)?;
+        ).map_err(|_| "HTTP execution schema could not be inspected".to_owned())?;
         if has_http_route_plan_digest == 0 {
             connection.execute_batch(
                 "ALTER TABLE http_executions ADD COLUMN route_plan_digest TEXT;",
-            ).map_err(|_| Failure::Unavailable)?;
+            ).map_err(|_| "HTTP execution schema could not be upgraded".to_owned())?;
         }
         for (column, declaration) in [
             ("body_data", "BLOB"),
@@ -2106,6 +2123,7 @@ impl EffectHost {
         }
         for (column, declaration) in [
             ("execution_principal", "TEXT NOT NULL DEFAULT ''"),
+            ("dap_allow_evaluate", "INTEGER NOT NULL DEFAULT 0"),
             ("scope_kind", "TEXT NOT NULL DEFAULT 'session'"),
             ("scope_workspace_id", "TEXT"),
             ("direct_session_grant_digest", "TEXT"),
@@ -2952,7 +2970,7 @@ impl EffectHost {
             None,
         );
         if decision.decision != guard::DecisionKind::Ask
-            || intent.as_deref() != Some(challenge.argument_digest.as_str())
+            || intent != challenge.argument_digest
         {
             return Err(Failure::Denied.error());
         }
@@ -3130,7 +3148,7 @@ impl EffectHost {
             None,
         );
         if decision.decision != guard::DecisionKind::Ask
-            || intent.as_deref() != Some(challenge.argument_digest.as_str())
+            || intent != challenge.argument_digest
         {
             return Err(Failure::Denied.error());
         }
@@ -3960,7 +3978,7 @@ impl EffectHost {
             response_digest, usage_digest,
         );
         let transaction = self.connection.transaction().map_err(|_| Failure::Unavailable.error())?;
-        let existing: Option<(String, Option<String>, Option<String>, Option<String>, Option<String>)> = transaction.query_row(
+        let existing: (String, Option<String>, Option<String>, Option<String>, Option<String>) = transaction.query_row(
             "SELECT status,assistant_entry_id,response_digest,usage_digest,receipt_digest
              FROM provider_inference_dispatches WHERE provider_request_id=?1 AND effect_id=?2
                AND binding_digest=?3 AND prepare_digest=?4 AND dispatch_digest=?5",
@@ -5508,7 +5526,7 @@ impl EffectHost {
             || deadline != authority.deadline_unix_ms as i64 || turn_context != authority.turn_context_digest
             || !matches!(status.as_str(), "READY"|"WAVE_PENDING"|"FAILED"|"CANCELLED"|"UNKNOWN"|"COMPLETE")
         { return Err(Failure::Conflict.error()); }
-        let outer: Option<(String,String,String,String,String,i64,i64,Option<String>,String,Option<String>,Option<String>)> = self.connection.query_row(
+        let outer: Option<(String,String,String,Option<String>,String,i64,i64,Option<String>,String,Option<String>,Option<String>)> = self.connection.query_row(
             "SELECT c.capability_id,c.status,c.origin_kind,c.managed_attempt_digest,
                     s.status,s.owner_epoch,s.generation,s.direct_session_grant_digest,s.location_id,
                     c.direct_permission_mode_digest,c.direct_permission_mode_revision
@@ -6480,8 +6498,8 @@ impl EffectHost {
                     execution_id,intent_id,effect_id,challenge_id,principal,execution_principal,session_id,scope_kind,scope_workspace_id,direct_session_grant_digest,location_id,
                     capability_id,capability_lease_digest,attempt_scope_digest,owner_epoch,generation,
                     workspace_revision,profile_ref,profile_id,profile_revision,profile_digest,executable_digest,
-                    execution_digest,confinement_record,cgroup_identity,status,created_at_ms,updated_at_ms
-                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,'PREPARED',?26,?26)",
+                    execution_digest,confinement_record,cgroup_identity,dap_allow_evaluate,status,created_at_ms,updated_at_ms
+                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,'PREPARED',?27,?27)",
                 params![
                     binding.execution_id,
                     intent_id,
@@ -6508,6 +6526,7 @@ impl EffectHost {
                     preflight.execution_digest,
                     preflight.confinement_record,
                     cgroup_identity,
+                    i64::from(binding.dap_allow_evaluate),
                     now,
                 ],
             )
@@ -6655,7 +6674,7 @@ impl EffectHost {
         if !is_blake3_digest(observed_workspace_revision) {
             return Err(Failure::Invalid.error());
         }
-        let grant_digest: Option<String> = self.connection.query_row(
+        let grant_digest: String = self.connection.query_row(
             "SELECT direct_session_grant_digest FROM effect_challenges WHERE challenge_id=?1 AND effect_id=?2",
             params![binding.challenge_id, binding.effect_id], |row| row.get::<_, Option<String>>(0),
         ).optional().map_err(|_| Failure::Unavailable.error())?.flatten()
@@ -7597,7 +7616,7 @@ impl EffectHost {
                         e.stdout_sequence,e.stderr_sequence,e.exit_code,e.stdout_digest,e.stderr_digest,
                         e.output_bytes,e.truncated,e.receipt_digest,c.argument_digest,c.status,
                         e.profile_id,e.profile_revision,e.profile_digest,e.executable_digest,e.execution_principal,
-                        e.scope_kind,e.scope_workspace_id,e.direct_session_grant_digest
+                        e.scope_kind,e.scope_workspace_id,e.direct_session_grant_digest,e.dap_allow_evaluate
                  FROM stdio_executions e JOIN effect_challenges c ON c.challenge_id=e.challenge_id
                  WHERE e.execution_id=?1 AND e.effect_id=?2 AND e.challenge_id=?3
                    AND e.principal=?4 AND e.location_id=?5",
@@ -7616,6 +7635,7 @@ impl EffectHost {
                     row.get::<_, String>(23)?, row.get::<_, i64>(24)?,
                     row.get::<_, String>(25)?, row.get::<_, String>(26)?, row.get::<_, String>(27)?,
                     row.get::<_, String>(28)?, row.get::<_, Option<String>>(29)?, row.get::<_, Option<String>>(30)?,
+                    row.get::<_, i64>(31)?,
                 )),
             )
             .optional()
@@ -7703,6 +7723,7 @@ impl EffectHost {
             profile_digest: row.25,
             executable_digest: row.26,
             approved_arguments_digest: row.21,
+            dap_allow_evaluate: row.31 != 0,
         };
         let status = StdioExecutionStatusV1 {
             execution_id: execution_id.to_owned(),
@@ -8288,7 +8309,7 @@ impl EffectHost {
                 || last_body_bytes != response.body.len()
                 || last_truncated != response.body_truncated
                 || last_peer.as_deref() != Some(expected_response_peer.as_str())
-                || route_plan_digest != binding.request_digest
+                || route_plan.map(|(_, _, digest)| digest).as_deref() != Some(binding.request_digest.as_str())
                 || canonical_routes.is_empty()
             {
                 return Err(Failure::Conflict.error());
@@ -8606,14 +8627,14 @@ impl EffectHost {
                 (canonical_routes[*prior_index].as_str(), *prior_attempt, "SETTLED", Some(prior_outcome.as_str()), prior_failure.as_deref(), *prior_status, *prior_count, *prior_truncated)
             });
             if !valid_next_http_route_attempt_from_receipt(previous_ref, &row.1, attempt)
-                || previous.as_ref().is_some_and(|(prior_index, _, _, prior_failure, _)| {
+                || previous.as_ref().is_some_and(|(prior_index, _, _, prior_failure, _, _, _)| {
                     route_index != *prior_index && route_index != prior_index.saturating_add(1)
                         || prior_failure.as_deref() == Some("cancelled")
                 })
             {
                 return Err(Failure::Conflict.error());
             }
-            if let Some((prior_index, prior_attempt, _, _, _)) = previous.as_ref() {
+            if let Some((prior_index, prior_attempt, _, _, _, _, _)) = previous.as_ref() {
                 if route_index == *prior_index && (*prior_attempt != 1 || attempt != 2)
                     || route_index == prior_index.saturating_add(1) && attempt != 1 {
                     return Err(Failure::Conflict.error());
@@ -8916,7 +8937,7 @@ impl EffectHost {
             let attempt = u8::try_from(row.2).map_err(|_| Failure::Unknown.error())?;
             if sequence == 0 || !(1..=2).contains(&attempt)
                 || !matches!(row.3.as_str(), "DISPATCHING" | "SETTLED" | "UNKNOWN")
-                || row.4.as_deref().is_some_and(|value| !matches!(value.as_str(),
+                || row.4.as_deref().is_some_and(|value| !matches!(value,
                     "SUCCEEDED" | "EMPTY" | "FAILED" | "RATE_LIMITED" | "RETRYABLE_FAILURE" | "NOT_DISPATCHED"))
                 || row.5.is_some_and(|value| !(0..=10).contains(&value))
                 || row.8.as_deref().is_some_and(|digest| !is_blake3_digest(digest))
@@ -9495,6 +9516,7 @@ impl EffectHost {
             .artifact_ref
             .byte_length
             .parse::<u64>()
+            .ok()
             .filter(|value| value.to_string() == capture.artifact_ref.byte_length)
             .ok_or(Failure::Invalid)?;
         let observed_bytes = retained_bytes
@@ -9517,7 +9539,7 @@ impl EffectHost {
         if challenge.capability_id != guard::TERMINAL_RUN_ID || challenge.status != "PREPARED" {
             return Err(Failure::Unknown);
         }
-        let cgroup_quiescence_digest = self.require_terminal_process_quiescence(effect_id, &challenge)?;
+        let cgroup_quiescence_digest = self.require_terminal_process_quiescence(effect_id, &challenge, status, exit_code)?;
         let lease_id =
             load_lease_id(&self.connection, &challenge.challenge_id)?.ok_or(Failure::Unknown)?;
         let artifact_ref_value = terminal_artifact_ref_value(&capture.artifact_ref);
@@ -9584,7 +9606,7 @@ impl EffectHost {
             ("status".to_owned(), Value::String(status.to_owned())),
             ("preview".to_owned(), Value::String(preview.to_owned())),
             ("artifactRef".to_owned(), artifact_ref_value),
-            ("receiptRef".to_owned(), Value::String(receipt)),
+            ("receiptRef".to_owned(), Value::String(receipt.clone())),
             ("receiptDigest".to_owned(), Value::String(receipt)),
             ("outputDigest".to_owned(), Value::String(capture.output_digest.clone())),
             ("observedBytes".to_owned(), Value::String(capture.observed_bytes.to_string())),
@@ -9626,7 +9648,7 @@ impl EffectHost {
         if challenge.capability_id != guard::TERMINAL_START_ID || challenge.status != "PREPARED" {
             return Err(Failure::Unknown);
         }
-        let cgroup_quiescence_digest = self.require_terminal_process_quiescence(effect_id, &challenge)?;
+        let cgroup_quiescence_digest = self.require_terminal_process_quiescence(effect_id, &challenge, status, exit_code)?;
         let code = exit_code.map(|code| code.to_string()).unwrap_or_default();
         let receipt = digest_bytes(
             format!(
@@ -9664,14 +9686,23 @@ impl EffectHost {
         &self,
         effect_id: &str,
         challenge: &Challenge,
+        terminal_status: &str,
+        exit_code: Option<i32>,
     ) -> Result<String, Failure> {
-        let row: Option<(Vec<u8>, Option<String>)> = self.connection.query_row(
+        let row: Option<(Option<Vec<u8>>, Option<String>)> = self.connection.query_row(
             "SELECT cgroup_identity,quiescence_digest FROM terminal_runs
              WHERE effect_id=?1 AND status='PREPARED'",
             [effect_id],
             |row| Ok((row.get(0)?,row.get(1)?)),
         ).optional().map_err(|_|Failure::Unavailable)?;
-        let Some((encoded, Some(proof))) = row else { return Err(Failure::Unknown); };
+        let Some((encoded, proof)) = row else { return Err(Failure::Unknown); };
+        let Some(encoded) = encoded else {
+            // No retained cgroup is allowed only for the exact authenticated Full
+            // Access launch. The consent preflight is HostKernel-written durable
+            // provenance; anything else keeps the outcome UNKNOWN with no replay.
+            return self.supervised_terminal_quiescence(effect_id, challenge, terminal_status, exit_code);
+        };
+        let Some(proof) = proof else { return Err(Failure::Unknown); };
         if !is_blake3_digest(&proof) { return Err(Failure::Unknown); }
         let value = crate::messagepack::decode(&encoded, FRAME_LIMITS).map_err(|_|Failure::Unknown)?;
         let identity = crate::cgroup_v2::CgroupIdentityV1::from_value(&value).map_err(|_|Failure::Unknown)?;
@@ -9682,6 +9713,42 @@ impl EffectHost {
             || identity.process_kind != if challenge.capability_id == guard::TERMINAL_RUN_ID { "terminal_run" } else { "terminal_start" }
         { return Err(Failure::Conflict); }
         Ok(proof)
+    }
+
+    /// Quiescence evidence for a launch that intentionally has no cgroup. The exact
+    /// Full Access consent-preflight marker is required, and the proof is labelled as
+    /// a supervised process-tree observation, never as cgroup containment. A restart
+    /// cannot reproduce the live supervisor observation, so recovery keeps the
+    /// effect UNKNOWN instead of settling it from journal data alone.
+    fn supervised_terminal_quiescence(
+        &self,
+        effect_id: &str,
+        challenge: &Challenge,
+        terminal_status: &str,
+        exit_code: Option<i32>,
+    ) -> Result<String, Failure> {
+        let row: Option<(String, Option<String>)> = self.connection.query_row(
+            "SELECT guarantee_record,direct_permission_mode_digest FROM terminal_consent_preflights
+             WHERE challenge_id=?1 AND effect_id=?2",
+            params![challenge.challenge_id, effect_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).optional().map_err(|_| Failure::Unavailable)?;
+        let Some((record, mode_digest)) = row else { return Err(Failure::Unknown); };
+        // Both the exact HostKernel-written launch assessment and a pinned direct
+        // permission mode are required. The cgroup-less path is never available to
+        // an effect admitted without an explicit mode.
+        if record != crate::terminal_process::FULL_ACCESS_GUARANTEE_RECORD
+            || !mode_digest.as_deref().is_some_and(is_blake3_digest)
+        {
+            return Err(Failure::Unknown);
+        }
+        Ok(supervised_tree_quiescence_digest(
+            b"horizoncode.terminal.supervised-tree-quiescence.v1",
+            effect_id,
+            &challenge.challenge_id,
+            terminal_status,
+            exit_code,
+        ))
     }
 
     /// Remove only the cgroup identity whose terminal proof and terminal row have
@@ -9737,7 +9804,7 @@ impl EffectHost {
         binding: &crate::terminal_process::ExternalEditorLaunchBindingV1,
         process_ref: &crate::terminal_process::StdioProcessRefV1,
         launch_digest: &str,
-        cgroup_identity_value: &Value,
+        cgroup_identity_value: Option<&Value>,
     ) -> Result<ExternalEditorExecutionOutcomeV1, TypedErrorV1> {
         use crate::terminal_process::{ExternalEditorTargetKindV1, StdioProcessKindV1};
         if !is_blake3_digest(launch_digest)
@@ -9767,29 +9834,51 @@ impl EffectHost {
         {
             return Err(Failure::Denied.error());
         }
-        let identity = crate::cgroup_v2::CgroupIdentityV1::from_value(cgroup_identity_value)
-            .map_err(|_| Failure::Invalid.error())?;
-        if identity.execution_id != binding.execution_id
-            || identity.effect_id != binding.effect_id
-            || identity.capability_lease_digest != binding.capability_lease_digest
-            || identity.execution_principal != binding.profile_ref.profile_id
-            || identity.attempt_scope_digest.is_some()
-            || identity.owner_epoch != binding.owner_epoch
-            || identity.process_generation != binding.generation
-            || identity.process_kind != "external_editor"
-            || identity.profile_id != binding.profile_ref.profile_id
-            || identity.profile_revision != binding.profile_ref.revision
-            || identity.profile_digest != binding.profile_ref.profile_digest
-            || identity.executable_digest != binding.executable_digest
-            || identity.resource_profile != "none"
-        { return Err(Failure::Conflict.error()); }
-        #[cfg(target_os = "linux")]
-        crate::cgroup_v2::ExecutionCgroupV2::confirm_empty_before_dispatch(&identity)
-            .map_err(|_| Failure::Unavailable.error())?;
-        #[cfg(not(target_os = "linux"))]
-        return Err(Failure::Unavailable.error());
-        let cgroup_identity_bytes = crate::messagepack::encode(cgroup_identity_value, FRAME_LIMITS)
-            .map_err(|_| Failure::Invalid.error())?;
+        // Full Access intentionally allocates no cgroup (the child can migrate
+        // descendants, so an empty group is not proof); only the exact
+        // danger-full-access + never projection may prepare without one, and it
+        // must never claim a containment identity it does not own. Confined
+        // profiles must persist their exact identity before any dispatch intent.
+        let cgroup_identity_bytes = match cgroup_identity_value {
+            None => {
+                if binding.permission_mode.sandbox_mode != guard::DirectSandboxModeV1::DangerFullAccess {
+                    return Err(Failure::Denied.error());
+                }
+                // The stdio dispatch boundary stops on non-Linux before any
+                // durable launch intent exists, Full Access included.
+                #[cfg(not(target_os = "linux"))]
+                return Err(Failure::Unavailable.error());
+                None
+            }
+            Some(cgroup_identity_value) => {
+                if binding.permission_mode.sandbox_mode == guard::DirectSandboxModeV1::DangerFullAccess {
+                    return Err(Failure::Denied.error());
+                }
+                let identity = crate::cgroup_v2::CgroupIdentityV1::from_value(cgroup_identity_value)
+                    .map_err(|_| Failure::Invalid.error())?;
+                if identity.execution_id != binding.execution_id
+                    || identity.effect_id != binding.effect_id
+                    || identity.capability_lease_digest != binding.capability_lease_digest
+                    || identity.execution_principal != binding.profile_ref.profile_id
+                    || identity.attempt_scope_digest.is_some()
+                    || identity.owner_epoch != binding.owner_epoch
+                    || identity.process_generation != binding.generation
+                    || identity.process_kind != "external_editor"
+                    || identity.profile_id != binding.profile_ref.profile_id
+                    || identity.profile_revision != binding.profile_ref.revision
+                    || identity.profile_digest != binding.profile_ref.profile_digest
+                    || identity.executable_digest != binding.executable_digest
+                    || identity.resource_profile != "none"
+                { return Err(Failure::Conflict.error()); }
+                #[cfg(target_os = "linux")]
+                crate::cgroup_v2::ExecutionCgroupV2::confirm_empty_before_dispatch(&identity)
+                    .map_err(|_| Failure::Unavailable.error())?;
+                #[cfg(not(target_os = "linux"))]
+                return Err(Failure::Unavailable.error());
+                Some(crate::messagepack::encode(cgroup_identity_value, FRAME_LIMITS)
+                    .map_err(|_| Failure::Invalid.error())?)
+            }
+        };
         for value in [&binding.session_id, &binding.principal, &binding.location_id,
             &binding.execution_id, &binding.user_action_id, &binding.call_id,
             &binding.effect_id, &binding.challenge_id] {
@@ -9918,7 +10007,10 @@ impl EffectHost {
             ("permissionModeRevision".to_owned(), Value::String(binding.permission_mode.revision.to_string())),
             ("capabilityLeaseDigest".to_owned(), Value::String(binding.capability_lease_digest.clone())),
             ("launchDigest".to_owned(), Value::String(launch_digest.to_owned())),
-            ("cgroupIdentityDigest".to_owned(), Value::String(digest_bytes(&cgroup_identity_bytes))),
+            ("cgroupIdentityDigest".to_owned(), Value::String(match &cgroup_identity_bytes {
+                Some(bytes) => digest_bytes(bytes),
+                None => digest_bytes(b"horizoncode.external-editor.no-cgroup.v1\0"),
+            })),
         ]));
         let encoded = crate::messagepack::encode(&binding_value, FRAME_LIMITS)
             .map_err(|_| Failure::Invalid.error())?;
@@ -10002,6 +10094,42 @@ impl EffectHost {
         Ok(identity)
     }
 
+    /// Read the exact retained cgroup identity when one exists. A `None` is only
+    /// legal for an explicitly authenticated Full Access launch; callers must not
+    /// treat it as proof of anything.
+    fn external_editor_cgroup_identity_optional(
+        &self,
+        binding: &crate::terminal_process::ExternalEditorLaunchBindingV1,
+    ) -> Result<Option<crate::cgroup_v2::CgroupIdentityV1>, TypedErrorV1> {
+        let encoded: Option<Option<Vec<u8>>> = self.connection.query_row(
+            "SELECT cgroup_identity FROM external_editor_runs
+             WHERE effect_id=?1 AND challenge_id=?2 AND execution_id=?3",
+            params![binding.effect_id,binding.challenge_id,binding.execution_id],
+            |row| row.get(0),
+        ).optional().map_err(|_|Failure::Unavailable.error())?;
+        let Some(encoded) = encoded else { return Err(Failure::NotFound.error()) };
+        let Some(encoded) = encoded else { return Ok(None) };
+        let value = crate::messagepack::decode(&encoded, FRAME_LIMITS)
+            .map_err(|_|Failure::Unknown.error())?;
+        let identity = crate::cgroup_v2::CgroupIdentityV1::from_value(&value)
+            .map_err(|_|Failure::Unknown.error())?;
+        if identity.execution_id != binding.execution_id
+            || identity.effect_id != binding.effect_id
+            || identity.capability_lease_digest != binding.capability_lease_digest
+            || identity.execution_principal != binding.profile_ref.profile_id
+            || identity.attempt_scope_digest.is_some()
+            || identity.owner_epoch != binding.owner_epoch
+            || identity.process_generation != binding.generation
+            || identity.process_kind != "external_editor"
+            || identity.profile_id != binding.profile_ref.profile_id
+            || identity.profile_revision != binding.profile_ref.revision
+            || identity.profile_digest != binding.profile_ref.profile_digest
+            || identity.executable_digest != binding.executable_digest
+            || identity.resource_profile != "none"
+        { return Err(Failure::Conflict.error()); }
+        Ok(Some(identity))
+    }
+
     pub(crate) fn cancel_prepared_external_editor(
         &mut self,
         effect_id: &str,
@@ -10011,16 +10139,33 @@ impl EffectHost {
     ) -> Result<ExternalEditorExecutionOutcomeV1, TypedErrorV1> {
         let row = self.external_editor_identity(effect_id, challenge_id, execution_id)?;
         if row.0 != "PREPARED" || row.1 != binding_digest { return Err(Failure::Conflict.error()); }
-        let encoded: Vec<u8> = self.connection.query_row(
+        let encoded: Option<Vec<u8>> = self.connection.query_row(
             "SELECT cgroup_identity FROM external_editor_runs WHERE effect_id=?1 AND challenge_id=?2 AND execution_id=?3",
             params![effect_id,challenge_id,execution_id],|row|row.get(0),
         ).optional().map_err(|_|Failure::Unavailable.error())?.ok_or_else(||Failure::Unknown.error())?;
-        let identity_value = crate::messagepack::decode(&encoded, FRAME_LIMITS).map_err(|_|Failure::Unknown.error())?;
-        let identity = crate::cgroup_v2::CgroupIdentityV1::from_value(&identity_value).map_err(|_|Failure::Unknown.error())?;
-        let quiescence = crate::cgroup_v2::ExecutionCgroupV2::kill_and_confirm_empty(&identity)
-            .map_err(|_|Failure::Unknown.error())?;
-        crate::cgroup_v2::ExecutionCgroupV2::retain_if_empty(&identity)
-            .map_err(|_|Failure::Unknown.error())?;
+        // The dispatch fence (`mark_external_editor_dispatching`) has not been
+        // crossed, so cancellation is deterministic in every mode: a confined
+        // run only ever held an empty, pre-dispatch-confirmed cgroup; a Full
+        // Access run never had one. No process-tree observation exists or is
+        // claimed, and no relaunch is ever derived from this receipt.
+        let (quiescence, cgroup_identity) = match encoded {
+            Some(bytes) => {
+                let identity_value = crate::messagepack::decode(&bytes, FRAME_LIMITS).map_err(|_|Failure::Unknown.error())?;
+                let identity = crate::cgroup_v2::CgroupIdentityV1::from_value(&identity_value).map_err(|_|Failure::Unknown.error())?;
+                // Fail closed before any containment action: the persisted
+                // identity must name exactly this durable row.
+                if identity.effect_id != effect_id
+                    || identity.execution_id != execution_id
+                    || identity.process_kind != "external_editor"
+                { return Err(Failure::Unknown.error()); }
+                let quiescence = crate::cgroup_v2::ExecutionCgroupV2::kill_and_confirm_empty(&identity)
+                    .map_err(|_|Failure::Unknown.error())?;
+                crate::cgroup_v2::ExecutionCgroupV2::retain_if_empty(&identity)
+                    .map_err(|_|Failure::Unknown.error())?;
+                (quiescence, Some(identity))
+            }
+            None => (editor_pre_dispatch_cancel_digest(effect_id, execution_id), None),
+        };
         let receipt = editor_terminal_receipt_digest(effect_id, challenge_id, execution_id,
             binding_digest, "cancelled", None, None, None, None, &quiescence)?;
         let tx = self.connection.transaction().map_err(|_| Failure::Unavailable.error())?;
@@ -10030,7 +10175,9 @@ impl EffectHost {
             params![receipt,effect_id,challenge_id]).map_err(|_|Failure::Unavailable.error())?;
         if changed != 1 || challenge_changed != 1 { return Err(Failure::Conflict.error()); }
         tx.commit().map_err(|_|Failure::Unavailable.error())?;
-        let _=crate::cgroup_v2::ExecutionCgroupV2::remove_quiescent_if_empty(&identity,&quiescence);
+        if let Some(identity)=cgroup_identity {
+            let _=crate::cgroup_v2::ExecutionCgroupV2::remove_quiescent_if_empty(&identity,&quiescence);
+        }
         self.read_external_editor_outcome(effect_id, challenge_id, execution_id)
     }
 
@@ -10109,12 +10256,6 @@ impl EffectHost {
             || challenge.session_id != binding.session_id || challenge.status != "RUNNING"
         { return Err(Failure::Conflict.error()); }
 
-        let cgroup_identity = self.external_editor_cgroup_identity(binding)?;
-        let quiescence = crate::cgroup_v2::ExecutionCgroupV2::kill_and_confirm_empty(&cgroup_identity)
-            .map_err(|_|Failure::Unknown.error())?;
-        crate::cgroup_v2::ExecutionCgroupV2::retain_if_empty(&cgroup_identity)
-            .map_err(|_|Failure::Unknown.error())?;
-
         let mut terminal_status = status.to_owned();
         let mut result_file_digest: Option<String> = None;
         let mut result_file_bytes: Option<u64> = None;
@@ -10136,6 +10277,26 @@ impl EffectHost {
                 { terminal_status = "conflict".to_owned(); }
             }
         }
+        // Full Access editors intentionally carry no cgroup. Only the exact
+        // authenticated danger-full-access projection may settle from the supervised
+        // process-tree observation; every other identity-less row stays UNKNOWN.
+        let cgroup_identity = self.external_editor_cgroup_identity_optional(binding)?;
+        let quiescence = match cgroup_identity.as_ref() {
+            Some(identity) => {
+                let proof = crate::cgroup_v2::ExecutionCgroupV2::kill_and_confirm_empty(identity)
+                    .map_err(|_|Failure::Unknown.error())?;
+                crate::cgroup_v2::ExecutionCgroupV2::retain_if_empty(identity)
+                    .map_err(|_|Failure::Unknown.error())?;
+                proof
+            }
+            None if binding.permission_mode.sandbox_mode == crate::guard::DirectSandboxModeV1::DangerFullAccess => {
+                supervised_tree_quiescence_digest(
+                    b"horizoncode.external-editor.supervised-tree-quiescence.v1",
+                    &binding.effect_id, &binding.execution_id, &terminal_status, exit_code,
+                )
+            }
+            None => return Err(Failure::Unknown.error()),
+        };
         let receipt = editor_terminal_receipt_digest(&binding.effect_id, &binding.challenge_id,
             &binding.execution_id, &binding_digest, &terminal_status, exit_code,
             result_file_digest.as_deref(), result_file_bytes, observed_workspace_revision, &quiescence)?;
@@ -10146,7 +10307,9 @@ impl EffectHost {
             params![result_file_digest,receipt,binding.effect_id,binding.challenge_id]).map_err(|_|Failure::Unavailable.error())?;
         if changed != 1 || challenge_changed != 1 { return Err(Failure::Unknown.error()); }
         tx.commit().map_err(|_|Failure::Unavailable.error())?;
-        let _=crate::cgroup_v2::ExecutionCgroupV2::remove_quiescent_if_empty(&cgroup_identity,&quiescence);
+        if let Some(identity)=cgroup_identity.as_ref() {
+            let _=crate::cgroup_v2::ExecutionCgroupV2::remove_quiescent_if_empty(identity,&quiescence);
+        }
         self.read_external_editor_outcome(&binding.effect_id, &binding.challenge_id, &binding.execution_id)
     }
 
@@ -10257,7 +10420,7 @@ impl EffectHost {
             .optional().map_err(|_|Failure::Unavailable.error())?.ok_or_else(||Failure::NotFound.error())?;
         let process_value = crate::messagepack::decode(&row.1, FRAME_LIMITS).map_err(|_|Failure::Unknown.error())?;
         let process_ref = crate::terminal_process::StdioProcessRefV1::from_value(&process_value).map_err(|_|Failure::Unknown.error())?;
-        let status = row.8.unwrap_or_else(|| match row.0.as_str() {
+        let status = row.8.clone().unwrap_or_else(|| match row.0.as_str() {
             "PREPARED" => "prepared", "RUNNING" => "running", "UNKNOWN" => "unknown",
             "CANCELLED" => "cancelled", "SETTLED" => "settled", _ => "unknown",
         }.to_owned());
@@ -10315,7 +10478,7 @@ impl EffectHost {
                 if !is_blake3_digest(workspace_revision_digest) || direct_session_grant_digest.as_ref().is_some_and(|d| !is_blake3_digest(d)))
             || authority.direct_turn_scope_digest.as_ref().is_some_and(|digest| !is_blake3_digest(digest))
         { return Err(Failure::Denied.error()); }
-        let outer: Option<(String,String,String,String,String,String,String,String,String,i64,i64,Option<String>)> = self.connection.query_row(
+        let outer: Option<(String,String,String,String,String,String,Option<String>,String,String,i64,i64,Option<String>)> = self.connection.query_row(
             "SELECT c.effect_id,c.challenge_id,c.principal,c.session_id,c.capability_id,c.status,c.capability_lease_digest,
                     s.status,s.location_id,s.owner_epoch,s.generation,s.attempt_scope_digest
              FROM effect_challenges c JOIN stdio_executions s ON s.execution_id=?1
@@ -10347,7 +10510,7 @@ impl EffectHost {
         ).optional().map_err(|_| Failure::Unavailable.error())?;
         if let Some((execution,effect,challenge,scope,tools,helper_digest)) = existing {
             if execution != authority.execution_id || effect != authority.effect_id || challenge != authority.challenge_id
-                || scope != scope_digest || tools != authority.tool_set_digest || helper_digest != authority.helper_digest { return Err(Failure.Conflict.error()); }
+                || scope != scope_digest || tools != authority.tool_set_digest || helper_digest != authority.helper_digest { return Err(Failure::Conflict.error()); }
             transaction.commit().map_err(|_| Failure::Unavailable.error())?;
             return Ok(());
         }
@@ -10631,7 +10794,7 @@ impl EffectHost {
                 return self.fence_code_mode_unknown(&authority.request_id,batch_id).and(Err(Failure::Unknown.error()))
             }
             total_output=total_output.checked_add(input.output_bytes.unwrap_or(0)).ok_or_else(||Failure::Invalid.error())?;
-            if total_output>crate::codemode_protocol::MAX_OUTPUT_BYTES as u64{return self.fence_code_mode_unknown(&authority.request_id,batch_id)}
+            if total_output>crate::codemode_protocol::MAX_OUTPUT_BYTES as u64{return self.fence_code_mode_unknown(&authority.request_id,batch_id).and(Err(Failure::Unknown.error()))}
             let (receipt_kind,receipt_ref,receipt_digest)=match kind {
                 CodeModeWaveCallKindV1::Effect => {
                     let (Some(effect_id),Some(_lease),Some(digest))=(effect_id,lease_id,receipt_digest) else {
@@ -10660,7 +10823,7 @@ impl EffectHost {
         let aggregate=codemode_wave_receipt_digest(batch_id,&receipt_tuples);
         let previous:i64=self.connection.query_row("SELECT total_output_bytes FROM code_mode_runs WHERE request_id=?1 AND status='WAVE_PENDING'",[&authority.request_id],|row|row.get(0)).optional().map_err(|_|Failure::Unavailable.error())?.ok_or_else(||Failure::Conflict.error())?;
         let total=(previous as u64).checked_add(total_output).ok_or_else(||Failure::Invalid.error())?;
-        if total>crate::codemode_protocol::MAX_OUTPUT_BYTES as u64{return self.fence_code_mode_unknown(&authority.request_id,batch_id)}
+        if total>crate::codemode_protocol::MAX_OUTPUT_BYTES as u64{return self.fence_code_mode_unknown(&authority.request_id,batch_id).and(Err(Failure::Invalid.error()))}
         let tx=self.connection.transaction().map_err(|_|Failure::Unavailable.error())?;
         for (call_index,row) in results.iter().enumerate(){
             tx.execute("INSERT INTO code_mode_wave_results(request_id,wave_index,call_index,call_id,status,output,output_digest,output_bytes,error_code,receipt_kind,receipt_ref,receipt_digest)
@@ -10725,6 +10888,7 @@ impl EffectHost {
             row.get::<_,Option<String>>(6)?, row.get::<_,Option<String>>(7)?, row.get::<_,Option<String>>(8)?,
         ))).map_err(|_|Failure::Unavailable.error())?;
         let stored = rows.collect::<Result<Vec<_>,_>>().map_err(|_|Failure::Unavailable.error())?;
+        drop(stmt);
         if stored.len() != outcomes.len() { return self.fence_code_mode_unknown(&authority.request_id,batch_id).and(Err(Failure::Unknown.error())); }
         let mut total_output = 0usize;
         let mut result_rows = Vec::with_capacity(outcomes.len());
@@ -10771,7 +10935,7 @@ impl EffectHost {
         if total_output > crate::codemode_protocol::MAX_OUTPUT_BYTES { return self.fence_code_mode_unknown(&authority.request_id,batch_id).and(Err(Failure::Unknown.error())); }
         let prior_output:i64=self.connection.query_row("SELECT total_output_bytes FROM code_mode_runs WHERE request_id=?1 AND status='WAVE_PENDING'",[&authority.request_id],|row|row.get(0)).optional().map_err(|_|Failure::Unavailable.error())?.ok_or_else(||Failure::Conflict.error())?;
         let cumulative_output=(prior_output as usize).checked_add(total_output).ok_or_else(||Failure::Invalid.error())?;
-        if cumulative_output>crate::codemode_protocol::MAX_OUTPUT_BYTES{return Err(Failure::Invalid.error())}
+        if cumulative_output>crate::codemode_protocol::MAX_OUTPUT_BYTES{return self.fence_code_mode_unknown(&authority.request_id,batch_id).and(Err(Failure::Invalid.error()))}
         let aggregate = codemode_wave_receipt_digest(batch_id,&receipt_tuples);
         let has_rejected = result_rows.iter().any(|r|r.status=="rejected");
         let has_cancelled = result_rows.iter().any(|r|r.status=="cancelled");
@@ -10841,6 +11005,7 @@ impl EffectHost {
             .map_err(|_|Failure::Unavailable.error())?;
         let calls=stmt.query_map(params![authority.request_id,index],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?)))
             .map_err(|_|Failure::Unavailable.error())?.collect::<Result<Vec<_>,_>>().map_err(|_|Failure::Unavailable.error())?;
+        drop(stmt);
         if calls.is_empty() || calls.len()>crate::codemode_protocol::MAX_CALLS_PER_WAVE { return Err(Failure::Conflict.error()); }
         let mut results=Vec::with_capacity(calls.len());
         let mut tuples=Vec::with_capacity(calls.len());
@@ -10868,7 +11033,7 @@ impl EffectHost {
         Ok(CodeModeWaveOutcomeV1{status:"rejected".into(),results,settlement_digest:aggregate})
     }
 
-    fn read_code_mode_wave_outcome(&self,request_id:&str,wave_index:u8,batch_id:&str)->Result<CodeModeWaveOutcomeV1,TypedErrorV1>{
+    pub(crate) fn read_code_mode_wave_outcome(&self,request_id:&str,wave_index:u8,batch_id:&str)->Result<CodeModeWaveOutcomeV1,TypedErrorV1>{
         let (status,receipt_digest,outcome_digest,call_count): (String,Option<String>,Option<String>,i64)=self.connection.query_row(
             "SELECT status,receipt_digest,outcome_digest,call_count FROM code_mode_waves WHERE request_id=?1 AND wave_index=?2 AND batch_id=?3",
             params![request_id,wave_index as i64,batch_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)),
@@ -10889,7 +11054,7 @@ impl EffectHost {
             .map_err(|_|Failure::Unavailable.error())?;
         let call_ids=calls_stmt.query_map(params![request_id,wave_index as i64],|row|Ok((row.get::<_,i64>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?)))
             .map_err(|_|Failure::Unavailable.error())?.collect::<Result<Vec<_>,_>>().map_err(|_|Failure::Unavailable.error())?;
-        if call_ids.len()!=rows.len() || call_ids.iter().enumerate().any(|(index,(call_index,call_id))|
+        if call_ids.len()!=rows.len() || call_ids.iter().enumerate().any(|(index,(call_index,call_id,_))|
             *call_index!=index as i64 || rows[index].call_id.as_str()!=call_id.as_str()
                 || CodeModeWaveCallKindV1::parse(&call_ids[index].2).is_none()) {return Err(Failure::Unknown.error())}
         for (index,(_,call_id,kind_text)) in call_ids.iter().enumerate() {
@@ -11056,8 +11221,8 @@ impl EffectHost {
             ("executionID".into(),Value::String(authority.execution_id.clone())),
             ("status".into(),Value::String(status)),
             ("nextWave".into(),Value::Unsigned(next_wave as u64)),
-            ("pendingBatchID".into(),pending_batch_id.map(Value::String).unwrap_or(Value::Null)),
-            ("outerReceipt".into(),outer_receipt.unwrap_or(Value::Null)),
+            ("pendingBatchID".into(),pending_batch_id.map(Value::String).unwrap_or(Value::Nil)),
+            ("outerReceipt".into(),outer_receipt.unwrap_or(Value::Nil)),
         ])))
     }
 
@@ -11176,7 +11341,7 @@ impl EffectHost {
         Ok(())
     }
 
-    fn fence_code_mode_unknown(&mut self, request_id: &str, batch_id: &str) -> Result<(), TypedErrorV1> {
+    pub(crate) fn fence_code_mode_unknown(&mut self, request_id: &str, batch_id: &str) -> Result<(), TypedErrorV1> {
         let tx = self.connection.transaction().map_err(|_| Failure::Unavailable.error())?;
         tx.execute("UPDATE code_mode_runs SET status='UNKNOWN',updated_at_ms=?1 WHERE request_id=?2 AND status IN ('READY','WAVE_PENDING')",params![now_ms().map_err(Failure::error)? as i64,request_id]).map_err(|_| Failure::Unavailable.error())?;
         tx.execute("UPDATE code_mode_waves SET status='UNKNOWN',updated_at_ms=?1 WHERE request_id=?2 AND batch_id=?3 AND status IN ('RESERVED','ADMITTED','BOUND')",params![now_ms().map_err(Failure::error)? as i64,request_id,batch_id]).map_err(|_| Failure::Unavailable.error())?;
@@ -12356,23 +12521,32 @@ impl EffectHost {
         if count == 0 {
             return Ok(None);
         }
-        if usize::try_from(count).ok() != Some(authorizations.len()) {
-            return Err(Failure::Conflict);
-        }
         let now = now_ms()?;
         let mut replay = Vec::with_capacity(authorizations.len());
+        let mut missing = 0usize;
         for authorization in authorizations {
-            let challenge = self.connection.query_row(
+            let challenge = match self.connection.query_row(
                 "SELECT challenge_id, effect_id, session_id, batch_id, call_id, capability_id,
                         relative_path, requested_path, target, resource, existed, argument_digest,
                         content_digest, expires_at_ms, status, after_digest, turn_context_digest,
-                        principal, origin_kind, managed_attempt_digest
+                        principal, origin_kind, managed_attempt_digest, capability_lease_digest, direct_session_grant_digest, receipt_digest
                  FROM effect_challenges WHERE batch_id=?1 AND session_id=?2 AND principal=?3 AND call_id=?4",
                 params![authorization.user_action_id, authorization.session_id,
                     authorization.principal, authorization.call_id],
                 row_to_challenge,
             ).optional().map_err(|_| Failure::Unavailable)?
-                .ok_or(Failure::Conflict)?;
+            {
+                Some(challenge) => challenge,
+                None => {
+                    // A verifier batch may be built member-by-member (one
+                    // single-member prepare per call), so an unprepared member
+                    // is prepared fresh below instead of rejected. Only a torn
+                    // *multi-member atomic* call — where some requested members
+                    // replay and others are missing — conflicts.
+                    missing += 1;
+                    continue;
+                }
+            };
             if challenge.capability_id != authorization.capability_id
                 || challenge.origin_kind != ORIGIN_MANAGED_RUN
                 || challenge.managed_attempt_digest.as_deref() != authorization.managed_attempt_digest.as_deref()
@@ -12410,6 +12584,13 @@ impl EffectHost {
                 ])])),
             ]));
         }
+        if replay.is_empty() {
+            // No requested member exists yet: prepare the set fresh.
+            return Ok(None);
+        }
+        if missing > 0 {
+            return Err(Failure::Conflict);
+        }
         Ok(Some(replay))
     }
 
@@ -12434,7 +12615,7 @@ impl EffectHost {
             "SELECT challenge_id,effect_id,session_id,batch_id,call_id,capability_id,
                     relative_path,requested_path,target,resource,existed,argument_digest,
                     content_digest,expires_at_ms,status,after_digest,turn_context_digest,
-                    principal,origin_kind,managed_attempt_digest
+                    principal,origin_kind,managed_attempt_digest,capability_lease_digest,direct_session_grant_digest,receipt_digest
              FROM effect_challenges WHERE session_id=?1 AND principal=?2 AND call_id=?3
                AND capability_id=?4 AND origin_kind=?5 AND batch_id=''",
             params![authorization.session_id, authorization.principal,
@@ -14420,7 +14601,34 @@ impl EffectHost {
                 rows.collect::<Result<Vec<_>,_>>().map_err(|_|Failure::Unavailable)?
             };
             for (effect,challenge_id,execution,binding,profile,profile_digest,encoded,prior_proof) in pending {
-                let Some(encoded)=encoded else {continue};
+                let Some(encoded)=encoded else {
+                    // Full Access runs persist no cgroup identity, so restart
+                    // has no containment proof to reconcile from: fence every
+                    // non-terminal row to receiptless UNKNOWN per the Full
+                    // Access guarantee record. Never relaunch, never fabricate
+                    // a receipt, and never let UNKNOWN convert to a settled
+                    // outcome without fresh authenticated evidence.
+                    let challenge=load_effect(&self.connection,&effect)?.ok_or(Failure::Unknown)?;
+                    if challenge.challenge_id!=challenge_id || challenge.capability_id!=guard::EDITOR_LAUNCH_ID
+                        || challenge.session_id.is_empty()
+                    {continue;}
+                    let tx=self.connection.transaction().map_err(|_|Failure::Unavailable)?;
+                    let changed=tx.execute(
+                        "UPDATE external_editor_runs SET status='UNKNOWN',updated_at_ms=?1
+                         WHERE effect_id=?2 AND challenge_id=?3 AND execution_id=?4 AND binding_digest=?5
+                           AND cgroup_identity IS NULL AND status IN ('PREPARED','RUNNING','UNKNOWN')",
+                        params![now_ms()? as i64,effect,challenge_id,execution,binding],
+                    ).map_err(|_|Failure::Unavailable)?;
+                    if changed==1 {
+                        tx.execute(
+                            "UPDATE effect_challenges SET status='UNKNOWN' WHERE effect_id=?1 AND challenge_id=?2
+                             AND capability_id=?3 AND status IN ('PREPARED','RUNNING','UNKNOWN')",
+                            params![effect,challenge_id,guard::EDITOR_LAUNCH_ID],
+                        ).map_err(|_|Failure::Unavailable)?;
+                        tx.commit().map_err(|_|Failure::Unavailable)?;
+                    }
+                    continue;
+                };
                 let Ok(value)=crate::messagepack::decode(&encoded,FRAME_LIMITS) else {continue};
                 let Ok(identity)=crate::cgroup_v2::CgroupIdentityV1::from_value(&value) else {continue};
                 let challenge=load_effect(&self.connection,&effect)?.ok_or(Failure::Unknown)?;
@@ -14503,7 +14711,7 @@ impl EffectHost {
                 if expected_kind==Some(identity.process_kind.as_str()) && identity.execution_id==execution && identity.effect_id==effect
                     && identity.capability_lease_digest==lease && identity.attempt_scope_digest==scope
                     && i64::try_from(identity.owner_epoch).ok()==Some(epoch) && i64::try_from(identity.process_generation).ok()==Some(generation)
-                    && identity.profile_id==profile && i64::try_from(identity.profile_revision).ok()==Some(revision)
+                    && identity.profile_id==profile && identity.profile_revision.to_string()==revision
                     && identity.profile_digest==digest && identity.executable_digest==executable && identity.execution_principal==principal
                     && (match status.as_str() {
                         "SETTLED" => load_effect(&self.connection,&effect).ok().flatten().is_some_and(|c|c.status=="SETTLED"),
@@ -14608,7 +14816,7 @@ impl EffectHost {
             .prepare(
                 "SELECT challenge_id, effect_id, session_id, batch_id, call_id, capability_id,
                         relative_path, requested_path, target, resource, existed, argument_digest,
-                        content_digest, expires_at_ms, status, after_digest, turn_context_digest, principal, origin_kind, managed_attempt_digest
+                        content_digest, expires_at_ms, status, after_digest, turn_context_digest, principal, origin_kind, managed_attempt_digest, capability_lease_digest, direct_session_grant_digest, receipt_digest
                  FROM effect_challenges WHERE status IN ('PREPARED', 'UNKNOWN') ORDER BY challenge_id",
             )
             .map_err(|_| Failure::Unavailable)?;
@@ -14754,7 +14962,7 @@ fn load_challenge(
         .query_row(
             "SELECT challenge_id, effect_id, session_id, batch_id, call_id, capability_id,
                     relative_path, requested_path, target, resource, existed, argument_digest,
-                    content_digest, expires_at_ms, status, after_digest, turn_context_digest, principal, origin_kind, managed_attempt_digest
+                    content_digest, expires_at_ms, status, after_digest, turn_context_digest, principal, origin_kind, managed_attempt_digest, capability_lease_digest, direct_session_grant_digest, receipt_digest
              FROM effect_challenges WHERE challenge_id=?1",
             [challenge_id],
             row_to_challenge,
@@ -14768,7 +14976,7 @@ fn load_effect(connection: &Connection, effect_id: &str) -> Result<Option<Challe
         .query_row(
             "SELECT challenge_id, effect_id, session_id, batch_id, call_id, capability_id,
                     relative_path, requested_path, target, resource, existed, argument_digest,
-                    content_digest, expires_at_ms, status, after_digest, turn_context_digest, principal, origin_kind, managed_attempt_digest
+                    content_digest, expires_at_ms, status, after_digest, turn_context_digest, principal, origin_kind, managed_attempt_digest, capability_lease_digest, direct_session_grant_digest, receipt_digest
              FROM effect_challenges WHERE effect_id=?1",
             [effect_id],
             row_to_challenge,
@@ -15644,6 +15852,9 @@ fn row_to_challenge(row: &rusqlite::Row<'_>) -> rusqlite::Result<Challenge> {
         after_digest: row.get(15)?,
         turn_context_digest: row.get(16)?,
         managed_attempt_digest: row.get(19)?,
+        capability_lease_digest: row.get(20)?,
+        direct_session_grant_digest: row.get(21)?,
+        receipt_digest: row.get(22)?,
     })
 }
 
@@ -15688,6 +15899,43 @@ fn strict_map_optional<'a>(
         return Err(Failure::Invalid);
     }
     Ok(map)
+}
+
+/// Deterministic, explicitly-labelled evidence digest for a quiescence observation
+/// that is not cgroup emptiness. Callers must have already established the exact
+/// durable authorization marker; this only binds the observed terminal facts.
+/// Deterministic durable evidence that a prepared editor was cancelled strictly
+/// before the dispatch fence. `mark_external_editor_dispatching` is the atomic
+/// PREPARED→RUNNING transition that must be persisted before any spawn, so a row
+/// still in PREPARED proves no process was ever created; no process-tree
+/// observation exists or is needed. Domain-separated from supervised-tree
+/// quiescence so this proof can never be mistaken for containment evidence.
+fn editor_pre_dispatch_cancel_digest(effect_id: &str, execution_id: &str) -> String {
+    supervised_tree_quiescence_digest(
+        b"horizoncode.external-editor.pre-dispatch-cancel.v1",
+        effect_id,
+        execution_id,
+        "cancelled",
+        None,
+    )
+}
+
+fn supervised_tree_quiescence_digest(
+    domain: &[u8],
+    effect_id: &str,
+    challenge_id: &str,
+    terminal_status: &str,
+    exit_code: Option<i32>,
+) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(domain);
+    hasher.update(&[0]);
+    for value in [effect_id.as_bytes(), challenge_id.as_bytes(), terminal_status.as_bytes()] {
+        hasher.update(&(value.len() as u64).to_be_bytes());
+        hasher.update(value);
+    }
+    hasher.update(&exit_code.unwrap_or(i32::MIN).to_be_bytes());
+    format!("blake3:{}", hasher.finalize().to_hex())
 }
 
 fn patch_target_value(target: &PatchTarget) -> Value {
@@ -15736,7 +15984,7 @@ fn validate_identifier(value: &str) -> Result<(), Failure> {
 fn json_map_to_wire(values: &crate::codemode_protocol::JsonMap) -> Option<Value> {
     fn convert(value:&serde_json::Value)->Option<Value>{
         Some(match value {
-            serde_json::Value::Null=>Value::Nil,
+            serde_json::Value::Null=>Value::Null,
             serde_json::Value::Bool(v)=>Value::Bool(*v),
             serde_json::Value::String(v)=>Value::String(v.clone()),
             serde_json::Value::Number(v)=>{
@@ -16317,7 +16565,8 @@ fn codemode_terminal_decision_receipt_ref(request_id:&str,batch_id:&str,wave_ind
 
 #[cfg(test)]
 mod http_route_outcome_tests {
-    use super::{valid_http_route_outcome, valid_next_http_route_attempt};
+    use super::{valid_http_route_outcome, valid_next_http_route_attempt,
+        valid_next_http_route_attempt_from_receipt};
     use crate::http_execution::HttpResponseV1;
 
     fn response(status: u16, truncated: bool) -> HttpResponseV1 {
@@ -16376,8 +16625,17 @@ mod http_route_outcome_tests {
             "web.search.tavily",
             1,
         ));
-        assert!(valid_next_http_route_attempt(
-            Some(("web.search.exa", 2, "SETTLED", Some("RETRYABLE_FAILURE"))),
+        // Switching routes after the same-route retry is consumed requires the
+        // durable receipt to prove the failure class: the settled retryable
+        // receipt must carry a retryable HTTP status, and a receipt without one
+        // proves nothing and never opens the cross-route path.
+        assert!(valid_next_http_route_attempt_from_receipt(
+            Some(("web.search.exa", 2, "SETTLED", Some("RETRYABLE_FAILURE"), None, Some(503), None, false)),
+            "web.search.tavily",
+            1,
+        ));
+        assert!(!valid_next_http_route_attempt_from_receipt(
+            Some(("web.search.exa", 2, "SETTLED", Some("RETRYABLE_FAILURE"), None, None, None, false)),
             "web.search.tavily",
             1,
         ));
@@ -16450,6 +16708,376 @@ mod codemode_wave_receipt_tests {
         let reference=codemode_terminal_decision_receipt_ref("request","batch",0,"call",&digest);
         assert!(reference.starts_with("cmdec_"));
         assert_eq!(reference,codemode_terminal_decision_receipt_ref("request","batch",0,"call",&digest));
+    }
+}
+
+/// The managed CodeMode routes in `host_kernel` cross the module boundary through
+/// exactly two EffectHost methods: the wave-outcome reader and the UNKNOWN fence.
+/// Their visibility is the only shared surface, so their preconditions are
+/// re-asserted here rather than inferred from the widened keyword: a wave that is
+/// not durably committed must never project a terminal value, and a fence must
+/// never move a wave it does not identify exactly.
+#[cfg(test)]
+mod codemode_wave_reader_fence_tests {
+    use super::*;
+
+    const NOW_MS: i64 = 1_700_000_000_000;
+
+    fn open_wave_host(name: &str) -> (PathBuf, EffectHost) {
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let base = std::env::temp_dir().join(format!(
+            "hz-codemode-wave-{name}-{}-{nonce}",
+            std::process::id()
+        ));
+        let state = base.join("state");
+        let workspace = base.join("workspace");
+        fs::create_dir_all(&state).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        fs::set_permissions(&base, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+        let host = EffectHost::open(&state, Some(&workspace)).unwrap();
+        (base, host)
+    }
+
+    fn digest(seed: u8) -> String {
+        format!(
+            "blake3:{}",
+            [seed; 32].iter().map(|byte| format!("{byte:02x}")).collect::<String>()
+        )
+    }
+
+    fn seed_run(host: &EffectHost, request_id: &str, status: &str) {
+        let challenge_id = format!("challenge_{request_id}");
+        let effect_id = format!("effect_{request_id}");
+        let execution_id = format!("exec_{request_id}");
+        // `code_mode_runs` declares foreign keys onto both durable parents, and this
+        // journal runs with foreign keys enforced, so they must exist first.
+        host.connection
+            .execute(
+                "INSERT INTO effect_challenges(challenge_id,effect_id,session_id,principal,batch_id,
+                    call_id,capability_id,relative_path,requested_path,target,resource,existed,
+                    argument_digest,content_digest,expires_at_ms,status,turn_context_digest,origin_kind)
+                 VALUES (?1,?2,'session_codemode_test','host_os_uid:1000',?3,?4,'codemode.test',
+                    '.','.','.','.',0,?5,?5,?6,'PREPARED',?5,'user_action')",
+                params![
+                    challenge_id,
+                    effect_id,
+                    format!("batch_{request_id}"),
+                    format!("call_{request_id}"),
+                    digest(0x01),
+                    NOW_MS + 600_000
+                ],
+            )
+            .unwrap();
+        host.connection
+            .execute(
+                "INSERT INTO stdio_executions(execution_id,intent_id,effect_id,challenge_id,principal,
+                    session_id,location_id,capability_id,capability_lease_digest,owner_epoch,generation,
+                    workspace_revision,profile_ref,execution_digest,confinement_record,status,
+                    created_at_ms,updated_at_ms)
+                 VALUES (?1,?2,?3,?4,'host_os_uid:1000','session_codemode_test','loc_codemode_test',
+                    'codemode.test',?5,1,1,?6,?6,?5,?6,'PREPARED',?7,?7)",
+                params![
+                    execution_id,
+                    format!("intent_{request_id}"),
+                    effect_id,
+                    challenge_id,
+                    digest(0x01),
+                    digest(0x07),
+                    NOW_MS
+                ],
+            )
+            .unwrap();
+        host.connection
+            .execute(
+                "INSERT INTO code_mode_runs(request_id,execution_id,effect_id,challenge_id,principal,
+                    session_id,location_id,owner_epoch,generation,capability_lease_digest,
+                    attempt_scope_digest,tool_set_digest,enablement_digest,helper_digest,
+                    resource_profile_digest,policy_digest,turn_context_digest,deadline_unix_ms,
+                    status,created_at_ms,updated_at_ms)
+                 VALUES (?1,?2,?3,?4,'host_os_uid:1000','session_codemode_test','loc_codemode_test',
+                    1,1,?5,?5,?5,?5,?5,?5,?5,?5,?6,?7,?8,?8)",
+                params![
+                    request_id,
+                    format!("exec_{request_id}"),
+                    format!("effect_{request_id}"),
+                    format!("challenge_{request_id}"),
+                    digest(0x01),
+                    NOW_MS + 600_000,
+                    status,
+                    NOW_MS
+                ],
+            )
+            .unwrap();
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn seed_wave(
+        host: &EffectHost,
+        request_id: &str,
+        wave_index: i64,
+        batch_id: &str,
+        status: &str,
+        receipt_digest: Option<&str>,
+        outcome_digest: Option<&str>,
+    ) {
+        host.connection
+            .execute(
+                "INSERT INTO code_mode_waves(request_id,wave_index,batch_id,frame_digest,call_count,
+                    argument_bytes,status,scope_digest,receipt_digest,outcome_digest,created_at_ms,updated_at_ms)
+                 VALUES (?1,?2,?3,?4,?5,0,?6,?7,?8,?9,?10,?10)",
+                params![
+                    request_id,
+                    wave_index,
+                    batch_id,
+                    digest(0x02),
+                    1_i64,
+                    status,
+                    digest(0x03),
+                    receipt_digest,
+                    outcome_digest,
+                    NOW_MS
+                ],
+            )
+            .unwrap();
+    }
+
+    fn seed_effect_call(host: &EffectHost, request_id: &str, wave_index: i64, call_id: &str) {
+        host.connection
+            .execute(
+                "INSERT INTO code_mode_wave_calls(request_id,wave_index,call_index,call_id,tool_name,
+                    capability_id,call_kind,arguments_digest)
+                 VALUES (?1,?2,0,?3,'tool_codemode_test','codemode.test',?4,?5)",
+                params![request_id, wave_index, call_id, "effect", digest(0x04)],
+            )
+            .unwrap();
+    }
+
+    fn seed_settled_result(
+        host: &EffectHost,
+        request_id: &str,
+        wave_index: i64,
+        call_id: &str,
+        receipt_ref: &str,
+        receipt_digest: &str,
+    ) {
+        host.connection
+            .execute(
+                "INSERT INTO code_mode_wave_results(request_id,wave_index,call_index,call_id,status,
+                    output,output_digest,output_bytes,error_code,receipt_kind,receipt_ref,receipt_digest)
+                 VALUES (?1,?2,0,?3,'settled',NULL,NULL,NULL,NULL,'effect_receipt',?4,?5)",
+                params![request_id, wave_index, call_id, receipt_ref, receipt_digest],
+            )
+            .unwrap();
+    }
+
+    fn wave_state(
+        host: &EffectHost,
+        request_id: &str,
+        batch_id: &str,
+    ) -> (String, Option<String>, Option<String>) {
+        host.connection
+            .query_row(
+                "SELECT status,receipt_digest,outcome_digest FROM code_mode_waves
+                 WHERE request_id=?1 AND batch_id=?2",
+                params![request_id, batch_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap()
+    }
+
+    fn run_status(host: &EffectHost, request_id: &str) -> String {
+        host.connection
+            .query_row(
+                "SELECT status FROM code_mode_runs WHERE request_id=?1",
+                [request_id],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    /// Non-vacuity control: the reader still returns a terminal outcome, but only
+    /// for a wave whose receipt digest, outcome digest, retained call order and
+    /// per-call receipt rows all agree.
+    #[test]
+    fn committed_wave_outcome_is_the_only_terminal_read() {
+        let (base, host) = open_wave_host("committed-outcome");
+        let request = "req_committed";
+        seed_run(&host, request, "COMPLETE");
+        let tuple = CodeModeWaveReceiptTupleV1 {
+            call_index: 0,
+            call_id: "call-0".into(),
+            status: "settled".into(),
+            receipt_kind: "effect_receipt".into(),
+            receipt_ref: "effect_ref_0".into(),
+            receipt_digest: digest(0x5a),
+        };
+        let aggregate = codemode_wave_receipt_digest(
+            "batch_committed",
+            std::slice::from_ref(&tuple),
+        );
+        seed_wave(
+            &host,
+            request,
+            0,
+            "batch_committed",
+            "SETTLED",
+            Some(&aggregate),
+            Some(&aggregate),
+        );
+        seed_effect_call(&host, request, 0, "call-0");
+        seed_settled_result(&host, request, 0, "call-0", &tuple.receipt_ref, &tuple.receipt_digest);
+
+        let outcome = host
+            .read_code_mode_wave_outcome(request, 0, "batch_committed")
+            .expect("a fully committed wave must still resolve");
+        assert_eq!(outcome.status, "settled");
+        assert_eq!(outcome.results.len(), 1);
+        assert_eq!(outcome.results[0].call_id, "call-0");
+        assert_eq!(outcome.settlement_digest, aggregate);
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// A wave that was admitted but never durably committed must stay UNKNOWN:
+    /// neither a missing receipt, an uncommitted receipt, nor a receipt that
+    /// disagrees with its outcome may ever be projected as a terminal value.
+    #[test]
+    fn wave_without_a_committed_outcome_stays_unknown() {
+        let (base, host) = open_wave_host("uncommitted-outcome");
+        let request = "req_uncommitted";
+        seed_run(&host, request, "WAVE_PENDING");
+        seed_wave(&host, request, 0, "batch_open", "RESERVED", None, None);
+        seed_wave(&host, request, 1, "batch_uncommitted", "ADMITTED", Some(&digest(0x61)), None);
+        seed_wave(
+            &host,
+            request,
+            2,
+            "batch_mismatch",
+            "BOUND",
+            Some(&digest(0x62)),
+            Some(&digest(0x63)),
+        );
+        // A fenced wave carries no receipt at all and must stay UNKNOWN.
+        seed_wave(&host, request, 3, "batch_fenced", "UNKNOWN", None, None);
+
+        for (wave_index, batch_id) in
+            [(0_i64, "batch_open"), (1, "batch_uncommitted"), (2, "batch_mismatch"), (3, "batch_fenced")]
+        {
+            let error = host
+                .read_code_mode_wave_outcome(request, wave_index as u8, batch_id)
+                .expect_err("an uncommitted wave must never resolve");
+            assert_eq!(
+                error.code, "effect_outcome_unknown",
+                "{batch_id} must stay UNKNOWN"
+            );
+        }
+        // An unknown request id is not a terminal answer either: it is absent.
+        let missing = host
+            .read_code_mode_wave_outcome("req_missing", 0, "batch_open")
+            .expect_err("a foreign request must never resolve");
+        assert_eq!(missing.code, "approval_not_found");
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// A committed aggregate over durable rows that cannot substantiate it
+    /// (missing, malformed or kind-inconsistent per-call receipts) is ambiguous
+    /// and must be refused rather than replayed as a terminal outcome.
+    #[test]
+    fn ambiguous_receipt_rows_never_resolve_to_a_terminal_value() {
+        let (base, host) = open_wave_host("ambiguous-receipts");
+        let request = "req_ambiguous";
+        seed_run(&host, request, "WAVE_PENDING");
+
+        // (a) committed aggregate but no durable per-call result rows at all.
+        let committed = digest(0x64);
+        seed_wave(&host, request, 0, "batch_no_results", "SETTLED", Some(&committed), Some(&committed));
+
+        // (b) committed aggregate over a result row without a BLAKE3 receipt digest.
+        seed_wave(&host, request, 1, "batch_bad_digest", "SETTLED", Some(&committed), Some(&committed));
+        seed_effect_call(&host, request, 1, "call-1");
+        seed_settled_result(&host, request, 1, "call-1", "effect_ref_1", "not-a-blake3-digest");
+
+        // (c) committed aggregate over a result row whose receipt kind is absent,
+        //     so its receipt class cannot be proven at all.
+        seed_wave(&host, request, 2, "batch_missing_kind", "SETTLED", Some(&committed), Some(&committed));
+        seed_effect_call(&host, request, 2, "call-2");
+        host.connection
+            .execute(
+                "INSERT INTO code_mode_wave_results(request_id,wave_index,call_index,call_id,status,
+                    output,output_digest,output_bytes,error_code,receipt_kind,receipt_ref,receipt_digest)
+                 VALUES (?1,2,0,'call-2','settled',NULL,NULL,NULL,NULL,NULL,'effect_ref_2',?2)",
+                params![request, digest(0x65)],
+            )
+            .unwrap();
+
+        for (wave_index, batch_id) in
+            [(0_i64, "batch_no_results"), (1, "batch_bad_digest"), (2, "batch_missing_kind")]
+        {
+            let error = host
+                .read_code_mode_wave_outcome(request, wave_index as u8, batch_id)
+                .expect_err("an ambiguous receipt set must never resolve");
+            assert_eq!(
+                error.code, "effect_outcome_unknown",
+                "{batch_id} must stay UNKNOWN"
+            );
+        }
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// The fence is scoped to one exact request and batch. A foreign request or a
+    /// foreign batch leaves the targeted wave exactly as it was, an already-fenced
+    /// wave is never rewritten, and an already-terminal wave is never reopened.
+    #[test]
+    fn unknown_fence_never_applies_to_a_foreign_or_already_fenced_wave() {
+        let (base, mut host) = open_wave_host("fence-scope");
+        let request = "req_fence";
+        let other = "req_fence_other";
+        seed_run(&host, request, "WAVE_PENDING");
+        seed_run(&host, other, "WAVE_PENDING");
+        seed_wave(&host, request, 0, "batch_live", "RESERVED", None, None);
+        seed_wave(&host, other, 0, "batch_other", "RESERVED", None, None);
+        let terminal_receipt = digest(0x66);
+        seed_wave(
+            &host,
+            request,
+            1,
+            "batch_terminal",
+            "SETTLED",
+            Some(&terminal_receipt),
+            Some(&terminal_receipt),
+        );
+
+        // Foreign request id: neither the wave nor its run may move.
+        host.fence_code_mode_unknown("req_missing", "batch_live").unwrap();
+        assert_eq!(wave_state(&host, request, "batch_live").0, "RESERVED");
+        assert_eq!(run_status(&host, request), "WAVE_PENDING");
+
+        // Foreign batch id for a real request: the named wave is not the target,
+        // so it stays untouched. The run-level fence follows the request authority
+        // (existing semantics, unchanged here).
+        host.fence_code_mode_unknown(request, "batch_missing").unwrap();
+        assert_eq!(wave_state(&host, request, "batch_live").0, "RESERVED");
+        assert_eq!(run_status(&host, request), "UNKNOWN");
+
+        // Exact request and batch: the wave fences.
+        host.fence_code_mode_unknown(request, "batch_live").unwrap();
+        assert_eq!(wave_state(&host, request, "batch_live").0, "UNKNOWN");
+
+        // Already fenced: the repeat is a no-op, never a rewrite or a reset.
+        host.fence_code_mode_unknown(request, "batch_live").unwrap();
+        assert_eq!(wave_state(&host, request, "batch_live").0, "UNKNOWN");
+        assert_eq!(run_status(&host, request), "UNKNOWN");
+
+        // Neither the neighbouring wave of this request nor the other request's
+        // wave was ever in scope for any of the calls above.
+        assert_eq!(wave_state(&host, request, "batch_terminal").0, "SETTLED");
+        assert_eq!(
+            wave_state(&host, request, "batch_terminal").1.as_deref(),
+            Some(terminal_receipt.as_str())
+        );
+        assert_eq!(wave_state(&host, other, "batch_other").0, "RESERVED");
+        assert_eq!(run_status(&host, other), "WAVE_PENDING");
+        fs::remove_dir_all(&base).unwrap();
     }
 }
 
@@ -16782,10 +17410,15 @@ fn classify_direct_mode_batch(
     for call in calls {
         match &call.effect {
             PlannedEffect::Write { .. } | PlannedEffect::Patch { .. } if inside_workspace || full_access => {}
-            // A configured build/test profile is still a process boundary. Only
-            // an exact DirectSessionGrant commandProfiles ref may quiet it; the
-            // broad permission mode never turns arbitrary process launch into
-            // an implicit allow.
+            // Explicit Full Access contains nothing, so the mode adds no local
+            // shell prompt for a terminal batch either: ordinary Guard still
+            // governs terminal.run (routine direct-session grant or explicit
+            // allow_once, §14.27/DEC-V1-28) — Candidate is not an allow.
+            // A configured build/test profile under confined modes is still a
+            // process boundary: only an exact DirectSessionGrant commandProfiles
+            // ref may quiet it; the broad permission mode never turns arbitrary
+            // process launch into an implicit allow.
+            PlannedEffect::Terminal { .. } if full_access => {}
             // Search has separate query-sharing and possible-cost consent.
             PlannedEffect::WebSearch { .. } => return if mode.approval_policy == guard::DirectApprovalPolicyV1::Never {
                 DirectModeBatchDecision::Deny
@@ -17004,6 +17637,7 @@ mod managed_attempt_scope_tests {
             session_id: "ses_scope_test".to_owned(),
             workspace_revision: format!("blake3:{}", "a".repeat(64)),
             delegation_binding_digest: format!("blake3:{}", "b".repeat(64)),
+            permission_scope_digest: format!("blake3:{}", "c".repeat(64)),
             effective_max_tokens: 100,
             remaining_tokens: 100,
             request_id: None, request_sequence: None, context_selection_digest: None,
@@ -17077,6 +17711,9 @@ mod managed_attempt_scope_tests {
             execution_principal: "server_auth:verifier".to_owned(),
             user_action_id: "verify_action_test".to_owned(),
             call_id: "criterion_one".to_owned(),
+            scope: crate::terminal_process::StdioExecutionScopeV1::Session {
+                session_id: "session_test".to_owned(),
+            },
             session_id: "session_test".to_owned(),
             managed_attempt_digest: Some(format!("blake3:{}", "c".repeat(64))),
             managed_root_scope_digest: None,
@@ -17271,6 +17908,9 @@ mod managed_attempt_scope_tests {
                     execution_principal: "server_auth:verifier".to_owned(),
                     user_action_id: "verification_run_one".to_owned(),
                     call_id: criterion.to_owned(),
+                    scope: crate::terminal_process::StdioExecutionScopeV1::Session {
+                        session_id: "session_verification".to_owned(),
+                    },
                     session_id: "session_verification".to_owned(),
                     managed_attempt_digest: Some(format!("blake3:{}", "c".repeat(64))),
                     managed_root_scope_digest: None,
@@ -17328,6 +17968,47 @@ mod managed_attempt_scope_tests {
             assert_eq!(status, "AWAITING_APPROVAL");
         }
 
+        // §14/managed-verifier contract: the exact assessed launch profile is bound
+        // to every challenge BEFORE approval; the all-allow resolution below
+        // requires that durable preflight for each member.
+        let preflight_revision = format!("blake3:{}", "d".repeat(64));
+        let preflight_executable_digest =
+            crate::terminal_process::executable_digest(&executable).unwrap();
+        for (index, (challenge_id, effect_id)) in
+            challenge_ids.iter().zip(effect_ids.iter()).enumerate()
+        {
+            let mut launch = StdioLaunchSpec::new(
+                executable.clone(),
+                preflight_executable_digest.clone(),
+                ["-c", "printf verifier"],
+                workspace.clone(),
+            );
+            launch.profile_digest = format!("blake3:{}", "a".repeat(64));
+            launch.workspace_revision = preflight_revision.clone();
+            launch.workspace_root = workspace.clone();
+            let assessment = StdioExecutionSupervisor::assess_launch(launch)
+                .expect("a no-child launch assessment must cover the fixed verifier profile");
+            let verifier_binding = ManagedVerifierPreflightBindingV1 {
+                challenge_id: challenge_id.clone(),
+                effect_id: effect_id.clone(),
+                principal: "server_auth:reviewer".to_owned(),
+                execution_principal: "server_auth:verifier".to_owned(),
+                session_id: "session_verification".to_owned(),
+                location_id: "location_verifier_one".to_owned(),
+                attempt_scope_digest: format!("blake3:{}", "c".repeat(64)),
+                owner_epoch: 7,
+                generation: 7,
+                workspace_revision: preflight_revision.clone(),
+                approved_arguments_digest: input_digests[index].clone(),
+                profile_id: "profile_test".to_owned(),
+                profile_revision: 1,
+                profile_digest: format!("blake3:{}", "a".repeat(64)),
+                executable_digest: preflight_executable_digest.clone(),
+            };
+            host.bind_managed_verifier_preflight(&verifier_binding, &assessment)
+                .expect("the assessed verifier profile must bind to its challenge");
+        }
+
         host.resolve_managed_run_approval_set(
             "server_auth:reviewer",
             &challenge_ids
@@ -17374,6 +18055,7 @@ mod managed_attempt_scope_tests {
             profile_digest: format!("blake3:{}", "a".repeat(64)),
             executable_digest: crate::terminal_process::executable_digest(&executable).unwrap(),
             approved_arguments_digest: input_digests[0].clone(),
+            dap_allow_evaluate: false,
         };
         let mut launch = StdioLaunchSpec::new(
             executable.clone(),
@@ -17385,6 +18067,41 @@ mod managed_attempt_scope_tests {
         launch.workspace_revision = workspace_revision;
         launch.workspace_root = workspace.clone();
         let mut supervisor = StdioExecutionSupervisor::default();
+        // Live-confined-tail precondition: creating a confined child needs a
+        // delegated cgroup subtree this user can write (root-owned cgroupfs
+        // without user delegation cannot run it). This is an OS capability
+        // probe, not an assertion change: every durable resolve/approve
+        // assertion above always runs; the preflight tail runs only where the
+        // kernel actually supports it, and reports SKIP loudly otherwise.
+        let delegated_cgroup_available = std::fs::read_to_string("/proc/self/cgroup")
+            .ok()
+            .and_then(|contents| {
+                contents
+                    .lines()
+                    .find(|line| line.starts_with("0::"))
+                    .map(|line| line[3..].to_owned())
+            })
+            .map(|relative| {
+                std::path::PathBuf::from("/sys/fs/cgroup")
+                    .join(relative.trim_start_matches('/'))
+            })
+            .map(|root| {
+                let probe = root.join(format!(".hz-p1-delegation-probe-{}", std::process::id()));
+                let created = std::fs::create_dir(&probe).is_ok();
+                if created {
+                    let _ = std::fs::remove_dir(&probe);
+                }
+                created
+            })
+            .unwrap_or(false);
+        if !delegated_cgroup_available {
+            eprintln!(
+                "SKIP managed_run_approval_set live-confined tail: no user-owned delegated cgroup root on this host"
+            );
+            drop(host);
+            fs::remove_dir_all(base).unwrap();
+            return;
+        }
         let prepared = supervisor
             .preflight(binding.clone(), launch)
             .expect("managed_run should support a confined sessionless process binding");
@@ -17513,6 +18230,7 @@ mod managed_attempt_scope_tests {
                 profile_revision: 1,
                 profile_digest: format!("blake3:{}", "d".repeat(64)),
                 executable_digest: format!("blake3:{}", "e".repeat(64)),
+                dap_allow_evaluate: false,
             };
             host.connection
                 .execute(
@@ -17538,17 +18256,18 @@ mod managed_attempt_scope_tests {
             host.connection
                 .execute(
                     "INSERT INTO stdio_executions(
-                        execution_id,intent_id,effect_id,challenge_id,principal,session_id,location_id,
+                        execution_id,intent_id,effect_id,challenge_id,principal,execution_principal,session_id,location_id,
                         capability_id,capability_lease_digest,attempt_scope_digest,owner_epoch,generation,
                         workspace_revision,profile_ref,profile_id,profile_revision,profile_digest,executable_digest,
                         execution_digest,confinement_record,status,created_at_ms,updated_at_ms
-                     ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,NULL,?10,?11,?12,?13,?14,?15,?16,?17,?18,'enforced',?19,?20,?20)",
+                     ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,NULL,?11,?12,?13,?14,?15,?16,?17,?18,?19,'enforced',?20,?21,?21)",
                     params![
                         binding.execution_id,
                         format!("intent_unknown_{suffix}"),
                         binding.effect_id,
                         binding.challenge_id,
                         binding.principal,
+                        binding.execution_principal,
                         binding.session_id,
                         binding.location_id,
                         binding.capability_id,
@@ -17639,6 +18358,7 @@ mod managed_attempt_scope_tests {
             profile_revision: 1,
             profile_digest: profile_digest.clone(),
             executable_digest: executable_digest.clone(),
+            dap_allow_evaluate: false,
         };
         let mut launch = StdioLaunchSpec::new(
             canonical_executable.clone(),
@@ -17710,17 +18430,18 @@ mod managed_attempt_scope_tests {
         host.connection
             .execute(
                 "INSERT INTO stdio_executions(
-                    execution_id,intent_id,effect_id,challenge_id,principal,session_id,location_id,
+                    execution_id,intent_id,effect_id,challenge_id,principal,execution_principal,session_id,location_id,
                     capability_id,capability_lease_digest,attempt_scope_digest,owner_epoch,generation,
                     workspace_revision,profile_ref,profile_id,profile_revision,profile_digest,executable_digest,
                     execution_digest,confinement_record,status,created_at_ms,updated_at_ms
-                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,'enforced','RUNNING',?20,?20)",
+                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,'enforced','RUNNING',?21,?21)",
                 params![
                     invocation.execution_id(),
                     "intent_verifier_reconcile",
                     invocation.effect_id(),
                     invocation.challenge_id(),
                     invocation.reviewer_principal(),
+                    binding.execution_principal,
                     binding.session_id,
                     invocation.location_id(),
                     guard::BUILTIN_VERIFIER_ID,
@@ -17811,6 +18532,7 @@ mod managed_attempt_scope_tests {
             profile_revision: 1,
             profile_digest: profile_digest.clone(),
             executable_digest: executable_digest.clone(),
+            dap_allow_evaluate: false,
         };
         let mut launch = StdioLaunchSpec::new(
             executable.clone(),
@@ -17942,16 +18664,17 @@ mod managed_attempt_scope_tests {
         ).unwrap();
         host.connection.execute(
             "INSERT INTO stdio_executions(
-                execution_id,intent_id,effect_id,challenge_id,principal,session_id,location_id,
+                execution_id,intent_id,effect_id,challenge_id,principal,execution_principal,session_id,location_id,
                 capability_id,capability_lease_digest,attempt_scope_digest,owner_epoch,generation,
                 workspace_revision,profile_ref,profile_id,profile_revision,profile_digest,executable_digest,
                 execution_digest,confinement_record,status,created_at_ms,updated_at_ms
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,NULL,11,4,?10,'linux-bash','linux-bash',1,?11,?12,?13,'enforced','RUNNING',?14,?14)",
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,NULL,11,4,?11,'linux-bash','linux-bash',1,?12,?13,?14,'enforced','RUNNING',?15,?15)",
             params![
                 "execution_stdio_recovery",
                 "intent_stdio_recovery",
                 "effect_stdio_recovery",
                 "challenge_stdio_recovery",
+                "host_os_uid:1000",
                 "host_os_uid:1000",
                 "session_stdio_recovery",
                 "location_stdio_recovery",
@@ -18459,5 +19182,588 @@ mod managed_attempt_scope_tests {
 
         drop(host);
         fs::remove_dir_all(base).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod supervised_quiescence_tests {
+    use super::*;
+
+    #[test]
+    fn supervised_tree_quiescence_is_deterministic_and_state_bound() {
+        let base = supervised_tree_quiescence_digest(
+            b"horizoncode.terminal.supervised-tree-quiescence.v1",
+            "effect_quiescence_test",
+            "challenge_quiescence_test",
+            "exited",
+            Some(0),
+        );
+        assert!(is_blake3_digest(&base));
+        assert_eq!(
+            base,
+            supervised_tree_quiescence_digest(
+                b"horizoncode.terminal.supervised-tree-quiescence.v1",
+                "effect_quiescence_test",
+                "challenge_quiescence_test",
+                "exited",
+                Some(0),
+            )
+        );
+        // The observation, not just the identity, is part of the evidence.
+        assert_ne!(
+            base,
+            supervised_tree_quiescence_digest(
+                b"horizoncode.terminal.supervised-tree-quiescence.v1",
+                "effect_quiescence_test",
+                "challenge_quiescence_test",
+                "cancelled",
+                Some(0),
+            )
+        );
+        assert_ne!(
+            base,
+            supervised_tree_quiescence_digest(
+                b"horizoncode.terminal.supervised-tree-quiescence.v1",
+                "effect_quiescence_test",
+                "challenge_quiescence_test",
+                "exited",
+                Some(1),
+            )
+        );
+        // Domains are separated so terminal and editor evidence can never collide.
+        assert_ne!(
+            base,
+            supervised_tree_quiescence_digest(
+                b"horizoncode.external-editor.supervised-tree-quiescence.v1",
+                "effect_quiescence_test",
+                "challenge_quiescence_test",
+                "exited",
+                Some(0),
+            )
+        );
+    }
+
+    #[test]
+    fn full_access_marker_is_exact_and_distinct_from_confined_launches() {
+        let marker = crate::terminal_process::FULL_ACCESS_GUARANTEE_RECORD;
+        assert!(marker.contains("no cgroup containment claim"));
+        assert!(!marker.contains("enforced"));
+        // The settlement gate is exact equality; a prefix or an edited record must
+        // never authorize the cgroup-less path.
+        assert_ne!(marker, marker.trim_end_matches("UNKNOWN"));
+        assert_ne!(marker, format!("{marker}."));
+        assert_ne!(
+            Some(marker),
+            Some("explicit direct-session Full Access; no HorizonCode filesystem/network sandbox")
+        );
+    }
+}
+
+#[cfg(test)]
+mod external_editor_disposition_tests {
+    use super::*;
+    use crate::cgroup_v2::CgroupIdentityV1;
+    use crate::terminal_process::{
+        ExternalEditorLaunchBindingV1, ExternalEditorLaunchModeV1, ExternalEditorProfileRefV1,
+        ExternalEditorProfileV1, ExternalEditorTargetBindingV1, ExternalEditorTargetKindV1,
+        StdioProcessKindV1, StdioProcessRefV1,
+    };
+    use std::ffi::OsString;
+
+    fn blake(byte: u8) -> String {
+        format!("blake3:{}", [byte; 32].iter().map(|b| format!("{b:02x}")).collect::<String>())
+    }
+
+    fn open_host(name: &str) -> (std::path::PathBuf, std::path::PathBuf, EffectHost) {
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let base = std::env::temp_dir().join(format!("hz-editor-disposition-{name}-{}-{nonce}", std::process::id()));
+        let state = base.join("state");
+        let workspace = base.join("workspace");
+        fs::create_dir_all(&state).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        fs::set_permissions(&base, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&workspace, fs::Permissions::from_mode(0o700)).unwrap();
+        let host = EffectHost::open(&state, Some(&workspace)).unwrap();
+        (base, workspace, host)
+    }
+
+    /// Insert one PREPARED external-editor row plus its PREPARED challenge.
+    /// `identity` NULL models the Full Access projection (no cgroup).
+    fn seed_prepared_editor(
+        host: &mut EffectHost,
+        suffix: &str,
+        identity: Option<&CgroupIdentityV1>,
+    ) -> (String, String, String) {
+        let effect_id = format!("effect_editor_{suffix}");
+        let challenge_id = format!("ch_editor_{suffix}");
+        let execution_id = format!("exec_editor_{suffix}");
+        let binding_digest = blake(0xa1);
+        let process_ref = StdioProcessRefV1::from_claims(
+            execution_id.clone(), 3, 7, StdioProcessKindV1::ExternalEditor,
+            "editor_profile_test".to_owned(), 2, blake(0xb1), blake(0xc1),
+        ).unwrap();
+        let process_bytes = crate::messagepack::encode(&process_ref.to_value(), FRAME_LIMITS).unwrap();
+        let identity_blob = identity.map(|value| {
+            crate::messagepack::encode(&value.to_value(), FRAME_LIMITS).unwrap()
+        });
+        let now = 1_700_000_000_000i64;
+        host.connection.execute(
+            "INSERT INTO effect_challenges(
+                challenge_id,effect_id,session_id,principal,batch_id,call_id,capability_id,
+                relative_path,requested_path,target,resource,existed,argument_digest,
+                content_digest,expires_at_ms,status,turn_context_digest,origin_kind
+             ) VALUES (?1,?2,'session_editor_test','host_os_uid:1000','batch_editor_test',?1,'editor.launch',
+                '','.','.', '.',0,?3,?3,?4,'PREPARED',?3,'user_action')",
+            params![challenge_id, effect_id, blake(0xd1), now + 600_000],
+        ).unwrap();
+        host.connection.execute(
+            "INSERT INTO external_editor_runs(
+                effect_id,challenge_id,execution_id,process_ref,binding_digest,launch_digest,
+                profile_id,profile_revision,profile_digest,executable_digest,target_kind,target_digest,
+                source_path_digest,base_workspace_revision,expected_file_digest,permission_mode_digest,
+                permission_mode_revision,capability_lease_digest,cgroup_identity,status,created_at_ms,updated_at_ms
+             ) VALUES (?1,?2,?3,?4,?5,?6,'editor_profile_test','2',?7,?8,'prompt_scratch',?6,'',
+                ?9,NULL,?10,'2',?11,?12,'PREPARED',?13,?13)",
+            params![
+                effect_id, challenge_id, execution_id, process_bytes, binding_digest, blake(0xe1),
+                blake(0xb1), blake(0xc1), blake(0xf1), blake(0xd1), blake(0x11), identity_blob, now
+            ],
+        ).unwrap();
+        (effect_id, challenge_id, execution_id)
+    }
+
+    fn run_state(host: &EffectHost, effect_id: &str) -> (String, Option<String>, Option<String>) {
+        host.connection.query_row(
+            "SELECT status,quiescence_digest,receipt_digest FROM external_editor_runs WHERE effect_id=?1",
+            [effect_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap()
+    }
+
+    fn challenge_state(host: &EffectHost, effect_id: &str) -> (String, Option<String>) {
+        host.connection.query_row(
+            "SELECT status,receipt_digest FROM effect_challenges WHERE effect_id=?1",
+            [effect_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap()
+    }
+
+    fn mismatched_identity(effect_id: &str, execution_id: &str) -> CgroupIdentityV1 {
+        CgroupIdentityV1 {
+            boot_id: "00000000-0000-4000-8000-000000000000".to_owned(),
+            delegated_root: "/sys/fs/cgroup/hz-test".to_owned(),
+            delegated_root_device: 1,
+            delegated_root_inode: 2,
+            delegated_root_owner_uid: 1000,
+            relative_path: "hz/editor_test".to_owned(),
+            cgroup_device: 1,
+            cgroup_inode: 3,
+            cgroup_owner_uid: 1000,
+            cgroup_hierarchy_hidden: true,
+            execution_id: execution_id.to_owned(),
+            effect_id: effect_id.to_owned(),
+            capability_lease_digest: blake(0x11),
+            execution_principal: "editor_profile_test".to_owned(),
+            attempt_scope_digest: None,
+            owner_epoch: 7,
+            process_generation: 3,
+            process_kind: "external_editor".to_owned(),
+            profile_id: "editor_profile_test".to_owned(),
+            profile_revision: 2,
+            profile_digest: blake(0xb1),
+            executable_digest: blake(0xc1),
+            resource_profile: "none".to_owned(),
+            resource_profile_digest: format!("blake3:{}", blake3::hash(b"horizoncode.resource-profile.none.v1\0").to_hex()),
+        }
+    }
+
+    #[test]
+    fn prepared_full_access_editor_cancel_is_deterministic_and_state_bound() {
+        let (base, _workspace, mut host) = open_host("full-access-cancel");
+        let (effect_id, challenge_id, execution_id) = seed_prepared_editor(&mut host, "fa", None);
+        let binding_digest = host.connection.query_row(
+            "SELECT binding_digest FROM external_editor_runs WHERE effect_id=?1", [&effect_id],
+            |row| row.get::<_, String>(0),
+        ).unwrap();
+
+        let outcome = host
+            .cancel_prepared_external_editor(&effect_id, &challenge_id, &execution_id, &binding_digest)
+            .expect("prepared Full Access cancellation must be deterministic");
+        assert_eq!(outcome.status, "cancelled");
+        assert!(outcome.receipt_digest.is_some());
+
+        // The proof is the durable PREPARED fence, not any containment claim.
+        let (status, quiescence, receipt) = run_state(&host, &effect_id);
+        assert_eq!(status, "CANCELLED");
+        let expected = editor_pre_dispatch_cancel_digest(&effect_id, &execution_id);
+        assert_eq!(quiescence.as_deref(), Some(expected.as_str()));
+        assert_eq!(receipt, outcome.receipt_digest);
+        let (challenge_status, challenge_receipt) = challenge_state(&host, &effect_id);
+        assert_eq!(challenge_status, "SETTLED");
+        assert_eq!(challenge_receipt, receipt);
+        // Reading back recomputes and cross-checks the receipt exactly.
+        let read = host.read_external_editor_outcome(&effect_id, &challenge_id, &execution_id).unwrap();
+        assert_eq!(read.status, "cancelled");
+
+        // One-use: the settled row can never be cancelled or dispatched again.
+        let second = host
+            .cancel_prepared_external_editor(&effect_id, &challenge_id, &execution_id, &binding_digest)
+            .unwrap_err();
+        assert_eq!(second.code, "effect_conflict");
+        let dispatch = host
+            .mark_external_editor_dispatching(&effect_id, &challenge_id, &execution_id, &binding_digest)
+            .unwrap_err();
+        assert_eq!(dispatch.code, "effect_conflict");
+        assert_eq!(run_state(&host, &effect_id).0, "CANCELLED");
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn prepared_editor_cancel_rejects_identity_not_bound_to_its_row() {
+        let (base, _workspace, mut host) = open_host("identity-mismatch");
+        // The stored identity names another effect: it must never be killed.
+        let foreign = mismatched_identity("effect_other", "exec_other");
+        let (effect_id, challenge_id, execution_id) = seed_prepared_editor(&mut host, "mm", Some(&foreign));
+        let binding_digest = host.connection.query_row(
+            "SELECT binding_digest FROM external_editor_runs WHERE effect_id=?1", [&effect_id],
+            |row| row.get::<_, String>(0),
+        ).unwrap();
+
+        let error = host
+            .cancel_prepared_external_editor(&effect_id, &challenge_id, &execution_id, &binding_digest)
+            .unwrap_err();
+        assert_eq!(error.code, "effect_outcome_unknown");
+        // Fail closed: the row is untouched and no receipt was manufactured.
+        let (status, quiescence, receipt) = run_state(&host, &effect_id);
+        assert_eq!(status, "PREPARED");
+        assert!(quiescence.is_none());
+        assert!(receipt.is_none());
+        assert_eq!(challenge_state(&host, &effect_id).0, "PREPARED");
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn restart_reconcile_fences_full_access_editor_runs_to_receiptless_unknown() {
+        let (base, _workspace, mut host) = open_host("restart-unknown");
+        let (prepared_effect, _, _) = seed_prepared_editor(&mut host, "rp", None);
+        let (running_effect, _, _) = seed_prepared_editor(&mut host, "rr", None);
+        host.connection.execute(
+            "UPDATE external_editor_runs SET status='RUNNING' WHERE effect_id=?1",
+            [&running_effect],
+        ).unwrap();
+        host.connection.execute(
+            "UPDATE effect_challenges SET status='RUNNING' WHERE effect_id=?1",
+            [&running_effect],
+        ).unwrap();
+
+        host.reconcile_external_editor_processes().unwrap();
+
+        // Full Access has no containment proof to restart from: both the
+        // never-dispatched and possibly-dispatched rows become receiptless
+        // UNKNOWN per the Full Access guarantee record.
+        for effect_id in [&prepared_effect, &running_effect] {
+            let (status, quiescence, receipt) = run_state(&host, effect_id);
+            assert_eq!(status, "UNKNOWN");
+            assert!(quiescence.is_none(), "no fabricated proof for {effect_id}");
+            assert!(receipt.is_none(), "UNKNOWN is receiptless for {effect_id}");
+            assert_eq!(challenge_state(&host, effect_id).0, "UNKNOWN");
+        }
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    fn full_access_binding(base: &std::path::Path) -> ExternalEditorLaunchBindingV1 {
+        let profile = ExternalEditorProfileV1 {
+            profile_id: "editor_profile_test".to_owned(),
+            revision: 2,
+            executable_selector: "editor".to_owned(),
+            argv: vec![OsString::from("/bin/true")],
+            target_arg_index: 0,
+            launch_mode: ExternalEditorLaunchModeV1::Wait,
+            target_kinds: vec![ExternalEditorTargetKindV1::PromptScratch],
+        };
+        let profile_ref = ExternalEditorProfileRefV1 {
+            profile_id: profile.profile_id.clone(),
+            revision: profile.revision,
+            profile_digest: profile.definition_digest().unwrap(),
+        };
+        let mut permission_mode = crate::guard::DirectSessionPermissionModeProjectionV1 {
+            session_id: "session_editor_test".to_owned(),
+            owner_epoch: 7,
+            location_id: "loc_editor_test".to_owned(),
+            workspace_id: "wrk_editor_test".to_owned(),
+            workspace_root_digest: blake(0x21),
+            execution_backend_id: crate::guard::DIRECT_SESSION_EFFECT_BACKEND_ID.to_owned(),
+            policy_digest: blake(0x22),
+            sandbox_mode: crate::guard::DirectSandboxModeV1::DangerFullAccess,
+            approval_policy: crate::guard::DirectApprovalPolicyV1::Never,
+            source: crate::guard::DirectPermissionModeSourceV1::UserSession,
+            revision: 1,
+            digest: String::new(),
+        };
+        permission_mode.digest = permission_mode.recompute_digest();
+        let scratch_root = base.join("scratch");
+        fs::create_dir_all(&scratch_root).unwrap();
+        fs::set_permissions(&scratch_root, fs::Permissions::from_mode(0o700)).unwrap();
+        let scratch_path = scratch_root.join("editor-target");
+        fs::write(&scratch_path, b"scratch").unwrap();
+        fs::set_permissions(&scratch_path, fs::Permissions::from_mode(0o600)).unwrap();
+        ExternalEditorLaunchBindingV1 {
+            execution_id: "exec_editor_gate".to_owned(),
+            session_id: "session_editor_test".to_owned(),
+            principal: "host_os_uid:1000".to_owned(),
+            location_id: "loc_editor_test".to_owned(),
+            owner_epoch: 7,
+            generation: 3,
+            user_action_id: "editor_action_gate".to_owned(),
+            call_id: "editor_call_gate".to_owned(),
+            profile_ref,
+            profile,
+            executable_path: std::path::PathBuf::from("/bin/true"),
+            executable_digest: blake(0xc1),
+            target: ExternalEditorTargetBindingV1 {
+                kind: ExternalEditorTargetKindV1::PromptScratch,
+                canonical_target_token: scratch_path.to_string_lossy().into_owned(),
+                source_relative_path: String::new(),
+                base_workspace_revision: blake(0x91),
+                expected_file_digest: None,
+                scratch_root,
+            },
+            workspace_root: base.join("workspace"),
+            workspace_root_binding: blake(0x21),
+            permission_mode,
+            capability_lease_digest: blake(0x11),
+            effect_id: "effect_editor_gate".to_owned(),
+            challenge_id: "ch_editor_gate".to_owned(),
+        }
+    }
+
+    #[test]
+    fn editor_prepare_rejects_contradictory_identity_projections() {
+        let (base, _workspace, mut host) = open_host("prepare-gate");
+        let full_access = full_access_binding(&base);
+        let process_ref = StdioProcessRefV1::from_claims(
+            full_access.execution_id.clone(), full_access.generation, full_access.owner_epoch,
+            StdioProcessKindV1::ExternalEditor,
+            full_access.profile_ref.profile_id.clone(), full_access.profile_ref.revision,
+            full_access.profile_ref.profile_digest.clone(), full_access.executable_digest.clone(),
+        ).unwrap();
+
+        // A confined launch must persist its exact cgroup identity.
+        let mut confined = full_access.clone();
+        confined.permission_mode.sandbox_mode = crate::guard::DirectSandboxModeV1::WorkspaceWrite;
+        confined.permission_mode.approval_policy = crate::guard::DirectApprovalPolicyV1::OnRequest;
+        confined.permission_mode.source = crate::guard::DirectPermissionModeSourceV1::Default;
+        confined.permission_mode.digest = confined.permission_mode.recompute_digest();
+        let error = host
+            .prepare_external_editor_execution(&confined, &process_ref, &blake(0x51), None)
+            .unwrap_err();
+        assert_eq!(error.code, "effect_denied");
+
+        // A Full Access launch must never claim a cgroup identity.
+        let identity = mismatched_identity("effect_editor_gate", "exec_editor_gate");
+        let error = host
+            .prepare_external_editor_execution(
+                &full_access, &process_ref, &blake(0x51), Some(&identity.to_value()),
+            )
+            .unwrap_err();
+        assert_eq!(error.code, "effect_denied");
+
+        // Full Access with no identity passes the projection gate and proceeds
+        // until the next missing durable authority (the challenge row).
+        let error = host
+            .prepare_external_editor_execution(&full_access, &process_ref, &blake(0x51), None)
+            .unwrap_err();
+        assert_eq!(error.code, "approval_not_found");
+        fs::remove_dir_all(&base).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod workspace_profile_admission_tests {
+    use super::*;
+
+    fn terminal_call(mode: &str) -> Value {
+        Value::Map(BTreeMap::from([
+            ("callId".into(), Value::String("call_profile_test".into())),
+            ("capabilityId".into(), Value::String(guard::TERMINAL_RUN_ID.into())),
+            ("arguments".into(), Value::Map(BTreeMap::from([
+                ("mode".into(), Value::String(mode.into())),
+            ]))),
+        ]))
+    }
+
+    #[test]
+    fn profile_mode_cannot_enter_effecthost_without_core_profile_projection() {
+        let calls = [terminal_call("workspace_profile")];
+
+        assert!(matches!(
+            parse_terminal_workspace_profile_projections(None, &calls),
+            Err(Failure::Denied)
+        ));
+    }
+
+    #[test]
+    fn shell_mode_remains_separate_from_profile_projection_requirement() {
+        let calls = [terminal_call("shell")];
+
+        assert!(parse_terminal_workspace_profile_projections(None, &calls)
+            .unwrap()
+            .is_empty());
+    }
+}
+
+#[cfg(test)]
+mod cross_capability_lease_tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct RepoTestDir {
+        path: PathBuf,
+        canonical_path: PathBuf,
+        repo_root: PathBuf,
+    }
+
+    impl RepoTestDir {
+        fn create() -> Self {
+            let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .canonicalize()
+                .expect("canonicalize kernel manifest directory");
+            let repo_root = manifest_dir
+                .parent()
+                .expect("kernel manifest directory has repository parent")
+                .to_path_buf();
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock is after Unix epoch")
+                .as_nanos();
+            let path = manifest_dir.join(format!(
+                ".p1-cross-capability-{}-{nonce}",
+                std::process::id()
+            ));
+
+            // create_dir is exclusive: an existing path/symlink is never followed.
+            fs::create_dir(&path).expect("create unique repository-contained test directory");
+            let canonical_path = fs::canonicalize(&path).expect("canonicalize test directory");
+            assert!(
+                canonical_path.starts_with(&repo_root),
+                "test directory escaped repository root"
+            );
+            assert_eq!(canonical_path, path, "test directory must not resolve through a symlink");
+
+            Self { path, canonical_path, repo_root }
+        }
+
+        fn child_dir(&self, name: &str) -> PathBuf {
+            let path = self.path.join(name);
+            fs::create_dir(&path).expect("create test-owned child directory");
+            let canonical = fs::canonicalize(&path).expect("canonicalize test child directory");
+            assert!(
+                canonical.starts_with(&self.canonical_path)
+                    && canonical.starts_with(&self.repo_root),
+                "test child directory escaped its repository-contained fixture"
+            );
+            path
+        }
+
+        fn cleanup(&mut self) -> io::Result<()> {
+            let current = fs::canonicalize(&self.path)?;
+            if current != self.canonical_path || !current.starts_with(&self.repo_root) {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "refusing to remove a redirected test fixture path",
+                ));
+            }
+            fs::remove_dir_all(&self.path)
+        }
+    }
+
+    impl Drop for RepoTestDir {
+        fn drop(&mut self) {
+            // Remove only this exact directory if it still resolves to the canonical
+            // location created above. If it was replaced or redirected, leave it alone.
+            if fs::canonicalize(&self.path).is_ok_and(|current| {
+                current == self.canonical_path && current.starts_with(&self.repo_root)
+            }) {
+                let _ = fs::remove_dir_all(&self.path);
+            }
+        }
+    }
+
+    #[test]
+    fn files_write_challenge_cannot_prepare_terminal_run() {
+        let mut scratch = RepoTestDir::create();
+        let state = scratch.child_dir("state");
+        let workspace = scratch.child_dir("workspace");
+        fs::set_permissions(&scratch.path, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&workspace, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let mut host = EffectHost::open(&state, Some(&workspace)).unwrap();
+        let lease = format!("blake3:{}", "1".repeat(64));
+        let argument_digest = format!("blake3:{}", "2".repeat(64));
+        let turn_context_digest = format!("sha256:{}", "3".repeat(64));
+        host.connection
+            .execute(
+                "INSERT INTO effect_challenges(
+                challenge_id,effect_id,session_id,principal,batch_id,call_id,capability_id,
+                relative_path,requested_path,target,resource,existed,argument_digest,
+                content_digest,expires_at_ms,status,approved,turn_context_digest,origin_kind,
+                capability_lease_digest
+             ) VALUES (
+                'challenge_write_only','effect_write_only','session_cross_capability',
+                'host_os_uid:1000','batch_cross_capability','call_write_only','files.write',
+                'marker.txt','marker.txt','/workspace/marker.txt','marker.txt',0,?1,?1,
+                ?2,'APPROVED',1,?3,'session_batch',?4
+             )",
+                params![
+                    argument_digest,
+                    now_ms().unwrap() as i64 + 60_000,
+                    turn_context_digest,
+                    lease
+                ],
+            )
+            .unwrap();
+
+        let error = host
+            .prepare_terminal_run(
+                "session_cross_capability",
+                "host_os_uid:1000",
+                "challenge_write_only",
+                &lease,
+                &Value::Map(BTreeMap::new()),
+                None,
+            )
+            .unwrap_err();
+        assert_eq!(error.code, "effect_denied");
+
+        let status: String = host
+            .connection
+            .query_row(
+                "SELECT status FROM effect_challenges WHERE challenge_id='challenge_write_only'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            status, "APPROVED",
+            "cross-capability denial must not consume the write lease"
+        );
+        let terminal_run_count: i64 = host
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM terminal_runs WHERE effect_id='effect_write_only'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            terminal_run_count, 0,
+            "wrong-capability authority must not create terminal state"
+        );
+        drop(host);
+        scratch
+            .cleanup()
+            .expect("remove only the exact repository-contained test fixture");
     }
 }

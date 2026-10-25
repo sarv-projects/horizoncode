@@ -1,14 +1,14 @@
 import { expect, test } from "bun:test"
 import { createHash } from "node:crypto"
-import { mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { Effect, Stream } from "effect"
 import { ChildProcess } from "effect/unstable/process"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { AppProcess, pinSupervisorExecutable } from "@opencode-ai/core/process"
+import { AppProcess, pinCodeModeHelperRoot, pinSupervisorExecutable } from "@opencode-ai/core/process"
 import { testEffect } from "./lib/effect"
 
-const it = testEffect(LayerNode.compile(AppProcess.node))
+const { effect: it } = testEffect(LayerNode.compile(AppProcess.node))
 
 it("denies generic process run, stream, and spawn before dispatch", () =>
   Effect.gen(function* () {
@@ -68,6 +68,69 @@ it("denies basename spoofing and executable replacement before dispatch", () =>
     }
   }),
 )
+
+it("allows only a manifest-pinned versioned supervisor path to answer the host digest probe", () =>
+  Effect.gen(function* () {
+    const process = yield* AppProcess.Service
+    const directory = mkdtempSync(join(import.meta.dir, ".process-guard-digest-"))
+    try {
+      const hostDigest = `blake3:${"0".repeat(64)}`
+      const bytes = Buffer.from(`#!/bin/sh\nprintf '%s\\n' '${hostDigest}'\n`)
+      const digest = createHash("sha256").update(bytes).digest("hex")
+      const binary = join(directory, `hz-kernel-${digest}`)
+      writeFileSync(binary, bytes, { mode: 0o700 })
+      const probe = () =>
+        ChildProcess.make(binary, ["--digest-host-executable=/usr/bin/bun"], {
+          stdin: "ignore",
+          stdout: "pipe",
+          stderr: "pipe",
+          extendEnv: false,
+        })
+      const unpinned = yield* Effect.exit(process.run(probe()))
+      expect(unpinned._tag).toBe("Failure")
+
+      pinSupervisorExecutable({ path: binary, binaryName: "hz-kernel", sha256: digest })
+
+      const result = yield* process.run(probe())
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout.toString("utf8").trim()).toBe(hostDigest)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  }),
+)
+
+test("pins only the fixed private CodeMode helper package and exact asset digest", () => {
+  const directory = mkdtempSync(join(import.meta.dir, ".process-guard-codemode-"))
+  try {
+    const helperRoot = join(directory, "codemode-helper")
+    mkdirSync(helperRoot, { mode: 0o700 })
+    chmodSync(helperRoot, 0o700)
+    const helperPath = join(helperRoot, "codemode-helper.js")
+    const helperBytes = Buffer.from("// fixed helper package fixture\n")
+    const helperDigest = createHash("sha256").update(helperBytes).digest("hex")
+    writeFileSync(helperPath, helperBytes, { mode: 0o600 })
+    const manifest = {
+      schemaVersion: 1,
+      status: "available",
+      helperSelector: "horizoncode:codemode:bun",
+      relativeEntrypoint: "codemode-helper.js",
+      sha256: `sha256:${helperDigest}`,
+      target: `linux-${process.arch}-gnu`,
+    }
+    writeFileSync(join(helperRoot, "codemode-helper.manifest.json"), JSON.stringify(manifest), { mode: 0o600 })
+
+    expect(() => pinCodeModeHelperRoot({ path: helperRoot, sha256: `sha256:${"0".repeat(64)}` }))
+      .toThrow("manifest or asset differs")
+    expect(() => pinCodeModeHelperRoot({ path: helperRoot, sha256: `sha256:${helperDigest}` })).not.toThrow()
+
+    writeFileSync(join(helperRoot, "codemode-helper.manifest.json"), JSON.stringify({ ...manifest, helperSelector: "node" }), { mode: 0o600 })
+    expect(() => pinCodeModeHelperRoot({ path: helperRoot, sha256: `sha256:${helperDigest}` }))
+      .toThrow("manifest or asset differs")
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
 
 test("rejects raw platform PTY adapters before invoking a native PTY library", async () => {
   const [bun, node] = await Promise.all([

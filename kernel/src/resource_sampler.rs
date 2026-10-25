@@ -236,6 +236,34 @@ pub(crate) enum CacheAllocationEvidenceV1 {
     AccountedOnly,
 }
 
+/// Canonical eviction owner recorded in RC0 evidence rows. The registry never
+/// deletes anything itself; a runtime executes the cache owner's safe eviction
+/// callback and then submits a fresh measured observation before any
+/// reclaimed-byte figure may exist.
+pub(crate) const CACHE_EVICTION_OWNER: &str = "hostkernel.cache-owner";
+
+impl CacheProtectionV1 {
+    /// §11.20-style strict vocabulary: canonical names only, no aliases.
+    pub(crate) fn wire_name(self) -> &'static str {
+        match self {
+            CacheProtectionV1::DerivedReadOnly => "DERIVED_READ_ONLY",
+            CacheProtectionV1::ReplaceableUiPaint => "REPLACEABLE_UI_PAINT",
+            CacheProtectionV1::ImmutableIndex => "IMMUTABLE_INDEX",
+            CacheProtectionV1::CanonicalState => "CANONICAL_STATE",
+        }
+    }
+
+    pub(crate) fn parse_wire(name: &str) -> Option<Self> {
+        match name {
+            "DERIVED_READ_ONLY" => Some(CacheProtectionV1::DerivedReadOnly),
+            "REPLACEABLE_UI_PAINT" => Some(CacheProtectionV1::ReplaceableUiPaint),
+            "IMMUTABLE_INDEX" => Some(CacheProtectionV1::ImmutableIndex),
+            "CANONICAL_STATE" => Some(CacheProtectionV1::CanonicalState),
+            _ => None,
+        }
+    }
+}
+
 /// Opaque cache-owner event minted only by HostKernel after it resolves the
 /// authenticated Core peer and revalidates the exact retained generation.
 /// Raw Core telemetry is not itself a registry input. `allocated_bytes` must
@@ -353,6 +381,47 @@ pub(crate) struct CacheRegistrySnapshotV1 {
     pub accounted_source_bytes: Option<u64>,
 }
 
+/// One cache family's §18.17 declaration: bounds, TTL, protection class, live
+/// pins and the named eviction owner. Unknown allocation/count stay `None`;
+/// this projection never reports zero for an unmeasured value and never
+/// claims bytes reclaimed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CacheFamilyEvidenceV1 {
+    pub family: String,
+    pub principal: String,
+    pub workspace: String,
+    pub source_generation: String,
+    pub build_version: String,
+    pub generation: u64,
+    pub allocated_bytes: Option<u64>,
+    pub accounted_source_bytes: Option<u64>,
+    pub entry_count: Option<u64>,
+    pub max_bytes: u64,
+    pub max_accounted_source_bytes: u64,
+    pub max_entries: u64,
+    pub ttl_ms: u64,
+    pub last_used_ms: u64,
+    pub protection: CacheProtectionV1,
+    pub owner_pin_count: u64,
+    pub pinned: bool,
+    pub eviction_pending: bool,
+    pub eviction_owner: String,
+}
+
+/// Whole-registry §18.17 evidence row. `reclaimed_bytes` stays `None` until
+/// a fresh authenticated post-retirement observation exists; the note states
+/// why, so a baseline table cannot silently read absence as zero freed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CacheRegistryEvidenceV1 {
+    pub families: Vec<CacheFamilyEvidenceV1>,
+    pub measured_bytes: Option<u64>,
+    pub measured_entries: Option<u64>,
+    pub accounted_source_bytes: Option<u64>,
+    pub eviction_owner: String,
+    pub reclaimed_bytes: Option<u64>,
+    pub reclaimed_bytes_note: &'static str,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CacheRegistryErrorV1 {
     InvalidAuthority,
@@ -459,6 +528,47 @@ impl CacheRegistryV1 {
             total.checked_add(record.observation.accounted_source_bytes?)
         });
         CacheRegistrySnapshotV1 { rows, measured_bytes, measured_entries, accounted_source_bytes }
+    }
+
+    /// §18.17 evidence projection: every registered cache family with its
+    /// declared byte/entry bounds, TTL, protection class, live pin count,
+    /// eviction-pending flag and the named eviction owner. This is accounting
+    /// metadata for baseline tables; it never triggers retirement, never
+    /// claims reclaimed bytes, and unknown allocation stays `None` rather
+    /// than zero.
+    pub(crate) fn rc0_cache_evidence(&self) -> CacheRegistryEvidenceV1 {
+        let snapshot = self.snapshot();
+        let families = snapshot.rows.into_iter().map(|row| CacheFamilyEvidenceV1 {
+            family: row.key.family,
+            principal: row.key.principal,
+            workspace: row.key.workspace,
+            source_generation: row.key.source_generation,
+            build_version: row.key.build_version,
+            generation: row.generation,
+            allocated_bytes: row.observation.allocated_bytes,
+            accounted_source_bytes: row.observation.accounted_source_bytes,
+            entry_count: row.observation.entry_count,
+            max_bytes: row.observation.max_bytes,
+            max_accounted_source_bytes: row.observation.max_accounted_source_bytes,
+            max_entries: row.observation.max_entries,
+            ttl_ms: row.observation.ttl_ms,
+            last_used_ms: row.observation.last_used_ms,
+            protection: row.observation.protection,
+            owner_pin_count: row.observation.owner_pin_count,
+            pinned: row.pinned,
+            eviction_pending: row.eviction_pending,
+            eviction_owner: CACHE_EVICTION_OWNER.to_owned(),
+        }).collect::<Vec<_>>();
+        CacheRegistryEvidenceV1 {
+            families,
+            measured_bytes: snapshot.measured_bytes,
+            measured_entries: snapshot.measured_entries,
+            accounted_source_bytes: snapshot.accounted_source_bytes,
+            eviction_owner: CACHE_EVICTION_OWNER.to_owned(),
+            reclaimed_bytes: None,
+            reclaimed_bytes_note:
+                "physical reclaimed bytes remain unknown until the next authenticated post-retirement observation",
+        }
     }
 
     fn register(
@@ -1150,6 +1260,20 @@ pub struct AggregateCounters {
     pub thread_count: Metric<u128>,
     pub fd_count: Metric<u128>,
     pub private_bytes: Metric<u128>,
+}
+
+impl AggregateCounters {
+    /// All dimensions unknown for the same reason; never a measured zero.
+    pub fn unknown(reason: UnknownReason) -> Self {
+        Self {
+            pss_bytes: Metric::unknown(reason.clone()),
+            rss_bytes: Metric::unknown(reason.clone()),
+            cpu_ns: Metric::unknown(reason.clone()),
+            thread_count: Metric::unknown(reason.clone()),
+            fd_count: Metric::unknown(reason.clone()),
+            private_bytes: Metric::unknown(reason),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1932,14 +2056,7 @@ fn verify_ancestry<B: ProcessBackend>(
 fn unknown_tree(reason: UnknownReason) -> TreeSample {
     TreeSample {
         process_count: 0,
-        metrics: AggregateCounters {
-            pss_bytes: Metric::unknown(reason.clone()),
-            rss_bytes: Metric::unknown(reason.clone()),
-            cpu_ns: Metric::unknown(reason.clone()),
-            thread_count: Metric::unknown(reason.clone()),
-            fd_count: Metric::unknown(reason.clone()),
-            private_bytes: Metric::unknown(reason),
-        },
+        metrics: AggregateCounters::unknown(reason),
         truncated: false,
         processes: Vec::new(),
     }
@@ -1970,10 +2087,12 @@ mod aggregate_tests {
     use super::{
         AggregateCounters, CacheAllocationEvidenceV1, CacheEvictionPlanV1, CacheKeyV1,
         CacheObservationV1, CacheProtectionV1, CacheRegistryErrorV1, CacheRegistryV1,
-        HostAuthenticatedCacheObservationV1, Metric,
-        RepoIntelAnalysisProfileV1,
+        CacheRetirementAckV1, CACHE_EVICTION_OWNER, HostAuthenticatedCacheObservationV1, Metric,
+        MAX_CACHE_PINS_PER_ENTRY, RepoIntelAnalysisProfileV1,
         RepoIntelConfigurationSourceV1, RepoIntelEffectiveSourceV1,
-        RepoIntelPolicyLockV1, RepoIntelProjectionReasonV1, UnknownReason,
+        RepoIntelPolicyLockV1, RepoIntelProjectionReasonV1,
+        ResourceLimitDimensionV1, ResourceLimitEnforcementV1, ResourceLimitStatusV1,
+        UnknownReason,
         empty_aggregate, merge_aggregate, repo_intel_profile_projection_under_pressure,
     };
     use crate::resource_budget::PressureState;
@@ -2150,6 +2269,54 @@ mod aggregate_tests {
         }
         assert!(registry.plans.is_empty());
         assert_eq!(registry.mark_used(&key, generation + 1, 2), Err(CacheRegistryErrorV1::StaleGeneration));
+    }
+
+    #[test]
+    fn rc0_cache_evidence_reports_bounds_owner_and_unknown_not_zero() {
+        let mut registry = CacheRegistryV1::default();
+        let measured = cache_key("syntax");
+        let unknown = cache_key("index");
+        registry.register(measured.clone(), cache_observation(Some(30), 5, CacheProtectionV1::DerivedReadOnly)).unwrap();
+        registry.register(unknown.clone(), cache_observation(None, 9, CacheProtectionV1::ImmutableIndex)).unwrap();
+
+        let evidence = registry.rc0_cache_evidence();
+        assert_eq!(evidence.families.len(), 2);
+        let syntax = evidence.families.iter().find(|row| row.family == "syntax").expect("syntax row");
+        assert_eq!(syntax.allocated_bytes, Some(30));
+        assert_eq!(syntax.entry_count, Some(1));
+        assert_eq!(syntax.max_bytes, 1024, "declared byte bound is recorded");
+        assert_eq!(syntax.max_entries, 128, "declared entry bound is recorded");
+        assert_eq!(syntax.ttl_ms, 100, "TTL is recorded");
+        assert_eq!(syntax.protection, CacheProtectionV1::DerivedReadOnly);
+        assert_eq!(syntax.eviction_owner, CACHE_EVICTION_OWNER);
+        assert!(!syntax.pinned && !syntax.eviction_pending);
+
+        let index = evidence.families.iter().find(|row| row.family == "index").expect("index row");
+        assert_eq!(index.allocated_bytes, None, "unknown allocation stays None, never zero");
+        assert_eq!(index.entry_count, None);
+        assert_eq!(index.max_bytes, 1024, "bounds exist even when allocation is unknown");
+        assert_eq!(index.protection, CacheProtectionV1::ImmutableIndex);
+
+        assert_eq!(evidence.measured_bytes, None, "one unknown row keeps the whole total unknown");
+        assert_eq!(evidence.eviction_owner, CACHE_EVICTION_OWNER);
+        assert_eq!(evidence.reclaimed_bytes, None, "no retirement ran, so no reclaimed figure exists");
+        assert!(evidence.reclaimed_bytes_note.contains("unknown"));
+    }
+
+    #[test]
+    fn cache_protection_wire_names_are_strict_and_alias_free() {
+        for protection in [
+            CacheProtectionV1::DerivedReadOnly,
+            CacheProtectionV1::ReplaceableUiPaint,
+            CacheProtectionV1::ImmutableIndex,
+            CacheProtectionV1::CanonicalState,
+        ] {
+            let name = protection.wire_name();
+            assert_eq!(CacheProtectionV1::parse_wire(name), Some(protection));
+        }
+        assert_eq!(CacheProtectionV1::parse_wire("DERIVED"), None, "truncated alias is rejected");
+        assert_eq!(CacheProtectionV1::parse_wire("canonical_state"), None, "case alias is rejected");
+        assert_eq!(CacheProtectionV1::parse_wire("MEASURED"), None, "allocation evidence is not a protection class");
     }
 
     #[test]
