@@ -58,7 +58,7 @@ HorizonCode is being implemented in public. **Interactive coding and the applica
 
 Implementation record: [HANDOFF.md](HANDOFF.md). Operative plan and gates: [docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md](docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md).
 
-The private root workspace currently declares `UNLICENSED`, pending an explicit HorizonCode distribution license decision. Root-level license/third-party notices and final distribution packaging are being completed before release.
+The private root workspace declares MIT for HorizonCode first-party distribution under user decision DEC-V1-11; `LICENSE` applies only to first-party portions, while upstream and third-party terms remain separate. `NOTICE` preserves known OpenCode attribution and explicitly does not claim complete dependency/native-asset notice closure. Distribution remains blocked until the exact candidate closure and release acceptance are verified. Signing, remote installation, and automatic updates are deferred and unavailable under DEC-V1-12.
 
 ## Documentation
 

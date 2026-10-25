@@ -1,0 +1,21 @@
+HorizonCode first-party distribution notice
+
+User decision dated 2026-10-25 selects the MIT License for HorizonCode first-party
+distribution. The root LICENSE contains the MIT grant. The existing copyright
+statement for OpenCode is preserved as an upstream attribution; no additional
+copyright holder or year is asserted here pending confirmation by the product
+owner/legal reviewer.
+
+OpenCode-derived software
+Copyright (c) 2025 opencode
+Source: https://github.com/anomalyco/opencode
+The pinned upstream source and its license are preserved in opencode/ for
+provenance. This notice does not replace the separate upstream license terms.
+
+This file records first-party license selection and known upstream attribution
+only. It is not a complete third-party notice inventory. The exact built
+artifact dependency/native-asset closure must be audited and its required
+notices assembled before release.
+
+DEC-V1-12 signing, remote installation and automatic updates are deferred and
+remain unavailable. This notice is not a signing or publication authorization.

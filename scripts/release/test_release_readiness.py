@@ -28,8 +28,9 @@ from scripts.release.audit_distribution import (
 )
 from scripts.release import clean_install
 from scripts.release.clean_install import run_matrix
-from scripts.release.prepare_build import _guard_build_script, _run_checked, build_candidate
+from scripts.release.prepare_build import _guard_build_script, _run_checked, build_candidate, plan_isolated_build
 from scripts.release.release_gate import build_platform_support_matrix, evaluate_release_gate
+from scripts.release import release_gate
 
 
 SANDBOX_PARENT = clean_install.APPROVED_TEMP_ROOT
@@ -49,7 +50,154 @@ def _process_id_running(pid: int) -> bool:
     return True
 
 
+def _load_bun_lock(path: Path) -> dict:
+    """Read Bun's JSONC lockfile without accepting anything but trailing commas.
+
+    This only strips trailing commas outside strings; comments, single quotes or
+    any other non-JSON syntax still raise so a malformed lockfile cannot pass a
+    release check silently.
+    """
+    text = path.read_text(encoding="utf-8")
+    stripped: list[str] = []
+    in_string = False
+    escaped = False
+    for character in text:
+        if in_string:
+            stripped.append(character)
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+            stripped.append(character)
+            continue
+        if character in "}]":
+            while stripped and stripped[-1] in " \t\r\n":
+                stripped.pop()
+            if stripped and stripped[-1] == ",":
+                stripped.pop()
+        stripped.append(character)
+    return json.loads("".join(stripped))
+
+
+def _normalized_bin(manifest: dict) -> dict[str, str] | None:
+    bin_value = manifest.get("bin")
+    if bin_value is None:
+        return None
+    if isinstance(bin_value, str):
+        return {str(manifest.get("name")): bin_value}
+    return dict(bin_value)
+
+
 class ReleaseGateCliTests(unittest.TestCase):
+    def test_authoritative_dec_v1_12_deferral_exempts_only_the_signing_gate_row(self) -> None:
+        repository_root = Path(__file__).resolve().parents[2]
+        report = evaluate_release_gate(repository_root)
+
+        self.assertNotIn("signing/update trust root and rollback policy remain unresolved", report["blockers"])
+        self.assertEqual(report["signing_update_policy"], "DEFERRED_UNAVAILABLE")
+        self.assertEqual(report["signing_update"]["status"], "UNAVAILABLE")
+        self.assertIsNone(report["signing_update"]["trust_root"])
+        self.assertEqual(report["signing_update"]["channels"], [])
+        self.assertEqual(report["signing_update"]["rollback_policy"], "NOT_CONFIGURED")
+        self.assertEqual(report["signing_update"]["remote_install"], "UNAVAILABLE")
+        self.assertEqual(report["signing_update"]["automatic_update"], "UNAVAILABLE")
+        self.assertEqual(report["signing_update"]["v1_scope"], "LOCAL_ONLY_UNSIGNED")
+        self.assertIn("accepted V1 deferral applies only to local unsigned use", report["signing_update"]["reason"])
+        self.assertEqual(report["status"], "BLOCKED")
+        self.assertIn("clean-install, upgrade, migration, TUI, and rollback evidence was not run", report["blockers"])
+        self.assertIn("Linux/WSL platform support acceptance remains unverified; install-matrix evidence is not full platform acceptance", report["blockers"])
+
+    def test_signing_deferral_exception_rejects_missing_unapproved_or_mismatched_decision(self) -> None:
+        repository_root = Path(__file__).resolve().parents[2]
+        authority = (repository_root / "arch_V1" / "17-GOVERNANCE-DECISIONS.md").read_text(encoding="utf-8")
+
+        self.assertTrue(release_gate._has_accepted_dec_v1_12_deferral(authority))
+        invalid_authorities = {
+            "missing": authority.replace(
+                "| DEC-V1-12 | **Deferred by user decision 2026-10-25:** signing/update policy is out of V1 | Signing, remote artifact installation and automatic updates remain UNAVAILABLE; no signing root, channel or remote rollback behavior is implied |\n",
+                "",
+            ),
+            "unapproved": authority.replace("**Deferred by user decision 2026-10-25:**", "Deferred without user decision:", 1),
+            "mismatched": authority.replace("| DEC-V1-12 |", "| DEC-V1-13 |", 1),
+        }
+        for case, content in invalid_authorities.items():
+            with self.subTest(case=case):
+                self.assertFalse(release_gate._has_accepted_dec_v1_12_deferral(content))
+
+    def test_local_client_identity_does_not_shadow_the_vendored_opencode_client(self) -> None:
+        repository_root = Path(__file__).resolve().parents[2]
+        local_client = json.loads((repository_root / "packages/client/package.json").read_text(encoding="utf-8"))
+        sdk_next = json.loads((repository_root / "packages/sdk-next/package.json").read_text(encoding="utf-8"))
+        sdk_next_source = (repository_root / "packages/sdk-next/src/opencode.ts").read_text(encoding="utf-8")
+        app = json.loads((repository_root / "packages/app/package.json").read_text(encoding="utf-8"))
+        session_ui = json.loads((repository_root / "packages/session-ui/package.json").read_text(encoding="utf-8"))
+        lock = (repository_root / "bun.lock").read_text(encoding="utf-8")
+
+        self.assertEqual(local_client["name"], "@horizoncode/client")
+        self.assertEqual(sdk_next["dependencies"]["@horizoncode/client"], "workspace:*")
+        self.assertIn('from "@horizoncode/client/effect"', sdk_next_source)
+        self.assertNotIn("@opencode-ai/client", local_client["name"])
+        self.assertEqual(app["dependencies"]["@opencode-ai/client"], "file:vendor/opencode-ai-client-1.17.13-v2.tgz")
+        self.assertEqual(
+            session_ui["dependencies"]["@opencode-ai/client"],
+            "file:../app/vendor/opencode-ai-client-1.17.13-v2.tgz",
+        )
+        self.assertIn('"@horizoncode/client": "workspace:*"', lock)
+        self.assertIn('"@opencode-ai/client": "file:vendor/opencode-ai-client-1.17.13-v2.tgz"', lock)
+        self.assertIn('"@opencode-ai/client": "file:../app/vendor/opencode-ai-client-1.17.13-v2.tgz"', lock)
+
+    def test_workspace_lockfile_importers_match_manifest_identity(self) -> None:
+        # A workspace importer is Bun's projection of the manifest name, version
+        # and public bins. A bin path that only exists in the manifest (or only in
+        # the lockfile) means the recorded install graph no longer describes the
+        # release artifact, so frozen resolution/qualification cannot be trusted.
+        repository_root = Path(__file__).resolve().parents[2]
+        root_manifest = json.loads((repository_root / "package.json").read_text(encoding="utf-8"))
+        importers = _load_bun_lock(repository_root / "bun.lock")["workspaces"]
+        workspace_dirs = sorted(
+            {
+                path.relative_to(repository_root).as_posix()
+                for pattern in root_manifest["workspaces"]["packages"]
+                for path in repository_root.glob(pattern)
+                if (path / "package.json").is_file()
+            }
+        )
+
+        self.assertTrue(workspace_dirs, "no workspace manifests were found for the lockfile cross-check")
+        mismatches: list[str] = []
+        for directory in workspace_dirs:
+            manifest = json.loads((repository_root / directory / "package.json").read_text(encoding="utf-8"))
+            importer = importers.get(directory)
+            if importer is None:
+                mismatches.append(f"{directory}: no lockfile importer")
+                continue
+            if importer.get("name") != manifest.get("name"):
+                mismatches.append(f"{directory}: lockfile name {importer.get('name')!r} != manifest {manifest.get('name')!r}")
+            if (importer.get("version") or None) != (manifest.get("version") or None):
+                mismatches.append(
+                    f"{directory}: lockfile version {importer.get('version')!r} != manifest {manifest.get('version')!r}"
+                )
+            if _normalized_bin(importer) != _normalized_bin(manifest):
+                mismatches.append(
+                    f"{directory}: lockfile bin {_normalized_bin(importer)!r} != manifest {_normalized_bin(manifest)!r}"
+                )
+        unexpected_importers = sorted(
+            directory for directory in importers if directory not in workspace_dirs and directory != ""
+        )
+        self.assertEqual(unexpected_importers, [], "lockfile records importers without a workspace manifest")
+
+        product = json.loads((repository_root / "packages/opencode/package.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            _normalized_bin(product),
+            {"horizoncode": "./bin/horizoncode", "hzcode": "./bin/horizoncode"},
+        )
+        self.assertEqual(mismatches, [], "workspace manifest/lockfile identity mismatch: " + "; ".join(mismatches))
+
     def test_evidence_output_must_stay_under_the_repository_artifact_root(self) -> None:
         with self.assertRaisesRegex(ValueError, "release evidence output must be a new file under"):
             clean_install._validated_output_path(Path("release-report.json"))
@@ -106,7 +254,7 @@ class PublicCliLauncherTests(unittest.TestCase):
         package_root = repository_root / "packages" / "opencode"
         manifest = json.loads((package_root / "package.json").read_text(encoding="utf-8"))
         bin_entries = manifest.get("bin")
-        self.assertEqual(bin_entries, {"horizoncode": "./bin/opencode", "hzcode": "./bin/opencode"})
+        self.assertEqual(bin_entries, {"horizoncode": "./bin/horizoncode", "hzcode": "./bin/horizoncode"})
 
         node = shutil.which("node")
         self.assertIsNotNone(node, "the package launcher requires Node.js")
@@ -143,6 +291,56 @@ class PublicCliLauncherTests(unittest.TestCase):
 
                 self.assertEqual(result.returncode, 23, f"{command_name}: {result.stderr}")
                 self.assertEqual(json.loads(capture.read_text(encoding="utf-8")), ["--from-manifest", "two words"])
+
+    def test_horizoncode_binary_override_precedes_legacy_opencode_override(self) -> None:
+        repository_root = Path(__file__).resolve().parents[2]
+        package_root = repository_root / "packages" / "opencode"
+        node = shutil.which("node")
+        self.assertIsNotNone(node, "the package launcher requires Node.js")
+        with tempfile.TemporaryDirectory(prefix="p9-launcher-priority-", dir=SANDBOX_PARENT) as temporary:
+            root = Path(temporary)
+            selected = root / "selected"
+            canonical = root / "horizoncode-candidate"
+            legacy = root / "opencode-candidate"
+            canonical.write_text(
+                "#!" + sys.executable + "\n"
+                "import os, sys\n"
+                "from pathlib import Path\n"
+                "Path(os.environ['P9_LAUNCHER_SELECTED']).write_text('horizoncode', encoding='utf-8')\n"
+                "raise SystemExit(23)\n",
+                encoding="utf-8",
+            )
+            legacy.write_text(
+                "#!" + sys.executable + "\n"
+                "import os, sys\n"
+                "from pathlib import Path\n"
+                "Path(os.environ['P9_LAUNCHER_SELECTED']).write_text('legacy', encoding='utf-8')\n"
+                "raise SystemExit(42)\n",
+                encoding="utf-8",
+            )
+            canonical.chmod(0o755)
+            legacy.chmod(0o755)
+            result = subprocess.run(
+                [
+                    node,
+                    str(package_root / "bin" / "horizoncode"),
+                    "--identity-priority",
+                ],
+                cwd=repository_root,
+                env=dict(
+                    os.environ,
+                    HORIZONCODE_BIN_PATH=str(canonical),
+                    OPENCODE_BIN_PATH=str(legacy),
+                    P9_LAUNCHER_SELECTED=str(selected),
+                ),
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 23, result.stderr)
+            self.assertEqual(selected.read_text(encoding="utf-8"), "horizoncode")
 
 
 class StandaloneInstallerCommandTests(unittest.TestCase):
@@ -286,6 +484,175 @@ class StandaloneInstallerCommandTests(unittest.TestCase):
             self.assertEqual(existing.read_text(encoding="utf-8"), "existing candidate\n")
             self.assertFalse((install_dir / "hzcode").exists())
 
+    def test_installer_is_idempotent_and_upgrades_both_public_commands(self) -> None:
+        repository_root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory(prefix="p9-idempotent-install-", dir=SANDBOX_PARENT) as temporary:
+            root = Path(temporary)
+            home = root / "home"
+            home.mkdir(mode=0o700)
+            install_dir = home / ".opencode" / "bin"
+            versions = {}
+            for version in ("1.0.0", "2.0.0"):
+                candidate = root / f"candidate-{version}"
+                candidate.write_text(f"#!/bin/sh\nprintf '%s\\n' {version}\n", encoding="utf-8")
+                candidate.chmod(0o755)
+                versions[version] = candidate
+
+            environment = dict(os.environ, HOME=str(home), SHELL="/bin/bash")
+            for version in ("1.0.0", "2.0.0", "2.0.0"):
+                result = subprocess.run(
+                    ["bash", str(repository_root / "install"), "--binary", str(versions[version]), "--no-modify-path"],
+                    cwd=repository_root,
+                    env=environment,
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+            self.assertEqual(sorted(path.name for path in install_dir.iterdir()), ["horizoncode", "hzcode"])
+            for command in ("horizoncode", "hzcode"):
+                launched = subprocess.run(
+                    [str(install_dir / command)],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    check=False,
+                )
+                self.assertEqual(launched.returncode, 0, launched.stderr)
+                self.assertEqual(launched.stdout.strip(), "2.0.0")
+            self.assertTrue((install_dir / "hzcode").is_symlink())
+            self.assertEqual(os.readlink(install_dir / "hzcode"), "horizoncode")
+
+    def test_installer_dry_run_validates_without_creating_install_state(self) -> None:
+        repository_root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory(prefix="p9-dry-run-install-", dir=SANDBOX_PARENT) as temporary:
+            root = Path(temporary)
+            home = root / "home"
+            home.mkdir(mode=0o700)
+            candidate = root / "candidate"
+            candidate.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            candidate.chmod(0o755)
+
+            result = subprocess.run(
+                ["bash", str(repository_root / "install"), "--binary", str(candidate), "--no-modify-path", "--dry-run"],
+                cwd=repository_root,
+                env=dict(os.environ, HOME=str(home), SHELL="/bin/bash"),
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Dry run: no files will be written.", result.stdout)
+            self.assertFalse((home / ".opencode").exists())
+
+    def test_installer_refuses_directory_alias_without_replacing_canonical(self) -> None:
+        repository_root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory(prefix="p9-directory-alias-", dir=SANDBOX_PARENT) as temporary:
+            root = Path(temporary)
+            home = root / "home"
+            install_dir = home / ".opencode" / "bin"
+            install_dir.mkdir(parents=True, mode=0o700)
+            canonical = install_dir / "horizoncode"
+            canonical.write_text("previous binary\n", encoding="utf-8")
+            (install_dir / "hzcode").mkdir()
+            candidate = root / "candidate"
+            candidate.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            candidate.chmod(0o755)
+
+            result = subprocess.run(
+                ["bash", str(repository_root / "install"), "--binary", str(candidate), "--no-modify-path"],
+                cwd=repository_root,
+                env=dict(os.environ, HOME=str(home), SHELL="/bin/bash"),
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Install destination must not be a directory", result.stderr)
+            self.assertEqual(canonical.read_text(encoding="utf-8"), "previous binary\n")
+            self.assertTrue((install_dir / "hzcode").is_dir())
+            self.assertEqual(sorted(path.name for path in install_dir.iterdir()), ["horizoncode", "hzcode"])
+
+    def test_installer_shell_syntax_is_valid(self) -> None:
+        repository_root = Path(__file__).resolve().parents[2]
+        result = subprocess.run(
+            ["bash", "-n", str(repository_root / "install")],
+            cwd=repository_root,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_build_script_packages_first_party_license_and_upstream_notice(self) -> None:
+        repository_root = Path(__file__).resolve().parents[2]
+        build_script = (repository_root / "packages" / "opencode" / "script" / "build.ts").read_text(encoding="utf-8")
+        self.assertIn('LICENSE', build_script)
+        self.assertIn('NOTICE', build_script)
+        self.assertIn('dist/${name}/bin/LICENSE', build_script)
+        self.assertIn('dist/${name}/bin/NOTICE', build_script)
+        self.assertIn('candidateLicense', build_script)
+        self.assertIn('MIT License', (repository_root / "LICENSE").read_text(encoding="utf-8"))
+        self.assertIn('path.resolve(dir, "../../NOTICE")', build_script)
+        self.assertIn("DEC-V1-12", (repository_root / "NOTICE").read_text(encoding="utf-8"))
+
+    def test_build_script_emits_the_horizoncode_product_binary(self) -> None:
+        repository_root = Path(__file__).resolve().parents[2]
+        build_script = (repository_root / "packages" / "opencode" / "script" / "build.ts").read_text(encoding="utf-8")
+        self.assertIn('outfile: `dist/${name}/bin/horizoncode`', build_script)
+        self.assertIn('const binaryPath = `dist/${name}/bin/horizoncode`', build_script)
+        self.assertIn('codesign --force --sign - dist/${name}/bin/horizoncode', build_script)
+        self.assertIn('`--user-agent=horizoncode/${Script.version}`', build_script)
+
+    def test_nix_package_consumes_horizoncode_artifacts_and_keeps_one_compatibility_alias(self) -> None:
+        repository_root = Path(__file__).resolve().parents[2]
+        nix_package = (repository_root / "nix" / "opencode.nix").read_text(encoding="utf-8")
+        self.assertIn('dist/horizoncode-*/bin/horizoncode $out/bin/horizoncode', nix_package)
+        self.assertIn('ln -s horizoncode $out/bin/opencode', nix_package)
+
+    def test_container_build_consumes_the_horizoncode_artifact_and_command(self) -> None:
+        repository_root = Path(__file__).resolve().parents[2]
+        dockerfile = (repository_root / "packages" / "opencode" / "Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("dist/horizoncode-linux-x64-baseline-musl/bin/horizoncode /usr/local/bin/horizoncode", dockerfile)
+        self.assertIn("dist/horizoncode-linux-arm64-musl/bin/horizoncode /usr/local/bin/horizoncode", dockerfile)
+        self.assertIn('ENTRYPOINT ["horizoncode"]', dockerfile)
+        self.assertIn("ln -s horizoncode /usr/local/bin/opencode", dockerfile)
+
+    def test_nix_and_container_release_controls_keep_one_horizoncode_runtime(self) -> None:
+        # Static only: `nix` is unavailable here, so this asserts the packaged
+        # identities and aliases agree instead of claiming an evaluated derivation.
+        repository_root = Path(__file__).resolve().parents[2]
+        flake = (repository_root / "flake.nix").read_text(encoding="utf-8")
+        nix_package = (repository_root / "nix" / "opencode.nix").read_text(encoding="utf-8")
+        container_builder = (repository_root / "packages" / "containers" / "script" / "build.ts").read_text(
+            encoding="utf-8"
+        )
+        publish_dockerfile = (repository_root / "packages" / "containers" / "publish" / "Dockerfile").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("horizoncode = opencode;", flake)
+        self.assertRegex(flake, r"default = (?:opencode|horizoncode);")
+        self.assertIn('mainProgram = "horizoncode"', nix_package)
+        self.assertIn("ln -s horizoncode $out/bin/hzcode", nix_package)
+        self.assertIn("ln -s horizoncode $out/bin/opencode", nix_package)
+        self.assertIn("dist/horizoncode-*/bin/horizoncode $out/bin/horizoncode", nix_package)
+
+        self.assertIn('if (process.argv.includes("--push") || process.env.PUSH === "1")', container_builder)
+        self.assertIn(
+            "HorizonCode container publication is disabled pending release authorization.", container_builder
+        )
+        self.assertIn("ARG REGISTRY=localhost/horizoncode", publish_dockerfile)
+        self.assertNotIn("docker push", container_builder)
+        self.assertNotIn(":latest", publish_dockerfile)
+
 
 class DistributionAuditTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -336,6 +703,83 @@ class DistributionAuditTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
+    def test_container_publication_audit_ignores_comments_but_detects_docker_push(self) -> None:
+        from scripts.release.audit_distribution import _container_builder_has_push_command
+
+        self.assertFalse(
+            _container_builder_has_push_command(
+                "// rejects --push before Docker\n"
+                'await $`docker build --tag example/image .`\n'
+            )
+        )
+        self.assertTrue(_container_builder_has_push_command('await $`docker buildx build --push .`\n'))
+
+    def test_release_audit_tracks_nix_packaging_inputs_for_git_visibility(self) -> None:
+        self._commit_audit_fixture()
+        nix_sources = (
+            "flake.nix",
+            "flake.lock",
+            "nix/opencode.nix",
+            "nix/node_modules.nix",
+            "nix/desktop.nix",
+            "nix/hashes.json",
+            "nix/scripts/canonicalize-node-modules.ts",
+            "nix/scripts/normalize-bun-binaries.ts",
+        )
+        for name in nix_sources:
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("packaging input\n", encoding="utf-8")
+        with (self.root / ".gitignore").open("a", encoding="utf-8") as ignore:
+            ignore.write("\n/flake.nix\n/flake.lock\n/nix/\n")
+
+        report = audit_repository(self.root)
+        visibility = report["package_target"]["release_control_sources_git_visible"]
+
+        for name in nix_sources:
+            self.assertIn(name, visibility)
+            self.assertFalse(visibility[name], f"ignored release packaging input was not reported: {name}")
+        self.assertTrue(
+            any("flake.nix" in blocker and "nix/opencode.nix" in blocker for blocker in report["blockers"])
+        )
+
+    def test_nix_mit_metadata_does_not_override_an_unresolved_root_distribution_notice(self) -> None:
+        nix_package = self.root / "nix" / "opencode.nix"
+        nix_package.parent.mkdir(parents=True)
+        nix_package.write_text(
+            "meta = {\n    license = lib.licenses.mit;\n};\n",
+            encoding="utf-8",
+        )
+
+        report = audit_repository(self.root)
+
+        self.assertEqual(report["package_target"].get("nix_package_license_claim"), "MIT")
+        self.assertNotIn(
+            "Nix package metadata declares MIT while first-party distribution rights remain unresolved",
+            report["blockers"],
+        )
+
+    def test_distribution_audit_blocks_a_runnable_or_write_enabled_publish_workflow(self) -> None:
+        workflow = self.root / ".github" / "workflows" / "publish.yml"
+        workflow.parent.mkdir(parents=True)
+        safe_workflow = (
+            "on:\n  workflow_dispatch:\n"
+            "permissions:\n  contents: read\n"
+            "jobs:\n  publish:\n    if: ${{ false }}\n"
+            "    runs-on: ubuntu-latest\n    steps:\n      - run: echo disabled\n"
+        )
+        unsafe_variants = (
+            safe_workflow.replace("contents: read", "contents: write"),
+            safe_workflow.replace("    if: ${{ false }}\n", ""),
+            safe_workflow.replace("  workflow_dispatch:", "  push:", 1),
+        )
+
+        for source in unsafe_variants:
+            with self.subTest(source=source):
+                workflow.write_text(source, encoding="utf-8")
+                report = audit_repository(self.root)
+                self.assertIn("root publication workflow is absent or not fail-closed", report["blockers"])
+
     def _commit_audit_fixture(self) -> str:
         (self.root / ".gitignore").write_text("node_modules/\n/LICENSE\nrelease-artifacts/\n", encoding="utf-8")
         subprocess.run(["git", "init", "--quiet"], cwd=self.root, check=True)
@@ -380,6 +824,42 @@ class DistributionAuditTests(unittest.TestCase):
         finally:
             shutil.rmtree(external, ignore_errors=True)
 
+    def test_runtime_dependency_store_symlink_inside_audited_root_is_resolved(self) -> None:
+        # Bun's isolated install resolves every dependency to an in-repository
+        # content store and symlinks it into place; the audit must resolve links
+        # whose target stays inside the audited root (containment is the rule,
+        # not a blanket link ban) while the escape negative below stays blocked.
+        store = (
+            self.root
+            / "node_modules"
+            / ".bun"
+            / "first-party-runtime@1.0.0"
+            / "node_modules"
+            / "first-party-runtime"
+        )
+        store.mkdir(parents=True)
+        linked = self.root / "node_modules" / "first-party-runtime"
+        shutil.move(str(linked / "package.json"), store / "package.json")
+        shutil.move(str(linked / "LICENSE"), store / "LICENSE")
+        linked.rmdir()
+        linked.symlink_to(store, target_is_directory=True)
+
+        inventory = scan_runtime_dependencies(self.root / "packages" / "opencode", self.root)
+
+        self.assertEqual(inventory["inventory_errors"], [])
+        self.assertEqual(inventory["package_count"], 2)
+        self.assertEqual(inventory["unresolved_required_dependencies"], [])
+        self.assertEqual(
+            {item["name"] for item in inventory["packages"]},
+            {"first-party-runtime", "transitive-runtime"},
+        )
+        self.assertEqual(
+            [item for item in inventory["packages"] if item["name"] == "first-party-runtime"][0][
+                "license_files"
+            ],
+            ["LICENSE"],
+        )
+
     def test_runtime_dependency_manifest_and_graph_limits_fail_closed(self) -> None:
         package_manifest = self.root / "packages" / "opencode" / "package.json"
         package_manifest.write_text(
@@ -409,6 +889,20 @@ class DistributionAuditTests(unittest.TestCase):
             "transitive-runtime",
             {item["name"] for item in report["runtime_dependencies"]["missing_license_metadata"]},
         )
+        self.assertIn("no built package artifact was supplied or found", report["blockers"])
+
+    def test_first_party_mit_decision_requires_distinct_license_and_notice(self) -> None:
+        (self.root / "package.json").write_text(
+            json.dumps({"name": "horizoncode-workspace", "private": True, "license": "MIT"}),
+            encoding="utf-8",
+        )
+        (self.root / "LICENSE").write_text("MIT License\nfirst-party grant\n", encoding="utf-8")
+        (self.root / "NOTICE").write_text("OpenCode attribution; exact third-party closure pending\\n", encoding="utf-8")
+
+        report = audit_repository(self.root)
+
+        self.assertTrue(report["distribution_license"]["legal_decision_made"])
+        self.assertFalse(report["distribution_license"]["root_license_matches_vendor"])
         self.assertIn("no built package artifact was supplied or found", report["blockers"])
 
     def test_dependency_license_symlink_is_not_counted_as_direct_legal_file(self) -> None:
@@ -601,7 +1095,7 @@ class DistributionAuditTests(unittest.TestCase):
         revision = self._commit_audit_fixture()
         artifact = self.root / "release-artifacts" / "candidate"
         (artifact / "bin").mkdir(parents=True)
-        binary = artifact / "bin" / "opencode"
+        binary = artifact / "bin" / "horizoncode"
         binary.write_bytes(b"candidate executable")
         (artifact / "LICENSE").write_text("license\n", encoding="utf-8")
         (artifact / "NOTICE.txt").write_text("notice\n", encoding="utf-8")
@@ -610,7 +1104,7 @@ class DistributionAuditTests(unittest.TestCase):
                 {
                     "sourceRevision": revision,
                     "sourceStateSha256": "0" * 64,
-                    "binaryPath": "bin/opencode",
+                    "binaryPath": "bin/horizoncode",
                     "binarySha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
                 }
             ),
@@ -630,7 +1124,7 @@ class DistributionAuditTests(unittest.TestCase):
         revision = self._commit_audit_fixture()
         artifact = self.root / "release-artifacts" / "candidate"
         (artifact / "bin").mkdir(parents=True)
-        (artifact / "bin" / "opencode").write_bytes(b"candidate executable")
+        (artifact / "bin" / "horizoncode").write_bytes(b"candidate executable")
         (artifact / "LICENSE").write_text("license\n", encoding="utf-8")
         (artifact / "NOTICE.txt").write_text("notice\n", encoding="utf-8")
         (artifact / "release-manifest.json").write_text(
@@ -638,7 +1132,7 @@ class DistributionAuditTests(unittest.TestCase):
                 {
                     "sourceRevision": revision,
                     "sourceStateSha256": "0" * 64,
-                    "binaryPath": "bin/opencode",
+                    "binaryPath": "bin/horizoncode",
                     "binarySha256": "f" * 64,
                 }
             ),
@@ -683,7 +1177,7 @@ class DistributionAuditTests(unittest.TestCase):
     def test_distribution_audit_rejects_non_horizoncode_installer_command(self) -> None:
         package_path = self.root / "packages" / "opencode" / "package.json"
         manifest = json.loads(package_path.read_text(encoding="utf-8"))
-        manifest["bin"] = {"horizoncode": "./bin/opencode", "hzcode": "./bin/opencode"}
+        manifest["bin"] = {"horizoncode": "./bin/horizoncode", "hzcode": "./bin/horizoncode"}
         package_path.write_text(json.dumps(manifest), encoding="utf-8")
         (self.root / "install").write_text("COMMAND=opencode\n", encoding="utf-8")
 
@@ -696,7 +1190,11 @@ class DistributionAuditTests(unittest.TestCase):
 
         self.assertEqual(report["status"], "BLOCKED")
         self.assertEqual(report["distribution_license_decision"], "NOT_AUTHORIZED")
-        self.assertEqual(report["signing_update_policy"], "UNRESOLVED")
+        self.assertEqual(report["signing_update_policy"], "DEFERRED_UNAVAILABLE")
+        self.assertEqual(report["signing_update"]["status"], "UNAVAILABLE")
+        self.assertEqual(report["signing_update"]["remote_install"], "UNAVAILABLE")
+        self.assertEqual(report["signing_update"]["automatic_update"], "UNAVAILABLE")
+        self.assertIsNone(report["signing_update"]["trust_root"])
         self.assertEqual(report["install_matrix"]["status"], "NOT_RUN")
         self.assertEqual(report["platform_support_matrix"]["assessment_status"], "NOT_VERIFIED")
         self.assertEqual(report["platform_support_matrix"]["lanes"]["native_windows"]["support_status"], "UNAVAILABLE")
@@ -705,7 +1203,7 @@ class DistributionAuditTests(unittest.TestCase):
             "Linux/WSL platform support acceptance remains unverified; install-matrix evidence is not full platform acceptance",
             report["blockers"],
         )
-        self.assertIn("signing/update trust root and rollback policy remain unresolved", report["blockers"])
+        self.assertNotIn("signing/update trust root and rollback policy remain unresolved", report["blockers"])
         self.assertIn("clean-install, upgrade, migration, TUI, and rollback evidence was not run", report["blockers"])
         self.assertIn("previous_binary_sha256", report["inputs"])
         self.assertIsNone(report["inputs"]["previous_binary_sha256"])
@@ -848,11 +1346,14 @@ class SyntheticCleanInstallMatrixTests(unittest.TestCase):
         self.host_only_sentinel.write_text("not mounted into the child sandbox", encoding="utf-8")
         shutil.copy2(Path(__file__).resolve().parents[2] / "install", self.checkout / "install")
         (self.checkout / "artifacts").mkdir()
+        fixture_dir = self.checkout / "scripts" / "release" / "fixtures"
+        fixture_dir.mkdir(parents=True)
+        shutil.copy2(Path(__file__).resolve().parent / "fixtures" / "legacy-config.toml", fixture_dir / "legacy-config.toml")
         self.old_binary = self.checkout / "artifacts" / "previous-opencode"
         self.new_binary = self.checkout / "artifacts" / "candidate-opencode"
         self._write_test_binary(self.old_binary, "1.0.0")
         self._write_test_binary(self.new_binary, "2.0.0")
-        self.fixture = Path(__file__).parent / "fixtures" / "legacy-config.toml"
+        self.fixture = fixture_dir / "legacy-config.toml"
 
     def tearDown(self) -> None:
         self.network_probe.close()
@@ -1048,7 +1549,7 @@ class SyntheticCleanInstallMatrixTests(unittest.TestCase):
         state_link.symlink_to(self.checkout, target_is_directory=True)
         state_root = state_link / "new-state"
 
-        with self.assertRaisesRegex(ValueError, "symlinked parent"):
+        with self.assertRaisesRegex(ValueError, "test state path contains a symlink"):
             run_matrix(
                 checkout=self.checkout,
                 candidate_binary=self.new_binary,
@@ -1073,6 +1574,25 @@ class SyntheticCleanInstallMatrixTests(unittest.TestCase):
                     state_root=state_root,
                     require_clean_checkout=False,
                 )
+        self.assertFalse(state_root.exists())
+
+    def test_matrix_dry_run_validates_inputs_without_creating_state_or_installing(self) -> None:
+        state_root = self.root / "dry-run-state"
+        report = run_matrix(
+            checkout=self.checkout,
+            candidate_binary=self.new_binary,
+            previous_binary=self.old_binary,
+            migration_fixture=self.fixture,
+            expected_model="openai/release-test-model",
+            state_root=state_root,
+            require_clean_checkout=False,
+            dry_run=True,
+        )
+
+        self.assertEqual(report["status"], "DRY_RUN")
+        self.assertTrue(report["dry_run"])
+        self.assertEqual(report["network_isolation"]["status"], "ENABLED")
+        self.assertIn("migration", report["planned_scenarios"])
         self.assertFalse(state_root.exists())
 
     def test_missing_previous_binary_is_explicitly_partial_not_release_pass(self) -> None:
@@ -1145,11 +1665,11 @@ class SyntheticCleanInstallMatrixTests(unittest.TestCase):
         subprocess.run(["git", "init", "--quiet"], cwd=self.checkout, check=True)
         subprocess.run(["git", "config", "user.name", "P9 test"], cwd=self.checkout, check=True)
         subprocess.run(["git", "config", "user.email", "p9-test@example.invalid"], cwd=self.checkout, check=True)
-        subprocess.run(["git", "add", "install", "artifacts"], cwd=self.checkout, check=True)
+        subprocess.run(["git", "add", "install", "artifacts", "scripts"], cwd=self.checkout, check=True)
         subprocess.run(["git", "commit", "--quiet", "-m", "synthetic artifacts"], cwd=self.checkout, check=True)
 
         report = evaluate_release_gate(
-            self.root,
+            self.checkout,
             checkout=self.checkout,
             candidate_binary=self.new_binary,
             previous_binary=self.old_binary,
@@ -1158,11 +1678,11 @@ class SyntheticCleanInstallMatrixTests(unittest.TestCase):
             state_root=self.root / "gate-state",
         )
 
-        self.assertEqual(report["install_matrix"]["status"], "PASS")
+        self.assertEqual(report["install_matrix"]["status"], "PASS", json.dumps(report["install_matrix"], indent=2))
         self.assertEqual(report["install_evidence_class"], "provided-binary exercise; synthetic harness tests are not product evidence")
         self.assertEqual(report["status"], "BLOCKED")
         self.assertEqual(report["distribution_license_decision"], "NOT_AUTHORIZED")
-        self.assertEqual(report["signing_update_policy"], "UNRESOLVED")
+        self.assertEqual(report["signing_update_policy"], "DEFERRED_UNAVAILABLE")
         host_lane = {"Linux": "native_linux", "WSL": "wsl", "WSL2": "wsl2"}[
             report["install_matrix"]["platform"]["host_kind"]
         ]
@@ -1193,7 +1713,7 @@ class SyntheticCleanInstallMatrixTests(unittest.TestCase):
         subprocess.run(["git", "init", "--quiet"], cwd=self.checkout, check=True)
         subprocess.run(["git", "config", "user.name", "P9 test"], cwd=self.checkout, check=True)
         subprocess.run(["git", "config", "user.email", "p9-test@example.invalid"], cwd=self.checkout, check=True)
-        subprocess.run(["git", "add", "install", "artifacts"], cwd=self.checkout, check=True)
+        subprocess.run(["git", "add", "install", "artifacts", "scripts"], cwd=self.checkout, check=True)
         subprocess.run(["git", "commit", "--quiet", "-m", "different candidate source"], cwd=self.checkout, check=True)
         state_root = self.root / "must-not-install"
 
@@ -1237,6 +1757,7 @@ class SyntheticTuiShutdownWindowTests(unittest.TestCase):
         self,
         *,
         shutdown_delay: float = 0.0,
+        startup_delay: float = 0.0,
         ignore_sigint: bool = False,
         raw: bool = False,
         spawn_marker: str | None = None,
@@ -1274,6 +1795,7 @@ class SyntheticTuiShutdownWindowTests(unittest.TestCase):
             "\n"
             f"{spawn}"
             f"{handler}\n"
+            f"time.sleep({startup_delay!r})\n"
             "print('SYNTHETIC_TUI_READY', flush=True)\n"
             "while True:\n"
             "    time.sleep(0.1)\n",
@@ -1303,6 +1825,19 @@ class SyntheticTuiShutdownWindowTests(unittest.TestCase):
         self.assertEqual(report["shutdown_window_seconds"], clean_install.TUI_SHUTDOWN_SECONDS)
         self.assertGreaterEqual(report["shutdown_window_seconds"], 8.0)
         self.assertEqual(report["leftover_processes"], [])
+
+    def test_tui_smoke_waits_for_a_slow_first_frame_inside_the_bound(self) -> None:
+        # A cold CLI can take longer than the former 1.0s window to paint its
+        # first frame. Startup must wait for output, not fail a slow-but-live UI.
+        self._write_tui_binary(startup_delay=2.0)
+
+        report = clean_install._tui_smoke(
+            self.home, self.env, source_checkout=self.checkout, state_root=self.state_root
+        )
+
+        self.assertEqual(report["status"], "PASS", report)
+        self.assertGreater(report["startup_output_bytes"], 0)
+        self.assertGreaterEqual(report["startup_window_seconds"], 10.0)
 
     def test_tui_smoke_fails_and_escalates_when_the_process_ignores_sigint(self) -> None:
         self._write_tui_binary(ignore_sigint=True)
@@ -1474,6 +2009,15 @@ class IsolatedBuildPreparationTests(unittest.TestCase):
             '{"fixture":true}\n',
         )
 
+    def test_isolated_build_dry_run_validates_without_creating_the_destination(self) -> None:
+        report = plan_isolated_build(self.source, self.destination)
+
+        self.assertTrue(report["dry_run"])
+        self.assertEqual(report["build"]["status"], "DRY_RUN")
+        self.assertEqual(report["build_copy"]["status"], "NOT_CREATED")
+        self.assertEqual(report["source"]["status"], "DIRTY")
+        self.assertFalse(self.destination.exists())
+
     def test_build_script_guard_rejects_a_final_symlink_without_touching_its_target(self) -> None:
         build_script = self.source / "packages" / "opencode" / "script" / "build.ts"
         sentinel = build_script.with_name("build-script-sentinel.ts")
@@ -1548,7 +2092,7 @@ class IsolatedBuildPreparationTests(unittest.TestCase):
         def fake_run(command, *, cwd, env, timeout):
             build_calls.append((command, cwd, env, timeout))
             if "script/build.ts" in command:
-                binary = build_root / "packages" / "opencode" / "dist" / "opencode-linux-x64" / "bin" / "opencode"
+                binary = build_root / "packages" / "opencode" / "dist" / "horizoncode-linux-x64" / "bin" / "horizoncode"
                 binary.parent.mkdir(parents=True)
                 binary.write_bytes(b"candidate-linux-binary")
                 binary.chmod(0o755)
@@ -1561,7 +2105,7 @@ class IsolatedBuildPreparationTests(unittest.TestCase):
 
         artifact = Path(result["build"]["artifact_directory"])
         manifest = json.loads((artifact / "release-manifest.json").read_text(encoding="utf-8"))
-        binary = artifact / "opencode"
+        binary = artifact / "horizoncode"
         self.assertEqual(result["build"]["status"], "BUILT")
         self.assertEqual(manifest["schemaVersion"], 2)
         self.assertEqual(manifest["binarySha256"], hashlib.sha256(binary.read_bytes()).hexdigest())
@@ -1569,10 +2113,10 @@ class IsolatedBuildPreparationTests(unittest.TestCase):
         self.assertEqual(manifest["sourceRevision"], result["source"]["revision"])
         self.assertEqual(manifest["sourceStateSha256"], result["source"]["source_state_sha256"])
         self.assertEqual(manifest["postBuildSourceStateSha256"], manifest["sourceStateSha256"])
-        self.assertEqual(manifest["target"], "opencode-linux-x64")
+        self.assertEqual(manifest["target"], "horizoncode-linux-x64")
         self.assertEqual(manifest["lockfileSha256"].keys(), {"bun.lock", "kernel/Cargo.lock"})
         self.assertEqual(manifest["artifactFiles"], [{
-            "path": "opencode",
+            "path": "horizoncode",
             "sizeBytes": len(b"candidate-linux-binary"),
             "sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
         }])
@@ -1646,6 +2190,11 @@ class QualificationWorkflowTests(unittest.TestCase):
         self.assertNotIn("push:", contents)
         self.assertIn("permissions:\n  contents: read", contents)
         self.assertIn("python3 scripts/release/prepare_build.py", contents)
+        self.assertIn("python3 scripts/release/clean_install.py", contents)
+        self.assertIn("python3 scripts/release/release_gate.py", contents)
+        self.assertIn("bash -n install", contents)
+        self.assertIn("python3 -m unittest scripts.release.test_release_readiness", contents)
+        self.assertIn("--dry-run", contents)
         self.assertIn("MODELS_DEV_API_JSON", contents)
         self.assertIn("opencode/packages/opencode/test/tool/fixtures/models-api.json", contents)
         self.assertIn("kernel/target/horizoncode-release", contents)
@@ -1653,9 +2202,30 @@ class QualificationWorkflowTests(unittest.TestCase):
         self.assertNotIn("$RUNNER_TEMP", contents)
         self.assertNotIn("npm publish", contents)
         self.assertNotIn("gh release upload", contents)
+        self.assertNotIn("upload-artifact", contents)
         self.assertNotIn("codesign", contents)
         self.assertNotIn("secrets.", contents)
         self.assertNotIn("id-token: write", contents)
+
+    def test_release_qualification_candidate_binary_matches_the_product_artifact_name(self) -> None:
+        # `build.ts` now emits `dist/horizoncode-<target>/bin/horizoncode`. Every
+        # `--candidate-binary` derived from the build report must resolve to that
+        # artifact; pointing at the retired `opencode` name fails the job at the
+        # install and gate steps with "no candidate product binary".
+        repository_root = Path(__file__).resolve().parents[2]
+        workflow = repository_root / ".github" / "workflows" / "horizoncode-release-qualification.yml"
+        contents = workflow.read_text(encoding="utf-8")
+
+        self.assertIn('--candidate-binary "$artifact_directory/horizoncode"', contents)
+        self.assertNotIn('--candidate-binary "$artifact_directory/opencode"', contents)
+
+    def test_root_publication_workflow_is_manual_read_only_and_has_no_runnable_job(self) -> None:
+        repository_root = Path(__file__).resolve().parents[2]
+        workflow = repository_root / ".github" / "workflows" / "publish.yml"
+        self.assertTrue(workflow.is_file(), f"publication workflow overlay is missing: {workflow}")
+        report = audit_repository(repository_root)
+
+        self.assertTrue(report["package_target"].get("publish_workflow_fail_closed"))
 
 
 if __name__ == "__main__":

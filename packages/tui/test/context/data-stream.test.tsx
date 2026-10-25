@@ -878,3 +878,91 @@ test("holds the first reconnected event until canonical message refresh succeeds
     globalThis.fetch = originalFetch
   }
 })
+
+test("retries a canonical refresh when live deltas arrive during pagination", async () => {
+  await using tmp = await tmpdir()
+  const events = createEventSource()
+  const raceSessionID = "ses_stream_snapshot_race"
+  const raceMessageID = "msg_stream_snapshot_race"
+  const raceTextID = "part_stream_snapshot_race"
+  let data: ReturnType<typeof useData> | undefined
+  let ready = false
+  let releaseFirstSnapshot = () => {}
+  let firstSnapshotStarted = () => {}
+  const firstSnapshotGate = new Promise<void>((resolve) => { releaseFirstSnapshot = resolve })
+  const firstSnapshotStartedPromise = new Promise<void>((resolve) => { firstSnapshotStarted = resolve })
+  let snapshotCount = 0
+  const canonical: SessionMessage = {
+    id: raceMessageID,
+    type: "assistant",
+    agent: "build",
+    model: { providerID: "test", id: "model" },
+    content: [{ type: "text", id: raceTextID, text: "live text included in canonical snapshot" }],
+    time: { created: 1 },
+  }
+  const api = createFetch(async (url) => {
+    if (url.pathname !== `/api/session/${raceSessionID}/message`) return
+    snapshotCount++
+    if (snapshotCount === 1) {
+      firstSnapshotStarted()
+      await firstSnapshotGate
+      return json({ data: [], cursor: {} })
+    }
+    return json({ data: [canonical], cursor: {} })
+  }, events)
+
+  function Probe() {
+    data = useData()
+    onMount(() => { ready = true })
+    return null
+  }
+
+  const app = await testRender(
+    () => (
+      <TestTuiContexts directory={tmp.path} paths={{ home: tmp.path, state: tmp.path, worktree: tmp.path }}>
+        <SDKProvider url="http://test" directory={tmp.path} events={events.source} fetch={api.fetch}>
+          <DataProvider><Probe /></DataProvider>
+        </SDKProvider>
+      </TestTuiContexts>
+    ),
+    { kittyKeyboard: true },
+  )
+
+  try {
+    await waitForState(() => ready)
+    await Bun.sleep(20)
+    events.emit(event("session.next.step.started", {
+      timestamp: 1, sessionID: raceSessionID, assistantMessageID: raceMessageID, agent: {}, model: {},
+    }))
+    events.emit(event("session.next.text.started", {
+      timestamp: 2, sessionID: raceSessionID, assistantMessageID: raceMessageID, textID: raceTextID,
+    }))
+    await waitForState(() => {
+      const assistant = data!.session.message.list(raceSessionID)?.find((item) => item.type === "assistant")
+      return assistant?.type === "assistant" && assistant.content.some((part) => part.type === "text")
+    })
+
+    const refresh = data!.session.message.refresh(raceSessionID)
+    await firstSnapshotStartedPromise
+    events.emit(event("session.next.text.delta", {
+      timestamp: 3,
+      sessionID: raceSessionID,
+      assistantMessageID: raceMessageID,
+      textID: raceTextID,
+      delta: "live text included in canonical snapshot",
+      sequence: 0,
+      sourceGeneration: "race-generation",
+    }))
+    await waitForState(() => data!.stream.stats().pendingEvents > 0)
+    releaseFirstSnapshot()
+    await refresh
+
+    expect(snapshotCount).toBe(2)
+    const assistant = data!.session.message.list(raceSessionID)?.find((item) => item.type === "assistant")
+    expect(assistant?.type === "assistant" && assistant.content.find((part) => part.type === "text")?.text)
+      .toBe("live text included in canonical snapshot")
+  } finally {
+    releaseFirstSnapshot()
+    app.renderer.destroy()
+  }
+})

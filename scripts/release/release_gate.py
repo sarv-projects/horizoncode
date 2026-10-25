@@ -120,6 +120,7 @@ def build_platform_support_matrix(install_matrix: dict) -> dict:
         dimension: "UNAVAILABLE" if dimension == "browser_desktop" else "NOT_VERIFIED"
         for dimension in PLATFORM_SUPPORT_DIMENSIONS
     }
+
     windows_capabilities = {dimension: "UNAVAILABLE" for dimension in PLATFORM_SUPPORT_DIMENSIONS}
     macos_capabilities = {dimension: "OUT_OF_SCOPE" for dimension in PLATFORM_SUPPORT_DIMENSIONS}
     lanes = {
@@ -200,6 +201,27 @@ def build_platform_support_matrix(install_matrix: dict) -> dict:
     }
 
 
+_ACCEPTED_DEC_V1_12_ROW = (
+    "| DEC-V1-12 | **Deferred by user decision 2026-10-25:** signing/update policy is out of V1 | "
+    "Signing, remote artifact installation and automatic updates remain UNAVAILABLE; no signing root, "
+    "channel or remote rollback behavior is implied |"
+)
+
+
+def _has_accepted_dec_v1_12_deferral(decision_text: str) -> bool:
+    """Recognize only the exact normative user-approved DEC-V1-12 row."""
+    return _ACCEPTED_DEC_V1_12_ROW in decision_text.splitlines()
+
+
+def _authoritative_dec_v1_12_deferral() -> bool:
+    """Read the fixed repository architecture owner; CLI inputs cannot supply this decision."""
+    try:
+        decision_text = (REPOSITORY_ROOT / "arch_V1" / "17-GOVERNANCE-DECISIONS.md").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return _has_accepted_dec_v1_12_deferral(decision_text)
+
+
 def evaluate_release_gate(
     root: Path,
     *,
@@ -231,6 +253,8 @@ def evaluate_release_gate(
     for label, value in (("candidate binary", candidate_binary), ("previous binary", previous_binary), ("migration fixture", migration_fixture)):
         if value is None:
             continue
+        if value.is_symlink() or not value.is_file():
+            raise ValueError(f"{label} must be a regular file")
         requested_value = Path(os.path.abspath(value))
         requested_checkout = Path(os.path.abspath(checkout)) if checkout is not None else None
         if requested_checkout is None or not _inside(requested_value, requested_checkout):
@@ -286,7 +310,9 @@ def evaluate_release_gate(
         blockers.append("clean-install, upgrade, migration, TUI, and rollback evidence was not run")
     elif install_matrix["status"] != "PASS":
         blockers.append("clean-install, upgrade, migration, TUI, and rollback evidence did not all pass")
-    blockers.append("signing/update trust root and rollback policy remain unresolved")
+    signing_deferral_accepted = _authoritative_dec_v1_12_deferral()
+    if not signing_deferral_accepted:
+        blockers.append("signing/update trust root and rollback policy remain unresolved")
     blockers.append("P1/P2, integrated V1 security/performance, and final CI gates are outside this P9 helper and remain unverified")
     blockers.append(
         "Linux/WSL platform support acceptance remains unverified; install-matrix evidence is not full platform acceptance"
@@ -318,8 +344,25 @@ def evaluate_release_gate(
             "migration_fixture_sha256": _sha256(migration_fixture) if migration_fixture else None,
         },
         "candidate_checkout": candidate_checkout,
-        "distribution_license_decision": "NOT_AUTHORIZED",
-        "signing_update_policy": "UNRESOLVED",
+        "distribution_license_decision": (
+            "AUTHORIZED_MIT_FIRST_PARTY" if audit["distribution_license"].get("legal_decision_made") is True else "NOT_AUTHORIZED"
+        ),
+        "signing_update_policy": "DEFERRED_UNAVAILABLE",
+        "signing_update": {
+            "status": "UNAVAILABLE",
+            "remote_install": "UNAVAILABLE",
+            "automatic_update": "UNAVAILABLE",
+            "trust_root": None,
+            "channels": [],
+            "rollback_policy": "NOT_CONFIGURED",
+            "v1_scope": "LOCAL_ONLY_UNSIGNED",
+            "reason": (
+                "DEC-V1-12 signing/update policy is deferred; no artifact-signing trust root, key "
+                "custody/rotation/revocation, channel, compatibility, staged-activation, or rollback "
+                "policy is approved. This accepted V1 deferral applies only to local unsigned use; "
+                "signing, remote installation and automatic updates remain unavailable."
+            ),
+        },
         "audit": audit,
         "install_matrix": install_matrix,
         "platform_support_matrix": build_platform_support_matrix(install_matrix),
