@@ -80,9 +80,14 @@ const GUARDED_EDITOR_PROCESS_RUNTIME_READY: bool = false;
 /// resource limits, cancellation and restart reconciliation pass integrated
 /// acceptance on the selected native target.
 const CODE_MODE_RUNTIME_READY: bool = false;
-/// Legacy PTY execution does not yet carry cgroup identity through the durable
-/// dispatch/recovery journal. Keep every terminal.v1/run/start ingress closed.
-const GUARDED_PTY_RUNTIME_READY: bool = false;
+/// Guarded PTY execution is available: every terminal.v1/run and
+/// terminal.v1/start ingress resolves the registered shell profile, binds a
+/// per-effect cgroup-v2 containment identity into the durable PREPARE record
+/// before dispatch, settles only an observed exit, and leaves an unobserved
+/// exit durably UNKNOWN. OS-level filesystem and network confinement come from
+/// the probed sandbox backend (bubblewrap + Landlock), which must report
+/// ENFORCED for read, write, egress and process tree or the launch is refused.
+const GUARDED_PTY_RUNTIME_READY: bool = true;
 
 /// Bounded live managed-Goal owners. Each Goal holds one durable OwnerLog and one
 /// exclusive owner lock for the kernel's lifetime: an instance is never evicted,
@@ -29485,7 +29490,10 @@ impl HostKernel {
                     &profile_digest,
                 ) {
                 Ok(value) => value,
-                Err(_) => {
+                Err(error) => {
+                    // The refusal is UNKNOWN, so the exact containment reason must
+                    // stay operator-visible rather than being collapsed.
+                    eprintln!("terminal containment bind failed: {error}");
                     let _ = effect_host.mark_terminal_unknown(&binding.effect_id);
                     if let Some(scope) = attempt_scope.as_ref() {
                         self.record_bound_attempt_unknown(scope, &binding, principal, fence, "terminal_cgroup_bind_unknown")?;
@@ -29727,12 +29735,17 @@ impl HostKernel {
                         .as_millis().try_into().map_err(|_| crate::artifact_store::ArtifactError::InvalidMetadata)?,
                 )?,
                 crate::artifact_store::ArtifactEncryptionV1::None,
-                crate::artifact_store::ArtifactRedactionV1::Unknown,
+                // Observed terminal output is stored verbatim for the owning
+                // workspace principal: no redaction pass is applied to it, and
+                // `Unknown` is reserved for fail-closed refusal. Reads still
+                // require a principal-bound permit from the private store.
+                crate::artifact_store::ArtifactRedactionV1::NotNeeded,
                 captured,
             )
         }) {
             Ok(reference) => reference,
-            Err(_) => {
+            Err(error) => {
+                eprintln!("terminal artifact publication failed: {error:?}");
                 effect_host.mark_terminal_unknown(&binding.effect_id).map_err(|error| terminal_failure(&error))?;
                 if let Some(scope) = attempt_scope.as_ref() {
                     self.record_bound_attempt_unknown(scope, &binding, principal, fence, "terminal_artifact_publication_unknown")?;
@@ -30016,7 +30029,10 @@ impl HostKernel {
                     &config.profile.profile_digest,
                 ) {
                 Ok(value) => value,
-                Err(_) => {
+                Err(error) => {
+                    // The refusal is UNKNOWN, so the exact containment reason must
+                    // stay operator-visible rather than being collapsed.
+                    eprintln!("terminal containment bind failed: {error}");
                     let _ = effect_host.mark_terminal_unknown(&binding.effect_id);
                     if let Some(scope) = attempt_scope.as_ref() {
                         self.record_bound_attempt_unknown(scope, &binding, principal, fence, "terminal_cgroup_bind_unknown")?;
@@ -44033,7 +44049,11 @@ mod tests {
     }
 
     #[test]
-    fn closed_guarded_pty_gate_denies_preflight_and_launch_before_effects() {
+    /// The guarded PTY runtime is live, but a terminal ingress that cannot be
+    /// validated still refuses before any effect is admitted: no lease, no durable
+    /// effect row, no prepared launch and no terminal state may exist after a
+    /// rejected request.
+    fn guarded_pty_ingress_refuses_an_unvalidated_request_before_any_effect() {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -44065,7 +44085,7 @@ mod tests {
             Err(error) => error,
             Ok(_) => panic!("closed PTY gate admitted consent preflight"),
         };
-        assert_eq!(preflight_error.0, "capability_unavailable");
+        assert_eq!(preflight_error.0, "invalid_effect_request");
 
         let run_request = request("terminal.run", Value::Nil, 7, "inc_test");
         let run_error = match host.run_terminal(
@@ -44075,9 +44095,9 @@ mod tests {
             None,
         ) {
             Err(error) => error,
-            Ok(_) => panic!("closed PTY gate admitted one-shot execution"),
+            Ok(_) => panic!("unvalidated one-shot terminal request was admitted"),
         };
-        assert_eq!(run_error.0, "capability_unavailable");
+        assert_eq!(run_error.0, "invalid_effect_request");
 
         let start_request = request("terminal.start", Value::Nil, 7, "inc_test");
         let start_error = match host.start_terminal(
@@ -44086,12 +44106,16 @@ mod tests {
             &fence(),
         ) {
             Err(error) => error,
-            Ok(_) => panic!("closed PTY gate admitted interactive execution"),
+            Ok(_) => panic!("unvalidated interactive terminal request was admitted"),
         };
-        assert_eq!(start_error.0, "capability_unavailable");
+        assert_eq!(start_error.0, "invalid_effect_request");
         assert!(host.terminals.is_empty());
         assert!(host.stdio_prepared.is_empty());
         assert!(host.stdio_process_refs.is_empty());
+        assert!(
+            !root.join("effects").exists(),
+            "a rejected terminal ingress must never admit a durable effect"
+        );
 
         drop(host);
         fs::remove_dir_all(root).unwrap();

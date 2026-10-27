@@ -9547,7 +9547,11 @@ impl EffectHost {
             ("effectID".to_owned(), Value::String(effect_id.to_owned())),
             ("challengeDigest".to_owned(), Value::String(challenge.content_digest.clone())),
             ("status".to_owned(), Value::String(status.to_owned())),
-            ("exitCode".to_owned(), exit_code.map_or(Value::Nil, |value| Value::Signed(i64::from(value)))),
+            // MessagePack's canonical form requires the unsigned variant for every
+            // nonnegative exit code; `Value::Signed(0)` is rejected by the frame encoder.
+            ("exitCode".to_owned(), exit_code.map_or(Value::Nil, |value| {
+                if value < 0 { Value::Signed(i64::from(value)) } else { Value::Unsigned(value as u64) }
+            })),
             ("preview".to_owned(), Value::String(preview.to_owned())),
             ("outputDigest".to_owned(), Value::String(capture.output_digest.clone())),
             ("artifactRef".to_owned(), artifact_ref_value.clone()),

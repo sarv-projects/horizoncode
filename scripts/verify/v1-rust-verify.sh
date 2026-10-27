@@ -122,6 +122,24 @@ export TEMP="$TMP_INREPO"
 export CARGO_BUILD_JOBS="$CARGO_BUILD_JOBS_VAL"
 export CARGO_TARGET_DIR="$CARGO_TARGET_DIR_REL"
 
+# Guarded PTY containment binds a per-effect cgroup-v2 subtree under the
+# executing principal's delegated cgroup. A systemd host delegates that slice to
+# the user; WSL and bare container CI do not, so those steps need root. They run
+# through passwordless sudo against a SEPARATE target dir so a privileged build
+# never leaves root-owned artifacts that would break the developer build.
+ROOT_TARGET_DIR="${V1_ROOT_TARGET_DIR:-/tmp/hz-kernel-root-target}"
+# The sandboxed child in a containment step runs inside a new user namespace, so
+# it cannot traverse an unprivileged user's home tree. Containment-step scratch
+# therefore lives under /tmp (still bounded, still removed on exit) instead of
+# the repo-local .tmp/ tree under $HOME.
+ROOT_SCRATCH_TMP="${V1_ROOT_SCRATCH_TMP:-/tmp/hz-verify-scratch}"
+if [ "$(id -u)" -ne 0 ]; then
+  if ! command -v sudo >/dev/null 2>&1 || ! sudo -n true >/dev/null 2>&1; then
+    printf 'V1-RUST-VERIFY PREFLIGHT NOTE: passwordless sudo is unavailable, so the\n' >&2
+    printf 'cgroup-v2 containment steps (04, 08) will fail closed instead of being skipped.\n' >&2
+  fi
+fi
+
 # ------------------------------------------------------------- bookkeeping
 # Full expected plan, in order. Anything declared here but not executed when
 # the run stops is reported as SKIPPED in the summary.
@@ -154,6 +172,10 @@ EXPECTED_STEPS=(
   07a-secret-use-grant-nonempty
   07b-secret-use-grant-ok
   07c-secret-use-grant-no-failed
+  08-rust-host-terminal
+  08a-host-terminal-nonempty
+  08b-host-terminal-ok
+  08c-host-terminal-no-failed
 )
 
 declare -A STEP_EXIT=()
@@ -202,6 +224,42 @@ run_step() {
       CARGO_TARGET_DIR="$CARGO_TARGET_DIR_REL" \
       "$@"
   ) >"$log" 2>&1 || rc=$?
+  record_step_outcome "$label" "$rc" "$log"
+}
+
+# run_step_root <label> <workdir> <cmd...>
+# Same contract as run_step, but executed with the privilege the cgroup-v2
+# containment needs: direct when this script is already root, otherwise through
+# passwordless sudo against ROOT_TARGET_DIR.
+run_step_root() {
+  local label="$1" wd="$2"; shift 2
+  STEP_INDEX=$((STEP_INDEX + 1))
+  local log="$LOG_DIR/${STAMP}-$(printf '%02d' "$STEP_INDEX")-${label}.log"
+  local rc=0
+  local -a prefix=()
+  [ "$(id -u)" -ne 0 ] && prefix=(sudo -n)
+  printf '[%s] STEP %s (containment)  (cd %s && %s)\n' "$(now)" "$label" "$wd" "$*"
+  (
+    cd "$wd" || exit 1
+    "${prefix[@]}" env \
+      -u OPENCODE_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY \
+      -u OPENCODE_GO_API_KEY -u GOOGLE_GENERATIVE_AI_API_KEY \
+      -u OPENROUTER_API_KEY -u DEEPSEEK_API_KEY -u XAI_API_KEY \
+      -u GROQ_API_KEY -u COHERE_API_KEY -u MISTRAL_API_KEY \
+      PATH="$PATH" HOME="${HOME:-/root}" \
+      TMPDIR="$ROOT_SCRATCH_TMP" TMP="$ROOT_SCRATCH_TMP" TEMP="$ROOT_SCRATCH_TMP" \
+      CARGO_BUILD_JOBS="$CARGO_BUILD_JOBS_VAL" \
+      CARGO_TARGET_DIR="$ROOT_TARGET_DIR" \
+      "$@"
+  ) >"$log" 2>&1 || rc=$?
+  record_step_outcome "$label" "$rc" "$log"
+}
+
+# record_step_outcome <label> <rc> <log>
+# Shared PASS/FAIL bookkeeping: record the exit code and log, and on failure echo
+# a bounded log tail and stop the run (fail-closed, first failure).
+record_step_outcome() {
+  local label="$1" rc="$2" log="$3"
   STEP_EXIT["$label"]=$rc
   STEP_LOG["$label"]="$log"
   if [ "$rc" -eq 0 ]; then
@@ -299,7 +357,7 @@ check_step 03c-codemode-inspect-no-failed mustnot 'test result: FAILED' \
   "${STEP_LOG[03-rust-codemode-inspect]}"
 
 # 4. tool_batch -- Guard no-bypass matrix (ToolBatch control, no bypass).
-run_step 04-rust-tool-batch-guard "$ROOT/kernel" \
+run_step_root 04-rust-tool-batch-guard "$ROOT/kernel" \
   cargo test --locked --offline --test tool_batch_guard_matrix -- --test-threads=1
 check_step 04a-tool-batch-guard-nonempty must '^running [1-9][0-9]* tests?' \
   "${STEP_LOG[04-rust-tool-batch-guard]}"
@@ -336,6 +394,18 @@ check_step 07b-secret-use-grant-ok must 'test result: ok' \
   "${STEP_LOG[07-rust-secret-use-grant]}"
 check_step 07c-secret-use-grant-no-failed mustnot 'test result: FAILED' \
   "${STEP_LOG[07-rust-secret-use-grant]}"
+
+# 8. Guarded PTY containment -- interactive terminal lifecycle plus the
+#    provider-free owner-loss escapee cleanup. Both bind a real cgroup-v2
+#    process tree, so they run with the privilege that requires.
+run_step_root 08-rust-host-terminal "$ROOT/kernel" \
+  cargo test --locked --offline --test host_terminal_process --test host_terminal_events_process -- --test-threads=1
+check_step 08a-host-terminal-nonempty must '^running [1-9][0-9]* tests?' \
+  "${STEP_LOG[08-rust-host-terminal]}"
+check_step 08b-host-terminal-ok must 'test result: ok' \
+  "${STEP_LOG[08-rust-host-terminal]}"
+check_step 08c-host-terminal-no-failed mustnot 'test result: FAILED' \
+  "${STEP_LOG[08-rust-host-terminal]}"
 
 print_summary
 printf 'V1-RUST-VERIFY=PASS steps=%s logs=%s\n' "${#EXPECTED_STEPS[@]}" "${LOG_ROOT#"$ROOT"/}"

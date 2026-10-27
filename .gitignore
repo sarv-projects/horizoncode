@@ -1454,3 +1454,4 @@ tmp-p2/
 .turbo/
 packages/core/tmp-p1/
 packages/core/tmp-p7/
+/kernel/.hz-*/

@@ -1,5 +1,29 @@
 # HorizonCode — Current implementation handoff
 
+## 2026-10-28 03:20 UTC — terminal containment VERIFIED (round 9)
+
+Guarded PTY execution is enabled: `GUARDED_PTY_RUNTIME_READY=true`, and every terminal.v1 run/start
+ingress now carries durable ExecutionHost containment (per-effect cgroup-v2 identity in the durable
+PREPARE record, OS confinement from the probed bubblewrap+Landlock backend, observed-exit-only
+settlement, unobserved exit left durably UNKNOWN).
+
+`tool_batch_guard_matrix` **9/9** — including workspace write confinement with outside and
+`.git/config` writes denied, and a confined command unable to reach a host TCP listener.
+`host_terminal_process` 3/3, `host_terminal_events_process` 1/1, `tool_batch_multi_call` 8/8,
+`managed_control` 39/39 + 57/57. Three real defects were found and fixed on the way (cgroup child
+scan rejecting control files, terminal artifacts filed with `Unknown` redaction, and a
+`Value::Signed(0)` receipt encoding every encoder rejects); `FinalizeRun`'s over-strict
+per-Task-final-revision conjunct was removed so verified Tasks at their own heads aggregate into a
+finalization, with the real stale-proof case kept as its own regression.
+
+The Rust verifier now runs containment steps with the privilege a non-delegated cgroup needs
+(`run_step_root`, separate `/tmp` target), and this session also pushed the P1–P9 work plus the
+push-gate prerequisites (AGENTS.md governance pointers, fixture reference targets, scratch hygiene
+in `.gitignore`).
+
+Still open: the live free-model send (source-mode observer pin refuses before dispatch; the provider
+gate fails closed by design) and the P8 evaluator's 3 skipped authentic-HostRun cases.
+
 ## 2026-10-27 21:10 UTC — guarded write VERIFIED end to end (round 7)
 
 The offline guarded-write journey passes: `E2E_V1_SMOKE=PASS`, `write=completed`, file content `OK` (2 bytes), `cost=0`, `zero_egress=true`, unauthenticated probe 401 with no file created. Two fixes made it work: `executeWrite`/`executePatch` now reuse the ToolBatch's registered Location (the kernel refused a second, workspace-less Location as a lease binding mismatch), and the E2E parser now scans every assistant message for the write tool part.

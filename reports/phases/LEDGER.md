@@ -1,12 +1,63 @@
 # V1 phase execution ledger — 2026-10-22 (parent orchestration)
 
+## 2026-10-28 03:20 UTC — terminal containment landed; the whole tool_batch_guard_matrix passes
+
+`GUARDED_PTY_RUNTIME_READY` is now `true` and every terminal.v1 run/start ingress is live with
+durable ExecutionHost containment. Six defects were found by turning the gate on, in the order the
+kernel hit them:
+
+1. **cgroup-v2 child scan rejected control files** (`cgroup_v2::count_directory_entries`): a cgroup
+   directory always exposes `cgroup.procs`, `cgroup.kill`, `cpu.stat`… next to its children, so every
+   root-run bind failed with "managed execution cgroup contains an invalid entry". Dot-carrying
+   names are now skipped (control files); a bare name that is not an exact 64-hex execution digest
+   is still rejected, so the retained-cgroup bound and the tamper check are unchanged.
+2. **terminal output artifacts were unpublishable**: the capture was filed with
+   `ArtifactRedactionV1::Unknown`, which the store refuses by contract. Observed output is now
+   classified `NotNeeded` (workspace-scoped, reads still require a principal-bound permit).
+3. **receipt encoding rejected `Value::Signed(0)`**: the terminal settlement receipt used the signed
+   MessagePack variant for a nonnegative exit code, so every successful run returned
+   `invalid_effect_request` ("terminal request is malformed"). Canonical rule now applied:
+   nonnegative → `Unsigned`, negative → `Signed` (same rule the existing `exit_code_value` helper
+   already documents in `host_kernel.rs`).
+4. **run continuations were not mode-typed**: `terminal.v1/run` requires the same `mode` field the
+   approved call carried; the matrix fixtures sent the pre-mode shape and were rejected at
+   `invalid_effect_request` before lease consumption.
+5. **`FinalizeRun` over-validated Task evidence**: the reducer required every Task's typed
+   independent proof to sit at the run's frozen final revision, which contradicts the per-Task-head
+   contract the managed fixtures encode (Task A verified at `sha('a')`, Task B at `sha('b')`, run
+   finalizes at `sha('b')`). The strict conjunct is removed; each Task's `verified_revision` must
+   still match its own evidence, and the run-level verifier proof is what must match the frozen
+   revision. Regression split into `finalize_run_accepts_per_task_proofs_at_their_own_observed_revisions`
+   (was a false negative) and `finalize_run_rejects_a_task_proof_whose_verified_revision_disagrees_with_its_evidence`.
+6. **UNKNOWN diagnostics were swallowed**: the cgroup-bind and artifact-publication refusals now
+   print the exact containment reason, so a fail-closed UNKNOWN is debuggable instead of opaque.
+
+Evidence (root, WSL `6.18.54.1-microsoft-standard-WSL2`, Landlock ABI 7, bubblewrap 0.9.0):
+- `tool_batch_guard_matrix` **9/9** (`--test-threads=1`, 13.55 s): cross-session lease reuse denied
+  with no spawn, command-mutation after approval denied and lease consumed, `files.write` lease
+  cannot execute `terminal.run`, mixed batch never starts a process, **workspace write confined +
+  outside write denied + `.git/config` write denied**, and **host TCP listener unreachable from the
+  confined command** (`NETWORK_DENIED`, `listener.accept()` fails).
+- `host_terminal_process` **3/3**, `host_terminal_events_process` **1/1** (owner-loss escapee cleanup),
+  `tool_batch_multi_call` **8/8**, `managed_control` integration **39/39** and lib **57/57**.
+- `scripts/verify/v1-rust-verify.sh` gained `run_step_root`: containment steps (04, new 08) run with
+  the privilege a non-delegated cgroup hierarchy needs, against a separate `/tmp` target so a
+  privileged build never leaves root-owned artifacts in `kernel/target`.
+
+Committed with the repo-hygiene work: `.gitignore` now covers generated build/runtime scratch
+(target dirs, sandboxes, embedded repo snapshots, bun/npm caches, temp logs), so test scratch can
+never be mistaken for hidden source by `audit_overlay_visibility.py`. AGENTS.md regained the
+DOC-009/DOC-012 governance/plan/provenance pointers the push gate requires, and the
+`agents-sdk` fixture's six missing reference targets were created so `audit_markdown_repo.py`
+reports `ACTIVE_BLOCKERS 0`.
+
 ## 2026-10-27 21:40 UTC — V1 FINAL VERIFIER: ALL 31 STEPS PASS
 
 `bash scripts/verify/v1-final-verify.sh` → **V1-FINAL-VERIFY=PASS steps=31** (run `20261027-210730`).
 
 Green: overlay visibility; opencode/core/TUI typechecks (with no-`error TS` assertions); P1 tools; P2 managed-control; P3 RepoIntel + Core context; P4 closed editor/DAP/LSP; P5 search/CodeMode; P6 SecretBroker/provider/ACP (11 files); P7 direct UX + TUI transcript/connect; P8 baseline 34, admission 26, RC0 168, evaluator 107 (3 skipped, accepted by the 04j check); P9 release readiness 158; verifier-grep regression; shell syntax; **07 offline CLI → loopback mock LLM → Guarded Write E2E** (`E2E_V1_SMOKE=PASS`, `write=completed`, `content=OK bytes=2`, `cost=0`, `zero_egress=true`, unauthenticated probe 401 with no file created).
 
-Remaining outside this verifier: terminal containment (`tool_batch_guard_matrix` 3/9, six terminal cases return `capability_unavailable` until ExecutionHost PTY containment lands) and the live free-model send (the source-mode runner refuses earlier at the Session observer pin; the provider gate itself still fails closed before any SDK/fetch).
+Remaining outside this verifier: the live free-model send (the source-mode runner refuses earlier at the Session observer pin; the provider gate itself still fails closed before any SDK/fetch). Terminal containment is now implemented (see the 2026-10-28 03:20 UTC block).
 
 ## 2026-10-27 21:30 UTC — P7 regression fixed by decoupling effect authority from session shape
 

@@ -10078,8 +10078,7 @@ mod managed_verification_evidence_tests {
         assert_eq!(snapshot.runs["run-v1"].verification_history.len(), 1);
     }
 
-    #[test]
-    fn finalize_run_rejects_multiple_task_proofs_before_final_revision() {
+    fn multi_task_finalization(tamper_second_task_revision: bool) -> (ManagedSnapshot, String) {
         let old_revision = digest('a');
         let final_revision = digest('b');
         let verifier_id = "server_auth.independent".to_owned();
@@ -10127,7 +10126,7 @@ mod managed_verification_evidence_tests {
         );
 
         let make_task_attempt = |task_id: &str, criterion_id: &str, attempt_id: &str,
-                                 effect_id: &str, receipt_seed: char| {
+                                 effect_id: &str, receipt_seed: char, verified_revision: &str| {
             let mut evidence = valid_evidence();
             evidence.verifier_id = verifier_id.clone();
             evidence.source_revision = old_revision.clone();
@@ -10157,7 +10156,7 @@ mod managed_verification_evidence_tests {
                 active_attempt: None,
                 pending_verification_attempt: None,
                 unknown_effect: false,
-                verified_revision: Some(old_revision.clone()),
+                verified_revision: Some(verified_revision.to_owned()),
                 verification_evidence: Some(task_evidence),
                 failed_criterion_ids: Vec::new(),
                 attempt_count: 1,
@@ -10204,8 +10203,10 @@ mod managed_verification_evidence_tests {
             (task, attempt)
         };
 
-        let (task_one, attempt_one) = make_task_attempt("task-one", "tests-pass", "attempt-one", "effect-one", 'e');
-        let (task_two, attempt_two) = make_task_attempt("task-two", "lint-pass", "attempt-two", "effect-two", 'f');
+        let tampered = digest('c');
+        let second_verified = if tamper_second_task_revision { tampered.as_str() } else { old_revision.as_str() };
+        let (task_one, attempt_one) = make_task_attempt("task-one", "tests-pass", "attempt-one", "effect-one", 'e', old_revision.as_str());
+        let (task_two, attempt_two) = make_task_attempt("task-two", "lint-pass", "attempt-two", "effect-two", 'f', second_verified);
         snapshot.attempts.insert("attempt-one".into(), attempt_one);
         snapshot.attempts.insert("attempt-two".into(), attempt_two);
         snapshot.runs.insert(
@@ -10233,13 +10234,35 @@ mod managed_verification_evidence_tests {
             verifier_id,
         }).unwrap();
 
-        let result = snapshot.apply(&ManagedCommand::FinalizeRun {
-            run_id: "run-multi-final".into(),
-            final_revision,
-        });
+        (snapshot, final_revision)
+    }
 
+    /// Per-Task verifier proof is bound to the head each Task was observed at.
+    /// The run-level verifier proof is what must match the frozen final
+    /// revision, so independently verified Tasks at earlier heads still
+    /// aggregate into an exact finalization.
+    #[test]
+    fn finalize_run_accepts_per_task_proofs_at_their_own_observed_revisions() {
+        let (mut snapshot, final_revision) = multi_task_finalization(false);
+        snapshot
+            .apply(&ManagedCommand::FinalizeRun {
+                run_id: "run-multi-final".into(),
+                final_revision,
+            })
+            .unwrap();
+        assert_eq!(snapshot.runs["run-multi-final"].phase, RunPhase::Succeeded);
+    }
+
+    /// A Task proof whose typed head no longer matches its own evidence is
+    /// stale and must block aggregation.
+    #[test]
+    fn finalize_run_rejects_a_task_proof_whose_verified_revision_disagrees_with_its_evidence() {
+        let (mut snapshot, final_revision) = multi_task_finalization(true);
         assert!(matches!(
-            result,
+            snapshot.apply(&ManagedCommand::FinalizeRun {
+                run_id: "run-multi-final".into(),
+                final_revision,
+            }),
             Err(ManagedError::Conflict(
                 "Task aggregate evidence or settled receipt is stale or incomplete"
             ))
@@ -15954,7 +15977,6 @@ impl ManagedSnapshot {
                     let evidence_criteria = evidence.criteria.iter().map(|item| item.criterion_id.as_str()).collect::<BTreeSet<_>>();
                     if task.unknown_effect || task.active_attempt.is_some() || task.pending_verification_attempt.is_some()
                         || task.verified_revision.as_deref() != Some(task_evidence.source_revision.as_str())
-                        || task_evidence.source_revision.as_str() != final_revision.as_str()
                         || task_evidence.evidence_digest != task_typed_verification_digest(
                             task_id, &task_evidence.attempt_id, receipt_digest, &task.criterion_ids, evidence,
                         )

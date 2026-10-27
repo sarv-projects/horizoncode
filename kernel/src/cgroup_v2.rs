@@ -640,6 +640,15 @@ fn count_directory_entries(directory: &File) -> io::Result<usize> {
         let name = unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()) };
         if name.to_bytes() != b"." && name.to_bytes() != b".." {
             let bytes = name.to_bytes();
+            // A cgroup-v2 directory always exposes its control files
+            // (`cgroup.procs`, `cgroup.kill`, `cpu.stat`, ...) alongside the
+            // child cgroups. Every control file name carries a dot; execution
+            // child names are bare 64-character lowercase hex digests. Only
+            // bare names are bounded, and any bare name that is not an exact
+            // execution digest is still rejected.
+            if bytes.contains(&b'.') {
+                continue;
+            }
             if bytes.len() != 64 || !bytes.iter().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()) {
                 unsafe { libc::closedir(stream); }
                 return Err(invalid("managed execution cgroup contains an invalid entry"));

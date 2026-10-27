@@ -576,6 +576,9 @@ fn cross_session_terminal_run_lease_reuse_is_denied_without_spawn() {
             ("locationID", string(&fixture.location_id)),
             ("effectID", string(&effect_id)),
             ("capabilityLeaseDigest", string(&lease)),
+            // Every terminal argument set is mode-typed; the run continuation
+            // must carry the same mode the approved call was prepared with.
+            ("mode", string("shell")),
             ("sessionID", string(session)),
             ("shellProfileID", string(&shell_profile_id)),
             ("command", string(&command)),
@@ -604,7 +607,7 @@ fn cross_session_terminal_run_lease_reuse_is_denied_without_spawn() {
     assert_eq!(correct.outcome, RpcOutcomeV1::Ok, "{:?}", correct.error);
     let body = correct.body.unwrap();
     assert_eq!(value_string(&body, "status"), "exited");
-    assert!(marker.exists());
+    assert!(marker.exists(), "body={body:?}");
     fixture.cleanup();
 }
 
@@ -639,6 +642,9 @@ fn guarded_terminal_run_confines_workspace_write_and_denies_outside_metadata_wri
                 ("locationID", string(&fixture.location_id)),
                 ("effectID", string(&effect_id)),
                 ("capabilityLeaseDigest", string(&lease)),
+                // Every terminal argument set is mode-typed; the run continuation
+                // must carry the same mode the approved call was prepared with.
+                ("mode", string("shell")),
                 ("sessionID", string(SESSION_A)),
                 ("shellProfileID", string(&shell_profile_id)),
                 ("command", string(&command)),
@@ -654,7 +660,7 @@ fn guarded_terminal_run_confines_workspace_write_and_denies_outside_metadata_wri
     assert_eq!(response.outcome, RpcOutcomeV1::Ok, "{:?}", response.error);
     let body = response.body.unwrap();
     assert_eq!(value_string(&body, "status"), "exited");
-    assert!(value_string(&body, "preview").contains("CONFINED_DONE"));
+    assert!(value_string(&body, "preview").contains("CONFINED_DONE"), "body={body:?}");
     assert_eq!(fs::read_to_string(inside).unwrap(), "inside");
     assert_eq!(fs::read_to_string(outside).unwrap(), "outside-before");
     assert_eq!(fs::read_to_string(metadata).unwrap(), "metadata-before");
@@ -686,6 +692,9 @@ fn guarded_terminal_run_cannot_connect_to_a_host_network_listener() {
                 ("locationID", string(&fixture.location_id)),
                 ("effectID", string(&effect_id)),
                 ("capabilityLeaseDigest", string(&lease)),
+                // Every terminal argument set is mode-typed; the run continuation
+                // must carry the same mode the approved call was prepared with.
+                ("mode", string("shell")),
                 ("sessionID", string(SESSION_A)),
                 ("shellProfileID", string(&shell_profile_id)),
                 ("command", string(&command)),
@@ -701,7 +710,7 @@ fn guarded_terminal_run_cannot_connect_to_a_host_network_listener() {
     assert_eq!(response.outcome, RpcOutcomeV1::Ok, "{:?}", response.error);
     let body = response.body.unwrap();
     assert_eq!(value_string(&body, "status"), "exited");
-    assert!(value_string(&body, "preview").contains("NETWORK_DENIED"));
+    assert!(value_string(&body, "preview").contains("NETWORK_DENIED"), "body={body:?}");
     assert!(
         listener.accept().is_err(),
         "confined command reached host listener"
@@ -732,6 +741,9 @@ fn mutated_terminal_command_after_approval_is_denied_without_spawn() {
                 ("locationID", string(&fixture.location_id)),
                 ("effectID", string(&effect_id)),
                 ("capabilityLeaseDigest", string(&lease)),
+                // Every terminal argument set is mode-typed; the run continuation
+                // must carry the same mode the approved call was prepared with.
+                ("mode", string("shell")),
                 ("sessionID", string(SESSION_A)),
                 ("shellProfileID", string(&shell_profile_id)),
                 ("command", string(command)),
@@ -825,6 +837,9 @@ fn files_write_lease_cannot_execute_a_terminal_run() {
                 ("locationID", string(&fixture.location_id)),
                 ("effectID", string(&effect_id)),
                 ("capabilityLeaseDigest", string(&lease)),
+                // Every terminal argument set is mode-typed; the run continuation
+                // must carry the same mode the approved call was prepared with.
+                ("mode", string("shell")),
                 ("sessionID", string(SESSION_A)),
                 ("shellProfileID", string(&shell_profile_id)),
                 ("command", string(&format!("touch '{}'", marker.display()))),
