@@ -119,10 +119,11 @@ function hasExactFields(input: unknown, required: readonly string[], optional: r
 export function parseStartRequest(input: unknown): StartRequest {
   let request: StartRequest
   try {
-    const limits =
-      typeof input === "object" && input !== null && !Array.isArray(input)
-        ? (input as Record<string, unknown>).resourceLimits
-        : undefined
+    assertPlainDataRecord(input)
+    const limits = input.resourceLimits
+    const callbackCapabilities = input.callbackCapabilities
+    assertPlainDataRecord(limits)
+    assertPlainDataArray(callbackCapabilities, MAX_CALLBACK_CAPABILITIES)
     if (
       !hasExactFields(input, ["language", "scope", "resourceLimits", "callbackCapabilities"]) ||
       !hasExactFields(limits, ["maxMemoryBytes", "maxWallTimeMs", "maxOutputBytes"])
@@ -161,6 +162,7 @@ export function parseStartRequest(input: unknown): StartRequest {
 export function parseExecuteRequest(input: unknown): ExecuteRequest {
   let request: ExecuteRequest
   try {
+    assertPlainDataRecord(input)
     if (!hasExactFields(input, ["generation", "code", "deadlineMs"])) {
       throw new TypeError("unknown or missing repl.execute fields")
     }
@@ -232,6 +234,35 @@ function assertPlainDataRecord(value: unknown): asserts value is Record<string, 
     const descriptor = Object.getOwnPropertyDescriptor(value, key)
     if (typeof key !== "string" || !descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) {
       throw new TypeError("REPL envelope must contain only enumerable data fields")
+    }
+  }
+}
+
+function assertPlainDataArray(value: unknown, maximumLength: number): asserts value is unknown[] {
+  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) {
+    throw new TypeError("REPL envelope must contain a plain data array")
+  }
+  if (value.length > maximumLength) throw new TypeError("REPL envelope array exceeds its entry bound")
+  for (const key of Reflect.ownKeys(value)) {
+    if (key === "length") continue
+    if (typeof key !== "string" || !/^(0|[1-9][0-9]*)$/.test(key)) {
+      throw new TypeError("REPL envelope array contains an invalid field")
+    }
+    const index = Number(key)
+    const descriptor = Object.getOwnPropertyDescriptor(value, key)
+    if (
+      !Number.isSafeInteger(index) ||
+      index >= value.length ||
+      !descriptor?.enumerable ||
+      !Object.hasOwn(descriptor, "value")
+    ) {
+      throw new TypeError("REPL envelope array must contain only indexed data fields")
+    }
+  }
+  for (let index = 0; index < value.length; index++) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(index))
+    if (!descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) {
+      throw new TypeError("REPL envelope array must be dense and contain only data fields")
     }
   }
 }

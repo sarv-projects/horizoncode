@@ -178,15 +178,24 @@ export function createSvgRasterPort(options: SvgRasterPortOptionsV1 = {}): SvgRa
   }
 
   function validFrame(result: Extract<SvgRasterResultV1, { status: "ok" }>) {
-    return (
-      Array.isArray(result.frame) &&
-      result.frame.length > 0 &&
-      result.frame.length <= MAX_FRAME_ROWS &&
-      result.frame.every((line) => typeof line === "string" && line.length <= MAX_FRAME_COLUMNS && /^[ #.]*$/.test(line)) &&
-      cachedBytes({ status: "ready", generation: "", frame: result.frame, shapeCount: result.shapeCount, cellCount: result.cellCount }) <= MAX_FRAME_BYTES &&
-      Number.isSafeInteger(result.shapeCount) && result.shapeCount > 0 && result.shapeCount <= 64 &&
-      Number.isSafeInteger(result.cellCount) && result.cellCount > 0 && result.cellCount <= MAX_FRAME_CELLS
-    )
+    const sourceFrame = result.frame
+    if (!Array.isArray(sourceFrame) || sourceFrame.length === 0 || sourceFrame.length > MAX_FRAME_ROWS) return undefined
+    const frame: string[] = []
+    for (let index = 0; index < sourceFrame.length; index++) {
+      const line = sourceFrame[index]
+      // Array#every skips sparse slots, which would let an incomplete worker
+      // frame appear ready and silently render as empty rows via join().
+      if (typeof line !== "string" || line.length > MAX_FRAME_COLUMNS || !/^[ #.]*$/.test(line)) return undefined
+      frame.push(line)
+    }
+    const shapeCount = result.shapeCount
+    const cellCount = result.cellCount
+    if (
+      cachedBytes({ status: "ready", generation: "", frame, shapeCount, cellCount }) > MAX_FRAME_BYTES ||
+      !Number.isSafeInteger(shapeCount) || shapeCount <= 0 || shapeCount > 64 ||
+      !Number.isSafeInteger(cellCount) || cellCount <= 0 || cellCount > MAX_FRAME_CELLS
+    ) return undefined
+    return { frame, shapeCount, cellCount }
   }
 
   function touch(blockID: string, view: SvgRasterPortFrameV1) {
@@ -253,15 +262,46 @@ export function createSvgRasterPort(options: SvgRasterPortOptionsV1 = {}): SvgRa
         void service.render({ source: block.source, generation, key: block.blockID }).then((result) => {
           release()
           if (disposed || currentRequestGeneration.get(block.blockID) !== block.generation) return
+          let resultStatus: SvgRasterResultV1["status"]
+          let resultGeneration: number
+          try {
+            resultStatus = result.status
+            resultGeneration = result.generation
+          } catch {
+            fail()
+            return
+          }
+          if (resultGeneration !== generation) {
+            fail()
+            return
+          }
+          let rejectionReason: string | undefined
+          let rejectionMessage: string | undefined
+          if (result.status === "rejected") {
+            try {
+              rejectionReason = result.reason
+              rejectionMessage = result.message
+            } catch {
+              fail()
+              return
+            }
+          }
           currentRequestGeneration.delete(block.blockID)
-          if (result.status === "rejected" && result.reason === "stale") {
+          if (resultStatus === "rejected" && rejectionReason === "stale") {
             // The source generation changed while the worker was rendering.
             // Re-render the caller so it can submit the current generation.
             options.onUpdate?.()
             return
           }
           if (result.status === "ok") {
-            if (!validFrame(result)) {
+            let snapshot: ReturnType<typeof validFrame>
+            try {
+              snapshot = validFrame(result)
+            } catch {
+              // Treat malformed worker payloads like any other invalid frame;
+              // a hostile accessor must not escape the async completion path.
+            }
+            if (!snapshot) {
               failed++
               touch(block.blockID, {
                 status: "failed",
@@ -276,9 +316,9 @@ export function createSvgRasterPort(options: SvgRasterPortOptionsV1 = {}): SvgRa
             touch(block.blockID, {
               status: "ready",
               generation: block.generation,
-              frame: result.frame,
-              shapeCount: result.shapeCount,
-              cellCount: result.cellCount,
+              frame: snapshot.frame,
+              shapeCount: snapshot.shapeCount,
+              cellCount: snapshot.cellCount,
             })
           } else {
             failed++
@@ -287,8 +327,8 @@ export function createSvgRasterPort(options: SvgRasterPortOptionsV1 = {}): SvgRa
             touch(block.blockID, {
               status: "failed",
               generation: block.generation,
-              reason: result.reason,
-              message: result.message,
+              reason: rejectionReason ?? "worker_unavailable",
+              message: rejectionMessage ?? "SVG raster service failed.",
             })
           }
           options.onUpdate?.()

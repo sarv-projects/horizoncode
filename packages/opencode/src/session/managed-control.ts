@@ -1031,9 +1031,9 @@ export type ManagedActiveAttemptRecoveryV1 = {
       readonly criterionIDs: readonly string[]
       readonly criteria: readonly { readonly criterionID: string; readonly description: string }[]
       readonly requiredCapabilities: readonly string[]
-      /** Rust-derived token ceiling and remainder for this exact Task Attempt. */
-      readonly effectiveMaxTokens: string
-      readonly remainingTokens: string
+      /** Absent in Rust's read-only active-recovery projection; never inferred. */
+      readonly effectiveMaxTokens?: string
+      readonly remainingTokens?: string
       readonly profile: {
         readonly profileID: string
         readonly revision: string
@@ -1051,13 +1051,39 @@ export type ManagedActiveAttemptRecoveryV1 = {
       readonly unknownEffect: boolean
       readonly consumed: ManagedDispatchConsumeReceiptV1 | null
       readonly quiescence: ManagedDispatchQuiescedReceiptV1 | null
+      readonly requestID?: string
+      readonly requestSequence?: string
       readonly contextSelectionDigest?: string
+      /** Full HostKernel authority scope, if a future producer can prove every pin. */
       readonly managedAttempt?: ManagedAttemptScopeV1
+      /** Current producer's compact read-only pins; never usable for admission/effects. */
+      readonly managedAttemptRecovery?: ManagedAttemptRecoveryPinsV1
       /** Exact durable initial provider selection, required to recover before consume. */
       readonly contextSelection?: ContextSelection
     }
   }
 )
+
+/**
+ * Subset emitted by HostKernel while recovering an active managed Attempt.
+ * Missing scope facts are intentionally not inferred; this type must never be
+ * passed to admission or effect APIs that require ManagedAttemptScopeV1.
+ */
+export type ManagedAttemptRecoveryPinsV1 = {
+  readonly goalID: string
+  readonly runID: string
+  readonly taskID: string
+  readonly attemptID: string
+  readonly ownerEpoch: string
+  readonly expectedManagedRevision: string
+  readonly locationID: string
+  readonly sessionID: string
+  readonly workspaceRevision: string
+  readonly delegationBindingDigest: string
+  readonly requestID: string | null
+  readonly requestSequence: string | null
+  readonly contextSelectionDigest: string | null
+}
 
 /** Exact authority envelope shared by the managed scheduler and Guard lease. */
 export type ManagedAttemptScopeV1 = {
@@ -1606,6 +1632,72 @@ export type RunFinalized = {
   readonly revision: string
 }
 
+export interface HostRunDispatchBindingV1 {
+  readonly schemaVersion: 1
+  readonly dispatchKeyDigest: string
+  readonly manifestDigest: string
+  readonly evaluatorTaskId: string
+  readonly armId: string
+  readonly taskGroup: string
+  readonly runId: string
+  readonly managedTaskId: string
+  readonly attemptId: string
+  readonly evaluationSessionId: string
+  readonly coreProcessGeneration: string
+  readonly ownerId: string
+  readonly ownerEpoch: string
+  readonly workerExecutionId: string
+  readonly delegationBindingDigest: string
+  readonly acceptedSpecDigest: string
+  readonly providerSelectionDigest: string
+  readonly workspaceBindingDigest: string
+  readonly admittedWorkspaceRevision: string
+  readonly attemptScopeDigest: string
+  readonly ownerPrincipalBindingDigest: string
+  readonly bindingDigest: string
+}
+
+export interface HostRunDispatchBindingReceiptV1 {
+  readonly schemaVersion: 1
+  readonly dispatchKeyDigest: string
+  readonly bindingDigest: string
+  readonly ownerLogSequence: string
+  readonly ownerLogEventDigest: string
+  readonly bindingManagedRevision: string
+}
+
+export interface HostRunDispatchP8OwnerReceiptV1 {
+  readonly schemaVersion: 1
+  readonly dispatchKeyDigest: string
+  readonly bindingDigest: string
+  readonly ownerLogID: string
+  readonly ownerLogSequence: string
+  readonly ownerLogEventDigest: string
+}
+
+export interface HostRunReconciliationV1 {
+  readonly schemaVersion: 1
+  readonly dispatchKeyDigest: string
+  readonly status: "SUCCEEDED" | "FAILED" | "CANCELLED" | "UNKNOWN"
+  readonly unknownReason?: string
+  readonly binding?: HostRunDispatchBindingV1
+  readonly bindingDigest?: string
+  readonly attemptReceiptDigest?: string
+  readonly verifiedRevision?: string
+}
+
+export interface HostRunBindResultV1 {
+  readonly schemaVersion: 1
+  readonly binding: HostRunDispatchBindingV1
+  readonly receipt: HostRunDispatchBindingReceiptV1
+}
+
+export interface HostRunBindReceiptResultV1 {
+  readonly schemaVersion: 1
+  readonly status: "RECORDED"
+  readonly receipt: HostRunDispatchP8OwnerReceiptV1
+}
+
 /**
  * The intersected facts one direct subagent dispatch is bound to.
  *
@@ -1925,6 +2017,35 @@ export interface Interface {
     readonly goalID: string
     readonly runID: string
   }) => Effect.Effect<RunFinalized, ManagedControlError, SessionSupervisorService>
+  /** Read-only HostRun reconciliation/inspect join. Resolves durable pre-dispatch binding and joins with P1 ToolBatch projection. */
+  readonly hostRunInspect: (input: {
+    readonly trustedPrincipal: TrustedPrincipal
+    readonly goalID: string
+    readonly dispatchKeyDigest: string
+  }) => Effect.Effect<HostRunReconciliationV1, ManagedControlError, SessionSupervisorService>
+  /** Authenticated pre-dispatch append for the private HostRunDispatchBindingV1. */
+  readonly hostRunBind: (input: {
+    readonly trustedPrincipal: TrustedPrincipal
+    readonly goalID: string
+    readonly attemptID: string
+    readonly dispatchKeyDigest: string
+  }) => Effect.Effect<HostRunBindResultV1, ManagedControlError, SessionSupervisorService>
+  /** Authenticated post-commit OwnerLog receipt append for an already-committed HostRun binding. */
+  readonly hostRunBindReceipt: (input: {
+    readonly trustedPrincipal: TrustedPrincipal
+    readonly goalID: string
+    readonly dispatchKeyDigest: string
+    readonly bindingDigest: string
+    readonly ownerLogID: string
+    readonly ownerLogSequence: string
+    readonly ownerLogEventDigest: string
+  }) => Effect.Effect<HostRunBindReceiptResultV1, ManagedControlError, SessionSupervisorService>
+  /** Full reconciliation chain for HostRun: verifies terminal status and authority chain. */
+  readonly reconcileHostRun: (input: {
+    readonly trustedPrincipal: TrustedPrincipal
+    readonly goalID: string
+    readonly dispatchKeyDigest: string
+  }) => Effect.Effect<HostRunReconciliationV1, ManagedControlError, SessionSupervisorService>
   readonly admitDirectAttempt: (input: {
     readonly attemptID: string
     readonly parentSessionID: string
@@ -2003,6 +2124,17 @@ function decodeBlake3Digest(operation: string, value: string, key: string): stri
   return digest
 }
 
+function ownerEventDigest(operation: string, value: unknown): string {
+  if (typeof value !== "string" || !/^(?:blake3:)?[0-9a-f]{64}$/.test(value)) {
+    throw new ManagedControlError({
+      operation,
+      code: "managed_protocol",
+      reason: "ownerLogEventDigest is not a canonical OwnerLog event digest",
+    })
+  }
+  return value
+}
+
 function requiredText(operation: string, source: Record<string, unknown>, key: string, maxBytes: number): string {
   const value = source[key]
   if (typeof value !== "string" || value.length === 0 || Buffer.byteLength(value, "utf8") > maxBytes) {
@@ -2054,6 +2186,38 @@ function unsignedRevision(operation: string, value: unknown, key: string): bigin
   return revision
 }
 
+function directAttemptExpectedRevision(operation: string, value: unknown): bigint {
+  if (typeof value === "string") {
+    if (!/^(0|[1-9][0-9]{0,19})$/.test(value)) {
+      throw new ManagedControlError({
+        operation,
+        code: "managed_protocol",
+        reason: "expectedRevision is not a canonical decimal u64",
+      })
+    }
+    const revision = BigInt(value)
+    if (revision > MAX_U64) {
+      throw new ManagedControlError({
+        operation,
+        code: "managed_protocol",
+        reason: "expectedRevision is not a u64 revision",
+      })
+    }
+    return revision
+  }
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) {
+    return BigInt(value)
+  }
+  if (typeof value === "bigint" && value >= 0n && value <= MAX_U64) {
+    return value
+  }
+  throw new ManagedControlError({
+    operation,
+    code: "managed_protocol",
+    reason: "expectedRevision is not a canonical decimal revision",
+  })
+}
+
 function expectedRevision(operation: string, value: unknown): bigint {
   if (typeof value === "string") {
     if (!/^(0|[1-9][0-9]{0,19})$/.test(value)) {
@@ -2076,6 +2240,16 @@ function optionalRevision(operation: string, source: Record<string, unknown>, ke
   const value = source[key]
   if (value === null || value === undefined) return null
   return unsignedRevision(operation, value, key).toString()
+}
+
+function optionalDecimalU64(operation: string, source: Record<string, unknown>, key: string): string | undefined {
+  const value = source[key]
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== "string") {
+    throw new ManagedControlError({ operation, code: "managed_protocol", reason: `${key} is not a canonical decimal u64 string` })
+  }
+  canonicalDecimalU64(operation, value, key)
+  return value
 }
 
 function requiredBoolean(operation: string, source: Record<string, unknown>, key: string): boolean {
@@ -2134,6 +2308,14 @@ function requiredDecimalU64(operation: string, source: Record<string, unknown>, 
     throw new ManagedControlError({ operation, code: "managed_protocol", reason: `${key} is not a canonical decimal u64 string` })
   }
   canonicalDecimalU64(operation, value, key)
+  return value
+}
+
+function requiredPositiveDecimalU64(operation: string, source: Record<string, unknown>, key: string): string {
+  const value = requiredDecimalU64(operation, source, key)
+  if (value === "0") {
+    throw new ManagedControlError({ operation, code: "managed_protocol", reason: `${key} must be a positive decimal u64` })
+  }
   return value
 }
 
@@ -2472,18 +2654,13 @@ function decodeManagedActiveAttemptRecovery(
   }
 
   const taskValue = requiredRecord(operation, response.task, "recovery Task")
-  const taskKeys = ["taskID", "title", "purpose", "candidateAttemptID", "attemptCount", "candidateGeneration", "taskRevision", "contextDigest", "dependencies", "criterionIDs", "criteria", "requiredCapabilities", "effectiveMaxTokens", "remainingTokens", "profile"].toSorted()
+  const taskKeys = ["taskID", "title", "purpose", "candidateAttemptID", "attemptCount", "candidateGeneration", "taskRevision", "contextDigest", "dependencies", "criterionIDs", "criteria", "requiredCapabilities", "profile"].toSorted()
   if (Object.keys(taskValue).toSorted().join("\0") !== taskKeys.join("\0")) {
     throw new ManagedControlError({ operation, code: "managed_protocol", reason: "active recovery Task has an invalid shape" })
   }
   const candidateAttemptID = requiredText(operation, taskValue, "candidateAttemptID", 256)
   if (!MANAGED_CANDIDATE_ATTEMPT_ID.test(candidateAttemptID)) throw new ManagedControlError({ operation, code: "managed_protocol", reason: "active recovery candidate Attempt ID is invalid" })
   for (const key of ["attemptCount", "candidateGeneration", "taskRevision"] as const) requiredDecimalU64(operation, taskValue, key)
-  const effectiveMaxTokens = requiredDecimalU64(operation, taskValue, "effectiveMaxTokens")
-  const remainingTokens = requiredDecimalU64(operation, taskValue, "remainingTokens")
-  if (BigInt(effectiveMaxTokens) === 0n || BigInt(remainingTokens) === 0n || BigInt(remainingTokens) > BigInt(effectiveMaxTokens)) {
-    throw new ManagedControlError({ operation, code: "managed_protocol", reason: "recovered Task token budget is absent, exhausted, or inconsistent" })
-  }
   const profileValue = requiredRecord(operation, taskValue.profile, "recovery Task profile")
   if (Object.keys(profileValue).toSorted().join("\0") !== ["profileID", "revision", "definitionDigest", "ownerBindingDigest"].toSorted().join("\0")) {
     throw new ManagedControlError({ operation, code: "managed_protocol", reason: "active recovery Task profile has an invalid shape" })
@@ -2516,8 +2693,6 @@ function decodeManagedActiveAttemptRecovery(
     criterionIDs,
     criteria,
     requiredCapabilities: stringList(operation, taskValue.requiredCapabilities as readonly string[], "recovery requiredCapabilities").map((id) => identifier(operation, id, "capability")),
-    effectiveMaxTokens,
-    remainingTokens,
     profile: {
       profileID: identifier(operation, requiredText(operation, profileValue, "profileID", 256), "profileID"),
       revision: requiredDecimalU64(operation, profileValue, "revision"),
@@ -2526,7 +2701,7 @@ function decodeManagedActiveAttemptRecovery(
     },
   }
   const attemptValue = requiredRecord(operation, response.attempt, "recovery Attempt")
-  const attemptKeys = ["attemptID", "sessionID", "ownerEpoch", "phase", "runPhase", "bindingDigest", "unknownEffect", "consumed", "quiescence", ...(Object.hasOwn(attemptValue, "managedAttempt") ? ["managedAttempt"] : []), ...(Object.hasOwn(attemptValue, "contextSelectionDigest") ? ["contextSelectionDigest"] : []), ...(Object.hasOwn(attemptValue, "contextSelection") ? ["contextSelection"] : [])].toSorted()
+  const attemptKeys = ["attemptID", "sessionID", "ownerEpoch", "phase", "runPhase", "bindingDigest", "unknownEffect", "consumed", "quiescence", ...["managedAttempt", "contextSelectionDigest", "contextSelection", "requestID", "requestSequence"].filter((key) => Object.hasOwn(attemptValue, key))].toSorted()
   if (Object.keys(attemptValue).toSorted().join("\0") !== attemptKeys.join("\0")) throw new ManagedControlError({ operation, code: "managed_protocol", reason: "active recovery Attempt has an invalid shape" })
   const attemptID = identifier(operation, requiredText(operation, attemptValue, "attemptID", 256), "attemptID")
   const sessionID = identifier(operation, requiredText(operation, attemptValue, "sessionID", 256), "sessionID")
@@ -2545,17 +2720,66 @@ function decodeManagedActiveAttemptRecovery(
       }
     })()
     : undefined
-  const managedAttempt = Object.hasOwn(attemptValue, "managedAttempt")
-    ? managedAttemptScopeValue(operation, requiredRecord(operation, attemptValue.managedAttempt, "recovery managed Attempt") as unknown as ManagedAttemptScopeV1)
+  const managedAttemptRecovery = Object.hasOwn(attemptValue, "managedAttempt")
+    ? (() => {
+      const value = requiredRecord(operation, attemptValue.managedAttempt, "recovery managed Attempt")
+      const keys = ["goalID", "runID", "taskID", "attemptID", "ownerEpoch", "expectedManagedRevision", "locationID", "sessionID", "workspaceRevision", "delegationBindingDigest", "requestID", "requestSequence", "contextSelectionDigest"].toSorted()
+      if (Object.keys(value).toSorted().join("\0") !== keys.join("\0")) {
+        throw new ManagedControlError({ operation, code: "managed_protocol", reason: "recovery managed Attempt pins have an invalid shape" })
+      }
+      const nullableText = (key: "requestID" | "requestSequence" | "contextSelectionDigest"): string | null => {
+        const raw = value[key]
+        if (raw === null) return null
+        if (typeof raw !== "string") throw new ManagedControlError({ operation, code: "managed_protocol", reason: `recovery managed Attempt ${key} is invalid` })
+        return raw
+      }
+      const requestID = nullableText("requestID")
+      const requestSequence = nullableText("requestSequence")
+      const selectionDigest = nullableText("contextSelectionDigest")
+      if ((requestID === null) !== (requestSequence === null) || (requestID === null) !== (selectionDigest === null)) {
+        throw new ManagedControlError({ operation, code: "managed_protocol", reason: "recovery managed Attempt request pins are incomplete" })
+      }
+      return {
+        goalID: identifier(operation, requiredText(operation, value, "goalID", 256), "goalID"),
+        runID: identifier(operation, requiredText(operation, value, "runID", 256), "runID"),
+        taskID: identifier(operation, requiredText(operation, value, "taskID", 256), "taskID"),
+        attemptID: requiredText(operation, value, "attemptID", 256),
+        ownerEpoch: requiredPositiveDecimalU64(operation, value, "ownerEpoch"),
+        expectedManagedRevision: requiredDecimalU64(operation, value, "expectedManagedRevision"),
+        locationID: identifier(operation, requiredText(operation, value, "locationID", 256), "locationID"),
+        sessionID: identifier(operation, requiredText(operation, value, "sessionID", 256), "sessionID"),
+        workspaceRevision: digestValue(operation, requiredText(operation, value, "workspaceRevision", 256), "workspaceRevision"),
+        delegationBindingDigest: decodeBlake3Digest(operation, requiredText(operation, value, "delegationBindingDigest", 256), "delegationBindingDigest"),
+        requestID: requestID === null ? null : identifier(operation, requestID, "requestID"),
+        requestSequence: requestSequence === null ? null : (() => {
+          canonicalDecimalU64(operation, requestSequence, "requestSequence")
+          return requestSequence
+        })(),
+        contextSelectionDigest: selectionDigest === null ? null : decodeBlake3Digest(operation, selectionDigest, "contextSelectionDigest"),
+      } satisfies ManagedAttemptRecoveryPinsV1
+    })()
     : undefined
   const contextSelectionDigest = Object.hasOwn(attemptValue, "contextSelectionDigest")
     ? decodeBlake3Digest(operation, requiredText(operation, attemptValue, "contextSelectionDigest", 256), "contextSelectionDigest")
     : undefined
-  if (contextSelection && (!managedAttempt || contextSelection.sessionID !== sessionID ||
-    contextSelection.attemptID !== attemptID || contextSelection.requestSequence !== managedAttempt.requestSequence ||
-    contextSelection.requestID !== managedAttempt.requestID || managedAttempt.requestSequence !== "1" ||
-    contextSelectionDigest !== managedAttempt.contextSelectionDigest ||
-    !contextSelection.sources.some((source) => source.kind === "provider-input" && source.sourceID === managedAttempt.requestID && source.sourceRevision === "1"))) {
+  const requestID = Object.hasOwn(attemptValue, "requestID") ? identifier(operation, requiredText(operation, attemptValue, "requestID", 256), "requestID") : undefined
+  const requestSequence = Object.hasOwn(attemptValue, "requestSequence") ? requiredDecimalU64(operation, attemptValue, "requestSequence") : undefined
+  if ((requestID === undefined) !== (requestSequence === undefined) ||
+    (contextSelection !== undefined) !== (requestID !== undefined) ||
+    (contextSelectionDigest !== undefined) !== (contextSelection !== undefined) ||
+    (managedAttemptRecovery !== undefined && (managedAttemptRecovery.goalID !== base.goalID ||
+      managedAttemptRecovery.runID !== base.runID || managedAttemptRecovery.taskID !== task.taskID ||
+      managedAttemptRecovery.attemptID !== attemptID || managedAttemptRecovery.ownerEpoch !== requiredDecimalU64(operation, attemptValue, "ownerEpoch") ||
+      managedAttemptRecovery.expectedManagedRevision !== base.revision || managedAttemptRecovery.sessionID !== sessionID ||
+      managedAttemptRecovery.delegationBindingDigest !== requiredText(operation, attemptValue, "bindingDigest", 256)))) {
+    throw new ManagedControlError({ operation, code: "managed_protocol", reason: "recovery managed Attempt pins do not match the enclosing projection" })
+  }
+  if (contextSelection && (!managedAttemptRecovery || contextSelection.sessionID !== sessionID ||
+    contextSelection.attemptID !== attemptID || contextSelection.requestSequence !== requestSequence ||
+    contextSelection.requestID !== requestID || managedAttemptRecovery.requestSequence !== requestSequence ||
+    managedAttemptRecovery.requestID !== requestID || managedAttemptRecovery.requestSequence !== "1" ||
+    contextSelectionDigest !== managedAttemptRecovery.contextSelectionDigest ||
+    !contextSelection.sources.some((source) => source.kind === "provider-input" && source.sourceID === requestID && source.sourceRevision === "1"))) {
     throw new ManagedControlError({ operation, code: "managed_protocol", reason: "recovery ContextSelection does not match the persisted initial Attempt request pins" })
   }
   const attempt = {
@@ -2569,13 +2793,37 @@ function decodeManagedActiveAttemptRecovery(
     consumed,
     quiescence,
     ...(contextSelectionDigest ? { contextSelectionDigest } : {}),
-    ...(managedAttempt ? { managedAttempt } : {}),
+    ...(requestID ? { requestID } : {}),
+    ...(requestSequence ? { requestSequence } : {}),
+    ...(managedAttemptRecovery ? { managedAttemptRecovery } : {}),
     ...(contextSelection ? { contextSelection } : {}),
   }
+  if (managedAttemptRecovery && managedAttemptRecovery.ownerEpoch !== attempt.ownerEpoch) throw new ManagedControlError({ operation, code: "managed_protocol", reason: "recovery managed Attempt owner epoch changed within the projection" })
   if (attempt.ownerEpoch === "0" || !attempt.bindingDigest.startsWith("blake3:") ||
     (quiescence && !consumed) || (consumed && (consumed.attemptID !== attemptID || consumed.sessionID !== sessionID)) ||
     (quiescence && (quiescence.attemptID !== attemptID || quiescence.sessionID !== sessionID))) {
     throw new ManagedControlError({ operation, code: "managed_protocol", reason: "active recovery receipts do not match the exact child Attempt" })
+  }
+  if (consumed && (consumed.goalID !== base.goalID || consumed.runID !== base.runID || consumed.taskID !== task.taskID ||
+    consumed.parentSessionID !== base.sessionID || consumed.sessionID !== sessionID || consumed.bindingDigest !== attempt.bindingDigest ||
+    consumed.ownerEpoch !== attempt.ownerEpoch)) {
+    throw new ManagedControlError({ operation, code: "managed_protocol", reason: "recovery consumed receipt does not match the exact managed Attempt" })
+  }
+  if (quiescence && consumed) {
+    let expectedCompletionDeliveryID: string
+    try {
+      expectedCompletionDeliveryID = managedCompletionDeliveryID(attemptID, consumed.handoffDigest, consumed.receiptDigest)
+    } catch {
+      throw new ManagedControlError({ operation, code: "managed_protocol", reason: "recovery consumed receipt cannot derive its stable completion delivery ID" })
+    }
+    if (quiescence.goalID !== consumed.goalID || quiescence.runID !== consumed.runID || quiescence.taskID !== consumed.taskID ||
+      quiescence.parentSessionID !== consumed.parentSessionID || quiescence.sessionID !== consumed.sessionID ||
+      quiescence.attemptID !== consumed.attemptID || quiescence.handoffID !== consumed.handoffID ||
+      quiescence.handoffDigest !== consumed.handoffDigest || quiescence.consumeDeliveryID !== consumed.deliveryID ||
+      quiescence.consumeReceiptDigest !== consumed.receiptDigest || quiescence.ownerEpoch !== consumed.ownerEpoch ||
+      quiescence.processIncarnation !== consumed.processIncarnation || quiescence.deliveryID !== expectedCompletionDeliveryID) {
+      throw new ManagedControlError({ operation, code: "managed_protocol", reason: "recovery quiescence receipt does not match the exact consumed dispatch receipt" })
+    }
   }
   return { ...activeBase, task, attempt }
 }
@@ -4241,13 +4489,147 @@ function decodeCriterionEvidence(operation: string, response: Record<string, unk
 
 function decodeRunFinalized(operation: string, response: Record<string, unknown>): RunFinalized {
   requireStatus(operation, response, "SUCCEEDED")
+  const runPhase = managedRunPhase(operation, response.runPhase)
+  if (runPhase !== "SUCCEEDED") {
+    throw new ManagedControlError({ operation, code: "managed_protocol", reason: "finalize_run status is SUCCEEDED but Run phase is not SUCCEEDED" })
+  }
   return {
     goalID: identifier(operation, requiredText(operation, response, "goalID", 256), "goalID"),
     runID: identifier(operation, requiredText(operation, response, "runID", 256), "runID"),
-    runPhase: managedRunPhase(operation, response.runPhase),
+    runPhase,
     revision: requiredRevision(operation, response, "revision"),
   }
 }
+
+export function decodeHostRunDispatchBinding(operation: string, value: unknown): HostRunDispatchBindingV1 {
+  const source = value as Record<string, unknown>
+  if (typeof source !== "object" || source === null || Array.isArray(source)) {
+    throw new ManagedControlError({ operation, code: "managed_protocol", reason: "HostRun dispatch binding payload is not an object" })
+  }
+  if (source.schemaVersion !== 1) {
+    throw new ManagedControlError({ operation, code: "managed_protocol", reason: "HostRun dispatch binding schemaVersion must be 1" })
+  }
+  return {
+    schemaVersion: 1,
+    dispatchKeyDigest: digestValue(operation, source.dispatchKeyDigest as string, "dispatchKeyDigest"),
+    manifestDigest: digestValue(operation, source.manifestDigest as string, "manifestDigest"),
+    evaluatorTaskId: identifier(operation, source.evaluatorTaskId as string, "evaluatorTaskId"),
+    armId: identifier(operation, source.armId as string, "armId"),
+    taskGroup: identifier(operation, source.taskGroup as string, "taskGroup"),
+    runId: identifier(operation, source.runId as string, "runId"),
+    managedTaskId: identifier(operation, source.managedTaskId as string, "managedTaskId"),
+    attemptId: identifier(operation, source.attemptId as string, "attemptId"),
+    evaluationSessionId: identifier(operation, source.evaluationSessionId as string, "evaluationSessionId"),
+    coreProcessGeneration: requiredDecimalU64(operation, source, "coreProcessGeneration"),
+    ownerId: identifier(operation, source.ownerId as string, "ownerId"),
+    ownerEpoch: requiredDecimalU64(operation, source, "ownerEpoch"),
+    workerExecutionId: identifier(operation, source.workerExecutionId as string, "workerExecutionId"),
+    delegationBindingDigest: digestValue(operation, source.delegationBindingDigest as string, "delegationBindingDigest"),
+    acceptedSpecDigest: digestValue(operation, source.acceptedSpecDigest as string, "acceptedSpecDigest"),
+    providerSelectionDigest: digestValue(operation, source.providerSelectionDigest as string, "providerSelectionDigest"),
+    workspaceBindingDigest: digestValue(operation, source.workspaceBindingDigest as string, "workspaceBindingDigest"),
+    admittedWorkspaceRevision: requiredText(operation, source, "admittedWorkspaceRevision", 256),
+    attemptScopeDigest: digestValue(operation, source.attemptScopeDigest as string, "attemptScopeDigest"),
+    ownerPrincipalBindingDigest: digestValue(operation, source.ownerPrincipalBindingDigest as string, "ownerPrincipalBindingDigest"),
+    bindingDigest: digestValue(operation, source.bindingDigest as string, "bindingDigest"),
+  }
+}
+
+export function decodeHostRunDispatchBindingReceipt(operation: string, value: unknown): HostRunDispatchBindingReceiptV1 {
+  const source = value as Record<string, unknown>
+  if (typeof source !== "object" || source === null || Array.isArray(source)) {
+    throw new ManagedControlError({ operation, code: "managed_protocol", reason: "HostRun dispatch binding receipt payload is not an object" })
+  }
+  if (source.schemaVersion !== 1) {
+    throw new ManagedControlError({ operation, code: "managed_protocol", reason: "HostRun dispatch binding receipt schemaVersion must be 1" })
+  }
+  return {
+    schemaVersion: 1,
+    dispatchKeyDigest: digestValue(operation, source.dispatchKeyDigest as string, "dispatchKeyDigest"),
+    bindingDigest: digestValue(operation, source.bindingDigest as string, "bindingDigest"),
+    ownerLogSequence: requiredPositiveDecimalU64(operation, source, "ownerLogSequence"),
+    ownerLogEventDigest: ownerEventDigest(operation, source.ownerLogEventDigest),
+    bindingManagedRevision: requiredDecimalU64(operation, source, "bindingManagedRevision"),
+  }
+}
+
+export function decodeHostRunDispatchP8OwnerReceipt(operation: string, value: unknown): HostRunDispatchP8OwnerReceiptV1 {
+  const source = value as Record<string, unknown>
+  if (typeof source !== "object" || source === null || Array.isArray(source)) {
+    throw new ManagedControlError({ operation, code: "managed_protocol", reason: "HostRun dispatch P8 owner receipt payload is not an object" })
+  }
+  if (source.schemaVersion !== 1) {
+    throw new ManagedControlError({ operation, code: "managed_protocol", reason: "HostRun dispatch P8 owner receipt schemaVersion must be 1" })
+  }
+  return {
+    schemaVersion: 1,
+    dispatchKeyDigest: digestValue(operation, source.dispatchKeyDigest as string, "dispatchKeyDigest"),
+    bindingDigest: digestValue(operation, source.bindingDigest as string, "bindingDigest"),
+    ownerLogID: identifier(operation, source.ownerLogID as string, "ownerLogID"),
+    ownerLogSequence: requiredPositiveDecimalU64(operation, source, "ownerLogSequence"),
+    ownerLogEventDigest: ownerEventDigest(operation, source.ownerLogEventDigest),
+  }
+}
+
+export function decodeHostRunReconciliation(operation: string, value: unknown): HostRunReconciliationV1 {
+  const source = value as Record<string, unknown>
+  if (typeof source !== "object" || source === null || Array.isArray(source)) {
+    throw new ManagedControlError({ operation, code: "managed_protocol", reason: "HostRun reconciliation payload is not an object" })
+  }
+  if (source.schemaVersion !== 1) {
+    throw new ManagedControlError({ operation, code: "managed_protocol", reason: "HostRun reconciliation schemaVersion must be 1" })
+  }
+  const status = requiredText(operation, source, "status", 32)
+  if (status !== "SUCCEEDED" && status !== "FAILED" && status !== "CANCELLED" && status !== "UNKNOWN") {
+    throw new ManagedControlError({ operation, code: "managed_protocol", reason: `HostRun reconciliation status '${status}' is invalid` })
+  }
+  if (status === "UNKNOWN" && source.unknownReason === undefined) {
+    throw new ManagedControlError({ operation, code: "managed_protocol", reason: "unknownReason is required for UNKNOWN HostRun reconciliation" })
+  }
+  if (status !== "UNKNOWN" && source.unknownReason !== undefined) {
+    throw new ManagedControlError({ operation, code: "managed_protocol", reason: "unknownReason is only valid for UNKNOWN HostRun reconciliation" })
+  }
+  const dispatchKeyDigest = digestValue(operation, source.dispatchKeyDigest as string, "dispatchKeyDigest")
+  const unknownReason = source.unknownReason !== undefined ? requiredText(operation, source, "unknownReason", 256) : undefined
+  if (unknownReason !== undefined && !(HOST_RUN_UNKNOWN_REASONS as readonly string[]).includes(unknownReason)) {
+    throw new ManagedControlError({ operation, code: "managed_protocol", reason: "unknownReason is not a canonical HostRun reconciliation reason" })
+  }
+  const binding = source.binding !== undefined ? decodeHostRunDispatchBinding(operation, source.binding) : undefined
+  const bindingDigest = source.bindingDigest !== undefined ? digestValue(operation, source.bindingDigest as string, "bindingDigest") : undefined
+  const attemptReceiptDigest = source.attemptReceiptDigest !== undefined ? digestValue(operation, source.attemptReceiptDigest as string, "attemptReceiptDigest") : undefined
+  const verifiedRevision = source.verifiedRevision !== undefined
+    ? digestValue(operation, source.verifiedRevision as string, "verifiedRevision")
+    : undefined
+
+  return {
+    schemaVersion: 1,
+    dispatchKeyDigest,
+    status,
+    unknownReason,
+    binding,
+    bindingDigest,
+    attemptReceiptDigest,
+    verifiedRevision,
+  }
+}
+
+const HOST_RUN_UNKNOWN_REASONS = [
+  "host_run_binding_absent",
+  "host_run_binding_identity_mismatch",
+  "host_run_effect_projection_unavailable",
+  "host_run_effect_projection_incomplete",
+  "host_run_effect_projection_identity_mismatch",
+  "host_run_effect_projection_ambiguous",
+  "host_run_managed_terminal_unsettled",
+  "host_run_task_unverified",
+  "host_run_attempt_unknown",
+  "host_run_attempt_receipt_missing",
+  "host_run_binding_receipt_missing",
+  "host_run_verifier_evidence_missing",
+  "host_run_verifier_pins_unavailable",
+  "host_run_p8_owner_receipt_missing",
+  "host_run_p8_settlement_missing",
+] as const
 
 /**
  * Sends one authenticated `managed.v1` request. A host refusal rejects with the
@@ -7054,6 +7436,195 @@ export const finalizeRun = Effect.fn("ManagedControl.finalizeRun")(function* (in
   return decoded
 })
 
+export const hostRunDispatchKeyDigest = (dispatchKey: string): string =>
+  `blake3:${bytesToHex(blake3(Buffer.from(dispatchKey, "utf8")))}`
+
+export const hostRunInspect = Effect.fn("ManagedControl.hostRunInspect")(function* (input: {
+  readonly trustedPrincipal: TrustedPrincipal
+  readonly goalID: string
+  readonly dispatchKeyDigest: string
+}) {
+  const operation = "host_run.inspect"
+  const trustedPrincipal = yield* serverAuthPrincipal(operation, input.trustedPrincipal)
+  const goalID = identifier(operation, input.goalID, "goalID")
+  const dispatchKeyDigest = digestValue(operation, input.dispatchKeyDigest, "dispatchKeyDigest")
+  const response = yield* call(operation, { goalID, dispatchKeyDigest }, undefined, trustedPrincipal)
+  const reconciliation = yield* decode(operation, response, (name, value) => {
+    const responseDispatchKeyDigest = digestValue(
+      name,
+      value.dispatchKeyDigest as string,
+      "dispatchKeyDigest",
+    )
+    if (responseDispatchKeyDigest !== dispatchKeyDigest) {
+      throw new ManagedControlError({
+        operation: name,
+        code: "managed_protocol",
+        reason: "HostRun reconciliation dispatch key identity differs from the queried key",
+      })
+    }
+    return decodeHostRunReconciliation(name, value)
+  })
+  return reconciliation
+})
+
+export const hostRunBind = Effect.fn("ManagedControl.hostRunBind")(function* (input: {
+  readonly trustedPrincipal: TrustedPrincipal
+  readonly goalID: string
+  readonly attemptID: string
+  readonly dispatchKeyDigest: string
+}) {
+  const operation = "host_run.bind"
+  const trustedPrincipal = yield* serverAuthPrincipal(operation, input.trustedPrincipal)
+  const goalID = identifier(operation, input.goalID, "goalID")
+  const attemptID = identifier(operation, input.attemptID, "attemptID")
+  const dispatchKeyDigest = digestValue(operation, input.dispatchKeyDigest, "dispatchKeyDigest")
+  const response = yield* call(
+    operation,
+    {
+      goalID,
+      attemptID,
+      dispatchKeyDigest,
+    },
+    oneUseKey(attemptID, "bind", dispatchKeyDigest),
+    trustedPrincipal,
+  )
+  return yield* decode(operation, response, (name, value) => {
+    if (value.schemaVersion !== 1) {
+      throw new ManagedControlError({ operation: name, code: "managed_protocol", reason: "schemaVersion is not 1" })
+    }
+    const binding = decodeHostRunDispatchBinding(name, value.binding)
+    const receipt = decodeHostRunDispatchBindingReceipt(name, value.receipt)
+    if (
+      binding.attemptId !== attemptID ||
+      binding.dispatchKeyDigest !== dispatchKeyDigest ||
+      receipt.dispatchKeyDigest !== dispatchKeyDigest ||
+      receipt.bindingDigest !== binding.bindingDigest
+    ) {
+      throw new ManagedControlError({
+        operation: name,
+        code: "managed_protocol",
+        reason: "HostRun binding identity does not match the requested Attempt/key and attached receipt",
+      })
+    }
+    return {
+      schemaVersion: 1,
+      binding,
+      receipt,
+    } satisfies HostRunBindResultV1
+  })
+})
+
+export const hostRunBindReceipt = Effect.fn("ManagedControl.hostRunBindReceipt")(function* (input: {
+  readonly trustedPrincipal: TrustedPrincipal
+  readonly goalID: string
+  readonly dispatchKeyDigest: string
+  readonly bindingDigest: string
+  readonly ownerLogID: string
+  readonly ownerLogSequence: string
+  readonly ownerLogEventDigest: string
+}) {
+  const operation = "host_run.bind_receipt"
+  const trustedPrincipal = yield* serverAuthPrincipal(operation, input.trustedPrincipal)
+  const goalID = identifier(operation, input.goalID, "goalID")
+  const dispatchKeyDigest = digestValue(operation, input.dispatchKeyDigest, "dispatchKeyDigest")
+  const bindingDigest = digestValue(operation, input.bindingDigest, "bindingDigest")
+  const ownerLogID = identifier(operation, input.ownerLogID, "ownerLogID")
+  const ownerLogSequence = requiredPositiveDecimalU64(
+    operation,
+    { ownerLogSequence: input.ownerLogSequence },
+    "ownerLogSequence",
+  )
+  const ownerLogEventDigest = ownerEventDigest(operation, input.ownerLogEventDigest)
+  const response = yield* call(
+    operation,
+    {
+      goalID,
+      dispatchKeyDigest,
+      bindingDigest,
+      ownerLogID,
+      ownerLogSequence,
+      ownerLogEventDigest,
+    },
+    oneUseKey(dispatchKeyDigest, "bind_receipt", ownerLogSequence),
+    trustedPrincipal,
+  )
+  return yield* decode(operation, response, (name, value) => {
+    if (value.schemaVersion !== 1) {
+      throw new ManagedControlError({ operation: name, code: "managed_protocol", reason: "schemaVersion is not 1" })
+    }
+    if (value.status !== "RECORDED") {
+      throw new ManagedControlError({ operation: name, code: "managed_protocol", reason: "status is not RECORDED" })
+    }
+    const receipt = decodeHostRunDispatchP8OwnerReceipt(name, value.receipt)
+    if (
+      receipt.dispatchKeyDigest !== dispatchKeyDigest ||
+      receipt.bindingDigest !== bindingDigest ||
+      receipt.ownerLogID !== ownerLogID ||
+      receipt.ownerLogSequence !== ownerLogSequence ||
+      receipt.ownerLogEventDigest !== ownerLogEventDigest
+    ) {
+      throw new ManagedControlError({
+        operation: name,
+        code: "managed_protocol",
+        reason: "HostRun P8 receipt identity does not match the submitted OwnerLog request",
+      })
+    }
+    return {
+      schemaVersion: 1,
+      status: "RECORDED",
+      receipt,
+    } satisfies HostRunBindReceiptResultV1
+  })
+})
+
+export const reconcileHostRun = Effect.fn("ManagedControl.reconcileHostRun")(function* (input: {
+  readonly trustedPrincipal: TrustedPrincipal
+  readonly goalID: string
+  readonly dispatchKeyDigest: string
+}) {
+  const reconciliation = yield* hostRunInspect(input)
+  if (reconciliation.status !== "UNKNOWN") {
+    if (!reconciliation.binding || !reconciliation.bindingDigest) {
+      return yield* new ManagedControlError({
+        operation: "reconcile_host_run",
+        code: "managed_protocol",
+        reason: "terminal host run reconciliation is missing durable binding or digest",
+      })
+    }
+    if (
+      reconciliation.binding.dispatchKeyDigest !== reconciliation.dispatchKeyDigest ||
+      reconciliation.binding.bindingDigest !== reconciliation.bindingDigest
+    ) {
+      return yield* new ManagedControlError({
+        operation: "reconcile_host_run",
+        code: "managed_protocol",
+        reason: "terminal HostRun binding identity differs from its queried dispatch key or attached digest",
+      })
+    }
+    if (
+      reconciliation.status === "SUCCEEDED" &&
+      (!reconciliation.attemptReceiptDigest || !reconciliation.verifiedRevision)
+    ) {
+      return yield* new ManagedControlError({
+        operation: "reconcile_host_run",
+        code: "managed_protocol",
+        reason: "terminal HostRun evidence is missing its Attempt receipt or verified final revision",
+      })
+    }
+  } else if (reconciliation.status === "UNKNOWN") {
+    if (!reconciliation.unknownReason) {
+      return yield* Effect.fail(
+        new ManagedControlError({
+          operation: "reconcile_host_run",
+          code: "managed_protocol",
+          reason: "unknown host run reconciliation is missing unknownReason",
+        }),
+      )
+    }
+  }
+  return reconciliation
+})
+
 export const admitDirectAttempt = Effect.fn("ManagedControl.admitDirectAttempt")(function* (input: {
   readonly attemptID: string
   readonly parentSessionID: string
@@ -7274,7 +7845,7 @@ export const settleDirectAttempt = Effect.fn("ManagedControl.settleDirectAttempt
       new ManagedControlError({ operation, code: "managed_protocol", reason: "attemptID is invalid" }),
     )
   }
-  const revision = yield* decode(operation, { expectedRevision: input.expectedRevision }, (name, value) => expectedRevision(name, value.expectedRevision))
+  const revision = yield* decode(operation, { expectedRevision: input.expectedRevision }, (name, value) => directAttemptExpectedRevision(name, value.expectedRevision))
   const body: Record<string, unknown> = {
     attemptID,
     outcome: input.outcome,
@@ -7316,7 +7887,7 @@ export const cancelDirectAttempt = Effect.fn("ManagedControl.cancelDirectAttempt
       new ManagedControlError({ operation, code: "managed_protocol", reason: "attemptID is invalid" }),
     )
   }
-  const revision = yield* decode(operation, { expectedRevision: input.expectedRevision }, (name, value) => expectedRevision(name, value.expectedRevision))
+  const revision = yield* decode(operation, { expectedRevision: input.expectedRevision }, (name, value) => directAttemptExpectedRevision(name, value.expectedRevision))
   const response = yield* call(
     operation,
     { attemptID: input.attemptID, expectedRevision: revision },
@@ -7571,6 +8142,9 @@ export const prepareManagedMessage = Effect.fn("ManagedControl.prepareManagedMes
   readonly content: string
 }) {
   const operation = "managed_message.prepare"
+  if (typeof input.content !== "string") {
+    return yield* new ManagedControlError({ operation, code: "managed_protocol", reason: "managed message content must be a string" })
+  }
   const scope = managedAttemptScopeValue(operation, input.scope)
   const bytes = Buffer.byteLength(input.content, "utf8")
   if (bytes < 1 || bytes > MAX_TEXT_BYTES) return yield* new ManagedControlError({ operation, code: "managed_protocol", reason: "managed message payload is outside the 16 KiB bound" })
@@ -8110,6 +8684,9 @@ export const prepareDirectMessage = Effect.fn("ManagedControl.prepareDirectMessa
   readonly directAttempt?: DirectAttemptScopeV1
 }) {
   const operation = "prepare"
+  if (typeof input.content !== "string") {
+    return yield* new ManagedControlError({ operation: "direct.message.prepare", code: "managed_protocol", reason: "direct message content must be a string" })
+  }
   const bytes = new TextEncoder().encode(input.content)
   if (bytes.byteLength === 0 || bytes.byteLength > 16 * 1024 || !Number.isSafeInteger(input.mailboxCapacity) || input.mailboxCapacity < 1 || input.mailboxCapacity > 32) {
     return yield* new ManagedControlError({ operation: "direct.message.prepare", code: "managed_protocol", reason: "direct message payload or available mailbox capacity is outside its bound" })

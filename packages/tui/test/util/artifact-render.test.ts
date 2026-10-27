@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { createSvgRasterPort, createTuiArtifactRenderer, renderTuiArtifacts } from "../../src/util/artifact-render"
-import { rasterizeSvgSubset, type SvgRasterWorkerLikeV1 } from "../../src/component/svg-raster"
+import { rasterizeSvgSubset, type SvgRasterResultV1, type SvgRasterWorkerLikeV1 } from "../../src/component/svg-raster"
 
 const SAFE_SVG = '<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><rect x="10" y="10" width="80" height="80"/></svg>'
 const SAFE_SVG_BLOCK = "```svg\n" + SAFE_SVG + "\n```"
@@ -355,15 +355,15 @@ test("does not let an older geometry generation overwrite a newer cached frame",
   }) => void> = []
   const port = createSvgRasterPort({
     service: {
-      render() {
-        return new Promise((resolve) => pending.push(resolve))
+      render(input) {
+        return new Promise((resolve) => pending.push((result) => resolve({ ...result, generation: input.generation })))
       },
       dispose() {},
     },
   })
   const block = { blockID: "same-source", generation: "width-40", source: SAFE_SVG }
   const updated = { ...block, generation: "width-80" }
-  const frame = (value: string) => ({ status: "ok" as const, generation: 1, frame: [value], shapeCount: 1, cellCount: 1 })
+  const frame = (value: string) => ({ status: "ok" as const, generation: 0, frame: [value], shapeCount: 1, cellCount: 1 })
 
   try {
     port.request(block)
@@ -401,6 +401,189 @@ test("rejects an injected raster frame that exceeds renderer cache bounds", asyn
     await waitFor(() => renderer.stats().failed === 1)
     expect(renderer.stats().cachedFrameBytes).toBe(0)
     expect(renderer.render(SAFE_SVG_BLOCK, true).fidelity).toBe("FAILED")
+  } finally {
+    renderer.dispose()
+  }
+})
+
+test("rejects a sparse injected raster frame instead of treating holes as rendered rows", async () => {
+  const renderer = createTuiArtifactRenderer({
+    service: {
+      async render() {
+        const frame = new Array<string>(1)
+        return {
+          status: "ok",
+          generation: 1,
+          frame,
+          shapeCount: 1,
+          cellCount: 1,
+        }
+      },
+      dispose() {},
+    },
+  })
+  try {
+    const pending = renderer.render(SAFE_SVG_BLOCK, true)
+    expect(pending.fidelity).toBe("FAILED")
+    await waitFor(() => renderer.stats().failed + renderer.stats().completed === 1)
+
+    const failed = renderer.render(SAFE_SVG_BLOCK, true)
+    expect(failed.fidelity).toBe("FAILED")
+    expect(failed.content).toContain("SVG preview failed in the isolated worker (worker_unavailable)")
+    expect(failed.content).toContain(SAFE_SVG_BLOCK)
+    expect(failed.content).not.toContain("```text\n\n```")
+    expect(renderer.stats()).toMatchObject({ cachedFrameBytes: 0, completed: 0, failed: 1 })
+  } finally {
+    renderer.dispose()
+  }
+})
+
+test("settles accessor-backed raster results as a failed source fallback", async () => {
+  const renderer = createTuiArtifactRenderer({
+    service: {
+      async render() {
+        const result = {
+          status: "ok" as const,
+          generation: 1,
+          shapeCount: 1,
+          cellCount: 1,
+          get frame(): string[] {
+            throw new Error("untrusted raster frame accessor")
+          },
+        }
+        return result as unknown as SvgRasterResultV1
+      },
+      dispose() {},
+    },
+  })
+  try {
+    const pending = renderer.render(SAFE_SVG_BLOCK, true)
+    expect(pending.fidelity).toBe("FAILED")
+    await waitFor(() => renderer.stats().failed === 1)
+
+    const failed = renderer.render(SAFE_SVG_BLOCK, true)
+    expect(failed.fidelity).toBe("FAILED")
+    expect(failed.content).toContain(SAFE_SVG_BLOCK)
+    expect(renderer.stats()).toMatchObject({ requests: 1, completed: 0, failed: 1 })
+  } finally {
+    renderer.dispose()
+  }
+})
+
+test("settles a raster result with an unreadable status as a failed source fallback", async () => {
+  const renderer = createTuiArtifactRenderer({
+    service: {
+      async render() {
+        const result = {
+          generation: 1,
+          frame: ["#"],
+          shapeCount: 1,
+          cellCount: 1,
+          get status(): string {
+            throw new Error("unreadable raster status")
+          },
+        }
+        return result as unknown as SvgRasterResultV1
+      },
+      dispose() {},
+    },
+  })
+  try {
+    expect(renderer.render(SAFE_SVG_BLOCK, true).fidelity).toBe("FAILED")
+    await waitFor(() => renderer.stats().failed === 1)
+    const result = renderer.render(SAFE_SVG_BLOCK, true)
+    expect(result.fidelity).toBe("FAILED")
+    expect(result.content).toContain(SAFE_SVG_BLOCK)
+    expect(renderer.stats()).toMatchObject({ requests: 1, completed: 0, failed: 1 })
+  } finally {
+    renderer.dispose()
+  }
+})
+
+test("settles a rejected raster result with unreadable metadata as a failed fallback", async () => {
+  const renderer = createTuiArtifactRenderer({
+    service: {
+      async render() {
+        const result = {
+          status: "rejected" as const,
+          generation: 1,
+          message: "worker rejected the raster",
+          get reason(): string {
+            throw new Error("unreadable raster rejection reason")
+          },
+        }
+        return result as unknown as SvgRasterResultV1
+      },
+      dispose() {},
+    },
+  })
+  try {
+    expect(renderer.render(SAFE_SVG_BLOCK, true).fidelity).toBe("FAILED")
+    await waitFor(() => renderer.stats().failed === 1)
+    const result = renderer.render(SAFE_SVG_BLOCK, true)
+    expect(result.fidelity).toBe("FAILED")
+    expect(result.content).toContain(SAFE_SVG_BLOCK)
+    expect(renderer.stats()).toMatchObject({ requests: 1, completed: 0, failed: 1 })
+  } finally {
+    renderer.dispose()
+  }
+})
+
+test("caches the validated raster snapshot instead of rereading worker accessors", async () => {
+  let frameReads = 0
+  const frame = ["#"]
+  const renderer = createTuiArtifactRenderer({
+    service: {
+      async render() {
+        return {
+          status: "ok" as const,
+          generation: 1,
+          get frame() {
+            frameReads++
+            if (frameReads > 5) throw new Error("frame changed after validation")
+            return frame
+          },
+          shapeCount: 1,
+          cellCount: 1,
+        } as unknown as SvgRasterResultV1
+      },
+      dispose() {},
+    },
+  })
+  try {
+    expect(renderer.render(SAFE_SVG_BLOCK, true).fidelity).toBe("FAILED")
+    await waitFor(() => renderer.stats().completed + renderer.stats().failed === 1)
+    const result = renderer.render(SAFE_SVG_BLOCK, true)
+    expect(result.fidelity).toBe("FULL")
+    expect(result.content).toContain("#")
+    expect(renderer.stats()).toMatchObject({ requests: 1, completed: 1, failed: 0 })
+  } finally {
+    renderer.dispose()
+  }
+})
+
+test("rejects a valid-looking frame from a different raster request generation", async () => {
+  const renderer = createTuiArtifactRenderer({
+    service: {
+      async render(input) {
+        return {
+          status: "ok",
+          generation: input.generation + 1,
+          frame: ["#"],
+          shapeCount: 1,
+          cellCount: 1,
+        }
+      },
+      dispose() {},
+    },
+  })
+  try {
+    expect(renderer.render(SAFE_SVG_BLOCK, true).fidelity).toBe("FAILED")
+    await waitFor(() => renderer.stats().failed === 1)
+    const result = renderer.render(SAFE_SVG_BLOCK, true)
+    expect(result.fidelity).toBe("FAILED")
+    expect(result.content).toContain(SAFE_SVG_BLOCK)
+    expect(renderer.stats()).toMatchObject({ requests: 1, completed: 0, failed: 1 })
   } finally {
     renderer.dispose()
   }

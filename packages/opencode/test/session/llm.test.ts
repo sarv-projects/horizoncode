@@ -17,6 +17,7 @@ import { ProviderTransform } from "@/provider/transform"
 import { ModelsDev } from "@opencode-ai/core/models-dev"
 
 import { testEffect } from "../lib/effect"
+import { directProviderNode, directTestRoute } from "../fake/direct-provider"
 import type { Agent } from "../../src/agent/agent"
 import { MessageV2 } from "../../src/session/message-v2"
 import { SessionID, MessageID } from "../../src/session/schema"
@@ -62,7 +63,12 @@ const openAIConfig = (
   }
 }
 
-const it = testEffect(AppNodeBuilder.build(LayerNode.group([LLM.node, Provider.node])))
+// The stream suite keeps each vendor identity (payload shaping is keyed on
+// providerID/api.npm) and routes the direct transport at the local test server
+// through the typed Provider-seam double; see test/fake/direct-provider.ts.
+const it = testEffect(
+  AppNodeBuilder.build(LayerNode.group([LLM.node, Provider.node]), [[Provider.node, directProviderNode]]),
+)
 
 describe("managed per-step token allowance", () => {
   test("clamps each provider step to the current Rust remainder and model cap", () => {
@@ -106,6 +112,7 @@ function llmLayerWithExecutor(
 ) {
   return AppNodeBuilder.build(LLM.node, [
     [RuntimeFlags.node, RuntimeFlags.layer(options.flags)],
+    [Provider.node, directProviderNode],
     ...(options.executor ? ([[LayerNodePlatform.requestExecutor, options.executor]] as const) : []),
   ])
 }
@@ -117,7 +124,10 @@ function llmLayerWithSupervisor(supervisor: Layer.Layer<SessionSupervisorService
     deps: [],
     tag: SessionSupervisor.node.tag,
   })
-  return AppNodeBuilder.build(LLM.node, [[SessionSupervisor.node, supervisorNode]])
+  return AppNodeBuilder.build(LLM.node, [
+    [SessionSupervisor.node, supervisorNode],
+    [Provider.node, directProviderNode],
+  ])
 }
 
 function llmLayerWithProvider(provider: Layer.Layer<Provider.Service>) {
@@ -564,7 +574,7 @@ describe("session.llm.ai-sdk adapter", () => {
     const reportedZero = SessionNs.getUsage({
       model,
       usage: { inputTokens: 0, outputTokens: 0 } as never,
-      metadata: { copilot: { totalNanoAiu: 0 } } as never,
+      metadata: { copilot: { totalNanoAiu: 0, responseId: "response-copilot-zero" } } as never,
     })
     expect(reportedZero.usageProvenance.cost).toEqual({ status: "provider-reported", value: 0 })
     expect(reportedZero.usageProvenance.tokens.input).toEqual({ status: "provider-reported", value: 0 })
@@ -871,6 +881,16 @@ describe("session.llm.stream", () => {
         const provider = Layer.mock(Provider.Service, {
           getLanguage: () => Effect.succeed(language),
           getProvider: () => Effect.succeed(providerInfo),
+          getDirectLanguage: () =>
+            Effect.succeed({
+              language: language as never,
+              route: directTestRoute({
+                providerID: "hosted-test",
+                modelID: model.id,
+                harnessID: "native-rich",
+                endpointBase: "http://127.0.0.1:1/v1",
+              }),
+            }),
         })
         const providerID = ProviderV2.ID.make("hosted-test")
         const sessionID = SessionID.make("session-hosted-workflow")

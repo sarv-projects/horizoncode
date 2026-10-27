@@ -155,6 +155,13 @@ test("V2 stream deltas are coalesced without changing text and durable deltas st
         source: "ui-event-mux",
       },
       {
+        metric: "ui.queue.dropped_events",
+        value: 0,
+        unit: "events",
+        provenance: "measured",
+        source: "ui-event-mux",
+      },
+      {
         metric: "ui.queue.direct_deliveries",
         value: 0,
         unit: "events",
@@ -207,6 +214,7 @@ test("V2 stream deltas are coalesced without changing text and durable deltas st
       "ui.queue.pending_events": { value: 0, provenance: "measured" },
       "ui.queue.pending_bytes": { value: 0, provenance: "measured" },
       "ui.queue.coalesced_events": { value: coalesced, provenance: "measured" },
+      "ui.queue.dropped_events": { value: 0, provenance: "measured" },
       "ui.queue.direct_deliveries": { value: 0, provenance: "measured" },
       "ui.stream.duplicates_suppressed": { value: 0, provenance: "measured" },
       "ui.stream.resnapshots_required": { value: 0, provenance: "measured" },

@@ -92,7 +92,7 @@ function fixture() {
     now: () => new Date(timestamp),
     id: (kind) => `${kind}_generated`,
   })
-  return { broker, secrets, leases, idempotency, inputs, consumed, writes }
+  return { broker, store, secrets, leases, idempotency, inputs, consumed, writes }
 }
 
 const putRequest = {
@@ -639,6 +639,39 @@ describe("SecretBroker in-process contract", () => {
     expect(delivered && [...delivered].every((byte) => byte === 0)).toBe(true)
     expect(writes).toEqual(["put", "lease", "consume"])
     await expect(broker.withUse(lease, trusted, async () => "replayed")).rejects.toMatchObject({ code: "CONFLICT" })
+  })
+
+  test("broker zeroes lease bytes even when the store does not", async () => {
+    const { broker, store } = fixture()
+    const created = await broker.put(putRequest)
+    const request = {
+      schemaVersion: 1,
+      secretRef: created.secretRef,
+      providerId: "example-provider",
+      operationDigest,
+      destination: "https://api.example.invalid/v1/chat/completions",
+      purpose: "PROVIDER_REQUEST",
+      expiresAt: "2026-10-18T17:00:15.000Z",
+      maxRequests: 1,
+    } satisfies SecretBrokerV1.UseRequestV1
+    const trusted = {
+      requesterRef: "principal_authenticated",
+      providerId: request.providerId,
+      operationDigest,
+      destination: request.destination,
+      purpose: request.purpose,
+      maxExpiresAt: "2026-10-18T17:00:20.000Z",
+    }
+    const lease = await broker.authorizeUse(request, trusted)
+    const delivered = new TextEncoder().encode("test-only-secret")
+    store.withConsumedLease = async (_lease, _at, use) => use(created, delivered)
+
+    await expect(broker.withUse(lease, trusted, async (bytes) => {
+      expect(bytes).toBe(delivered)
+      return "used"
+    })).resolves.toBe("used")
+
+    expect([...delivered].every((byte) => byte === 0)).toBe(true)
   })
 
   test("one-use delivery zeroes bytes when the provider transport fails", async () => {

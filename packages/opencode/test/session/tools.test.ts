@@ -1,4 +1,6 @@
 import { expect } from "bun:test"
+import path from "node:path"
+import { Buffer } from "node:buffer"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
@@ -21,6 +23,7 @@ import { Effect, Layer, Schema } from "effect"
 import { testEffect } from "../lib/effect"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { FSUtil } from "@opencode-ai/core/fs-util"
+import { TestInstance } from "../fixture/fixture"
 
 const callID = "call-test"
 const sessionID = SessionID.make("ses_test")
@@ -95,6 +98,18 @@ const layer = Layer.mergeAll(
                 yield* ctx.metadata({ metadata: { output: "second" } })
                 return { title: "timing", metadata: {}, output: "done" }
               }),
+          } satisfies Tool.Def,
+          {
+            id: "edit",
+            capability: { id: "files.patch", effectClass: "effect" },
+            description: "prepares a guarded file edit",
+            parameters: Schema.Struct({
+              filePath: Schema.String,
+              oldString: Schema.String,
+              newString: Schema.String,
+              replaceAll: Schema.optional(Schema.Boolean),
+            }),
+            execute: () => Effect.succeed({ title: "edit", metadata: {}, output: "done" }),
           } satisfies Tool.Def,
           {
             id: "custom-plugin-shell",
@@ -179,6 +194,63 @@ it.instance("projects the canonical question control without granting effect aut
       ),
     )
     expect(result).toMatchObject({ output: "answered" })
+  }),
+)
+
+it.instance("prepares Edit calls as Guarded files.patch without writing", () =>
+  Effect.gen(function* () {
+    const test = yield* TestInstance
+    const fs = yield* FSUtil.Service
+    const target = path.join(test.directory, "edit-preflight.txt")
+    const before = "before\n"
+    const after = "after\n"
+    yield* fs.writeWithDirs(target, before)
+    const processor = {
+      message: {
+        id: messageID,
+        sessionID,
+        role: "assistant",
+        parentID: MessageID.ascending(),
+        agent: "build",
+        mode: "build",
+        path: { cwd: test.directory, root: test.directory },
+        cost: 0,
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        modelID: ModelV2.ID.make("test-model"),
+        providerID: ProviderV2.ID.make("test"),
+        time: { created: 1 },
+      } satisfies SessionV1.Assistant,
+      updateToolCall: () => Effect.succeed({} as SessionV1.ToolPart),
+      completeToolCall: () => Effect.void,
+    } satisfies Pick<SessionProcessor.Handle, "message" | "updateToolCall" | "completeToolCall">
+
+    const resolved = yield* SessionTools.resolve({
+      agent,
+      model,
+      session: { id: sessionID, permission: [] } as unknown as Session.Info,
+      processor,
+      bypassAgentCheck: false,
+      messages: [],
+      promptOps: {} as never,
+    })
+    const definition = resolved.definitions.edit
+    expect(definition?.capability).toEqual({ id: "files.patch", effectClass: "effect" })
+    if (!definition?.prepare) throw new Error("edit Guard preparation is missing")
+
+    const prepared = yield* Effect.promise(() =>
+      definition.prepare!({ filePath: target, oldString: "before", newString: "after" }),
+    )
+    const operations = [
+      {
+        operation: "write" as const,
+        path: target,
+        expectedBeforeBase64: Buffer.from(before).toString("base64"),
+        contentBase64: Buffer.from(after).toString("base64"),
+      },
+    ]
+    expect(prepared.arguments).toEqual({ operations })
+    expect(prepared.execution).toEqual(operations)
+    expect(yield* fs.readFileString(target)).toBe(before)
   }),
 )
 

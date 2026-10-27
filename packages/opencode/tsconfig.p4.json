@@ -1,0 +1,4 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["src/lsp/**/*.ts", "src/dap/**/*.ts", "src/repl/**/*.ts", "src/tool/lsp.ts", "src/tool/dap.ts", "src/audio.d.ts", "test/lsp/**/*.ts", "test/dap/**/*.ts", "test/repl/**/*.ts"]
+}

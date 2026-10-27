@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "src/auth/secure-input.ts",
+    "src/auth/secret-mutation.ts",
+    "src/auth/index.ts",
+    "src/auth/secret-broker.ts",
+    "src/auth/credential-broker-runtime.ts",
+    "src/cli/cmd/provider.ts",
+    "src/index.ts",
+    "test/auth/secure-input.test.ts",
+    "test/auth/credential-mutation.test.ts",
+    "test/auth/provider-command.test.ts"
+  ]
+}

@@ -35,6 +35,26 @@ type RunTrustedEffect = <A, E, R>(effect: Effect.Effect<A, E, R>) => Promise<A>
 
 export type SupervisedLspHostRequestV1 = RequestExecutionHostV1
 
+/** Detach authority-bearing Attempt pins from caller-owned mutable objects. */
+export function snapshotLspAttemptScopeV1(input: {
+  readonly managedAttempt?: ManagedAttemptScopeV1
+  readonly directAttempt?: DirectAttemptScopeV1
+}): Pick<Parameters<typeof createSupervisedLspClientV1>[0], "managedAttempt" | "directAttempt"> {
+  return Object.freeze({
+    ...(input.managedAttempt === undefined
+      ? {}
+      : {
+          managedAttempt: Object.freeze({
+            ...input.managedAttempt,
+            worktreeTarget: Object.freeze({ ...input.managedAttempt.worktreeTarget }),
+          }),
+        }),
+    ...(input.directAttempt === undefined
+      ? {}
+      : { directAttempt: Object.freeze({ ...input.directAttempt }) }),
+  })
+}
+
 /**
  * Resolve, approve, start and connect one immutable configured LSP profile.
  * Scope, Location and supervisor are supplied by the trusted Core composition
@@ -61,24 +81,25 @@ export async function createSupervisedLspClientV1(input: {
   readonly runTrustedEffect: RunTrustedEffect
   readonly requestHostKernel: SupervisedLspHostRequestV1
 }): Promise<{ readonly client: Info; readonly processRef: Awaited<ReturnType<typeof launchApprovedEditorProcessV1>>["processRef"] }> {
-  if (input.managedAttempt !== undefined && input.directAttempt !== undefined) {
+  const { managedAttempt, directAttempt } = snapshotLspAttemptScopeV1(input)
+  if (managedAttempt !== undefined && directAttempt !== undefined) {
     throw new TypeError("supervised LSP creation cannot combine managed and direct Attempt scopes")
   }
-  if (input.managedAttempt !== undefined || input.directAttempt !== undefined) {
-    const attemptSessionID = input.managedAttempt?.sessionID ?? input.directAttempt!.childSessionID
-    const attempt = input.managedAttempt ?? input.directAttempt!
+  if (managedAttempt !== undefined || directAttempt !== undefined) {
+    const attemptSessionID = managedAttempt?.sessionID ?? directAttempt!.childSessionID
+    const attempt = managedAttempt ?? directAttempt!
     if (input.sessionID !== attemptSessionID || input.locationID !== attempt.locationID ||
         input.workspaceRevision !== attempt.workspaceRevision ||
-        (input.directAttempt && input.workspaceID !== input.directAttempt.workspaceID) ||
-        (input.managedAttempt && input.workspaceID !== undefined)) {
+        (directAttempt && input.workspaceID !== directAttempt.workspaceID) ||
+        (managedAttempt && input.workspaceID !== undefined)) {
       throw new TypeError("supervised LSP scope does not match the authenticated Attempt workspace pins")
     }
     if (input.workspaceID !== undefined && input.locationRef.workspaceID !== input.workspaceID) {
       throw new TypeError("supervised LSP location pin does not match the authenticated workspace ID")
     }
-    if (input.managedAttempt !== undefined &&
-        (path.resolve(input.root) !== path.resolve(input.managedAttempt.worktreeTarget.canonicalRoot) ||
-          input.locationRef.workspaceID !== input.managedAttempt.worktreeTarget.workspaceID)) {
+    if (managedAttempt !== undefined &&
+        (path.resolve(input.root) !== path.resolve(managedAttempt.worktreeTarget.canonicalRoot) ||
+          input.locationRef.workspaceID !== managedAttempt.worktreeTarget.workspaceID)) {
       throw new TypeError("supervised LSP scope does not match the managed Attempt worktree target")
     }
   } else if (!input.sessionID || !input.locationID || !input.workspaceID ||
@@ -98,8 +119,8 @@ export async function createSupervisedLspClientV1(input: {
     locationID: input.locationID,
     workspaceRevision: input.workspaceRevision,
     ...(input.workspaceID === undefined ? {} : { workspaceID: input.workspaceID }),
-    ...(input.managedAttempt === undefined ? {} : { managedAttempt: input.managedAttempt }),
-    ...(input.directAttempt === undefined ? {} : { directAttempt: input.directAttempt }),
+     ...(managedAttempt === undefined ? {} : { managedAttempt }),
+     ...(directAttempt === undefined ? {} : { directAttempt }),
   })
   const hostRequest = input.requestHostKernel
   const approval = await resolveTrustedGlobalLaunchProfileV1({
@@ -111,8 +132,8 @@ export async function createSupervisedLspClientV1(input: {
       sessionID: input.sessionID,
       userActionID: `editor_${randomUUID().replaceAll("-", "")}`,
       callID: `editor_${randomUUID().replaceAll("-", "")}`,
-      ...(input.managedAttempt === undefined ? {} : { managedAttempt: input.managedAttempt }),
-      ...(input.directAttempt === undefined ? {} : { directAttempt: input.directAttempt }),
+       ...(managedAttempt === undefined ? {} : { managedAttempt }),
+       ...(directAttempt === undefined ? {} : { directAttempt }),
     },
     requestHostKernel: hostRequest,
   })
@@ -155,8 +176,8 @@ export async function createSupervisedLspClientV1(input: {
       locationRef: input.locationRef,
       sessionID: input.sessionID,
       locationID: input.locationID,
-      ...(input.managedAttempt === undefined ? {} : { managedAttempt: input.managedAttempt }),
-      ...(input.directAttempt === undefined ? {} : { directAttempt: input.directAttempt }),
+       ...(managedAttempt === undefined ? {} : { managedAttempt }),
+       ...(directAttempt === undefined ? {} : { directAttempt }),
       runTrustedEffect: input.runTrustedEffect,
     })
     protocol = new HostKernelLspProtocolClientV1({
@@ -166,8 +187,8 @@ export async function createSupervisedLspClientV1(input: {
         sessionID: input.sessionID,
         locationID: input.locationID,
         workspaceRevision: input.workspaceRevision,
-        ...(input.managedAttempt === undefined ? {} : { managedAttempt: input.managedAttempt }),
-        ...(input.directAttempt === undefined ? {} : { directAttempt: input.directAttempt }),
+         ...(managedAttempt === undefined ? {} : { managedAttempt }),
+         ...(directAttempt === undefined ? {} : { directAttempt }),
       },
       authorize,
       onTerminalFailure: () => stopServer({

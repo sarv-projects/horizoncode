@@ -141,14 +141,51 @@ const structurePage = Schema.decodeUnknownSync(RepoIntelligenceSchema.RepoStruct
     },
   ],
 })
+const unknownFreshnessCurrentStructurePage = {
+  ...structurePage,
+  freshness: "unknown" as const,
+}
+const unknownFreshnessPartialStructurePage = {
+  ...structurePage,
+  status: "PARTIAL" as const,
+  freshness: "unknown" as const,
+  completeness: "partial" as const,
+}
+const bidiStructurePage = Schema.decodeUnknownSync(RepoIntelligenceSchema.RepoStructurePageV1)({
+  ...structurePage,
+  nodes: structurePage.nodes.map((node, index) => index === 0
+    ? { ...node, pathRef: "src/pay\u202Eload.ts" }
+    : node),
+})
 const repoStructureSupervisorNode = LayerNode.make({
   service: SessionSupervisor.Service,
   layer: Layer.mock(SessionSupervisor.Service, {
     queryRepoStructure: (input) =>
       Effect.sync(() => {
         observedStructureCalls.push(input)
-        return { ...structurePage, queryId: input.query.queryId }
+        const page = input.query.rootRef === "unknown-current"
+          ? unknownFreshnessCurrentStructurePage
+          : input.query.rootRef === "unknown-partial"
+            ? unknownFreshnessPartialStructurePage
+            : structurePage
+        return { ...page, queryId: input.query.queryId }
       }),
+    readRepoDocument: (input) => Effect.succeed({
+      schemaVersion: 1 as const,
+      status: "OK" as const,
+      pathRef: input.request.pathRef,
+      revisionKind: input.request.revisionKind,
+      text: structureDocumentText,
+      contentDigest: Schema.decodeUnknownSync(Digest)(RepoIntelligenceSchema.repoDocumentContentDigest(structureDocumentText)),
+      observedWorkspaceRevision: input.request.expectedWorkspaceRevision,
+    }),
+  }),
+  deps: [],
+})
+const bidiRepoStructureSupervisorNode = LayerNode.make({
+  service: SessionSupervisor.Service,
+  layer: Layer.mock(SessionSupervisor.Service, {
+    queryRepoStructure: (input) => Effect.succeed({ ...bidiStructurePage, queryId: input.query.queryId }),
     readRepoDocument: (input) => Effect.succeed({
       schemaVersion: 1 as const,
       status: "OK" as const,
@@ -203,6 +240,22 @@ const itRepoStructure = testEffect(
       Agent.node,
       Git.node,
       repoStructureSupervisorNode,
+      trustedPrincipalNode,
+    ]),
+    [[Config.node, configLayer]],
+  ),
+)
+const itBidiRepoStructure = testEffect(
+  LayerNode.compile(
+    LayerNode.group([
+      Config.node,
+      FSUtil.node,
+      RepoIntel.node,
+      CrossSpawnSpawner.node,
+      Truncate.node,
+      Agent.node,
+      Git.node,
+      bidiRepoStructureSupervisorNode,
       trustedPrincipalNode,
     ]),
     [[Config.node, configLayer]],
@@ -264,6 +317,8 @@ const defaultManifestText =
  * the aggregate discovery read budget after four exact-revision reads. */
 const budgetManifestText = `{"dependencies":{"pad":"${"a".repeat(64_000)}"}}`
 const commentedGradleManifestText = `// testImplementation("org.junit.jupiter:junit-jupiter:5.10.0")\n/* useJUnitPlatform() */\nplugins { id("java") }\n`
+const nestedCommentedGradleManifestText = `/* outer /* inner */ useJUnitPlatform() */\nplugins { id("java") }\n`
+const unterminatedGradleManifestText = `/* unterminated\nplugins { id("java") }\nuseJUnitPlatform()\n`
 const commentedMavenManifestText = `<!-- <dependency><artifactId>junit-jupiter</artifactId></dependency> -->\n<project><artifactId>sample</artifactId></project>\n`
 const mavenArtifactNamesWithoutJUnitDependencyText = `<project><parent><groupId>org.example</groupId><artifactId>junit-parent</artifactId></parent><artifactId>junit-helper</artifactId><dependencies><dependency><groupId>org.example</groupId><artifactId>spring-core</artifactId></dependency></dependencies></project>\n`
 const activeMavenManifestText = `<project><dependencies><dependency><groupId>org.junit.jupiter</groupId><artifactId>junit-jupiter</artifactId></dependency></dependencies></project>\n`
@@ -274,8 +329,18 @@ const commentedPyprojectTestManifestText = `# [tool.pytest.ini_options]\n[projec
 const activePyprojectTestManifestText = `[project]\nname = "sample"\n\n[tool.pytest.ini_options]\ntestpaths = ["tests"]\n`
 const commentedCsprojTestManifestText = `<Project><!-- <IsTestProject>true</IsTestProject> --><!-- <PackageReference Include="Microsoft.NET.Test.Sdk" /> --></Project>\n`
 const activeCsprojTestManifestText = `<Project><PropertyGroup><IsTestProject>true</IsTestProject></PropertyGroup></Project>\n`
+const orderedCsprojTestManifestText = `<Project><PropertyGroup><IsTestProject>false</IsTestProject></PropertyGroup><PropertyGroup><IsTestProject>true</IsTestProject></PropertyGroup></Project>\n`
 const commentedSwiftTestManifestText = `// .testTarget(name: "ExampleTests", dependencies: ["Example"])\n/* .testTarget(name: "ExampleBlockTests", dependencies: ["Example"]) */\nlet package = Package(name: "Example", targets: [])\n`
+const nestedCommentedSwiftTestManifestText = `/* outer /* inner */ .testTarget(name: "NestedExampleTests", dependencies: ["Example"]) */\nlet package = Package(name: "Example", targets: [])\n`
 const activeSwiftTestManifestText = `let package = Package(name: "Example", targets: [.testTarget(name: "ExampleTests", dependencies: ["Example"])])\n`
+const mavenExclusionJunitManifestText = `<project><dependencies><dependency><groupId>com.example</groupId><artifactId>lib</artifactId><exclusions><exclusion><groupId>org.junit.jupiter</groupId><artifactId>junit-jupiter</artifactId></exclusion></exclusions></dependency></dependencies></project>\n`
+const explicitNonTestCsprojManifestText = `<Project><PropertyGroup><IsTestProject>false</IsTestProject></PropertyGroup></Project>\n`
+const commentedSlnManifestText = `# Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Test", "Test.csproj", "{...}"\n# Microsoft.NET.Test.Sdk\n`
+const inlineCommentGemfileManifestText = `source "https://rubygems.org"\ngem "rake" # rspec is deprecated\n`
+const inlineCommentPyprojectManifestText = `[project]\nname = "sample"\ndescription = "Works with [tool.pytest] plugins"\n# [tool.pytest.ini_options]\n`
+const poetryScriptsPyprojectManifestText = `[tool.poetry.scripts]\nserve = "app:main"\n`
+const stringCargoTestManifestText = `[package]\nname = "sample"\ndescription = """\n[[test]]\n"""\n`
+const activeCargoTestManifestText = `[package]\nname = "sample"\n\n[[test]]\nname = "integration"\n`
 /** >32 KiB of rendered tree lines, used to prove the `repo_tree` display cap. */
 const largeTreeEntries = Array.from({ length: 512 }, (_, index) => ({
   pathRef:
@@ -316,6 +381,9 @@ const manifestEntriesFor = (root: string): ReadonlyArray<Record<string, unknown>
         manifestEntry("build.gradle", "512", { manifestKind: "gradle" }),
         manifestEntry("pom.xml", "512", { manifestKind: "pom_xml" }),
       ]
+    case "nested-commented-gradle":
+    case "unterminated-gradle":
+      return [manifestEntry(`${root}/build.gradle`, "512", { manifestKind: "gradle" })]
     case "active-test-config":
       return [
         manifestEntry("active-test-config/build.gradle", "512", { manifestKind: "gradle" }),
@@ -331,10 +399,27 @@ const manifestEntriesFor = (root: string): ReadonlyArray<Record<string, unknown>
       return [manifestEntry(`${root}/pyproject.toml`, "512", { manifestKind: "pyproject_toml" })]
     case "commented-csproj-test":
     case "active-csproj-test":
+    case "ordered-csproj-test":
       return [manifestEntry(`${root}/sample.csproj`, "512", { manifestKind: "csproj" })]
     case "commented-swift-test":
     case "active-swift-test":
+    case "nested-commented-swift-test":
       return [manifestEntry(`${root}/Package.swift`, "512", { manifestKind: "package_swift" })]
+    case "maven-exclusion-junit":
+      return [manifestEntry("maven-exclusion-junit/pom.xml", "512", { manifestKind: "pom_xml" })]
+    case "explicit-non-test-csproj":
+      return [manifestEntry("explicit-non-test-csproj/sample.csproj", "512", { manifestKind: "csproj" })]
+    case "commented-sln":
+      return [manifestEntry("commented-sln/sample.sln", "512", { manifestKind: "sln" })]
+    case "inline-comment-gemfile":
+      return [manifestEntry("inline-comment-gemfile/Gemfile", "512", { manifestKind: "gemfile" })]
+    case "inline-comment-pyproject":
+      return [manifestEntry("inline-comment-pyproject/pyproject.toml", "512", { manifestKind: "pyproject_toml" })]
+    case "poetry-scripts-pyproject":
+      return [manifestEntry("poetry-scripts-pyproject/pyproject.toml", "512", { manifestKind: "pyproject_toml" })]
+    case "string-cargo-test":
+    case "active-cargo-test":
+      return [manifestEntry(`${root}/Cargo.toml`, "512", { manifestKind: "cargo_toml" })]
     case "partial":
       return [manifestEntry("package.json", "512", { languageHint: "javascript" })]
     default:
@@ -397,6 +482,10 @@ const discoverySupervisorNode = LayerNode.make({
       observedManifestRevisionKinds.push(input.request.revisionKind)
       const text = input.request.pathRef.startsWith("budget/")
         ? budgetManifestText
+        : input.request.pathRef.startsWith("nested-commented-gradle/")
+          ? nestedCommentedGradleManifestText
+        : input.request.pathRef.startsWith("unterminated-gradle/")
+          ? unterminatedGradleManifestText
         : input.request.pathRef.startsWith("commented-gemfile/")
           ? commentedGemfileManifestText
         : input.request.pathRef.startsWith("active-gemfile/")
@@ -409,14 +498,34 @@ const discoverySupervisorNode = LayerNode.make({
           ? commentedCsprojTestManifestText
         : input.request.pathRef.startsWith("active-csproj-test/")
           ? activeCsprojTestManifestText
+        : input.request.pathRef.startsWith("ordered-csproj-test/")
+          ? orderedCsprojTestManifestText
         : input.request.pathRef.startsWith("commented-swift-test/")
           ? commentedSwiftTestManifestText
+        : input.request.pathRef.startsWith("nested-commented-swift-test/")
+          ? nestedCommentedSwiftTestManifestText
         : input.request.pathRef.startsWith("active-swift-test/")
           ? activeSwiftTestManifestText
         : input.request.pathRef.startsWith("active-test-config/")
           ? input.request.pathRef.endsWith("pom.xml") ? activeMavenManifestText : activeGradleManifestText
         : input.request.pathRef.startsWith("maven-nondependency-junit/")
           ? mavenArtifactNamesWithoutJUnitDependencyText
+        : input.request.pathRef.startsWith("maven-exclusion-junit/")
+          ? mavenExclusionJunitManifestText
+        : input.request.pathRef.startsWith("explicit-non-test-csproj/")
+          ? explicitNonTestCsprojManifestText
+        : input.request.pathRef.startsWith("commented-sln/")
+          ? commentedSlnManifestText
+        : input.request.pathRef.startsWith("inline-comment-gemfile/")
+          ? inlineCommentGemfileManifestText
+        : input.request.pathRef.startsWith("inline-comment-pyproject/")
+          ? inlineCommentPyprojectManifestText
+        : input.request.pathRef.startsWith("poetry-scripts-pyproject/")
+          ? poetryScriptsPyprojectManifestText
+        : input.request.pathRef.startsWith("string-cargo-test/")
+          ? stringCargoTestManifestText
+        : input.request.pathRef.startsWith("active-cargo-test/")
+          ? activeCargoTestManifestText
         : input.request.pathRef.endsWith("build.gradle")
           ? commentedGradleManifestText
           : input.request.pathRef.endsWith("pom.xml")
@@ -514,6 +623,17 @@ describe("tool.repo-tools", () => {
     }),
   )
 
+  itBidiRepoStructure.instance("removes bidi format controls from terminal-rendered RepoSearch nodes", () =>
+    Effect.gen(function* () {
+      const info = yield* DefinitionsFindTool
+      const tool = yield* info.init()
+      const result = yield* tool.execute({ query: "entry" }, ctx)
+
+      expect(result.output).not.toContain("\u202E")
+      expect(result.output).toContain("src/payload.ts:1 function entry")
+    }),
+  )
+
   itTool.instance("repo_tree and repo_detect fail closed when HostKernel discovery is unavailable", () =>
     Effect.gen(function* () {
       const treeInfo = yield* RepoTreeTool
@@ -578,6 +698,19 @@ describe("tool.repo-tools", () => {
     }),
   )
 
+  itDiscovery.instance("does not expose repo_tree entries when discovery freshness is unknown", () =>
+    Effect.gen(function* () {
+      const treeInfo = yield* RepoTreeTool
+      const tree = yield* treeInfo.init()
+      const result = yield* tree.execute({ path: "noncurrent", depth: 8 }, ctx)
+
+      expect(result.metadata.status).toBe("UNAVAILABLE")
+      expect(result.metadata.count).toBe(0)
+      expect(result.output).toContain("no current source revision")
+      expect(result.output).not.toContain("src/link")
+    }),
+  )
+
   itDiscovery.instance("redacts credential-shaped path labels in manifest detection output", () =>
     Effect.gen(function* () {
       const detectInfo = yield* RepoDetectTool
@@ -618,6 +751,38 @@ describe("tool.repo-tools", () => {
       expect(result.metadata.status).toBe("CURRENT")
       expect(result.output).not.toContain("test framework: JUnit declared")
       expect(observedManifestReads).toEqual(["maven-nondependency-junit/pom.xml"])
+    }),
+  )
+
+  itDiscovery.instance("reports an unterminated Gradle block comment as a parse failure", () =>
+    Effect.gen(function* () {
+      observedManifestReads.length = 0
+      const detectInfo = yield* RepoDetectTool
+      const detect = yield* detectInfo.init()
+      const result = yield* detect.execute({ path: "unterminated-gradle" }, ctx)
+      expect(result.metadata.status).toBe("PARTIAL")
+      expect(result.output).toContain("parse: failed (unterminated-gradle/build.gradle)")
+      expect(result.output).not.toContain("test framework: JUnit declared")
+      expect(observedManifestReads).toEqual(["unterminated-gradle/build.gradle"])
+    }),
+  )
+
+  itDiscovery.instance("does not report Gradle test declarations hidden in nested block comments", () =>
+    Effect.gen(function* () {
+      observedManifestReads.length = 0
+      const detectInfo = yield* RepoDetectTool
+      const detect = yield* detectInfo.init()
+      const nested = yield* detect.execute({ path: "nested-commented-gradle" }, ctx)
+      expect(nested.metadata.status).toBe("CURRENT")
+      expect(nested.output).not.toContain("test framework: JUnit declared")
+
+      const active = yield* detect.execute({ path: "active-test-config" }, ctx)
+      expect(active.output).toContain("test framework: JUnit declared (from active-test-config/build.gradle)")
+      expect(observedManifestReads).toEqual([
+        "nested-commented-gradle/build.gradle",
+        "active-test-config/build.gradle",
+        "active-test-config/pom.xml",
+      ])
     }),
   )
 
@@ -672,6 +837,18 @@ describe("tool.repo-tools", () => {
     }),
   )
 
+  itDiscovery.instance("uses the last .NET IsTestProject declaration when property groups override earlier values", () =>
+    Effect.gen(function* () {
+      observedManifestReads.length = 0
+      const detectInfo = yield* RepoDetectTool
+      const detect = yield* detectInfo.init()
+      const result = yield* detect.execute({ path: "ordered-csproj-test" }, ctx)
+      expect(result.metadata.status).toBe("CURRENT")
+      expect(result.output).toContain("test project: declared")
+      expect(observedManifestReads).toEqual(["ordered-csproj-test/sample.csproj"])
+    }),
+  )
+
   itDiscovery.instance("does not report a commented-out SwiftPM test target", () =>
     Effect.gen(function* () {
       observedManifestReads.length = 0
@@ -687,6 +864,103 @@ describe("tool.repo-tools", () => {
         "commented-swift-test/Package.swift",
         "active-swift-test/Package.swift",
       ])
+    }),
+  )
+
+  itDiscovery.instance("does not report a test target hidden in nested Swift block comments", () =>
+    Effect.gen(function* () {
+      observedManifestReads.length = 0
+      const detectInfo = yield* RepoDetectTool
+      const detect = yield* detectInfo.init()
+      const nested = yield* detect.execute({ path: "nested-commented-swift-test" }, ctx)
+      expect(nested.metadata.status).toBe("CURRENT")
+      expect(nested.output).not.toContain("test target: declared")
+      expect(observedManifestReads).toEqual(["nested-commented-swift-test/Package.swift"])
+    }),
+  )
+
+  itDiscovery.instance("does not report JUnit when Maven dependency excludes JUnit", () =>
+    Effect.gen(function* () {
+      observedManifestReads.length = 0
+      const detectInfo = yield* RepoDetectTool
+      const detect = yield* detectInfo.init()
+      const result = yield* detect.execute({ path: "maven-exclusion-junit" }, ctx)
+      expect(result.metadata.status).toBe("CURRENT")
+      expect(result.output).not.toContain("test framework: JUnit declared")
+      expect(observedManifestReads).toEqual(["maven-exclusion-junit/pom.xml"])
+    }),
+  )
+
+  itDiscovery.instance("does not report test project when .NET project explicitly declares IsTestProject false or in commented .sln", () =>
+    Effect.gen(function* () {
+      observedManifestReads.length = 0
+      const detectInfo = yield* RepoDetectTool
+      const detect = yield* detectInfo.init()
+      const nonTest = yield* detect.execute({ path: "explicit-non-test-csproj" }, ctx)
+      expect(nonTest.metadata.status).toBe("CURRENT")
+      expect(nonTest.output).not.toContain("test project: declared")
+
+      const commentedSln = yield* detect.execute({ path: "commented-sln" }, ctx)
+      expect(commentedSln.metadata.status).toBe("CURRENT")
+      expect(commentedSln.output).not.toContain("test project: declared")
+      expect(observedManifestReads).toEqual([
+        "explicit-non-test-csproj/sample.csproj",
+        "commented-sln/sample.sln",
+      ])
+    }),
+  )
+
+  itDiscovery.instance("does not report test configuration for inline commented pyproject test tables or descriptions", () =>
+    Effect.gen(function* () {
+      observedManifestReads.length = 0
+      const detectInfo = yield* RepoDetectTool
+      const detect = yield* detectInfo.init()
+      const result = yield* detect.execute({ path: "inline-comment-pyproject" }, ctx)
+      expect(result.metadata.status).toBe("CURRENT")
+      expect(result.output).not.toContain("test configuration: declared")
+      expect(observedManifestReads).toEqual(["inline-comment-pyproject/pyproject.toml"])
+    }),
+  )
+
+  itDiscovery.instance("does not mistake Poetry CLI scripts for test configuration", () =>
+    Effect.gen(function* () {
+      observedManifestReads.length = 0
+      const detectInfo = yield* RepoDetectTool
+      const detect = yield* detectInfo.init()
+      const result = yield* detect.execute({ path: "poetry-scripts-pyproject" }, ctx)
+      expect(result.metadata.status).toBe("CURRENT")
+      expect(result.output).not.toContain("test configuration: declared")
+      expect(observedManifestReads).toEqual(["poetry-scripts-pyproject/pyproject.toml"])
+    }),
+  )
+
+  itDiscovery.instance("does not report a Cargo test target hidden inside a TOML string", () =>
+    Effect.gen(function* () {
+      observedManifestReads.length = 0
+      const detectInfo = yield* RepoDetectTool
+      const detect = yield* detectInfo.init()
+      const hidden = yield* detect.execute({ path: "string-cargo-test" }, ctx)
+      expect(hidden.metadata.status).toBe("CURRENT")
+      expect(hidden.output).not.toContain("test target: declared")
+
+      const active = yield* detect.execute({ path: "active-cargo-test" }, ctx)
+      expect(active.output).toContain("test target: declared")
+      expect(observedManifestReads).toEqual([
+        "string-cargo-test/Cargo.toml",
+        "active-cargo-test/Cargo.toml",
+      ])
+    }),
+  )
+
+  itDiscovery.instance("does not report test framework for inline commented Gemfile dependencies", () =>
+    Effect.gen(function* () {
+      observedManifestReads.length = 0
+      const detectInfo = yield* RepoDetectTool
+      const detect = yield* detectInfo.init()
+      const result = yield* detect.execute({ path: "inline-comment-gemfile" }, ctx)
+      expect(result.metadata.status).toBe("CURRENT")
+      expect(result.output).not.toContain("test framework: declared")
+      expect(observedManifestReads).toEqual(["inline-comment-gemfile/Gemfile"])
     }),
   )
 
@@ -824,6 +1098,21 @@ describe("tool.repo-tools", () => {
       expect(observedStructureCalls[0]?.query).not.toHaveProperty("sourceGeneration")
       expect(result.output).toContain("src/a.ts")
       expect(result.output).toContain("function entry")
+    }),
+  )
+
+  itRepoStructure.instance("fails closed for unknown-freshness pages without a continuation cursor", () =>
+    Effect.gen(function* () {
+      const info = yield* SymbolsSearchTool
+      const tool = yield* info.init()
+
+      for (const path of ["unknown-current", "unknown-partial"]) {
+        const result = yield* tool.execute({ query: "entry", path }, ctx)
+        expect(result.metadata.status).toBe("UNAVAILABLE")
+        expect(result.metadata.count).toBe(0)
+        expect(result.output).toContain("status: UNAVAILABLE")
+        expect(result.output).not.toContain("src/a.ts")
+      }
     }),
   )
 

@@ -172,6 +172,106 @@ it.effect("redacts lower-level keyring details from Auth errors", () =>
   }),
 )
 
+it.effect("credentialed provider dispatch fails closed before any broker use without a Guarded supervisor", () =>
+  Effect.gen(function* () {
+    let authorizeUseCalls = 0
+    let withUseCalls = 0
+    let hostCalls = 0
+    // No Guard authorizer and no session supervisor: exactly the production
+    // shape before P1/P2 install the Guarded HostKernel provider routes. Both
+    // credentialed lanes must refuse without minting a SecretBroker lease or
+    // releasing credential bytes.
+    const broker = {
+      put: async () => { throw new Error("credential write must not run") },
+      describe: async () => { throw new Error("credential metadata must not run") },
+      listByProviderIds: async () => [],
+      revoke: async () => { throw new Error("credential revoke must not run") },
+      authorizeUse: async () => {
+        authorizeUseCalls++
+        throw new Error("credential lease must not be minted")
+      },
+      withUse: async () => {
+        withUseCalls++
+        throw new Error("credential bytes must not be released")
+      },
+    }
+    const auth = Auth.makeService(broker)
+
+    const managed = yield* Effect.exit(
+      auth.dispatchAuthorizedManagedProviderRequest({
+        authorization: {} as never,
+        expected: {} as never,
+        managedAttempt: {} as never,
+        route: {} as never,
+        prepared: {} as never,
+      }),
+    )
+    expect(Exit.isFailure(managed)).toBe(true)
+    if (Exit.isFailure(managed)) {
+      expect(Cause.prettyErrors(managed.cause).map(String).join(" ")).toContain(
+        "Guarded managed provider dispatch is unavailable",
+      )
+    }
+
+    const search = yield* Effect.exit(
+      auth.dispatchAuthorizedSearchRequest({
+        authorization: {} as never,
+        scope: {} as never,
+      }),
+    )
+    expect(Exit.isFailure(search)).toBe(true)
+    if (Exit.isFailure(search)) {
+      expect(Cause.prettyErrors(search.cause).map(String).join(" ")).toContain(
+        "Guarded provider request dispatch is unavailable",
+      )
+    }
+
+    const lease = yield* Effect.exit(
+      auth.authorizeCredentialUse({
+        schemaVersion: 1,
+        secretRef: "secret_guard_probe" as SecretBrokerV1.SecretRef,
+        providerId: "test-provider",
+        operationDigest: `sha256:${"b".repeat(64)}` as SecretBrokerV1.SecretOperationDigest,
+        destination: "https://api.example.test/v1/responses",
+        purpose: "PROVIDER_REQUEST",
+        expiresAt: new Date(Date.now() + 30_000).toISOString(),
+        maxRequests: 1,
+      }),
+    )
+    expect(Exit.isFailure(lease)).toBe(true)
+
+    // With a supervisor installed, a foreign or already-consumed permit still
+    // must not reach HostKernel or the broker: the one-use handle is consumed
+    // before any lease or dispatch authority is derived from it.
+    const supervisor = {
+      requestHostKernel: () => {
+        hostCalls++
+        return Effect.die("HostKernel must not be reached for a foreign permit")
+      },
+    } as never
+    const authWithSupervisor = Auth.makeService(broker, undefined, supervisor)
+    const foreign = yield* Effect.exit(
+      authWithSupervisor.dispatchAuthorizedManagedProviderRequest({
+        authorization: {} as never,
+        expected: {} as never,
+        managedAttempt: {} as never,
+        route: {} as never,
+        prepared: {} as never,
+      }),
+    )
+    expect(Exit.isFailure(foreign)).toBe(true)
+    if (Exit.isFailure(foreign)) {
+      expect(Cause.prettyErrors(foreign.cause).map(String).join(" ")).toContain(
+        "Guarded managed provider request is unavailable",
+      )
+    }
+
+    expect(authorizeUseCalls).toBe(0)
+    expect(withUseCalls).toBe(0)
+    expect(hostCalls).toBe(0)
+  }),
+)
+
 it.effect("projects only one available opaque search credential per fixed route", () =>
   Effect.gen(function* () {
     const metadata = (secretRef: string, providerId: string, status: SecretBrokerV1.SecretStatusV1 = "AVAILABLE") =>

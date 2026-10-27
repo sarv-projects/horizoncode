@@ -5782,7 +5782,7 @@ impl EffectHost {
             validate_identifier(effect_id)?;
             validate_identifier(user_action_id)?;
             if principal.is_empty() || principal.chars().any(char::is_control)
-                || !guard::is_automation_definition_action(capability_id)
+                || !guard::is_guarded_control_action(capability_id)
                 || !is_blake3_digest(input_digest) || !is_blake3_digest(lease_digest)
             { return Err(Failure::Invalid); }
             Ok(())
@@ -5841,7 +5841,7 @@ impl EffectHost {
         lease_digest: &str,
     ) -> Result<GuardedControlEffectStateV1, TypedErrorV1> {
         if !is_blake3_digest(input_digest) || !is_blake3_digest(lease_digest)
-            || !guard::is_automation_definition_action(capability_id)
+            || !guard::is_guarded_control_action(capability_id)
         { return Err(Failure::Invalid.error()); }
         let challenge = load_challenge(&self.connection, challenge_id)
             .map_err(Failure::error)?.ok_or_else(|| Failure::NotFound.error())?;
@@ -5885,7 +5885,7 @@ impl EffectHost {
             "UPDATE effect_challenges SET status='SETTLED',receipt_digest=?1
              WHERE challenge_id=?2 AND effect_id=?3 AND status IN ('PREPARED','UNKNOWN')
                AND capability_lease_digest=?4 AND capability_id IN
-                 ('automations.create','automations.update','automations.enable','automations.disable')",
+                 ('automations.create','automations.update','automations.enable','automations.disable','secrets.put','secrets.rotate','secrets.revoke','secrets.use')",
             params![receipt_digest, challenge_id, effect_id, lease_digest],
         ).map_err(|_| Failure::Unavailable.error())?;
         if changed == 1 { return Ok(()); }
@@ -12032,7 +12032,7 @@ impl EffectHost {
         let user_action_id = text(fields, "userActionId")?;
         validate_identifier(user_action_id)?;
         let capability_id = text(fields, "capabilityId")?;
-        if guard::is_automation_definition_action(capability_id) {
+        if guard::is_guarded_control_action(capability_id) {
             if !session_id.is_empty()
                 || fields.contains_key("managedAttempt")
                 || fields.contains_key("directAttempt")
@@ -12116,7 +12116,7 @@ impl EffectHost {
         arguments: &Value,
         attempt_scope_digest: Option<String>,
     ) -> Result<Value, Failure> {
-        if !guard::is_automation_definition_action(capability_id)
+        if !guard::is_guarded_control_action(capability_id)
             && capability_id != guard::AGENTS_MESSAGE_ID
         {
             return Err(Failure::Invalid);
@@ -14554,20 +14554,23 @@ impl EffectHost {
             };
             for (effect_id, encoded) in pending {
                 let Some(encoded) = encoded else { continue; };
-                let Ok(value) = crate::messagepack::decode(&encoded, FRAME_LIMITS) else { continue; };
-                let Ok(identity) = crate::cgroup_v2::CgroupIdentityV1::from_value(&value) else { continue; };
-                let Some(challenge) = load_effect(&self.connection,&effect_id)? else { continue; };
+                let value = crate::messagepack::decode(&encoded, FRAME_LIMITS)
+                    .map_err(|_| Failure::Unknown)?;
+                let identity = crate::cgroup_v2::CgroupIdentityV1::from_value(&value)
+                    .map_err(|_| Failure::Unknown)?;
+                let challenge = load_effect(&self.connection,&effect_id)?
+                    .ok_or(Failure::Unknown)?;
                 let expected_kind = match challenge.capability_id.as_str() {
                     guard::TERMINAL_RUN_ID => "terminal_run",
                     guard::TERMINAL_START_ID => "terminal_start",
-                    _ => continue,
+                    _ => return Err(Failure::Unknown),
                 };
                 if identity.effect_id != effect_id
                     || identity.capability_lease_digest != challenge.capability_lease_digest.as_deref().unwrap_or_default()
                     || identity.execution_principal != challenge.principal
                     || identity.attempt_scope_digest != challenge.managed_attempt_digest
                     || identity.process_kind != expected_kind
-                { continue; }
+                { return Err(Failure::Unknown); }
                 let Ok(proof) = crate::cgroup_v2::ExecutionCgroupV2::kill_and_confirm_empty(&identity) else { continue; };
                 self.connection.execute(
                     "UPDATE terminal_runs SET quiescence_digest=?1
@@ -17472,6 +17475,120 @@ fn classify_direct_mode_challenge(
 }
 
 #[cfg(test)]
+mod managed_provider_inference_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn blake(seed: u8) -> String {
+        format!("blake3:{}", [seed; 32].iter().map(|b| format!("{b:02x}")).collect::<String>())
+    }
+    fn sha(seed: u8) -> String {
+        format!("sha256:{}", [seed; 32].iter().map(|b| format!("{b:02x}")).collect::<String>())
+    }
+
+    fn open_provider_host(name: &str) -> (std::path::PathBuf, EffectHost) {
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let base = std::env::temp_dir().join(format!("hz-provider-infer-{name}-{}-{nonce}", std::process::id()));
+        let state = base.join("state");
+        let workspace = base.join("workspace");
+        fs::create_dir_all(&state).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        fs::set_permissions(&base, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+        let host = EffectHost::open(&state, Some(&workspace)).unwrap();
+        (base, host)
+    }
+
+    fn provider_binding(provider_request_id: &str) -> ManagedProviderPrepareBindingV1 {
+        ManagedProviderPrepareBindingV1 {
+            attempt_id: "attempt_infer_test".to_owned(),
+            managed_attempt_digest: blake(0xa1),
+            owner_epoch: 7,
+            provider_request_id: provider_request_id.to_owned(),
+            request_id: "req_infer_test".to_owned(),
+            request_sequence: 1,
+            context_selection_digest: blake(0xb2),
+            request_digest: blake(0xc3),
+            operation_digest: sha(0xd4),
+            transport_request_digest: blake(0xe5),
+            provider_id: "test".to_owned(),
+            model_id: "test-model".to_owned(),
+            harness_id: "native-rich".to_owned(),
+            route_id: "llm_test".to_owned(),
+            endpoint_revision: blake(0xf6),
+            credential_ref: None,
+            permission_scope_digest: blake(0x17),
+            principal: "server_auth:reviewer".to_owned(),
+            session_id: "ses_infer_test".to_owned(),
+            location_id: "loc_infer_test".to_owned(),
+            batch_id: "batch_infer_test".to_owned(),
+            call_id: "call_infer_test".to_owned(),
+            workspace_revision: blake(0x28),
+            budget_lease_id: "budget_infer_test".to_owned(),
+            budget_authority_digest: blake(0x39),
+            max_tokens: 100,
+            max_cost_micros: 100,
+        }
+    }
+
+    fn dispatch_status(host: &EffectHost, provider_request_id: &str) -> Option<String> {
+        host.connection
+            .query_row(
+                "SELECT status FROM provider_inference_dispatches WHERE provider_request_id=?1",
+                [provider_request_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap()
+    }
+
+    fn dispatch_count(host: &EffectHost) -> i64 {
+        host.connection
+            .query_row("SELECT COUNT(*) FROM provider_inference_dispatches", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    /// A prepared provider-inference challenge is durably pinned as
+    /// AWAITING_APPROVAL and never dispatched: it is a Guard challenge, not a
+    /// send. An identical retry recovers the same challenge (one-use idempotency
+    /// key) instead of minting a second approval, and a different binding digest
+    /// reusing the same provider request ID is rejected as a conflict so a
+    /// substituted request can never fall back onto an existing challenge.
+    #[test]
+    fn provider_inference_prepare_is_one_use_and_rejects_binding_substitution() {
+        let (base, mut host) = open_provider_host("prepare");
+        let binding = provider_binding("mpr_prepare_1");
+
+        // Guard asks (does not auto-allow) and the challenge is pinned
+        // AWAITING_APPROVAL — prepared, not dispatched, no provider call.
+        let prepared = host.prepare_managed_provider_inference(&binding).unwrap();
+        let status = prepared.get("status").and_then(|v| v.as_str()).unwrap_or_default();
+        assert_eq!(status, "needs_approval", "a valid managed provider-inference prepare must surface a Guard challenge");
+        assert_eq!(dispatch_status(&host, "mpr_prepare_1").as_deref(), Some("AWAITING_APPROVAL"));
+        assert_eq!(dispatch_count(&host), 1);
+
+        // An identical retry is idempotent: same challenge row, no second
+        // approval, still exactly one dispatch record.
+        let retry = host.prepare_managed_provider_inference(&binding).unwrap();
+        let retry_status = retry.get("status").and_then(|v| v.as_str()).unwrap_or_default();
+        assert_eq!(retry_status, "needs_approval");
+        assert_eq!(dispatch_count(&host), 1, "identical retry must not mint a second challenge");
+
+        // A different binding digest reusing the same provider request ID is a
+        // conflict, never a fallback onto the existing challenge.
+        let mut substituted = binding.clone();
+        substituted.max_tokens = 999;
+        let err = host.prepare_managed_provider_inference(&substituted).unwrap_err();
+        assert_eq!(err.code, "effect_conflict");
+        assert_eq!(dispatch_count(&host), 1, "substituted binding must not create or replace a dispatch");
+
+        drop(host);
+        let _ = fs::remove_dir_all(&base);
+    }
+}
+
+#[cfg(test)]
 mod direct_mode_classifier_tests {
     use super::{classify_direct_mode_batch, DirectModeBatchDecision, PlannedCall, PlannedEffect};
     use crate::guard::{DirectApprovalPolicyV1, DirectPermissionModeSourceV1, DirectSandboxModeV1, DirectSessionPermissionModeProjectionV1};
@@ -19256,6 +19373,279 @@ mod supervised_quiescence_tests {
             Some(marker),
             Some("explicit direct-session Full Access; no HorizonCode filesystem/network sandbox")
         );
+    }
+
+    #[test]
+    fn full_access_supervised_quiescence_requires_exact_marker_and_mode_pin() {
+        use std::{
+            fs,
+            os::unix::fs::PermissionsExt,
+            time::{SystemTime, UNIX_EPOCH},
+        };
+
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join(format!(".hz-terminal-full-access-quiescence-{}-{nonce}", std::process::id()));
+        let state = base.join("state");
+        let workspace = base.join("workspace");
+        fs::create_dir_all(&state).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        fs::set_permissions(&base, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&workspace, fs::Permissions::from_mode(0o700)).unwrap();
+        let host = EffectHost::open(&state, Some(&workspace)).unwrap();
+
+        let principal = "server_auth:terminal-test";
+        let marker = crate::terminal_process::FULL_ACCESS_GUARANTEE_RECORD;
+        let pin = |byte: u8| format!("blake3:{}", format!("{byte:02x}").repeat(32));
+        for (suffix, guarantee_record, mode_digest, allowed) in [
+            ("exact", marker.to_owned(), Some(pin(4)), true),
+            ("edited-marker", format!("{marker}."), Some(pin(4)), false),
+            ("missing-mode-pin", marker.to_owned(), None, false),
+        ] {
+            let effect_id = format!("effect_terminal_full_access_{suffix}");
+            let challenge_id = format!("challenge_terminal_full_access_{suffix}");
+            host.connection.execute(
+                "INSERT INTO terminal_runs(effect_id,status,cgroup_identity,quiescence_digest,created_at_ms)
+                 VALUES (?1,'PREPARED',NULL,NULL,1)",
+                [effect_id.as_str()],
+            ).unwrap();
+            let mode_revision = mode_digest.as_ref().map(|_| "1".to_owned());
+            host.connection.execute(
+                "INSERT INTO terminal_consent_preflights(
+                    challenge_id,effect_id,principal,owner_epoch,approved_arguments_digest,
+                    profile_digest,executable_digest,workspace_revision,launch_digest,
+                    binding_digest,guarantee_record,direct_permission_mode_digest,
+                    direct_permission_mode_revision,status,created_at_ms
+                 ) VALUES (?1,?2,?3,1,?4,?5,?6,?7,?8,?9,?10,?11,?12,'PREPARED',1)",
+                params![
+                    challenge_id,
+                    effect_id,
+                    principal,
+                    pin(1),
+                    pin(2),
+                    pin(3),
+                    pin(5),
+                    pin(6),
+                    pin(7),
+                    guarantee_record,
+                    mode_digest,
+                    mode_revision,
+                ],
+            ).unwrap();
+            let challenge = Challenge {
+                challenge_id: challenge_id.clone(),
+                effect_id: effect_id.clone(),
+                session_id: "session_terminal_test".to_owned(),
+                principal: principal.to_owned(),
+                batch_id: "batch_terminal_test".to_owned(),
+                call_id: "call_terminal_test".to_owned(),
+                capability_id: guard::TERMINAL_RUN_ID.to_owned(),
+                origin_kind: "user_action".to_owned(),
+                managed_attempt_digest: None,
+                relative_path: String::new(),
+                requested_path: String::new(),
+                target: String::new(),
+                resource: "process:terminal".to_owned(),
+                existed: false,
+                argument_digest: pin(1),
+                content_digest: pin(2),
+                turn_context_digest: pin(3),
+                expires_at_ms: 1,
+                status: "PREPARED".to_owned(),
+                after_digest: None,
+                capability_lease_digest: Some(pin(8)),
+                direct_session_grant_digest: None,
+                receipt_digest: None,
+            };
+
+            let actual = host.require_terminal_process_quiescence(
+                &effect_id,
+                &challenge,
+                "exited",
+                Some(0),
+            );
+            if allowed {
+                let actual = actual.expect("exact Full Access preflight permits supervised quiescence");
+                let expected = supervised_tree_quiescence_digest(
+                    b"horizoncode.terminal.supervised-tree-quiescence.v1",
+                    &effect_id,
+                    &challenge_id,
+                    "exited",
+                    Some(0),
+                );
+                assert_eq!(actual, expected);
+                assert!(is_blake3_digest(&actual));
+            } else {
+                assert!(
+                    matches!(actual, Err(Failure::Unknown)),
+                    "{suffix}: changed marker or missing mode pin must remain UNKNOWN"
+                );
+            }
+        }
+
+        drop(host);
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn malformed_persisted_terminal_cgroup_blocks_recovery() {
+        use std::{
+            fs,
+            os::unix::fs::PermissionsExt,
+            time::{SystemTime, UNIX_EPOCH},
+        };
+
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join(format!(".hz-terminal-malformed-cgroup-{}-{nonce}", std::process::id()));
+        let state = base.join("state");
+        let workspace = base.join("workspace");
+        fs::create_dir_all(&state).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        fs::set_permissions(&base, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&workspace, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut host = EffectHost::open(&state, Some(&workspace)).unwrap();
+        host.connection.execute(
+            "INSERT INTO terminal_runs(effect_id,status,cgroup_identity,quiescence_digest,created_at_ms)
+             VALUES ('effect_terminal_malformed_cgroup','PREPARED',?1,NULL,1)",
+            [vec![0xc1_u8]],
+        ).unwrap();
+
+        assert!(
+            matches!(host.reconcile_terminal_processes(), Err(Failure::Unknown)),
+            "recovery must not silently accept an undecodable persisted process-tree identity"
+        );
+        let status: String = host.connection.query_row(
+            "SELECT status FROM terminal_runs WHERE effect_id='effect_terminal_malformed_cgroup'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(status, "PREPARED", "unreconciled state must not be advanced");
+
+        drop(host);
+        assert!(
+            EffectHost::open(&state, Some(&workspace)).is_err(),
+            "EffectHost must remain unavailable when persisted process containment cannot be decoded"
+        );
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn terminal_quiescence_without_exact_persisted_proof_remains_unknown() {
+        use std::{
+            fs,
+            os::unix::fs::PermissionsExt,
+            time::{SystemTime, UNIX_EPOCH},
+        };
+
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join(format!(".hz-terminal-quiescence-{}-{nonce}", std::process::id()));
+        let state = base.join("state");
+        let workspace = base.join("workspace");
+        fs::create_dir_all(&state).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        fs::set_permissions(&base, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&workspace, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut host = EffectHost::open(&state, Some(&workspace)).unwrap();
+
+        for (suffix, cgroup_present) in [
+            ("cgroup-proof-missing", true),
+            ("full-access-preflight-missing", false),
+        ] {
+            let effect_id = format!("effect_terminal_{suffix}");
+            let challenge_id = format!("challenge_terminal_{suffix}");
+            let cgroup_identity = cgroup_present.then(|| {
+                let identity = crate::cgroup_v2::CgroupIdentityV1 {
+                    boot_id: "00000000-0000-4000-8000-000000000000".to_owned(),
+                    delegated_root: "/sys/fs/cgroup/hz-test".to_owned(),
+                    delegated_root_device: 1,
+                    delegated_root_inode: 2,
+                    delegated_root_owner_uid: 1000,
+                    relative_path: "hz/terminal_test".to_owned(),
+                    cgroup_device: 1,
+                    cgroup_inode: 3,
+                    cgroup_owner_uid: 1000,
+                    cgroup_hierarchy_hidden: true,
+                    execution_id: "exec_terminal_test".to_owned(),
+                    effect_id: effect_id.clone(),
+                    capability_lease_digest: format!("blake3:{}", "1".repeat(64)),
+                    execution_principal: "server_auth:terminal-test".to_owned(),
+                    attempt_scope_digest: None,
+                    owner_epoch: 7,
+                    process_generation: 3,
+                    process_kind: "terminal_run".to_owned(),
+                    profile_id: "terminal_profile_test".to_owned(),
+                    profile_revision: 2,
+                    profile_digest: format!("blake3:{}", "2".repeat(64)),
+                    executable_digest: format!("blake3:{}", "3".repeat(64)),
+                    resource_profile: "none".to_owned(),
+                    resource_profile_digest: format!(
+                        "blake3:{}",
+                        blake3::hash(b"horizoncode.resource-profile.none.v1\0").to_hex()
+                    ),
+                };
+                messagepack::encode(&identity.to_value(), FRAME_LIMITS).unwrap()
+            });
+            host.connection
+                .execute(
+                    "INSERT INTO terminal_runs(effect_id,status,cgroup_identity,quiescence_digest,created_at_ms)
+                     VALUES (?1,'PREPARED',?2,NULL,1)",
+                    rusqlite::params![effect_id.as_str(), cgroup_identity.as_deref()],
+                )
+                .unwrap();
+            let challenge = Challenge {
+                challenge_id: challenge_id.clone(),
+                effect_id: effect_id.clone(),
+                session_id: "session_terminal_test".to_owned(),
+                principal: "server_auth:terminal-test".to_owned(),
+                batch_id: "batch_terminal_test".to_owned(),
+                call_id: "call_terminal_test".to_owned(),
+                capability_id: guard::TERMINAL_RUN_ID.to_owned(),
+                origin_kind: "user_action".to_owned(),
+                managed_attempt_digest: None,
+                relative_path: String::new(),
+                requested_path: String::new(),
+                target: String::new(),
+                resource: "process:terminal".to_owned(),
+                existed: false,
+                argument_digest: String::new(),
+                content_digest: String::new(),
+                turn_context_digest: String::new(),
+                expires_at_ms: 1,
+                status: "PREPARED".to_owned(),
+                after_digest: None,
+                capability_lease_digest: None,
+                direct_session_grant_digest: None,
+                receipt_digest: None,
+            };
+
+            let result = host.require_terminal_process_quiescence(
+                &effect_id,
+                &challenge,
+                "exited",
+                Some(0),
+            );
+            assert!(
+                matches!(result, Err(Failure::Unknown)),
+                "{suffix}: no absent or incomplete quiescence evidence may settle the effect"
+            );
+            let durable: (String, Option<String>, Option<String>) = host
+                .connection
+                .query_row(
+                    "SELECT status,quiescence_digest,receipt_digest FROM terminal_runs WHERE effect_id=?1",
+                    [effect_id.as_str()],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap();
+            assert_eq!(durable, ("PREPARED".to_owned(), None, None));
+        }
+
+        drop(host);
+        fs::remove_dir_all(base).unwrap();
     }
 }
 

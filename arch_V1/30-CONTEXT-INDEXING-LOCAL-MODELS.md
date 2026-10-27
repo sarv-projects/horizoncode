@@ -316,6 +316,14 @@ manifest discovery
 
 Do not start an embedding model merely to open a project.
 
+**Current runtime status (2026-10-26):** semantic embeddings and semantic recall in this section
+and §30.20–30.22 are DESIGNED, not wired. `indexd` implements only bounded lexical `Text`
+queries; `Symbol`, `References`, `Impact` and `Expand` return typed unsupported
+(`indexd/src/repo_intel.rs:6-8,93-100`), and the crate has a single dependency (`indexd/Cargo.toml`).
+The self-corrections at §30.14 (line 518), §30.18 (line 689) and §30.21 (line 740) remain the
+detailed status/acceptance anchors and are not duplicated here. This status note does not weaken
+the target pipeline above.
+
 ## 30.8 SymbolIndexV2
 
 ```ts

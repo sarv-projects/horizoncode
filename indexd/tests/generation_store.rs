@@ -17,7 +17,7 @@ impl Scratch {
             std::process::id(),
             NEXT_DIR.fetch_add(1, Ordering::Relaxed)
         ));
-        fs::create_dir(&path).expect("create scratch directory");
+        fs::create_dir_all(&path).expect("create scratch directory");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

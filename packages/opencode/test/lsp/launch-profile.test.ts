@@ -707,9 +707,12 @@ describe("launch profile approval consent projection", () => {
   })
 
   test("rejects target, origin and summary fields that do not match the request", async () => {
+    const sparseTargets = new Array(1)
     for (const [label, over] of [
       ["no targets", { normalizedTargets: [], targets: [] }],
       ["target disagreement", { targets: [{ kind: "home_directory" }] }],
+      ["sparse target projections", { normalizedTargets: sparseTargets, targets: sparseTargets }],
+      ["sparse requested guarantees", { requestedGuarantees: new Array(1) }],
       ["oversized targets", {
         normalizedTargets: [{ kind: "registered_location_root", pad: "x".repeat(64 * 1024) }],
         targets: [{ kind: "registered_location_root", pad: "x".repeat(64 * 1024) }],
@@ -730,6 +733,16 @@ describe("launch profile approval consent projection", () => {
     }
   })
 
+  test("detaches HostKernel target objects from the returned approval", async () => {
+    const targets = [{ kind: "registered_location_root" }]
+    const result = await decode(challenge({ normalizedTargets: targets, targets }))
+
+    targets[0]!.kind = "attacker_mutated"
+
+    expect(result.approval.normalizedTargets[0]).toEqual({ kind: "registered_location_root" })
+    expect(Object.isFrozen(result.approval.normalizedTargets[0])).toBe(true)
+  })
+
   test("rejects an allow flag inconsistent with its own assessment", async () => {
     await expect(decode(challenge({
       allowEnabled: true,
@@ -745,6 +758,10 @@ describe("launch profile approval consent projection", () => {
 
     await expect(decode(challenge({
       guaranteeAssessment: { status: "assessed", residual: ["unknown_guarantee"] },
+    }))).rejects.toThrow("HostKernel launch approval assessment is incomplete or inconsistent")
+
+    await expect(decode(challenge({
+      guaranteeAssessment: { status: "assessed", residual: new Array(1) },
     }))).rejects.toThrow("HostKernel launch approval assessment is incomplete or inconsistent")
 
     // The same unavailable summary is admitted when it consistently denies.

@@ -25,6 +25,8 @@ import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionSchema } from "@opencode-ai/core/session/schema"
 import { SessionTable } from "@opencode-ai/core/session/sql"
 import sessionMetadataMigration from "@opencode-ai/core/database/migration/20260511173437_session-metadata"
+import managedSubagentConsumptionMigration from "@opencode-ai/core/database/migration/20261021110000_managed_subagent_consumption"
+import managedSubagentConsumptionProofMigration from "@opencode-ai/core/database/migration/20261023120000_managed_subagent_inbox_consumption_proof"
 import type { SqlClient as SqlClientService } from "effect/unstable/sql/SqlClient"
 import { Database } from "@opencode-ai/core/database/database"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
@@ -158,6 +160,22 @@ describe("DatabaseMigration", () => {
           { name: "session_message_session_time_created_id_idx" },
           { name: "session_message_session_type_seq_idx" },
         ])
+      }),
+    )
+  })
+
+  test("replaying managed subagent consumption on a schema-complete table is idempotent", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* DatabaseMigration.apply(db)
+        yield* db.run(sql`DELETE FROM migration WHERE id = ${managedSubagentConsumptionMigration.id}`)
+
+        yield* DatabaseMigration.applyOnly(db, [managedSubagentConsumptionMigration])
+
+        expect(
+          yield* db.get(sql`SELECT name FROM pragma_table_info('managed_subagent_inbox') WHERE name = 'delivery_prompt_message_id'`),
+        ).toEqual({ name: "delivery_prompt_message_id" })
       }),
     )
   })
@@ -642,6 +660,33 @@ describe("DatabaseMigration", () => {
         yield* DatabaseMigration.applyOnly(db, [])
 
         expect(yield* db.get(sql`SELECT id FROM migration`)).toEqual({ id: "20260127222353_familiar_lady_ursula" })
+      }),
+    )
+  })
+
+  test("does not add consumption_proof_json when the create migration already defined it", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        // The create migration (20261021100000) already declares this column, so
+        // the follow-up add must be conditional; an unconditional ALTER fails
+        // with "duplicate column name" and blocks every CLI start.
+        yield* db.run(sql`CREATE TABLE managed_subagent_inbox (id text PRIMARY KEY, consumption_proof_json text)`)
+        yield* DatabaseMigration.applyOnly(db, [managedSubagentConsumptionProofMigration])
+        const columns = yield* db.all<{ name: string }>(sql`SELECT name FROM pragma_table_info('managed_subagent_inbox')`)
+        expect(columns.map((column) => column.name)).toEqual(["id", "consumption_proof_json"])
+      }),
+    )
+  })
+
+  test("adds consumption_proof_json to an inbox created before the column existed", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* db.run(sql`CREATE TABLE managed_subagent_inbox (id text PRIMARY KEY, consumption_ack_digest text)`)
+        yield* DatabaseMigration.applyOnly(db, [managedSubagentConsumptionProofMigration])
+        const columns = yield* db.all<{ name: string }>(sql`SELECT name FROM pragma_table_info('managed_subagent_inbox')`)
+        expect(columns.map((column) => column.name)).toEqual(["id", "consumption_ack_digest", "consumption_proof_json"])
       }),
     )
   })

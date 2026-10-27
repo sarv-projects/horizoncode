@@ -106,6 +106,13 @@ const languageBaseURL = (language: unknown) => (language as { config: { baseURL:
 const it = testEffect(LayerNode.compile(LayerNode.group([Provider.node, Env.node, Plugin.node])))
 const experimentalModels = testEffect(providerLayer({ enableExperimentalModels: true }))
 
+it.instance("does not expose a direct user-key provider route", () =>
+  Effect.gen(function* () {
+    const provider = yield* Provider.Service
+    expect("getDirectFreeLanguage" in provider).toBe(false)
+  }),
+)
+
 const unbundledProviderCalls = { add: 0 }
 const unbundledProviderLayer = testEffect(
   providerLayer(

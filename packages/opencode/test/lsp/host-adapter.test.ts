@@ -53,6 +53,70 @@ describe("LSP HostKernel adapter", () => {
     adapter.dispose()
   })
 
+  test("Guard denial of a server-request callback prevents HostKernel reply dispatch", async () => {
+    let signalReplyAuthorization!: () => void
+    const replyAuthorizationStarted = new Promise<void>((resolve) => {
+      signalReplyAuthorization = resolve
+    })
+    let replyAuthorizationCount = 0
+    let replyDispatchCount = 0
+    const adapter = makeHostLspProtocolAdapterV1({
+      context: {
+        hostProcessRef,
+        sessionID: "session-1",
+        locationID: "location-1",
+        workspaceRevision: digest("1"),
+      },
+      transport: {
+        async protocolOp() {
+          throw new Error("must not dispatch an operation")
+        },
+        async protocolRead() {
+          return {
+            hostProcessRef,
+            afterEventSequence: "0",
+            processIOSequence: "0",
+            workspaceRevision: digest("1"),
+            status: "RUNNING",
+            events: [{
+              protocol: "lsp",
+              messageKind: "server_request",
+              payload: {
+                eventSequence: "1",
+                requestID: "server-request-1",
+                method: "workspace/configuration",
+                params: { items: [] },
+              },
+            }],
+          }
+        },
+        async protocolReply() {
+          replyDispatchCount += 1
+          throw new Error("must not reply after Guard denial")
+        },
+      },
+      guard: {
+        async authorizeOperation() {
+          throw new Error("must not authorize an operation")
+        },
+        async authorizeReply() {
+          replyAuthorizationCount += 1
+          signalReplyAuthorization()
+          throw new Error("server reply denied")
+        },
+      },
+    })
+    adapter.onRequest("workspace/configuration", () => [])
+    adapter.listen()
+    await replyAuthorizationStarted
+    // Let the denied callback unwind through the adapter poll loop; this is an
+    // event-loop barrier, not a timing-based sleep.
+    await new Promise<void>((resolve) => setImmediate(resolve))
+
+    expect(replyAuthorizationCount).toBe(1)
+    expect(replyDispatchCount).toBe(0)
+    adapter.dispose()
+  })
   test("does not continue an admitted request after the adapter is disposed during authorization", async () => {
     let resolveAuthorization!: (lease: {
       effectID: string
@@ -159,4 +223,82 @@ describe("LSP HostKernel adapter", () => {
     })
     expect(dispatchCount).toBe(0)
   })
+
+  test("does not authorize a server-request reply after disposal during its Core handler", async () => {
+    let resolveHandler!: (value: unknown) => void
+    let enterHandler!: () => void
+    const handlerEntered = new Promise<void>((resolve) => {
+      enterHandler = resolve
+    })
+    let authorizeReplyCount = 0
+    let protocolReplyCount = 0
+    const adapter = makeHostLspProtocolAdapterV1({
+      context: {
+        hostProcessRef,
+        sessionID: "session-1",
+        locationID: "location-1",
+        workspaceRevision: digest("1"),
+      },
+      transport: {
+        async protocolOp() {
+          throw new Error("must not dispatch")
+        },
+        async protocolRead() {
+          return {
+            hostProcessRef,
+            afterEventSequence: "0",
+            processIOSequence: "0",
+            workspaceRevision: digest("1"),
+            status: "RUNNING",
+            events: [{
+              protocol: "lsp",
+              messageKind: "server_request",
+              payload: {
+                eventSequence: "1",
+                requestID: "server-request-1",
+                method: "workspace/configuration",
+                params: { items: [] },
+              },
+            }],
+          }
+        },
+        async protocolReply() {
+          protocolReplyCount += 1
+          throw new Error("must not reply")
+        },
+      },
+      guard: {
+        async authorizeOperation() {
+          throw new Error("must not authorize an operation")
+        },
+        async authorizeReply() {
+          authorizeReplyCount += 1
+          return {
+            effectID: "effect-1",
+            challengeID: "challenge-1",
+            capabilityID: "language.start",
+            capabilityLeaseDigest: digest("2"),
+          }
+        },
+      },
+    })
+    adapter.onRequest("workspace/configuration", () => {
+      enterHandler()
+      return new Promise((resolve) => {
+        resolveHandler = resolve
+      })
+    })
+    adapter.listen()
+    await handlerEntered
+
+    adapter.dispose()
+    resolveHandler([])
+    // The callback continuation is queued before this marker, so this observes
+    // whether it crossed into Guard authorization without relying on a timeout.
+    await new Promise<void>((resolve) => queueMicrotask(resolve))
+
+    expect(authorizeReplyCount).toBe(0)
+    expect(protocolReplyCount).toBe(0)
+  })
+
 })

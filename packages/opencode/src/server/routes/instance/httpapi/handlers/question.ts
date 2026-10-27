@@ -24,6 +24,7 @@ export const questionHandlers = HttpApiBuilder.group(InstanceHttpApi, "question"
       const instanceDirectory = yield* InstanceState.directory
       const workspaceID = yield* InstanceState.workspaceID
       let sessionID = request.sessionID
+      let matchedOwner = false
       const seen = new Set<string>()
       for (let depth = 0; depth < 32; depth++) {
         if (seen.has(sessionID)) return false
@@ -35,9 +36,14 @@ export const questionHandlers = HttpApiBuilder.group(InstanceHttpApi, "question"
         if (session.workspaceID !== undefined && session.workspaceID !== workspaceID) return false
         const owner = session.metadata?.horizonPrincipalOwner
         if (owner !== undefined) {
-          return ownerMatchesPrincipal(principal, owner)
+          // Validate every recorded owner in the chain. Returning at the first
+          // match would let a child owner hide conflicting authority metadata
+          // on an ancestor.
+          if (!ownerMatchesPrincipal(principal, owner)) return false
+          matchedOwner = true
         }
         if (!session.parentID) {
+          if (matchedOwner) return true
           // Compatibility applies only to an ownerless root created in this
           // exact instance directory; it is never inherited from request data.
           return legacyHostRootCompatible(principal, {

@@ -321,3 +321,77 @@ describe("caller-supplied envelope requestID", () => {
     expect(sent).toHaveLength(0)
   })
 })
+
+describe("Core -> HostKernel service-ID contract", () => {
+  /**
+   * CRITICAL direct-turn regression guard.
+   *
+   * `requestHostKernel(serviceID, operation, ...)` passes the service ID verbatim
+   * onto the wire, and the Rust HostKernel only registers the `<NAME>_SERVICE_ID`
+   * constants declared in `kernel/src/host_kernel.rs`. An unregistered ID is
+   * rejected by the kernel allowlist with `capability_unavailable / "service is
+   * unavailable"` -- the exact failure that killed every direct prompt when the
+   * four direct-session permission-mode and grant-preflight call sites still sent
+   * `effects.v1` after the kernel moved the effects service to `effects.v2`.
+   *
+   * Pure source-to-source contract: no socket, no host process, no provider or
+   * effect dispatch.
+   */
+  const DIRECT_EFFECT_OPERATIONS = [
+    "direct_session_permission_mode_snapshot",
+    "set_direct_session_permission_mode",
+    "preflight_direct_session_grant_protocol_effect",
+    "preflight_direct_session_grant_batch",
+  ] as const
+
+  type CallSite = {
+    readonly file: string
+    readonly line: number
+    readonly service: string
+    readonly operation: string | undefined
+  }
+
+  async function contract() {
+    const { readFileSync, readdirSync } = await import("node:fs")
+    const { join, resolve } = await import("node:path")
+    const repoRoot = resolve(import.meta.dir, "../../..")
+    const coreSourceRoot = join(repoRoot, "packages/core/src")
+    const kernelSource = readFileSync(join(repoRoot, "kernel/src/host_kernel.rs"), "utf8")
+    const registered = new Set<string>()
+    for (const match of kernelSource.matchAll(/SERVICE_ID:\s*&str\s*=\s*"([a-z0-9][a-z0-9._-]*)"/g)) {
+      registered.add(match[1]!)
+    }
+    expect(registered.size).toBeGreaterThan(0)
+    const sites: Array<CallSite> = []
+    for (const relative of readdirSync(coreSourceRoot, { recursive: true })) {
+      const file = String(relative)
+      if (!file.endsWith(".ts")) continue
+      const source = readFileSync(join(coreSourceRoot, file), "utf8")
+      for (const match of source.matchAll(/requestHostKernel\(\s*"([a-z0-9][a-z0-9._-]*)"(?:\s*,\s*"([a-z0-9][a-z0-9_.-]*)")?/g)) {
+        sites.push({ file, line: source.slice(0, match.index ?? 0).split("\n").length, service: match[1]!, operation: match[2] })
+      }
+    }
+    return { registered, sites }
+  }
+
+  test("every HostKernel service ID Core sends is registered by the Rust kernel", async () => {
+    const { registered, sites } = await contract()
+    expect(sites.length).toBeGreaterThanOrEqual(40)
+    const stale = sites
+      .filter((site) => !registered.has(site.service))
+      .map((site) => `packages/core/src/${site.file}:${site.line} sends "${site.service}"`)
+    expect(stale).toEqual([])
+  })
+
+  test("direct-session permission-mode and grant-preflight RPCs are sent under effects.v2", async () => {
+    const { registered, sites } = await contract()
+    expect(registered.has("effects.v2")).toBe(true)
+    for (const operation of DIRECT_EFFECT_OPERATIONS) {
+      const callSites = sites.filter((site) => site.operation === operation)
+      expect(callSites.length).toBeGreaterThanOrEqual(1)
+      expect(callSites.map((site) => `packages/core/src/${site.file}:${site.line} -> ${site.service}`)).toEqual(
+        callSites.map((site) => `packages/core/src/${site.file}:${site.line} -> effects.v2`),
+      )
+    }
+  })
+})

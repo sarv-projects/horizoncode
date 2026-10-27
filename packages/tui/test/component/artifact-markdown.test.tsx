@@ -50,7 +50,11 @@ async function waitFor(predicate: () => boolean, timeout = 2_000) {
 async function waitForFrame(
   app: { renderOnce: () => Promise<unknown>; captureCharFrame: () => string },
   predicate: (frame: string) => boolean,
-  timeout = 2_000,
+  // The isolated raster worker settles asynchronously and the render loop shares
+  // the host with the rest of the suite; a 2s budget passed in isolation but
+  // missed under a combined `test/component/ test/context/` run. The predicate
+  // stays exact, so a larger budget only waits longer for the same frame.
+  timeout = 10_000,
 ) {
   const start = Date.now()
   let lastFrame = ""
@@ -170,6 +174,7 @@ test("never requests an isolated raster for a streaming sample source", async ()
   const { app } = await mount(SAFE_SVG_BLOCK, false, renderer)
   try {
     const frame = await waitForFrame(app, (value) => value.includes("svg"))
+    expect(frame).toContain("Derived artifact preview: SAMPLE")
     expect(frame).not.toContain("pending in the isolated worker")
     expect(frame).not.toContain("worker_unavailable")
     expect(renderer.stats()).toMatchObject({ requests: 0, completed: 0, failed: 0 })

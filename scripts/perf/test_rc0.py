@@ -51,6 +51,17 @@ class Rc0UnsupportedPlatformTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 rc0.append_capture_output(partial, b'{"new":"row"}\n')
 
+    def test_capture_output_rejects_group_or_world_accessible_existing_file(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as directory:
+            output = Path(directory) / 'capture.jsonl'
+            output.write_bytes(b'{"private":"prior"}\n')
+            output.chmod(0o640)
+
+            with self.assertRaisesRegex(ValueError, 'private'):
+                rc0.append_capture_output(output, b'{"private":"new"}\n')
+
+            self.assertEqual(output.read_bytes(), b'{"private":"prior"}\n')
+
 
 def measured_session(session_id):
     pid, start = {'s1': (101, 1), 's2': (102, 2)}[session_id]
@@ -343,6 +354,26 @@ class Rc0AttestationSignatureTests(unittest.TestCase):
                         {'test-only': rc0.hmac_sha256_verifier(key or self.KEY)}):
             return rc0.verify_attestation(attestation)
 
+    def test_capture_row_exports_only_verified_owner_attestation_provenance(self):
+        attestation = self.attestation()
+        with patch.object(rc0, 'TRUSTED_ATTESTATION_SOURCES', ('test-only',)), \
+             patch.dict(rc0.TRUSTED_ATTESTATION_VERIFIERS,
+                        {'test-only': rc0.hmac_sha256_verifier(self.KEY)}):
+            self.assertEqual(rc0.capture_attestation_provenance(attestation), {
+                'owner_attestation_source': 'test-only',
+                'owner_attestation_signature_digest':
+                    attestation.source_signature_digest,
+            })
+            self.assertEqual(rc0.capture_attestation_provenance(None), {
+                'owner_attestation_source': None,
+                'owner_attestation_signature_digest': None,
+            })
+            tampered = self.attestation()
+            object.__setattr__(tampered, 'source_signature',
+                               'hmac-sha256:' + 'f' * 64)
+            with self.assertRaisesRegex(ValueError, 'does not verify'):
+                rc0.capture_attestation_provenance(tampered)
+
     def test_keyed_signature_over_the_exact_payload_verifies(self):
         self.assertTrue(self.verify(self.attestation()))
 
@@ -528,9 +559,12 @@ class Rc0AttestationKeyLoaderTests(unittest.TestCase):
             redirected.symlink_to(target.parent, target_is_directory=True)
             with self.assertRaisesRegex(ValueError, 'without following directory links'):
                 rc0.load_attestation_key(redirected / target.name)
-            with self.assertRaisesRegex(ValueError, 'inside the repository'):
-                rc0.load_attestation_key(
-                    Path(__file__).resolve().parents[3] / 'outside.key')
+            repository = Path(__file__).resolve().parents[2]
+            simulated_module = repository / 'scripts' / 'perf' / 'nested' / 'rc0.py'
+            contained_sibling = repository / 'kernel' / 'outside.key'
+            with patch.object(rc0, '__file__', str(simulated_module)):
+                with self.assertRaisesRegex(ValueError, 'inside the repository'):
+                    rc0.load_attestation_key(contained_sibling)
             with self.assertRaisesRegex(ValueError, 'parent traversal'):
                 rc0.load_attestation_key('scripts/../../scripts/perf/attestation.key')
 
@@ -697,6 +731,20 @@ class Rc0AggregateTests(unittest.TestCase):
         self.assertIsNone(totals['metrics']['pss_bytes'])
 
 class Rc0BudgetTests(unittest.TestCase):
+    def test_budget_limits_and_charges_require_nonnegative_integers(self):
+        for kwargs in ({"max_bytes": True}, {"max_work": 1.5},
+                       {"max_bytes": -1}, {"max_work": "2"}):
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaisesRegex(ValueError, "budget limits must be nonnegative integers"):
+                    rc0.Budget(**kwargs)
+
+        budget = rc0.Budget(max_work=2)
+        for amount in (True, 0.5, "1", -1):
+            with self.subTest(amount=repr(amount)):
+                with self.assertRaisesRegex(ValueError, "work charge must be a nonnegative integer"):
+                    budget.charge_work(amount)
+        self.assertEqual(budget.work, 0)
+
     def test_source_read_cannot_exceed_remaining_byte_budget(self):
         with temporary_directory() as directory:
             path = Path(directory) / 'sample'
@@ -771,8 +819,8 @@ class Rc0InputBoundTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'regular file'):
                     rc0.load_outcomes(fifo)
 
-        with self.assertRaisesRegex(ValueError, 'inside the repository'):
-            rc0.load_outcomes(Path('/outside-agentx/outcomes.json'))
+        with self.assertRaisesRegex(ValueError, 'parent traversal'):
+            rc0.load_outcomes(Path('scripts/perf/../perf/outcomes.json'))
 
     def test_repository_input_closes_descriptors_when_directory_stat_fails(self):
         with temporary_directory() as directory:
@@ -1566,6 +1614,11 @@ class Rc0OwnerSampleAggregationTests(unittest.TestCase):
                 'status': 'NOT_PROVIDED', 'processIdentity': None, 'metrics': None},
             'workers': [worker],
             'aggregate': metrics,
+            'resourceLimits': [
+                {'dimension': dimension, 'status': 'UNSUPPORTED', 'enforced': False,
+                 'reason': 'worker OS quota backend is not integrated'}
+                for dimension in ('cpuTime', 'memory', 'processCount', 'fileDescriptors')
+            ],
             'productAttestation': {
                 'status': 'NOT_ATTESTED', 'hostRunReceiptRef': None,
                 'independentVerifierEvidenceRef': None, 'sourceCommit': None,
@@ -1720,6 +1773,85 @@ class Rc0OwnerSampleAggregationTests(unittest.TestCase):
             path.write_text(json.dumps(snapshot), encoding='utf-8')
             with self.assertRaisesRegex(ValueError, 'monitoring-only resource limit claims enforcement'):
                 rc0.load_owner_snapshot(path)
+
+    def test_schema_v3_resource_limits_use_strict_row_validation(self):
+        limits = [
+            {'dimension': dimension, 'status': 'UNSUPPORTED', 'enforced': False,
+             'reason': 'worker OS quota backend is not integrated'}
+            for dimension in ('cpuTime', 'memory', 'processCount', 'fileDescriptors')
+        ]
+        corruptions = (
+            ('unknown dimension', lambda rows: rows[0].__setitem__('dimension', 'gpuMemory')),
+            ('unknown status', lambda rows: rows[0].__setitem__('status', 'ENABLED')),
+            ('duplicate dimension', lambda rows: rows[1].__setitem__('dimension', 'cpuTime')),
+            ('forged ENFORCED claim', lambda rows: rows[0].update({
+                'status': 'ENFORCED', 'enforced': False, 'limit': '100',
+            })),
+        )
+        for label, corrupt in corruptions:
+            with self.subTest(resource_limit=label):
+                snapshot = self._owner_snapshot_with_worker()
+                snapshot['resourceLimits'] = json.loads(json.dumps(limits))
+                corrupt(snapshot['resourceLimits'])
+                with self.assertRaises(ValueError):
+                    self._load_owner_snapshot(snapshot)
+
+    def test_schema_v3_resource_limit_dimension_rejects_unhashable_json_values(self):
+        for malformed_dimension in ([], {}):
+            with self.subTest(dimension=malformed_dimension):
+                snapshot = self._owner_snapshot_with_worker()
+                snapshot['resourceLimits'] = [
+                    {'dimension': dimension, 'status': 'UNSUPPORTED', 'enforced': False,
+                     'reason': 'worker OS quota backend is not integrated'}
+                    for dimension in ('cpuTime', 'memory', 'processCount', 'fileDescriptors')
+                ]
+                snapshot['resourceLimits'][0]['dimension'] = malformed_dimension
+                with self.assertRaises(ValueError):
+                    self._load_owner_snapshot(snapshot)
+
+    def test_schema_v3_enforced_limit_shape_remains_untrusted_input(self):
+        snapshot = self._owner_snapshot_with_worker()
+        snapshot['resourceLimits'] = [
+            {'dimension': 'cpuTime', 'status': 'ENFORCED', 'enforced': True,
+             'limit': '100', 'reason': None},
+            *[{'dimension': dimension, 'status': 'UNSUPPORTED', 'enforced': False,
+               'reason': 'worker OS quota backend is not integrated'}
+              for dimension in ('memory', 'processCount', 'fileDescriptors')],
+        ]
+        ingested = self._load_owner_snapshot(snapshot)
+        self.assertEqual(ingested['resource_limits_provenance'], 'UNVERIFIED_CALLER_SUPPLIED')
+
+    def test_schema_v3_enforced_limit_must_fit_u64_wire_range(self):
+        snapshot = self._owner_snapshot_with_worker()
+        snapshot['resourceLimits'] = [
+            {'dimension': 'cpuTime', 'status': 'ENFORCED', 'enforced': True,
+             'limit': str(rc0.MAX_U64), 'reason': None},
+            *[{'dimension': dimension, 'status': 'UNSUPPORTED', 'enforced': False,
+               'reason': 'quota backend not integrated'}
+              for dimension in ('memory', 'processCount', 'fileDescriptors')],
+        ]
+        self.assertEqual(self._load_owner_snapshot(snapshot)['resource_limits'][0]['limit'],
+                         str(rc0.MAX_U64))
+
+        snapshot['resourceLimits'][0]['limit'] = str(rc0.MAX_U64 + 1)
+        with self.assertRaisesRegex(ValueError, 'positive verified limit'):
+            self._load_owner_snapshot(snapshot)
+
+    def test_schema_v3_monitoring_observation_must_fit_u64_wire_range(self):
+        snapshot = self._owner_snapshot_with_worker()
+        snapshot['resourceLimits'] = [
+            {'dimension': 'cpuTime', 'status': 'MONITORING_ONLY', 'enforced': False,
+             'observed': str(rc0.MAX_U64), 'reason': None},
+            *[{'dimension': dimension, 'status': 'UNSUPPORTED', 'enforced': False,
+               'reason': 'quota backend not integrated'}
+              for dimension in ('memory', 'processCount', 'fileDescriptors')],
+        ]
+        self.assertEqual(self._load_owner_snapshot(snapshot)['resource_limits'][0]['observed'],
+                         str(rc0.MAX_U64))
+
+        snapshot['resourceLimits'][0]['observed'] = str(rc0.MAX_U64 + 1)
+        with self.assertRaisesRegex(ValueError, 'monitoring-only observation'):
+            self._load_owner_snapshot(snapshot)
 
     def test_shared_reported_core_process_is_counted_once_but_unattested(self):
         metrics = {name: {'quality': 'MEASURED', 'value': '5'} for name in (
@@ -1933,9 +2065,9 @@ class Rc0DiskRootTests(unittest.TestCase):
         self.assertIsNone(result['bytes'])
 
     def test_parent_traversal_and_outside_paths_are_rejected(self):
-        for path in ('../outside', '/etc'):
-            with self.assertRaises(ValueError, msg=path):
-                rc0.repository_tree_bytes(path)
+        path = 'scripts/perf/../perf'
+        with self.assertRaises(ValueError, msg=path):
+            rc0.repository_tree_bytes(path)
 
     def test_symlinked_root_is_unknown_not_followed(self):
         with temporary_directory() as tmp:
@@ -2019,6 +2151,34 @@ class Rc0CacheEvidenceTests(unittest.TestCase):
         with temporary_directory() as tmp:
             with self.assertRaisesRegex(ValueError, 'exceeds'):
                 rc0.load_cache_evidence(self.write(tmp, envelope))
+
+    def test_cache_evidence_u64_wire_counters_reject_overflow(self):
+        too_large = str(rc0.MAX_U64 + 1)
+        cases = (
+            ('families', 0, 'generation'),
+            ('families', 0, 'allocatedBytes'),
+            ('families', 0, 'accountedSourceBytes'),
+            ('families', 0, 'entryCount'),
+            ('families', 0, 'maxBytes'),
+            ('families', 0, 'maxAccountedSourceBytes'),
+            ('families', 0, 'maxEntries'),
+            ('families', 0, 'ttlMs'),
+            ('families', 0, 'lastUsedMs'),
+            ('families', 0, 'ownerPinCount'),
+            (None, None, 'measuredBytes'),
+            (None, None, 'measuredEntries'),
+            (None, None, 'accountedSourceBytes'),
+        )
+        for container, index, field in cases:
+            with self.subTest(field=field):
+                envelope = self.envelope()
+                if container is None:
+                    envelope[field] = too_large
+                else:
+                    envelope[container][index][field] = too_large
+                with temporary_directory() as tmp:
+                    with self.assertRaisesRegex(ValueError, 'u64'):
+                        rc0.load_cache_evidence(self.write(tmp, envelope))
 
     def test_noncanonical_protection_class_is_rejected(self):
         envelope = self.envelope()
@@ -2615,6 +2775,399 @@ class ManagedPreAdmissionContractTests(unittest.TestCase):
         # Guard facts P1 must produce are consumed, never minted, by P8 pins.
         guard = (REPOSITORY / "kernel" / "src" / "guard.rs").read_text(encoding="utf-8")
         self.assertIn("pub(crate) fn derive_effective_capability_ceiling(", guard)
+
+
+class TrustedSourceRegistrationTests(unittest.TestCase):
+    """Item 45 — configuration/registration + verification path (trust boundary).
+
+    P2's authenticated HostRun chain has not fully landed, so registration must
+    fail closed against the real source, untrusted/empty registries must keep
+    every capture NOT_ATTESTED, and only a configured trusted source whose
+    registered verifier accepts an exact covering attestation may promote a
+    capture to ATTESTED/BASELINE.
+    """
+
+    KEY = b'\x44' * 32
+
+    def key_file(self, directory, name='trusted-source.key'):
+        directory = Path(directory)
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / name
+        path.write_bytes(self.KEY)
+        path.chmod(0o600)
+        return path
+
+    @staticmethod
+    def registration(key_path, *, drop=(), patches=None, extra=None):
+        value = {
+            'schema': 'horizoncode.rc0.trusted-source-registration.v1',
+            'source': 'horizoncore.owner.v1',
+            'algorithm': 'hmac-sha256',
+            'key_path': str(key_path),
+            'p2_hostrun': {
+                'bind_operation': 'managed.v1/host_run.bind',
+                'bind_identity_source': 'p8_frozen_invocation',
+                'receipt_operation': 'managed.v1/host_run.bind_receipt',
+                'cursor_resolution': 'durable_owner_log_resolved',
+                'mirror_event_kind': 'HostRunDispatchBoundV1',
+                'evidence_refs': ['p2-binding-receipt-1'],
+            },
+            'p1_projection': {
+                'projection_trait': 'HostRunEffectProjectionSourceV1',
+                'install_call': 'install_host_run_effect_projection_source',
+                'evidence_refs': ['p1-projection-1'],
+            },
+            'independent_verifier': {'evidence_refs': ['verifier-evidence-1']},
+        }
+        for key in drop:
+            value.pop(key)
+        for path_keys, change in (patches or {}).items():
+            target = value
+            for part in path_keys[:-1]:
+                target = target[part]
+            target[path_keys[-1]] = change
+        value.update(extra or {})
+        return value
+
+    @staticmethod
+    def attestation_file(directory, **overrides):
+        fields = {
+            'source': 'untrusted-caller-source',
+            'commit': 'abc123',
+            'session_ids': ['s1', 's2'],
+            'run_ids': ['r1', 'r2'],
+            'session_run_ids': [['s1', 'r1'], ['s2', 'r2']],
+            'session_owner_identities': [['s1', 101, '1'], ['s2', 102, '2']],
+            'host_run_receipt_refs': ['receipt-1', 'receipt-2'],
+            'independent_verifier_evidence_refs': ['evidence-1', 'evidence-2'],
+            'owner_log_event_digests': ['blake3:' + 'a' * 64, 'blake3:' + 'b' * 64],
+            'session_outcome_digests': [
+                [session, rc0.outcome_digest(outcome)]
+                for session, outcome in Rc0AttestationCoverageTests.outcomes().items()
+            ],
+            'source_signature_digest': 'sha256:' + 'c' * 64,
+            'source_signature': 'hmac-sha256:' + 'd' * 64,
+        }
+        fields.update(overrides)
+        path = Path(directory) / 'attestation.json'
+        path.write_text(json.dumps(fields), encoding='utf-8')
+        return path
+
+    def assert_registries_untouched(self):
+        self.assertEqual(rc0.TRUSTED_ATTESTATION_SOURCES, ())
+        self.assertEqual(rc0.TRUSTED_ATTESTATION_VERIFIERS, {})
+
+    # --- registry state and the exact cross-phase interface still needed ---
+
+    def test_registry_starts_unconfigured_and_gap_report_matches_the_source(self):
+        status = rc0.attestation_registry_status()
+        self.assertEqual(status['status'], 'NOT_CONFIGURED')
+        self.assertEqual(status['sources'], [])
+        self.assertEqual(status['verifiers'], [])
+        # Each gap must exist exactly while its *production* interface is
+        # absent, so a `#[cfg(test)]` mention in the same file can never close
+        # a production gap (P2 lands the bind resolver concurrently).
+        source = rc0._repository_source_text('kernel/src/host_kernel.rs')
+        gaps = '\n'.join(status['contract_gaps'])
+        bind_region = rc0._rust_function_region(source, 'managed_host_run_bind')
+        self.assertEqual('resolve_frozen_invocation(' not in bind_region,
+                         'bind_identity_source=' in gaps)
+        receipt_region = rc0._rust_function_region(
+            source, 'managed_host_run_bind_receipt')
+        self.assertEqual(
+            'resolve_host_run_dispatch_bound_receipt(' not in receipt_region,
+            'cursor_resolution=' in gaps)
+        self.assertEqual('host_run_effect_projection: Some(' not in source,
+                         'install_call=' in gaps)
+        for gap in status['contract_gaps']:
+            self.assertRegex(gap, r'(bind_identity_source|cursor_resolution|install_call)=')
+        self.assert_registries_untouched()
+
+    def test_registration_fails_closed_while_any_contract_gap_remains(self):
+        gaps = rc0.landed_hostrun_contract_gaps()
+        with temporary_directory() as directory:
+            registration = self.registration(self.key_file(directory))
+            if gaps:
+                expected_reason = 'HostRun chain lands'
+            else:
+                expected_reason = 'authenticated owner-registration provenance verifier'
+            with self.assertRaisesRegex(rc0.TrustedRegistrationError, expected_reason):
+                rc0.register_trusted_attestation_source(registration)
+            self.assert_registries_untouched()
+            self.assertEqual(rc0.attestation_registry_status()['status'],
+                             'NOT_CONFIGURED')
+
+    def test_registration_cannot_claim_a_landed_contract_from_the_payload(self):
+        with temporary_directory() as directory:
+            registration = self.registration(
+                self.key_file(directory),
+                patches={('p2_hostrun', 'bind_identity_source'): 'rpc_correlation_fields'})
+            with self.assertRaisesRegex(rc0.TrustedRegistrationError, 'p8_frozen_invocation'):
+                rc0.register_trusted_attestation_source(registration)
+        self.assert_registries_untouched()
+
+    def test_registration_rejects_shape_only_cursor_resolution(self):
+        with temporary_directory() as directory:
+            registration = self.registration(
+                self.key_file(directory),
+                patches={('p2_hostrun', 'cursor_resolution'): 'shape_validated'})
+            with self.assertRaisesRegex(rc0.TrustedRegistrationError, 'durable_owner_log_resolved'):
+                rc0.register_trusted_attestation_source(registration)
+        self.assert_registries_untouched()
+
+    def test_registration_rejects_missing_and_unknown_fields(self):
+        with temporary_directory() as directory:
+            key_path = self.key_file(directory)
+            with self.assertRaisesRegex(rc0.TrustedRegistrationError, 'missing'):
+                rc0.register_trusted_attestation_source(
+                    self.registration(key_path, drop=('p1_projection',)))
+            with self.assertRaisesRegex(rc0.TrustedRegistrationError, 'unknown'):
+                rc0.register_trusted_attestation_source(
+                    self.registration(key_path, extra={'caller_claimed_landed': True}))
+        self.assert_registries_untouched()
+
+    def test_registration_requires_distinct_nonempty_evidence(self):
+        with temporary_directory() as directory:
+            key_path = self.key_file(directory)
+            with self.assertRaisesRegex(rc0.TrustedRegistrationError, 'evidence'):
+                rc0.register_trusted_attestation_source(
+                    self.registration(key_path,
+                                      patches={('p2_hostrun', 'evidence_refs'): []}))
+            with self.assertRaisesRegex(rc0.TrustedRegistrationError, 'independent'):
+                rc0.register_trusted_attestation_source(
+                    self.registration(key_path, patches={
+                        ('independent_verifier', 'evidence_refs'): ['p2-binding-receipt-1'],
+                    }))
+        self.assert_registries_untouched()
+
+    def test_registration_requires_a_private_repository_key(self):
+        with temporary_directory() as directory:
+            repository = Path(__file__).resolve().parents[2]
+            simulated_module = repository / 'scripts' / 'perf' / 'nested' / 'rc0.py'
+            contained_sibling = repository / 'kernel' / 'outside.key'
+            with patch.object(rc0, '__file__', str(simulated_module)):
+                with self.assertRaisesRegex(ValueError, 'inside the repository'):
+                    rc0.load_attestation_key(contained_sibling)
+            with self.assertRaisesRegex(ValueError, 'cannot be opened safely'):
+                rc0.load_attestation_key(Path(directory) / 'absent.key')
+        self.assert_registries_untouched()
+
+    def test_registration_does_not_read_key_while_hostrun_gaps_remain(self):
+        with temporary_directory() as directory:
+            registration = self.registration(self.key_file(directory))
+            key_reads = []
+
+            def forbidden_key_read(_path):
+                key_reads.append(_path)
+                raise AssertionError('key read before HostRun gate')
+
+            with patch.object(rc0, 'landed_hostrun_contract_gaps',
+                              return_value=['test HostRun binding gap']), \
+                    patch.object(rc0, 'load_attestation_key', new=forbidden_key_read):
+                with self.assertRaisesRegex(rc0.TrustedRegistrationError,
+                                            'HostRun chain lands'):
+                    rc0.register_trusted_attestation_source(registration)
+            self.assertEqual(key_reads, [])
+        self.assert_registries_untouched()
+
+    def test_registration_does_not_read_key_without_owner_provenance_verifier(self):
+        with temporary_directory() as directory:
+            registration = self.registration(self.key_file(directory))
+            key_reads = []
+
+            def forbidden_key_read(_path):
+                key_reads.append(_path)
+                raise AssertionError('key read before owner verifier gate')
+
+            with patch.object(rc0, 'landed_hostrun_contract_gaps', return_value=[]), \
+                    patch.object(rc0, 'load_attestation_key', new=forbidden_key_read):
+                self.assertIsNone(rc0.TRUSTED_REGISTRATION_PROVENANCE_VERIFIER)
+                with self.assertRaisesRegex(
+                        rc0.TrustedRegistrationError,
+                        'authenticated owner-registration provenance verifier'):
+                    rc0.register_trusted_attestation_source(registration)
+                self.assertEqual(rc0.attestation_registry_status()['status'],
+                                 'NOT_CONFIGURED')
+            self.assertEqual(key_reads, [])
+        self.assert_registries_untouched()
+
+    def test_registration_rejects_unbound_callable_returning_true(self):
+        with temporary_directory() as directory:
+            registration = self.registration(self.key_file(directory))
+            original_sources = rc0.TRUSTED_ATTESTATION_SOURCES
+            original_verifiers = dict(rc0.TRUSTED_ATTESTATION_VERIFIERS)
+            callback_calls = []
+
+            def arbitrary_callback(_registration):
+                callback_calls.append(True)
+                return True
+
+            try:
+                with patch.object(rc0, 'landed_hostrun_contract_gaps', return_value=[]), \
+                        patch.object(rc0, 'TRUSTED_ATTESTATION_SOURCES', original_sources), \
+                        patch.dict(rc0.TRUSTED_ATTESTATION_VERIFIERS, {}, clear=True), \
+                        patch.object(rc0, 'TRUSTED_REGISTRATION_PROVENANCE_VERIFIER',
+                                     arbitrary_callback):
+                    with self.assertRaisesRegex(
+                            rc0.TrustedRegistrationError,
+                            'unbound.*owner-issued provenance verifier'):
+                        rc0.register_trusted_attestation_source(registration)
+                    self.assertEqual(callback_calls, [])
+                    self.assertEqual(rc0.attestation_registry_status()['status'],
+                                     'NOT_CONFIGURED')
+            finally:
+                rc0.TRUSTED_ATTESTATION_SOURCES = original_sources
+                rc0.TRUSTED_ATTESTATION_VERIFIERS.clear()
+                rc0.TRUSTED_ATTESTATION_VERIFIERS.update(original_verifiers)
+        self.assert_registries_untouched()
+
+    def test_registration_requires_owner_provenance_verifier_even_if_static_scan_is_clean(self):
+        with temporary_directory() as directory:
+            registration = self.registration(self.key_file(directory))
+            original_sources = rc0.TRUSTED_ATTESTATION_SOURCES
+            try:
+                with patch.object(rc0, 'landed_hostrun_contract_gaps', return_value=[]):
+                    with self.assertRaisesRegex(
+                            rc0.TrustedRegistrationError,
+                            'authenticated owner-registration provenance verifier'):
+                        rc0.register_trusted_attestation_source(registration)
+                    self.assertEqual(rc0.attestation_registry_status()['status'],
+                                     'NOT_CONFIGURED')
+            finally:
+                rc0.TRUSTED_ATTESTATION_SOURCES = original_sources
+                rc0.TRUSTED_ATTESTATION_VERIFIERS.pop('horizoncore.owner.v1', None)
+        self.assert_registries_untouched()
+
+    # --- capture-side verification path ------------------------------------
+
+    def test_empty_or_untrusted_registry_keeps_captures_not_attested(self):
+        with temporary_directory() as directory:
+            path = self.attestation_file(directory)
+            with self.assertRaisesRegex(ValueError, 'not a configured trusted owner source'):
+                rc0.load_attestation(path)
+        self.assertEqual(rc0.attestation_registry_status()['status'], 'NOT_CONFIGURED')
+        state = rc0.attestation_record_state(False, False)
+        self.assertEqual(state['owner_sample_attestation'], 'NOT_ATTESTED')
+        self.assertEqual(state['status'], 'NOT_BASELINE')
+        self.assertFalse(state['release_eligible'])
+        self.assertTrue(state['provisional_raw_sample'])
+        self.assertIn('attestation', state['blocked_reason'])
+
+    def test_load_attestation_requires_a_verified_keyed_signature(self):
+        selected = [('s1', (101, 1)), ('s2', (102, 2))]
+        attestation = Rc0AttestationCoverageTests.signed(
+            Rc0AttestationCoverageTests.forged_attestation(
+                source='horizoncore.owner.v1'), self.KEY)
+        payload = {
+            'source': attestation.source,
+            'commit': attestation.commit,
+            'session_ids': list(attestation.session_ids),
+            'run_ids': list(attestation.run_ids),
+            'session_run_ids': [list(pair) for pair in attestation.session_run_ids],
+            'session_owner_identities': [list(row) for row in
+                                         attestation.session_owner_identities],
+            'host_run_receipt_refs': list(attestation.host_run_receipt_refs),
+            'independent_verifier_evidence_refs': list(
+                attestation.independent_verifier_evidence_refs),
+            'owner_log_event_digests': list(attestation.owner_log_event_digests),
+            'session_outcome_digests': [list(row) for row in
+                                        attestation.session_outcome_digests],
+            'source_signature_digest': attestation.source_signature_digest,
+            'source_signature': attestation.source_signature,
+        }
+        with patch.object(rc0, 'TRUSTED_ATTESTATION_SOURCES',
+                          ('horizoncore.owner.v1',)), \
+             patch.dict(rc0.TRUSTED_ATTESTATION_VERIFIERS,
+                        {'horizoncore.owner.v1': rc0.hmac_sha256_verifier(self.KEY)}):
+            with temporary_directory() as directory:
+                # Unknown field set is rejected before any construction.
+                extra = Path(directory) / 'extra.json'
+                extra.write_text(json.dumps({'source': 'horizoncore.owner.v1'}),
+                                 encoding='utf-8')
+                with self.assertRaisesRegex(ValueError, 'missing'):
+                    rc0.load_attestation(extra)
+                # A structurally valid file whose MAC does not verify is rejected.
+                tampered = dict(payload)
+                signature = tampered['source_signature']
+                tampered['source_signature'] = (
+                    signature[:-1] + ('0' if signature[-1] != '0' else '1'))
+                bad = Path(directory) / 'bad.json'
+                bad.write_text(json.dumps(tampered), encoding='utf-8')
+                with self.assertRaisesRegex(ValueError, 'did not verify'):
+                    rc0.load_attestation(bad)
+                # A genuine signed attestation from the configured source loads.
+                good = Path(directory) / 'good.json'
+                good.write_text(json.dumps(payload), encoding='utf-8')
+                loaded = rc0.load_attestation(good)
+                self.assertTrue(rc0.verify_attestation(loaded))
+                self.assertTrue(rc0.attestation_covers(
+                    loaded, selected, 'abc123',
+                    outcomes=Rc0AttestationCoverageTests.outcomes()))
+
+    def test_covering_attestation_promotes_baseline_state(self):
+        selected = [('s1', (101, 1)), ('s2', (102, 2))]
+        results = [measured_session('s1'), measured_session('s2')]
+        outcomes = Rc0AttestationCoverageTests.outcomes()
+        attestation = Rc0AttestationCoverageTests.signed(
+            Rc0AttestationCoverageTests.forged_attestation(
+                source='horizoncore.owner.v1'), self.KEY)
+        with patch.object(rc0, 'TRUSTED_ATTESTATION_SOURCES',
+                          ('horizoncore.owner.v1',)), \
+             patch.dict(rc0.TRUSTED_ATTESTATION_VERIFIERS,
+                        {'horizoncore.owner.v1': rc0.hmac_sha256_verifier(self.KEY)}):
+            eligible = rc0.baseline_eligible(
+                selected, results, outcomes, 'abc123', True, 'provider/model',
+                'release rustc pinned', 'native', 'excluded', attestation=attestation)
+            self.assertTrue(eligible)
+            self.assertTrue(rc0.attestation_covers(
+                attestation, selected, 'abc123', outcomes=outcomes))
+            # The same attestation cannot attest a different commit.
+            self.assertFalse(rc0.attestation_covers(
+                attestation, selected, 'other-commit', outcomes=outcomes))
+        state = rc0.attestation_record_state(True, eligible)
+        self.assertEqual(state['owner_sample_attestation'], 'ATTESTED')
+        self.assertEqual(state['status'], 'BASELINE')
+        self.assertTrue(state['release_eligible'])
+        self.assertFalse(state['provisional_raw_sample'])
+        self.assertIsNone(state['blocked_reason'])
+
+    def test_preflight_refuses_attestation_input(self):
+        argv = ['rc0.py', '--preflight', '--min-sessions', '1',
+                '--scenario', 'shape only', '--build', 'debug', '--warm-cold', 'warm',
+                '--provider-model', 'local/model', '--harness', 'hzcode-tui',
+                '--local-inference', 'excluded',
+                '--attestation', 'scripts/perf/does-not-exist.json']
+        stderr = io.StringIO()
+        with patch.object(sys, 'argv', argv), contextlib.redirect_stderr(stderr):
+            with self.assertRaises(SystemExit):
+                rc0.main()
+        self.assertIn('--attestation is not accepted in --preflight mode',
+                      stderr.getvalue())
+
+    @unittest.skipUnless(platform.system() == 'Linux', 'Linux /proc harness')
+    def test_cli_attestation_is_rejected_while_the_trusted_registry_is_empty(self):
+        pid, start = live_identity()
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as directory:
+            outcomes_path = Path(directory) / 'outcomes.json'
+            output_path = Path(directory) / 'rc0.jsonl'
+            attestation_path = self.attestation_file(directory)
+            outcomes_path.write_text(json.dumps(
+                {'ses-live': {'expected': 'ok', 'actual': 'ok', 'status': 'passed'}}),
+                encoding='utf-8')
+            argv = [
+                'rc0.py', '--scenario', 'attested capture', '--build', 'release rustc',
+                '--warm-cold', 'warm', '--provider-model', 'local/model',
+                '--harness', 'hzcode-tui', '--local-inference', 'excluded',
+                '--identity', f'ses-live={pid}:{start}', '--outcomes', str(outcomes_path),
+                '--attestation', str(attestation_path), '--output', str(output_path),
+            ]
+            stderr = io.StringIO()
+            with patch.object(sys, 'argv', argv), contextlib.redirect_stderr(stderr):
+                with self.assertRaises(SystemExit):
+                    rc0.main()
+            self.assertIn('invalid --attestation', stderr.getvalue())
+            self.assertFalse(output_path.exists(),
+                             'no capture row may be written from an untrusted attestation')
 
 
 if __name__ == '__main__':

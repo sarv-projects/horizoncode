@@ -11,37 +11,43 @@ function released(date: string) {
 }
 
 function cost(input: ModelsDev.Model["cost"]): ModelV2Info["cost"] {
-  const base = {
-    input: input?.input ?? 0,
-    output: input?.output ?? 0,
-    cache: {
-      read: input?.cache_read ?? 0,
-      write: input?.cache_write ?? 0,
-    },
-  }
-  return [
-    base,
-    ...(input?.tiers?.map((item) => ({
-      tier: item.tier,
+  if (!input) return []
+
+  const priced = (item: { input: number; output: number; cache_read?: number; cache_write?: number }) => {
+    if (item.cache_read === undefined || item.cache_write === undefined) return undefined
+    return {
       input: item.input,
       output: item.output,
       cache: {
-        read: item.cache_read ?? 0,
-        write: item.cache_write ?? 0,
+        read: item.cache_read,
+        write: item.cache_write,
       },
-    })) ?? []),
-    ...(input?.context_over_200k
+    }
+  }
+
+  const base = priced(input)
+  const tiers = input.tiers?.flatMap((item) => {
+    const price = priced(item)
+    return price ? [{ ...price, tier: item.tier }] : []
+  }) ?? []
+  const contextOver = input.context_over_200k ? priced(input.context_over_200k) : undefined
+
+  // The SDK cost shape cannot encode partial/unknown rates. An empty schedule
+  // keeps those prices UNKNOWN instead of inventing a zero-priced offer.
+  if (!base || tiers.length !== (input.tiers ? input.tiers.length : 0) || (input.context_over_200k !== undefined && !contextOver)) {
+    return []
+  }
+
+  return [
+    base,
+    ...tiers,
+    ...(contextOver
       ? [
           {
+            ...contextOver,
             tier: {
               type: "context" as const,
               size: 200_000,
-            },
-            input: input.context_over_200k.input,
-            output: input.context_over_200k.output,
-            cache: {
-              read: input.context_over_200k.cache_read ?? 0,
-              write: input.context_over_200k.cache_write ?? 0,
             },
           },
         ]
@@ -52,9 +58,13 @@ function cost(input: ModelsDev.Model["cost"]): ModelV2Info["cost"] {
 function mergeCost(base: ModelV2Info["cost"], override: ModelsDev.Model["cost"] | undefined) {
   if (!override) return base
   const next = cost(override)
+  if (next.length === 0) return []
+  if (base.length === 0) return next
+
   const [baseDefault, ...baseTiers] = base
   const [nextDefault, ...nextTiers] = next
-  const tierKey = (item: ModelV2Info["cost"][number]) => `${item.tier?.type ?? "base"}:${item.tier?.size ?? 0}`
+  if (!baseDefault || !nextDefault) return []
+  const tierKey = (item: ModelV2Info["cost"][number]) => `${item.tier ? item.tier.type : "base"}:${item.tier ? item.tier.size : 0}`
   const merge = (left: ModelV2Info["cost"][number], right: ModelV2Info["cost"][number]) => ({
     ...left,
     ...right,
@@ -66,7 +76,7 @@ function mergeCost(base: ModelV2Info["cost"], override: ModelsDev.Model["cost"] 
     const current = tiers.get(tierKey(item))
     tiers.set(tierKey(item), current ? merge(current, item) : item)
   }
-  return [merge(baseDefault ?? { input: 0, output: 0, cache: { read: 0, write: 0 } }, nextDefault), ...tiers.values()]
+  return [merge(baseDefault, nextDefault), ...tiers.values()]
 }
 
 function modeName(model: ModelsDev.Model, mode: string) {

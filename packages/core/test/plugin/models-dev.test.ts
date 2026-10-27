@@ -53,21 +53,24 @@ describe("ModelsDevPlugin", () => {
                   cost: {
                     input: 2.5,
                     output: 15,
+                    cache_read: 0,
+                    cache_write: 0,
                     tiers: [
                       {
                         tier: { type: "context", size: 272_000 },
                         input: 3,
                         output: 18,
                         cache_read: 0.25,
+                        cache_write: 0,
                       },
                     ],
-                    context_over_200k: { input: 5, output: 22.5, cache_read: 0.5 },
+                    context_over_200k: { input: 5, output: 22.5, cache_read: 0.5, cache_write: 0 },
                   },
                   limit: { context: 1_050_000, input: 922_000, output: 128_000 },
                   experimental: {
                     modes: {
                       fast: {
-                        cost: { input: 5, output: 30, cache_read: 0.5 },
+                        cost: { input: 5, output: 30, cache_read: 0.5, cache_write: 0 },
                         provider: {
                           headers: { "x-mode": "fast" },
                           body: { service_tier: "priority" },

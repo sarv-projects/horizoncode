@@ -839,13 +839,15 @@ export const goalReviewHandlers = HttpApiBuilder.group(InstanceHttpApi, "goalRev
       let dispatchStatus: "DISABLED" | "NO_TASK" | "PROMPT_RETURNED" | "PROMPT_RETURNED_ERROR" | "PROMPT_UNKNOWN" | "UNAVAILABLE" = "DISABLED"
       if (runtimeFlags.managedTaskDispatch) {
         const dispatch = yield* executeNextManagedTask({
-          trustedPrincipal,
           goalID: ctx.payload.goalID,
           runID: ctx.payload.runID,
           rootSessionID: rootSession.id,
           locationID,
           expectedRevision: result.revision,
-        }).pipe(Effect.result)
+        }).pipe(
+          Effect.provideService(TrustedPrincipalContext, TrustedPrincipalContext.of({ principal: trustedPrincipal })),
+          Effect.result,
+        )
         dispatchStatus = dispatch._tag === "Failure" ? "UNAVAILABLE" : dispatch.success.status
       }
       return { schemaVersion: 1 as const, ...result, sessionID: rootSession.id, dispatchStatus }

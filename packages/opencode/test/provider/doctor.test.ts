@@ -174,6 +174,17 @@ describe("ProviderDoctor.inspectOffline", () => {
     })
   })
 
+  test("treats prototype property names as missing local provider rows", () => {
+    const result = ProviderDoctor.inspectOffline({
+      ...request,
+      selection: { providerRef: "provider:toString", modelRef: "model:toString/model" },
+    }, auth, { catalog: {}, config: {} })
+
+    expect(result.localReadiness).toBe("UNKNOWN")
+    expect(result.selection.configurationStatus).toBe("UNKNOWN")
+    expect(result.probes.find((probe) => probe.phase === "config")?.code).toBe("provider_missing_from_local_catalog")
+  })
+
   test("rejects credential-bearing or network-enabled input rather than inspecting it", () => {
     expect(() => ProviderDoctor.inspectOffline({ ...request, apiKey: "must-not-be-read" }, auth)).toThrow()
     expect(() => ProviderDoctor.inspectOffline({ ...request, maxNetworkRequests: 1 }, auth)).toThrow()
@@ -397,6 +408,103 @@ describe("ProviderDoctor.inspectOffline", () => {
     expect(() => ProviderDoctor.inspectCatalog(offlineRequest, auth)).toThrow(/only accepts catalog/)
     expect(() => ProviderDoctor.inspectFull(offlineRequest, auth)).toThrow(/only accepts full/)
     expect(() => ProviderDoctor.inspectCatalog(fullRequest, auth)).toThrow(/only accepts catalog/)
+  })
+
+  test("rejects network and spend grants that do not intersect the requested tier", () => {
+    // Offline is zero-request by contract, so neither grant label may appear.
+    expect(() => ProviderDoctor.inspectOffline({ ...request, networkGrantRef: "grant:offline-must-refuse" }, auth))
+      .toThrow(/cannot carry network or spend grants/)
+    expect(() =>
+      ProviderDoctor.inspectOffline({
+        ...request,
+        networkGrantRef: "grant:offline-must-refuse",
+        spendConsentRef: "consent:offline-must-refuse",
+      }, auth),
+    ).toThrow(/cannot carry network or spend grants/)
+    // Catalog has network intent but is not spend-bearing: spend consent must
+    // not leak into this tier, and it still requires an explicit network grant.
+    const catalog = {
+      ...request,
+      tier: "catalog",
+      maxNetworkRequests: 1,
+      networkGrantRef: "grant:caller-asserted",
+    } as const
+    expect(() => ProviderDoctor.inspectCatalog({ ...catalog, spendConsentRef: "consent:catalog-must-refuse" }, auth))
+      .toThrow(/cannot carry spend consent/)
+    expect(() => ProviderDoctor.inspectCatalog({
+      ...request,
+      tier: "catalog",
+      maxNetworkRequests: 1,
+    } as never, auth),
+    ).toThrow()
+    // Full is the only spend-bearing tier and requires both labels.
+    const full = {
+      ...request,
+      tier: "full",
+      maxNetworkRequests: 1,
+      networkGrantRef: "grant:caller-asserted",
+      spendConsentRef: "consent:caller-asserted",
+    } as const
+    expect(() => ProviderDoctor.inspectFull({ ...full, spendConsentRef: "consent: " }, auth)).toThrow()
+    expect(() => ProviderDoctor.inspectFull({ ...full, spendConsentRef: "" }, auth)).toThrow()
+    expect(() => ProviderDoctor.inspectFull({ ...full, networkGrantRef: "grant: " }, auth)).toThrow()
+  })
+
+  test("rejects caller identity and configuration authority labels on every tier", () => {
+    const catalog = {
+      ...request,
+      tier: "catalog",
+      maxNetworkRequests: 1,
+      networkGrantRef: "grant:caller-asserted",
+    } as const
+    const full = {
+      ...request,
+      tier: "full",
+      maxNetworkRequests: 1,
+      networkGrantRef: "grant:caller-asserted",
+      spendConsentRef: "consent:caller-asserted",
+    } as const
+    // `ownerRef`/`ownerEpoch` are removed authority-like fields: none of the
+    // three tiers may accept them, and a forged configuration status is never
+    // taken from the request. Each body is checked against its own tier entry
+    // point, so a rejection cannot be explained by a tier mismatch.
+    const forbidden = (base: Record<string, unknown>) => [
+      { ...base, ownerRef: "owner:spoofed" },
+      { ...base, ownerEpoch: "1" },
+      { ...base, selection: { ...request.selection, configurationStatus: "VALID" } },
+      { ...base, apiKey: "must-not-be-read" },
+    ]
+    for (const body of forbidden({ ...request })) {
+      expect(() => ProviderDoctor.inspectOffline(body, auth)).toThrow()
+    }
+    for (const body of forbidden({ ...catalog })) {
+      expect(() => ProviderDoctor.inspectCatalog(body, auth)).toThrow()
+    }
+    for (const body of forbidden({ ...full })) {
+      expect(() => ProviderDoctor.inspectFull(body, auth)).toThrow()
+    }
+  })
+
+  test("bounds network request and deadline budgets per tier", () => {
+    const catalog = {
+      ...request,
+      tier: "catalog",
+      maxNetworkRequests: 1,
+      networkGrantRef: "grant:caller-asserted",
+    } as const
+    const full = {
+      ...request,
+      tier: "full",
+      maxNetworkRequests: 1,
+      networkGrantRef: "grant:caller-asserted",
+      spendConsentRef: "consent:caller-asserted",
+    } as const
+    expect(() => ProviderDoctor.inspectCatalog({ ...catalog, maxNetworkRequests: 0 }, auth)).toThrow()
+    expect(() => ProviderDoctor.inspectCatalog({ ...catalog, maxNetworkRequests: 6 }, auth)).toThrow()
+    expect(() => ProviderDoctor.inspectFull({ ...full, maxNetworkRequests: 6 }, auth)).toThrow()
+    expect(() => ProviderDoctor.inspectCatalog({ ...catalog, deadlineMs: 60_001 }, auth)).toThrow()
+    expect(() => ProviderDoctor.inspectFull({ ...full, deadlineMs: 0 }, auth)).toThrow()
+    expect(() => ProviderDoctor.inspectFull({ ...full, deadlineMs: 60_001 }, auth)).toThrow()
   })
 
   test("rejects an untrusted or absent principal on every tier before any projection", () => {

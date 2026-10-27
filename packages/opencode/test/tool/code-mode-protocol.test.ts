@@ -1,10 +1,13 @@
 import { expect, test } from "bun:test"
+import { blake3 } from "@noble/hashes/blake3.js"
+import { bytesToHex } from "@noble/hashes/utils.js"
 import {
   CodeModeConversationV1,
   codeModeReceiptDigestV1,
   codeModeRunReceiptDigestV2,
   codeModeToolResultDigestV1,
   codeModeWaveReceiptDigestV2,
+  canonicalJsonBytesV1,
   decodeCodeModeFrameV1,
   encodeCodeModeFrameV1,
   makeCodeModeStartFrameV1,
@@ -12,6 +15,33 @@ import {
 } from "@/tool/code-mode-protocol"
 
 const encoder = new TextEncoder()
+
+test("counts sparse array slots as JSON null in canonical argument bytes", () => {
+  const items = new Array(2)
+  items[1] = "value"
+  const arguments_ = { items }
+
+  expect(canonicalJsonBytesV1(arguments_)).toBe(encoder.encode('{"items":[null,"value"]}').byteLength)
+})
+
+/**
+ * Independent mirror of Rust's `canonical_schema_json`: object keys sort by
+ * UTF-16 code units, unlike canonical argument JSON, which sorts UTF-8 bytes.
+ */
+function canonicalSchemaJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalSchemaJson).join(",")}]`
+  if (typeof value === "object" && value !== null) {
+    const entries = Object.entries(value as Record<string, unknown>).sort(([left], [right]) =>
+      left < right ? -1 : left > right ? 1 : 0)
+    return `{${entries.map(([key, child]) => `${JSON.stringify(key)}:${canonicalSchemaJson(child)}`).join(",")}}`
+  }
+  return JSON.stringify(value)
+}
+
+function expectedSchemaDigest(inputSchema: unknown): string {
+  const payload = encoder.encode(`horizon.tool-schema.v1\0${canonicalSchemaJson(inputSchema)}`)
+  return `blake3:${bytesToHex(blake3(payload))}`
+}
 const tool = {
   toolName: "read",
   capabilityId: "files.read",
@@ -56,6 +86,9 @@ test("uses UTF-8 canonical key ordering and rejects lone surrogate values", () =
   }
   const frame = makeCodeModeStartFrameV1({ requestId: "request-unicode", code: "return 1", tools: [unicodeTool] })
   expect(decodeCodeModeFrameV1(encodeCodeModeFrameV1(frame)).frameType).toBe("start")
+  // Rust's schema digest sorts object keys by UTF-16 code units. For these two
+  // keys that order differs from the UTF-8 byte order used for argument JSON.
+  expect(frame.tools[0]?.inputSchemaDigest).toBe(expectedSchemaDigest(unicodeTool.inputSchema))
   expect(() => makeCodeModeStartFrameV1({ requestId: "request-surrogate", code: "\ud800", tools: [tool] })).toThrow()
 })
 
@@ -81,6 +114,27 @@ test("rejects unknown fields, invalid versions, malformed UTF-8 and oversized fr
   expect(() => decodeCodeModeFrameV1(encoder.encode(`\uFEFF${JSON.stringify(start)}\n`))).toThrow()
   expect(() => decodeCodeModeFrameV1(Uint8Array.of(0xff))).toThrow()
   expect(() => decodeCodeModeFrameV1(new Uint8Array(2 * 1024 * 1024 + 1))).toThrow()
+})
+
+test("rejects Unicode control characters in nested argument-map keys", () => {
+  // Rust's `valid_argument_map` rejects every `char::is_control` key, while a
+  // JSON line can carry a non-ASCII control character such as U+0085.
+  const arguments_ = { "\u0085": "value" }
+  const frame = {
+    schemaVersion: 1,
+    frameType: "wave_request",
+    requestId: "request-control-key",
+    sequence: "1",
+    waveIndex: 0,
+    calls: [{
+      callId: "call-control-key",
+      toolName: "read",
+      capabilityId: "files.read",
+      arguments: arguments_,
+      argumentBytes: encoder.encode(JSON.stringify(arguments_)).byteLength,
+    }],
+  }
+  expect(() => decodeCodeModeFrameV1(encoder.encode(`${JSON.stringify(frame)}\n`))).toThrow()
 })
 
 test("matches Rust UNKNOWN receipt omission while retaining the internal null projection", () => {

@@ -52,6 +52,15 @@ export const TERMINAL_FRAME_INPUT = 0x10
 export const TERMINAL_FRAME_RESIZE = 0x11
 export const TERMINAL_SOCKET_QUEUE_MAX_BYTES = 2 * 1024 * 1024
 
+const TERMINAL_FRAME_KINDS = new Set([
+  TERMINAL_FRAME_OUTPUT,
+  TERMINAL_FRAME_GAP,
+  TERMINAL_FRAME_EXIT,
+  TERMINAL_FRAME_ENDED,
+  TERMINAL_FRAME_INPUT,
+  TERMINAL_FRAME_RESIZE,
+])
+
 export function withinTerminalBackpressureLimit(bufferedAmount: number, nextFrameBytes: number) {
   return (
     Number.isSafeInteger(bufferedAmount) &&
@@ -80,13 +89,17 @@ export function decodeTerminalFrame(value: ArrayBuffer): TerminalFrame {
   const version = view.getUint8(4)
   if (version !== 1) throw new Error("Unsupported terminal frame version")
   const kind = view.getUint8(5)
+  if (!TERMINAL_FRAME_KINDS.has(kind)) throw new Error("Invalid terminal frame kind")
   const sequence = Number(view.getBigUint64(6, false))
   const cursor = Number(view.getBigUint64(14, false))
   const length = view.getUint32(22, false)
   if (!Number.isSafeInteger(sequence) || !Number.isSafeInteger(cursor)) throw new Error("Unsafe terminal frame cursor")
   if (length !== bytes.byteLength - TERMINAL_FRAME_HEADER_BYTES) throw new Error("Invalid terminal frame length")
   const payload = bytes.subarray(TERMINAL_FRAME_HEADER_BYTES)
-  if (kind === TERMINAL_FRAME_OUTPUT && payload.byteLength > TERMINAL_OUTPUT_MAX_BYTES) {
+  if (kind === TERMINAL_FRAME_INPUT && payload.byteLength > TERMINAL_INPUT_MAX_BYTES) {
+    throw new Error("Terminal input frame is too large")
+  }
+  if (kind !== TERMINAL_FRAME_INPUT && payload.byteLength > TERMINAL_OUTPUT_MAX_BYTES) {
     throw new Error("Terminal output frame is too large")
   }
   return { version: 1, kind, sequence, cursor, payload }
@@ -98,6 +111,7 @@ export function encodeTerminalFrame(input: {
   cursor: number
   payload?: Uint8Array
 }): ArrayBuffer {
+  if (!TERMINAL_FRAME_KINDS.has(input.kind)) throw new Error("Invalid terminal frame kind")
   const payload = input.payload ?? new Uint8Array()
   const limit = input.kind === TERMINAL_FRAME_INPUT ? TERMINAL_INPUT_MAX_BYTES : TERMINAL_OUTPUT_MAX_BYTES
   if (payload.byteLength > limit) throw new Error("Terminal frame payload is too large")

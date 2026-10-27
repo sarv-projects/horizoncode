@@ -949,6 +949,7 @@ let route: ReplEffectRoute | undefined
 
 /** Keep the Core REPL runtime closed until integrated HostKernel receipt,
  * recovery, callback and DEC-V1-27 OS-quota acceptance passes. */
+// CODE_PRESENT / UNWIRED: lifecycle/callback adapters are not production ingress until P1/P2 receipts and P8 OS quotas pass.
 const GUARDED_REPL_RUNTIME_READY = false
 /** Callback DTOs are source-projected, but HostKernel read/reply routing and acceptance remain incomplete. */
 const HOST_KERNEL_REPL_CALLBACK_INGRESS_READY = false
@@ -986,6 +987,31 @@ function validAuthorization(value: unknown): value is ReplEffectAuthorization {
 
 function validTokenID(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 160 && !/[\0\s]/.test(value)
+}
+
+/** DEC-V1-27 policy boundary: REPL execution is unavailable unless the
+ * HostKernel confirms OS enforcement for all four required dimensions.
+ * Partial bounded admission/monitoring is never represented as hard quotas. */
+export function validateReplResourceGuaranteesV1(
+  guarantees: ReplResourceGuaranteesV1 | undefined,
+): ReplResourceGuaranteesV1 {
+  if (
+    !guarantees ||
+    guarantees.cpuTimeEnforced !== true ||
+    guarantees.memoryEnforced !== true ||
+    guarantees.processCountEnforced !== true ||
+    guarantees.fileDescriptorsEnforced !== true
+  ) {
+    throw new TypeError(
+      "REPL execution requires HostKernel-confirmed OS enforcement for CPU time, memory, process count, and file descriptors",
+    )
+  }
+  return Object.freeze({
+    cpuTimeEnforced: true,
+    memoryEnforced: true,
+    processCountEnforced: true,
+    fileDescriptorsEnforced: true,
+  })
 }
 
 /**
@@ -1030,14 +1056,9 @@ export async function authorizeEffect(request: ReplEffectRequest): Promise<ReplE
     })
   }
   if (["repl.start", "repl.reset", "repl.execute"].includes(request.operation)) {
-    const guarantees = current.resourceGuarantees
-    if (
-      !guarantees ||
-      guarantees.cpuTimeEnforced !== true ||
-      guarantees.memoryEnforced !== true ||
-      guarantees.processCountEnforced !== true ||
-      guarantees.fileDescriptorsEnforced !== true
-    ) {
+    try {
+      validateReplResourceGuaranteesV1(current.resourceGuarantees)
+    } catch {
       throw new UnavailableError({
         operation: request.operation,
         reason: "guard_not_verified",

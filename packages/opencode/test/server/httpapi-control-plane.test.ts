@@ -220,6 +220,16 @@ const itGoalReviewLayer = Layer.mergeAll(
 
 const itGoalReview = testEffect(itGoalReviewLayer)
 
+// Three Goal-review route tests do real, load-sensitive setup per isolated test:
+// `tmpdirScoped({ git: true })` spawns a `git init` child process, plus a
+// database reset and a fresh `NodeHttpServer.layerTest` build. Under a loaded
+// machine that legitimate startup window can exceed Bun's default 5s test
+// timeout, which SIGTERMs the in-flight `git init` (`ChildProcess.exitCode
+// (git init)` + `ManagedRuntime disposed`). Give only these setup-heavy tests a
+// bounded, explicit allowance; the schema/401 tests need no such budget and the
+// default timeout still guards them.
+const goalReviewSetupTimeout = 20000
+
 const serveGoalReview = () =>
   HttpRouter.serve(goalReviewRoutes, { disableListenLog: true, disableLogger: true }).pipe(Layer.build)
 
@@ -447,6 +457,7 @@ describe("Goal review inbox HttpApi", () => {
       expect(response.status).toBe(503)
       expect(yield* Ref.get(goalReviewHostCalls)).toEqual([])
     }),
+    goalReviewSetupTimeout,
   )
 
   itGoalReview.live("derives the Run control CAS revision from the current scoped OwnerLog snapshot", () =>
@@ -504,6 +515,7 @@ describe("Goal review inbox HttpApi", () => {
       expect(stale.status).toBe(409)
       expect(yield* Ref.get(goalReviewHostCalls)).toEqual([{ serviceID: "managed.v1", operation: "snapshot" }])
     }),
+    goalReviewSetupTimeout,
   )
 
   itGoalReview.live("keeps plan revisions as DecimalU64 strings and requires authenticated planning", () =>
@@ -616,5 +628,6 @@ describe("Goal review inbox HttpApi", () => {
         { serviceID: "managed.v1", operation: "list_pending_reviews" },
       ])
     }),
+    goalReviewSetupTimeout,
   )
 })

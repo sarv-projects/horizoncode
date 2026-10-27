@@ -1,5 +1,225 @@
 # HorizonCode — Current implementation handoff
 
+## 2026-10-27 21:10 UTC — guarded write VERIFIED end to end (round 7)
+
+The offline guarded-write journey passes: `E2E_V1_SMOKE=PASS`, `write=completed`, file content `OK` (2 bytes), `cost=0`, `zero_egress=true`, unauthenticated probe 401 with no file created. Two fixes made it work: `executeWrite`/`executePatch` now reuse the ToolBatch's registered Location (the kernel refused a second, workspace-less Location as a lease binding mismatch), and the E2E parser now scans every assistant message for the write tool part.
+
+Still open: the free-model turn is refused at registration because the allowlisted catalog entry has incomplete pricing (`cost {input:0, output:0, cache:{}}`) and the strict free proof rejects it; terminal containment (`tool_batch_guard_matrix` 3/9). Nothing staged; `.env` remains the only place the test key exists.
+
+## 2026-10-27 21:05 UTC — symlink-safe revision (round 6)
+
+Workspace revision now hashes symlink targets without following them and excludes dependency/build/cache trees, so a normal project with `node_modules` no longer fails closed; `workspace_revision` 7/7, `effect` 63/63. The E2E wrapper restores the served project cwd and the guarded-write journey runs in its own clean `work/` project.
+
+The guarded write now reaches lease settlement and stops at `capability lease binding mismatch` (kernel `consume_lease`). Earlier blockers were cleared in order: owner conflict, symlink refusal, revision size cap, harness cwd. Free-model turn still refuses at registration because the allowlisted catalog entry has incomplete pricing (`cost {input:0, output:0, cache:{}}`) and the strict free proof rejects it. No provider call, no file write, nothing staged.
+
+## 2026-10-27 20:55 UTC — workspace binding (round 5)
+
+Added a local workspace (`local` adapter + deterministic `Session.create` binding) so direct Sessions carry a workspace: the offline E2E's `location_owner_conflict` is gone, sessions show `workspaceID=wrk_local_…`, adapter 3/3, focused regression 85/85, typecheck 0.
+
+Two blockers surfaced, both fail-closed: (1) HostKernel's workspace revision refuses any symlink, and the E2E instance root is the repo (which has `node_modules` symlinks) — so projects with dependencies cannot run direct-session effects; (2) the free-model turn is refused with `ProviderModelNotFoundError` because the allowlisted catalog entry has `cost {input:0, output:0, cache:{}}`, so the strict free proof rejects it and the route is never registered. No provider call was made.
+
+## 2026-10-27 21:40 UTC — full verifier PASS (round 8)
+
+`V1-FINAL-VERIFY=PASS steps=31` (run `20261027-210730`): all typechecks, P1–P9 focused suites, P8 evaluator/RC0, P9 release readiness (158), verifier self-checks, and the real offline guarded-write journey (`E2E_V1_SMOKE=PASS`, `write=completed`, `content=OK`, `cost=0`, zero egress, 401 negative with no file).
+
+Key fixes this stretch: `executeWrite`/`executePatch` reuse the ToolBatch's Location; direct-session Locations are bound to a directory-derived local workspace at registration (sessions keep their prior shape, so P7 routing is unchanged); symlink-safe workspace revision with dependency-tree exclusions; E2E project cwd and parser corrections.
+
+Still open: terminal containment (`tool_batch_guard_matrix` 3/9) and the live free-model send (source-mode observer pin refuses before dispatch; provider gate fails closed by design).
+
+## 2026-10-27 20:40 UTC — credential import verified (round 4)
+
+The guarded credential path now works end to end. Two real defects were fixed: (1) the kernel's u64 `expiresAtUnixMs` arrives as `bigint` and both authorizers required `number` — `secret.v1/authorize_put` was therefore always `malformed`; (2) the Secret Service client negotiated the 1024-bit algorithm but used the 768-bit RFC 2409 group-1 prime, so every real service public key was rejected. Regressions added; focused auth 19/19, full `test/auth` 110/110, opencode typecheck exit 0.
+
+Evidence: `horizoncode provider --provider openrouter` through a masked PTY with the repo-local HostKernel manifest reports "Credential stored for OpenRouter (openrouter) at version 1." The key exists only in that Secret Service entry plus the gitignored `.env` (0600); a leak scan found no other copy.
+
+Still blocked: the free-model turn (`horizoncode run --model openrouter/nvidia/nemotron-3.5-super-vl:free`) and the offline guarded-write journey both stop before dispatch because the session is created with `workspaceID=undefined` (HostKernel `location_owner_conflict`). A default local-workspace bootstrap is the next prerequisite. Terminal containment (`tool_batch_guard_matrix` 3/9) is unchanged.
+
+## 2026-10-27 19:57 UTC — verification digest (round 3)
+
+Final verifier `20261027-194919`: **all steps PASS through 06b** (overlay audit; opencode/core/TUI typechecks; P1-P7 focused suites; P8 baseline/admission/RC0/evaluator; P9 release readiness 158 tests; verifier-grep regression; shell syntax) and the **only failure is step 07, the offline guarded-write E2E**.
+
+Fixed this round and re-verified: P9 installer source-binding + migration identity validation; P8 evaluator accounting completeness (`accounting_incomplete`) and RC0 v3 `resourceLimits`; P6 provider/authorizer/ACP test contracts plus Bun on PATH for spawned subprocesses; P7 transcript test race; P3 RepoIntel actual-byte budget enforcement (no invalid-UTF-8 read bypass); Rust CodeMode inspect fixture correlation.
+
+Blocking, fail-closed evidence: (1) terminal containment - `tool_batch_guard_matrix` 3/9, all terminal cases `capability_unavailable` until ExecutionHost PTY containment lands; (2) offline write journey - HostKernel `location_owner_conflict` because the session/Location has no workspace binding, so the guarded write never runs; (3) live OpenRouter `/provider` + free-model call not attempted (no key entered); (4) P8 authentic HostRun evidence still skipped (BLOCKED_P1/P2).
+
+V1 remains **PARTIAL / NOT VERIFIED / NOT RELEASED**. Worktree stays dirty and unstaged; no stage/commit/reset/clean/publish, no paid call, no credential echo.
+
+## 2026-10-27 — rapid implementation digest
+
+Active: final implementation wave complete except P6 transport integration and final-runner refresh. User explicitly requested implement first, verify once at end. No tests/typechecks/Cargo run in this wave.
+P1: Edit + Write exact effectID/target receipt checks now precede Attempt acceptance and ToolBatch settlement; regressions added, not run. Real Guard HostKernel negative still requires final batch.
+P2: Core finalize rejects SUCCEEDED with non-SUCCEEDED phase; Rust CodeMode requestId binds to private Tool.Context callID. Regressions added, unrun. Rust aggregate Run/Task finalization invariants already exist; no extra edit.
+P3: repo.tree fails closed for CURRENT/unknown freshness; RepoIntel checks aggregate actual bytes after read to prevent file-growth budget bypass. Tests added, unrun. ArtifactStore/anchor and authenticated query/cursor remain blocked.
+P4: no additional safe edit; DAP/LSP/editor routes stay closed pending Guard/HostKernel/OS containment acceptance.
+P5: WebSearch production request-envelope builder preserves exact admitted credentialRefsByRoute + challenge/location/attempt; CodeMode sparse array slots serialize/count as JSON null. Tests added, unrun; runtime gates closed.
+P6 PARTIAL/BLOCKED at production seam: HostKernel `authorize_use`/`redeem_use` Rust tests passed 10/10; Core authorizer/local lease redemption exist in new edits, but ordinary OpenRouter still takes AI SDK raw fetch and bypasses Auth pinned `RequestExecutor`. Do not allow synthetic placeholder/raw credential there. Keep model route explicitly unavailable until native-runtime bridge can preserve SessionStore PINNED→DISPATCHING→UNKNOWN + ServerAuth owner. No provider call/key entered.
+P7: TUI transcript near-tail sticky-follow synced to pinned OpenTUI one-row threshold with near/far/tail regression (unrun). No safe TUI `/provider` bridge: TUI worker HTTP/RPC cannot carry bytes, and there is no in-process trusted masked-input/Auth callback; keep slash/connect entry closed. CLI `provider` masked-TTY path remains separately available.
+P8: reservation release requires exact bool terminal proof; RC0 budgets/charges reject bool/non-int/negative values. New tests unrun. RC0 NOT_ATTESTED; real workloads NOT RUN; OS quotas UNSUPPORTED.
+P9: installer candidate `runtimeVersion` bound to binary manifest provenance and checked against CLI/upgrade --version; migration planner rejects missing/duplicate/colliding final IDs, permits self-target. Tests unrun; candidate build/install, CI and full identity acceptance remain.
+P6 user key remains untouched. Free route is only OpenRouter `nvidia/nemotron-3.5-super-vl:free`; no paid/fallback requests. Signing/publish/release NOT performed.
+Full P1–P9 E2E, full typecheck, final verification runner and release gates remain NOT VERIFIED. Preserve staged user files and dirty work; no reset/clean/stage/commit/push.
+## 2026-10-26 — audit + integration wave (verified)
+
+**Measured by SA-6 (repeatable E2E + status truth), same tree, no Git mutation.** HEAD `73e3876e7052cdb2f7d4dc95cd96177f0065ce1d` (`73e3876e7`) on `main`. Wave start: **186 dirty paths**; **188** at SA-6's measurement (146 modified, 40 untracked, 2 pre-staged `A` — `arch_V1/46-V1-RELEASE-EXECUTION-QUEUE.md` and `docs/superpowers/plans/2026-10-25-hostrun-contract.md`); concurrent owners later reached **193**, none of it SA-6's; the only path this wave adds is `scripts/e2e/v1-smoke.sh`; the deny-all overlay (`.gitignore:6` `*`) initially hid it from `git status`; the parent added exact `!/scripts/e2e/` and `!/scripts/e2e/v1-smoke.sh` exceptions on 2026-10-27, and `scripts/e2e/` is now visible as untracked. No `git add`, commit, push, reset, clean, rebase or worktree change was performed.
+
+- **Typecheck:** NOT run in this wave (full typecheck is out of scope and the tsgo slot was held by concurrent owners). Last recorded parent result stands: `bun turbo typecheck` exit 2 with two `packages/session-ui/src/components/message-part.tsx` diagnostics; P7 repaired them and `packages/session-ui` typecheck exits 0. Full Turbo remains **UNVERIFIED**.
+- **Kernel:** `kernel/target` is 3.1 GB; `hz-kernel` and `session_supervisor` binaries exist (2026-10-25 18:53). 9 `kernel/` paths are dirty. SA-6 ran no Cargo; kernel/Guard acceptance is **UNVERIFIED** in this wave (2 `cargo`/`rustc` processes from another owner were observed and left untouched).
+- **E2E (new, repeatable):** `bash scripts/e2e/v1-smoke.sh` — repo-local HOME/XDG/TMPDIR under `.tmp/e2e/smoke`, random loopback port, Basic auth, trap-killed server, 401 negative probe, one `opencode/big-pickle` write turn asserting no `error`, exact `OK` file and cost 0. Latest run at this HEAD: **FAIL** — `E2E_V1_SMOKE=FAIL` / `EVIDENCE upto=assistant unauth=401 session=ses_e868bdf3cffeTyTeXcPhQA1tS6 assistant=done cost=0 write=none` / `EVIDENCE_FAIL step=assistant detail=assistant error present: {"name": "UnknownError", "data": {"message": "Session supervisor direct_provider_authority failed: direct provider pins require the authenticated Core AgentProfileV2 service"}}`. Server health, catalog, session create and the 401 probe passed; `.tmp/e2e/ok.txt` was not created.
+- **Exact remaining E2E blocker:** the server-authenticated direct turn must wire the authenticated Core AgentProfileV2 service before provider dispatch (`Session supervisor direct_provider_authority failed`). Until then the V1 direct coding journey is **NOT VERIFIED**; V1 stays **PARTIAL / NOT VERIFIED / NOT RELEASED**.
+
+**[SUPERSEDED 2026-10-26]** The two `bun turbo typecheck` / `message-part.tsx` diagnostics recorded in the older block below were repaired by P7 (`packages/session-ui` typecheck exit 0). The full Turbo result is still unverified. History is preserved below, with an explicit superseded marker on that block.
+
+## Parent continuation — 2026-10-26 (strict checks and phase wave 2)
+
+**Operator note (2026-10-26):** subagent dispatch failed twice — first `subscription_sharing_usage_limit_exceeded` despite the user's quota reset, then `Invalid model "inherit". Use "providerID/modelID" ...` when retrying with the AGENTS.md `inherit` convention. Recovery required enumerating the live model catalog and re-dispatching with `opencode-go/mimo-v2.6-flash`. This must become a HorizonCode self-inspection capability: on an invalid/unavailable model reference, inspect its own canonical model registry, return valid live slugs (or retry under the user's pinned model policy, `A-V2-03`), and surface quota errors with provider/reset context. Requirement recorded in `arch_V1/46-V1-IMPLEMENTATION-BACKLOG.md` "Operator notes"; candidate for Task/dispatch acceptance rows in `32` — not implemented or tested.
+
+V1 remains **PARTIAL / NOT VERIFIED / NOT RELEASED**. The first P1–P9 phase-owner wave returned partial results; P2's first dispatch and the P4 typecheck-repair dispatch failed with a transient `getaddrinfo EAI_AGAIN auth.openai.com`. After the user reported a quota reset, parent successfully launched nine fresh whole-phase continuations: P1–P9 (session ownership and exclusive scopes in `reports/phases/LEDGER.md`). P2 now owns P8's `worker_durable.rs` HostRun mirror integration; P8 is restricted away from that file. P4 owns the narrow prompt-test LSP environment fixture correction. P9 is checking only source-verifiable license metadata/notices and identity mapping; candidate work stays gated. No effect gate changed.
+
+**[SUPERSEDED 2026-10-26 — see the verified integration-wave section above: the two message-part.tsx diagnostics were repaired; full Turbo is still unverified.]** Post-compaction continuation: P3/P5/P6/P7/P8/P9 were re-launched as whole-phase owners; P7 also has exclusive ownership of the current `packages/session-ui/src/components/message-part.tsx` Turbo typecheck repair. P1/P2/P4 continuations carry forward from the prior ledger and must be resumed if their sessions are no longer live. The latest `bun turbo typecheck` (after P4's prompt fixture fix) exited **2**, 7/30 tasks successful, with **two** current errors in `message-part.tsx`: unused `@ts-expect-error` at 1553 and absent `ToolState.metadata` at 1555. This supersedes the earlier one-error status. Parent made no product-source edit; full typecheck must rerun after P7's source-backed repair and concurrent phase edits settle.
+
+P1 then fixed only the PTY test fixture path budget: a RED regression captured the composed path at 158 bytes; shortened repo-local roots now pass **1/1 (2 expectations)**. PTY session/ticket tests are **3 pass / 10 skipped / 0 fail (20 expectations)**; skipped start-dependent cases are not runtime acceptance. Core boundary suites **57/57 (564 expectations)**. Production socket validation/readiness flags remain unchanged; P1 still needs Cargo-authorized Rust acceptance plus integrated Guard/receipt/recovery, containment and observer evidence. P8's latest continuation remains partial with no changes: RC0 **150/150**, evaluator **71 pass / 3 skip**, trusted registry/setup absent, no authenticated 1/5/10/20 workload, K/L ingress blocked, and the Rust mirror crash-window test awaits P2's Cargo ownership. P8 has been resumed to inspect any remaining offline work; hard quotas and fan-out/pressure remain unavailable.
+
+Latest phase handoffs: P1 added fresh offline protocol/ToolBatch/read-batch/launch evidence **48/48 (197 expectations)** plus guarded patch denial **10/10 (34)** and fail-closed patch boundary **1/1 (7)**. One combined discovery failure is P3-owned manifests-mode assertion; P1 did not touch it. P6 refreshed Auth/provider **876/876 (2,244)**, S1 **11/11 (69)**, Core Models.dev/settings/profile **57/57 (262)** and LLM executor **24/24 (99)**. P6 typecheck was interrupted twice and remains unverified. No readiness gates or downstream effects opened; exact P1/P6 blockers and owner reruns are in `reports/phases/LEDGER.md`.
+
+P4 shortened its prompt fixture root and added socket-path budget assertions; the failure is fixture composition, but prompt suite was not rerun (could launch supervisor processes) and post-edit typecheck is unverified. P7 removed the stale TypeScript suppression and narrowed `ToolState`; `packages/session-ui` typecheck now exits 0. Its focused component suite has **14 pass / 1 fail** (`[omitted]` vs expected `undefined`), requiring owner diagnosis; full Turbo is pending. Exact P4/P7 tests and remaining whole-phase work are in the phase ledger.
+
+P5 refreshed its offline search/CodeMode/registry suites (**163/628**), CodeMode package (**263/784**, typecheck exit 0), Core helper-pin fixture (**1/1**) and P7 consumer (**71/322**); adapter remains fail-closed and helper hidden pending P1/P2/P6/P7/P9. No gate or dependency advanced.
+
+P7 continuation 59 traced its one failing component test to the existing sanitizer contract: the test calls `sanitizeToolDisplayValue` directly and expects `undefined`, while `PRIVATE_PAYLOAD_KEY` matching `output` yields the established `[omitted]` sentinel. It does not load the fixed `message-part.tsx`; no behavior or test was changed and historical origin is unknown. That focused test remains **0/1**, while `part-default-open.test.ts` is **5/5** and session-ui typecheck exit 0. Full Turbo and whole P7 acceptance remain pending; see `reports/phases/LEDGER.md`.
+
+P7 continuation 60 added a fresh offline six-file TUI bundle pass (**155/1,398**) with no source changes. P4’s process-free OpenCode suite passed **129/455** (10 files), TUI editor/layout/settings **24/147**, external editor schema **11/24**, and TUI/Schema `tsgo --noEmit`; P4’s prompt suite was not run and post-fixture path budget remains unverified. OpenCode package typecheck has unrelated goal-review/managed-coordinator diagnostics; P4 tsconfig is blocked by missing Photon WASM. P4 remains blocked on P1/P2/P3/P8 and DAP/platform integration; exact work is in the phase ledger. No effect gates changed.
+
+P3 fixed the P1-reported manifests assertion failure by correcting only its stale fixture coverage budget from 80 to the validator's existing 88-byte minimum. Narrow test **1/1**, focused Core **24/24**, OpenCode RepoIntel/repo-tools **92/92**, Schema RepoIntel **13/13**; no validator rule changed. P3 continues with navigation gated pending authenticated HostKernel and real-project acceptance.
+
+P3 continuation 57 hardened the pure pressure planner test-first: malformed model limits now yield `unknown_context_limit`, invalid caller reserves are rejected; RED reproduced `NaN` selecting `auto_trim` and a negative reserve producing a negative pressure limit. Focused test **10/10 (36 expectations)**; convergence **1,298/0**. Navigation remains closed; authenticated HostKernel/cursor/recovery, trusted buffer, cache lifecycle, Guarded patch, real project, compile-policy wiring and approved parser provenance remain open. No effect/provider/Cargo/Git or dependent phase unblocked.
+
+P1 continuation 67 added offline tests: managed-root Guard challenge **3/3 (15)**; approval cancellation/expiry **2 passed / 19 filtered**; changed launch suite **21/21 (56)**. No production change, Cargo, effects, provider/network, Git, or shared typecheck; both terminal gates remain false. Its P1 report’s known P3 manifests failure is stale: P3 fixed that fixture in continuation 56 (80→88-byte budget; regression 1/1). P1 Rust Guard/lease/receipt/UNKNOWN recovery, containment, observer, P2/P6/P7 integrations, HostRun, patch authority, and parent measurement remain open.
+
+P5 and P8 have completed their latest re-audits as **PARTIAL** with no safe additional offline change; their unchanged tests were not repeated. P5 is waiting on P1/P2 guarded lifecycle/receipts, P6 SecretBroker consent, P7 caller/catalog and P9 exact helper packaging; search/CodeMode remain gated. P8 is waiting on P2 authenticated HostRun binding/receipt and real admission/Guarded evidence plus P1's installed terminal projection; trusted RC0, crash-window Cargo test and 1/5/10/20 workloads remain blocked, hard quotas unsupported. Both phase owners are queued only behind these explicit dependencies and must resume when they land; exact evidence is in `reports/phases/LEDGER.md`.
+
+P2's latest audit exposed a concrete P2-owned gap: HostRun receipt route persists caller cursor without canonical P8 durable resolution; the evaluator tuple also lacks a trusted P8-frozen source. P2 was resumed to wire/negative-test durable cursor resolution while preserving invocation authority as blocked. P1's latest test-first fix rejects oversized and unknown-kind PTY protocol frames; protocol **8/8 (32)**, broader offline Core bundle **100/100 (735)**, fail-closed patch **1/1 (7)**. Legacy apply_patch-success tests remain intentionally unavailable; both terminal readiness gates false. Exact remaining P1/P2 work is recorded in the ledger.
+
+Parent Wave-0 results: release readiness invocation from repo root with `PYTHONPATH=.` passed **116/116**; the strict typecheck wrapper now fails on `error TS` even when compiler exit is zero, captures only under repo-local `.tmp`, and cleans via trap (regression suite **2/2**, shell syntax passes). Its first full run found exactly one current OpenCode diagnostic at `test/session/prompt.test.ts:158`; Core and TUI were diagnostic-free. P4 owns the repair; turbo workspace typecheck is pending that repair and phase-owner TypeScript slot release. Overlay visibility is **0/0/0** after exact `.gitignore` exceptions. Convergence passes **1,298/0**. Markdown audit currently has 3 active missing-link blockers because tracked architecture pages target the untracked `arch_V1/46-V1-RELEASE-EXECUTION-QUEUE.md`; preserve the mixed tree and do not stage it just to alter this interim result.
+
+Current release gate is **BLOCKED / 15**, with dirty source, no candidate or provenance digests, stale legacy artifact, 3 missing runtime license metadata rows, 46 missing direct legal notice rows, no install matrix, and Linux/WSL support not verified. MIT is the selected first-party license; exact artifact notices remain open. DEC-V1-12 signing/update is deferred and correctly unavailable. P1–P9 remain unverified. Current Git MCP snapshot: `main`, 20 commits ahead of `origin/main`, 104 modified / 20 untracked, none staged, no conflicts, one worktree; 825 GB free with existing `kernel/target` (2.5 GB) and `target-p2` (7.7 GB) retained. No Cargo slot, provider call, live Doctor, candidate build/install, signature, publication, commit or push is authorized/performed.
+
+## Whole-phase continuation — 2026-10-26 (latest owner results)
+
+V1 remains **PARTIAL / NOT VERIFIED / NOT RELEASED**. Phase owners resumed for P1–P9 with exclusive
+scopes; P2 owns HostKernel/managed control and P8 owns the prospective durable OwnerLog mirror seam.
+The current owner/dependency ledger is `reports/phases/LEDGER.md`. No readiness gate or effectful path
+opened; no commit/push, provider call, candidate build/install, signing/publication, or LM-018 activity.
+
+Newest offline evidence since the prior handoff:
+
+- **P1:** process guard `collectStream` now has a 1,024-byte fallback cap; latest focused process-guard
+  suite **12/12 (38 expectations)** after `pinCodeModeHelperRoot` rejected manifests over the existing
+  4 KiB bound before reading/parsing (RED reproduced acceptance of an oversized valid manifest).
+  Observer socket-path issue is partly diagnosed: paths >=108 bytes are rejected; a shortened fixture
+  passed path checks but `openForSession` timed out before cursor/ACK/replay. No production workaround;
+  observer lifecycle remains NOT VERIFIED.
+- **P2:** scheduler fails closed if active and pending-verification Attempt IDs disagree (RED
+  `Some("task-2")`, GREEN 1/1); HostRun decoder **4/4 (16 expectations)**. Managed recovery producer/TS
+  DTO mismatch remains under P2 repair. After P8’s mirror tests passed 7/7, P2 is integrating the
+  post-commit append, exact P8 cursor resolve and P2 receipt persistence; dispatch remains closed.
+- **P3:** `repo_detect` Poetry false-positive, overlong/NUL excludes, root+nested `**/AGENTS.md`, and
+  unsafe `displayPath` provenance labels are hardened. Imported and local instruction paths reject
+  newline/control/bidi labels before expansion. `instruction-project.test.ts` **33 passed / 605
+  expectations**; truncation budgets 1–512 bytes **512 expectations**. HostKernel navigation/recovery,
+  trusted buffer ingress, cache, Guarded patch, real-project acceptance and parser provenance remain.
+  RepoSearch additionally sanitizes source-controlled path/symbol/parser labels for terminal display
+  while keeping canonical HostKernel read paths unchanged; bidi-path regression RED→GREEN,
+  `repo-tools.test.ts` **33/143 expectations**.
+  Latest resolver fixes reject all Unicode control/format/line/paragraph separators in instruction labels
+  (U+061C RED→GREEN) and reject malformed, oversized or NUL exclude globs in the public helper;
+  `instruction-project.test.ts` **34/609 expectations**.
+- **P4:** standard LSP/DAP/REPL suite now passes without `--isolate`: **411 tests / 1,503 expectations
+  across 24 files**. The adapter test mock delegates to the real closed protocol guard outside its two
+  synthetic queue tests. Launch approval also rejects sparse target arrays and detaches/freezes nested
+  HostKernel target data; launch-profile suite **30/30 (119 expectations)**, both regressions RED first.
+  P1/P2/P3/P8 prerequisites, DAP namespace/ptrace and Linux/WSL acceptance remain; no process/editor/PTY
+  launch occurred.
+- **P5:** stale HostKernel route-plan digest returns UNKNOWN without aggregate receipt reference;
+  NEEDS_APPROVAL rejects route attempts/provider/result/receipt evidence. Sparse in-memory catalog holes
+  are tested; JSON frame arrays cannot encode holes. Search/CodeMode/registry suite **163 tests / 628
+  expectations across 10 files**, all green. Integrated §32.28/CM-001–012 remain blocked; search and
+  `codemode.execute` stay closed.
+- **P6:** `SecureInputVault.issue` failure paths zeroize the owned credential copy; auth **71/270**,
+  offline Doctor/direct-route/cost **30/131**, transport **8/24**. Models.dev now enforces its 16 MiB
+  raw-response cap during streaming, excludes the over-limit chunk and cancels the response while
+  retaining a decoded-size check; injected cancellation tests plus plugin tests **7/37**. Core typecheck
+  still has three unrelated `workspaceID` fixture branding errors. Routes stay closed.
+  Further offline fixes zeroize the caller buffer if expiry-clock initialization throws (auth **72/272**),
+  cap Models.dev cache/override reads at 16 MiB + 1 byte (Models.dev/plugin **8/39**), treat inherited
+  Doctor map keys such as `toString` as missing providers (Doctor/direct-route/cost **31/134**), and
+  restore TTY mode if raw-mode setup throws (Auth **73/275**). Sidecar provenance reads now cap at
+  **16 KiB + 1 byte**, ignoring oversized metadata; Models.dev/plugin **9/43**. Three unrelated
+  `workspaceID` fixture branding diagnostics still block full Core typecheck; routes remain closed.
+  Latest TTY fix also removes the credential listener and zeroes the temporary buffer if `stdin.resume()`
+  throws after listener attachment; RED reproduced retained listener, full Auth suite **74/278**.
+- **P7:** raster failure accessors, TOCTOU snapshot, and mismatched worker generation fail closed with
+  inert fallback; accessor-backed token/cache/cost provenance/estimate fields and revoked Proxy records
+  or `parts` arrays project as unavailable/UNKNOWN. Linux/Bun 1.4.2: renderer **39/39**, analytics
+  **22/22**, six-file TUI bundle **154/154 / 1,396 expectations**. Integrated worker/artifact recovery, stream, analytics
+  retention/export, guarded automation and rewind remain.
+- **P8:** evaluator checks bind response `runId`, task, arm and group against frozen invocation (four
+  negatives); evaluator **74 run / 71 pass / 3 skip**, RC0 **150/150**. Rust mirror append/resolve source
+  is now present in `worker_durable.rs`: it validates P2 binding+durable receipt, appends to existing
+  P8 OwnerLog, derives cursor from commit receipt, and reconstructs state through strict replay. Focused
+  Cargo suite passed **7/7 (525 filtered)** using existing `target-p2`; P2 is assigned post-commit append →
+  exact cursor resolve → P2 receipt wiring. P8 reviewed its test-only post-commit/pre-publication failpoint:
+  it models panic/reopen, not process-kill/power-loss or P2 route authenticity; the new test remains
+  uncompiled/unrun pending P2's Cargo-slot release. No dispatch unlock; RC0 NOT_ATTESTED, quotas UNSUPPORTED.
+- **P1:** non-number `collectStream` caps now fail closed at zero and mark truncation; process guard
+  **11/11 (37 expectations)**. Observer startup after socket-path shortening still times out before
+  cursor/ACK/replay; stage is ambiguous, no production change.
+- **P9:** offline NOTICE/path audit and package identity evidence remain, but release-readiness **110/110**
+  is invalid under the no-Git constraint because synthetic fixtures invoke Git; do not rerun. Installer
+  now rejects CR/LF and shell metacharacters before filesystem changes; POSIX/fish PATH formatting quotes
+  validated paths and preserves spaces. RED across 7 subcases; focused pure tests **3/3** and `bash -n
+  install` pass. No installer invocation or CLI spawn.
+  Latest identity layer renames the Desktop workspace package to `@horizoncode/desktop` and updates
+  matching root lock namespaces without dependency-payload changes; focused identity/importer parity
+  tests **6/6** (no Git invocation). Existing Desktop author/homepage copy and upstream `@opencode-ai/*`
+  dependencies are preserved; §56 maps remaining workspace IDs to coupled local consumers, so no
+  isolated renames are safe. §57 offline tests: NOTICE/DEC-V1-12 **2/2**, packaging/identity **5/5**,
+  workspace identity **6/6**, platform matrix **6/6** (corrected command **13/13**). No renderer/main-process
+  code or localization strings changed; no safe isolated rename remains. Candidate remains NO-GO; no
+  Git-dependent release audit, installer, CLI, build/install, Nix, signing or publication was run.
+
+Open acceptance includes P1 Guard/lease/receipt/recovery and containment; P2 authenticated HostRun,
+managed DAG/verifier/final settlement/restart; P3/P4 real authenticated journeys; P6 protected
+credentials/live Doctor; P7 integrated streaming/automation; P8 trusted attestation, quotas and repeated
+workloads; P9 exact artifact/legal closure and candidate qualification; and final integrated security,
+recovery and release gates. Native Windows remains unavailable; LM-018 is NOT_RUN; candidate is NO-GO.
+Mixed unstaged work and the single worktree are preserved.
+
+## Whole-phase implementation update — 2026-10-26
+
+The implementation wave has landed test-first offline fixes across P1/P3/P4/P5/P6/P7/P8/P9, plus
+the parent-owned QA-007 `/api/event` authorization fix. Exact phase evidence is in
+`reports/phases/P1.md`–`P9.md` and the owner/dependency ledger is in
+`reports/phases/LEDGER.md`. Highlights include finite process-probe caps and argv-redacted diagnostics;
+bounded/deduplicated instruction imports with external-approval path checks; detached/frozen LSP/DAP
+worktree authority; immutable search admission and body-free UNKNOWN outcomes; broker-owned secret
+zeroization plus bounded managed URL/header payloads; requestID-bound cost and stream-generation fencing;
+RC0 u64 checks; and stricter NOTICE attribution. QA-007's actual `/api/event` stream filters question
+events using persisted Session-owner ancestry. Latest focused results include P1 process guard
+**10/10 (31 expectations)**, P3 resolver **26/26 (77)**, P4 focused LSP/process lifecycle **23/23 (29)**
+and **23/23 (59)** but combined LSP/DAP/REPL **391 passed / 19 failed** (diagnosis in progress), P5
+websearch **76/76 (246)** plus search/CodeMode **145/145 (571)**, P6 transport **7/7 (23)**, P7 analytics
+**16/16 (85)** and stream mux **44/44 (986)**, P8 evaluator **70 passed / 3 skipped** and RC0 **149/149**,
+P9 release readiness **107/107** plus identity **3 tests / 59 expectations**, and QA-007 live-question
+suite **4/4 (50)** plus Server typecheck exit 0. These are focused offline evidence, not phase acceptance.
+
+V1 remains **PARTIAL / NOT VERIFIED / NOT RELEASED**. P1 Guard/lease/receipt and containment; P2
+authenticated HostRun/P8 OwnerLog proof, managed DAG and final settlement; P3/P4 integrated authenticated
+journeys; P6 protected credential/live Doctor; P7 integrated stream/automation; P8 trusted attestation,
+quotas and repeated workloads; P9 exact artifact closure/candidate qualification; and final integrated
+acceptance remain open. Native Windows is unavailable; LM-018 is NOT_RUN. No provider/effect/candidate/
+install/signing/publication, commit or push was performed. The mixed unstaged tree and single worktree
+are preserved; Cargo work is serialized to P2 only.
+
 ## Whole-phase V1 continuation — 2026-10-24
 
 The user requested whole V1 completion and exact Git add/commit/push followed by all open gates.

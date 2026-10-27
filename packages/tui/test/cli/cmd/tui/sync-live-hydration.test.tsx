@@ -2,7 +2,7 @@
 import { expect, test } from "bun:test"
 import type { GlobalEvent } from "@opencode-ai/sdk/v2"
 import { tmpdir } from "../../../fixture/fixture"
-import { json, mount, wait } from "./sync-fixture"
+import { json, mount, wait, worktree } from "./sync-fixture"
 
 const sessionID = "ses_hydration_race"
 const messageID = "msg_hydration_race"
@@ -12,7 +12,7 @@ const session = {
   title: "race",
   time: { created: 0, updated: 0 },
   version: "1.15.13",
-  directory: "/tmp/opencode/packages/opencode",
+  directory: `${worktree}/packages/opencode`,
 }
 const assistant = {
   id: messageID,

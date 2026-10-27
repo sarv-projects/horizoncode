@@ -1,5 +1,6 @@
 export * as ConfigMigrateV1 from "./migrate"
 
+import { Schema } from "effect"
 import { ConfigV1 } from "./config"
 import { ConfigAgentV1 } from "./agent"
 import { ConfigMCPV1 } from "./mcp"
@@ -31,6 +32,23 @@ const keys = new Set([
 export function isV1(input: unknown) {
   if (typeof input !== "object" || input === null || Array.isArray(input)) return false
   return Object.keys(input).some((key) => keys.has(key))
+}
+
+export class MixedGenerationError extends Schema.TaggedErrorClass<MixedGenerationError>()(
+  "ConfigMigrateV1.MixedGenerationError",
+  { fields: Schema.Array(Schema.String), message: Schema.String },
+) {}
+
+const currentProfileFields = ["agent_profiles", "agent_profile_selectors", "primary_agent_profile_selector"] as const
+
+export function validateMixedGeneration(input: unknown): MixedGenerationError | undefined {
+  if (typeof input !== "object" || input === null || Array.isArray(input) || !isV1(input)) return
+  const fields = currentProfileFields.filter((field) => field in input)
+  if (fields.length === 0) return
+  return new MixedGenerationError({
+    fields,
+    message: `V1 permission and Core-current agent_profiles* fields cannot coexist in one file (found ${fields.join(", ")}); split the configurations or migrate explicitly.`,
+  })
 }
 
 export function migrate(info: typeof ConfigV1.Info.Type) {

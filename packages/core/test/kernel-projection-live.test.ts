@@ -36,6 +36,7 @@ import { SessionEvent } from "@opencode-ai/schema/session-event"
 import { SessionID } from "@opencode-ai/schema/session-id"
 import { SessionMessage } from "@opencode-ai/schema/session-message"
 import { AbsolutePath } from "@opencode-ai/core/schema"
+import { WorkspaceV2 } from "@opencode-ai/core/workspace"
 import { Prompt } from "@opencode-ai/core/session/prompt"
 import {
   GuardApprovalRequested,
@@ -177,6 +178,7 @@ async function admitAndPromote(source: string, directory = "/projection-test") {
           directory,
           title: "projection test",
           version: "test",
+          metadata: { horizonPrincipalOwner: { kind: "server_auth", subject: "projection-test" } },
         })
         .onConflictDoNothing()
         .run()
@@ -196,11 +198,17 @@ async function admitAndPromote(source: string, directory = "/projection-test") {
 describe("OpenCode EventV2 -> Rust Session supervisor", () => {
   test("Core Effect supervisor authenticates, negotiates, receives and ACKs real OpenCode events", async () => {
     expect(existsSync(supervisorRust)).toBe(true)
-    const dir = mkdtempSync(join(tmpdir(), "hc-session-supervised-"))
+    const dir = mkdtempSync(join(tmpdir(), "x"))
     const source = join(dir, "opencode.db")
-    const state = join(dir, "supervisor")
+    const state = dir
     try {
+      const observerDirectory = join(state, `s-${createHash("sha256").update(sessionID).digest("hex").slice(0, 20)}`)
+      const observerSocket = join(observerDirectory, `s-${"0".repeat(16)}.sock`)
+      const hostSocket = join(dir, "host-kernel-state", `host-${"0".repeat(16)}.sock`)
+      expect(Buffer.byteLength(observerSocket, "utf8")).toBeLessThan(108)
+      expect(Buffer.byteLength(hostSocket, "utf8")).toBeLessThan(108)
       await admitAndPromote(source)
+      console.log("observer-stage:layer-built")
       const layer = AppNodeBuilder.build(LayerNode.group([SessionSupervisor.node]), [
         [Database.node, databaseNode(source)],
         [SessionSupervisor.runtimeConfigNode, Layer.succeed(SessionSupervisor.RuntimeConfig, observerRuntime(dir, state))],
@@ -209,7 +217,9 @@ describe("OpenCode EventV2 -> Rust Session supervisor", () => {
         Effect.scoped(
           Effect.gen(function* () {
             const supervisor = yield* SessionSupervisor.Service
+            console.log("observer-stage:supervisor-acquired")
             const opened = yield* supervisor.openForSession(sessionID, source)
+            console.log("observer-stage:open-complete")
             if (opened.status !== "available") return yield* Effect.fail(new Error(opened.reason))
             const client = opened.client
             const cursor = {
@@ -346,7 +356,7 @@ describe("OpenCode EventV2 -> Rust Session supervisor", () => {
       const layer = AppNodeBuilder.build(LayerNode.group([SessionSupervisor.node, EventV2.node]), [
         [Database.node, databaseNode(source)],
         [SessionSupervisor.runtimeConfigNode, runtime],
-      ]).pipe(Layer.merge(Layer.succeed(TrustedPrincipalContext, { principal: { kind: "host_os" } })))
+      ]).pipe(Layer.merge(Layer.succeed(TrustedPrincipalContext, { principal: { kind: "server_auth", subject: "projection-test" } })))
       const content = "TypeScript-to-Rust guarded workspace write"
       const target = join(workspace, "approved.txt")
       await Effect.runPromise(
@@ -376,9 +386,13 @@ describe("OpenCode EventV2 -> Rust Session supervisor", () => {
                 yield* supervisor.replyGuardApproval({ approvalID: request.approvalID, decision: "allow_once" })
               }),
             )
+            const locationRef = {
+              directory: AbsolutePath.make(workspace),
+              workspaceID: WorkspaceV2.ID.make("workspace_projection_test"),
+            }
             const admission = yield* supervisor.prepareToolBatch({
               sessionID,
-              locationRef: { directory: AbsolutePath.make(workspace) },
+              locationRef,
               batchID: "batch_typescript_interop",
               turnContextDigest: `sha256:${"c".repeat(64)}`,
               calls: [
@@ -391,7 +405,6 @@ describe("OpenCode EventV2 -> Rust Session supervisor", () => {
             })
             expect(admission.status).toBe("prepared")
             if (admission.status !== "prepared") return
-            const locationRef = { directory: AbsolutePath.make(workspace) }
             const receipt = yield* supervisor.executeWrite({
               sessionID,
               locationRef,
@@ -467,7 +480,24 @@ describe("OpenCode EventV2 -> Rust Session supervisor", () => {
         deps: [],
       })
       const fakeModel = Model.make({ id: "guard-test-model", provider: "test", route: OpenAIChat.route })
-      const model = SessionRunnerModel.layerWith(() => Effect.succeed(fakeModel))
+      const model = Layer.succeed(
+        SessionRunnerModel.Service,
+        SessionRunnerModel.Service.of({
+          resolve: () => Effect.succeed(fakeModel),
+          resolveSelection: () =>
+            Effect.succeed({
+              model: fakeModel,
+              directProviderRoute: {
+                providerID: "test",
+                modelID: "guard-test-model",
+                routeID: "route-test",
+                routeRevision: "1",
+                endpointRevision: "1",
+                endpointBase: "https://test.provider/v1",
+              },
+            }),
+        }),
+      )
       const responses = [
         [
           LLMEvent.stepStart({ index: 0 }),
@@ -546,7 +576,7 @@ describe("OpenCode EventV2 -> Rust Session supervisor", () => {
           [ToolOutputStore.node, ToolOutputStore.nodeWithoutConfig],
           [SessionSupervisor.runtimeConfigNode, runtime],
         ],
-      ).pipe(Layer.merge(Layer.succeed(TrustedPrincipalContext, { principal: { kind: "host_os" } })))
+      ).pipe(Layer.merge(Layer.succeed(TrustedPrincipalContext, { principal: { kind: "server_auth", subject: "projection-test" } })))
       await Effect.runPromise(
         Effect.scoped(
           Effect.gen(function* () {
@@ -745,6 +775,101 @@ describe("OpenCode EventV2 -> Rust Session supervisor", () => {
       rmSync(dir, { recursive: true, force: true })
     }
   }, 30000)
+
+  test("observer restart after an unacked mid-stream event replays exactly once", async () => {
+    expect(existsSync(supervisorRust)).toBe(true)
+    const dir = mkdtempSync(join(tmpdir(), "x"))
+    const source = join(dir, "opencode.db")
+    const state = join(dir, "supervisor")
+    try {
+      await admitAndPromote(source)
+      const layer = AppNodeBuilder.build(LayerNode.group([SessionSupervisor.node]), [
+        [Database.node, databaseNode(source)],
+        [SessionSupervisor.runtimeConfigNode, Layer.succeed(SessionSupervisor.RuntimeConfig, observerRuntime(dir, state))],
+      ])
+      const sessionState = join(state, `s-${createHash("sha256").update(sessionID).digest("hex").slice(0, 20)}`)
+      const started = await Effect.runPromise(Deferred.make<void>())
+      const fiber = Effect.runFork(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const supervisor = yield* SessionSupervisor.Service
+            const opened = yield* supervisor.openForSession(sessionID, source)
+            if (opened.status !== "available") return yield* Effect.fail(new Error(opened.reason))
+            yield* Effect.promise(() =>
+              opened.client.subscribe({
+                ownerKind: "session",
+                ownerId: sessionID,
+                seq: "0",
+                eventDigest: "blake3:" + "0".repeat(64),
+              }),
+            )
+            const first = yield* Effect.promise(() => opened.client.receive())
+            expect(first.kind).toBe("event")
+            if (first.kind !== "event") return
+            expect(first.eventType).toBe("session.next.prompt.admitted.1")
+            yield* Deferred.succeed(started, undefined)
+            return yield* Effect.never
+          }).pipe(Effect.provide(layer)),
+        ),
+      )
+      await Effect.runPromise(Deferred.await(started))
+      await Effect.runPromise(Fiber.interrupt(fiber))
+      expect(readdirSync(sessionState).filter((name) => name.endsWith(".sock"))).toEqual([])
+      expect(await Bun.file(join(sessionState, "supervisor.epoch")).text()).toBe("1")
+      expect(existsSync(join(sessionState, `session-${sessionID}.cursor`))).toBe(false)
+
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const supervisor = yield* SessionSupervisor.Service
+            const opened = yield* supervisor.openForSession(sessionID, source)
+            if (opened.status !== "available") return yield* Effect.fail(new Error(opened.reason))
+            const client = opened.client
+            expect(yield* Effect.promise(() => client.resumeCursor())).toEqual({
+              ownerKind: "session",
+              ownerId: sessionID,
+              seq: "0",
+              eventDigest: "blake3:" + "0".repeat(64),
+            })
+            yield* Effect.promise(() => client.subscribe())
+            const expected = ["session.next.prompt.admitted.1", "session.next.prompted.1"]
+            const cursors = []
+            for (const eventType of expected) {
+              const event = yield* Effect.promise(() => client.receive())
+              expect(event.kind).toBe("event")
+              if (event.kind !== "event") return
+              expect(event.eventType).toBe(eventType)
+              cursors.push(event.cursor)
+              yield* Effect.promise(() => client.ack(event))
+            }
+            const end = yield* Effect.promise(() => client.receive())
+            expect(end).toMatchObject({ kind: "page_end", through: cursors[1], hasMore: false })
+            yield* Effect.promise(() => client.unsubscribe())
+          }).pipe(Effect.provide(layer)),
+        ),
+      )
+      expect(await Bun.file(join(sessionState, `session-${sessionID}.cursor`)).text()).toContain('"seq":"2"')
+
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const supervisor = yield* SessionSupervisor.Service
+            const opened = yield* supervisor.openForSession(sessionID, source)
+            if (opened.status !== "available") return yield* Effect.fail(new Error(opened.reason))
+            const resume = yield* Effect.promise(() => opened.client.resumeCursor())
+            expect(resume.seq).toBe("2")
+            yield* Effect.promise(() => opened.client.subscribe())
+            const end = yield* Effect.promise(() => opened.client.receive())
+            expect(end).toMatchObject({ kind: "page_end", through: resume, hasMore: false })
+            yield* Effect.promise(() => opened.client.unsubscribe())
+          }).pipe(Effect.provide(layer)),
+        ),
+      )
+      expect(await Bun.file(join(sessionState, "supervisor.epoch")).text()).toBe("3")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }, 60000)
 
   test("persists real prompt admission and promotion events with replay parity", async () => {
     expect(existsSync(rust)).toBe(true)

@@ -168,7 +168,12 @@ function validateScope(scope: EditorProcessLifecycleScopeV1): EditorProcessLifec
   }
   return Object.freeze({
     ...scope,
-    ...(scope.managedAttempt === undefined ? {} : { managedAttempt: Object.freeze({ ...scope.managedAttempt }) }),
+    ...(scope.managedAttempt === undefined ? {} : {
+      managedAttempt: Object.freeze({
+        ...scope.managedAttempt,
+        worktreeTarget: Object.freeze({ ...scope.managedAttempt.worktreeTarget }),
+      }),
+    }),
     ...(scope.directAttempt === undefined ? {} : { directAttempt: Object.freeze({ ...scope.directAttempt }) }),
   })
 }
@@ -293,11 +298,11 @@ export async function launchApprovedEditorProcessV1(input: {
   /** Local Core-only pin retained for exact cancel/receipt reconciliation. */
   readonly lease: EditorProcessLeaseV1
 }> {
-  assertLanguageServiceProcessAllowed(input.approval.capabilityID === "language.start" ? "server.spawn"
-    : input.approval.capabilityID === "debug.start" ? "debug.start" : "repl.start")
   const scope = validateScope(input.scope)
   validateApprovalForScope(input.approval, scope)
   const profileRef: ExecutionLaunchProfileRefV1 = validateExecutionLaunchProfileRef(input.approval.profileRef)
+  assertLanguageServiceProcessAllowed(input.approval.capabilityID === "language.start" ? "server.spawn"
+    : input.approval.capabilityID === "debug.start" ? "debug.start" : "repl.start")
   const lease = validateLease(input.approval, scope, await input.resolveApproval(input.approval))
   const executionID = `editor_${randomUUID().replaceAll("-", "")}`
   const common = Object.freeze({

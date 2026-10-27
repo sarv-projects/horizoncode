@@ -1,0 +1,177 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "horizon://schemas/host-run-dispatch-v1",
+  "title": "HostRunDispatchV1",
+  "description": "Private managed.v1 HostRun bind, P8 post-commit mirror receipt, inspect, immutable binding, and reconciliation contracts. Schema presence grants no dispatch or attestation authority.",
+  "oneOf": [
+    { "$ref": "#/$defs/BindRequest" },
+    { "$ref": "#/$defs/BindResponse" },
+    { "$ref": "#/$defs/BindReceiptRequest" },
+    { "$ref": "#/$defs/BindReceiptResponse" },
+    { "$ref": "#/$defs/InspectRequest" },
+    { "$ref": "#/$defs/Binding" },
+    { "$ref": "#/$defs/BindingReceipt" },
+    { "$ref": "#/$defs/P8OwnerReceipt" },
+    { "$ref": "#/$defs/Reconciliation" }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "blake3": {
+      "type": "string",
+      "pattern": "^blake3:[0-9a-f]{64}$"
+    },
+    "ownerEventDigest": {
+      "type": "string",
+      "pattern": "^(blake3:)?[0-9a-f]{64}$",
+      "description": "The existing OwnerLog cursor may use a bare lowercase digest or the canonical blake3:-prefixed spelling; implementations normalize comparison to the exact durable cursor value."
+    },
+    "positiveDecimalU64": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 20,
+      "pattern": "^[1-9][0-9]*$",
+      "description": "Canonical positive decimal u64; Rust additionally enforces the u64 upper bound."
+    },
+    "version": { "const": 1 },
+    "BindRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["goalID", "attemptID", "dispatchKeyDigest", "manifestDigest", "evaluatorTaskId", "armId", "taskGroup"],
+      "properties": {
+        "goalID": { "$ref": "#/$defs/id" },
+        "attemptID": { "$ref": "#/$defs/id" },
+        "dispatchKeyDigest": { "$ref": "#/$defs/blake3" },
+        "manifestDigest": { "$ref": "#/$defs/blake3" },
+        "evaluatorTaskId": { "$ref": "#/$defs/id" },
+        "armId": { "$ref": "#/$defs/id" },
+        "taskGroup": { "$ref": "#/$defs/id" }
+      },
+      "description": "Private managed.v1/host_run.bind. IDs and digests are correlation input only; HostKernel derives all authority pins and validates the key tuple."
+    },
+    "Binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "dispatchKeyDigest", "manifestDigest", "evaluatorTaskId", "armId", "taskGroup", "runId", "managedTaskId", "attemptId", "evaluationSessionId", "coreProcessGeneration", "ownerId", "ownerEpoch", "workerExecutionId", "delegationBindingDigest", "acceptedSpecDigest", "providerSelectionDigest", "workspaceBindingDigest", "admittedWorkspaceRevision", "attemptScopeDigest", "ownerPrincipalBindingDigest", "bindingDigest"],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/version" },
+        "dispatchKeyDigest": { "$ref": "#/$defs/blake3" },
+        "manifestDigest": { "$ref": "#/$defs/blake3" },
+        "evaluatorTaskId": { "$ref": "#/$defs/id" },
+        "armId": { "$ref": "#/$defs/id" },
+        "taskGroup": { "$ref": "#/$defs/id" },
+        "runId": { "$ref": "#/$defs/id" },
+        "managedTaskId": { "$ref": "#/$defs/id" },
+        "attemptId": { "$ref": "#/$defs/id" },
+        "evaluationSessionId": { "$ref": "#/$defs/id", "description": "The root Run SessionLink pinned at Run start; never the child Attempt Session." },
+        "coreProcessGeneration": { "$ref": "#/$defs/positiveDecimalU64" },
+        "ownerId": { "$ref": "#/$defs/id", "description": "P8 OwnerLog identity; not a principal or authorization grant." },
+        "ownerEpoch": { "$ref": "#/$defs/positiveDecimalU64" },
+        "workerExecutionId": { "$ref": "#/$defs/id" },
+        "delegationBindingDigest": { "$ref": "#/$defs/blake3" },
+        "acceptedSpecDigest": { "$ref": "#/$defs/blake3" },
+        "providerSelectionDigest": { "$ref": "#/$defs/blake3" },
+        "workspaceBindingDigest": { "$ref": "#/$defs/blake3" },
+        "admittedWorkspaceRevision": { "$ref": "#/$defs/id" },
+        "attemptScopeDigest": { "$ref": "#/$defs/blake3" },
+        "ownerPrincipalBindingDigest": { "$ref": "#/$defs/blake3" },
+        "bindingDigest": { "$ref": "#/$defs/blake3", "description": "BLAKE3 over domain horizoncode.host-run-dispatch-binding.v1\\0 followed by the canonical MessagePack encoding of the validated 21-field preimage." }
+      }
+    },
+    "BindingReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "dispatchKeyDigest", "bindingDigest", "ownerLogSequence", "ownerLogEventDigest", "bindingManagedRevision"],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/version" },
+        "dispatchKeyDigest": { "$ref": "#/$defs/blake3" },
+        "bindingDigest": { "$ref": "#/$defs/blake3" },
+        "ownerLogSequence": { "$ref": "#/$defs/positiveDecimalU64" },
+        "ownerLogEventDigest": { "$ref": "#/$defs/ownerEventDigest" },
+        "bindingManagedRevision": { "$ref": "#/$defs/positiveDecimalU64" }
+      },
+      "description": "P2 receipt for the committed HostRun binding in the managed OwnerLog."
+    },
+    "BindResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "binding", "receipt"],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/version" },
+        "binding": { "$ref": "#/$defs/Binding" },
+        "receipt": { "$ref": "#/$defs/BindingReceipt" }
+      }
+    },
+    "BindReceiptRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["goalID", "dispatchKeyDigest", "bindingDigest", "ownerLogID", "ownerLogSequence", "ownerLogEventDigest"],
+      "properties": {
+        "goalID": { "$ref": "#/$defs/id" },
+        "dispatchKeyDigest": { "$ref": "#/$defs/blake3" },
+        "bindingDigest": { "$ref": "#/$defs/blake3" },
+        "ownerLogID": { "$ref": "#/$defs/id" },
+        "ownerLogSequence": { "$ref": "#/$defs/positiveDecimalU64" },
+        "ownerLogEventDigest": { "$ref": "#/$defs/ownerEventDigest" }
+      },
+      "description": "Private managed.v1/host_run.bind_receipt. These fields are claims only until P2 re-resolves the exact P8 event/cursor from durable P8 state."
+    },
+    "P8OwnerReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "dispatchKeyDigest", "bindingDigest", "ownerLogID", "ownerLogSequence", "ownerLogEventDigest"],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/version" },
+        "dispatchKeyDigest": { "$ref": "#/$defs/blake3" },
+        "bindingDigest": { "$ref": "#/$defs/blake3" },
+        "ownerLogID": { "$ref": "#/$defs/id" },
+        "ownerLogSequence": { "$ref": "#/$defs/positiveDecimalU64" },
+        "ownerLogEventDigest": { "$ref": "#/$defs/ownerEventDigest" }
+      },
+      "description": "Exact P8 committed HostRunDispatchBoundV1 OwnerLog cursor returned by the append; never caller-created authority."
+    },
+    "BindReceiptResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "status", "receipt"],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/version" },
+        "status": { "const": "RECORDED" },
+        "receipt": { "$ref": "#/$defs/P8OwnerReceipt" }
+      }
+    },
+    "InspectRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["goalID", "dispatchKeyDigest"],
+      "properties": {
+        "goalID": { "$ref": "#/$defs/id" },
+        "dispatchKeyDigest": { "$ref": "#/$defs/blake3" }
+      },
+      "description": "Private read-only managed.v1/host_run.inspect; it cannot dispatch, settle, clear UNKNOWN, or release capacity."
+    },
+    "Reconciliation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "dispatchKeyDigest", "status"],
+      "properties": {
+        "schemaVersion": { "$ref": "#/$defs/version" },
+        "dispatchKeyDigest": { "$ref": "#/$defs/blake3" },
+        "status": { "enum": ["SUCCEEDED", "FAILED", "CANCELLED", "UNKNOWN"] },
+        "unknownReason": { "enum": ["host_run_binding_absent", "host_run_binding_identity_mismatch", "host_run_effect_projection_unavailable", "host_run_effect_projection_incomplete", "host_run_effect_projection_identity_mismatch", "host_run_effect_projection_ambiguous", "host_run_managed_terminal_unsettled", "host_run_task_unverified", "host_run_attempt_unknown", "host_run_attempt_receipt_missing", "host_run_binding_receipt_missing", "host_run_verifier_evidence_missing", "host_run_verifier_pins_unavailable", "host_run_p8_owner_receipt_missing", "host_run_p8_settlement_missing"] },
+        "binding": { "$ref": "#/$defs/Binding" },
+        "bindingDigest": { "$ref": "#/$defs/blake3" },
+        "attemptReceiptDigest": { "$ref": "#/$defs/id" },
+        "verifiedRevision": { "$ref": "#/$defs/id" }
+      },
+      "allOf": [
+        { "if": { "properties": { "status": { "const": "UNKNOWN" } }, "required": ["status"] }, "then": { "required": ["unknownReason"] } },
+        { "if": { "properties": { "status": { "enum": ["SUCCEEDED", "FAILED", "CANCELLED"] } }, "required": ["status"] }, "then": { "not": { "required": ["unknownReason"] } } }
+      ]
+    }
+  }
+}

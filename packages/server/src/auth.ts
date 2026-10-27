@@ -76,7 +76,12 @@ export function reviewerConfigured(config: Info) {
   )
 }
 
+/** Authentication is configured only when `required()` holds, i.e. a non-empty
+ * password. An unset *or empty* configured password must never authorize a
+ * guessed credential pair, so both owners of this contract fail closed on the
+ * same condition; callers that gate on `required()` first are unaffected. */
 export function authorized(credentials: DecodedCredentials, config: Info) {
+  if (!required(config)) return false
   const primary = (
     Option.isSome(config.password) &&
     credentials.username === config.username &&

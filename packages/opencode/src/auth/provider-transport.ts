@@ -3,6 +3,8 @@ import { blake3 } from "@noble/hashes/blake3.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
 import { SecretBrokerError, type TrustedSecretUseContext } from "./secret-broker"
 import type { SecretBrokerV1 } from "@opencode-ai/schema/secret-broker-v1"
+import type { TrustedPrincipal } from "@opencode-ai/core/trusted-principal"
+import { providerOperationDigest, type CredentialUseAuthorizer } from "./credential-use-authorizer"
 import type {
   ModelsDevCatalogFreshnessV1 as ModelsDevCatalogFreshnessSchema,
   ModelsDevCatalogSourceV1 as ModelsDevCatalogSourceSchema,
@@ -45,6 +47,13 @@ export type DirectProviderRouteV1 = {
   readonly endpointRevision: string
   readonly endpointBase: string
   readonly anonymousOpenCodeFree: boolean
+  /**
+   * Temporary explicit opt-in: this route was selected for a zero-priced model
+   * and carries the user's own provider key. `anonymousOpenCodeFree` stays
+   * false, so the journaled/pinned direct transport and the managed route
+   * projection MUST keep refusing it until a Guarded SecretBroker lease exists.
+   */
+  readonly explicitFreeCredential?: true
   readonly credentialHeader: ProviderTransportInput["credentialHeader"]
   /**
    * §30.26.4/§30.26.9 prefix-cache capability for this exact pinned route.
@@ -150,6 +159,7 @@ export function contextCompileCatalogSnapshot(
 }
 
 const DIRECT_PUBLIC_TOKEN = "public"
+export const DIRECT_PROVIDER_CREDENTIAL_PLACEHOLDER = "horizoncode-direct-credential-placeholder-v1"
 
 /** Inspect and freeze the SDK's exact request before the SessionStore PINNED commit. */
 export async function prepareDirectProviderTransportRequest(options: {
@@ -164,12 +174,14 @@ export async function prepareDirectProviderTransportRequest(options: {
     !/^blake3:[a-f0-9]{64}$/.test(route.endpointRevision)) {
     throw new SecretBrokerError("INVALID_REQUEST", "Direct provider route identity is invalid")
   }
-  if (!route.anonymousOpenCodeFree || route.providerID !== "opencode") {
+  const credentialedFreeRoute = route.explicitFreeCredential === true &&
+    route.providerID === "openrouter" && route.modelID === "nvidia/nemotron-3.5-super-vl:free" &&
+    !route.anonymousOpenCodeFree
+  if (!credentialedFreeRoute && (!route.anonymousOpenCodeFree || route.providerID !== "opencode")) {
     throw new SecretBrokerError("UNAVAILABLE", "Direct provider transport is not enabled for this selected route")
   }
-  // This lane is currently limited to the anonymous OpenCode route. Keep its
-  // public placeholder bound to the adapter's canonical header rather than
-  // trusting a type-only union from a runtime route projection.
+  // The credentialed lane is one exact OpenRouter free offer. The SDK only
+  // sees this synthetic placeholder; actual bytes enter at the send boundary.
   if (route.credentialHeader?.name !== "authorization" || route.credentialHeader.prefix !== "Bearer ") {
     throw new SecretBrokerError("INVALID_REQUEST", "Direct provider credential header is invalid")
   }
@@ -184,11 +196,16 @@ export async function prepareDirectProviderTransportRequest(options: {
     throw new SecretBrokerError("INVALID_REQUEST", "Direct provider request or endpoint is malformed")
   }
   const loopback = endpoint.hostname === "localhost" || endpoint.hostname === "127.0.0.1" || endpoint.hostname === "[::1]"
+  const credentialedDestinationAllowed = credentialedFreeRoute && endpoint.protocol === "https:" &&
+    endpoint.hostname === "openrouter.ai" && endpoint.port === "" && endpoint.pathname === "/api/v1" &&
+    destination.protocol === "https:" && destination.hostname === "openrouter.ai" && destination.port === "" &&
+    destination.pathname === "/api/v1/chat/completions" && destination.search === "" && destination.hash === ""
   if ((endpoint.protocol !== "https:" && !(endpoint.protocol === "http:" && loopback)) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash ||
     destination.origin !== endpoint.origin || destination.username || destination.password || destination.hash ||
     (destination.pathname !== endpoint.pathname && !destination.pathname.startsWith(endpoint.pathname.endsWith("/") ? endpoint.pathname : `${endpoint.pathname}/`)) ||
     destination.toString() !== request.url || (request.method !== "GET" && request.method !== "POST") ||
-    (request.method === "GET" && request.body !== null)) {
+    (request.method === "GET" && request.body !== null) ||
+    (credentialedFreeRoute && (!credentialedDestinationAllowed || request.method !== "POST" || destination.search !== ""))) {
     throw new SecretBrokerError("INVALID_REQUEST", "Direct provider request escaped its fixed selected endpoint")
   }
   let body = ""
@@ -197,22 +214,45 @@ export async function prepareDirectProviderTransportRequest(options: {
     if (!contentType.includes("json")) throw new SecretBrokerError("UNAVAILABLE", "Direct provider request body is not bounded JSON")
     body = await readBoundedRequestBody(request)
   }
+  if (credentialedFreeRoute) {
+    let bodyModel: unknown
+    try {
+      const parsed: unknown = JSON.parse(body)
+      bodyModel = typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>).model
+        : undefined
+    } catch {
+      throw new SecretBrokerError("INVALID_REQUEST", "OpenRouter free request body is malformed")
+    }
+    if (bodyModel !== route.modelID) throw new SecretBrokerError("INVALID_REQUEST", "OpenRouter request body differs from its fixed free model")
+  }
   const credentialName = route.credentialHeader.name.toLowerCase()
   const forbidden = /^(authorization|proxy-authorization|x-api-key|x-goog-api-key|x-azure-api-key|x-subscription-token|api-key|x-auth-token|x-access-token|cookie|set-cookie)$/
   const headers: Record<string, string> = {}
   for (const [rawName, value] of request.headers.entries()) {
     const name = rawName.toLowerCase()
     if (forbidden.test(name) && name !== credentialName) throw new SecretBrokerError("INVALID_REQUEST", "Direct provider request contains an unselected credential header")
-    if (name === credentialName && value !== `${route.credentialHeader.prefix}${DIRECT_PUBLIC_TOKEN}`) {
-      throw new SecretBrokerError("UNAVAILABLE", "Credentialed direct provider transport is unavailable until SecretBroker is authorized")
+    if (name === credentialName) {
+      const expectedCredential = credentialedFreeRoute
+        ? `${route.credentialHeader.prefix}${DIRECT_PROVIDER_CREDENTIAL_PLACEHOLDER}`
+        : `${route.credentialHeader.prefix}${DIRECT_PUBLIC_TOKEN}`
+      if (value !== expectedCredential) {
+        throw new SecretBrokerError("UNAVAILABLE", "Direct provider SDK did not use its isolated credential placeholder")
+      }
+      if (credentialedFreeRoute) continue
     }
     if (/[\r\n\u0000]/.test(value)) throw new SecretBrokerError("INVALID_REQUEST", "Direct provider header is malformed")
     headers[name] = value
   }
-  // Core intentionally sends no auth header. Construct the SDK's public-key
-  // placeholder only inside Auth, after the direct route has been selected.
+  // Anonymous OpenCode uses its public sentinel. The credentialed route must
+  // arrive with the SDK-generated synthetic placeholder and never gets a key
+  // synthesized or copied into the prepared transport.
   if (!Object.hasOwn(headers, credentialName)) {
-    headers[credentialName] = `${route.credentialHeader.prefix}${DIRECT_PUBLIC_TOKEN}`
+    if (credentialedFreeRoute) {
+      if (!request.headers.has(credentialName)) throw new SecretBrokerError("INVALID_REQUEST", "OpenRouter SDK omitted its credential placeholder")
+    } else {
+      headers[credentialName] = `${route.credentialHeader.prefix}${DIRECT_PUBLIC_TOKEN}`
+    }
   }
   if (Object.keys(headers).length > 64) {
     throw new SecretBrokerError("INVALID_REQUEST", "Direct provider request exceeded its header bound")
@@ -461,10 +501,11 @@ export function retainManagedProviderSendAuthorization(
   }
   const secretUseContext = exactRecord(permit.secretUseContext, "SecretBroker context")
   exactRecordKeys(secretUseContext, ["requesterRef", "runRef", "profileRef", "purpose", "expiresAtUnixMs"])
-  const expiresAtUnixMs = Number(secretUseContext.expiresAtUnixMs)
+  const expiresAtUnixMs = secretUseContext.expiresAtUnixMs
   if (!identifier(secretUseContext.requesterRef) || !identifier(secretUseContext.runRef) ||
     !identifier(secretUseContext.profileRef) || secretUseContext.purpose !== "PROVIDER_REQUEST" ||
-    !Number.isSafeInteger(expiresAtUnixMs) || expiresAtUnixMs <= Date.now() || expiresAtUnixMs > Date.now() + 15_000) {
+    typeof expiresAtUnixMs !== "number" || !Number.isSafeInteger(expiresAtUnixMs) ||
+    expiresAtUnixMs <= Date.now() || expiresAtUnixMs > Date.now() + 15_000) {
     throw new SecretBrokerError("INVALID_REQUEST", "Managed provider SecretBroker context is invalid")
   }
   const handle = Object.freeze(Object.create(null)) as object
@@ -1164,6 +1205,7 @@ export async function prepareManagedProviderTransportRequest(options: {
   if ((base.protocol !== "https:" && !(base.protocol === "http:" && loopback)) ||
     base.username || base.password || base.search || base.hash || destination.origin !== base.origin ||
     destination.username || destination.password || destination.hash || credentialQuery || destination.toString() !== request.url ||
+    Buffer.byteLength(destination.toString(), "utf8") > 8 * 1024 ||
     (destination.pathname !== base.pathname && !destination.pathname.startsWith(base.pathname.endsWith("/") ? base.pathname : `${base.pathname}/`)) ||
     (request.method !== "POST" && request.method !== "GET") || (request.method === "GET" && request.body !== null)) {
     throw new SecretBrokerError("INVALID_REQUEST", "Managed provider request differs from its active fixed endpoint")
@@ -1172,11 +1214,16 @@ export async function prepareManagedProviderTransportRequest(options: {
   if (request.body !== null && !request.headers.get("content-type")?.toLowerCase().includes("json")) {
     throw new SecretBrokerError("UNAVAILABLE", "Managed provider body is not a bounded JSON request")
   }
+  const requestHeaders = [...request.headers.entries()]
+  if (requestHeaders.length > 64) {
+    throw new SecretBrokerError("INVALID_REQUEST", "Managed provider request exceeds its header count limit")
+  }
   let body = ""
   if (request.method !== "GET" && request.body !== null) {
     body = await readBoundedRequestBody(request)
   }
   const headers: Record<string, string> = {}
+  let headerBytes = 0
   if (!request.headers.has(options.credentialHeader.name)) {
     throw new SecretBrokerError("INVALID_REQUEST", "Managed provider SDK omitted its pinned credential header")
   }
@@ -1184,8 +1231,11 @@ export async function prepareManagedProviderTransportRequest(options: {
     "authorization", "proxy-authorization", "x-api-key", "x-goog-api-key", "x-azure-api-key",
     "x-subscription-token", "api-key", "x-auth-token", "x-access-token", "cookie", "set-cookie",
   ])
-  for (const [rawName, value] of request.headers.entries()) {
+  for (const [rawName, value] of requestHeaders) {
     const name = rawName.toLowerCase()
+    if (name.length > 128 || !/^[!#$%&'*+.^_`|~0-9a-z-]+$/.test(name)) {
+      throw new SecretBrokerError("INVALID_REQUEST", "Managed provider request contains an invalid header name")
+    }
     if (name === options.credentialHeader.name.toLowerCase()) {
       const expected = `${options.credentialHeader.prefix}${options.credentialPlaceholder}`
       if (options.credentialPlaceholder !== MANAGED_PROVIDER_CREDENTIAL_PLACEHOLDER || value !== expected) {
@@ -1195,6 +1245,10 @@ export async function prepareManagedProviderTransportRequest(options: {
     }
     if (credentialNames.has(name) || /[\r\n\u0000]/.test(value)) {
       throw new SecretBrokerError("INVALID_REQUEST", "Managed provider SDK request contains an unapproved credential header")
+    }
+    headerBytes += Buffer.byteLength(name, "utf8") + Buffer.byteLength(value, "utf8")
+    if (headerBytes + Buffer.byteLength(options.credentialHeader.prefix, "utf8") + 16 * 1024 > 32 * 1024) {
+      throw new SecretBrokerError("INVALID_REQUEST", "Managed provider request exceeds its header size limit")
     }
     headers[name] = value
   }
@@ -1436,4 +1490,121 @@ export async function dispatchProviderRequest<Value>(options: {
       credential = ""
     }
   })
+}
+/** Issue, redeem, and dispatch one exact OpenRouter free-route use grant. */
+export async function dispatchAuthorizedDirectFreeProviderRequest(options: {
+  readonly broker: Pick<ReturnType<typeof import("./secret-broker").createSecretBroker>, "authorizeUse" | "withUse">
+  readonly authorizer: CredentialUseAuthorizer
+  readonly principal: TrustedPrincipal
+  readonly secretRef: SecretBrokerV1.SecretRef
+  readonly prepared: PreparedDirectProviderTransportV1
+  readonly signal?: AbortSignal
+  readonly send: (request: ProviderTransportRequest) => Promise<Response>
+  readonly now?: () => number
+}): Promise<Response> {
+  const now = options.now ?? Date.now
+  const prepared = options.prepared
+  const route = prepared.route
+  const transport = prepared.transport
+  if (route.providerID !== "openrouter" || route.modelID !== "nvidia/nemotron-3.5-super-vl:free" ||
+    route.explicitFreeCredential !== true || route.anonymousOpenCodeFree ||
+    route.endpointBase !== "https://openrouter.ai/api/v1" ||
+    transport.providerId !== route.providerID || transport.destination !== "https://openrouter.ai/api/v1/chat/completions" ||
+    transport.method !== "POST" || Object.hasOwn(transport.headers, "authorization") ||
+    !/^blake3:[a-f0-9]{64}$/.test(prepared.transportRequestDigest)) {
+    throw new SecretBrokerError("UNAVAILABLE", "Direct credential dispatch is limited to the exact OpenRouter free offer")
+  }
+  const requestDigest = providerRequestDigest(transport)
+  const operationDigest = providerOperationDigest(requestDigest)
+  if (options.signal?.aborted) throw new SecretBrokerError("EXPIRED", "Provider request was cancelled")
+
+  const grant = await options.authorizer.authorize({
+    secretRef: options.secretRef,
+    providerId: transport.providerId,
+    modelId: route.modelID,
+    destination: transport.destination,
+    providerRequestDigest: requestDigest,
+    purpose: "PROVIDER_REQUEST",
+  }, options.principal)
+  const assertGrantMatches = () => {
+    if (grant.secretRef !== options.secretRef || grant.providerId !== transport.providerId ||
+      grant.modelId !== route.modelID || grant.destination !== transport.destination ||
+      grant.providerRequestDigest !== requestDigest || grant.operationDigest !== operationDigest ||
+      grant.purpose !== "PROVIDER_REQUEST" || providerOperationDigest(providerRequestDigest(transport)) !== grant.operationDigest) {
+      throw new SecretBrokerError("CONFLICT", "HostKernel provider-use grant differs from the exact request")
+    }
+  }
+  assertGrantMatches()
+  const expiresAt = new Date(grant.expiresAtUnixMs).toISOString()
+  const useRequest: SecretBrokerV1.UseRequestV1 = {
+    schemaVersion: 1,
+    secretRef: options.secretRef,
+    providerId: transport.providerId,
+    operationDigest: requestDigest as SecretBrokerV1.SecretOperationDigest,
+    destination: transport.destination,
+    purpose: "PROVIDER_REQUEST",
+    expiresAt,
+    maxRequests: 1,
+  }
+  const trusted = grant.trusted
+  if (trusted.providerId !== transport.providerId || trusted.operationDigest !== requestDigest ||
+    trusted.destination !== transport.destination || trusted.purpose !== "PROVIDER_REQUEST" ||
+    trusted.maxExpiresAt !== expiresAt) {
+    throw new SecretBrokerError("CONFLICT", "HostKernel provider-use context differs from the exact request")
+  }
+  const lease = await options.broker.authorizeUse(useRequest, trusted)
+  if (lease.secretRef !== options.secretRef || lease.secretVersion !== grant.secretVersion ||
+    lease.providerId !== transport.providerId || lease.operationDigest !== requestDigest ||
+    lease.destination !== transport.destination || lease.purpose !== "PROVIDER_REQUEST" ||
+    lease.requesterRef !== trusted.requesterRef || lease.state !== "ISSUED" || lease.maxRequests !== 1 ||
+    Date.parse(lease.expiresAt) !== grant.expiresAtUnixMs) {
+    throw new SecretBrokerError("CONFLICT", "SecretBroker lease differs from the HostKernel provider-use grant")
+  }
+  assertGrantMatches()
+  await options.authorizer.redeem(grant, options.principal)
+
+  let responseStatus: number | undefined
+  let responseHeaders: Headers | undefined
+  const chunks = await dispatchProviderRequest({
+    broker: options.broker,
+    lease,
+    trusted,
+    input: transport,
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+    deadlineAt: grant.expiresAtUnixMs,
+    maxResponseBytes: MAX_DIRECT_PROVIDER_RESPONSE_BYTES,
+    now,
+    send: async (request) => {
+      assertGrantMatches()
+      if (providerRequestDigest(transport) !== requestDigest || providerOperationDigest(providerRequestDigest(transport)) !== grant.operationDigest) {
+        throw new SecretBrokerError("CONFLICT", "Provider request digest changed before transport send")
+      }
+      const response = await options.send(request)
+      if (!Number.isInteger(response.status) || response.status < 200 || response.status > 599 || [204, 205, 304].includes(response.status)) {
+        throw new SecretBrokerError("UNAVAILABLE", "OpenRouter returned an unsupported response status")
+      }
+      responseStatus = response.status
+      responseHeaders = safeProviderResponseHeaders(response.headers)
+      return responseBodyChunks(response)
+    },
+  })
+  if (responseStatus === undefined || !responseHeaders) {
+    throw new SecretBrokerError("UNAVAILABLE", "OpenRouter response metadata is unavailable")
+  }
+  const iterator = chunks[Symbol.asyncIterator]()
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const next = await iterator.next()
+        if (next.done) controller.close()
+        else controller.enqueue(next.value)
+      } catch (error) {
+        controller.error(error)
+      }
+    },
+    async cancel(reason) {
+      await iterator.return?.(reason)
+    },
+  })
+  return new Response(body, { status: responseStatus, headers: responseHeaders })
 }

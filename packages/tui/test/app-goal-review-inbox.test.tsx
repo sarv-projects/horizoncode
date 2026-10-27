@@ -115,6 +115,7 @@ test("goal.review fetches a pending proposal and posts only its revision-bound d
     await setup.renderOnce()
     setup.mockInput.pressKey("ARROW_DOWN")
     setup.mockInput.pressKey("ARROW_DOWN")
+    setup.mockInput.pressKey("ARROW_DOWN")
     setup.mockInput.pressEnter()
     const decisionDeadline = Date.now() + 3000
     while (!requests.some((item) => item.url.endsWith("/goal-review/decision")) && Date.now() < decisionDeadline) {
@@ -136,6 +137,118 @@ test("goal.review fetches a pending proposal and posts only its revision-bound d
     // catalog must stay intact afterwards (no crash/error-boundary swap).
     await setup.renderOnce()
     expect(setup.captureCharFrame()).not.toContain("Review proposed SpecVersion")
+    const exit = api?.keymap.dispatchCommand("app.exit")
+    expect(exit?.ok).toBe(true)
+    await task
+  } finally {
+    if (!setup.renderer.isDestroyed) setup.renderer.destroy()
+    mock.restore()
+  }
+}, { timeout: 30_000 })
+
+test("automation manager keeps invocation unavailable and exposes no run-now action", async () => {
+  const setup = await createTestRenderer({ width: 120, height: 60, useThread: false })
+  const core = await import("@opentui/core")
+  mock.module("@opentui/core", () => ({ ...core, createCliRenderer: async () => setup.renderer }))
+
+  const events = createEventSource()
+  const fallback = createFetch()
+  const session = {
+    id: "session-automation",
+    title: "Automation fail-closed test",
+    slug: "session-automation",
+    projectID: "project",
+    directory,
+    version: "0.0.0-test",
+    time: { created: 1, updated: 1 },
+  }
+  const requests: Array<{ method: string; path: string }> = []
+  const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = input instanceof Request ? input : new Request(input, init)
+    const url = new URL(request.url)
+    if (url.pathname.startsWith("/experimental/automation/")) {
+      requests.push({ method: request.method, path: url.pathname })
+      if (url.pathname === "/experimental/automation/list") {
+        return json({
+          automations: [{
+            automationID: "automation-safe",
+            version: "1",
+            definition: {
+              actionCapabilityID: "files.patch",
+              actionVersion: 1,
+              actionDigest: `sha256:${"a".repeat(64)}`,
+              actionSchemaDigest: `blake3:${"b".repeat(64)}`,
+              actionInputJSON: "{}",
+              scheduleExpression: "0 * * * *",
+              timezone: "UTC",
+              enabled: true,
+              overlapPolicy: "SKIP",
+              missedRunPolicy: "SKIP",
+              retry: { maxAttempts: 1, initialDelayMs: 0, maxDelayMs: 0 },
+            },
+            active: null,
+            pending: null,
+            retryPending: null,
+            historyCount: 0,
+            invocation: { available: false, reason: "guarded_invocation_unavailable" },
+          }],
+        })
+      }
+      throw new Error(`unexpected automation request: ${request.method} ${url.pathname}`)
+    }
+    if (url.pathname === "/session/session-automation") return json(session)
+    if (["/session/session-automation/todo", "/session/session-automation/diff", "/session/session-automation/message"].includes(url.pathname)) return json([])
+    if (url.pathname === "/api/session/session-automation/message") return json({ data: [], cursor: {} })
+    if (url.pathname === "/api/session/session-automation/question") return json({ data: [] })
+    return fallback.fetch(request)
+  }) as typeof globalThis.fetch
+
+  let api: TuiPluginApi | undefined
+  let started!: () => void
+  const ready = new Promise<void>((resolve) => { started = resolve })
+
+  try {
+    const { run } = await import("../src/app")
+    const task = Effect.runPromise(
+      run({
+        url: "http://test",
+        directory,
+        config: createTuiResolvedConfig({ plugin_enabled: {} }),
+        fetch,
+        events: events.source,
+        args: { sessionID: "session-automation" },
+        pluginHost: {
+          async start(input) { api = input.api; started() },
+          async dispose() {},
+        },
+      }).pipe(Effect.provide(AppNodeBuilder.build(Global.node))),
+    )
+
+    await ready
+    await setup.renderOnce()
+    expect(api?.keymap.dispatchCommand("automation.list").ok).toBe(true)
+
+    const listDeadline = Date.now() + 3000
+    while (requests.length === 0 && Date.now() < listDeadline) {
+      await setup.renderOnce()
+      await Bun.sleep(10)
+    }
+    expect(requests).toEqual([{ method: "GET", path: "/experimental/automation/list" }])
+
+    await setup.renderOnce()
+    setup.mockInput.pressKey("ARROW_DOWN")
+    await setup.renderOnce()
+    const summaryFrame = setup.captureCharFrame().replace(/\s+/g, " ")
+    expect(summaryFrame).toContain("Guarded invocation unavailable")
+    setup.mockInput.pressEnter()
+    await setup.renderOnce()
+    const frame = setup.captureCharFrame().replace(/\s+/g, " ")
+    expect(frame).toContain("Inspect current journal state")
+    expect(frame).toContain("View latest occurrence history")
+    expect(frame).not.toContain("Run now")
+    expect(frame).not.toContain("Invocation available")
+    expect(requests).toHaveLength(1)
+
     const exit = api?.keymap.dispatchCommand("app.exit")
     expect(exit?.ok).toBe(true)
     await task
@@ -241,7 +354,7 @@ test("goal.propose submits a bounded versioned draft in the current workspace", 
   }
 }, { timeout: 30_000 })
 
-test("goal.verify requests verification through authenticated API without caller identity or evidence", async () => {
+test("goal.verify keeps verification unavailable until trusted HostKernel and P8 acceptance", async () => {
   const setup = await createTestRenderer({ width: 120, height: 60, useThread: false })
   const core = await import("@opentui/core")
   mock.module("@opentui/core", () => ({ ...core, createCliRenderer: async () => setup.renderer }))
@@ -294,18 +407,9 @@ test("goal.verify requests verification through authenticated API without caller
     await setup.mockInput.typeText("goal-managed run-current")
     setup.mockInput.pressEnter()
     await setup.renderOnce()
+    expect(setup.captureCharFrame().replace(/\s+/g, " ")).toContain("Verification is unavailable")
     setup.mockInput.pressEnter()
-    const deadline = Date.now() + 3000
-    while (requests.length === 0 && Date.now() < deadline) {
-      await setup.renderOnce()
-      await Bun.sleep(10)
-    }
-    expect(requests).toHaveLength(1)
-    expect(new URL(requests[0].url).pathname).toBe("/experimental/control-plane/goal-verification")
-    expect(requests[0].body).toEqual({ schemaVersion: 1, goalID: "goal-managed", runID: "run-current" })
-    for (const forbidden of ["principal", "reviewer", "verdict", "evidence", "artifact", "credential"]) {
-      expect(requests[0].body).not.toHaveProperty(forbidden)
-    }
+    expect(requests).toHaveLength(0)
     const exit = api?.keymap.dispatchCommand("app.exit")
     expect(exit?.ok).toBe(true)
     await task
@@ -467,7 +571,7 @@ test("goal.control confirms against the observed Goal revision and submits a fen
       await Bun.sleep(10)
     }
     expect(requests).toHaveLength(1)
-    expect(setup.captureCharFrame()).toContain("Goal revision 9007199254740993")
+    expect(setup.captureCharFrame().replace(/\s+/g, " ")).toContain("Goal revision 9007199254740993")
     setup.mockInput.pressEnter()
     const writeDeadline = Date.now() + 3000
     while (requests.length < 2 && Date.now() < writeDeadline) {
@@ -624,7 +728,7 @@ test("goal.start derives accepted SpecVersion and revision from the trusted Goal
         config: createTuiResolvedConfig({ plugin_enabled: {} }),
         fetch,
         events: events.source,
-        args: {},
+        args: { sessionID: "session-root" },
         pluginHost: { async start(input) { api = input.api; started() }, async dispose() {} },
       }).pipe(Effect.provide(AppNodeBuilder.build(Global.node))),
     )
@@ -657,6 +761,7 @@ test("goal.start derives accepted SpecVersion and revision from the trusted Goal
       schemaVersion: 1,
       goalID: "goal-managed",
       runID: "run-planned",
+      sessionID: "session-root",
       expectedGoalRevision: "9007199254740993",
       specID: "spec-accepted",
       specDigest: `blake3:${"a".repeat(64)}`,

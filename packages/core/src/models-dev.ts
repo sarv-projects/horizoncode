@@ -1,5 +1,5 @@
 import path from "path"
-import { Context, Duration, Effect, Layer, Option, Schedule, Schema } from "effect"
+import { Context, Duration, Effect, Layer, Option, Schedule, Schema, Stream } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http"
 import { ModelsDev } from "@opencode-ai/schema/models-dev"
 import { Global } from "./global"
@@ -23,6 +23,7 @@ const InterleavedField = Schema.Union([
 const USER_AGENT = `opencode/${InstallationChannel}/${InstallationVersion}/${Flag.OPENCODE_CLIENT}`
 const DEFAULT_SOURCE = "https://models.opencode.ai"
 const MAX_CATALOG_BYTES = 16 * 1024 * 1024
+const MAX_METADATA_BYTES = 16 * 1024
 
 const SnapshotMetadata = Schema.Struct({
   schemaVersion: Schema.Literal(1),
@@ -155,7 +156,6 @@ export interface CatalogSnapshotV1 {
   updatedAt?: number
   /** Bound provenance for imported catalog data; absence is UNKNOWN, never "current". */
   provenance?: {
-    sourceURL?: string
     project: "models.dev" | "custom"
     retrievedAt?: number
     contentDigest?: string
@@ -209,13 +209,16 @@ const layer = Layer.effect(
     }
     const ttl = Duration.minutes(5)
     const lockKey = `models-dev:${filepath}`
-    const loadMetadata = fs.readJson(metadataPath).pipe(
-      Effect.catch(() => Effect.succeed(undefined)),
-      Effect.map((value) => {
-        if (value === undefined) return undefined
-        return Option.getOrUndefined(decodeMetadata(value))
-      }),
-    )
+    const loadMetadata = Effect.gen(function* () {
+      const chunks = yield* fs.stream(metadataPath, { bytesToRead: MAX_METADATA_BYTES + 1 }).pipe(Stream.runCollect)
+      const bytes = Buffer.concat(Array.from(chunks, (chunk) => Buffer.from(chunk)))
+      if (bytes.byteLength > MAX_METADATA_BYTES) return undefined
+      const value = yield* Effect.try({
+        try: () => JSON.parse(bytes.toString("utf8")) as unknown,
+        catch: () => undefined,
+      })
+      return value === undefined ? undefined : Option.getOrUndefined(decodeMetadata(value))
+    }).pipe(Effect.catch(() => Effect.succeed(undefined)))
 
     const fresh = Effect.fnUntraced(function* () {
       const stat = yield* fs.stat(filepath).pipe(Effect.catch(() => Effect.succeed(undefined)))
@@ -228,12 +231,46 @@ const layer = Layer.effect(
       return yield* HttpClientRequest.get(`${source}/api.json`).pipe(
         HttpClientRequest.setHeader("User-Agent", USER_AGENT),
         http.execute,
-        Effect.flatMap((res) => res.text),
+        Effect.flatMap((res) =>
+          Effect.suspend(() => {
+            let bytes = 0
+            let oversized = false
+            const bounded = res.stream.pipe(
+              Stream.takeUntilEffect(
+                (chunk) =>
+                  Effect.sync(() => {
+                    if (chunk.byteLength > MAX_CATALOG_BYTES - bytes) {
+                      oversized = true
+                      return true
+                    }
+                    bytes += chunk.byteLength
+                    return false
+                  }),
+                { excludeLast: true },
+              ),
+              Stream.runCollect,
+            )
+            return bounded.pipe(
+              Effect.flatMap((chunks) =>
+                oversized
+                  ? Effect.fail(new Error("Models.dev catalog response exceeds the bounded snapshot size"))
+                  : Effect.succeed(Buffer.concat(Array.from(chunks, (chunk) => Buffer.from(chunk))).toString("utf8")),
+              ),
+            )
+          }),
+        ),
         Effect.timeout("10 seconds"),
       )
     })
 
-    const readCatalogText = fs.readFileStringSafe(Flag.OPENCODE_MODELS_PATH ?? filepath).pipe(
+    const readCatalogText = Effect.gen(function* () {
+      const chunks = yield* fs.stream(Flag.OPENCODE_MODELS_PATH ?? filepath, {
+        bytesToRead: MAX_CATALOG_BYTES + 1,
+      }).pipe(Stream.runCollect)
+      const bytes = Buffer.concat(Array.from(chunks, (chunk) => Buffer.from(chunk)))
+      if (bytes.byteLength > MAX_CATALOG_BYTES) return undefined
+      return bytes.toString("utf8")
+    }).pipe(
       Effect.catch(() => {
         // Reads never delete cache state. Repair and refresh remain explicit.
         return Effect.succeed(undefined)
@@ -285,8 +322,8 @@ const layer = Layer.effect(
           ? { license: "MIT", attribution: "Models.dev (https://models.dev)" }
           : {}),
       } satisfies SnapshotMetadata)).pipe(
-        Effect.catch((error) =>
-          Effect.logWarning("Failed to persist Models.dev provenance", { error }),
+        Effect.catch(() =>
+          Effect.logWarning("Failed to persist Models.dev provenance"),
         ),
       )
       return text
@@ -320,7 +357,6 @@ const layer = Layer.effect(
       const provenance = (allowRetrieval: boolean) => ({
         ...defaultProvenance,
         ...(contentDigest !== undefined ? { contentDigest } : {}),
-        ...(allowRetrieval && verifiedMetadata?.sourceURL !== undefined ? { sourceURL: verifiedMetadata.sourceURL } : {}),
         ...(allowRetrieval && verifiedMetadata?.retrievedAt !== undefined ? { retrievedAt: verifiedMetadata.retrievedAt } : {}),
         ...(verifiedMetadata?.license !== undefined ? { license: verifiedMetadata.license } : {}),
         ...(verifiedMetadata?.attribution !== undefined ? { attribution: verifiedMetadata.attribution } : {}),
@@ -373,7 +409,7 @@ const layer = Layer.effect(
           yield* events.publish(Event.Refreshed, {})
         }),
       ).pipe(
-        Effect.tapCause((cause) => Effect.logError("Failed to fetch models.dev", { cause: cause })),
+        Effect.tapCause(() => Effect.logError("Failed to fetch Models.dev catalog")),
         Effect.ignore,
       )
     })

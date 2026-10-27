@@ -1,4 +1,4 @@
-import { describe, expect } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import {
   SessionSupervisor,
@@ -11,11 +11,22 @@ import { AbsolutePath } from "@opencode-ai/core/schema"
 import { AgentProfileService } from "@opencode-ai/core/config"
 import { Effect, Layer, Schema, Stream } from "effect"
 import { Info as ProviderInfoSchema, Service as ProviderService } from "@/provider/provider"
+import { Agent } from "@/agent/agent"
 import { Service as AuthService } from "@/auth"
 import { SecretBrokerV1 } from "@opencode-ai/schema/secret-broker-v1"
 import { blake3 } from "@noble/hashes/blake3.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
-import { ManagedControl, ManagedControlError, type VerificationRunResult } from "@/session/managed-control"
+import {
+  ManagedControl,
+  ManagedControlError,
+  decodeHostRunDispatchBindingReceipt,
+  decodeHostRunDispatchP8OwnerReceipt,
+  decodeHostRunReconciliation,
+  type VerificationRunResult,
+} from "@/session/managed-control"
+import { executeNextManagedTask } from "@/session/managed-run-coordinator"
+import { SessionPrompt } from "@/session/prompt"
+import { Session } from "@/session/session"
 import * as AgentProfileV2 from "@opencode-ai/schema/agent-profile-v2"
 import { ContextSelectionV1 } from "@opencode-ai/schema/context-selection-v1"
 import { testEffect } from "../lib/effect"
@@ -28,6 +39,32 @@ const ATTEMPT_ID = `attempt_${"c".repeat(64)}`
 const LOCATION_ID = `loc_${"d".repeat(64)}`
 const SCOPE = `sha256:${"b".repeat(64)}`
 const CONTEXT_SELECTION_DIGEST = `blake3:${"c".repeat(64)}`
+
+const hostRunBindingFixture = (overrides: Record<string, unknown> = {}) => ({
+  schemaVersion: 1,
+  dispatchKeyDigest: RECEIPT,
+  manifestDigest: RECEIPT,
+  evaluatorTaskId: "evaluator-one",
+  armId: "arm-one",
+  taskGroup: "group-one",
+  runId: "run-one",
+  managedTaskId: "task-one",
+  attemptId: ATTEMPT_ID,
+  evaluationSessionId: "ses_root000000000000000000000001",
+  coreProcessGeneration: "1",
+  ownerId: "owner-one",
+  ownerEpoch: "1",
+  workerExecutionId: "worker-one",
+  delegationBindingDigest: RECEIPT,
+  acceptedSpecDigest: RECEIPT,
+  providerSelectionDigest: RECEIPT,
+  workspaceBindingDigest: RECEIPT,
+  admittedWorkspaceRevision: RECEIPT,
+  attemptScopeDigest: RECEIPT,
+  ownerPrincipalBindingDigest: RECEIPT,
+  bindingDigest: RECEIPT,
+  ...overrides,
+})
 // Exact deterministic route projection over the TEST_PROVIDER_INFO fixture,
 // mirroring provider.ts's managed route derivation byte-for-byte.
 const TEST_ROUTE_MATERIAL = JSON.stringify([
@@ -893,6 +930,7 @@ const testProviderNode = LayerNode.make({
     getLanguage: () => Effect.die("unexpected language lookup"),
     getDirectLanguage: () => Effect.die("unexpected direct language lookup"),
     getManagedLanguage: () => Effect.die("unexpected managed language lookup"),
+    getDirectFreeLanguage: () => Effect.die("unexpected direct free language lookup"),
     closest: () => Effect.die("unexpected closest model lookup"),
     getSmallModel: () => Effect.die("unexpected small model lookup"),
     defaultModel: () => Effect.die("unexpected default model lookup"),
@@ -913,6 +951,8 @@ const testAuthNode = LayerNode.make({
     all: () => Effect.die("unexpected auth listing"),
     set: () => Effect.die("unexpected auth write"),
     remove: () => Effect.die("unexpected auth removal"),
+    issueCredentialHandle: () => Effect.die("unexpected credential handle"),
+    credentialMutationAvailable: () => Effect.succeed(false),
     putCredential: () => Effect.die("unexpected credential put"),
     describeCredential: () => Effect.die("unexpected credential describe"),
     searchCredentialRefs: () => Effect.die("unexpected search credential refs"),
@@ -927,6 +967,319 @@ const testAuthNode = LayerNode.make({
 })
 
 const it = testEffect(LayerNode.compile(LayerNode.group([testSupervisorNode, testPrincipalNode, testAgentProfileNode, testProviderNode, testAuthNode])))
+const coordinatorSessionPromptNode = LayerNode.make({
+  service: SessionPrompt.Service,
+  layer: Layer.mock(SessionPrompt.Service, {}),
+  deps: [],
+  tag: SessionPrompt.node.tag,
+})
+const coordinatorSessionNode = LayerNode.make({
+  service: Session.Service,
+  layer: Layer.mock(Session.Service, {}),
+  deps: [],
+  tag: Session.node.tag,
+})
+// `executeNextManagedTask` declares `Agent.Service` (@horizoncode/Agent) in its
+// requirement set through the managed prompt/session projections, even though
+// these settle/cancel-only tests never resolve it. The coordinator group must
+// still satisfy that requirement; a fail-closed mock keeps it unimplemented so
+// any accidental reach fails loudly instead of silently.
+const coordinatorAgentNode = LayerNode.make({
+  service: Agent.Service,
+  layer: Layer.mock(Agent.Service, {}),
+  deps: [],
+})
+const coordinatorIt = testEffect(LayerNode.compile(LayerNode.group([
+  testSupervisorNode,
+  testPrincipalNode,
+  testAgentProfileNode,
+  testProviderNode,
+  testAuthNode,
+  coordinatorSessionPromptNode,
+  coordinatorSessionNode,
+  coordinatorAgentNode,
+])))
+
+test("managed child scheduler takes its principal from TrustedPrincipalContext, never caller input", async () => {
+  // The input type carries no `trustedPrincipal`; authority is derived solely
+  // from the authenticated TrustedPrincipalContext. A host_os context is denied
+  // before any Session/Supervisor/Prompt service is yielded, so this focused
+  // guard test casts the static requirements to `never` (the guard
+  // short-circuits, so those services are never touched at runtime). tsgo
+  // enforces that a caller can no longer inject a principal through the input.
+  const effect = executeNextManagedTask({
+    goalID: "goal-test",
+    runID: "run-test",
+    rootSessionID: "ses_root00000000000000000000000001",
+    locationID: "loc-test",
+    expectedRevision: "1",
+  }).pipe(
+    Effect.provideService(TrustedPrincipalContext, { principal: { kind: "host_os" } }),
+  ) as unknown as Effect.Effect<unknown, unknown, never>
+  const result = await Effect.runPromise(Effect.exit(effect))
+
+  expect(result._tag).toBe("Failure")
+  if (result._tag === "Failure") expect(result.cause.toString()).toContain("authorization_denied")
+})
+
+const cancellingQuiescenceFixture = (
+  kernel: FakeHostKernel,
+  settlementOutcome: "FAILED" | "UNKNOWN",
+  unknownEffect = false,
+) => {
+  const goalID = "goal-cancel"
+  const runID = "run-cancel"
+  const taskID = "task-cancel"
+  const attemptID = `attempt_${"1".repeat(64)}`
+  const sessionID = ManagedControl.managedTaskSessionID(attemptID)
+  const runPhase = "CANCELLING"
+  const consumed = {
+    status: "CONSUMED",
+    goalID,
+    runID,
+    taskID,
+    parentSessionID: "session-root",
+    sessionID,
+    attemptID,
+    handoffID: "handoff-cancel",
+    handoffDigest: RECEIPT,
+    claimedProofDigest: RECEIPT,
+    workerExecutionID: "worker-cancel",
+    pinsDigest: RECEIPT,
+    bindingDigest: RECEIPT,
+    claimNonce: RECEIPT,
+    claimOwnerLogID: "owner-log-cancel",
+    claimOwnerLogSequence: "1",
+    claimOwnerLogEventDigest: RECEIPT,
+    workerPoolRevision: "1",
+    ownerEpoch: "1",
+    processIncarnation: "core-incarnation-cancel",
+    deliveryID: "managed_consume_cancel",
+    corePID: 1,
+    coreStartIdentity: "1",
+    coreUID: 1,
+    coreGID: 1,
+    coreExecutableDigest: RECEIPT,
+    consumedManagedRevision: "6",
+    receiptDigest: RECEIPT,
+    worktreeTarget: {
+      worktreeID: "worktree-cancel",
+      worktreeBaseRevision: "base-1",
+      worktreePoolRevision: "1",
+      locationID: "loc-child",
+      workspaceID: "workspace-cancel",
+      workspaceRef: "refs/heads/managed",
+      canonicalRoot: "/workspace/managed",
+      workspaceRevision: RECEIPT,
+    },
+  }
+  const quiescence = {
+    status: "QUIESCED",
+    goalID,
+    runID,
+    taskID,
+    parentSessionID: "session-root",
+    sessionID,
+    attemptID,
+    handoffID: consumed.handoffID,
+    handoffDigest: consumed.handoffDigest,
+    consumeDeliveryID: consumed.deliveryID,
+    consumeReceiptDigest: consumed.receiptDigest,
+    ownerEpoch: "1",
+    processIncarnation: consumed.processIncarnation,
+    childSessionSequence: "2",
+    childSessionEventDigest: RECEIPT,
+    childSessionStateDigest: RECEIPT,
+    childSessionOutputDigest: RECEIPT,
+    childSessionOutputBytes: "0",
+    childSessionOutcomeKind: "assistant_completed",
+    deliveryID: ManagedControl.managedCompletionDeliveryID(attemptID, RECEIPT, RECEIPT),
+    managedRevision: "7",
+    ownerLogID: "owner-log-cancel",
+    ownerLogSequence: "2",
+    ownerLogEventDigest: RECEIPT,
+    receiptDigest: RECEIPT,
+  }
+  kernel.managedResponses.next_schedulable_task = {
+    status: "NO_TASK",
+    goalID,
+    runID,
+    revision: "7",
+    runPhase,
+    specID: "spec-cancel",
+    specDigest: RECEIPT,
+    goalObjective: "cancel a quiesced Task",
+    specConstraints: [],
+    locationID: "loc-root",
+    sessionID: "session-root",
+    workspaceRef: "workspace-cancel",
+    task: null,
+  }
+  kernel.managedResponses.active_attempt_recovery = {
+    goalID,
+    runID,
+    locationID: "loc-root",
+    sessionID: "session-root",
+    revision: "7",
+    runPhase,
+    specID: "spec-cancel",
+    specDigest: RECEIPT,
+    goalObjective: "cancel a quiesced Task",
+    specConstraints: [],
+    workspaceRef: "workspace-cancel",
+    status: "ACTIVE_ATTEMPT",
+    task: {
+      taskID,
+      title: "Cancel Task",
+      purpose: "Reconcile the stopped child before completing cancellation",
+      candidateAttemptID: attemptID,
+      attemptCount: "1",
+      candidateGeneration: "1",
+      taskRevision: "7",
+      contextDigest: RECEIPT,
+      dependencies: [],
+      criterionIDs: ["criterion-cancel"],
+      criteria: [{ criterionID: "criterion-cancel", description: "settle the attempt" }],
+      requiredCapabilities: [],
+      profile: {
+        profileID: "profile-cancel",
+        revision: "1",
+        definitionDigest: RECEIPT,
+        ownerBindingDigest: RECEIPT,
+      },
+    },
+    attempt: {
+      attemptID,
+      sessionID,
+      ownerEpoch: "1",
+      phase: "EXECUTING",
+      runPhase,
+      bindingDigest: RECEIPT,
+      unknownEffect,
+      consumed,
+      quiescence,
+    },
+  }
+  kernel.managedResponses.settle = {
+    status: "SETTLED",
+    outcome: settlementOutcome,
+    goalID,
+    runID,
+    taskID,
+    attemptID,
+    attemptPhase: settlementOutcome,
+    runPhase: settlementOutcome === "UNKNOWN" ? "RECONCILING" : runPhase,
+    receiptDigest: settlementOutcome === "UNKNOWN" ? null : RECEIPT,
+    revision: 8n,
+  }
+  kernel.managedResponses.settle_dispatch = {
+    status: "QUARANTINED",
+    goalID,
+    runID,
+    taskID,
+    attemptID,
+    workerExecutionID: "worker-cancel",
+    ownerEpoch: "1",
+    reservationID: "reservation-cancel",
+    worktreeLeaseID: "worktree-lease-cancel",
+    reason: "CANCELLED_TASK",
+    terminalProofDigest: RECEIPT,
+    ownerLogID: "owner-log-cancel",
+    ownerLogSequence: "3",
+    ownerLogEventDigest: RECEIPT,
+    workerPoolRevision: "2",
+    receiptDigest: RECEIPT,
+  }
+  kernel.managedResponses.cancel = {
+    status: "CANCELLED",
+    goalID,
+    runID,
+    runPhase: "CANCELLED",
+    revision: 9n,
+  }
+  return { goalID, runID, taskID, attemptID }
+}
+
+coordinatorIt.effect("settles assistant-completed quiescence before completing a cancelling Run", () =>
+  Effect.gen(function* () {
+    const kernel = freshKernel()
+    const fixture = cancellingQuiescenceFixture(kernel, "FAILED")
+    const result = yield* executeNextManagedTask({
+      goalID: fixture.goalID,
+      runID: fixture.runID,
+      rootSessionID: "session-root",
+      locationID: "loc-root",
+      expectedRevision: "7",
+    })
+
+    expect(result.status).toBe("PROMPT_RETURNED")
+    expect(kernel.calls.map((call) => call.operation)).toEqual([
+      "next_schedulable_task",
+      "active_attempt_recovery",
+      "settle",
+      "settle_dispatch",
+      "cancel",
+    ])
+    const settlement = kernel.calls.find((call) => call.operation === "settle")
+    expect(settlement?.body).toMatchObject({
+      goalID: fixture.goalID,
+      runID: fixture.runID,
+      taskID: fixture.taskID,
+      attemptID: fixture.attemptID,
+      outcome: "failed",
+      failureCode: "managed_prompt_stopped",
+      retryable: false,
+      expectedRevision: 7n,
+    })
+    const cancellation = kernel.calls.find((call) => call.operation === "cancel")
+    expect(cancellation?.body).toMatchObject({
+      goalID: fixture.goalID,
+      runID: fixture.runID,
+      expectedRevision: 8n,
+    })
+  }),
+)
+
+coordinatorIt.effect("keeps cancelling Run unknown when durable settlement is ambiguous", () =>
+  Effect.gen(function* () {
+    const kernel = freshKernel()
+    const fixture = cancellingQuiescenceFixture(kernel, "UNKNOWN")
+    const result = yield* executeNextManagedTask({
+      goalID: fixture.goalID,
+      runID: fixture.runID,
+      rootSessionID: "session-root",
+      locationID: "loc-root",
+      expectedRevision: "7",
+    })
+
+    expect(result.status).toBe("PROMPT_UNKNOWN")
+    expect(kernel.calls.map((call) => call.operation)).toEqual([
+      "next_schedulable_task",
+      "active_attempt_recovery",
+      "settle",
+    ])
+  }),
+)
+
+coordinatorIt.effect("does not settle or cancel a quiesced Run with an unknown effect", () =>
+  Effect.gen(function* () {
+    const kernel = freshKernel()
+    const fixture = cancellingQuiescenceFixture(kernel, "FAILED", true)
+    const result = yield* executeNextManagedTask({
+      goalID: fixture.goalID,
+      runID: fixture.runID,
+      rootSessionID: "session-root",
+      locationID: "loc-root",
+      expectedRevision: "7",
+    })
+
+    expect(result.status).toBe("PROMPT_UNKNOWN")
+    expect(kernel.calls.map((call) => call.operation)).toEqual([
+      "next_schedulable_task",
+      "active_attempt_recovery",
+    ])
+  }),
+)
 
 const scopeFacts = {
   parentSessionID: "ses_parent00000000000000000000000",
@@ -943,6 +1296,682 @@ const scopeFacts = {
 }
 
 describe("managed control client", () => {
+  it.effect("managed restart recovery decodes the Rust projection and rejects cross-pinned Attempts", () =>
+    Effect.gen(function* () {
+      const kernel = freshKernel()
+      const attemptID = `attempt_${"1".repeat(64)}`
+      const sessionID = ManagedControl.managedTaskSessionID(attemptID)
+      kernel.managedResponses.active_attempt_recovery = {
+        goalID: "goal-client",
+        runID: "run-client",
+        locationID: "loc-root",
+        sessionID: "session-root",
+        revision: "5",
+        runPhase: "RUNNING",
+        specID: "spec-client",
+        specDigest: RECEIPT,
+        goalObjective: "recover the active managed Task",
+        specConstraints: [],
+        workspaceRef: "workspace-client",
+        status: "ACTIVE_ATTEMPT",
+        task: {
+          taskID: "task-client",
+          title: "Task",
+          purpose: "Recover exact Attempt",
+          candidateAttemptID: attemptID,
+          attemptCount: "1",
+          candidateGeneration: "1",
+          taskRevision: "5",
+          contextDigest: RECEIPT,
+          dependencies: [],
+          criterionIDs: ["criterion-one"],
+          criteria: [{ criterionID: "criterion-one", description: "complete" }],
+          requiredCapabilities: [],
+          profile: {
+            profileID: "profile-client",
+            revision: "1",
+            definitionDigest: RECEIPT,
+            ownerBindingDigest: RECEIPT,
+          },
+        },
+        attempt: {
+          attemptID,
+          sessionID,
+          ownerEpoch: "1",
+          phase: "EXECUTING",
+          runPhase: "RUNNING",
+          bindingDigest: RECEIPT,
+          unknownEffect: false,
+          consumed: null,
+          quiescence: null,
+          managedAttempt: {
+            goalID: "goal-client",
+            runID: "run-client",
+            taskID: "task-client",
+            attemptID,
+            ownerEpoch: "1",
+            expectedManagedRevision: "5",
+            locationID: "loc-child",
+            sessionID,
+            workspaceRevision: RECEIPT,
+            delegationBindingDigest: RECEIPT,
+            requestID: null,
+            requestSequence: null,
+            contextSelectionDigest: null,
+          },
+        },
+      }
+
+      const recoveryInput = {
+        trustedPrincipal: REVIEWER,
+        goalID: "goal-client",
+        runID: "run-client",
+        locationID: "loc-root",
+        sessionID: "session-root",
+        expectedRevision: "5",
+      }
+      const validProjection = yield* Effect.exit(ManagedControl.activeAttemptRecovery(recoveryInput))
+      expect(validProjection._tag === "Success" ? "Success" : validProjection.cause.toString()).toBe("Success")
+      if (validProjection._tag === "Success" && validProjection.value.status === "ACTIVE_ATTEMPT") {
+        expect("effectiveMaxTokens" in validProjection.value.task).toBe(false)
+        expect(validProjection.value.attempt.managedAttempt).toBeUndefined()
+        expect(validProjection.value.attempt.managedAttemptRecovery?.requestID).toBeNull()
+      }
+
+      // A syntactically valid quiescence receipt must remain bound to the exact
+      // consume receipt. This deliberately malformed cross-receipt projection
+      // is a DTO denial case, not evidence that any managed effect ran.
+      const originalRecovery = kernel.managedResponses.active_attempt_recovery!
+      const originalAttempt = originalRecovery.attempt as Record<string, unknown>
+      const consumed = {
+        status: "CONSUMED",
+        goalID: "goal-client",
+        runID: "run-client",
+        taskID: "task-client",
+        parentSessionID: "session-root",
+        sessionID,
+        attemptID,
+        handoffID: "handoff-client",
+        handoffDigest: RECEIPT,
+        claimedProofDigest: RECEIPT,
+        workerExecutionID: "worker-client",
+        pinsDigest: RECEIPT,
+        bindingDigest: RECEIPT,
+        claimNonce: RECEIPT,
+        claimOwnerLogID: "owner-log-client",
+        claimOwnerLogSequence: "1",
+        claimOwnerLogEventDigest: RECEIPT,
+        workerPoolRevision: "1",
+        ownerEpoch: "1",
+        processIncarnation: "core-incarnation-1",
+        deliveryID: "managed_consume_client",
+        corePID: 1,
+        coreStartIdentity: "1",
+        coreUID: 1,
+        coreGID: 1,
+        coreExecutableDigest: RECEIPT,
+        consumedManagedRevision: "6",
+        receiptDigest: RECEIPT,
+        worktreeTarget: {
+          worktreeID: "worktree-client",
+          worktreeBaseRevision: "base-1",
+          worktreePoolRevision: "1",
+          locationID: "loc-child",
+          workspaceID: "workspace-client",
+          workspaceRef: "refs/heads/managed",
+          canonicalRoot: "/workspace/managed",
+          workspaceRevision: RECEIPT,
+        },
+      }
+      const quiescence = {
+        status: "QUIESCED",
+        goalID: "goal-client",
+        runID: "run-client",
+        taskID: "task-client",
+        parentSessionID: "session-root",
+        sessionID,
+        attemptID,
+        handoffID: "handoff-client",
+        handoffDigest: RECEIPT,
+        consumeDeliveryID: consumed.deliveryID,
+        consumeReceiptDigest: `blake3:${"b".repeat(64)}`,
+        ownerEpoch: "1",
+        processIncarnation: "core-incarnation-1",
+        childSessionSequence: "2",
+        childSessionEventDigest: RECEIPT,
+        childSessionStateDigest: RECEIPT,
+        childSessionOutputDigest: RECEIPT,
+        childSessionOutputBytes: "0",
+        childSessionOutcomeKind: "assistant_completed",
+        deliveryID: ManagedControl.managedCompletionDeliveryID(attemptID, RECEIPT, RECEIPT),
+        managedRevision: "7",
+        ownerLogID: "owner-log-client",
+        ownerLogSequence: "2",
+        ownerLogEventDigest: RECEIPT,
+        receiptDigest: RECEIPT,
+      }
+      kernel.managedResponses.active_attempt_recovery = {
+        ...originalRecovery,
+        attempt: { ...originalAttempt, consumed, quiescence },
+      }
+      const detachedQuiescence = yield* Effect.exit(ManagedControl.activeAttemptRecovery(recoveryInput))
+      expect(detachedQuiescence._tag).toBe("Failure")
+      if (detachedQuiescence._tag === "Failure") {
+        expect(detachedQuiescence.cause.toString()).toContain("quiescence receipt")
+      }
+      kernel.managedResponses.active_attempt_recovery = originalRecovery
+
+      const response = kernel.managedResponses.active_attempt_recovery!
+      const attempt = response.attempt as { managedAttempt: Record<string, unknown> }
+      const requestID = `req_managed_${attemptID}_1`
+      const selection = Schema.decodeUnknownSync(ContextSelectionV1)({
+        schemaVersion: 1,
+        lane: "managed",
+        sessionID,
+        mode: "fresh",
+        attemptID,
+        requestSequence: "1",
+        requestID,
+        sourceRevision: "0",
+        sources: [
+          {
+            kind: "managed-task",
+            sourceID: "task-client",
+            sourceRevision: "0",
+            contentDigest: RECEIPT,
+            sourceAuthority: "managed-control",
+            trust: "user",
+            included: true,
+            inclusionReason: "required",
+          },
+          {
+            kind: "accepted-spec",
+            sourceID: "spec-client",
+            sourceRevision: "0",
+            contentDigest: RECEIPT,
+            sourceAuthority: "managed-control",
+            trust: "system",
+            included: true,
+            inclusionReason: "required",
+          },
+          {
+            kind: "agent-profile",
+            sourceID: "specialist.reader",
+            sourceRevision: "1",
+            contentDigest: DIRECT_PROFILE_DIGEST,
+            sourceAuthority: "core-config",
+            trust: "system",
+            included: true,
+            inclusionReason: "profile",
+          },
+          {
+            kind: "tool",
+            sourceID: "toolset:native-rich",
+            sourceRevision: RECEIPT,
+            contentDigest: RECEIPT,
+            sourceAuthority: "tool-registry",
+            trust: "system",
+            included: true,
+            inclusionReason: "selected_tool",
+            harnessRevision: 1,
+          },
+          {
+            kind: "provider-input",
+            sourceID: requestID,
+            sourceRevision: "1",
+            contentDigest: RECEIPT,
+            sourceAuthority: "core-prompt-compiler",
+            trust: "mixed",
+            included: true,
+            inclusionReason: "current_request",
+          },
+        ],
+      })
+      ;(attempt.managedAttempt as Record<string, unknown>).requestID = requestID
+      ;(attempt.managedAttempt as Record<string, unknown>).requestSequence = "1"
+      ;(attempt.managedAttempt as Record<string, unknown>).contextSelectionDigest = RECEIPT
+      const selectionProjection = yield* Effect.exit(ManagedControl.activeAttemptRecovery(recoveryInput))
+      expect(selectionProjection._tag).toBe("Success")
+
+      attempt.managedAttempt.attemptID = `attempt_${"2".repeat(64)}`
+      const mismatchedProjection = yield* Effect.exit(ManagedControl.activeAttemptRecovery(recoveryInput))
+      expect(mismatchedProjection._tag).toBe("Failure")
+      if (mismatchedProjection._tag === "Failure") expect(mismatchedProjection.cause.toString()).toContain("recovery managed Attempt pins")
+    }),
+  )
+
+  test("HostRun receipt decoders reject malformed OwnerLog event digests", () => {
+    const common = {
+      schemaVersion: 1,
+      dispatchKeyDigest: RECEIPT,
+      bindingDigest: RECEIPT,
+      ownerLogSequence: "1",
+      ownerLogEventDigest: "not-a-digest",
+    }
+
+    expect(() => decodeHostRunDispatchBindingReceipt("test", {
+      ...common,
+      bindingManagedRevision: "1",
+    })).toThrow("ownerLogEventDigest")
+    expect(() => decodeHostRunDispatchP8OwnerReceipt("test", {
+      ...common,
+      ownerLogID: "owner-log-1",
+    })).toThrow("ownerLogEventDigest")
+  })
+
+  test("HostRun receipt decoders preserve either canonical OwnerLog digest spelling", () => {
+    const common = {
+      schemaVersion: 1,
+      dispatchKeyDigest: RECEIPT,
+      bindingDigest: RECEIPT,
+      ownerLogSequence: "1",
+    }
+    for (const ownerLogEventDigest of ["a".repeat(64), `blake3:${"b".repeat(64)}`]) {
+      expect(decodeHostRunDispatchBindingReceipt("test", {
+        ...common,
+        ownerLogEventDigest,
+        bindingManagedRevision: "1",
+      }).ownerLogEventDigest).toBe(ownerLogEventDigest)
+      expect(decodeHostRunDispatchP8OwnerReceipt("test", {
+        ...common,
+        ownerLogEventDigest,
+        ownerLogID: "owner-log-1",
+      }).ownerLogEventDigest).toBe(ownerLogEventDigest)
+    }
+  })
+
+  test("HostRun receipt decoders reject zero and non-canonical OwnerLog sequences", () => {
+    const common = {
+      schemaVersion: 1,
+      dispatchKeyDigest: RECEIPT,
+      bindingDigest: RECEIPT,
+      ownerLogEventDigest: "a".repeat(64),
+      bindingManagedRevision: "1",
+      ownerLogID: "owner-log-1",
+    }
+    for (const ownerLogSequence of ["0", "01", "18446744073709551616"]) {
+      expect(() => decodeHostRunDispatchBindingReceipt("test", {
+        ...common,
+        ownerLogSequence,
+      })).toThrow("ownerLogSequence")
+      expect(() => decodeHostRunDispatchP8OwnerReceipt("test", {
+        ...common,
+        ownerLogSequence,
+      })).toThrow("ownerLogSequence")
+    }
+  })
+
+  it.instance("HostRun bind sends only managed selectors and rejects a cross-pinned response", () =>
+    Effect.gen(function* () {
+      const kernel = freshKernel()
+      const goalID = "goal-host-run-bind"
+      const attemptID = `attempt_${"1".repeat(64)}`
+      const dispatchKeyDigest = RECEIPT
+      const foreignDispatchKeyDigest = `blake3:${"f".repeat(64)}`
+      const foreignAttemptID = `attempt_${"2".repeat(64)}`
+
+      // Negative client/DTO fixture only: this foreign response is deliberately
+      // cross-pinned and is never evidence that a HostRun effect occurred.
+      kernel.managedResponses["host_run.bind"] = {
+        schemaVersion: 1,
+        binding: {
+          schemaVersion: 1,
+          dispatchKeyDigest: foreignDispatchKeyDigest,
+          manifestDigest: RECEIPT,
+          evaluatorTaskId: "evaluator-one",
+          armId: "arm-one",
+          taskGroup: "group-one",
+          runId: "run-one",
+          managedTaskId: "task-one",
+          attemptId: foreignAttemptID,
+          evaluationSessionId: "ses_root000000000000000000000001",
+          coreProcessGeneration: "1",
+          ownerId: "owner-one",
+          ownerEpoch: "1",
+          workerExecutionId: "worker-one",
+          delegationBindingDigest: RECEIPT,
+          acceptedSpecDigest: RECEIPT,
+          providerSelectionDigest: RECEIPT,
+          workspaceBindingDigest: RECEIPT,
+          admittedWorkspaceRevision: RECEIPT,
+          attemptScopeDigest: RECEIPT,
+          ownerPrincipalBindingDigest: RECEIPT,
+          bindingDigest: RECEIPT,
+        },
+        receipt: {
+          schemaVersion: 1,
+          dispatchKeyDigest: foreignDispatchKeyDigest,
+          bindingDigest: RECEIPT,
+          ownerLogSequence: "1",
+          ownerLogEventDigest: RECEIPT,
+          bindingManagedRevision: "1",
+        },
+      }
+
+      const exit = yield* Effect.exit(ManagedControl.hostRunBind({
+        trustedPrincipal: REVIEWER,
+        goalID,
+        attemptID,
+        dispatchKeyDigest,
+      }))
+
+      expect(kernel.calls).toHaveLength(1)
+      expect(kernel.calls[0]?.body).toEqual({ goalID, attemptID, dispatchKeyDigest })
+      expect(exit._tag).toBe("Failure")
+      if (exit._tag === "Failure") expect(exit.cause.toString()).toContain("HostRun binding identity")
+    }),
+  )
+
+  it.instance("HostRun bind rejects a response for a different Attempt even when the DTO is valid", () =>
+    Effect.gen(function* () {
+      const kernel = freshKernel()
+      const attemptID = `attempt_${"1".repeat(64)}`
+      const foreignAttemptID = `attempt_${"2".repeat(64)}`
+      kernel.managedResponses["host_run.bind"] = {
+        schemaVersion: 1,
+        binding: hostRunBindingFixture({ attemptId: foreignAttemptID }),
+        receipt: {
+          schemaVersion: 1,
+          dispatchKeyDigest: RECEIPT,
+          bindingDigest: RECEIPT,
+          ownerLogSequence: "1",
+          ownerLogEventDigest: RECEIPT,
+          bindingManagedRevision: "1",
+        },
+      }
+
+      const exit = yield* Effect.exit(ManagedControl.hostRunBind({
+        trustedPrincipal: REVIEWER,
+        goalID: "goal-host-run-bind",
+        attemptID,
+        dispatchKeyDigest: RECEIPT,
+      }))
+
+      expect(exit._tag).toBe("Failure")
+      if (exit._tag === "Failure") expect(exit.cause.toString()).toContain("HostRun binding identity")
+    }),
+  )
+
+  it.instance("HostRun bind rejects a foreign dispatch key or detached binding receipt", () =>
+    Effect.gen(function* () {
+      const attemptID = `attempt_${"1".repeat(64)}`
+      const foreignDigest = `blake3:${"f".repeat(64)}`
+      const receipt = (dispatchKeyDigest: string, bindingDigest: string) => ({
+        schemaVersion: 1,
+        dispatchKeyDigest,
+        bindingDigest,
+        ownerLogSequence: "1",
+        ownerLogEventDigest: RECEIPT,
+        bindingManagedRevision: "1",
+      })
+      const responses = [
+        {
+          schemaVersion: 1,
+          binding: hostRunBindingFixture({ attemptId: attemptID, dispatchKeyDigest: foreignDigest }),
+          receipt: receipt(RECEIPT, RECEIPT),
+        },
+        {
+          schemaVersion: 1,
+          binding: hostRunBindingFixture({ attemptId: attemptID }),
+          receipt: receipt(foreignDigest, RECEIPT),
+        },
+        {
+          schemaVersion: 1,
+          binding: hostRunBindingFixture({ attemptId: attemptID }),
+          receipt: receipt(RECEIPT, foreignDigest),
+        },
+      ]
+
+      for (const response of responses) {
+        const kernel = freshKernel()
+        kernel.managedResponses["host_run.bind"] = response
+        const exit = yield* Effect.exit(ManagedControl.hostRunBind({
+          trustedPrincipal: REVIEWER,
+          goalID: "goal-host-run-bind",
+          attemptID,
+          dispatchKeyDigest: RECEIPT,
+        }))
+        expect(exit._tag).toBe("Failure")
+      }
+    }),
+  )
+
+  it.instance("HostRun bind receipt rejects any response that changes its P8 request", () =>
+    Effect.gen(function* () {
+      const foreignDigest = `blake3:${"f".repeat(64)}`
+      const submitted = {
+        schemaVersion: 1,
+        dispatchKeyDigest: RECEIPT,
+        bindingDigest: RECEIPT,
+        ownerLogID: "owner-one",
+        ownerLogSequence: "1",
+        ownerLogEventDigest: RECEIPT,
+      }
+      const responses = [
+        { ...submitted, dispatchKeyDigest: foreignDigest },
+        { ...submitted, bindingDigest: foreignDigest },
+        { ...submitted, ownerLogID: "owner-other" },
+        { ...submitted, ownerLogSequence: "2" },
+        { ...submitted, ownerLogEventDigest: foreignDigest },
+      ]
+
+      for (const receipt of responses) {
+        const kernel = freshKernel()
+        kernel.managedResponses["host_run.bind_receipt"] = {
+          schemaVersion: 1,
+          status: "RECORDED",
+          receipt,
+        }
+        const exit = yield* Effect.exit(ManagedControl.hostRunBindReceipt({
+          trustedPrincipal: REVIEWER,
+          goalID: "goal-host-run-bind",
+          dispatchKeyDigest: RECEIPT,
+          bindingDigest: RECEIPT,
+          ownerLogID: "owner-one",
+          ownerLogSequence: "1",
+          ownerLogEventDigest: RECEIPT,
+        }))
+
+        expect(exit._tag).toBe("Failure")
+        if (exit._tag === "Failure") expect(exit.cause.toString()).toContain("HostRun P8 receipt identity")
+      }
+    }),
+  )
+
+  it.instance("HostRun reconciliation rejects mismatched query and attached binding keys", () =>
+    Effect.gen(function* () {
+      const foreignDigest = `blake3:${"f".repeat(64)}`
+      const responses = [
+        {
+          schemaVersion: 1,
+          dispatchKeyDigest: foreignDigest,
+          status: "FAILED",
+          binding: hostRunBindingFixture({ dispatchKeyDigest: RECEIPT }),
+          bindingDigest: RECEIPT,
+          attemptReceiptDigest: RECEIPT,
+        },
+        {
+          schemaVersion: 1,
+          dispatchKeyDigest: RECEIPT,
+          status: "FAILED",
+          binding: hostRunBindingFixture({ dispatchKeyDigest: foreignDigest }),
+          bindingDigest: RECEIPT,
+          attemptReceiptDigest: RECEIPT,
+        },
+      ]
+
+      for (const response of responses) {
+        const kernel = freshKernel()
+        kernel.managedResponses["host_run.inspect"] = response
+        const exit = yield* Effect.exit(ManagedControl.reconcileHostRun({
+          trustedPrincipal: REVIEWER,
+          goalID: "goal-host-run-bind",
+          dispatchKeyDigest: RECEIPT,
+        }))
+
+        expect(exit._tag).toBe("Failure")
+        if (exit._tag === "Failure") expect(exit.cause.toString()).toContain("identity")
+      }
+    }),
+  )
+
+  it.instance("UNKNOWN HostRun reconciliation checks the query key before the status reason", () =>
+    Effect.gen(function* () {
+      const kernel = freshKernel()
+      kernel.managedResponses["host_run.inspect"] = {
+        schemaVersion: 1,
+        dispatchKeyDigest: `blake3:${"f".repeat(64)}`,
+        status: "UNKNOWN",
+      }
+      const exit = yield* Effect.exit(ManagedControl.reconcileHostRun({
+        trustedPrincipal: REVIEWER,
+        goalID: "goal-host-run-bind",
+        dispatchKeyDigest: RECEIPT,
+      }))
+      expect(exit._tag).toBe("Failure")
+      if (exit._tag === "Failure") expect(exit.cause.toString()).toContain("dispatch key identity")
+    }),
+  )
+
+  it.instance("UNKNOWN HostRun reconciliation preserves a valid typed UNKNOWN", () =>
+    Effect.gen(function* () {
+      const kernel = freshKernel()
+      kernel.managedResponses["host_run.inspect"] = {
+        schemaVersion: 1,
+        dispatchKeyDigest: RECEIPT,
+        status: "UNKNOWN",
+        unknownReason: "host_run_attempt_unknown",
+      }
+      const result = yield* ManagedControl.reconcileHostRun({
+        trustedPrincipal: REVIEWER,
+        goalID: "goal-host-run-bind",
+        dispatchKeyDigest: RECEIPT,
+      })
+      expect(result.status).toBe("UNKNOWN")
+      expect(result.unknownReason).toBe("host_run_attempt_unknown")
+    }),
+  )
+  it.instance("CANCELLED HostRun reconciliation requires an attached binding identity", () =>
+    Effect.gen(function* () {
+      const foreignDigest = `blake3:${"f".repeat(64)}`
+      const responses = [
+        { status: "CANCELLED" },
+        {
+          status: "CANCELLED",
+          binding: hostRunBindingFixture({ dispatchKeyDigest: foreignDigest }),
+          bindingDigest: RECEIPT,
+        },
+        {
+          status: "CANCELLED",
+          binding: hostRunBindingFixture(),
+          bindingDigest: foreignDigest,
+        },
+      ]
+
+      for (const response of responses) {
+        const kernel = freshKernel()
+        kernel.managedResponses["host_run.inspect"] = {
+          schemaVersion: 1,
+          dispatchKeyDigest: RECEIPT,
+          ...response,
+        }
+        const exit = yield* Effect.exit(ManagedControl.reconcileHostRun({
+          trustedPrincipal: REVIEWER,
+          goalID: "goal-host-run-bind",
+          dispatchKeyDigest: RECEIPT,
+        }))
+
+        expect(exit._tag).toBe("Failure")
+      }
+    }),
+  )
+
+  it.instance("SUCCEEDED HostRun reconciliation requires Attempt receipt and final revision evidence", () =>
+    Effect.gen(function* () {
+      const finalRevision = `blake3:${"d".repeat(64)}`
+      const responses = [
+        {
+          schemaVersion: 1,
+          dispatchKeyDigest: RECEIPT,
+          status: "SUCCEEDED",
+          binding: hostRunBindingFixture(),
+          bindingDigest: RECEIPT,
+          verifiedRevision: finalRevision,
+        },
+        {
+          schemaVersion: 1,
+          dispatchKeyDigest: RECEIPT,
+          status: "SUCCEEDED",
+          binding: hostRunBindingFixture(),
+          bindingDigest: RECEIPT,
+          attemptReceiptDigest: RECEIPT,
+        },
+      ]
+
+      for (const response of responses) {
+        const kernel = freshKernel()
+        kernel.managedResponses["host_run.inspect"] = response
+        const exit = yield* Effect.exit(ManagedControl.reconcileHostRun({
+          trustedPrincipal: REVIEWER,
+          goalID: "goal-host-run-bind",
+          dispatchKeyDigest: RECEIPT,
+        }))
+
+        expect(exit._tag).toBe("Failure")
+      }
+    }),
+  )
+
+  it.instance("SUCCEEDED HostRun accepts the verified final revision distinct from the admission pin", () =>
+    Effect.gen(function* () {
+      const admissionRevision = `blake3:${"e".repeat(64)}`
+      const finalRevision = `blake3:${"d".repeat(64)}`
+      const kernel = freshKernel()
+      kernel.managedResponses["host_run.inspect"] = {
+        schemaVersion: 1,
+        dispatchKeyDigest: RECEIPT,
+        status: "SUCCEEDED",
+        binding: hostRunBindingFixture({ admittedWorkspaceRevision: admissionRevision }),
+        bindingDigest: RECEIPT,
+        attemptReceiptDigest: RECEIPT,
+        verifiedRevision: finalRevision,
+      }
+      const result = yield* ManagedControl.reconcileHostRun({
+        trustedPrincipal: REVIEWER,
+        goalID: "goal-host-run-bind",
+        dispatchKeyDigest: RECEIPT,
+      })
+      expect(result.status).toBe("SUCCEEDED")
+      expect(result.verifiedRevision).toBe(finalRevision)
+      expect(result.binding?.admittedWorkspaceRevision).toBe(admissionRevision)
+    }),
+  )
+  test("HostRun reconciliation requires a reason only for UNKNOWN", () => {
+    const base = {
+      schemaVersion: 1,
+      dispatchKeyDigest: RECEIPT,
+    }
+    expect(() => decodeHostRunReconciliation("test", {
+      ...base,
+      status: "UNKNOWN",
+    })).toThrow("unknownReason")
+    expect(() => decodeHostRunReconciliation("test", {
+      ...base,
+      status: "SUCCEEDED",
+      unknownReason: "host_run_attempt_unknown",
+    })).toThrow("unknownReason")
+    expect(decodeHostRunReconciliation("test", {
+      ...base,
+      status: "UNKNOWN",
+      unknownReason: "host_run_attempt_unknown",
+    }).unknownReason).toBe("host_run_attempt_unknown")
+    expect(() => decodeHostRunReconciliation("test", {
+      ...base,
+      status: "UNKNOWN",
+      unknownReason: "caller-invented",
+    })).toThrow("unknownReason")
+  })
+
   it.instance("goal.start refuses a SessionLink bound to another Session or workspace before HostKernel dispatch", () =>
     Effect.gen(function* () {
       const kernel = freshKernel()
@@ -1218,6 +2247,53 @@ describe("managed control client", () => {
         },
       }))
       expect(queuedWithUnusedProof._tag).toBe("Failure")
+      expect(kernel.calls).toHaveLength(0)
+    }),
+  )
+
+  it.instance("direct message rejects non-string content before any HostKernel dispatch", () =>
+    Effect.gen(function* () {
+      const kernel = freshKernel()
+      const pins = {
+        parentSessionID: "ses_parent00000000000000000000000",
+        childSessionID: "ses_child000000000000000000000001",
+        childOwnerEpoch: "7",
+        profileID: DIRECT_PROFILE_SELECTION.profileId,
+        profileRevision: DIRECT_PROFILE_SELECTION.revision,
+        profileDigest: DIRECT_PROFILE_DIGEST,
+        permissionScopeDigest: DIRECT_FACTS.permissionsDigest,
+        directAttemptID: "att_0123456789abcdef",
+        messageID: "msg_0123456789abcdef",
+        deliveryMode: "queued" as const,
+        mailboxSequence: "1",
+      }
+      // A non-string payload must be rejected with a typed error before it can
+      // be coerced (`TextEncoder.encode` stringifies a number) and reach RPC.
+      const error = yield* Effect.flip(ManagedControl.prepareDirectMessage({
+        pins,
+        content: 123 as never,
+        mailboxCapacity: 1,
+      }))
+      expect(error).toBeInstanceOf(ManagedControlError)
+      expect(error.code).toBe("managed_protocol")
+      expect(error.reason).toMatch(/content/i)
+      expect(kernel.calls).toHaveLength(0)
+    }),
+  )
+
+  it.instance("managed message rejects non-string content before any HostKernel dispatch", () =>
+    Effect.gen(function* () {
+      const kernel = freshKernel()
+      // The content-type guard must fire before scope/pin validation and before
+      // `Buffer.byteLength`, which throws a raw TypeError on a number.
+      const error = yield* Effect.flip(ManagedControl.prepareManagedMessage({
+        scope: {} as never,
+        pins: {} as never,
+        content: 123 as never,
+      }))
+      expect(error).toBeInstanceOf(ManagedControlError)
+      expect(error.code).toBe("managed_protocol")
+      expect(error.reason).toMatch(/content/i)
       expect(kernel.calls).toHaveLength(0)
     }),
   )
@@ -2826,6 +3902,29 @@ describe("managed control client", () => {
       const error = yield* Effect.flip(ManagedControl.pauseRun({ ...input, expectedRevision: 11 }))
       expect(error).toBeInstanceOf(ManagedControlError)
       expect("code" in error ? error.code : undefined).toBe("managed_protocol")
+    }),
+  )
+
+  it.instance("finalize_run rejects a nonterminal Run phase even with a SUCCEEDED status", () =>
+    Effect.gen(function* () {
+      const kernel = freshKernel()
+      kernel.managedResponses.finalize_run = {
+        status: "SUCCEEDED",
+        goalID: "goal-client",
+        runID: "run-client",
+        runPhase: "RUNNING",
+        revision: 14n,
+      }
+
+      const error = yield* Effect.flip(ManagedControl.finalizeRun({
+        trustedPrincipal: REVIEWER,
+        goalID: "goal-client",
+        runID: "run-client",
+      }))
+
+      expect(error).toBeInstanceOf(ManagedControlError)
+      expect(error.code).toBe("managed_protocol")
+      expect(error.reason).toContain("Run phase")
     }),
   )
 

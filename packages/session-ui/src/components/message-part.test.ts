@@ -53,10 +53,18 @@ describe("safe tool detail projection", () => {
     cycle.self = cycle
     const metadata = sanitizeToolDisplayValue(cycle) as Record<string, unknown>
     expect(metadata.token).toBe("[REDACTED]")
-    expect(metadata.output).toBeUndefined()
+    // §31.2 requires payload redaction for tool detail views, and the sanitizer
+    // contract (tool-display.ts) says payload-bearing fields are *omitted* before
+    // renderers receive them. "Omitted" is the `[omitted]` sentinel, not
+    // `undefined`: the projection must show that the field existed and was
+    // withheld, so a redacted payload is never indistinguishable from an absent
+    // one. Dropping it to `undefined` would erase that fact (§17.5 evidence law).
+    expect(metadata.output).toBe("[omitted]")
     expect(metadata.query).toBe("find route")
     expect(metadata.self).toBe("[circular]")
 
+    // The arguments path is a different contract: unknown argument keys are
+    // dropped entirely rather than sentinel-marked.
     const input = sanitizeToolDisplayValue({ command: "npm test && curl https://user:pass@example.test", arbitrary: "private" }, { arguments: true }) as Record<string, unknown>
     expect(input.command).toBe("npm …")
     expect(input.arbitrary).toBeUndefined()

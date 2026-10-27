@@ -131,6 +131,41 @@ const exists = (target: string) =>
 const it = testEffect(Layer.empty)
 
 describe("ApplyPatchTool", () => {
+  it.live("keeps patchText unavailable without the canonical files.patch Guard adapter", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => {
+        reset()
+        const existing = path.join(tmp.path, "existing.txt")
+        const created = path.join(tmp.path, "must-not-exist.txt")
+        return Effect.promise(() => fs.writeFile(existing, "original\n")).pipe(
+          Effect.andThen(
+            withTool(tmp.path, (registry) =>
+              Effect.gen(function* () {
+                const definitions = yield* toolDefinitions(registry)
+                expect(definitions.map((tool) => tool.name)).not.toContain("apply_patch")
+
+                const validPatch = yield* executeTool(
+                  registry,
+                  call("*** Begin Patch\n*** Add File: must-not-exist.txt\n+created\n*** End Patch"),
+                )
+                const malformedPatch = yield* executeTool(registry, call("not a patch"))
+
+                expect(validPatch).toEqual({ type: "error", value: "Unknown tool: apply_patch" })
+                expect(malformedPatch).toEqual({ type: "error", value: "Unknown tool: apply_patch" })
+                expect(assertions).toEqual([])
+                expect(readsBeforeEditApproval).toBe(0)
+                expect(yield* Effect.promise(() => fs.readFile(existing, "utf8"))).toBe("original\n")
+                expect(yield* exists(created)).toBe(false)
+              }),
+            ),
+          ),
+        )
+      },
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
   it.live("registers and sequentially applies add, update, and delete hunks", () =>
     Effect.acquireUseRelease(
       Effect.promise(() => tmpdir()),

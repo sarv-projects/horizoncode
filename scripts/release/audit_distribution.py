@@ -25,6 +25,60 @@ LEGAL_BASENAME = re.compile(
     r"^(license|licence|copying|notice|patents|third[._-]?party[._-]?notices?)(?:[._-].*)?$", re.IGNORECASE
 )
 PRODUCT_BINARY = "horizoncode"
+MAX_GRANT_TEXT_FILE_BYTES = 512 * 1024
+# A package's own grant text counts only when the complete canonical marker set
+# is present in one root-level file. Marker sets are deliberately long so a
+# header comment, an SPDX mention, or a README sentence never counts as text.
+FULL_GRANT_TEXT_MARKERS = {
+    "MIT": (
+        "permission is hereby granted, free of charge",
+        "the software is provided",
+        "without restriction",
+        "copyright notice and this permission notice shall be included",
+    ),
+    "ISC": ("permission to use, copy, modify, and/or distribute this software",),
+    "Apache-2.0": (
+        "apache license",
+        "version 2.0",
+        "terms and conditions",
+        "limitations under the license",
+    ),
+    "Unlicense": ("this is free and unencumbered software released into the public domain",),
+    "CC0-1.0": ("cc0 1.0 universal",),
+    "CC-BY-3.0": ("creative commons attribution 3.0",),
+}
+LICENSE_FILE_BASENAME = re.compile(r"^(license|licence|copying)(?:[._-].*)?$", re.IGNORECASE)
+NOTICE_FILE_BASENAME = re.compile(
+    r"^(notice|patents|third[._-]?party[._-]?notices?)(?:[._-].*)?$", re.IGNORECASE
+)
+LEGAL_TEXT_CANDIDATE_SUFFIX = re.compile(
+    r"^(readme|license|licence|copying|notice|patents|third[._-]?party[._-]?notices?"
+    r"|mit[._-]?license|apache[._-]?license|unlicense)(?:[._-].*)?$",
+    re.IGNORECASE,
+)
+# Only grants whose canonical body carries no package-specific copyright line
+# may be closed from a promoted canonical text. MIT and ISC always need the
+# installing package's own copyright notice, which is not available locally for
+# the remaining rows, so they are deliberately absent from this allowlist.
+CANONICAL_TEXT_GRANTS = frozenset({"Apache-2.0"})
+CANONICAL_TEXT_STRUCTURE = {
+    "Apache-2.0": (
+        "apache license",
+        "version 2.0, january 2004",
+        "http://www.apache.org/licenses/",
+        "terms and conditions for use, reproduction, and distribution",
+        "1. definitions.",
+        "2. grant of copyright license.",
+        "3. grant of patent license.",
+        "8. limitation of liability.",
+        "9. accepting warranty or additional liability.",
+        "end of terms and conditions",
+        "appendix: how to apply the apache license to your work",
+    ),
+}
+CANONICAL_NOTICE_TEXT_DIR = "scripts/release/notice-texts"
+CANONICAL_NOTICE_PROVENANCE = "scripts/release/notice-texts-provenance.json"
+MAX_CANONICAL_TEXT_BYTES = 256 * 1024
 SOURCE_OUTPUT_DIRS = frozenset({".git", ".turbo", ".cache", "__pycache__", "dist", "node_modules", "target"})
 SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -410,12 +464,160 @@ def _package_legal_files(
     return sorted(legal_files)
 
 
+def _declared_license_allows_grant(declared_license: str, grant: str) -> bool:
+    """True only when the package's own declared metadata names this grant."""
+    tokens = {
+        token
+        for token in re.split(r"[^0-9A-Za-z.+-]+", declared_license)
+        if token
+    }
+    return grant.lower() in {token.lower() for token in tokens}
+
+
+def _package_grant_text_files(
+    package_root: Path,
+    allowed_root: Path,
+    declared_license: str | None,
+    errors: list[str],
+    remaining_entries: list[int],
+) -> list[dict]:
+    """Locate full license grant text shipped by the package itself.
+
+    Only root-level regular files count: a nested file belongs to a bundled
+    component and must not be mistaken for the package's own grant. Text counts
+    only when the complete canonical marker set is present *and* the package's
+    own declared license metadata allows that grant, so this never infers a
+    license. Every accepted file is hashed so the evidence is exact and can be
+    bound to the exact installed bytes.
+    """
+    if not declared_license:
+        return []
+    legal_text: list[dict] = []
+    visited = 0
+    try:
+        with os.scandir(package_root) as entries:
+            for entry in entries:
+                visited += 1
+                remaining_entries[0] -= 1
+                if visited > MAX_PACKAGE_DIRECTORY_ENTRIES:
+                    errors.append(
+                        f"{package_root}: grant-text inventory exceeds {MAX_PACKAGE_DIRECTORY_ENTRIES} entries"
+                    )
+                    return []
+                if remaining_entries[0] < 0:
+                    errors.append(
+                        f"runtime package grant-text inventory exceeds {MAX_PACKAGE_DIRECTORY_ENTRIES_TOTAL} total entries"
+                    )
+                    return []
+                if not LEGAL_TEXT_CANDIDATE_SUFFIX.match(entry.name):
+                    continue
+                payload = _read_local_bytes(
+                    package_root / entry.name, allowed_root, MAX_GRANT_TEXT_FILE_BYTES
+                )
+                if payload is None:
+                    continue
+                text = " ".join(payload.decode("utf-8", errors="ignore").lower().split())
+                for grant, markers in FULL_GRANT_TEXT_MARKERS.items():
+                    if not _declared_license_allows_grant(declared_license, grant):
+                        continue
+                    if all(marker in text for marker in markers):
+                        legal_text.append(
+                            {
+                                "file": entry.name,
+                                "grant": grant,
+                                "sha256": hashlib.sha256(payload).hexdigest(),
+                                "bytes": len(payload),
+                            }
+                        )
+                        break
+    except OSError as error:
+        errors.append(f"{package_root}: grant-text inventory failed: {error}")
+        return []
+    return sorted(legal_text, key=lambda item: item["file"])
+
+
+def _text_contains_first_party_grant(contents: bytes | None) -> bool:
+    """True when the bytes carry the selected HorizonCode first-party MIT grant."""
+    if contents is None:
+        return False
+    text = " ".join(contents.decode("utf-8", errors="ignore").lower().split())
+    return all(marker in text for marker in FULL_GRANT_TEXT_MARKERS["MIT"])
+
+
+def _canonical_notice_texts(
+    canonical_dir: Path | None,
+    allowed_root: Path,
+    errors: list[str],
+) -> dict[str, dict]:
+    """Load promoted canonical license bodies that still match their provenance.
+
+    A promoted text closes a dependency row only for grants in
+    `CANONICAL_TEXT_GRANTS`, only when the stored bytes still hash to the
+    recorded provenance digest, and only when the text carries the complete
+    canonical marker *and* structural marker set. Any malformed, truncated,
+    tampered or out-of-root entry is dropped, so the dependent rows stay
+    blocked rather than being closed by an unverifiable file.
+    """
+    if canonical_dir is None:
+        return {}
+    try:
+        root = allowed_root.resolve(strict=True)
+        directory = canonical_dir.resolve(strict=True)
+    except OSError:
+        return {}
+    if not directory.is_dir() or not _inside(directory, root):
+        return {}
+    provenance_path = directory.parent / "notice-texts-provenance.json"
+    raw_provenance = _read_local_bytes(provenance_path, root, MAX_PACKAGE_MANIFEST_BYTES)
+    if raw_provenance is None:
+        return {}
+    try:
+        provenance = json.loads(raw_provenance.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(provenance, dict):
+        return {}
+    texts: dict[str, dict] = {}
+    for grant, entry in sorted(provenance.items()):
+        if grant not in CANONICAL_TEXT_GRANTS or not isinstance(entry, dict):
+            continue
+        relative = entry.get("file")
+        recorded_sha = entry.get("sha256")
+        if not isinstance(relative, str) or not isinstance(recorded_sha, str):
+            continue
+        if not SHA256_HEX.fullmatch(recorded_sha):
+            continue
+        candidate = root / relative
+        if not _inside(candidate, root):
+            continue
+        payload = _read_local_bytes(candidate, root, MAX_CANONICAL_TEXT_BYTES)
+        if payload is None or hashlib.sha256(payload).hexdigest() != recorded_sha:
+            continue
+        normalized = " ".join(payload.decode("utf-8", errors="ignore").lower().split())
+        markers = FULL_GRANT_TEXT_MARKERS.get(grant, ())
+        structure = CANONICAL_TEXT_STRUCTURE.get(grant, ())
+        if not markers or not structure:
+            continue
+        if not all(marker in normalized for marker in (*markers, *structure)):
+            continue
+        texts[grant] = {
+            "grant": grant,
+            "file": relative,
+            "sha256": recorded_sha,
+            "bytes": len(payload),
+            "evidence": "canonical_text_promoted",
+            "source": entry.get("source"),
+        }
+    return texts
+
+
 def scan_runtime_dependencies(
     package_root: Path,
     allowed_root: Path | None = None,
     errors: list[str] | None = None,
     *,
     first_party_grant: str | None = None,
+    canonical_notice_dir: Path | None = None,
 ) -> dict:
     """Walk runtime/optional/required-peer dependencies from one package.
 
@@ -423,7 +625,9 @@ def scan_runtime_dependencies(
     a tracked, vendor-distinct root `LICENSE` and `NOTICE` for the declared
     first-party grant. A workspace package that declares exactly that grant is
     then covered by those repository-root legal files; every other package still
-    needs its own direct LICENSE/NOTICE file.
+    needs its own direct LICENSE/NOTICE file, or complete grant text for its own
+    declared license in a hashed root-level file (see
+    `grant_text_without_dedicated_license_file`).
     """
     allowed_root = (allowed_root or package_root).resolve()
     packages: dict[str, dict] = {}
@@ -441,6 +645,7 @@ def scan_runtime_dependencies(
         pending = [resolved_package_root]
     visited: set[Path] = set()
     remaining_package_entries = [MAX_PACKAGE_DIRECTORY_ENTRIES_TOTAL]
+    canonical_texts = _canonical_notice_texts(canonical_notice_dir, allowed_root, inventory_errors)
 
     while pending:
         if len(visited) >= MAX_RUNTIME_PACKAGES:
@@ -492,12 +697,38 @@ def scan_runtime_dependencies(
             version = str(dependency_manifest.get("version", "unknown"))
             key = f"{package_name}@{version}:{resolved}"
             if key not in packages:
+                declared_license = _declared_license(dependency_manifest)
+                license_files = _package_legal_files(resolved, inventory_errors, remaining_package_entries)
+                grant_text_files = _package_grant_text_files(
+                    resolved,
+                    allowed_root,
+                    declared_license,
+                    inventory_errors,
+                    remaining_package_entries,
+                )
+                canonical_files: list[dict] = []
+                if not license_files and not grant_text_files and declared_license:
+                    for grant, entry in canonical_texts.items():
+                        if _declared_license_allows_grant(declared_license, grant):
+                            canonical_files = [dict(entry)]
+                            break
+                package_license_text = grant_text_files or canonical_files
                 packages[key] = {
                     "name": package_name,
                     "version": version,
-                    "license": _declared_license(dependency_manifest),
+                    "license": declared_license,
                     "path": str(resolved),
-                    "license_files": _package_legal_files(resolved, inventory_errors, remaining_package_entries),
+                    "license_files": license_files,
+                    "license_text_files": package_license_text,
+                    "grant_text_status": (
+                        "direct_file"
+                        if license_files
+                        else "package_grant_text"
+                        if grant_text_files
+                        else "canonical_text"
+                        if canonical_files
+                        else "none"
+                    ),
                     "requested_by": [],
                 }
                 pending.append(resolved)
@@ -505,7 +736,15 @@ def scan_runtime_dependencies(
 
     inventory = sorted(packages.values(), key=lambda item: (item["name"], item["version"], item["path"]))
     missing_license_metadata = [item for item in inventory if item["license"] is None]
-    missing_license_files = [item for item in inventory if not item["license_files"]]
+    # A row is missing only when the package ships neither a direct legal file
+    # nor complete grant text for its own declared license; the text-only rows
+    # are kept visible with their hashes instead of being silently cleared.
+    missing_license_files = [
+        item for item in inventory if not item["license_files"] and not item["license_text_files"]
+    ]
+    grant_text_without_dedicated_license_file = [
+        item for item in inventory if not item["license_files"] and item["license_text_files"]
+    ]
     granted_workspace_packages: list[dict] = []
     if first_party_grant:
         covered = {
@@ -524,6 +763,16 @@ def scan_runtime_dependencies(
         "packages": inventory,
         "missing_license_metadata": missing_license_metadata,
         "missing_license_files": missing_license_files,
+        "grant_text_without_dedicated_license_file": [
+            {
+                "name": item["name"],
+                "version": item["version"],
+                "path": item["path"],
+                "license": item["license"],
+                "license_text_files": item["license_text_files"],
+            }
+            for item in grant_text_without_dedicated_license_file
+        ],
         "first_party_workspace_grant_evidence": {
             "declared_license": first_party_grant,
             "basis": (
@@ -934,8 +1183,12 @@ def inspect_artifact(path: Path) -> dict:
             "artifact_inventory_valid": False,
             "artifact_inventory_errors": ["artifact is unavailable or unsafe"],
             "legal_files": [],
+            "license_member_paths": [],
+            "notice_member_paths": [],
             "contains_license_file": False,
             "contains_notice_file": False,
+            "license_grant_present": False,
+            "notice_attribution_valid": False,
             "symlinks": [str(symlink_component)],
             "special_entries": [],
             "unsafe_paths": [],
@@ -982,8 +1235,12 @@ def inspect_artifact(path: Path) -> dict:
             "artifact_inventory_valid": False,
             "artifact_inventory_errors": ["artifact inventory could not be read"],
             "legal_files": [],
+            "license_member_paths": [],
+            "notice_member_paths": [],
             "contains_license_file": False,
             "contains_notice_file": False,
+            "license_grant_present": False,
+            "notice_attribution_valid": False,
             "symlinks": [],
             "special_entries": [],
             "unsafe_paths": [],
@@ -1009,6 +1266,26 @@ def inspect_artifact(path: Path) -> dict:
     legal_file_facts = _artifact_legal_file_facts(path, safe_members)
     if any("error" in item for item in legal_file_facts):
         status = "BLOCKED"
+    license_members = [
+        name
+        for name in safe_members
+        if LICENSE_FILE_BASENAME.match(PurePosixPath(name.replace("\\", "/")).name)
+    ]
+    notice_members = [
+        name
+        for name in safe_members
+        if NOTICE_FILE_BASENAME.match(PurePosixPath(name.replace("\\", "/")).name)
+    ]
+    # Item 49: legal files must carry the selected first-party MIT grant and
+    # preserve upstream attribution; a matching filename alone is not evidence.
+    license_grant_present = any(
+        _text_contains_first_party_grant(_read_artifact_member(path, name, 1024 * 1024))
+        for name in license_members
+    )
+    notice_attribution_valid = any(
+        _notice_preserves_opencode_attribution(_read_artifact_member(path, name, 1024 * 1024))
+        for name in notice_members
+    )
     provenance_files = [
         name
         for name in safe_members
@@ -1085,8 +1362,12 @@ def inspect_artifact(path: Path) -> dict:
         "artifact_inventory_valid": artifact_inventory_valid,
         "artifact_inventory_errors": artifact_inventory_errors,
         "legal_files": licenses,
+        "license_member_paths": license_members,
+        "notice_member_paths": notice_members,
         "contains_license_file": has_license,
         "contains_notice_file": has_notice,
+        "license_grant_present": license_grant_present,
+        "notice_attribution_valid": notice_attribution_valid,
         "symlinks": symlinks,
         "special_entries": special_entries,
         "unsafe_paths": unsafe_paths,
@@ -1247,6 +1528,20 @@ def _select_discovered_artifact(root: Path, discovery: dict, supplied: Path | No
     return None, "NOT_FOUND"
 
 
+def _notice_preserves_opencode_attribution(contents: bytes | None) -> bool:
+    """Require an explicit attribution line and a reference to the upstream license."""
+    if contents is None:
+        return False
+    lines = contents.splitlines()
+    return (
+        any(line.strip() == b"Copyright (c) 2025 opencode" for line in lines)
+        and any(
+            re.search(rb"(?<![A-Za-z0-9_./-])opencode/LICENSE(?=$|[\s.,;:!?])", line)
+            for line in lines
+        )
+    )
+
+
 def audit_repository(root: Path, artifact: Path | None = None) -> dict:
     requested_root = Path(os.path.abspath(root))
     if not _inside(requested_root, REPOSITORY_ROOT):
@@ -1275,6 +1570,17 @@ def audit_repository(root: Path, artifact: Path | None = None) -> dict:
         _regular_file(root / name, root) and _is_tracked(root, name)
         for name in ("NOTICE", "NOTICE.md", "NOTICE.txt")
     )
+    root_notice = next(
+        (
+            contents
+            for name in ("NOTICE", "NOTICE.md", "NOTICE.txt")
+            if _regular_file(root / name, root)
+            and _is_tracked(root, name)
+            and (contents := _read_local_bytes(root / name, root, MAX_AUDIT_TEXT_BYTES)) is not None
+        ),
+        None,
+    )
+    notice_preserves_opencode_attribution = _notice_preserves_opencode_attribution(root_notice)
 
     license_reasons = []
     if root_package.get("license") == "UNLICENSED":
@@ -1292,6 +1598,10 @@ def audit_repository(root: Path, artifact: Path | None = None) -> dict:
         license_reasons.append("no tracked first-party root distribution license was established")
     if not tracked_root_notice:
         license_reasons.append("no tracked first-party root distribution notice was established")
+    elif root_notice is None:
+        license_reasons.append("tracked first-party root NOTICE could not be safely read within the audit bound")
+    elif not notice_preserves_opencode_attribution:
+        license_reasons.append("tracked first-party root NOTICE does not preserve the OpenCode copyright and license attribution")
     if root_license_regular and root_license is None:
         license_reasons.append("root distribution license could not be safely read within the audit bound")
     if vendor_license_regular and vendor_license is None:
@@ -1303,6 +1613,7 @@ def audit_repository(root: Path, artifact: Path | None = None) -> dict:
         and tracked_root_license
         and not root_license_matches_vendor
         and tracked_root_notice
+        and notice_preserves_opencode_attribution
     )
     workspace_manifest_reconciliation = _workspace_manifest_reconciliation(
         root,
@@ -1317,6 +1628,9 @@ def audit_repository(root: Path, artifact: Path | None = None) -> dict:
         root,
         manifest_errors,
         first_party_grant=first_party_grant,
+        canonical_notice_dir=root / CANONICAL_NOTICE_TEXT_DIR
+        if (root / CANONICAL_NOTICE_TEXT_DIR).is_dir()
+        else None,
     ) if app_package else {
         "basis": "no packages/opencode/package.json",
         "root_package": str(root / "packages" / "opencode"),
@@ -1343,8 +1657,12 @@ def audit_repository(root: Path, artifact: Path | None = None) -> dict:
         "path": None,
         "status": "NOT_PROVIDED",
         "members": [],
+        "license_member_paths": [],
+        "notice_member_paths": [],
         "contains_license_file": False,
         "contains_notice_file": False,
+        "license_grant_present": False,
+        "notice_attribution_valid": False,
         "source_state_sha256": None,
         "source_state_digest_valid": False,
         "source_state_digest_matches": False,
@@ -1556,6 +1874,41 @@ def audit_repository(root: Path, artifact: Path | None = None) -> dict:
         blockers.append("the inspected artifact has no LICENSE/COPYING file")
     if not artifact_report.get("contains_notice_file"):
         blockers.append("the inspected artifact has no separate NOTICE/PATENTS file")
+    if artifact_report.get("contains_license_file") and not artifact_report.get("license_grant_present"):
+        blockers.append(
+            "the inspected artifact LICENSE file does not contain the selected first-party MIT grant text"
+        )
+    if artifact_report.get("contains_notice_file") and not artifact_report.get("notice_attribution_valid"):
+        blockers.append(
+            "the inspected artifact NOTICE file does not preserve the OpenCode copyright/license attribution"
+        )
+
+    # The isolated build packages the tracked root LICENSE and NOTICE verbatim,
+    # so a candidate whose legal files silently differ is not the reviewed
+    # artifact even when the content predicates above pass.
+    def _artifact_member_matches_root(members: list, root_digest: str | None) -> bool:
+        if root_digest is None or not members or artifact_path is None:
+            return True
+        for name in members:
+            payload = _read_artifact_member(artifact_path, str(name), MAX_AUDIT_TEXT_BYTES)
+            if payload is not None and hashlib.sha256(payload).hexdigest() == root_digest:
+                return True
+        return False
+
+    if not _artifact_member_matches_root(
+        artifact_report.get("license_member_paths") or [],
+        hashlib.sha256(root_license).hexdigest()
+        if tracked_root_license and root_license is not None
+        else None,
+    ):
+        blockers.append("artifact LICENSE does not match the tracked repository LICENSE")
+    if not _artifact_member_matches_root(
+        artifact_report.get("notice_member_paths") or [],
+        hashlib.sha256(root_notice).hexdigest()
+        if tracked_root_notice and root_notice is not None
+        else None,
+    ):
+        blockers.append("artifact NOTICE does not match the tracked repository NOTICE")
     if runtime_dependencies["missing_license_metadata"]:
         blockers.append(
             f"{len(runtime_dependencies['missing_license_metadata'])} installed runtime packages have no license metadata; manual review required"
@@ -1597,7 +1950,9 @@ def audit_repository(root: Path, artifact: Path | None = None) -> dict:
             "root_license_is_regular": root_license_regular,
             "root_license_tracked": tracked_root_license,
             "root_license_sha256": hashlib.sha256(root_license).hexdigest() if root_license is not None else None,
+            "root_notice_sha256": hashlib.sha256(root_notice).hexdigest() if root_notice is not None else None,
             "root_notice_tracked": tracked_root_notice,
+            "notice_preserves_opencode_attribution": notice_preserves_opencode_attribution,
             "vendor_license_present": vendor_license is not None,
             "vendor_license_sha256": hashlib.sha256(vendor_license).hexdigest() if vendor_license is not None else None,
             "root_license_matches_vendor": root_license_matches_vendor,
@@ -1670,7 +2025,10 @@ def main() -> int:
         print(f"release audit: {report['release_status']} ({len(report['blockers'])} blockers); report={output_path}")
     else:
         print(encoded, end="")
-    return 1 if args.strict and report["blockers"] else 0
+    # Fail closed on the reported status as well as the blocker list: a report
+    # that says BLOCKED must never exit 0 under --strict.
+    blocked = report.get("release_status") == "BLOCKED" or bool(report.get("blockers"))
+    return 1 if args.strict and blocked else 0
 
 
 if __name__ == "__main__":

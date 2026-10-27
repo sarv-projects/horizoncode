@@ -118,6 +118,22 @@ test("flushes before queue limits are exceeded and delivers oversized deltas dir
   queue.close()
 })
 
+test("closed mux still resnapshots oversized cursor-backed deltas instead of bypassing the byte cap", () => {
+  const { queue, batches, resnapshots } = envelopedMux({ maxQueuedBytes: 2 })
+  const cursor = {
+    sessionID: "a",
+    partID: "text",
+    sourceGeneration: "generation-1",
+    sequence: 0,
+  }
+  expect(queue.seedStream(cursor)).toBe(true)
+  queue.close()
+
+  expect(queue.push(envelope("a", "text", 0, "oversized"))).toBe("resnapshot_required")
+  expect(batches).toEqual([])
+  expect(resnapshots).toEqual([{ ...cursor, advance: 1 }])
+})
+
 test("delivers queued deltas on the flush deadline without further pushes", async () => {
   const { queue, batches } = mux({ flushAfterMs: 5 })
   queue.push({ sessionID: "a", partID: "text-1", text: "one" })
@@ -368,6 +384,13 @@ test("reports queue analytics with explicit measured and size provenance", () =>
     },
     {
       metric: "ui.queue.coalesced_events",
+      value: 0,
+      unit: "events",
+      provenance: "measured",
+      source: "ui-event-mux",
+    },
+    {
+      metric: "ui.queue.dropped_events",
       value: 0,
       unit: "events",
       provenance: "measured",
@@ -749,6 +772,21 @@ test("seals an ended stream so a late delta cannot re-append text, and a restart
   queue.close()
 })
 
+test("resetting a stream discards queued deltas from its previous generation", () => {
+  const { queue, batches } = envelopedMux()
+  const old = { sessionID: "a", partID: "text-1", sourceGeneration: "generation-1", sequence: 0 }
+  const fresh = { ...old, sourceGeneration: "generation-2", sequence: 0 }
+  queue.resetStream(old)
+  expect(queue.push(envelope("a", "text-1", 0, "stale", "generation-1"))).toBe("apply")
+
+  queue.resetStream(fresh)
+  expect(queue.push(envelope("a", "text-1", 0, "fresh", "generation-2"))).toBe("apply")
+  queue.flush("a")
+
+  expect(batches).toEqual([[{ ...envelope("a", "text-1", 0, "fresh", "generation-2") }]])
+  queue.close()
+})
+
 test("cursor pressure forgets an ended cursor when its bounded seal is evicted", () => {
   const guard = createStreamEnvelopeGuard({ maxCursors: 2 })
   const first = { sessionID: "a", partID: "part-a", sourceGeneration: "g1", sequence: 0 }
@@ -898,5 +936,46 @@ test("a delta burst reports measured coalesced, duplicate and resnapshot counts 
   expect(batches).toHaveLength(1)
   expect(batches[0]?.[0]?.text).toBe("x".repeat(100))
   expect(resnapshots).toHaveLength(1)
+  queue.close()
+})
+
+test("counts ephemeral deltas dropped when a stream generation resets (AN-009)", () => {
+  const { queue, batches } = envelopedMux()
+  const old = { sessionID: "a", partID: "text-1", sourceGeneration: "generation-1", sequence: 0 }
+  const fresh = { ...old, sourceGeneration: "generation-2", sequence: 0 }
+
+  // Seed generation-1 first so the guard accepts the stale delta into the
+  // queue; the reset is what discards it.
+  queue.resetStream(old)
+  expect(queue.push(envelope("a", "text-1", 0, "stale", "generation-1"))).toBe("apply")
+  queue.resetStream(fresh)
+  expect(queue.push(envelope("a", "text-1", 0, "fresh", "generation-2"))).toBe("apply")
+  queue.flush("a")
+
+  // The stale delta is discarded rather than delivered, so it must be
+  // observable alongside the coalesced count (§31.16, §31.17, AN-009).
+  expect(batches).toEqual([[envelope("a", "text-1", 0, "fresh", "generation-2")]])
+  const dropped = queue
+    .observations()
+    .find((observation) => observation.metric === "ui.queue.dropped_events")
+  expect(dropped).toMatchObject({
+    metric: "ui.queue.dropped_events",
+    value: 1,
+    unit: "events",
+    provenance: "measured",
+    source: "ui-event-mux",
+  })
+  queue.close()
+})
+
+test("reports a zero dropped count when queued deltas are never discarded (AN-009)", () => {
+  const { queue } = mux()
+  queue.push({ sessionID: "a", partID: "text-1", text: "one" })
+  queue.push({ sessionID: "a", partID: "text-1", text: "two" })
+
+  const dropped = queue
+    .observations()
+    .find((observation) => observation.metric === "ui.queue.dropped_events")
+  expect(dropped).toMatchObject({ value: 0, provenance: "measured" })
   queue.close()
 })

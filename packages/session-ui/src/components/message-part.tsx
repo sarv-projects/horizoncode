@@ -1550,9 +1550,10 @@ PART_MAPPING["tool"] = function ToolPartDisplay(props) {
     const value = sanitizeToolDisplayValue(part().state?.input ?? emptyInput, { arguments: true, maxBytes: 16 * 1024 })
     return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : emptyInput
   })
-  // @ts-expect-error
   const partMetadata = createMemo(() => {
-    const value = sanitizeToolDisplayValue(part().state?.metadata ?? emptyMetadata, { maxBytes: 8 * 1024 })
+    const state = part().state
+    const metadata = "metadata" in state ? state.metadata : undefined
+    const value = sanitizeToolDisplayValue(metadata ?? emptyMetadata, { maxBytes: 8 * 1024 })
     return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : emptyMetadata
   })
   const output = createMemo(() => {

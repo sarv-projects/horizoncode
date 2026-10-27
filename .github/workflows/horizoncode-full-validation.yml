@@ -1,6 +1,8 @@
 name: HorizonCode full validation
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
   pull_request:
     branches: [main]
 concurrency:
@@ -39,12 +41,83 @@ jobs:
         run: |
           python3 scripts/architecture/validate_convergence.py
           python3 scripts/architecture/validate_external_sources.py
-      - name: Focused real Guard, managed recovery and resource math tests
+      - name: Focused real Guard, managed recovery, resource math and worker-wire tests
         # Compile/test critical regressions before slow monorepo typechecking.
         # The final full gate reruns these with all integration checks.
+        # `--lib resource_budget` cannot select `worker_pool::jc_res_012_wire_tests::*`,
+        # so that module needs its own explicit filter. Cargo has no `[[test]]` table
+        # here, so each Guard/security integration suite is named with `--test`
+        # instead of relying on an implicit target list.
         run: |
           cargo test --locked --manifest-path kernel/Cargo.toml --lib resource_budget
+          cargo test --locked --manifest-path kernel/Cargo.toml --lib worker_pool::jc_res_012_wire_tests
           cargo test --locked --manifest-path kernel/Cargo.toml --test managed_control
+          cargo test --locked --manifest-path kernel/Cargo.toml --test effects_host_process
           (cd packages/core && bun test test/session-runner-tool-registry.test.ts)
+
+      - name: Readiness-false Guard/terminal denial suites (classified, never skipped)
+        # These three suites are RED by design while the PTY/terminal readiness
+        # gates stay false: every failing case is an explicit
+        # `capability_unavailable` denial (GUARDED_PTY_RUNTIME_READY=false), not a
+        # pass and not a bypass. They run here and are classified, so a real
+        # regression, an ignored test, or an unexplained count change fails the job.
+        shell: bash
+        run: |
+          set -euo pipefail
+          log_dir="kernel/target/horizoncode-ci"
+          mkdir -p "$log_dir"
+          set +e
+          cargo test --locked --manifest-path kernel/Cargo.toml --test tool_batch_guard_matrix -- --test-threads=1 2>&1 | tee "$log_dir/tool_batch_guard_matrix.log"
+          cargo test --locked --manifest-path kernel/Cargo.toml --test host_terminal_process -- --test-threads=1 2>&1 | tee "$log_dir/host_terminal_process.log"
+          cargo test --locked --manifest-path kernel/Cargo.toml --test host_terminal_events_process -- --test-threads=1 2>&1 | tee "$log_dir/host_terminal_events_process.log"
+          set -e
+          python3 - "$log_dir" <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          # Documented readiness-false denials, from the P1/P2 reports recorded in
+          # reports/phases/P1.md and reports/phases/P2.md. Fewer denials means the
+          # gate may have opened: that is reported, never silently accepted.
+          EXPECTED_DENIALS = {
+              "tool_batch_guard_matrix": 6,
+              "host_terminal_process": 1,
+              "host_terminal_events_process": 1,
+          }
+
+          problems = []
+          log_dir = pathlib.Path(sys.argv[1])
+          for suite, expected in EXPECTED_DENIALS.items():
+              log_path = log_dir / f"{suite}.log"
+              text = log_path.read_text(encoding="utf-8", errors="replace")
+              summaries = re.findall(r"test result: \w+\. (\d+) passed; (\d+) failed; (\d+) ignored", text)
+              if not summaries:
+                  problems.append(f"{suite}: no cargo test summary; build or harness failure (see {log_path})")
+                  continue
+              passed, failed, ignored = (int(value) for value in summaries[-1])
+              if ignored:
+                  problems.append(f"{suite}: {ignored} ignored test(s); silently skipping is forbidden")
+              denial_markers = text.count("capability_unavailable")
+              if failed > denial_markers:
+                  problems.append(
+                      f"{suite}: {failed} failure(s) but only {denial_markers} documented "
+                      "capability_unavailable denial marker(s)"
+                  )
+              if failed > expected:
+                  problems.append(
+                      f"{suite}: {failed} failure(s) exceed the {expected} documented readiness-false denials"
+                  )
+              print(f"{suite}: {passed} passed, {failed} failed ({expected} documented denials), {ignored} ignored")
+              if failed < expected:
+                  print(
+                      f"::notice title={suite}::fewer readiness-false denials than documented "
+                      f"({failed} < {expected}); the PTY/terminal gate may have opened, so review the pinned expectation"
+                  )
+          if problems:
+              for problem in problems:
+                  print(f"::error title=readiness-false suite drift::{problem}")
+              raise SystemExit(1)
+          PY
+
       - name: Full monorepo typecheck and Guard tests
         run: bash scripts/architecture/run_full_gate.sh

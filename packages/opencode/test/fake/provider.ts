@@ -81,6 +81,9 @@ export namespace ProviderTest {
           getManagedLanguage: override.getManagedLanguage ?? Effect.fn("TestProvider.getManagedLanguage")(() =>
             Effect.die(new Error("ProviderTest.getManagedLanguage not configured")),
           ),
+          getDirectFreeLanguage:
+            override.getDirectFreeLanguage ??
+            Effect.fn("TestProvider.getDirectFreeLanguage")(() => Effect.die("unexpected direct free language lookup")),
         }),
       ),
     }

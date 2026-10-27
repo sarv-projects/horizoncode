@@ -202,6 +202,10 @@ export function pinCodeModeHelperRoot(input: { readonly path: string; readonly s
   const manifestPath = `${input.path}/codemode-helper.manifest.json`
   const helper = secureRegularFile(helperPath, false)
   const manifest = secureRegularFile(manifestPath, false)
+  if (helper.size === 0 || helper.size > 16 * 1024 * 1024) {
+    throw new Error("CodeMode helper asset is empty or exceeds its bound")
+  }
+  if (manifest.size > 4 * 1024) throw new Error("CodeMode helper manifest exceeds its bound")
   const manifestBytes = readFileSync(manifestPath)
   const parsed = JSON.parse(manifestBytes.toString("utf8")) as Record<string, unknown>
   if (parsed.schemaVersion !== 1 || parsed.status !== "available" || parsed.helperSelector !== "horizoncode:codemode:bun" ||
@@ -391,23 +395,41 @@ const normalizeStdin = (
       ? Stream.make(input)
       : input
 
-export const collectStream = (stream: Stream.Stream<Uint8Array, PlatformError>, maxOutputBytes: number | undefined) =>
-  Stream.runFold(
+const normalizeOutputLimit = (requested: number | undefined, fixedCap: number) => {
+  if (requested === undefined) return fixedCap
+  const finiteInteger = typeof requested !== "number" || Number.isNaN(requested) ? 0 : Math.trunc(requested)
+  return Math.max(0, Math.min(finiteInteger, fixedCap))
+}
+
+export const collectStream = (stream: Stream.Stream<Uint8Array, PlatformError>, maxOutputBytes: number | undefined) => {
+  // Keep the collector bounded even when called directly without a run/runStream
+  // option-normalization layer. Callers may lower this ceiling, never raise it.
+  const limit = normalizeOutputLimit(maxOutputBytes, 1024)
+  return Stream.runFold(
     stream,
     () => ({ chunks: [] as Uint8Array[], bytes: 0, truncated: false }),
     (acc, chunk) => {
-      if (maxOutputBytes === undefined) {
-        acc.chunks.push(chunk)
-        acc.bytes += chunk.length
-        return acc
-      }
-      const remaining = maxOutputBytes - acc.bytes
+      const remaining = limit - acc.bytes
       if (remaining > 0) acc.chunks.push(remaining >= chunk.length ? chunk : chunk.slice(0, remaining))
       acc.bytes += chunk.length
-      acc.truncated = acc.truncated || acc.bytes > maxOutputBytes
+      acc.truncated = acc.truncated || acc.bytes > limit
       return acc
     },
   ).pipe(Effect.map((x) => ({ buffer: Buffer.concat(x.chunks), truncated: x.truncated })))
+}
+
+const limitStreamBytes = (stream: Stream.Stream<Uint8Array, PlatformError>, limit: number) =>
+  stream.pipe(
+    Stream.mapAccum(
+      () => 0,
+      (bytes, chunk) => {
+        const remaining = limit - bytes
+        if (remaining <= 0) return [bytes, []] as const
+        const bounded = chunk.slice(0, remaining)
+        return [bytes + bounded.length, bounded.length === 0 ? [] : [bounded]] as const
+      },
+    ),
+  )
 
 const layer = Layer.effect(
   Service,
@@ -417,12 +439,17 @@ const layer = Layer.effect(
     const runCommand = (command: ChildProcess.Command, options?: RunOptions) => {
       if (!isHostDigestProbe(command)) return Effect.fail(processUnavailable())
       const description = describeCommand(command)
+      // The only admitted `run` operation is a metadata-only host digest probe.
+      // Never let caller-provided limits (including Infinity) turn that narrow
+      // control channel into an unbounded output accumulator.
+      const maxOutputBytes = normalizeOutputLimit(options?.maxOutputBytes, 128)
+      const maxErrorBytes = normalizeOutputLimit(options?.maxErrorBytes, 1024)
       const collect = Effect.scoped(
         Effect.gen(function* () {
           const handle = yield* spawner.spawn(command)
           if (options?.combineOutput) {
             const [output, exitCode] = yield* Effect.all(
-              [collectStream(handle.all, options.maxOutputBytes), handle.exitCode],
+              [collectStream(handle.all, maxOutputBytes), handle.exitCode],
               { concurrency: "unbounded" },
             )
             return {
@@ -438,8 +465,8 @@ const layer = Layer.effect(
           }
           const [stdout, stderr, exitCode] = yield* Effect.all(
             [
-              collectStream(handle.stdout, options?.maxOutputBytes),
-              collectStream(handle.stderr, options?.maxErrorBytes),
+              collectStream(handle.stdout, maxOutputBytes),
+              collectStream(handle.stderr, maxErrorBytes),
               handle.exitCode,
             ],
             { concurrency: "unbounded" },
@@ -474,7 +501,9 @@ const layer = Layer.effect(
       if (options?.stdin === undefined) return yield* runCommand(command, options)
       if (command._tag !== "StandardCommand") {
         return yield* new AppProcessError({
-          command: describeCommand(command),
+          // Piped command arguments may contain credentials or private tool
+          // data; this validation error must not turn them into diagnostics.
+          command: "Piped command",
           cause: new Error("stdin option only supports StandardCommand; received PipedCommand"),
         })
       }
@@ -498,9 +527,14 @@ const layer = Layer.effect(
         Effect.gen(function* () {
           const handle = yield* spawner.spawn(command)
           const stderrFiber = yield* Effect.forkScoped(
-            collectStream(handle.stderr, options?.maxErrorBytes).pipe(Effect.map((x) => x.buffer.toString("utf8"))),
+            collectStream(handle.stderr, normalizeOutputLimit(options?.maxErrorBytes, 1024)).pipe(
+              Effect.map((x) => x.buffer.toString("utf8")),
+            ),
           )
-          const source = options?.includeStderr === true ? handle.all : handle.stdout
+          // Even the pinned control probe can produce an oversized single line;
+          // cap bytes before decoding/splitting so no line accumulator grows
+          // beyond the fixed host-digest response budget.
+          const source = limitStreamBytes(options?.includeStderr === true ? handle.all : handle.stdout, 128)
           const lines = source.pipe(
             Stream.decodeText,
             Stream.splitLines,

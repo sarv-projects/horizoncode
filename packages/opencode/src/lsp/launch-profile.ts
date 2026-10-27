@@ -69,6 +69,33 @@ function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
+function denseArray(value: unknown): value is unknown[] {
+  if (!Array.isArray(value)) return false
+  for (let index = 0; index < value.length; index++) {
+    if (!Object.hasOwn(value, index)) return false
+  }
+  return true
+}
+
+function freezeJsonSnapshot(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    const snapshot: unknown[] = []
+    for (let index = 0; index < value.length; index++) {
+      if (!Object.hasOwn(value, index)) throw new TypeError("launch approval target projection is sparse")
+      snapshot.push(freezeJsonSnapshot(value[index]))
+    }
+    return Object.freeze(snapshot)
+  }
+  if (record(value)) {
+    return Object.freeze(Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, freezeJsonSnapshot(item)]),
+    ))
+  }
+  if (value === null || typeof value === "string" || typeof value === "boolean" ||
+      (typeof value === "number" && Number.isFinite(value))) return value
+  throw new TypeError("launch approval target projection is not JSON data")
+}
+
 function exactKeys(value: Record<string, unknown>, required: readonly string[], optional: readonly string[] = []) {
   const allowed = new Set([...required, ...optional])
   return required.every((key) => Object.hasOwn(value, key)) && Object.keys(value).every((key) => allowed.has(key))
@@ -366,8 +393,8 @@ export async function resolveExecutionLaunchProfileV1(input: {
     typeof inputDigest !== "string" || !/^blake3:[0-9a-f]{64}$/.test(inputDigest) ||
     typeof expiresAtUnixMs !== "number" || !Number.isSafeInteger(expiresAtUnixMs) ||
     expiresAtUnixMs <= now || expiresAtUnixMs > now + 5 * 60 * 1000 ||
-    !Array.isArray(normalizedTargets) || normalizedTargets.length === 0 || normalizedTargets.length > 64 ||
-    !Array.isArray(targets) || JSON.stringify(targets) !== JSON.stringify(normalizedTargets) ||
+    !denseArray(normalizedTargets) || normalizedTargets.length === 0 || normalizedTargets.length > 64 ||
+    !denseArray(targets) || JSON.stringify(targets) !== JSON.stringify(normalizedTargets) ||
     Buffer.byteLength(JSON.stringify(normalizedTargets), "utf8") > 64 * 1024 ||
     typeof policyID !== "string" || !/^[a-z][a-z0-9._-]{0,127}$/.test(policyID) ||
     typeof policyDigest !== "string" || !/^blake3:[0-9a-f]{64}$/.test(policyDigest) ||
@@ -375,11 +402,12 @@ export async function resolveExecutionLaunchProfileV1(input: {
     raw.normalizedAction !== expectedCapability || raw.noResponse !== "deny_and_expire" ||
     typeof raw.allowEnabled !== "boolean" || typeof raw.policySummary !== "string" ||
     !raw.policySummary.trim() || Buffer.byteLength(raw.policySummary, "utf8") > 1024 ||
-    !Array.isArray(requestedGuarantees) || requestedGuarantees.length === 0 || requestedGuarantees.length > 16 ||
+    !denseArray(requestedGuarantees) || requestedGuarantees.length === 0 || requestedGuarantees.length > 16 ||
     requestedGuarantees.some((item) => typeof item !== "string" || !/^[a-z][a-z0-9_]{0,63}$/.test(item)) ||
     new Set(requestedGuarantees).size !== requestedGuarantees.length ||
     !record(argumentSummary) || !record(guaranteeAssessment)
   ) throw new TypeError("HostKernel launch approval consent projection is invalid")
+  const normalizedTargetSnapshot = freezeJsonSnapshot(normalizedTargets) as readonly unknown[]
   const parsedSummary = argumentSummary.status === "available" && exactKeys(argumentSummary, ["status", "text"]) &&
     typeof argumentSummary.text === "string" && argumentSummary.text.trim().length > 0 &&
     Buffer.byteLength(argumentSummary.text, "utf8") <= 512
@@ -390,7 +418,7 @@ export async function resolveExecutionLaunchProfileV1(input: {
       : undefined
   let parsedAssessment: GuardApprovalRequest["guaranteeAssessment"] | undefined
   if (guaranteeAssessment.status === "assessed" && exactKeys(guaranteeAssessment, ["status", "residual"]) &&
-    Array.isArray(guaranteeAssessment.residual) && guaranteeAssessment.residual.length <= 16 &&
+    denseArray(guaranteeAssessment.residual) && guaranteeAssessment.residual.length <= 16 &&
     guaranteeAssessment.residual.every((item) => typeof item === "string" && requestedGuarantees.includes(item)) &&
     new Set(guaranteeAssessment.residual).size === guaranteeAssessment.residual.length) {
     parsedAssessment = { status: "assessed", residual: [...guaranteeAssessment.residual] as string[] }
@@ -408,7 +436,7 @@ export async function resolveExecutionLaunchProfileV1(input: {
     locationID: raw.locationID as string,
     sessionID: raw.sessionID as string,
     inputDigest,
-    normalizedTargets: Object.freeze([...normalizedTargets]),
+    normalizedTargets: normalizedTargetSnapshot,
     expiresAtUnixMs,
     policySummary: raw.policySummary as string,
     origin: "user_action" as const,

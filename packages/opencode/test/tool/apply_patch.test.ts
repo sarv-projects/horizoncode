@@ -318,4 +318,42 @@ describe("tool.apply_patch Guard preparation", () => {
       }),
     { git: true },
   )
+
+  it.instance(
+    "rejects a guarded patch projection that differs from the parsed operations",
+    () =>
+      Effect.gen(function* () {
+        const instance = yield* TestInstance
+        const target = path.join(instance.directory, "guarded-projection.txt")
+        yield* writeText(target, "unchanged\n")
+        let asks = 0
+        const ctx: Tool.Context = {
+          ...baseCtx,
+          extra: {
+            guardedPatch: [],
+            guardedLease: {
+              effectID: "effect_test",
+              capabilityLeaseDigest: `blake3:${"a".repeat(64)}`,
+            },
+          },
+          ask: () => Effect.sync(() => asks++).pipe(Effect.asVoid),
+        }
+
+        yield* expectFailure(
+          execute(
+            `*** Begin Patch
+*** Update File: guarded-projection.txt
+@@
+-unchanged
++changed
+*** End Patch`,
+            ctx,
+          ),
+          "Patch denied: guarded operation set or lease changed",
+        )
+        expect(asks).toBe(0)
+        expect(yield* readText(target)).toBe("unchanged\n")
+      }),
+    { git: true },
+  )
 })

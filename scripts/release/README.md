@@ -54,13 +54,17 @@ isolated upstream build removes generated output, it checks the marker, owner,
 permissions, symlink components, and ownership of the complete removal tree.
 
 The normal installer path intentionally accepts only a local executable via
-`install --binary`. Remote artifact download remains disabled until HorizonCode
-has an approved release signing trust policy. Automatic updates remain disabled;
+`install --binary <candidate> --sha256 <expected-digest>`. The SHA-256 digest is
+required and checked before install state is created, then checked again against
+the staged copy before activation; supported Linux ELF/script-interpreter
+architecture must match the host. This checksum is integrity against the
+operator-supplied digest, **not a signature or proof of origin**. Remote artifact
+download, signatures, and automatic updates remain unavailable under DEC-V1-12;
 the CLI reports that state rather than starting a package-manager process.
 `horizoncode` and `hzcode` install from the same candidate entrypoint.
-`install --binary ... --dry-run` validates the candidate, destination, and
-planned aliases without creating directories, copying files, or editing shell
-profiles. `scripts/release/clean_install.py --dry-run` and
+`install --binary ... --sha256 ... --dry-run` validates the digest, architecture,
+destination, and planned aliases without creating directories, copying files,
+or editing shell profiles. `scripts/release/clean_install.py --dry-run` and
 `scripts/release/prepare_build.py --dry-run` provide the corresponding
 input/isolation and isolated-build validation only.
 
@@ -71,6 +75,89 @@ candidate inspection. The copyright holder/year for HorizonCode first-party
 work is not invented; the existing upstream statement is preserved. User
 decision 2026-10-25 resolves the first-party grant (DEC-V1-11), but does not
 clear incomplete third-party closure or authorize publication by itself.
+
+## Candidate build commands (item 48)
+
+Dry-run validation, safe on any tree, creates nothing:
+
+```text
+PYTHONPATH=. python3 scripts/release/prepare_build.py --source . \
+  --destination kernel/target/horizoncode-release/p9-dry-run --dry-run
+```
+
+The exact real candidate command, **ready to run only after the parent relays
+Phase-10 acceptance** (it installs locked dependencies and compiles):
+
+```text
+PYTHONPATH=. python3 scripts/release/prepare_build.py --source . \
+  --destination kernel/target/horizoncode-release/<revision>-candidate --build
+```
+
+Do not run the real command while the source tree is dirty, while P1–P8
+integration is incomplete, or before Phase 10 is accepted; the preparer marks
+such builds `NON_RELEASE_QUALIFIED`. The stale `packages/opencode/dist` tree is
+never a candidate input.
+
+## Legal-file evidence rules (item 8 and item 49)
+
+Declared license metadata still comes only from a package's own manifest. A
+runtime dependency row is cleared only when the package ships a direct
+LEGAL_BASENAME file, or when a root-level file inside that package carries the
+*complete* canonical grant text for the identifier that package itself
+declares. The text channel hashes the exact bytes and records them under
+`license_text_files` (see `grant_text_without_dedicated_license_file`), so
+nothing is cleared silently. A mismatched grant, a component-scoped nested
+file, or a package with no declared metadata never closes: `seq-queue@0.0.5`
+ships MIT text but declares no license field, and `@openauthjs/openauth` and
+`poe-oauth` ship no local grant at all; all three stay named blockers.
+
+Candidate legal files are content-validated, not just name-validated: the
+artifact LICENSE must carry the selected first-party MIT grant text and the
+artifact NOTICE must preserve the OpenCode copyright/license attribution.
+Missing or weak content is an explicit release blocker. The inspected artifact's
+legal files must additionally be byte-identical to the tracked repository
+`LICENSE`/`NOTICE` that the isolated build packages, so a candidate whose legal
+files silently differ from the reviewed root files is blocked even when the
+content predicates pass.
+
+## Promoted canonical license texts (item 8, second pass)
+
+`scripts/release/notice-texts/` holds byte-exact copies of canonical license
+bodies promoted from locally installed packages, and
+`scripts/release/notice-texts-provenance.json` records, per text, the source
+package path, source digest, byte-identical copy count, byte count and the
+closure rule. A promoted text closes a dependency row only when:
+
+- the grant is in `CANONICAL_TEXT_GRANTS` (currently only `Apache-2.0`, whose
+  canonical body carries no package-specific copyright line);
+- the row's own manifest declares that grant token (case-insensitive; an SPDX
+  expression such as `MIT OR Apache-2.0` matches on its Apache token);
+- the stored bytes still hash to the recorded provenance digest;
+- the text carries the complete canonical marker set **and** all 11 structural
+  markers (license header, sections 1-3/8/9, END OF TERMS, APPENDIX template).
+
+MIT and ISC rows never close from promotion because their artifact notice must
+retain the installing package's own copyright line, which is not available
+locally. A missing, truncated, tampered, or out-of-root text is dropped, so the
+dependent rows stay blocked; the three license-metadata gaps
+(`seq-queue@0.0.5`, `@openauthjs/openauth`, `poe-oauth@0.0.8`) are unaffected and
+their vendor manifests are never edited. Promoted-text closure is exact-text
+availability for the declared grant; it is not third-party legal clearance.
+
+## Stage-2 identity and clean-machine plans (items 50/51)
+
+`scripts/release/IDENTITY-MAPPING.json` is the NAME-001..004 mapping plan: it
+classifies every workspace package as MIGRATE, DONE, or vendor HOLD, records
+each MIGRATE row's lockfile edges, source-importer coupling, generated
+identifiers and runtime identifiers, and lists the vendor/upstream identities
+that must never be renamed. A regression test recomputes the workspace set and
+the importer-coupling facts, so the plan cannot drift from the manifests.
+
+`scripts/release/CLEAN-MACHINE-PLAN.json` is the clean-machine
+install/upgrade/migration/rollback test plan. Every scenario stays `NOT_RUN`
+until a real digest-bound run is authorized; the plan forbids reusing stale
+legacy output, forbids remote download, and keeps Linux/WSL `NOT_VERIFIED` and
+native Windows `UNAVAILABLE`.
 
 ## Candidate discovery and first-party notice evidence
 

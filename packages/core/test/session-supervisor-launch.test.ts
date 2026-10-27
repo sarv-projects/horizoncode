@@ -7,6 +7,7 @@ import { Cause, Effect, Exit, Option, Stream } from "effect"
 import {
   assertApplicationFrameFence,
   OPTIONAL_HOST_FEATURES,
+  SessionSupervisorError,
   sessionSupervisorArgs,
   validateManagedVerifierChallenges,
   collectManagedVerifierApprovalDecisions,
@@ -251,6 +252,40 @@ describe("managed verifier approval challenge bounds", () => {
       })),
     })
     expect(observed).toEqual(Array.from({ length: 17 }, (_, index) => `challenge-${index + 1}`))
+  })
+
+  test("reports cancellation separately and retains only decisions already observed", async () => {
+    const result = await Effect.runPromise(
+      collectManagedVerifierApprovalDecisions(
+        [challenge(1), challenge(2), challenge(3)],
+        (item) => item.challengeID === "challenge-2"
+          ? Effect.interrupt
+          : Effect.succeed("allow_once" as const),
+      ),
+    )
+
+    expect(result).toEqual({
+      kind: "abort",
+      reason: "cancelled",
+      decisions: [{ challengeID: "challenge-1", decision: "allow_once" }],
+    })
+  })
+
+  test("reports approval expiry separately without inventing later decisions", async () => {
+    const result = await Effect.runPromise(
+      collectManagedVerifierApprovalDecisions(
+        [challenge(1), challenge(2), challenge(3)],
+        (item) => item.challengeID === "challenge-2"
+          ? Effect.fail(new SessionSupervisorError({ stage: "approval-expired", reason: "approval challenge expired" }))
+          : Effect.succeed("allow_once" as const),
+      ),
+    )
+
+    expect(result).toEqual({
+      kind: "abort",
+      reason: "expired",
+      decisions: [{ challengeID: "challenge-1", decision: "allow_once" }],
+    })
   })
 
   test("stops after a genuine denial without inventing decisions for unseen challenges", async () => {

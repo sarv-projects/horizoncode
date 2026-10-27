@@ -1,8 +1,10 @@
 # V1 source alignment audit — docs, main repo, repo_take, and external references
 
-Status: **final documentation pass (2026-10-22)**. Complements [`46-V1-DESIGN-AUDIT.md`](46-V1-DESIGN-AUDIT.md) (structural) with **semantic traceability**: normative arch → **where to read code**, **what to take as-is vs adapt**, and **known doc/code disparities**.
+Status: **living alignment doc** — last reconciliation **2026-10-26** (code-inspected). Complements [`46-V1-DESIGN-AUDIT.md`](46-V1-DESIGN-AUDIT.md) (structural) with **semantic traceability**: normative arch → **where to read code**, **what to take as-is vs adapt**, and **known doc/code disparities**.
 
-**Not** product VERIFIED. Structural gates: `validate_convergence.py` **0 failures** (1299 checks); `audit_markdown_repo.py` **ACTIVE_BLOCKERS 0** (285 tracked Markdown files).
+**Not** product VERIFIED. Structural gates (re-run on current tree): `validate_convergence.py` **0 failures** (~1298 checks); `audit_markdown_repo.py` **ACTIVE_BLOCKERS 0** on active arch paths. **Registry truth:** 230 IDs, **226 `designed`**, **4 `code_present`**, **0 `wired`** — unchanged until §32 acceptance updates registry rows.
+
+**Reconciliation rule:** If a row below disagrees with [`46-V1-WIRE-TRACKER.md`](46-V1-WIRE-TRACKER.md) or [`46-V1-IMPLEMENTATION-BACKLOG.md`](46-V1-IMPLEMENTATION-BACKLOG.md), prefer **this file’s code-inspected §3/§5/§13** for path/disposition and the **backlog** for phase status (`CP`/`PART`/`OPEN`); wire tracker **Partial** means CODE_PRESENT or integration incomplete, not VERIFIED.
 
 ---
 
@@ -53,19 +55,19 @@ Every row below states **disparity** when docs claim more than the main repo del
 | **P0** | `10` §10.2, `20`, `42` | `packages/opencode`, `packages/core`, `kernel/`, `install` | `repo_take/NOTES.md` take-map | REUSE overlay model | Docs complete; tree dirty/mixed — status in `implementationtov1release.md` |
 | **P1** Guard | `14`, `37`, `21` §21.11 | `kernel/src/{guard,effect_host,host_kernel,terminal_process}.rs`, `packages/core/src/session/tool-batch.ts`, `packages/opencode/src/session/*` | Codex `repos/codex/codex-rs/core/src/exec.rs` (process group only) | **ADAPT**; reject Codex as receipt authority | §42.19: upstream has **no** durable cgroup janitor — Horizon **stronger** UNKNOWN/quiescence required |
 | **P1** terminal profiles | `37.27`, `DEC-V1-28` | `kernel/src/terminal_process.rs`, `packages/core/src/tool/bash.ts` | OpenCode shell in `packages/opencode/src/tool/shell.ts` | **ADAPT** — workspace profile mode, not legacy bash-only | `HANDOFF` stale “command-profile pending” — **ignore**; use `37.27` |
-| **P1** CodeMode | `29.22`, `37.24` | `packages/opencode/src/tool/code-mode.ts`, `opencode/packages/codemode` | Cloudflare docs (pattern) | **REUSE** interpreter + **ADAPT** waves/Guard | cgroup profile **designed**; enforcement PART |
+| **P1** CodeMode | `29.22`, `37.24` | `packages/opencode/src/tool/code-mode.ts`, `opencode/packages/codemode` | Cloudflare docs (pattern) | **REUSE** interpreter + **ADAPT** waves/Guard | cgroup profile **designed**; CodeMode **hard-disabled** (`CODE_MODE_HELPER_RUNTIME_READY=false`, `code-mode.ts:21`), not enforcement PART |
 | **P2** managed | `11`, `29.18`, `DEC-V1-31` | `kernel/src/managed_control.rs`, `packages/opencode/src/session/managed-run-coordinator.ts`, `tool/task.ts` | `repo_take/opencode/packages/core/src/session/subagent-{job,completion}.ts`, `execution/restart.ts`; Codex `codex_delegate.rs` | **REUSE** Task seam; **ADAPT** Rust DAG | Subagent files **not** in root `packages/core` — read `repo_take` or hydrate; multi-Task DAG **OPEN** |
 | **P3** RepoIntel | `30.22–25`, `37.22` | `indexd/`, `kernel/src/repo_structure.rs`, `packages/opencode/src/tool/repo-*.ts` | OMP graph ideas **REJECT** as authority (§42.11) | **ADAPT** lexical/indexd | `repo.tree`/`repo.detect` **gated** in registry |
 | **P3** context ledger | `30.2`, `30.24` | `packages/core/src/session/context-{selection,ledger}.ts`, `runner/llm.ts` | Pi progressive disclosure (research doc) | **ADAPT** | Ledger **PART**; pin before dispatch **source-present** |
-| **P3** §30.26 compile policy | `30.26`, `37.30` | Schema: `arch_V1/contracts-v2/context-compile-policy-v1.schema.json`, `packages/schema/src/context-compile-policy-v1.ts` | models.dev API (online) | **DESIGNED** | **`packages/core/src/session/context-compile-policy.ts` missing** — backlog P3-05 |
-| **P3** §29.23 instructions | `29.23` | *planned* `project-instruction.ts`; today: `packages/core/src/v1/config/config.ts` `instructions[]`, `packages/opencode/src/session/system.ts`, `skill/index.ts` | Claude docs (policy); OpenCode skills list only | **ADAPT** — no auto subdir AGENTS yet | **DESIGNED** — backlog P3-09; disparity vs Claude **documented** |
+| **P3** §30.26 compile policy | `30.26`, `37.30` | `packages/core/src/session/context-compile-policy.ts`, schemas `context-compile-policy-v1`, `repo-context-anchor-v1`; tests `packages/core/test/context-compile-policy.test.ts` | models.dev API (online) | **PART** | **Code present** (P3-05 **CP**); provider/runner legs of CX-014–021 still **NOT_RUN** |
+| **P3** §29.23 instructions | `29.23` | `packages/core/src/session/project-instruction.ts`, tests `instruction-project.test.ts`; legacy: `config.ts` `instructions[]`, `system.ts`, `skill/index.ts` | Claude docs (policy) | **PART** | **Code present** (P3-09 **CP**); child delivery-root and full INST-* journeys still open |
 | **P4** LSP | `37.6`, `30.7` | `packages/opencode/src/lsp/*` (after bootstrap from `opencode/packages/opencode`) | **NOT** on `repo_take/opencode` HEAD | **ADAPT** nearly verbatim server defs | **Wrong pointer:** do not cite `repo_take/opencode/.../lsp` — use **`opencode/packages/opencode/src/lsp/server.ts`** |
 | **P4** DAP | `37.7` | Horizon broker **partial** | `repo_take/oh-my-pi/packages/coding-agent/src/dap/session.ts` | **ADAPT** + Guard | OpenCode trees **lack** DAP — OMP-only candidate |
-| **P5** web search | `37.5`, `DEC-V1-26` | `packages/opencode/src/tool/websearch*.ts` | Provider docs in §42.1 table | **ADAPT** cascade | Paid routes gated |
+| **P5** web search | `37.5`, `DEC-V1-26` | `packages/opencode/src/tool/websearch*.ts` | Provider docs in §42.1 table | **ADAPT** cascade | Broker code-present and consent-gated, but runtime-disabled by `WEB_SEARCH_*_RUNTIME_READY=false` (`websearch-broker.ts:11-12`); paid routes gated |
 | **P6** providers | `16`, `37.16–19` | `packages/core/src/models-dev.ts`, `packages/opencode/src/provider/*`, `packages/llm` | OMP catalog **ADAPT** only | **PART** | Direct transport journal PART; no hidden fallback |
 | **P7** TUI streams | `31.1–2`, `37.11` | `packages/tui/src/**` + hydrated `opencode/packages/tui/src/` | OMP pi-tui algorithms (§31.17) | **ADAPT** scheduler | Overlay thin — most widgets in snapshot |
 | **P7** §31.22 activity cards | `31.22`, `16.21` | `packages/tui/src/component/activity-stream.tsx` | Cursor-like **semantics only** | **ADAPT** | Generic rows — **no** Ctrl+R/diff gutter yet |
-| **P7** §31.23 code display | `31.23`, `37.12` | `artifact-markdown.tsx`, `session/index.tsx` (`conceal`) | OMP markdown cache patterns | **DESIGNED** | No `CodeDisplayPipelineV1` — backlog P7-08 |
+| **P7** §31.23 code display | `31.23`, `37.12` | `packages/tui/src/util/code-display.ts` (+ tests); still uses `artifact-markdown.tsx`, `session/index.tsx` (`conceal`) | OMP markdown cache patterns | **PART** | **`CodeDisplayPipelineV1` name in §37** ≠ shipped module name **`code-display.ts`**; UI-024–030 budgets **not measured** |
 | **P8** worktrees | `21`, `37` | `kernel/worktree_pool.rs`, OpenCode worktree in snapshot core | `repo_take` + `opencode` worktree modules | **REUSE/ADAPT** + leases | Pool/lease **PART** |
 | **P9** release | `18`, `10` §10.11 | `install`, CI workflows | — | **PART** | Not RELEASED |
 
@@ -87,17 +89,20 @@ Unmapped competitor ideas remain in **§42.21** only (mgrep, CRG install, Windsu
 
 ---
 
-## 5. Designed in arch, not in main repo (explicit backlog)
+## 5. Spec vs main repo — backlog truth (2026-10-26)
 
-| Spec | Schema / TS | Missing implementation | Backlog ID |
-|---|---|---|---|
-| §30.26 policy resolver | `context-compile-policy-v1`, `repo-context-anchor-v1` | `packages/core/src/session/context-compile-policy.ts`, RepoIntel anchor builder | P3-05 |
-| §29.23 instruction resolver | ledger reasons (documented) | `project-instruction.ts`, on-demand subdir load | P3-09 |
-| §31.23 code display | — | `CodeDisplayPipelineV1`, review overlay virtualization | P7-08 |
-| §31.22 activity cards | `ActivityCardV1` (in §31 doc) | Card kinds, Ctrl+R, read coalescing | P7-03 |
-| AgentProfileV2 full wire | `agent-profile-v2.schema.json` | `kernel/src/agent_profile.rs` PART | P6-05 |
+| Spec | Schema / seam | Main repo today | Backlog | Disposition |
+|---|---|---|---|---|
+| §30.26 policy resolver | `context-compile-policy-v1`, `repo-context-anchor-v1` | `context-compile-policy.ts` + focused tests | P3-05 **CP** | **PART** — not WIRED |
+| §29.23 instruction resolver | ledger reasons in §30.2 | `project-instruction.ts` + tests | P3-09 **CP** | **PART** — integrated INST-* open |
+| §14.3.1 read fast path | `prepare_tool_batch_read` | `kernel/src/host_kernel.rs`, `packages/core/src/session/direct-read-batch.ts`, supervisor allowlist | P1-10 **CP** | **PART** — PERF-DIRECT-* not run; registry still **designed** |
+| §31.23 code display | §37 `CodeDisplayPipelineV1` (doc name) | `packages/tui/src/util/code-display.ts` | P7-08 **CP** | **PART** — rename doc seam or alias in §37.12 |
+| §31.22 activity cards | `ActivityCardV1` (in §31 doc) | `activity-cards.ts` / stream (focused tests green) | P7-03 **PART** | **PART** — Ctrl+R / full ACT-* journeys open |
+| HostRun dispatch DTOs | `host-run-dispatch-v1.schema.json` | `managed-control.ts` decoders + §12 narrative; routes **fail-closed** | P2 **PART** | **PART** — chain not VERIFIED |
+| AgentProfileV2 full wire | `agent-profile-v2.schema.json` | `kernel/src/agent_profile.rs` PART | P6-05 **PART** | **PART** |
+| §30.28 SPD-A compile overlap | §30.28 | no `compileOverlapMs` consumer in tests | P3-10 **OPEN** | **DESIGNED** |
 
-Schemas present **≠** WIRED. Registry: **4/230** `code_present` per `46-V1-DESIGN-AUDIT.md`.
+Schemas present **≠** WIRED. Registry: **4/230** `code_present` until acceptance promotes rows.
 
 ---
 
@@ -129,10 +134,10 @@ Schemas present **≠** WIRED. Registry: **4/230** `code_present` per `46-V1-DES
 | Requirement | Owner | Main repo today | Gap |
 |---|---|---|---|
 | Scroll anchor `UI-002` | §31.2 | TUI session route | Needs acceptance measurement |
-| Conceal long code | §31.23 | `session.toggle.conceal` | No viewport highlight scheduler |
+| Conceal long code | §31.23 | `session.toggle.conceal` + `code-display.ts` helpers | Viewport highlight scheduler + UI-024–030 **open** |
 | Tool tail caps | §31.16–17 | Partial streaming | Full diagnostics **DESIGNED** |
-| Activity digest | §31.22 | `activity-stream.tsx` generic | Card mapping **DESIGNED** |
-| Syntax cache 8 MiB | §31.23.5 | Not enforced | **P7-08** |
+| Activity digest | §31.22 | `activity-cards.ts` (kinds, tests) | Rendered-surface ACT-* **open** |
+| Syntax cache 8 MiB | §31.23.5 | `code-display.ts` bounded paths in tests | Production RAM cap **not attested** — **P7-08** |
 
 ---
 
@@ -149,7 +154,21 @@ Schemas present **≠** WIRED. Registry: **4/230** `code_present` per `46-V1-DES
 
 ---
 
-## 10. Residual gaps (not forgotten)
+## 10. Code seams without a normative owner line (add when touching)
+
+These exist in `packages/` or `kernel/` but are easy to lose when reading only topic HLDs — **point normative docs here on the next edit** of the owning §.
+
+| Seam | Path | Suggested owner doc |
+|---|---|---|
+| Session owner metadata match / legacy host root | `packages/core/src/session/owner.ts` | `37` §37.11 / instance SSE; used by `packages/server/src/handlers/event.ts` question filter |
+| Instance SSE question-owner filter (first-party server) | `packages/server/src/handlers/event.ts` | `37` §37.11 (today: prose only in `31`/`37`, not this path) |
+| DEC-V1-36 direct read batch caller | `packages/core/src/session/direct-read-batch.ts` | `14` §14.3.1, `46-V1-WIRE-TRACKER` W-P1-07 |
+| Sealed builtin integration skill | `packages/core/src/horizon/skills/horizoncode/SKILL.md`, `builtin.horizoncode` in `packages/core/src/skill.ts` | `29` §29.6, `33` §33.32, `DEC-V1-38` |
+| Horizon Coding Profile preset | `packages/core/src/config/coding-profile.ts` | `16` §16.19.1, W-P6-06 |
+
+---
+
+## 11. Residual gaps (not forgotten)
 
 1. **§32 OMP-prefixed rows** (`UI-OMP-*`, etc.) — acceptance for **adapted** OMP behaviors; tracked in §32 long matrix; implementation varies PART/OPEN.
 2. **`generated-capability-ids.txt`** — 230 IDs; must match `capability-registry-v1.json` (convergence checks this).
@@ -159,7 +178,7 @@ Schemas present **≠** WIRED. Registry: **4/230** `code_present` per `46-V1-DES
 
 ---
 
-## 11. Migration parity (2026-10-22 update)
+## 12. Migration parity (2026-10-22 spec; 2026-10-26 code)
 
 Reviewer friction items are addressed in **`DEC-V1-36`**, **§14.3.1** (read fast path),
 **§16.19.1** (default preset), **§16.4.1** (slash truth), **§31.24**, **§32.49**, and
@@ -168,7 +187,7 @@ Reviewer friction items are addressed in **`DEC-V1-36`**, **§14.3.1** (read fas
 
 ---
 
-## 12. Sign-off: is “everything accounted for”?
+## 13. Sign-off: is “everything accounted for”?
 
 | Question | Answer |
 |---|---|
@@ -179,4 +198,4 @@ Reviewer friction items are addressed in **`DEC-V1-36`**, **§14.3.1** (read fas
 | As-is vs adapt stated per major port? | **Yes** — `repo_take/NOTES.md` table + §3 matrix |
 | Product matches normative docs? | **No** — majority **DESIGNED/PART**; this audit separates **spec complete** from **runtime complete** |
 
-**Implementers:** start from [`46-V1-IMPLEMENTATION-BACKLOG.md`](46-V1-IMPLEMENTATION-BACKLOG.md), use **§3** of this file for path/disposition, run [`46-V1-VERIFICATION-RUNBOOK.md`](46-V1-VERIFICATION-RUNBOOK.md) only after code lands.
+**Implementers:** start from [`46-V1-RELEASE-EXECUTION-QUEUE.md`](46-V1-RELEASE-EXECUTION-QUEUE.md) (waves + subagents), then [`46-V1-IMPLEMENTATION-BACKLOG.md`](46-V1-IMPLEMENTATION-BACKLOG.md); use **§3** of this file for path/disposition; run [`46-V1-VERIFICATION-RUNBOOK.md`](46-V1-VERIFICATION-RUNBOOK.md) only after code lands.

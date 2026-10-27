@@ -403,7 +403,11 @@ test("rejects an over-limit wave output before admitting a later wave", async ()
 
 test("deadline bounds a host start that never replies", async () => {
   const host = fakeHost({ turns: [] })
-  host.adapter.start = () => new Promise<CodeModeHostTurnV1>(() => {})
+  const startRequests: Parameters<CodeModeHostAdapterV1["start"]>[0][] = []
+  host.adapter.start = (request) => {
+    startRequests.push(request)
+    return new Promise<CodeModeHostTurnV1>(() => {})
+  }
   const outcome = await runCodeModeConversationV1({
     requestID,
     code: "return 1",
@@ -417,8 +421,61 @@ test("deadline bounds a host start that never replies", async () => {
     deadlineMs: 10,
   })
 
+  // §37.24 cancel requires requestId plus executionID; this pending start has
+  // no returned executionID, so the local coordinator must not invent one.
+  expect(startRequests.map((request) => request.requestID)).toEqual([requestID])
   expect(outcome.status).toBe("unknown")
   expect(host.calls.cancel).toHaveLength(0)
+})
+
+test("a late host start response after deadline remains UNKNOWN and is never resumed", async () => {
+  const host = fakeHost({ turns: [] })
+  let resolveStart: (value: CodeModeHostTurnV1) => void = () => {
+    throw new Error("host start resolver was not initialized")
+  }
+  const pendingStart = new Promise<CodeModeHostTurnV1>((resolve) => {
+    resolveStart = resolve
+  })
+  const startRequests: Parameters<CodeModeHostAdapterV1["start"]>[0][] = []
+  let dispatches = 0
+  host.adapter.start = (request) => {
+    startRequests.push(request)
+    return pendingStart
+  }
+
+  const outcome = await runCodeModeConversationV1({
+    requestID,
+    code: "return 1",
+    tools,
+    binding,
+    enablementRef: "grant-1",
+    host: host.adapter,
+    dispatchWave: async () => {
+      dispatches += 1
+      throw new Error("must not dispatch")
+    },
+    deadlineMs: 10,
+  })
+
+  expect(outcome.status).toBe("unknown")
+  expect(startRequests.map((request) => request.requestID)).toEqual([requestID])
+  expect(host.calls.cancel).toHaveLength(0)
+  expect(host.calls.resume).toHaveLength(0)
+  expect(dispatches).toBe(0)
+
+  // A response arriving after the caller has conservatively returned UNKNOWN
+  // cannot turn that result into success or start a later wave without a new
+  // authenticated recovery contract.
+  resolveStart({
+    executionID,
+    frame: completed("1", "completed", "late"),
+  })
+  await pendingStart
+  await Promise.resolve()
+  expect(outcome.status).toBe("unknown")
+  expect(host.calls.cancel).toHaveLength(0)
+  expect(host.calls.resume).toHaveLength(0)
+  expect(dispatches).toBe(0)
 })
 
 test("missing enablement keeps CodeMode unavailable without launch", async () => {

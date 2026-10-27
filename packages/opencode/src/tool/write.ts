@@ -10,8 +10,16 @@ import { InstanceState } from "@/effect/instance-state"
 import { SessionSupervisor } from "@opencode-ai/core/session/supervisor"
 import { Location } from "@opencode-ai/core/location"
 import { AbsolutePath } from "@opencode-ai/core/schema"
+import { FSUtil } from "@opencode-ai/core/fs-util"
 import type { EffectLease, ManagedAttemptScopeV1 } from "@opencode-ai/core/session/supervisor"
-import type { ManagedAttemptAuthority } from "@/session/managed-control"
+import {
+  isCompletedDirectTurnBatchScope,
+  isReceiptAdvancedDirectAttemptScope,
+  isReceiptAdvancedManagedAttemptScope,
+  sameDirectAttemptScope,
+  sameManagedAttemptScope,
+  type ManagedAttemptAuthority,
+} from "@/session/managed-control"
 import {
   acceptDirectAttemptReceipt,
   acceptDirectTurnBatchReceipt,
@@ -43,6 +51,7 @@ export const WriteTool = Tool.define(
   "write",
   Effect.gen(function* () {
     const lsp = yield* LSP.Service
+    const afs = yield* FSUtil.Service
     const events = yield* EventV2Bridge.Service
     const supervisor = yield* SessionSupervisor.Service
     return {
@@ -62,6 +71,15 @@ export const WriteTool = Tool.define(
           const managedAttemptScope = managedAttempt?.currentScope()
           const directAttempt = ctx.extra?.directAttempt as ToolBatchDirectAttemptAuthority | undefined
           const directAttemptScope = directAttempt?.currentScope()
+          const directTurnScope = directAttempt?.directTurn?.currentScope()
+          const requestedPath = path.resolve(instance.directory, params.filePath)
+          let expectedTarget: string
+          if (yield* afs.existsSafe(requestedPath)) {
+            expectedTarget = path.resolve(yield* afs.resolve(requestedPath))
+          } else {
+            const parent = path.resolve(yield* afs.resolve(path.dirname(requestedPath)))
+            expectedTarget = path.join(parent, path.basename(requestedPath))
+          }
           const locationRef = Location.Ref.make({ directory: AbsolutePath.make(instance.directory) })
           const receipt = yield* Effect.uninterruptible(
             supervisor.executeWrite({
@@ -73,29 +91,65 @@ export const WriteTool = Tool.define(
               ...(directAttemptScope !== undefined
                 ? { directAttempt: directAttemptScope }
                 : {}),
-              ...(directAttempt?.directTurn ? { directTurnScope: directAttempt.directTurn.currentScope() } : {}),
+              ...(directTurnScope !== undefined ? { directTurnScope } : {}),
               ...(managedAttemptScope !== undefined
                 ? { managedAttempt: managedAttemptScope as ManagedAttemptScopeV1 }
                 : {}),
             }),
           )
-          if (directAttemptScope && directAttempt) {
+          if (
+            receipt.effectID !== lease.effectID ||
+            receipt.target !== expectedTarget
+          ) {
+            throw new Error("Write denied: Rust receipt does not match the requested effect")
+          }
+          if (directAttemptScope !== undefined && directAttempt) {
+            if (!receipt.directAttempt || receipt.attemptScopeTransition !== "effect_receipt") {
+              throw new Error("Write denied: HostKernel omitted direct Attempt receipt scope")
+            }
+            if (
+              !sameDirectAttemptScope(directAttempt.currentScope(), directAttemptScope) ||
+              !isReceiptAdvancedDirectAttemptScope(directAttemptScope, receipt.directAttempt)
+            ) {
+              throw new Error("Write denied: HostKernel returned a stale or mismatched direct Attempt receipt scope")
+            }
+            if (directAttempt.directTurn && receipt.directTurnScope) {
+              if (
+                !directTurnScope ||
+                !isCompletedDirectTurnBatchScope(directTurnScope, receipt.directTurnScope) ||
+                !sameDirectAttemptScope(receipt.directTurnScope.directAttempt, receipt.directAttempt)
+              ) {
+                throw new Error("Write denied: HostKernel returned a stale or mismatched DirectTurn receipt scope")
+              }
+            }
+          }
+          if (managedAttemptScope) {
+            if (!receipt.managedAttempt || receipt.attemptScopeTransition !== "effect_receipt") {
+              throw new Error("Write denied: HostKernel omitted managed receipt scope")
+            }
+            if (
+              !sameManagedAttemptScope(managedAttempt!.currentScope(), managedAttemptScope) ||
+              !isReceiptAdvancedManagedAttemptScope(managedAttemptScope, receipt.managedAttempt) ||
+              receipt.managedAttempt.effectiveMaxTokens !== managedAttemptScope.effectiveMaxTokens ||
+              receipt.managedAttempt.remainingTokens !== managedAttemptScope.remainingTokens
+            ) {
+              throw new Error("Write denied: HostKernel returned a stale or mismatched managed Attempt receipt scope")
+            }
+          }
+          if (directAttemptScope !== undefined && directAttempt) {
             acceptDirectAttemptReceipt(directAttempt, directAttemptScope, receipt)
             if (directAttempt.directTurn && receipt.directTurnScope) {
               yield* Effect.promise(() => acceptDirectTurnBatchReceipt(directAttempt, receipt))
             }
           }
-          yield* Effect.promise(() => settleToolBatchLease(lease, { effectID: receipt.effectID }))
           if (managedAttemptScope) {
-            if (!receipt.managedAttempt || receipt.attemptScopeTransition !== "effect_receipt") {
-              return yield* Effect.fail(new Error("Write denied: HostKernel omitted managed receipt scope"))
-            }
             managedAttempt?.acceptRefreshedScope({
               previous: managedAttemptScope,
-              refreshed: receipt.managedAttempt,
+              refreshed: receipt.managedAttempt!,
               transition: "effect_receipt",
             })
           }
+          yield* Effect.promise(() => settleToolBatchLease(lease, { effectID: receipt.effectID }))
           const filepath = receipt.target
           const relative = path.relative(instance.directory, filepath).split(path.sep).join("/")
           yield* events.publish(FileSystem.Event.Edited, { file: filepath })

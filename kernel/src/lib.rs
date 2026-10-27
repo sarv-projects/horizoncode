@@ -58,6 +58,8 @@ pub mod protocol;
 pub(crate) mod protocol_framing;
 /// Durable HostKernel intent/ACK and bounded protocol-event replay journal.
 pub(crate) mod protocol_io_journal;
+pub(crate) mod secret_mutation;
+pub(crate) mod secret_use;
 pub(crate) mod search_secret_journal;
 pub mod request_cancellation;
 pub mod resource_budget;

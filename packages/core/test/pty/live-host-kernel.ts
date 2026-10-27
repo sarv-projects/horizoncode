@@ -8,7 +8,6 @@
 // `allow_once` unless a case supplies a different decision.
 import { createHash } from "node:crypto"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs"
-import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { test } from "bun:test"
 import { Cause, Effect, Exit, Layer, Queue } from "effect"
@@ -50,11 +49,24 @@ function hostKernelRuntime(stateDirectory: string) {
       target: `linux-${process.arch}-gnu`,
       sha256: createHash("sha256").update(readFileSync(hostKernelRust)).digest("hex"),
     }),
-    hostKernelInstallRoot: join(stateDirectory, "host-kernel-install"),
-    hostKernelStateRoot: join(stateDirectory, "host-kernel-state"),
-    installRoot: join(stateDirectory, "session-observer-install"),
-    stateRoot: join(stateDirectory, "session-observer-state"),
+    hostKernelInstallRoot: join(stateDirectory, "hi"),
+    hostKernelStateRoot: join(stateDirectory, "hs"),
+    installRoot: join(stateDirectory, "oi"),
+    stateRoot: join(stateDirectory, "os"),
   }
+}
+
+export function livePtySocketPaths(stateDirectory: string) {
+  const runtime = hostKernelRuntime(stateDirectory)
+  const session = `s-${"0".repeat(20)}`
+  return [
+    join(runtime.stateRoot, "state", session, `s-${"0".repeat(16)}.sock`),
+    join(runtime.hostKernelStateRoot, "state", session, `host-${"0".repeat(16)}.sock`),
+  ] as const
+}
+
+export function livePtyFixtureRoot() {
+  return join(resolve(import.meta.dir, "../../../../.tmp"), "p-XXXXXX")
 }
 
 export type LivePtyContext = {
@@ -115,7 +127,9 @@ export async function withLivePty<T, R>(
   if (!liveHostKernelAvailable) {
     throw new Error(`host kernel binary is unavailable: build ${hostKernelRust}`)
   }
-  const dir = mkdtempSync(join(tmpdir(), "hc-pty-live-"))
+  const fixtureRoot = resolve(import.meta.dir, "../../../../.tmp")
+  mkdirSync(fixtureRoot, { recursive: true })
+  const dir = mkdtempSync(livePtyFixtureRoot())
   const workspacePath = join(dir, "workspace")
   mkdirSync(workspacePath)
   const workspace = realpathSync(workspacePath)

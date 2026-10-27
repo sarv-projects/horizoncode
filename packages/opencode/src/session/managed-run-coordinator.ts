@@ -9,7 +9,7 @@ import { ManagedControl, ManagedControlError } from "@/session/managed-control"
 import { sameManagedContextSelectionV1 } from "@/session/llm"
 import { managedRouteProjection } from "@/provider/provider"
 import { MessageID, SessionID } from "@/session/schema"
-import type { TrustedPrincipal } from "@opencode-ai/core/trusted-principal"
+import { TrustedPrincipalContext } from "@opencode-ai/core/trusted-principal"
 import { createHash } from "node:crypto"
 import { managedMessageConsumptionAckDigest, managedMessageInboxReceiptDigest } from "./managed-subagent-inbox"
 
@@ -50,14 +50,14 @@ function exactManagedDelivery(raw: unknown, input: {
  * this coordinator never invents Task IDs or retries a consumed prompt.
  */
 export const executeNextManagedTask = Effect.fn("ManagedRunCoordinator.executeNextManagedTask")(function* (input: {
-  readonly trustedPrincipal: TrustedPrincipal
   readonly goalID: string
   readonly runID: string
   readonly rootSessionID: string
   readonly locationID: string
   readonly expectedRevision: string
 }) {
-  if (input.trustedPrincipal.kind !== "server_auth") {
+  const authenticated = yield* TrustedPrincipalContext
+  if (authenticated.principal.kind !== "server_auth" || !authenticated.principal.subject) {
     return yield* new ManagedControlError({ operation: "next_schedulable_task", code: "authorization_denied", reason: "managed scheduler requires authenticated ServerAuth" })
   }
   const supervisor = yield* SessionSupervisor.Service
@@ -381,7 +381,7 @@ export const executeNextManagedTask = Effect.fn("ManagedRunCoordinator.executeNe
     )
   }).pipe(Effect.provideService(SessionSupervisor.Service, supervisor))
   const selection = yield* ManagedControl.nextSchedulableTask({
-    trustedPrincipal: input.trustedPrincipal,
+    trustedPrincipal: authenticated.principal,
     goalID: input.goalID,
     runID: input.runID,
     locationID: input.locationID,
@@ -390,7 +390,7 @@ export const executeNextManagedTask = Effect.fn("ManagedRunCoordinator.executeNe
   })
   if (selection.status === "NO_TASK") {
     const recovery = yield* ManagedControl.activeAttemptRecovery({
-      trustedPrincipal: input.trustedPrincipal,
+      trustedPrincipal: authenticated.principal,
       goalID: input.goalID,
       runID: input.runID,
       locationID: input.locationID,
@@ -404,11 +404,16 @@ export const executeNextManagedTask = Effect.fn("ManagedRunCoordinator.executeNe
       return yield* new ManagedControlError({ operation: "active_attempt_recovery", code: "managed_protocol", reason: "Rust recovery omitted the active Task or Attempt" })
     }
     if (attempt.quiescence) {
-      const settlement = attempt.quiescence.childSessionOutcomeKind === "assistant_completed" ||
-        attempt.phase === "SUCCEEDED" || attempt.phase === "FAILED"
+      if (attempt.unknownEffect || attempt.phase === "UNKNOWN" || attempt.phase === "SETTLING") {
+        return { status: "PROMPT_UNKNOWN" as const, selection, recovery, quiesced: attempt.quiescence }
+      }
+      const cancellationPending = recovery.runPhase === "CANCELLING"
+      const assistantCompleted = attempt.quiescence.childSessionOutcomeKind === "assistant_completed"
+      const settlement = attempt.phase === "SUCCEEDED" || attempt.phase === "FAILED" ||
+        assistantCompleted && !cancellationPending
         ? undefined
         : yield* ManagedControl.settleAttempt({
-            trustedPrincipal: input.trustedPrincipal,
+            trustedPrincipal: authenticated.principal,
             goalID: recovery.goalID,
             runID: recovery.runID,
             taskID: task.taskID,
@@ -418,9 +423,12 @@ export const executeNextManagedTask = Effect.fn("ManagedRunCoordinator.executeNe
             retryable: false,
             expectedRevision: attempt.quiescence.managedRevision,
           })
+      if (settlement?.attemptPhase === "UNKNOWN") {
+        return { status: "PROMPT_UNKNOWN" as const, selection, recovery, quiesced: attempt.quiescence, settlement }
+      }
       const dispatchSettlement = attempt.phase === "FAILED" || settlement?.attemptPhase === "FAILED"
         ? yield* ManagedControl.settleManagedDispatch({
-            trustedPrincipal: input.trustedPrincipal,
+            trustedPrincipal: authenticated.principal,
             goalID: recovery.goalID,
             runID: recovery.runID,
             taskID: task.taskID,
@@ -431,13 +439,22 @@ export const executeNextManagedTask = Effect.fn("ManagedRunCoordinator.executeNe
       if (dispatchSettlement && dispatchSettlement.status !== "QUARANTINED") {
         return yield* new ManagedControlError({ operation: "settle_dispatch", code: "managed_protocol", reason: "failed managed child did not receive the exact P8 quarantine receipt" })
       }
+      const cancellation = cancellationPending && dispatchSettlement?.status === "QUARANTINED"
+        ? yield* ManagedControl.cancelRun({
+            trustedPrincipal: authenticated.principal,
+            goalID: recovery.goalID,
+            runID: recovery.runID,
+            expectedRevision: settlement?.revision ?? recovery.revision,
+          })
+        : undefined
       return {
-        status: attempt.quiescence.childSessionOutcomeKind === "assistant_completed" ? "PROMPT_RETURNED" as const : "PROMPT_RETURNED_ERROR" as const,
+        status: assistantCompleted ? "PROMPT_RETURNED" as const : "PROMPT_RETURNED_ERROR" as const,
         selection,
         recovery,
         quiesced: attempt.quiescence,
         ...(settlement ? { settlement } : {}),
         ...(dispatchSettlement ? { dispatchSettlement } : {}),
+        ...(cancellation ? { cancellation } : {}),
       }
     }
     if (attempt.unknownEffect || attempt.phase === "UNKNOWN" || attempt.phase === "SETTLING" ||
@@ -445,6 +462,17 @@ export const executeNextManagedTask = Effect.fn("ManagedRunCoordinator.executeNe
       // A consumed callback without a durable RETURNED marker is ambiguous;
       // terminal/unknown Attempts never re-enter TaskTool or prompt().
       return { status: "PROMPT_UNKNOWN" as const, selection, recovery }
+    }
+
+    if (task.effectiveMaxTokens === undefined || task.remainingTokens === undefined) {
+      // The current restart DTO is intentionally read-only and omits budget
+      // authority. Never reconstruct it from profile or Task prose.
+      return { status: "UNAVAILABLE" as const, selection, recovery, reason: "recovery projection omits the durable Task token budget" }
+    }
+    const recoveredTaskWithBudget = {
+      ...task,
+      effectiveMaxTokens: task.effectiveMaxTokens,
+      remainingTokens: task.remainingTokens,
     }
 
     if (!attempt.consumed) {
@@ -475,7 +503,7 @@ export const executeNextManagedTask = Effect.fn("ManagedRunCoordinator.executeNe
         locationID: recovery.locationID,
         sessionID: recovery.sessionID,
         workspaceRef: recovery.workspaceRef,
-        task,
+        task: recoveredTaskWithBudget,
       }
       // A restart may not reconstruct the prompt from current Session state.
       // Recompile on the exact pinned worktree and compare the entire saved
@@ -492,7 +520,7 @@ export const executeNextManagedTask = Effect.fn("ManagedRunCoordinator.executeNe
         preAdmissionTarget: scope.worktreeTarget,
         requestID: scope.requestID,
         requestSequence: scope.requestSequence,
-        trustedPrincipal: input.trustedPrincipal,
+        trustedPrincipal: authenticated.principal,
       }).pipe(Effect.provideService(SessionSupervisor.Service, supervisor)))
       if (Result.isFailure(preparedResult)) {
         return { status: "UNAVAILABLE" as const, selection, recovery, reason: "exact initial managed provider request could not be safely re-prepared" }
@@ -569,7 +597,7 @@ export const executeNextManagedTask = Effect.fn("ManagedRunCoordinator.executeNe
         admission,
         handoff,
         consumeReceipt,
-        trustedPrincipal: input.trustedPrincipal,
+        trustedPrincipal: authenticated.principal,
         preparedRequest: prepared,
         managedFollowUpRunner,
         managedPreDispatchRecovery,
@@ -577,7 +605,7 @@ export const executeNextManagedTask = Effect.fn("ManagedRunCoordinator.executeNe
       const dispatchSettlement = child.outcomeKind === "assistant_completed"
         ? undefined
         : yield* ManagedControl.settleManagedDispatch({
-            trustedPrincipal: input.trustedPrincipal,
+            trustedPrincipal: authenticated.principal,
             goalID: selection.goalID,
             runID: selection.runID,
             taskID: task.taskID,
@@ -646,14 +674,14 @@ export const executeNextManagedTask = Effect.fn("ManagedRunCoordinator.executeNe
       attemptID: attempt.attemptID,
     })
     const quiesced = yield* ManagedControl.completeRecoveredManagedDispatch({
-      trustedPrincipal: input.trustedPrincipal,
+      trustedPrincipal: authenticated.principal,
       consumeReceipt: consume,
       childSession: completion,
     })
     const settlement = completion.childSessionOutcomeKind === "assistant_completed"
       ? undefined
       : yield* ManagedControl.settleAttempt({
-          trustedPrincipal: input.trustedPrincipal,
+          trustedPrincipal: authenticated.principal,
           goalID: recovery.goalID,
           runID: recovery.runID,
           taskID: task.taskID,
@@ -665,7 +693,7 @@ export const executeNextManagedTask = Effect.fn("ManagedRunCoordinator.executeNe
         })
     const dispatchSettlement = settlement?.attemptPhase === "FAILED"
       ? yield* ManagedControl.settleManagedDispatch({
-          trustedPrincipal: input.trustedPrincipal,
+          trustedPrincipal: authenticated.principal,
           goalID: recovery.goalID,
           runID: recovery.runID,
           taskID: task.taskID,
@@ -691,7 +719,7 @@ export const executeNextManagedTask = Effect.fn("ManagedRunCoordinator.executeNe
     return yield* new ManagedControlError({ operation: "next_schedulable_task", code: "managed_protocol", reason: "Rust READY_TASK projection omitted its Task" })
   }
   const reservation = yield* ManagedControl.reserveManagedPreAdmissionTarget({
-    trustedPrincipal: input.trustedPrincipal,
+    trustedPrincipal: authenticated.principal,
     selection,
   })
   if (reservation.candidateAttemptID !== task.candidateAttemptID || reservation.taskRevision !== task.taskRevision ||
@@ -725,7 +753,7 @@ export const executeNextManagedTask = Effect.fn("ManagedRunCoordinator.executeNe
     preAdmissionTarget: reservation.preAdmissionTarget,
     requestID: `req_managed_${task.candidateAttemptID}_1`,
     requestSequence: "1",
-    trustedPrincipal: input.trustedPrincipal,
+    trustedPrincipal: authenticated.principal,
   }))
   if (Result.isFailure(preparedResult)) {
     return { status: "UNAVAILABLE" as const, selection, reason: "exact managed provider request preflight is unavailable" }
@@ -735,7 +763,7 @@ export const executeNextManagedTask = Effect.fn("ManagedRunCoordinator.executeNe
   // idempotent identity check when reserve reports an already-bound candidate,
   // and reconciles a lost bind response without minting a second reservation.
   const boundReservation = yield* ManagedControl.bindManagedPreAdmissionContext({
-    trustedPrincipal: input.trustedPrincipal,
+    trustedPrincipal: authenticated.principal,
     selection,
     reservation,
     contextSelection: prepared.contextSelection,
@@ -786,7 +814,7 @@ export const executeNextManagedTask = Effect.fn("ManagedRunCoordinator.executeNe
     admission,
     handoff,
     consumeReceipt,
-    trustedPrincipal: input.trustedPrincipal,
+    trustedPrincipal: authenticated.principal,
     preparedRequest: prepared,
     managedFollowUpRunner,
     managedPreDispatchRecovery,
@@ -800,4 +828,3 @@ export const executeNextManagedTask = Effect.fn("ManagedRunCoordinator.executeNe
     child,
   }
 })
-

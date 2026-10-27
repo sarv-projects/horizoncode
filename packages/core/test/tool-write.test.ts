@@ -29,6 +29,7 @@ let preparedTarget: string | undefined
 let preparedResource: string | undefined
 let leasePrepared = false
 let denyToolBatch = false
+let executedPrincipal: unknown
 
 const permission = Layer.succeed(
   PermissionV2.Service,
@@ -68,9 +69,10 @@ const supervisor = Layer.succeed(
     subscribeHostKernelEvents: () => Stream.empty,
     replyGuardApproval: () => Effect.die("unused"),
     awaitManagedVerifierApprovals: () => Effect.die("unused"),
-    executeWrite: ({ lease: providedLease, content }) =>
+    executeWrite: ({ lease: providedLease, content, trustedPrincipal }) =>
       Effect.gen(function* () {
         supervisorCalls.push("execute")
+        executedPrincipal = trustedPrincipal
         if (
           !leasePrepared ||
           providedLease.effectID !== lease.effectID ||
@@ -158,6 +160,7 @@ const withTool = <A, E, R>(directory: string, body: (registry: ToolRegistry.Inte
 const call = (input: typeof WriteTool.Input.Type, effect?: ToolRegistry.ExecuteInput["effect"]) => ({
   sessionID,
   ...toolIdentity,
+  trustedPrincipal: { kind: "server_auth" as const, subject: "write-test-user" },
   call: { type: "tool-call" as const, id: "call-write", name: "write", input },
   ...(effect ? { effect } : {}),
 })
@@ -190,6 +193,7 @@ describe("WriteTool", () => {
         leasePrepared = false
         preparedTarget = undefined
         preparedResource = undefined
+        executedPrincipal = undefined
         permissionAssertions.length = 0
         supervisorCalls.length = 0
         const target = path.join(tmp.path, "allowed.txt")
@@ -216,6 +220,7 @@ describe("WriteTool", () => {
             )
             expect(settled.result).toMatchObject({ type: "text" })
             expect(supervisorCalls).toEqual(["prepare", "execute"])
+            expect(executedPrincipal).toEqual({ kind: "server_auth", subject: "write-test-user" })
             expect(permissionAssertions.map((input) => input.action)).toEqual(["edit"])
             expect(yield* Effect.promise(() => fs.readFile(target, "utf8"))).toBe("allowed")
           }),
@@ -286,6 +291,45 @@ describe("WriteTool", () => {
               expect(settled.result).toEqual({ type: "error", value: "Unable to write file" })
               expect(permissionAssertions.map((input) => input.action)).toEqual(["edit"])
               expect(supervisorCalls).toEqual(["execute"])
+              expect(
+                yield* Effect.promise(() =>
+                  fs.stat(target).then(
+                    () => true,
+                    () => false,
+                  ),
+                ),
+              ).toBe(false)
+            }),
+          ),
+        )
+      },
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+  it.live("rejects a host-OS principal before permission or host settlement", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => {
+        leasePrepared = false
+        preparedTarget = undefined
+        preparedResource = undefined
+        executedPrincipal = undefined
+        permissionAssertions.length = 0
+        supervisorCalls.length = 0
+        const target = path.join(tmp.path, "wrong-principal.txt")
+        const input = call({ path: "wrong-principal.txt", content: "must not be written" }, lease)
+        return withTool(tmp.path, (registry) =>
+          settleTool(registry, {
+            ...input,
+            trustedPrincipal: { kind: "host_os" as const },
+          }),
+        ).pipe(
+          Effect.andThen((settled) =>
+            Effect.gen(function* () {
+              expect(settled.result).toEqual({ type: "error", value: "Unable to write file" })
+              expect(permissionAssertions).toEqual([])
+              expect(supervisorCalls).toEqual([])
+              expect(executedPrincipal).toBeUndefined()
               expect(
                 yield* Effect.promise(() =>
                   fs.stat(target).then(

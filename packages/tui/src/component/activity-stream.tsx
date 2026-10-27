@@ -252,9 +252,14 @@ function ToolActivity(props: {
     // detail renderer; the bounded summary/output remains available instead.
     return value && typeof value === "object" ? value as ToolPart : undefined
   })
-  const artifact = createMemo(() =>
-    toolArtifactFidelity("metadata" in props.part.state ? props.part.state.metadata : undefined),
-  )
+  // §31.5/§31.17: `UNKNOWN` is a producer/receipt lifecycle outcome, never an
+  // artifact fidelity value. Only `FULL`/`SAMPLE`/`FAILED` are fidelity labels;
+  // an unresolvable fidelity is surfaced as lifecycle text instead.
+  const artifact = createMemo(() => {
+    const projected = toolArtifactFidelity("metadata" in props.part.state ? props.part.state.metadata : undefined)
+    const fidelity = projected.visible && projected.fidelity !== "UNKNOWN" ? projected.fidelity : undefined
+    return { visible: projected.visible, fidelity }
+  })
   const canExpand = createMemo(() => Boolean(output()) || Boolean(props.renderDetails && details()))
   const visibleOutput = createMemo(() => (props.expanded ? bounded().output : collapsed().output))
   const handleToggleKey = (event: KeyEvent) => {
@@ -276,7 +281,11 @@ function ToolActivity(props: {
         </Show>
       </text>
       <Show when={artifact().visible}>
-        <text fg={theme.textMuted}>{`Output artifact: ${artifact().fidelity}`}</text>
+        <text fg={theme.textMuted}>
+          {artifact().fidelity
+            ? `Output artifact: ${artifact().fidelity}`
+            : "Output artifact · fidelity unknown"}
+        </text>
       </Show>
       <Show when={output() && props.expanded}>
         <text fg={theme.text}>{visibleOutput()}</text>

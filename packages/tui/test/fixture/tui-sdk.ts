@@ -1,7 +1,9 @@
+import "../preload"
+import path from "node:path"
 import type { GlobalEvent } from "@opencode-ai/sdk/v2"
 import type { EventSource } from "../../src/context/sdk"
 
-export const worktree = "/tmp/opencode"
+export const worktree = process.env.OPENCODE_TEST_WORKTREE ?? path.resolve(import.meta.dir, "../../.p7-sandbox/worktree")
 export const directory = `${worktree}/packages/tui`
 
 export function json(data: unknown, init?: ResponseInit) {

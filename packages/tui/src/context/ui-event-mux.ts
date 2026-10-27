@@ -44,6 +44,7 @@ export type UiEventMuxObservationV1 = {
     | "ui.queue.pending_events"
     | "ui.queue.pending_bytes"
     | "ui.queue.coalesced_events"
+    | "ui.queue.dropped_events"
     | "ui.queue.direct_deliveries"
     | "ui.stream.duplicates_suppressed"
     | "ui.stream.resnapshots_required"
@@ -358,6 +359,7 @@ export function createUiEventMux<T>(input: {
     ? createStreamEnvelopeGuard({ maxCursors: input.maxStreamCursors ?? 4096 })
     : undefined
   let coalesced = 0
+  let droppedEvents = 0
   let directDeliveries = 0
   let duplicatesSuppressed = 0
   let resnapshotsRequired = 0
@@ -394,6 +396,22 @@ export function createUiEventMux<T>(input: {
       queue.events.map((item) => item.event),
       queue.events.map((item) => item.run),
     )
+  }
+
+  function discardQueuedStream(sessionID: string, partID: string) {
+    const queue = pending.get(sessionID)
+    if (!queue) return
+    const retained = queue.events.filter((item) => item.run?.partID !== partID)
+    if (retained.length === queue.events.length) return
+    // §31.16/§31.17 and AN-009 require the dropped ephemeral count to be
+    // observable alongside the coalesced count; these deltas are never
+    // delivered, so count exactly what was discarded here.
+    droppedEvents += queue.events.length - retained.length
+    queue.events = retained
+    queue.bytes = retained.reduce((total, item) => total + item.size, 0)
+    if (retained.length > 0) return
+    if (queue.timer) clearTimeout(queue.timer)
+    pending.delete(sessionID)
   }
 
   function schedule(sessionID: string, queue: Queue<T>) {
@@ -482,21 +500,20 @@ export function createUiEventMux<T>(input: {
             advance: envelope.advance,
           }
         : undefined
-      if (closed) {
-        directDeliveries++
-        deliver(sessionID, [event], [run])
-        return decision
-      }
-
       const size = sizeOf(event)
       if (size > maxQueuedBytes && envelope && run) {
         // An oversized canonical delta cannot be allowed to bypass the stream
-        // byte bound through direct delivery. Rebuild from the owning store.
+        // byte bound through direct delivery.
         flushOne(sessionID)
         resnapshotsRequired++
         envelopes?.forget(envelope.sessionID, envelope.partID)
         input.onResnapshotRequired?.(envelope)
         return "resnapshot_required"
+      }
+      if (closed) {
+        directDeliveries++
+        deliver(sessionID, [event], [run])
+        return decision
       }
       if (maxQueuedEvents === 0 || size > maxQueuedBytes) {
         directDeliveries++
@@ -558,6 +575,9 @@ export function createUiEventMux<T>(input: {
     },
     /** Replace cursor state and clear any seal (a stream part restarted). */
     resetStream(cursor: StreamCursorV1) {
+      // A new generation replaces the canonical stream. Pending paint deltas
+      // from its prior generation must not be delivered after the reset.
+      discardQueuedStream(cursor.sessionID, cursor.partID)
       envelopes?.forget(cursor.sessionID, cursor.partID)
       return envelopes?.seed(cursor) ?? false
     },
@@ -616,6 +636,14 @@ export function createUiEventMux<T>(input: {
         {
           metric: "ui.queue.coalesced_events",
           value: stats.coalesced,
+          unit: "events",
+          provenance: "measured",
+          source: "ui-event-mux",
+          observedAtMs,
+        },
+        {
+          metric: "ui.queue.dropped_events",
+          value: droppedEvents,
           unit: "events",
           provenance: "measured",
           source: "ui-event-mux",

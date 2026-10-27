@@ -5,6 +5,25 @@ import {
   parseSearchProviderResponse,
   searchProviderResponseTruncated,
 } from "@/tool/websearch-adapters"
+import {
+  hasEnabledSearchRouteReady,
+  normalizeSearchCascadeSettings,
+  WEB_SEARCH_ANONYMOUS_RUNTIME_READY,
+  WEB_SEARCH_BYO_RUNTIME_READY,
+} from "@/tool/websearch-broker"
+
+test("search release gates stay closed after consent", () => {
+  const settings = normalizeSearchCascadeSettings({
+    querySharingConsent: "anonymous_free_v1",
+    byoConsents: [{ route: "brave", consent: "secret_broker_unknown_cost_v1" }],
+    enabled: ["exa_keyless", "brave"],
+    order: ["exa_keyless", "brave"],
+  })
+  expect(settings.enabled).toEqual(["exa_keyless", "brave"])
+  expect(WEB_SEARCH_ANONYMOUS_RUNTIME_READY).toBe(false)
+  expect(WEB_SEARCH_BYO_RUNTIME_READY).toBe(false)
+  expect(hasEnabledSearchRouteReady(settings)).toBe(false)
+})
 
 const secretRef = {
   schemaVersion: 1,

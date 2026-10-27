@@ -45,6 +45,7 @@ import {
 import type { ManagedAttemptAuthority } from "./managed-control"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { preparePatchBatch } from "@/tool/apply_patch"
+import { prepareEditBatch, type EditParameters } from "@/tool/edit"
 import { TrustedPrincipalContext } from "@opencode-ai/core/trusted-principal"
 import {
   canonicalizeCodeModeToolSetV1,
@@ -206,26 +207,45 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
               execution: prepared.operations,
             }
           }
-        : item.id === "bash"
+        : item.id === "edit"
           ? async (value: unknown) => {
               if (
                 !isRecord(value) ||
-                typeof value.command !== "string" ||
-                (value.workdir !== undefined && typeof value.workdir !== "string") ||
-                (value.timeout !== undefined &&
-                  (typeof value.timeout !== "number" || !Number.isSafeInteger(value.timeout) || value.timeout <= 0))
-              )
-                throw new Error("Invalid terminal.run arguments")
-              const execution = {
-                command: value.command,
-                cwd: path.resolve(instance.directory, value.workdir ?? "."),
-                timeoutMs: value.timeout ?? flags.bashDefaultTimeoutMs ?? 2 * 60 * 1000,
+                typeof value.filePath !== "string" ||
+                typeof value.oldString !== "string" ||
+                typeof value.newString !== "string" ||
+                (value.replaceAll !== undefined && typeof value.replaceAll !== "boolean")
+              ) {
+                throw new Error("Invalid edit arguments")
               }
-              return { arguments: execution, execution }
+              const prepared = await run.promise(
+                prepareEditBatch(value as EditParameters, instance.directory, fs),
+              )
+              return {
+                arguments: { operations: prepared.operations },
+                execution: prepared.operations,
+              }
             }
-          : capability.id === "web.search"
-            ? async (value: unknown) => run.promise(webSearchRuntime.prepareEffectArguments(value))
-          : undefined
+          : item.id === "bash"
+            ? async (value: unknown) => {
+                if (
+                  !isRecord(value) ||
+                  typeof value.command !== "string" ||
+                  (value.workdir !== undefined && typeof value.workdir !== "string") ||
+                  (value.timeout !== undefined &&
+                    (typeof value.timeout !== "number" || !Number.isSafeInteger(value.timeout) || value.timeout <= 0))
+                )
+                  throw new Error("Invalid terminal.run arguments")
+                const execution = {
+                  command: value.command,
+                  cwd: path.resolve(instance.directory, value.workdir ?? "."),
+                  timeoutMs: value.timeout ?? flags.bashDefaultTimeoutMs ?? 2 * 60 * 1000,
+                }
+                return { arguments: execution, execution }
+              }
+            : capability.id === "web.search"
+              ? async (value: unknown) => run.promise(webSearchRuntime.prepareEffectArguments(value))
+            : undefined
     definitions[item.id] = {
       capability,
       schema,

@@ -469,6 +469,12 @@ def build_candidate(report: dict) -> dict:
     source_after_build = _git_source_facts(build_root)
     product = json.loads((build_root / "packages" / "opencode" / "package.json").read_text(encoding="utf-8"))
     workspace = json.loads((build_root / "package.json").read_text(encoding="utf-8"))
+    distribution_package_path = artifact_directory.parent / "package.json"
+    _required_digest(distribution_package_path)
+    distribution_package = json.loads(distribution_package_path.read_text(encoding="utf-8"))
+    runtime_version = distribution_package.get("version")
+    if not isinstance(runtime_version, str) or not runtime_version or runtime_version.strip() != runtime_version:
+        raise ValueError("built distribution package must declare its exact runtime version")
     migration_directory = build_root / "packages" / "core" / "src" / "database" / "migration"
     migration_ids = sorted(path.name for path in migration_directory.glob("*.ts") if path.is_file() and not path.is_symlink())
     schema_contracts = sorted((build_root / "arch_V1" / "contracts-v2").glob("*.json"))
@@ -502,6 +508,7 @@ def build_candidate(report: dict) -> dict:
         "binaryPath": binary.name,
         "binarySha256": _sha256(binary),
         "binarySizeBytes": binary.stat(follow_symlinks=False).st_size,
+        "runtimeVersion": runtime_version,
         "target": binary.parents[1].name,
         "host": {"system": platform.system(), "release": platform.release(), "machine": platform.machine()},
         "buildToolchain": toolchain,

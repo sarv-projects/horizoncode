@@ -189,6 +189,26 @@ describe("editor process lifecycle status reads", () => {
     })).rejects.toThrow("managed process scope does not match the authenticated session")
     expect(calls).toHaveLength(0)
   })
+
+  test("snapshots nested managed worktree authority before dispatch", async () => {
+    const managedAttempt = managedScope()
+    let dispatchedRoot: string | undefined
+    const host: RequestExecutionHostV1 = async (_service, _operation, body) => {
+      ;(managedAttempt.worktreeTarget as { canonicalRoot: string }).canonicalRoot = "/attacker/changed"
+      dispatchedRoot = (body.managedAttempt as ManagedAttemptScopeV1).worktreeTarget.canonicalRoot
+      return status({ hostProcessRef: undefined })
+    }
+
+    await readEditorProcessStatusV1({
+      executionID: "editor_exec_1",
+      effectID: "effect_1",
+      challengeID: "challenge_1",
+      scope: { ...rootScope, sessionID: "session-managed", locationID: "location-1", managedAttempt },
+      requestHostKernel: host,
+    })
+
+    expect(dispatchedRoot).toBe("/workspace/managed")
+  })
 })
 
 describe("editor process lifecycle output reads", () => {
@@ -390,6 +410,38 @@ describe("editor process lifecycle effect gates", () => {
       }), kind).rejects.toMatchObject({ _tag: "LanguageServiceProcessError", operation })
       expect(calls).toHaveLength(0)
     }
+  })
+
+  test("malformed launch approval is rejected before the closed process gate or any HostKernel dispatch", async () => {
+    const { host, calls } = recordingHost({})
+    await expect(launchApprovedEditorProcessV1({
+      approval: {
+        ...approval("language.start", "lsp_typescript_test"),
+        sessionID: "session-foreign",
+      },
+      scope: rootScope,
+      resolveApproval: async () => {
+        throw new Error("approval must not resolve")
+      },
+      requestHostKernel: host,
+    })).rejects.toThrow("launch profile approval does not match the requested Session, Location, or process kind")
+    expect(calls).toHaveLength(0)
+  })
+
+  test("a malformed immutable launch profile is rejected before the closed process gate or any HostKernel dispatch", async () => {
+    const { host, calls } = recordingHost({})
+    await expect(launchApprovedEditorProcessV1({
+      approval: {
+        ...approval("language.start", "lsp_typescript_test"),
+        profileRef: { profileId: "dap_debugpy_test", revision: "1", profileDigest: PROFILE_DIGEST },
+      },
+      scope: rootScope,
+      resolveApproval: async () => {
+        throw new Error("approval must not resolve")
+      },
+      requestHostKernel: host,
+    })).rejects.toThrow("launch profile approval capability does not match its immutable profile kind")
+    expect(calls).toHaveLength(0)
   })
 
   test("a malformed scope is rejected before the process gate", async () => {

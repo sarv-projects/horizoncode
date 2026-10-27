@@ -334,7 +334,7 @@ authenticated **direct** Session may dispatch when:
 Reads may start **while the provider response is still streaming** additional tool calls.
 Each read still records scope, digest, and bounded result; optional single **read-batch lease**
 covers up to **8** read calls per provider tool response with **one** `prepare_tool_batch_read`
-kernel RPC (implementation coalescing), instead of one RPC per read.
+kernel RPC (implementation coalescing), instead of one RPC per read. **Core caller seam (CODE_PRESENT, not WIRED):** `packages/core/src/session/direct-read-batch.ts`; kernel handler in `host_kernel.rs`; runner routing in `packages/core/src/session/runner/llm.ts`. Acceptance: §32.49 `PERF-DIRECT-002/004`, wire tracker W-P1-07.
 
 **Mutation-class** tools (`files.write`, `files.patch`, `terminal.run`, effectful `git.*`, MCP
 mutations, etc.) remain gated on **closed** structural batch validation and full §14.3 admission.
@@ -1214,6 +1214,57 @@ configuration/catalog state and must report missing or stale facts as UNKNOWN.
 This is a concrete contract dependency, not acceptance evidence. The Auth mutation
 fixture asserts that an absent Guard grant makes zero broker mutation calls. Doctor
 network behavior remains unavailable; no provider call or check is implied.
+
+**Update (2026-10-27): the `secret.v1` grant contract now exists.** HostKernel
+admits `secret.v1` on the authenticated dispatch allowlist with five operations:
+`authorize_put`, `authorize_rotate`, `authorize_revoke`, `authorize_use` and
+`redeem_use`. Mutation requests carry metadata only — `providerId`,
+`idempotencyKey` and, for rotate/revoke, the exact `secretRef` plus
+`expectedVersion` (and a bounded optional `label`). `authorize_use` accepts only
+`secretRef`, `providerId`, exact HTTPS `destination`, `operationDigest`, purpose
+`PROVIDER_REQUEST`, `idempotencyKey`, and exactly one bounded `maxExpiresAt` or
+`ttlMs`. `redeem_use` accepts only the issued `leaseId` and an idempotency key.
+Credential bytes, caller-supplied principals, challenge/effect IDs, secure-input
+handles, and extra fields are rejected as `invalid_effect_request` before any
+state is read.
+
+Owner identity is never taken from the request. HostKernel accepts either the
+typed `ServerAuth` subject already bound to the connection (the connection
+principal must equal `server_auth:<subject>`) or, for a local CLI, the
+kernel-attested `host_os_uid:<uid>` principal derived from `SO_PEERCRED` and the
+connected process executable identity. The owner scope is a domain-separated
+BLAKE3 digest over that identity, so the two identities never share a credential
+scope and neither can reach the other's secrets. The grant alone moves no bytes:
+it is redeemable only inside the process that owns the matching one-use
+`SecureInputVault` handle, whose binding must equal the grant field for field.
+
+Each authorization runs the normal Guard path with owner-scoped policy, a
+PREPARED durable intent, a one-use EffectHost lease consumed before any receipt
+exists, STARTED settlement to a durable receipt, and replay accepted only from
+that exact receipt. Canonical actions are `secrets.put|rotate|revoke|use`; the
+subsequent `redeem_use` consumes one issued use lease exactly once
+(`ISSUED -> CONSUMED`) and is itself owner/expiry fenced. An intent recovered
+without its receipt reports `secret_outcome_unknown` and is never retried as a
+success. Mutation version fencing rejects stale rotate/revoke
+(`secret_stale_version`); use authorization rejects provider mismatch
+(`secret_provider_mismatch`), a foreign owner (`secret_not_found`), revoked
+secret (`secret_revoked`), malformed request (`invalid_effect_request`), and
+expiry beyond 120 seconds (`expired`). Denials do not write receipts, so the
+same idempotency key remains usable after correcting the request.
+
+Acceptance boundary. Rust coverage is `kernel/tests/secret_mutation_grant.rs`
+(6/6) and `kernel/tests/secret_use_grant.rs` (10/10); guard unit tests are 46/46
+and secret journal unit tests 5/5. The mutation suite covers forged owner,
+untyped principal, stale version, provider mismatch, half-specified target,
+revoked target, extra credential/principal fields and restart replay. The use
+suite covers exact HTTPS/digest/purpose/TTL binding, owner/provider/revocation
+denials, exact replay, one-use redemption, expiry and restart persistence. The
+in-process SecretBroker byte store is TypeScript; HostKernel has no credential
+byte-store or byte-redemption endpoint. Its `redeem_use` consumes metadata only,
+so credential bytes never reach Rust. Lease and receipt retention are bounded
+(256); evicted entries fail closed. `secret_outcome_unknown` is proven at
+journal level, not by crash injection. Production Core request-scoped transport
+and live-provider E2E are separate gates, not implied by kernel grants.
 
 ## 14.23 Request-bound context integrity at managed dispatch (2026-10-21)
 

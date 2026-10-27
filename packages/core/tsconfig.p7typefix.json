@@ -1,0 +1,6 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": true, "incremental": false },
+  "include": [],
+  "files": ["test/session-direct-read-batch.test.ts"]
+}

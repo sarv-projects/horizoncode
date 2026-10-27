@@ -21,7 +21,7 @@ import {
   type RequestExecutionHostV1,
 } from "@/lsp/process-lifecycle"
 import { makeEditorProtocolGuardAuthorizerV1 } from "@/lsp/guard-authorizer"
-import type { HostProcessRefV1 } from "@/lsp/process-scope"
+import { validateHostProcessRef, type HostProcessRefV1 } from "@/lsp/process-scope"
 import { projectTrustedGlobalDapProfileV1, resolveTrustedGlobalLaunchProfileV1 } from "@/lsp/launch-profile"
 import { assertLanguageServiceProcessAllowed } from "@/lsp/launch"
 import { HostKernelDapProtocolClientV1 } from "./host-protocol-client"
@@ -29,6 +29,26 @@ import { HostKernelDapProtocolClientV1 } from "./host-protocol-client"
 type RunTrustedEffect = <A, E, R>(effect: Effect.Effect<A, E, R>) => Promise<A>
 
 type DapHostRequestV1 = RequestExecutionHostV1
+
+/** Detach authority-bearing Attempt pins from caller-owned mutable objects. */
+export function snapshotDapAttemptScopeV1(input: {
+  readonly managedAttempt?: ManagedAttemptScopeV1
+  readonly directAttempt?: DirectAttemptScopeV1
+}): Pick<Parameters<typeof createSupervisedDapClientV1>[0], "managedAttempt" | "directAttempt"> {
+  return Object.freeze({
+    ...(input.managedAttempt === undefined
+      ? {}
+      : {
+          managedAttempt: Object.freeze({
+            ...input.managedAttempt,
+            worktreeTarget: Object.freeze({ ...input.managedAttempt.worktreeTarget }),
+          }),
+        }),
+    ...(input.directAttempt === undefined
+      ? {}
+      : { directAttempt: Object.freeze({ ...input.directAttempt }) }),
+  })
+}
 
 /** Resolve and start only an immutable global DAP profile. Debuggee launch or
  * attach authority is intentionally separate and unavailable in this helper. */
@@ -57,27 +77,38 @@ export async function createSupervisedDapClientV1(input: {
   readonly status: () => Promise<EditorProcessStatusV1>
   readonly stop: () => Promise<void>
 }> {
-  if (input.managedAttempt !== undefined && input.directAttempt !== undefined) {
+  const { managedAttempt, directAttempt } = snapshotDapAttemptScopeV1(input)
+  if (managedAttempt !== undefined && directAttempt !== undefined) {
     throw new TypeError("supervised DAP creation cannot combine managed and direct Attempt scopes")
+  }
+  if (input.targetHostProcessRef !== undefined) {
+    const target = validateHostProcessRef(input.targetHostProcessRef)
+    if (target.kind !== "terminal_run") {
+      throw new TypeError("DAP attach target must be a HostKernel terminal_run process")
+    }
+    const attemptEpoch = managedAttempt?.ownerEpoch ?? directAttempt?.ownerEpoch
+    if (attemptEpoch !== undefined && target.ownerEpoch !== attemptEpoch) {
+      throw new TypeError("DAP attach target does not match the authenticated owner epoch")
+    }
   }
   if (!input.userActionID.trim() || input.userActionID.length > 160 || !input.callID.trim() || input.callID.length > 160) {
     throw new TypeError("supervised DAP scope requires authenticated userActionID and callID")
   }
-  if (input.managedAttempt !== undefined || input.directAttempt !== undefined) {
-    const attemptSessionID = input.managedAttempt?.sessionID ?? input.directAttempt!.childSessionID
-    const attempt = input.managedAttempt ?? input.directAttempt!
+  if (managedAttempt !== undefined || directAttempt !== undefined) {
+    const attemptSessionID = managedAttempt?.sessionID ?? directAttempt!.childSessionID
+    const attempt = managedAttempt ?? directAttempt!
     if (input.sessionID !== attemptSessionID || input.locationID !== attempt.locationID ||
         input.workspaceRevision !== attempt.workspaceRevision ||
-        (input.directAttempt && input.workspaceID !== input.directAttempt.workspaceID) ||
-        (input.managedAttempt && input.workspaceID !== undefined)) {
+        (directAttempt && input.workspaceID !== directAttempt.workspaceID) ||
+        (managedAttempt && input.workspaceID !== undefined)) {
       throw new TypeError("supervised DAP scope does not match the authenticated Attempt workspace pins")
     }
     if (input.workspaceID !== undefined && input.locationRef.workspaceID !== input.workspaceID) {
       throw new TypeError("supervised DAP location pin does not match the authenticated workspace ID")
     }
-    if (input.managedAttempt !== undefined &&
-        (path.resolve(input.locationRef.directory) !== path.resolve(input.managedAttempt.worktreeTarget.canonicalRoot) ||
-          input.locationRef.workspaceID !== input.managedAttempt.worktreeTarget.workspaceID)) {
+    if (managedAttempt !== undefined &&
+        (path.resolve(input.locationRef.directory) !== path.resolve(managedAttempt.worktreeTarget.canonicalRoot) ||
+          input.locationRef.workspaceID !== managedAttempt.worktreeTarget.workspaceID)) {
       throw new TypeError("supervised DAP scope does not match the managed Attempt worktree target")
     }
   } else if (!input.sessionID || !input.locationID || !input.workspaceID ||
@@ -90,8 +121,8 @@ export async function createSupervisedDapClientV1(input: {
     locationID: input.locationID,
     workspaceRevision: input.workspaceRevision,
     ...(input.workspaceID === undefined ? {} : { workspaceID: input.workspaceID }),
-    ...(input.managedAttempt === undefined ? {} : { managedAttempt: input.managedAttempt }),
-    ...(input.directAttempt === undefined ? {} : { directAttempt: input.directAttempt }),
+    ...(managedAttempt === undefined ? {} : { managedAttempt }),
+    ...(directAttempt === undefined ? {} : { directAttempt }),
   })
   const requestHostKernel = input.requestHostKernel
   const profileDefinition = projectTrustedGlobalDapProfileV1({ config: input.config, adapterID: input.adapterID })
@@ -105,8 +136,8 @@ export async function createSupervisedDapClientV1(input: {
       sessionID: input.sessionID,
       userActionID: input.userActionID,
       callID: input.callID,
-      ...(input.managedAttempt === undefined ? {} : { managedAttempt: input.managedAttempt }),
-      ...(input.directAttempt === undefined ? {} : { directAttempt: input.directAttempt }),
+       ...(managedAttempt === undefined ? {} : { managedAttempt }),
+       ...(directAttempt === undefined ? {} : { directAttempt }),
     },
     requestHostKernel,
   })
@@ -166,8 +197,8 @@ export async function createSupervisedDapClientV1(input: {
       locationRef: input.locationRef,
       sessionID: input.sessionID,
       locationID: input.locationID,
-      ...(input.managedAttempt === undefined ? {} : { managedAttempt: input.managedAttempt }),
-      ...(input.directAttempt === undefined ? {} : { directAttempt: input.directAttempt }),
+      ...(managedAttempt === undefined ? {} : { managedAttempt }),
+      ...(directAttempt === undefined ? {} : { directAttempt }),
       runTrustedEffect: input.runTrustedEffect,
     })
     client = new HostKernelDapProtocolClientV1({
@@ -179,8 +210,8 @@ export async function createSupervisedDapClientV1(input: {
         sessionID: input.sessionID,
         locationID: input.locationID,
         workspaceRevision: input.workspaceRevision,
-        ...(input.managedAttempt === undefined ? {} : { managedAttempt: input.managedAttempt }),
-        ...(input.directAttempt === undefined ? {} : { directAttempt: input.directAttempt }),
+         ...(managedAttempt === undefined ? {} : { managedAttempt }),
+         ...(directAttempt === undefined ? {} : { directAttempt }),
       },
       authorize,
       onTerminalFailure: () => stop(),

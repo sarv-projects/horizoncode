@@ -13,6 +13,19 @@ describe("Secret Service encrypted D-Bus session", () => {
     service.close()
   })
 
+  test("uses the 1024-bit RFC 2409 group the negotiated algorithm requires", () => {
+    // Regression: the 768-bit group-1 prime rejected every real Secret Service
+    // public key (128 bytes) as out of range, so no credential could be stored.
+    const client = beginSecretServiceDhSession({ privateExponent: 123456789n })
+    expect(client.clientPublicKey.byteLength).toBe(128)
+    const peer = beginSecretServiceDhSession({ privateExponent: 987654321n })
+    expect(peer.clientPublicKey.byteLength).toBe(128)
+    expect(() => client.complete(peer.clientPublicKey)).not.toThrow()
+    expect(() => client.complete(new Uint8Array(128))).toThrow("invalid Secret Service DH public key")
+    client.close()
+    peer.close()
+  })
+
   test("negotiation selects only encrypted DH and refuses malformed replies", async () => {
     let algorithm: string | undefined
     let input: unknown

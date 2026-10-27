@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "src/session/managed-control.ts",
+    "src/session/managed-run-coordinator.ts",
+    "src/session/task.ts",
+    "test/session/managed-control.test.ts"
+  ]
+}

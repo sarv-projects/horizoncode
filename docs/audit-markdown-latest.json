@@ -1,0 +1,3009 @@
+{
+  "structural_only": true,
+  "tracked_markdown": 285,
+  "lines": 82431,
+  "bytes": 7830882,
+  "files": [
+    {
+      "path": ".opencode/skills/horizon-docs/SKILL.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "9759e02408bd7e4dd75fe35af669fd4e89b4ccafb0cf8644f3b540361b564d84",
+      "bytes": 685,
+      "lines": 16,
+      "issues": []
+    },
+    {
+      "path": "AGENTS.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "ede0c99bc13fda6bd266de9a7af57115bbe5340ca7737bdb7eef8204f1e4299b",
+      "bytes": 47300,
+      "lines": 299,
+      "issues": []
+    },
+    {
+      "path": "CONTEXT.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "f87867db6f3a701b95a01a09c4a6d23748f24b297e166c8b521c4d472a908435",
+      "bytes": 32747,
+      "lines": 227,
+      "issues": []
+    },
+    {
+      "path": "CONTRIBUTING.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "af16bf44389bad7b6381f4cdbbfdb93a057e0897561f03dece952b21f06a0852",
+      "bytes": 5755,
+      "lines": 53,
+      "issues": []
+    },
+    {
+      "path": "CURRENT_RUN.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "1aa34f9b7dd1a1d2fcd3e9b5de3aeb892b18ab702eb1d24be87a27e54b956524",
+      "bytes": 1109780,
+      "lines": 6168,
+      "issues": []
+    },
+    {
+      "path": "HANDOFF.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "6981a904a26d5e233d1e5914afec5c4a8a0850c5dee34b3bb836628ba09613f4",
+      "bytes": 800503,
+      "lines": 4853,
+      "issues": []
+    },
+    {
+      "path": "HANDOFF_PROMPT.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "f03f6568e9c901b94646bb214ab37ba98e9310d0b749dc216d591296d8ec13a5",
+      "bytes": 6393,
+      "lines": 48,
+      "issues": []
+    },
+    {
+      "path": "IMPLEMENTER_PROMPT.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "a20389a4e408b096d9e8984b9f5a87186e9e7498baa8086763825230ff5bdc76",
+      "bytes": 5203,
+      "lines": 19,
+      "issues": []
+    },
+    {
+      "path": "README.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "d87b08312627e8cb548402daf1c6e80a29c67a43c1b04db15b8e88c5e45c818a",
+      "bytes": 11671,
+      "lines": 190,
+      "issues": []
+    },
+    {
+      "path": "SECURITY.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "1d98ebaeec5fcf1e1111540b6810120475074ed41699ad330b20f91e746e6027",
+      "bytes": 3914,
+      "lines": 24,
+      "issues": []
+    },
+    {
+      "path": "STATS.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "8ff61963b74caf3041af0b614b9e9df8c7a9ff4cd997c7ce19faae6678f6184b",
+      "bytes": 18662,
+      "lines": 219,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/01-SYSTEM.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "6abe102dfc39a4872d734943c2bb72c2af4f19a340396c9801d1a9f4fa5e20d3",
+      "bytes": 12532,
+      "lines": 207,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/02-DOMAIN.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "2b104ca4074a3552b7f9f13ab9b48b924474aa80930c20794f59b1df27822d17",
+      "bytes": 5075,
+      "lines": 163,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/03-FLOWS.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "9f98321905def6762e1978794d9861d0e8918c14e73887f0a1231de584d3e46d",
+      "bytes": 32708,
+      "lines": 389,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/04-STATE-EVENTS.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "f198facb30ea17b433f5b206545221980773e157694cb7d5adae7f4287ceb841",
+      "bytes": 24812,
+      "lines": 341,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/05-SECURITY.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "c3b1ea4cdf264c0ec315c6de9467b663d496586091c5790ea862c58822f89c00",
+      "bytes": 5925,
+      "lines": 149,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/06-CAPABILITIES.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "6362858edd85a461611ba8a267067817676484d4fdd544d4e90f7a22162bbade",
+      "bytes": 706,
+      "lines": 12,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/07-UX-COMMANDS.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "46c845dbbf87be02c1e304bfea23d99d35daa4f8678cd5b6d61773735e6c5a22",
+      "bytes": 668,
+      "lines": 11,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/08-RECONCILIATION.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "73d0031c52a5ab1cbbbd117fd6af0a8ddac0c725dc4bb8150f310667fae70d8a",
+      "bytes": 612,
+      "lines": 10,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/09-SOURCE-MAP.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "95dbc1071b8117283227659b50815636e302558758011d41b0a6be5dc3cfcd5d",
+      "bytes": 686,
+      "lines": 11,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/10-DELIVERY.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "9f0d7b5f1681c2cacf1ccf058ff568998e0e885a2f01a05d4f1c570c45cb3be2",
+      "bytes": 28583,
+      "lines": 275,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/11-LIFECYCLE.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "ace5374ce023aeea54b776fc6d45e5c2d8840a2fa5a971a46ecfb24e752fd429",
+      "bytes": 17521,
+      "lines": 308,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/12-DOMAIN-SCHEMAS.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "4adaffd33da57a1f70507a366566cce6dd48ca1ea438b0c8c0d82199d4e20d5d",
+      "bytes": 103509,
+      "lines": 1196,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/13-COMPOSITION-IPC.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "b77afc6cadebc5e091edca977e243c6baedc55dd3e279aaaaa6b459f84625501",
+      "bytes": 15950,
+      "lines": 219,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/14-EFFECTS-EXECUTION-SECURITY.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "cca4e93fdcddce30f26896c4a2d0e9700ee54e4c4b86d082b1668250abdefc5b",
+      "bytes": 115288,
+      "lines": 1481,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/15-RUNTIME-EXECUTION.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "b9dc97d4aa732e1b6e04bac18f20e5a10b33577bbd2acf2e368bdbbe162913d7",
+      "bytes": 24344,
+      "lines": 309,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/16-UX-SETTINGS-ECOSYSTEM.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "d47ccb090f4b7df27e592eed5b9a27dae0c09a6cddab39d0bc035c950703e382",
+      "bytes": 71713,
+      "lines": 713,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/17-GOVERNANCE-DECISIONS.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "320b4df5c59ae8578363799b374fa5a490c8dd0b265408874dbe6a2e454dfc44",
+      "bytes": 87615,
+      "lines": 623,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/18-OPERATIONS-RELEASE.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "9e04e6b0a111c301355d588ec5d431c2718b8cd4d39102f3a51684fd12b825a4",
+      "bytes": 54790,
+      "lines": 385,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/19-OPENCODE-UPSTREAM-REUSE.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "98694c2f565052010012ec8d073a2b2dce642fc959ce45e7c07d72a2759bd554",
+      "bytes": 716,
+      "lines": 11,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/20-OPENCODE-INTEGRATION-LLD.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "d3d445dfa3bc2fa145598e893eb576170593dbe58d9baff29a0f4b9e4de26b85",
+      "bytes": 28942,
+      "lines": 311,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/21-HEALING-PERMISSIONS-WORKTREE-POOL.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "9feffb135a33278086bb892f3c0a82f20fa2b440285accff0e23dc5e5667d4ad",
+      "bytes": 30987,
+      "lines": 397,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/22-UNIVERSAL-UI-COMMANDS-MEMORY.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "73980e09bc84f24552f687af5969d8039f577bd4f9e12f67ce5d57cf5b2c4d52",
+      "bytes": 858,
+      "lines": 13,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/23-ADOPTION-GATES-TESTS.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "70d4c4b516afbbd04f58d2700c80df0c8bac766576022e08d87c51a7341dc5ce",
+      "bytes": 665,
+      "lines": 11,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/24-LOCAL-CODE-AUDIT-AND-MIGRATION.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "08525e66a998e43aa0c55956b80145bbbbac41dcee6b7dc0b0752c5e4081839c",
+      "bytes": 659,
+      "lines": 11,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/25-DATA-AND-CONTROL-PLANE-CROSSWALK.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "1b11d21fe97d2d7c0569b5a04c594a42aec7aee5487140fdfaf47ee070de9145",
+      "bytes": 782,
+      "lines": 13,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/26-UX-ACCEPTANCE-AND-RELEASE.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "3f18e9cb4d925869939a89e099fe8707a059a636d2eb299d756d276f2dd529a7",
+      "bytes": 701,
+      "lines": 11,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/27-IMPLEMENTATION-READINESS-AUDIT.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "268728e15cf65ff1bd36809d198b7a18bd76b089b804e748268a7a21441b8fa2",
+      "bytes": 626,
+      "lines": 11,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/28-COMPETITIVE-GAP-AUDIT.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "2c7f5192d147788e80dee154671236c6244b992106feb529be02e3cb3f3dac93",
+      "bytes": 728,
+      "lines": 11,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/29-AGENTS-SKILLS-HOOKS-MCP.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "4d2c22aea27e15fe55df89cf2e021044f5ed2783704f758b4efeb503f511026f",
+      "bytes": 60342,
+      "lines": 935,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/30-CONTEXT-INDEXING-LOCAL-MODELS.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "fe5cd4fd962c123f9a80d0edcc9776de53bb9310c78961dde879636762bb8dce",
+      "bytes": 94852,
+      "lines": 1141,
+      "issues": [
+        {
+          "line": 918,
+          "kind": "missing-relative-link",
+          "target": "contracts-v2/context-compile-policy-v1.schema.json"
+        },
+        {
+          "line": 918,
+          "kind": "missing-relative-link",
+          "target": "contracts-v2/repo-context-anchor-v1.schema.json"
+        }
+      ]
+    },
+    {
+      "path": "arch_V1/31-UI-PERFORMANCE-ARTIFACTS-ANALYTICS.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "5ffb81e85ac732a4222f8638b76c42db740bd6afaa3cb24d4e81a106267b0fb6",
+      "bytes": 73052,
+      "lines": 749,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/32-TASK-BASED-AGENT-TEST-CATALOG.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "9a4a34adc5a52da2671bc09243d48afa7362562bc9bc72545527ca9dc0c47b89",
+      "bytes": 161530,
+      "lines": 1287,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/33-BUILTIN-CAPABILITIES-CATALOG.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "6736ebfa855983394c9a183dbbdc1deaf132c19cf6f9e1408138c4dc75fbaa2b",
+      "bytes": 39856,
+      "lines": 813,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/34-DOCUMENT-LINE-AUDIT-LEDGER.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "05254733917934c6b95bf5f524cf3fd9f685b99be7d7717b0ceb106c54d369c1",
+      "bytes": 650,
+      "lines": 11,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/35-USER-REQUEST-COVERAGE-MATRIX.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "f05adcbcb17370fa52b941c3da2d700d5322dcfc9c2e870d7a5edffc15184d49",
+      "bytes": 763,
+      "lines": 12,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/36-CONTRACT-CONVERGENCE-PLAN.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "e03baaefd0e0ccb3d50edc19ca87ac624294c1e18130a01b1c6c4dd6ebd8bc71",
+      "bytes": 682,
+      "lines": 11,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/37-RUNTIME-SERVICE-LLD.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "873943b3b5c91ed5f4bdebfee7d0585eca758ed662f9c06cff474143fd1789bd",
+      "bytes": 336634,
+      "lines": 3716,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/38-OMP-SOURCE-COMPETITIVE-AUDIT.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "a862410dbda577768b46c5d1abfa56a924718adc9b6dd5a9a20be8e0b3616cb9",
+      "bytes": 657,
+      "lines": 10,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/39-OMP-TUI-SLASH-MODEL-SETTINGS-AUDIT.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "da9fefc7547e23033b86329f70ab939a920dc51f87b70e66b5a98ed7c8d903b3",
+      "bytes": 808,
+      "lines": 12,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/40-HORIZONCODE-OMP-INSPIRED-UI-PROPOSAL.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "6a59d8b3128c41b48058a3682664a8d48c99ba0ce6ff25866b5447a2fdd399d5",
+      "bytes": 876,
+      "lines": 13,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/41-OMP-STREAMING-VISUAL-ARTIFACTS-AUDIT.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "71246be450b5fd586aec79e14dd747d45cb05b45807b056bed5d16dca26a7077",
+      "bytes": 824,
+      "lines": 12,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/42-EXTERNAL-SOURCE-PROVENANCE-REGISTER.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "f94cceffa16b2fe8ecd60c5c3ccb227a13ce03a039c52d66af83e7aa1fecaeff",
+      "bytes": 104568,
+      "lines": 751,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/43-IMPLEMENTATION-SOURCE-LLD-PLAYBOOK.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "04c99fc80a5cb20fe152a70f360a1405541d09ba928691a2ec48ad323479e382",
+      "bytes": 918,
+      "lines": 14,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/44-FINAL-REPO-AUDIT-LEDGER.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "e574e666cbafba5ae46df8529c32d236dd737a4980be4093136efc06d3e5607d",
+      "bytes": 601,
+      "lines": 11,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/45-V1-EVENT-FLOWS-ATLAS.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "0a30d99aa079167c04cf447bb76be88d881a061b40e755314af5c2e6fb898865",
+      "bytes": 74001,
+      "lines": 1140,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/GLOSSARY.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "4fbf114fea6a21c4d3b2741dd2f336bdc4a6444f461a83dd24080503060c2606",
+      "bytes": 8977,
+      "lines": 90,
+      "issues": []
+    },
+    {
+      "path": "arch_V1/README.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "c8b65ef524cedcac3fbf4bf550c2dce15e15f5644afdbc609e9a3464dc9db0be",
+      "bytes": 7983,
+      "lines": 108,
+      "issues": []
+    },
+    {
+      "path": "docs/README.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "bd721f7b4c2bf7f77d65f3fc966ce6f0a8ec43eb8021939996bcee66b865bdae",
+      "bytes": 3690,
+      "lines": 26,
+      "issues": []
+    },
+    {
+      "path": "docs/agent-tool-routing.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "c66c0ecd0a83aa830dbdb7172d0dcdd8a8b28d90148f07617daf830f02ec35d4",
+      "bytes": 6997,
+      "lines": 31,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/AGENTS.md",
+      "scope": "historical",
+      "sha256": "bd66a6ca7dba6ac48e00ad348b7ce9245ab1b9854ae7afe726296774ec1378f6",
+      "bytes": 16929,
+      "lines": 104,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/CURRENT_RUN.md",
+      "scope": "historical",
+      "sha256": "f77127a6aa2e67375c8dfaebb11f37a288ab3099d848214df024c516eceb0953",
+      "bytes": 136404,
+      "lines": 1728,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/HANDOFF.md",
+      "scope": "historical",
+      "sha256": "d7cac707dcefd0c977d6452e7e2e8fe7c455a3c0b19b166304d99f354c634037",
+      "bytes": 30109,
+      "lines": 175,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/IMPLEMENTER_PROMPT.md",
+      "scope": "historical",
+      "sha256": "c99e40aa78493519613046928c136765e68aa426d3b4269b0aaa38cd3a649398",
+      "bytes": 7906,
+      "lines": 33,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/README.md",
+      "scope": "historical",
+      "sha256": "e586bfb8fe6fec0f669cd29de468179c9f76b8e6329ca93e9537300f0ae38151",
+      "bytes": 588,
+      "lines": 8,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/01-SYSTEM.md",
+      "scope": "historical",
+      "sha256": "f743d06418b88c1a0fc709e3ab660d20ec799ee122b5a233782ae20b991545a7",
+      "bytes": 13391,
+      "lines": 169,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/02-DOMAIN.md",
+      "scope": "historical",
+      "sha256": "450a752b9fc2601e9763c27016e9ee7024a0ca7bdaaaf91e2e0d08bd4d9fe7a3",
+      "bytes": 22703,
+      "lines": 464,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/03-FLOWS.md",
+      "scope": "historical",
+      "sha256": "c7a23b1fea354d9fe601884b0c23f9a2eb61b414be8841db7d159e9920329566",
+      "bytes": 20285,
+      "lines": 329,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/04-STATE-EVENTS.md",
+      "scope": "historical",
+      "sha256": "7b1708043032d9e8661647b35afbd00a2b59e21880cbffcfe6f5c80a52fa6562",
+      "bytes": 31475,
+      "lines": 497,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/05-SECURITY.md",
+      "scope": "historical",
+      "sha256": "e20e9d3d4dbfbfb4f25b388f5c917b797f292d5caa50c69f1565634442507b96",
+      "bytes": 16224,
+      "lines": 225,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/06-CAPABILITIES.md",
+      "scope": "historical",
+      "sha256": "dbb1632b5944cb35ace15c2461450fc20f4553c932a2f31103104c8cc4408fb7",
+      "bytes": 14154,
+      "lines": 120,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/07-UX-COMMANDS.md",
+      "scope": "historical",
+      "sha256": "c96cf34cfbaba1f6f19108fe923b869355d6a2b8091b5d55242bc65e7bc6ba6e",
+      "bytes": 12760,
+      "lines": 234,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/08-RECONCILIATION.md",
+      "scope": "historical",
+      "sha256": "16483a388a193b16874e95f368939e7371389844ec056d94b8ad83a7c230b863",
+      "bytes": 16498,
+      "lines": 167,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/09-SOURCE-MAP.md",
+      "scope": "historical",
+      "sha256": "0eca7d41e75fba29a794e28aab4c7e9724c41f46f2605c6c016a367f8d6cc4f2",
+      "bytes": 32715,
+      "lines": 305,
+      "issues": [
+        {
+          "line": 29,
+          "kind": "missing-relative-link",
+          "target": "opencode-b1fe25ab-path-inventory.jsonl"
+        },
+        {
+          "line": 305,
+          "kind": "missing-relative-link",
+          "target": "external-source-register.json"
+        }
+      ]
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/10-DELIVERY.md",
+      "scope": "historical",
+      "sha256": "d336b96279e791ee37bb2984a42e7de691f2f1f0de045911bebe2d6878521b15",
+      "bytes": 38925,
+      "lines": 482,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/11-LIFECYCLE.md",
+      "scope": "historical",
+      "sha256": "75192a58b1fd142ab567e56c4ef2a86c84e32e24a0995e6e1ecbb45d7a85dfe6",
+      "bytes": 88034,
+      "lines": 1050,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/12-DOMAIN-SCHEMAS.md",
+      "scope": "historical",
+      "sha256": "dc6ee822c90f32ef7e8c34fa24132b2abe32c1d316adb4365bdcf5a090a14650",
+      "bytes": 94058,
+      "lines": 1701,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/13-COMPOSITION-IPC.md",
+      "scope": "historical",
+      "sha256": "44992aacbe3e2943017744d85f1acd245a29340ca98ae2aa0013223e2aad9d36",
+      "bytes": 44883,
+      "lines": 766,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/14-EFFECTS-EXECUTION-SECURITY.md",
+      "scope": "historical",
+      "sha256": "cfaab7cbec5b4d5ddeb4c4082f7f7c96f91e0aeb8335f64c3b8943ce277d22ad",
+      "bytes": 40147,
+      "lines": 682,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/15-RUNTIME-EXECUTION.md",
+      "scope": "historical",
+      "sha256": "28f9c8c9ea94310c05379fc856dd6deffaf6c4636d0eb8c2ef9132f0646e44c6",
+      "bytes": 56149,
+      "lines": 833,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/16-UX-SETTINGS-ECOSYSTEM.md",
+      "scope": "historical",
+      "sha256": "8baea6323b1db764d713d6a5cbd201732fc66eb7707bb8da8bf13aa72c42f0fa",
+      "bytes": 36052,
+      "lines": 527,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/17-GOVERNANCE-DECISIONS.md",
+      "scope": "historical",
+      "sha256": "b673e63ca2d68508a1860c4fda1521ae06e8573681f19343acc704ad749e923c",
+      "bytes": 27795,
+      "lines": 219,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/18-OPERATIONS-RELEASE.md",
+      "scope": "historical",
+      "sha256": "01d2d048e456db91aab1c93aa032feb6a5bf54cf8046d6785f8ffc2dcdfaff48",
+      "bytes": 24700,
+      "lines": 354,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/19-OPENCODE-UPSTREAM-REUSE.md",
+      "scope": "historical",
+      "sha256": "d785a242405ca09f033556a1f5c2c9fad54ca45911b432f60f47a0c3d7032037",
+      "bytes": 12939,
+      "lines": 66,
+      "issues": [
+        {
+          "line": 66,
+          "kind": "missing-relative-link",
+          "target": "external-source-register.json"
+        }
+      ]
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/20-OPENCODE-INTEGRATION-LLD.md",
+      "scope": "historical",
+      "sha256": "e40a7409b808dbab2ed907e0dad13f9776461decbaf5c4c9909ea2084d10c43c",
+      "bytes": 24235,
+      "lines": 364,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/21-HEALING-PERMISSIONS-WORKTREE-POOL.md",
+      "scope": "historical",
+      "sha256": "489f8e39c42d8d5bbbe072eedb40c859445483ba98ef343df9a8517f08f5aa2d",
+      "bytes": 17972,
+      "lines": 159,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/22-UNIVERSAL-UI-COMMANDS-MEMORY.md",
+      "scope": "historical",
+      "sha256": "f0d323574083a97a5cef08cd1eb0bdb013222879e7473c5798ad28a71b49191b",
+      "bytes": 20553,
+      "lines": 185,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/23-ADOPTION-GATES-TESTS.md",
+      "scope": "historical",
+      "sha256": "c5346aba136c05edc5ebfbed7054cca78efcdbc1630c0f55e9c2648a733ef510",
+      "bytes": 20238,
+      "lines": 196,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/24-LOCAL-CODE-AUDIT-AND-MIGRATION.md",
+      "scope": "historical",
+      "sha256": "fa1490e3da0e7b0454372828c8d36aba241002156903ada72f5c271aaffc4048",
+      "bytes": 31499,
+      "lines": 308,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/25-DATA-AND-CONTROL-PLANE-CROSSWALK.md",
+      "scope": "historical",
+      "sha256": "7513f80d4cfdee1bd8eb78100db7f3d7f6dac48237f1816501caa308a68251b0",
+      "bytes": 19474,
+      "lines": 265,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/26-UX-ACCEPTANCE-AND-RELEASE.md",
+      "scope": "historical",
+      "sha256": "5c3bfeec13f39e288cb1d96ac3f5362b2f3567d0156ebfc981fe5ed2cc6ed04d",
+      "bytes": 16232,
+      "lines": 203,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/27-IMPLEMENTATION-READINESS-AUDIT.md",
+      "scope": "historical",
+      "sha256": "545ab0464e006ddca6e61982587f5ac2e1d035a457467eff6ef4289e42651a8d",
+      "bytes": 28618,
+      "lines": 300,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/28-COMPETITIVE-GAP-AUDIT.md",
+      "scope": "historical",
+      "sha256": "0b17051767ee42cffd5b8377a04d71fc6fd3ea4198ed07348d2273c7a21f0d25",
+      "bytes": 25103,
+      "lines": 329,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/29-AGENTS-SKILLS-HOOKS-MCP.md",
+      "scope": "historical",
+      "sha256": "58081b460fb38bf4a6ba64d85b9b46c35f3b0dda39d405ff942908215ac6ac32",
+      "bytes": 23197,
+      "lines": 567,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/30-CONTEXT-INDEXING-LOCAL-MODELS.md",
+      "scope": "historical",
+      "sha256": "411cdbecde2ca8515d0ab8c78485f624f71f582bf57d97056038d709764beb78",
+      "bytes": 21787,
+      "lines": 514,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/31-UI-PERFORMANCE-ARTIFACTS-ANALYTICS.md",
+      "scope": "historical",
+      "sha256": "f1e0bf9c6b4cad41730603476597151b5f8d8c2dd9a882f85307cb8d5ae3aada",
+      "bytes": 21616,
+      "lines": 549,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/32-TASK-BASED-AGENT-TEST-CATALOG.md",
+      "scope": "historical",
+      "sha256": "643f57b71bdecbeee3e9034d2f7c77a50043fa81d4746472558bb87210425e58",
+      "bytes": 30962,
+      "lines": 509,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/33-BUILTIN-CAPABILITIES-CATALOG.md",
+      "scope": "historical",
+      "sha256": "fab4451a58c3ea867ff033db9c05255c000ecaeffcc56d98d6bb69e5787d7ac7",
+      "bytes": 18210,
+      "lines": 554,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/34-DOCUMENT-LINE-AUDIT-LEDGER.md",
+      "scope": "historical",
+      "sha256": "15785730c5c3088d2b2a0d5de5b5b060b27c7e7ab680a8323af3ce7326cee0ff",
+      "bytes": 25536,
+      "lines": 275,
+      "issues": [
+        {
+          "line": 275,
+          "kind": "missing-relative-link",
+          "target": "repo-file-line-audit-manifest.json"
+        }
+      ]
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/35-USER-REQUEST-COVERAGE-MATRIX.md",
+      "scope": "historical",
+      "sha256": "7f3b3191935e435fc791c9f46c078763ceeba97cc1802aa308ed0259991620ac",
+      "bytes": 28798,
+      "lines": 373,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/36-CONTRACT-CONVERGENCE-PLAN.md",
+      "scope": "historical",
+      "sha256": "3f938ec683a92c19bbfaf10fa9eb217fa45c7aef6ccb62260b013f226878f256",
+      "bytes": 6018,
+      "lines": 58,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/37-RUNTIME-SERVICE-LLD.md",
+      "scope": "historical",
+      "sha256": "003de943530e556e3bc85e296b8876dfa01815399b6041e4f3fe81925def85a5",
+      "bytes": 17980,
+      "lines": 148,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/38-OMP-SOURCE-COMPETITIVE-AUDIT.md",
+      "scope": "historical",
+      "sha256": "3404356f083aedeb8736683b21e70c9761e86c1efa21af103559f2847fe018bd",
+      "bytes": 29681,
+      "lines": 167,
+      "issues": [
+        {
+          "line": 163,
+          "kind": "missing-relative-link",
+          "target": "omp-tui-command-settings-inventory.json"
+        },
+        {
+          "line": 163,
+          "kind": "missing-relative-link",
+          "target": "omp-provider-source-roster.json"
+        }
+      ]
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/39-OMP-TUI-SLASH-MODEL-SETTINGS-AUDIT.md",
+      "scope": "historical",
+      "sha256": "67767b4e221133dbb1e9fc8b6a786df59b6adb56e47daefc5cfaca0dad8be29f",
+      "bytes": 53889,
+      "lines": 691,
+      "issues": [
+        {
+          "line": 4,
+          "kind": "missing-relative-link",
+          "target": "omp-tui-command-settings-inventory.json"
+        },
+        {
+          "line": 691,
+          "kind": "missing-relative-link",
+          "target": "omp-provider-source-roster.json"
+        }
+      ]
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/40-HORIZONCODE-OMP-INSPIRED-UI-PROPOSAL.md",
+      "scope": "historical",
+      "sha256": "d3855dbc3f02e92e2eebac1d7eea5654037f23b4b9db85ea11ea727d3df196c3",
+      "bytes": 26696,
+      "lines": 225,
+      "issues": [
+        {
+          "line": 4,
+          "kind": "missing-relative-link",
+          "target": "omp-tui-command-settings-inventory.json"
+        },
+        {
+          "line": 219,
+          "kind": "missing-relative-link",
+          "target": "omp-provider-source-roster.json"
+        }
+      ]
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/41-OMP-STREAMING-VISUAL-ARTIFACTS-AUDIT.md",
+      "scope": "historical",
+      "sha256": "040db7b2757e13dde4e180cdf7abf852aa88e4eb1a259cfecb47b4ab09f1a3dc",
+      "bytes": 19209,
+      "lines": 121,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/42-EXTERNAL-SOURCE-PROVENANCE-REGISTER.md",
+      "scope": "historical",
+      "sha256": "71ba8b2fe03f36c95c2d519ccd80d5005cc864bb71f18bd987bcd15644f385a3",
+      "bytes": 35366,
+      "lines": 326,
+      "issues": [
+        {
+          "line": 3,
+          "kind": "missing-relative-link",
+          "target": "external-source-register.json"
+        },
+        {
+          "line": 317,
+          "kind": "missing-relative-link",
+          "target": "repo-file-line-audit-manifest.json"
+        },
+        {
+          "line": 325,
+          "kind": "missing-relative-link",
+          "target": "ignored-reference-source-manifest.json"
+        }
+      ]
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/43-IMPLEMENTATION-SOURCE-LLD-PLAYBOOK.md",
+      "scope": "historical",
+      "sha256": "1732d8738e63a6d78c39ba463f5d0f39c92d0ce1066cb4f2904618ca6555169e",
+      "bytes": 14478,
+      "lines": 114,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/44-FINAL-REPO-AUDIT-LEDGER.md",
+      "scope": "historical",
+      "sha256": "eb6f936dca6ed63aeffec97d7157ec80edb2f19d587441d40af9068f39a7c112",
+      "bytes": 11209,
+      "lines": 68,
+      "issues": [
+        {
+          "line": 3,
+          "kind": "missing-relative-link",
+          "target": "repo-file-line-audit-manifest.json"
+        },
+        {
+          "line": 3,
+          "kind": "missing-relative-link",
+          "target": "ownership-phrase-audit-candidates.json"
+        },
+        {
+          "line": 61,
+          "kind": "missing-relative-link",
+          "target": "ignored-reference-source-manifest.json"
+        }
+      ]
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/GLOSSARY.md",
+      "scope": "historical",
+      "sha256": "0c4b38b8c6e62e02c760288ba545d607298c9359047b153b3343064c64267522",
+      "bytes": 10857,
+      "lines": 85,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/README.md",
+      "scope": "historical",
+      "sha256": "565208f0963cea9bbc61744d810c6410ae29afedc343433996ffb2b3f47b9bf7",
+      "bytes": 15447,
+      "lines": 117,
+      "issues": [
+        {
+          "line": 73,
+          "kind": "missing-relative-link",
+          "target": "contracts-v2/managed-work-additive.sql"
+        },
+        {
+          "line": 74,
+          "kind": "missing-relative-link",
+          "target": "contracts-v2/managed-event.schema.json"
+        },
+        {
+          "line": 75,
+          "kind": "missing-relative-link",
+          "target": "contracts-v2/control-api.openapi.json"
+        },
+        {
+          "line": 76,
+          "kind": "missing-relative-link",
+          "target": "contracts-v2/agent-profile-v2.schema.json"
+        },
+        {
+          "line": 77,
+          "kind": "missing-relative-link",
+          "target": "contracts-v2/harness-profile-v1.schema.json"
+        },
+        {
+          "line": 78,
+          "kind": "missing-relative-link",
+          "target": "contracts-v2/plan-handoff-v1.schema.json"
+        },
+        {
+          "line": 79,
+          "kind": "missing-relative-link",
+          "target": "contracts-v2/context-ledger-v2.schema.json"
+        },
+        {
+          "line": 80,
+          "kind": "missing-relative-link",
+          "target": "contracts-v2/runtime-observation-v1.schema.json"
+        },
+        {
+          "line": 81,
+          "kind": "missing-relative-link",
+          "target": "opencode-b1fe25ab-path-inventory.jsonl"
+        },
+        {
+          "line": 95,
+          "kind": "missing-relative-link",
+          "target": "contracts-v2/capability-registry-v1.json"
+        },
+        {
+          "line": 95,
+          "kind": "missing-relative-link",
+          "target": "contracts-v2/capability-registry-v1.schema.json"
+        },
+        {
+          "line": 96,
+          "kind": "missing-relative-link",
+          "target": "contracts-v2/skill-manifest-v2.schema.json"
+        },
+        {
+          "line": 96,
+          "kind": "missing-relative-link",
+          "target": "contracts-v2/hook-binding-v2.schema.json"
+        },
+        {
+          "line": 96,
+          "kind": "missing-relative-link",
+          "target": "contracts-v2/mcp-server-profile-v2.schema.json"
+        },
+        {
+          "line": 96,
+          "kind": "missing-relative-link",
+          "target": "contracts-v2/automation-v2.schema.json"
+        },
+        {
+          "line": 97,
+          "kind": "missing-relative-link",
+          "target": "contracts-v2/ui-stream-event-v2.schema.json"
+        },
+        {
+          "line": 97,
+          "kind": "missing-relative-link",
+          "target": "contracts-v2/browser-action-v1.schema.json"
+        },
+        {
+          "line": 97,
+          "kind": "missing-relative-link",
+          "target": "contracts-v2/language-service-snapshot-v1.schema.json"
+        },
+        {
+          "line": 97,
+          "kind": "missing-relative-link",
+          "target": "contracts-v2/subagent-delivery-v1.schema.json"
+        },
+        {
+          "line": 106,
+          "kind": "missing-relative-link",
+          "target": "omp-source-evidence-inventory.json"
+        },
+        {
+          "line": 107,
+          "kind": "missing-relative-link",
+          "target": "omp-native-rust-surface-inventory.json"
+        },
+        {
+          "line": 108,
+          "kind": "missing-relative-link",
+          "target": "omp-tui-command-settings-inventory.json"
+        },
+        {
+          "line": 109,
+          "kind": "missing-relative-link",
+          "target": "omp-provider-source-roster.json"
+        },
+        {
+          "line": 114,
+          "kind": "missing-relative-link",
+          "target": "external-source-register.json"
+        },
+        {
+          "line": 114,
+          "kind": "missing-relative-link",
+          "target": "repo-file-line-audit-manifest.json"
+        },
+        {
+          "line": 117,
+          "kind": "missing-relative-link",
+          "target": "ignored-reference-source-manifest.json"
+        }
+      ]
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/docs/superpowers/plans/2026-10-09-horizon-p2-foundation.md",
+      "scope": "historical",
+      "sha256": "269333b1b4dccf68f13235669943d87b99ee14a9f0194f4382f693cc7ea5ff10",
+      "bytes": 18768,
+      "lines": 180,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/docs/superpowers/plans/2026-10-10-horizon-p2-thread-cutover.md",
+      "scope": "historical",
+      "sha256": "eeddc90dfa6fedc10686d1b79b7f78222380bf05f6a194ffe3ec9d8da966d957",
+      "bytes": 33459,
+      "lines": 448,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/docs/superpowers/plans/2026-10-10-session-observer-supervisor.md",
+      "scope": "historical",
+      "sha256": "a0959bf553bf01de752d6e4b0482de3a0e772cdfee6255db926c5c2528d4bad2",
+      "bytes": 4452,
+      "lines": 55,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md",
+      "scope": "historical",
+      "sha256": "fd81223185deac1d86357595f6d03b6331dfa1b2bc66cbd600e8f43eaee02be3",
+      "bytes": 14360,
+      "lines": 122,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/docs/superpowers/specs/2026-10-09-horizon-p2-kernel-foundation-design.md",
+      "scope": "historical",
+      "sha256": "c578ee270a44f4c90220f2638ba311bf53a62f6e050a5afb7a67688b7eba76eb",
+      "bytes": 21667,
+      "lines": 308,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-12-pre-repo-audit-HANDOFF.md",
+      "scope": "historical",
+      "sha256": "aaf2fb4d15a34c7af1aaeefdc48c5bf399d3925e0ae4fc4f2636291b6df86b58",
+      "bytes": 28657,
+      "lines": 223,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-12-superseded-thread-memory-schema-prototypes/README.md",
+      "scope": "historical",
+      "sha256": "7762ffe72c8f30509672f3eb5190ca499259c70a58bc630faf63c14cba9040f3",
+      "bytes": 1007,
+      "lines": 14,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-15-handoff-pre-jcode-adoption.md",
+      "scope": "historical",
+      "sha256": "bed8cad12ace060a8beada810fae8062d4bd304dfb7ce72e362670fe006d4975",
+      "bytes": 25859,
+      "lines": 234,
+      "issues": []
+    },
+    {
+      "path": "docs/architecture-input/2026-10-11-superseded-contract-excerpts.md",
+      "scope": "historical",
+      "sha256": "d35ccce06fdfa87a5081cbd896065acee04954fd18d36f0685fd317c77a93578",
+      "bytes": 43852,
+      "lines": 634,
+      "issues": [
+        {
+          "line": 86,
+          "kind": "missing-relative-link",
+          "target": "17-GOVERNANCE-DECISIONS.md"
+        },
+        {
+          "line": 86,
+          "kind": "missing-relative-link",
+          "target": "24-LOCAL-CODE-AUDIT-AND-MIGRATION.md"
+        },
+        {
+          "line": 86,
+          "kind": "missing-relative-link",
+          "target": "25-DATA-AND-CONTROL-PLANE-CROSSWALK.md"
+        },
+        {
+          "line": 247,
+          "kind": "missing-relative-link",
+          "target": "17-GOVERNANCE-DECISIONS.md"
+        },
+        {
+          "line": 247,
+          "kind": "missing-relative-link",
+          "target": "24-LOCAL-CODE-AUDIT-AND-MIGRATION.md"
+        },
+        {
+          "line": 247,
+          "kind": "missing-relative-link",
+          "target": "25-DATA-AND-CONTROL-PLANE-CROSSWALK.md"
+        },
+        {
+          "line": 411,
+          "kind": "missing-relative-link",
+          "target": "17-GOVERNANCE-DECISIONS.md"
+        },
+        {
+          "line": 411,
+          "kind": "missing-relative-link",
+          "target": "24-LOCAL-CODE-AUDIT-AND-MIGRATION.md"
+        },
+        {
+          "line": 411,
+          "kind": "missing-relative-link",
+          "target": "25-DATA-AND-CONTROL-PLANE-CROSSWALK.md"
+        },
+        {
+          "line": 586,
+          "kind": "missing-relative-link",
+          "target": "17-GOVERNANCE-DECISIONS.md"
+        },
+        {
+          "line": 586,
+          "kind": "missing-relative-link",
+          "target": "24-LOCAL-CODE-AUDIT-AND-MIGRATION.md"
+        },
+        {
+          "line": 586,
+          "kind": "missing-relative-link",
+          "target": "25-DATA-AND-CONTROL-PLANE-CROSSWALK.md"
+        }
+      ]
+    },
+    {
+      "path": "docs/architecture-input/universal-software-agent-v2-source.md",
+      "scope": "historical",
+      "sha256": "b1a3dab6434ebc7f7bb13bd1848118e29002256c48ab9f5c81e58d1a01c42ab6",
+      "bytes": 215321,
+      "lines": 2292,
+      "issues": []
+    },
+    {
+      "path": "docs/performance/README.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "0774bb9414407aac49c4ead45e8ca4f86006c111ad33e508dc8dc6a2b1f848b7",
+      "bytes": 6448,
+      "lines": 75,
+      "issues": []
+    },
+    {
+      "path": "docs/research/2026-10-21-pi-codex-harness-decisions.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "89296c1b51bd5d5d4042f63b359a52afa154acabe233bbd570e75211c178e1ad",
+      "bytes": 49239,
+      "lines": 344,
+      "issues": []
+    },
+    {
+      "path": "docs/superpowers/plans/2026-10-09-horizon-p2-foundation.md",
+      "scope": "superseded-plan",
+      "sha256": "037e77430b79e6e034dcdedc35065627ea8c7d63b8d57844fa1145f26bc3b4e4",
+      "bytes": 720,
+      "lines": 15,
+      "issues": []
+    },
+    {
+      "path": "docs/superpowers/plans/2026-10-10-horizon-p2-thread-cutover.md",
+      "scope": "superseded-plan",
+      "sha256": "da9c0913438e7faa81aff9f1216ba6410e9ff8d3683f1877da5b7ffa5f14419b",
+      "bytes": 675,
+      "lines": 14,
+      "issues": []
+    },
+    {
+      "path": "docs/superpowers/plans/2026-10-10-session-observer-supervisor.md",
+      "scope": "superseded-plan",
+      "sha256": "c0d79f5f64f29e37f67b1531fe0f505d8a3f33775e468644798d8748c8e42c2e",
+      "bytes": 748,
+      "lines": 16,
+      "issues": []
+    },
+    {
+      "path": "docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "29ee6286284bf5d743e5b38c1556dde9db75b11e0f9dea5c60a9e7573b33d567",
+      "bytes": 541154,
+      "lines": 3718,
+      "issues": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-10-09-horizon-p2-kernel-foundation-design.md",
+      "scope": "superseded-plan",
+      "sha256": "217abb2a6d158c75216d7cd3d68d6ca9ef73f811c9f7cbe5cb43312864af3d55",
+      "bytes": 749,
+      "lines": 16,
+      "issues": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-10-19-veo-inspired-capability-roadmap.md",
+      "scope": "superseded-plan",
+      "sha256": "f2851f44156e01a527966c36a4260215df62801b2af1471ef57dc8afa3f6fdad",
+      "bytes": 25550,
+      "lines": 267,
+      "issues": []
+    },
+    {
+      "path": "horizoncode-sandbox/README.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "f74bd15d19af6992543914b9257d9a9e19e30885cc56cd2bddd83e0ecfc0b787",
+      "bytes": 4732,
+      "lines": 87,
+      "issues": []
+    },
+    {
+      "path": "implementationtov1release.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "a09566a34c2f9d9f87718e48031cc4b0597a8f8a081f85bdb9d425fa70743901",
+      "bytes": 716689,
+      "lines": 4320,
+      "issues": []
+    },
+    {
+      "path": "indexd/src/README.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "d523f310e67b7887083c814995764b75c65fbb0dc5f6cbdf506cc4cceb246355",
+      "bytes": 23483,
+      "lines": 371,
+      "issues": []
+    },
+    {
+      "path": "opencode/.github/pull_request_template.md",
+      "scope": "upstream",
+      "sha256": "5514aa7d3586f04229441b71c9b33a25531b6c8eafd3b540a72cafc62057b9c0",
+      "bytes": 846,
+      "lines": 29,
+      "issues": []
+    },
+    {
+      "path": "opencode/.opencode/agent/duplicate-pr.md",
+      "scope": "upstream",
+      "sha256": "639806db0259a5aa38caa8320c5e311bfcd89d807461b300355fad90e8c21f0f",
+      "bytes": 924,
+      "lines": 26,
+      "issues": []
+    },
+    {
+      "path": "opencode/.opencode/agent/triage.md",
+      "scope": "upstream",
+      "sha256": "7ba6df54df56ed5a7fa9730119a0eff7a3751fdd6f4e6b738ed653a15c6b0ca3",
+      "bytes": 1411,
+      "lines": 43,
+      "issues": []
+    },
+    {
+      "path": "opencode/.opencode/command/ai-deps.md",
+      "scope": "upstream",
+      "sha256": "31bbd0ff021af312fe1dcc80943a266bdb282f0b2d5b176f372ea30098c6f2be",
+      "bytes": 1033,
+      "lines": 24,
+      "issues": []
+    },
+    {
+      "path": "opencode/.opencode/command/changelog.md",
+      "scope": "upstream",
+      "sha256": "f1861a12b139ef6fe98c8b9009aa86d0baedef2dfb7ee334bd2f68cf5dffa371",
+      "bytes": 3172,
+      "lines": 49,
+      "issues": []
+    },
+    {
+      "path": "opencode/.opencode/command/commit.md",
+      "scope": "upstream",
+      "sha256": "b3e6700bfd6a8c9bbd28d0d631da5b60b46924c437e14dfe701f6df62166a890",
+      "bytes": 628,
+      "lines": 37,
+      "issues": []
+    },
+    {
+      "path": "opencode/.opencode/command/issues.md",
+      "scope": "upstream",
+      "sha256": "cc8fd1121ba237c0c76f45ec91913c91c26b1e46a52faeed40e4ca58a0718f43",
+      "bytes": 520,
+      "lines": 23,
+      "issues": []
+    },
+    {
+      "path": "opencode/.opencode/command/learn.md",
+      "scope": "upstream",
+      "sha256": "891675a8519c637290b675f6671c451e30e14ac3a50e6759bd513c414e50cd22",
+      "bytes": 1628,
+      "lines": 42,
+      "issues": []
+    },
+    {
+      "path": "opencode/.opencode/command/rmslop.md",
+      "scope": "upstream",
+      "sha256": "066e981569517dc46dc34360e17bc40a02e4790ebbc75c4a360ce0745c377c64",
+      "bytes": 576,
+      "lines": 15,
+      "issues": []
+    },
+    {
+      "path": "opencode/.opencode/command/spellcheck.md",
+      "scope": "upstream",
+      "sha256": "680b0616829f8710065c23cb089b042ef51691bfdb664028f718dfeff783a372",
+      "bytes": 204,
+      "lines": 5,
+      "issues": []
+    },
+    {
+      "path": "opencode/.opencode/command/translate.md",
+      "scope": "upstream",
+      "sha256": "7ecab0823ee3ae86b3bb731af3fd8d6c5625c16dd74020e015f5b6926c32886e",
+      "bytes": 798,
+      "lines": 14,
+      "issues": []
+    },
+    {
+      "path": "opencode/.opencode/glossary/README.md",
+      "scope": "upstream",
+      "sha256": "ab52715e8c334cd09793cb9bbf50924812b60c45bbb3ef90856e6e69ba79f5ac",
+      "bytes": 2148,
+      "lines": 63,
+      "issues": []
+    },
+    {
+      "path": "opencode/.opencode/glossary/ar.md",
+      "scope": "upstream",
+      "sha256": "92240e6a5ff250db2f2044d4aa377ea4edfcabc00ce66749ece0d6567401e67e",
+      "bytes": 1004,
+      "lines": 28,
+      "issues": []
+    },
+    {
+      "path": "opencode/.opencode/glossary/br.md",
+      "scope": "upstream",
+      "sha256": "9ddbca9524c8bdacf943461e26a8b9f2545af3c957e40b3589e9b54227026c0d",
+      "bytes": 1733,
+      "lines": 34,
+      "issues": []
+    },
+    {
+      "path": "opencode/.opencode/glossary/bs.md",
+      "scope": "upstream",
+      "sha256": "25382288f821dc9105436cb5dbd59a7ce5fd94ac870c602af9482cbf5e9d465f",
+      "bytes": 1437,
+      "lines": 33,
+      "issues": []
+    },
+    {
+      "path": "opencode/.opencode/glossary/da.md",
+      "scope": "upstream",
+      "sha256": "0def8e584c6070c408653947b78132d1cce10370fabe263c8b70c4ebb2878de0",
+      "bytes": 898,
+      "lines": 27,
+      "issues": []
+    },
+    {
+      "path": "opencode/.opencode/glossary/de.md",
+      "scope": "upstream",
+      "sha256": "721878a65354b3e4018678c2cebfb32f35acde1dbcbd47d6c66796b57abd8422",
+      "bytes": 898,
+      "lines": 27,
+      "issues": []
+    },
+    {
+      "path": "opencode/.opencode/glossary/es.md",
+      "scope": "upstream",
+      "sha256": "f09684393e914d77c6652c8bafd11e663b11788fd90aad1dfbe499a5bd23aed8",
+      "bytes": 900,
+      "lines": 27,
+      "issues": []
+    },
+    {
+      "path": "opencode/.opencode/glossary/fr.md",
+      "scope": "upstream",
+      "sha256": "07c704d16f4e40352b1b66b3f7a673283fbed5c274454deab4c0ee414e294484",
+      "bytes": 898,
+      "lines": 27,
+      "issues": []
+    },
+    {
+      "path": "opencode/.opencode/glossary/ja.md",
+      "scope": "upstream",
+      "sha256": "d288bf1dec91ae49011ab76f3a10e5c1383cfd6e9518a0d202f93421f662a2e3",
+      "bytes": 1343,
+      "lines": 33,
+      "issues": []
+    },
+    {
+      "path": "opencode/.opencode/glossary/ko.md",
+      "scope": "upstream",
+      "sha256": "e4f32fc61b6307987b4cb69ed6f5147e1ef5adf3fb3ccc226dde6f77db012e9b",
+      "bytes": 898,
+      "lines": 27,
+      "issues": []
+    },
+    {
+      "path": "opencode/.opencode/glossary/no.md",
+      "scope": "upstream",
+      "sha256": "1f89427acb81fb50570da5861b2a37f2108b75ab7fcba452ad289cba2f16aaa3",
+      "bytes": 1598,
+      "lines": 38,
+      "issues": []
+    },
+    {
+      "path": "opencode/.opencode/glossary/pl.md",
+      "scope": "upstream",
+      "sha256": "714b8dffa0f55a7a5401aff38a73bd99dcd50f87e9c7b00c4be16ba07ce4673c",
+      "bytes": 898,
+      "lines": 27,
+      "issues": []
+    },
+    {
+      "path": "opencode/.opencode/glossary/ru.md",
+      "scope": "upstream",
+      "sha256": "dfba01e5811fc351e443f7e98972045641b598b0ff1e3a4bc3401d8a0cd6dd4c",
+      "bytes": 900,
+      "lines": 27,
+      "issues": []
+    },
+    {
+      "path": "opencode/.opencode/glossary/th.md",
+      "scope": "upstream",
+      "sha256": "f5c4ab304faf10eeb8047d97b177c74f0d7c0fa316fe8a8d052de93e07e1102b",
+      "bytes": 1642,
+      "lines": 34,
+      "issues": []
+    },
+    {
+      "path": "opencode/.opencode/glossary/tr.md",
+      "scope": "upstream",
+      "sha256": "e50598dfb4d61c9f8c6d5be3d440f288e36bf8ee2cc8128cc8a952410bf1acf2",
+      "bytes": 2244,
+      "lines": 38,
+      "issues": []
+    },
+    {
+      "path": "opencode/.opencode/glossary/zh-cn.md",
+      "scope": "upstream",
+      "sha256": "75171b20ed851577202617156bc281b098defdcbdebd1a82852e4cb2aabafcdc",
+      "bytes": 2128,
+      "lines": 42,
+      "issues": []
+    },
+    {
+      "path": "opencode/.opencode/glossary/zh-tw.md",
+      "scope": "upstream",
+      "sha256": "553be897407a978f0db303d8a9f0eb5bbf5a2ea6b4955eb57d9a68b03589620c",
+      "bytes": 2137,
+      "lines": 42,
+      "issues": []
+    },
+    {
+      "path": "opencode/.opencode/skills/effect/SKILL.md",
+      "scope": "upstream",
+      "sha256": "0d27f8d40455cd4d509c0c81f3d2b6edb8319cd8ebd12a2e9f21626fc80495d5",
+      "bytes": 2794,
+      "lines": 38,
+      "issues": []
+    },
+    {
+      "path": "opencode/.opencode/skills/rtl-aware-development/SKILL.md",
+      "scope": "upstream",
+      "sha256": "456d9a1c7fdb120b9256a6c3bc81b49defea84ca87ab3b395ddc4b870d740cea",
+      "bytes": 4097,
+      "lines": 63,
+      "issues": []
+    },
+    {
+      "path": "opencode/AGENTS.md",
+      "scope": "upstream",
+      "sha256": "1c9b877668f74a1a2a735fb3aee730e8bb058d1fa34c1d96e8db1e41bbec9233",
+      "bytes": 8748,
+      "lines": 161,
+      "issues": []
+    },
+    {
+      "path": "opencode/CONTEXT.md",
+      "scope": "upstream",
+      "sha256": "9a4980983ed2067c83782dfec54c1723654aa33223fb6789fad4c2ee68fc66b6",
+      "bytes": 32094,
+      "lines": 225,
+      "issues": []
+    },
+    {
+      "path": "opencode/CONTRIBUTING.md",
+      "scope": "upstream",
+      "sha256": "df7c889142b20cedf2a2e4da21fb73ef710d9d27539c152f98d730ef9c65d474",
+      "bytes": 10347,
+      "lines": 272,
+      "issues": [
+        {
+          "line": 169,
+          "kind": "missing-relative-link",
+          "target": ".vscode/settings.example.json"
+        },
+        {
+          "line": 169,
+          "kind": "missing-relative-link",
+          "target": ".vscode/launch.example.json"
+        }
+      ]
+    },
+    {
+      "path": "opencode/README.ar.md",
+      "scope": "upstream",
+      "sha256": "682f6b4a162acfe10d7d0fa7dfe005db52de80f21a23f6cbe476fa0598cb2bd6",
+      "bytes": 6072,
+      "lines": 129,
+      "issues": []
+    },
+    {
+      "path": "opencode/README.bn.md",
+      "scope": "upstream",
+      "sha256": "d0e06b40c46e4fbcb4f1f167230b7fd746686e5aebe99d16c1e9dfbfdd7443a0",
+      "bytes": 8083,
+      "lines": 129,
+      "issues": []
+    },
+    {
+      "path": "opencode/README.br.md",
+      "scope": "upstream",
+      "sha256": "c18511e53391badb44d635706ac39970f3da2e98253578170619a14f26205c2a",
+      "bytes": 5626,
+      "lines": 129,
+      "issues": []
+    },
+    {
+      "path": "opencode/README.bs.md",
+      "scope": "upstream",
+      "sha256": "c6b9cb1f3617feafc4ea1bef34a2d995cfe07c7aa48566c13f758db13fb77907",
+      "bytes": 5461,
+      "lines": 129,
+      "issues": []
+    },
+    {
+      "path": "opencode/README.da.md",
+      "scope": "upstream",
+      "sha256": "8aac5815474ec99839a553267746af6395beb21f9bd5851d3e7ddabc1a507019",
+      "bytes": 5395,
+      "lines": 129,
+      "issues": []
+    },
+    {
+      "path": "opencode/README.de.md",
+      "scope": "upstream",
+      "sha256": "6e00650ea1488babfd0eff54f9db4c32c66adba7a0ab7b2348d829518304c8b8",
+      "bytes": 5592,
+      "lines": 129,
+      "issues": []
+    },
+    {
+      "path": "opencode/README.es.md",
+      "scope": "upstream",
+      "sha256": "67c98ec9c563a87fb2a790c6537916b3272bfd116213dd77143f87d4ce7a0e1f",
+      "bytes": 5635,
+      "lines": 129,
+      "issues": []
+    },
+    {
+      "path": "opencode/README.fr.md",
+      "scope": "upstream",
+      "sha256": "82994c9ea09ea88bad6e946df01ab9858fef6507a10df382a72bdb56443d930c",
+      "bytes": 5717,
+      "lines": 129,
+      "issues": []
+    },
+    {
+      "path": "opencode/README.gr.md",
+      "scope": "upstream",
+      "sha256": "10cc14eaac7c7c9d5e10227dd472236c574038b7544a9fd4a1d987843c217373",
+      "bytes": 7438,
+      "lines": 129,
+      "issues": []
+    },
+    {
+      "path": "opencode/README.it.md",
+      "scope": "upstream",
+      "sha256": "e153fafbef9581bef8d26523e4eb1411eb66eead54a7295a33151699c4664b01",
+      "bytes": 5689,
+      "lines": 129,
+      "issues": []
+    },
+    {
+      "path": "opencode/README.ja.md",
+      "scope": "upstream",
+      "sha256": "8f25900d7e652a15e87a372847706c6b6830f570bb0f315bd6abda9428090e2d",
+      "bytes": 5954,
+      "lines": 129,
+      "issues": []
+    },
+    {
+      "path": "opencode/README.ko.md",
+      "scope": "upstream",
+      "sha256": "e42760b4570ced739d359b43397f02fa8cc46ce313995f11b9ca393a8f0d0541",
+      "bytes": 5670,
+      "lines": 129,
+      "issues": []
+    },
+    {
+      "path": "opencode/README.md",
+      "scope": "upstream",
+      "sha256": "400890a3082e225c440561825270a911cd7df90a9f64f85166aed330201e50ba",
+      "bytes": 5402,
+      "lines": 129,
+      "issues": []
+    },
+    {
+      "path": "opencode/README.no.md",
+      "scope": "upstream",
+      "sha256": "6d47612d3b9f82159406f3595b16b3d4d44a7144c736367bb9353b09e04390c0",
+      "bytes": 5355,
+      "lines": 129,
+      "issues": []
+    },
+    {
+      "path": "opencode/README.pl.md",
+      "scope": "upstream",
+      "sha256": "594c1652cd0cf41be62f9a8f368b1b8b636f604b25cb6d36d543526ee63d4c7f",
+      "bytes": 5571,
+      "lines": 129,
+      "issues": []
+    },
+    {
+      "path": "opencode/README.ru.md",
+      "scope": "upstream",
+      "sha256": "7511edf9497ad8a3596bba50ec21a0af2e254185fd59b704d1aa206941a72960",
+      "bytes": 6682,
+      "lines": 129,
+      "issues": []
+    },
+    {
+      "path": "opencode/README.th.md",
+      "scope": "upstream",
+      "sha256": "0b25881ff784689184471b1d295af51cbdb4daf23388b8306220f8ff73202592",
+      "bytes": 7819,
+      "lines": 129,
+      "issues": []
+    },
+    {
+      "path": "opencode/README.tr.md",
+      "scope": "upstream",
+      "sha256": "4a84c757fec5c9f2ba357d669c606e6768d4e77e6bc26b310df91157405955ac",
+      "bytes": 5828,
+      "lines": 129,
+      "issues": []
+    },
+    {
+      "path": "opencode/README.uk.md",
+      "scope": "upstream",
+      "sha256": "553254d6e5d2255c2daa59c449babb451d0379e3092552298751c29da52f8212",
+      "bytes": 7024,
+      "lines": 130,
+      "issues": []
+    },
+    {
+      "path": "opencode/README.vi.md",
+      "scope": "upstream",
+      "sha256": "29733be95e587790a2c4a50544b4be01638bd4f4708e686fb775a3e11395a157",
+      "bytes": 6112,
+      "lines": 129,
+      "issues": []
+    },
+    {
+      "path": "opencode/README.zh.md",
+      "scope": "upstream",
+      "sha256": "c6eb3848cfd99bcd5e6266a48217db1274efa61d42056e2d699149b9533ad50f",
+      "bytes": 5293,
+      "lines": 128,
+      "issues": []
+    },
+    {
+      "path": "opencode/README.zht.md",
+      "scope": "upstream",
+      "sha256": "8eeed1782511cf46195b8761381e26815fbbf37b3759e247ad341cadab9061f5",
+      "bytes": 5589,
+      "lines": 128,
+      "issues": []
+    },
+    {
+      "path": "opencode/SECURITY.md",
+      "scope": "upstream",
+      "sha256": "25d6b5b174c7b6728da5df12d1befbc714394da55950ebfd9b1922ea953ce417",
+      "bytes": 2661,
+      "lines": 47,
+      "issues": []
+    },
+    {
+      "path": "opencode/STATS.md",
+      "scope": "upstream",
+      "sha256": "51704e5b3d341f2b12e7a8e6d3653f59f9bed653d6585f78151f9e35567f0e63",
+      "bytes": 18293,
+      "lines": 217,
+      "issues": []
+    },
+    {
+      "path": "opencode/github/README.md",
+      "scope": "upstream",
+      "sha256": "e7b28066f85b0feac13ce61bee56cbda8cef5b8071bd4c1745230c02e0780987",
+      "bytes": 6017,
+      "lines": 166,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/app/AGENTS.md",
+      "scope": "upstream",
+      "sha256": "06f2d2d4fddd981356f438e02dc0f41270981ef3638eba3b5667a6347c6ac5d6",
+      "bytes": 4570,
+      "lines": 50,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/app/README.md",
+      "scope": "upstream",
+      "sha256": "b8e039dff3f429a1eb0e9656623a511da1af4a902006bd0298abf9871bb4bc4a",
+      "bytes": 1636,
+      "lines": 50,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/app/V1_API_MIGRATION.md",
+      "scope": "upstream",
+      "sha256": "c667c0033f345650d15f69ec4e7d3fd873a2c142e6a3bcf65c2125a92f0a18fb",
+      "bytes": 10763,
+      "lines": 220,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/app/create-effect-simplification-spec.md",
+      "scope": "upstream",
+      "sha256": "f50aa86e6eb0c1752575a0512fe91b9d0bd4e43d47d20dc4246ca864787186b9",
+      "bytes": 18928,
+      "lines": 515,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/app/e2e/AGENTS.md",
+      "scope": "upstream",
+      "sha256": "1db2e856de3de339da7eade27a8d8bbd0342b349caa51dcad07bb58dcdc864b2",
+      "bytes": 1745,
+      "lines": 16,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/app/e2e/performance/AGENTS.md",
+      "scope": "upstream",
+      "sha256": "f3139eb2927c5b6758955772ea1dd42ba9d5403b785f6e09b2c5cc858e73e0f1",
+      "bytes": 813,
+      "lines": 13,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/app/e2e/performance/README.md",
+      "scope": "upstream",
+      "sha256": "4c1c5b91100ce702066a5ea7a6bea2060fbe79fb5db9bce5d513f21fc6b9b32f",
+      "bytes": 5283,
+      "lines": 79,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/app/e2e/performance/timeline-stability/README.md",
+      "scope": "upstream",
+      "sha256": "ccd35b95d987613c9d4b75ef996cdb8f4b8ee92120c28f720fc1bcc4c57cde88",
+      "bytes": 3241,
+      "lines": 61,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/client/README.md",
+      "scope": "upstream",
+      "sha256": "99c292e554a2ff0691163a368e9949007b3be711a70c26f84968ec71a9516d16",
+      "bytes": 1839,
+      "lines": 27,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/codemode/AGENTS.md",
+      "scope": "upstream",
+      "sha256": "516a12cfae0d6da9bd0f64323a3a864de22d36e3cf68c39080836aee7655b928",
+      "bytes": 3145,
+      "lines": 23,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/codemode/README.md",
+      "scope": "upstream",
+      "sha256": "a2f99f6fe646bee0893e9c0489f2a0ab248de835c9372841c37f12b59ffa08af",
+      "bytes": 27705,
+      "lines": 369,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/codemode/codemode.md",
+      "scope": "upstream",
+      "sha256": "3d6bf8f9e164567b57fdd4b95e503ae0e931d750180f9a883bb3061d4011b375",
+      "bytes": 13243,
+      "lines": 176,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/codemode/src/openapi/TODO.md",
+      "scope": "upstream",
+      "sha256": "fd764b43f04fb0137b51ce7a5465408303bd4eeb007dacc8ced6fe0bfd4869fa",
+      "bytes": 1213,
+      "lines": 19,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/console/app/.opencode/agent/css.md",
+      "scope": "upstream",
+      "sha256": "2e17787bad0dc54a8775209128ab5c0a4fc631d2e9fd3cada724f141e1c12c09",
+      "bytes": 4284,
+      "lines": 149,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/console/app/README.md",
+      "scope": "upstream",
+      "sha256": "6c15509b7483c470ab2d6dedb8113e02bc86682c5bd10569114da9e8ebe51837",
+      "bytes": 965,
+      "lines": 32,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/containers/README.md",
+      "scope": "upstream",
+      "sha256": "c2f73374c6d86eebcd42a484f57a1232193cf3bf414adc4da818002c9d20390a",
+      "bytes": 1115,
+      "lines": 38,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/core/src/github-copilot/README.md",
+      "scope": "upstream",
+      "sha256": "62969b3ac55adab013546f90667ff48924880bfe07cd2504de0d40a3e6eb0aa0",
+      "bytes": 263,
+      "lines": 5,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/core/src/plugin/skill/customize-opencode.md",
+      "scope": "upstream",
+      "sha256": "eda4eae3679562180d26a31817cb5b2c8c801599b85f80b2796beae5620bad66",
+      "bytes": 16072,
+      "lines": 453,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/core/src/tool/AGENTS.md",
+      "scope": "upstream",
+      "sha256": "c325cfc3087a6f0db38c50af8ec9eb4fb6011c6548f8b03b2405871641a311f2",
+      "bytes": 3743,
+      "lines": 59,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/desktop/AGENTS.md",
+      "scope": "upstream",
+      "sha256": "854f55f901c5bbf938c65d674de5dc3182feb1593f38009318bd029a3717ca81",
+      "bytes": 2801,
+      "lines": 14,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/desktop/README.md",
+      "scope": "upstream",
+      "sha256": "c08d25ce32082a41a9d50ab1ad4f3f28063a747acd56303b2938e52e848f9942",
+      "bytes": 319,
+      "lines": 19,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/desktop/icons/README.md",
+      "scope": "upstream",
+      "sha256": "87c70f83b3cac97aeeaa1c074b29e33c4023c5768b71c1781f41f751dfe519c1",
+      "bytes": 781,
+      "lines": 14,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/docs/README.md",
+      "scope": "upstream",
+      "sha256": "ab2fe690f54206433b53e62791237ec36de782f18d1137610b4166160f77bb57",
+      "bytes": 1359,
+      "lines": 44,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/effect-drizzle-sqlite/AGENTS.md",
+      "scope": "upstream",
+      "sha256": "f524ac5266a0a600c93615a8c3d32917d24327dafa01cdd9f8c7415721883738",
+      "bytes": 1364,
+      "lines": 19,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/enterprise/README.md",
+      "scope": "upstream",
+      "sha256": "6c15509b7483c470ab2d6dedb8113e02bc86682c5bd10569114da9e8ebe51837",
+      "bytes": 965,
+      "lines": 32,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/http-recorder/README.md",
+      "scope": "upstream",
+      "sha256": "7ed0f053ed29582f99b444ce1db33a92ff084ee984e30fb1961080b08551899b",
+      "bytes": 8276,
+      "lines": 217,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/httpapi-codegen/README.md",
+      "scope": "upstream",
+      "sha256": "3ffd8d1f4f5dccbedaa4a23a2339a682473af94197ee99aee1da7b64de8153d4",
+      "bytes": 3959,
+      "lines": 42,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/llm/AGENTS.md",
+      "scope": "upstream",
+      "sha256": "b791bc16d827bcf7a8a858c7e1c0af6cfc2c21051aa528d911f9bd39d6c58e32",
+      "bytes": 24684,
+      "lines": 321,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/llm/DESIGN.md",
+      "scope": "upstream",
+      "sha256": "b76e4c7b9f1f7e7aa5a5b9ba6ec32fab61adefd7cd7a1a941b273fe5f6df3a5f",
+      "bytes": 33051,
+      "lines": 1114,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/llm/README.md",
+      "scope": "upstream",
+      "sha256": "09193ea57d3614c8c91f31a2873da9341ab73ec84be09854bfe99a21a555fcc7",
+      "bytes": 6806,
+      "lines": 131,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/llm/example/call-sites.md",
+      "scope": "upstream",
+      "sha256": "f2daa73cc24dedf24d82674817c5429ffc11949f257a561e69f3b9a8470af9e8",
+      "bytes": 21702,
+      "lines": 591,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/opencode/AGENTS.md",
+      "scope": "upstream",
+      "sha256": "3eb97d68fba764fc98daa9e2410ff559f38fa2cfa5f8aa18ebed45f1e4abd8ff",
+      "bytes": 6453,
+      "lines": 131,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/opencode/README.md",
+      "scope": "upstream",
+      "sha256": "9364d790f80c4218254cf5bd3356ee41205fd154976a583ebbd2e9e8e8d1292d",
+      "bytes": 217,
+      "lines": 15,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/opencode/specs/effect/error-boundaries-plan.md",
+      "scope": "upstream",
+      "sha256": "84c31f6a5c296fa4fbce7d51745291828741f49fe5f340f5247e609ede99fdb0",
+      "bytes": 7283,
+      "lines": 235,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/opencode/specs/effect/errors.md",
+      "scope": "upstream",
+      "sha256": "adc78a87b7556577c5985609b77e69bf4d4c12460e5c17d862a0a427f292495e",
+      "bytes": 8113,
+      "lines": 207,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/opencode/specs/effect/facades.md",
+      "scope": "upstream",
+      "sha256": "bf620d1830ee1d463e4589b520efa3977b67267d14d7509175d88dfcca568771",
+      "bytes": 9216,
+      "lines": 218,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/opencode/specs/effect/guide.md",
+      "scope": "upstream",
+      "sha256": "776eb6526ae074b558217c03e1c37c5f97dd74bafe0e50acfafa8eb569ae8641",
+      "bytes": 8145,
+      "lines": 247,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/opencode/specs/effect/instance-context.md",
+      "scope": "upstream",
+      "sha256": "f931e99eaf0890c4d4efaf5002953c73f991a39e7f1a92b54e1c234dee691358",
+      "bytes": 673,
+      "lines": 13,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/opencode/specs/effect/loose-ends.md",
+      "scope": "upstream",
+      "sha256": "9651c8cc190b8bc54f7d2d90d098fc980f095d1522641e4ff8920348d90b95f3",
+      "bytes": 1959,
+      "lines": 30,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/opencode/specs/effect/migration.md",
+      "scope": "upstream",
+      "sha256": "7ffbae88c62c0f8b7876046eaea14024a29deba42545b4853d0fa05ac85ba870",
+      "bytes": 2164,
+      "lines": 62,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/opencode/specs/effect/routes.md",
+      "scope": "upstream",
+      "sha256": "00410d534ef74d296f00ec1da436e25a27b80c923a6fbeee0b96a26e78231a87",
+      "bytes": 2276,
+      "lines": 61,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/opencode/specs/effect/schema.md",
+      "scope": "upstream",
+      "sha256": "75948694a78e95ee36e54b13c81a96144ce6289f3714e0f4ec530fb663873119",
+      "bytes": 2634,
+      "lines": 88,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/opencode/specs/effect/server-package.md",
+      "scope": "upstream",
+      "sha256": "b6b0a3ef7364c332201d2cf0dcb65f819f50861d7937a6156efc14769e4be725",
+      "bytes": 2189,
+      "lines": 58,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/opencode/specs/effect/todo.md",
+      "scope": "upstream",
+      "sha256": "126e2961897e0020e6b1e989a721d04de7bfc0dcc8f072365f3256cee5b1d952",
+      "bytes": 10841,
+      "lines": 241,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/opencode/specs/effect/tools.md",
+      "scope": "upstream",
+      "sha256": "7b40e732d648a9a81d7907f68c2a1deaa34e72c0cf2acfcca896c610c6303339",
+      "bytes": 3688,
+      "lines": 88,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/opencode/specs/openapi-translation-cleanup.md",
+      "scope": "upstream",
+      "sha256": "0667709f18bfe8a0c55027ff857109a6f8bf580341397452b7e8f5a1f50cf84a",
+      "bytes": 11613,
+      "lines": 204,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/opencode/specs/tui-plugins.md",
+      "scope": "upstream",
+      "sha256": "f59d8de9f2a24a394d37ff21edb0c2a4fc46f7a05e931e637c060dcc903f77a8",
+      "bytes": 26987,
+      "lines": 544,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/opencode/specs/v2/message-shape.md",
+      "scope": "upstream",
+      "sha256": "707a9ea7b482d1a73bd7c314455cb2a6fd7be452d0a2c8a9b5a251d80ffe01ea",
+      "bytes": 3240,
+      "lines": 136,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/opencode/specs/v2/notifications.md",
+      "scope": "upstream",
+      "sha256": "c4b991fdca9ac4262f5ceda10ae9465d086e21d3898e3a1eb7929d58954fea42",
+      "bytes": 321,
+      "lines": 13,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/opencode/specs/v2/tui-command-shim.md",
+      "scope": "upstream",
+      "sha256": "6f316d593f7afe355abaff6ba31776aee2c6156774ee91646c8b1e65c8fec442",
+      "bytes": 1848,
+      "lines": 67,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/opencode/src/control-plane/dev/README.md",
+      "scope": "upstream",
+      "sha256": "4abf66d7c4434c545000432748db55c10053abb23f5f71cd43820a1b2dbd637b",
+      "bytes": 1270,
+      "lines": 19,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/opencode/src/plugin/openai/README.md",
+      "scope": "upstream",
+      "sha256": "bff0606342417e1fb286ea76aa6f86b742d46c8225690328105a95ea1d89918c",
+      "bytes": 1233,
+      "lines": 31,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/opencode/src/server/routes/instance/httpapi/AGENTS.md",
+      "scope": "upstream",
+      "sha256": "85f198f1c3c5aeb6e2b4eef195d0e7b09710b0d43c53912a2e2d680c0be3f7b2",
+      "bytes": 2716,
+      "lines": 39,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/opencode/src/session/llm/AGENTS.md",
+      "scope": "upstream",
+      "sha256": "f1c14f72f12e42b5683cd1a021cb7b1c46b92f30d0c0986940655420b99172f4",
+      "bytes": 7072,
+      "lines": 90,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/opencode/src/sync/README.md",
+      "scope": "upstream",
+      "sha256": "a4b011597b8bfe1dfaf167bbae538dac1c7d36dc862cf9562a0fb416e42a0b8f",
+      "bytes": 9181,
+      "lines": 179,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/opencode/test/AGENTS.md",
+      "scope": "upstream",
+      "sha256": "0d0c71dd95b457f92fa0290886bb25633928db166a59e75ca09987295a49b305",
+      "bytes": 7914,
+      "lines": 204,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/opencode/test/EFFECT_TEST_MIGRATION.md",
+      "scope": "upstream",
+      "sha256": "f84700017ffa166d668ba68fb9fdcc8f4d578a5e810e1f59a1699754c7b52c42",
+      "bytes": 6141,
+      "lines": 169,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/opencode/test/config/fixtures/empty-frontmatter.md",
+      "scope": "upstream",
+      "sha256": "9de529e18a347f4cc0fab08cbd53e9030af026b7bf36e2e4c722837b62ccf8ab",
+      "bytes": 17,
+      "lines": 4,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/opencode/test/config/fixtures/frontmatter.md",
+      "scope": "upstream",
+      "sha256": "e0d59a78fb219af5bd8c79c031507872bd1eaf2036f1798107f04b73f9de2162",
+      "bytes": 802,
+      "lines": 28,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/opencode/test/config/fixtures/markdown-header.md",
+      "scope": "upstream",
+      "sha256": "8aa9fbf7deed750a5893bc5ff5d684ac7b224245e3b6fd64a1682cab0c56dd1a",
+      "bytes": 557,
+      "lines": 11,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/opencode/test/config/fixtures/no-frontmatter.md",
+      "scope": "upstream",
+      "sha256": "c99404a35eb9f1d0abe2705a0483c216a47036be108a8dc138765b551a4e9715",
+      "bytes": 8,
+      "lines": 1,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/opencode/test/config/fixtures/v2-compat/README.md",
+      "scope": "upstream",
+      "sha256": "321bf4bc78ffe12266290e87c5e2290010c4d1682da96369cb36b609347c5fa6",
+      "bytes": 2781,
+      "lines": 40,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/opencode/test/config/fixtures/weird-model-id.md",
+      "scope": "upstream",
+      "sha256": "08e2560fa082ea4a3f3f0e5a1d9b9bacf455c25f2d30505aba7bd2bbe96229e1",
+      "bytes": 209,
+      "lines": 13,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/opencode/test/fixture/skills/agents-sdk/SKILL.md",
+      "scope": "upstream",
+      "sha256": "6769c6520383ed5501ea88dc4f9291517a8642167d859486181585063e8b7d2f",
+      "bytes": 6337,
+      "lines": 152,
+      "issues": [
+        {
+          "line": 146,
+          "kind": "missing-relative-link",
+          "target": "references/workflows.md"
+        },
+        {
+          "line": 148,
+          "kind": "missing-relative-link",
+          "target": "references/state-scheduling.md"
+        },
+        {
+          "line": 149,
+          "kind": "missing-relative-link",
+          "target": "references/streaming-chat.md"
+        },
+        {
+          "line": 150,
+          "kind": "missing-relative-link",
+          "target": "references/mcp.md"
+        },
+        {
+          "line": 151,
+          "kind": "missing-relative-link",
+          "target": "references/email.md"
+        },
+        {
+          "line": 152,
+          "kind": "missing-relative-link",
+          "target": "references/codemode.md"
+        }
+      ]
+    },
+    {
+      "path": "opencode/packages/opencode/test/fixture/skills/agents-sdk/references/callable.md",
+      "scope": "upstream",
+      "sha256": "fa95681443e429de3bd02861464f03e1d05c3db9c1f95aabb5a9a65d67684a9f",
+      "bytes": 2283,
+      "lines": 92,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/opencode/test/fixture/skills/cloudflare/SKILL.md",
+      "scope": "upstream",
+      "sha256": "2a8a4bdd991c34dff4cf014c7e8f84bb1aa971642a067c4d387cf3746b77b603",
+      "bytes": 7799,
+      "lines": 211,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/opencode/test/server/AGENTS.md",
+      "scope": "upstream",
+      "sha256": "043b38ac4568efae5818b7a2724624dfa6b8400ecc5b7413e3868f2fd64aa27f",
+      "bytes": 1701,
+      "lines": 15,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/plugin/src/v2/effect/PLAN.md",
+      "scope": "upstream",
+      "sha256": "c790ae2db0eedb2af0cdcc5b04164fd84a871a99674de161ffdb41368945f4af",
+      "bytes": 15875,
+      "lines": 515,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/plugin/src/v2/effect/README.md",
+      "scope": "upstream",
+      "sha256": "6e38bae7c0ab468cad0384e21722b54cb8f824c800ae84127e611267649fe56d",
+      "bytes": 2845,
+      "lines": 111,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/plugin/src/v2/promise/README.md",
+      "scope": "upstream",
+      "sha256": "160c3b0bde4d2129c227f435786110c3d96e91b1832aef138b5c63167ad2d5e7",
+      "bytes": 2478,
+      "lines": 103,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/schema/AGENTS.md",
+      "scope": "upstream",
+      "sha256": "326d8238f64675cfad3f72dafebf1923873f21ae6d2eebf0bad4b5729d7aa0fc",
+      "bytes": 6430,
+      "lines": 88,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/sdk-next/README.md",
+      "scope": "upstream",
+      "sha256": "834c3aaf731351c9ab958d2b3717b31ce6e4cb8c2aebb55d0919b31acbc3c3fa",
+      "bytes": 1652,
+      "lines": 29,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/session-ui/AGENTS.md",
+      "scope": "upstream",
+      "sha256": "60bfa8f3ae4ad8e65a15247074ae0c105712b352990dac4b1f9463c1de4a58e7",
+      "bytes": 1404,
+      "lines": 7,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/slack/README.md",
+      "scope": "upstream",
+      "sha256": "63c806d13644ebbe34c8bfd688f3f04daa526eada15f6427c1939c7da8298344",
+      "bytes": 750,
+      "lines": 27,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/stats/AGENTS.md",
+      "scope": "upstream",
+      "sha256": "2e6198f6466746c241ac543cb884110f69cca228e403fde2abae71d78c59c99b",
+      "bytes": 73,
+      "lines": 1,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/stats/README.md",
+      "scope": "upstream",
+      "sha256": "d0e3223b8a3a73edfe8f403b459373a410d61b8f23f6297be11c0f6f15e47b6f",
+      "bytes": 722,
+      "lines": 16,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/ui/AGENTS.md",
+      "scope": "upstream",
+      "sha256": "4b6684b625e1bc84b7082ce401f07e3cbd3f2e5a120141e8e0b9a96ee2622769",
+      "bytes": 2160,
+      "lines": 10,
+      "issues": []
+    },
+    {
+      "path": "opencode/packages/web/README.md",
+      "scope": "upstream",
+      "sha256": "8f24969d5a7859608135a7639b65ab2b838b540fc461c95178188974e7cb3f86",
+      "bytes": 2634,
+      "lines": 54,
+      "issues": []
+    },
+    {
+      "path": "opencode/perf/test-suite.md",
+      "scope": "upstream",
+      "sha256": "6593aae516c08917b90c1615a03bc0fd139af7c2c9832f3011648f5d9928778d",
+      "bytes": 20306,
+      "lines": 145,
+      "issues": []
+    },
+    {
+      "path": "opencode/script/translate-app.md",
+      "scope": "upstream",
+      "sha256": "76990d23ce8ef43c695b44937168dc7f9e7ae667c3ddd5e9c3fc2b2bb087b17f",
+      "bytes": 2498,
+      "lines": 24,
+      "issues": []
+    },
+    {
+      "path": "opencode/sdks/vscode/README.md",
+      "scope": "upstream",
+      "sha256": "b2a3ba9b2d2d4743e180e0599985b4979d506b1818a2e0c8d894fc00c4037d71",
+      "bytes": 1764,
+      "lines": 34,
+      "issues": []
+    },
+    {
+      "path": "opencode/specs/project.md",
+      "scope": "upstream",
+      "sha256": "f298049df2aefcdb7818aa8a1db53e4bb3b42a870ec95264899c1d93879ead37",
+      "bytes": 1726,
+      "lines": 64,
+      "issues": []
+    },
+    {
+      "path": "opencode/specs/storage/effect-sqlite-package.md",
+      "scope": "upstream",
+      "sha256": "887568a4f8484decd9b6469836613c8e0ea9151b899f3b053f20058c3eea5fb8",
+      "bytes": 7714,
+      "lines": 145,
+      "issues": []
+    },
+    {
+      "path": "opencode/specs/storage/remove-opencode-db.md",
+      "scope": "upstream",
+      "sha256": "e19f277c730478e75c6a1f2016132e840a002b5963f801d1e6a5d508c834233c",
+      "bytes": 11835,
+      "lines": 239,
+      "issues": []
+    },
+    {
+      "path": "opencode/specs/tui-package.md",
+      "scope": "upstream",
+      "sha256": "77a60509f49487a429416d4362cfe817a9022896f886dd05b1d682bb307999bc",
+      "bytes": 25002,
+      "lines": 641,
+      "issues": []
+    },
+    {
+      "path": "opencode/specs/v2/catalog-config-plugin-lifecycle.md",
+      "scope": "upstream",
+      "sha256": "c799915c4ce1bf10bee41189b5788211ce513d3660aab6219e82519016335d97",
+      "bytes": 10851,
+      "lines": 324,
+      "issues": []
+    },
+    {
+      "path": "opencode/specs/v2/config.md",
+      "scope": "upstream",
+      "sha256": "80b15a6db2c24ecec2dfd25a05bba9e54fd5828f9e3c037393a35d57838e0593",
+      "bytes": 29396,
+      "lines": 399,
+      "issues": []
+    },
+    {
+      "path": "opencode/specs/v2/instructions.md",
+      "scope": "upstream",
+      "sha256": "42c5acde4bbea7ac1cf08a5293e4fb93bff790995eac451fc692955babc1f881",
+      "bytes": 5651,
+      "lines": 121,
+      "issues": []
+    },
+    {
+      "path": "opencode/specs/v2/provider-model.md",
+      "scope": "upstream",
+      "sha256": "1b1ff086c8e7649912e71854e5a374261cb700f92b84d36cb72de95d28edf853",
+      "bytes": 11046,
+      "lines": 400,
+      "issues": []
+    },
+    {
+      "path": "opencode/specs/v2/provider-policy.md",
+      "scope": "upstream",
+      "sha256": "0624bcef3029268b658af184c857a22580c55d1dd74102c08cf435d06a6160de",
+      "bytes": 8702,
+      "lines": 291,
+      "issues": []
+    },
+    {
+      "path": "opencode/specs/v2/schema-changelog.md",
+      "scope": "upstream",
+      "sha256": "0b44871172e6cd59b37e339a6e818d5b60d080f6e433f988cfbc4efe557ec39c",
+      "bytes": 40158,
+      "lines": 843,
+      "issues": []
+    },
+    {
+      "path": "opencode/specs/v2/session.md",
+      "scope": "upstream",
+      "sha256": "6354dada656636b22bfd36092bd8bf171c84a69581f83b138ed7ac1708e7a832",
+      "bytes": 28965,
+      "lines": 231,
+      "issues": []
+    },
+    {
+      "path": "opencode/specs/v2/todo.md",
+      "scope": "upstream",
+      "sha256": "d724fd8514472be0fbe7367188faaa9010ccd22fc4bc0786e3780577e80d8de8",
+      "bytes": 7057,
+      "lines": 146,
+      "issues": []
+    },
+    {
+      "path": "opencode/specs/v2/tools.md",
+      "scope": "upstream",
+      "sha256": "d699b711cc97c99cdd85d4cb59a8fab1ea1ad1916c2e7a4492c182d44b95200a",
+      "bytes": 9403,
+      "lines": 186,
+      "issues": []
+    },
+    {
+      "path": "packages/core/src/horizon/skills/horizon-docs/SKILL.md",
+      "scope": "active-or-entrypoint",
+      "sha256": "83d9a8e079486da8b673158cf2c2527ddb690eb55e56147c75b4d6489b3bb74e",
+      "bytes": 4922,
+      "lines": 90,
+      "issues": []
+    }
+  ],
+  "active_blockers": [
+    {
+      "path": "arch_V1/30-CONTEXT-INDEXING-LOCAL-MODELS.md",
+      "line": 918,
+      "kind": "missing-relative-link",
+      "target": "contracts-v2/context-compile-policy-v1.schema.json"
+    },
+    {
+      "path": "arch_V1/30-CONTEXT-INDEXING-LOCAL-MODELS.md",
+      "line": 918,
+      "kind": "missing-relative-link",
+      "target": "contracts-v2/repo-context-anchor-v1.schema.json"
+    }
+  ],
+  "reference_warnings": [
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/09-SOURCE-MAP.md",
+      "line": 29,
+      "kind": "missing-relative-link",
+      "target": "opencode-b1fe25ab-path-inventory.jsonl"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/09-SOURCE-MAP.md",
+      "line": 305,
+      "kind": "missing-relative-link",
+      "target": "external-source-register.json"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/19-OPENCODE-UPSTREAM-REUSE.md",
+      "line": 66,
+      "kind": "missing-relative-link",
+      "target": "external-source-register.json"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/34-DOCUMENT-LINE-AUDIT-LEDGER.md",
+      "line": 275,
+      "kind": "missing-relative-link",
+      "target": "repo-file-line-audit-manifest.json"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/38-OMP-SOURCE-COMPETITIVE-AUDIT.md",
+      "line": 163,
+      "kind": "missing-relative-link",
+      "target": "omp-tui-command-settings-inventory.json"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/38-OMP-SOURCE-COMPETITIVE-AUDIT.md",
+      "line": 163,
+      "kind": "missing-relative-link",
+      "target": "omp-provider-source-roster.json"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/39-OMP-TUI-SLASH-MODEL-SETTINGS-AUDIT.md",
+      "line": 4,
+      "kind": "missing-relative-link",
+      "target": "omp-tui-command-settings-inventory.json"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/39-OMP-TUI-SLASH-MODEL-SETTINGS-AUDIT.md",
+      "line": 691,
+      "kind": "missing-relative-link",
+      "target": "omp-provider-source-roster.json"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/40-HORIZONCODE-OMP-INSPIRED-UI-PROPOSAL.md",
+      "line": 4,
+      "kind": "missing-relative-link",
+      "target": "omp-tui-command-settings-inventory.json"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/40-HORIZONCODE-OMP-INSPIRED-UI-PROPOSAL.md",
+      "line": 219,
+      "kind": "missing-relative-link",
+      "target": "omp-provider-source-roster.json"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/42-EXTERNAL-SOURCE-PROVENANCE-REGISTER.md",
+      "line": 3,
+      "kind": "missing-relative-link",
+      "target": "external-source-register.json"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/42-EXTERNAL-SOURCE-PROVENANCE-REGISTER.md",
+      "line": 317,
+      "kind": "missing-relative-link",
+      "target": "repo-file-line-audit-manifest.json"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/42-EXTERNAL-SOURCE-PROVENANCE-REGISTER.md",
+      "line": 325,
+      "kind": "missing-relative-link",
+      "target": "ignored-reference-source-manifest.json"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/44-FINAL-REPO-AUDIT-LEDGER.md",
+      "line": 3,
+      "kind": "missing-relative-link",
+      "target": "repo-file-line-audit-manifest.json"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/44-FINAL-REPO-AUDIT-LEDGER.md",
+      "line": 3,
+      "kind": "missing-relative-link",
+      "target": "ownership-phrase-audit-candidates.json"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/44-FINAL-REPO-AUDIT-LEDGER.md",
+      "line": 61,
+      "kind": "missing-relative-link",
+      "target": "ignored-reference-source-manifest.json"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/README.md",
+      "line": 73,
+      "kind": "missing-relative-link",
+      "target": "contracts-v2/managed-work-additive.sql"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/README.md",
+      "line": 74,
+      "kind": "missing-relative-link",
+      "target": "contracts-v2/managed-event.schema.json"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/README.md",
+      "line": 75,
+      "kind": "missing-relative-link",
+      "target": "contracts-v2/control-api.openapi.json"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/README.md",
+      "line": 76,
+      "kind": "missing-relative-link",
+      "target": "contracts-v2/agent-profile-v2.schema.json"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/README.md",
+      "line": 77,
+      "kind": "missing-relative-link",
+      "target": "contracts-v2/harness-profile-v1.schema.json"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/README.md",
+      "line": 78,
+      "kind": "missing-relative-link",
+      "target": "contracts-v2/plan-handoff-v1.schema.json"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/README.md",
+      "line": 79,
+      "kind": "missing-relative-link",
+      "target": "contracts-v2/context-ledger-v2.schema.json"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/README.md",
+      "line": 80,
+      "kind": "missing-relative-link",
+      "target": "contracts-v2/runtime-observation-v1.schema.json"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/README.md",
+      "line": 81,
+      "kind": "missing-relative-link",
+      "target": "opencode-b1fe25ab-path-inventory.jsonl"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/README.md",
+      "line": 95,
+      "kind": "missing-relative-link",
+      "target": "contracts-v2/capability-registry-v1.json"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/README.md",
+      "line": 95,
+      "kind": "missing-relative-link",
+      "target": "contracts-v2/capability-registry-v1.schema.json"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/README.md",
+      "line": 96,
+      "kind": "missing-relative-link",
+      "target": "contracts-v2/skill-manifest-v2.schema.json"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/README.md",
+      "line": 96,
+      "kind": "missing-relative-link",
+      "target": "contracts-v2/hook-binding-v2.schema.json"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/README.md",
+      "line": 96,
+      "kind": "missing-relative-link",
+      "target": "contracts-v2/mcp-server-profile-v2.schema.json"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/README.md",
+      "line": 96,
+      "kind": "missing-relative-link",
+      "target": "contracts-v2/automation-v2.schema.json"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/README.md",
+      "line": 97,
+      "kind": "missing-relative-link",
+      "target": "contracts-v2/ui-stream-event-v2.schema.json"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/README.md",
+      "line": 97,
+      "kind": "missing-relative-link",
+      "target": "contracts-v2/browser-action-v1.schema.json"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/README.md",
+      "line": 97,
+      "kind": "missing-relative-link",
+      "target": "contracts-v2/language-service-snapshot-v1.schema.json"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/README.md",
+      "line": 97,
+      "kind": "missing-relative-link",
+      "target": "contracts-v2/subagent-delivery-v1.schema.json"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/README.md",
+      "line": 106,
+      "kind": "missing-relative-link",
+      "target": "omp-source-evidence-inventory.json"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/README.md",
+      "line": 107,
+      "kind": "missing-relative-link",
+      "target": "omp-native-rust-surface-inventory.json"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/README.md",
+      "line": 108,
+      "kind": "missing-relative-link",
+      "target": "omp-tui-command-settings-inventory.json"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/README.md",
+      "line": 109,
+      "kind": "missing-relative-link",
+      "target": "omp-provider-source-roster.json"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/README.md",
+      "line": 114,
+      "kind": "missing-relative-link",
+      "target": "external-source-register.json"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/README.md",
+      "line": 114,
+      "kind": "missing-relative-link",
+      "target": "repo-file-line-audit-manifest.json"
+    },
+    {
+      "path": "docs/architecture-archive/2026-10-11-pre-lean-consolidation/arch_V1/README.md",
+      "line": 117,
+      "kind": "missing-relative-link",
+      "target": "ignored-reference-source-manifest.json"
+    },
+    {
+      "path": "docs/architecture-input/2026-10-11-superseded-contract-excerpts.md",
+      "line": 86,
+      "kind": "missing-relative-link",
+      "target": "17-GOVERNANCE-DECISIONS.md"
+    },
+    {
+      "path": "docs/architecture-input/2026-10-11-superseded-contract-excerpts.md",
+      "line": 86,
+      "kind": "missing-relative-link",
+      "target": "24-LOCAL-CODE-AUDIT-AND-MIGRATION.md"
+    },
+    {
+      "path": "docs/architecture-input/2026-10-11-superseded-contract-excerpts.md",
+      "line": 86,
+      "kind": "missing-relative-link",
+      "target": "25-DATA-AND-CONTROL-PLANE-CROSSWALK.md"
+    },
+    {
+      "path": "docs/architecture-input/2026-10-11-superseded-contract-excerpts.md",
+      "line": 247,
+      "kind": "missing-relative-link",
+      "target": "17-GOVERNANCE-DECISIONS.md"
+    },
+    {
+      "path": "docs/architecture-input/2026-10-11-superseded-contract-excerpts.md",
+      "line": 247,
+      "kind": "missing-relative-link",
+      "target": "24-LOCAL-CODE-AUDIT-AND-MIGRATION.md"
+    },
+    {
+      "path": "docs/architecture-input/2026-10-11-superseded-contract-excerpts.md",
+      "line": 247,
+      "kind": "missing-relative-link",
+      "target": "25-DATA-AND-CONTROL-PLANE-CROSSWALK.md"
+    },
+    {
+      "path": "docs/architecture-input/2026-10-11-superseded-contract-excerpts.md",
+      "line": 411,
+      "kind": "missing-relative-link",
+      "target": "17-GOVERNANCE-DECISIONS.md"
+    },
+    {
+      "path": "docs/architecture-input/2026-10-11-superseded-contract-excerpts.md",
+      "line": 411,
+      "kind": "missing-relative-link",
+      "target": "24-LOCAL-CODE-AUDIT-AND-MIGRATION.md"
+    },
+    {
+      "path": "docs/architecture-input/2026-10-11-superseded-contract-excerpts.md",
+      "line": 411,
+      "kind": "missing-relative-link",
+      "target": "25-DATA-AND-CONTROL-PLANE-CROSSWALK.md"
+    },
+    {
+      "path": "docs/architecture-input/2026-10-11-superseded-contract-excerpts.md",
+      "line": 586,
+      "kind": "missing-relative-link",
+      "target": "17-GOVERNANCE-DECISIONS.md"
+    },
+    {
+      "path": "docs/architecture-input/2026-10-11-superseded-contract-excerpts.md",
+      "line": 586,
+      "kind": "missing-relative-link",
+      "target": "24-LOCAL-CODE-AUDIT-AND-MIGRATION.md"
+    },
+    {
+      "path": "docs/architecture-input/2026-10-11-superseded-contract-excerpts.md",
+      "line": 586,
+      "kind": "missing-relative-link",
+      "target": "25-DATA-AND-CONTROL-PLANE-CROSSWALK.md"
+    },
+    {
+      "path": "opencode/CONTRIBUTING.md",
+      "line": 169,
+      "kind": "missing-relative-link",
+      "target": ".vscode/settings.example.json"
+    },
+    {
+      "path": "opencode/CONTRIBUTING.md",
+      "line": 169,
+      "kind": "missing-relative-link",
+      "target": ".vscode/launch.example.json"
+    },
+    {
+      "path": "opencode/packages/opencode/test/fixture/skills/agents-sdk/SKILL.md",
+      "line": 146,
+      "kind": "missing-relative-link",
+      "target": "references/workflows.md"
+    },
+    {
+      "path": "opencode/packages/opencode/test/fixture/skills/agents-sdk/SKILL.md",
+      "line": 148,
+      "kind": "missing-relative-link",
+      "target": "references/state-scheduling.md"
+    },
+    {
+      "path": "opencode/packages/opencode/test/fixture/skills/agents-sdk/SKILL.md",
+      "line": 149,
+      "kind": "missing-relative-link",
+      "target": "references/streaming-chat.md"
+    },
+    {
+      "path": "opencode/packages/opencode/test/fixture/skills/agents-sdk/SKILL.md",
+      "line": 150,
+      "kind": "missing-relative-link",
+      "target": "references/mcp.md"
+    },
+    {
+      "path": "opencode/packages/opencode/test/fixture/skills/agents-sdk/SKILL.md",
+      "line": 151,
+      "kind": "missing-relative-link",
+      "target": "references/email.md"
+    },
+    {
+      "path": "opencode/packages/opencode/test/fixture/skills/agents-sdk/SKILL.md",
+      "line": 152,
+      "kind": "missing-relative-link",
+      "target": "references/codemode.md"
+    }
+  ]
+}

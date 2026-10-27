@@ -131,7 +131,10 @@ test("renders canonical progress, tool states, and answer in part order without 
     expect(collapsed).toContain("curl")
     expect(collapsed).toContain("Running")
     expect(collapsed).toContain("Succeeded")
-    expect(collapsed).toContain("Output artifact: UNKNOWN")
+    // §31.5: this part's artifact metadata has no resolvable fidelity, so the
+    // row reports lifecycle state instead of a fidelity label.
+    expect(collapsed).toContain("Output artifact · fidelity unknown")
+    expect(collapsed).not.toContain("Output artifact: UNKNOWN")
     expect(collapsed).toContain("Failed")
     expect(collapsed).not.toContain("first output")
     expect(collapsed).not.toContain("fourth output")
@@ -371,3 +374,85 @@ test("bounds projection work to the live tail of very large part histories", asy
     app.renderer.destroy()
   }
 }, 90_000)
+
+test("labels artifact fidelity only with FULL, SAMPLE or FAILED (§31.5)", async () => {
+  await using tmp = await tmpdir()
+  const state = path.join(tmp.path, "state")
+  await mkdir(state, { recursive: true })
+  await Bun.write(path.join(state, "kv.json"), "{}")
+  // One part resolves to a real fidelity; the other has artifact metadata but no
+  // resolvable fidelity, so its outcome is a lifecycle fact, not a fidelity.
+  const parts = [
+    {
+      type: "tool",
+      id: "call-known",
+      callID: "call-known",
+      name: "read",
+      tool: "read",
+      state: {
+        status: "completed",
+        input: {},
+        metadata: { artifactRef: "art_1", artifactFidelity: "SAMPLE" },
+        content: [],
+      },
+    },
+    {
+      type: "tool",
+      id: "call-unknown",
+      callID: "call-unknown",
+      name: "read",
+      tool: "read",
+      state: { status: "completed", input: {}, metadata: { truncated: true }, content: [] },
+    },
+  ] as unknown as Part[]
+
+  function Harness() {
+    const renderer = useRenderer()
+    const keymap = createDefaultOpenTuiKeymap(renderer)
+    const config = createTuiResolvedConfig()
+    const off = registerOpencodeKeymap(keymap, renderer, config)
+    onCleanup(off)
+    return (
+      <OpencodeKeymapProvider keymap={keymap}>
+        <SDKProvider url="http://test" directory={tmp.path} events={eventSource()} fetch={createFetch().fetch}>
+          <TuiConfigProvider config={config}>
+            <KVProvider>
+              <ThemeProvider mode="dark">
+                <box flexDirection="column">
+                  <text>fidelity-sentinel</text>
+                  <ActivityStream
+                    parts={parts}
+                    complete={true}
+                    width={100}
+                    renderText={(part) => <text>{part.text}</text>}
+                    renderToolDetails={(part) => <text>{JSON.stringify(part.state.input)}</text>}
+                  />
+                </box>
+              </ThemeProvider>
+            </KVProvider>
+          </TuiConfigProvider>
+        </SDKProvider>
+      </OpencodeKeymapProvider>
+    )
+  }
+
+  const app = await testRender(
+    () => (
+      <TestTuiContexts directory={tmp.path} paths={{ home: tmp.path, state, worktree: tmp.path }}>
+        <Harness />
+      </TestTuiContexts>
+    ),
+    { width: 100, height: 30, kittyKeyboard: true, useMouse: true },
+  )
+
+  try {
+    const frame = await waitForFrame(app, (value) => value.includes("Output artifact: SAMPLE"))
+    expect(frame).toContain("Output artifact: SAMPLE")
+    // §31.5/§31.17: UNKNOWN is a producer/receipt outcome, never a fidelity
+    // value, so it must not appear where FULL/SAMPLE/FAILED do.
+    expect(frame).not.toContain("Output artifact: UNKNOWN")
+    expect(frame).toContain("Output artifact · fidelity unknown")
+  } finally {
+    app.renderer.destroy()
+  }
+})

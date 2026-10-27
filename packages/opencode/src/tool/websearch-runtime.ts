@@ -3,8 +3,8 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { SessionSupervisor, SessionSupervisorError, WEB_SEARCH_CASCADE_FEATURE } from "@opencode-ai/core/session/supervisor"
 import type { SecretBrokerV1 } from "@opencode-ai/schema/secret-broker-v1"
 import type { DirectAttemptScopeV1, ManagedAttemptScopeV1, EffectChallenge, EffectLease } from "@opencode-ai/core/session/supervisor"
-import type { SearchRouteID, SearchProviderStatus, SearchCascadeSettings, SearchRouteAttempt, SearchResultItem } from "./websearch-broker"
-import { inspectSearchProviders, normalizeSearchCascadeSettings, processSearchAttemptStore, processSearchCooldownStore, SEARCH_ROUTE_IDS, searchRouteRuntimeReady } from "./websearch-broker"
+import type { SearchRouteID, SearchProviderStatus, SearchCascadeSettings, SearchRouteAttempt, SearchResultItem, SearchAttemptStore, SearchCooldownStore } from "./websearch-broker"
+import { inspectSearchProviders, normalizeSearchCascadeSettings, SEARCH_ROUTE_IDS, searchRouteRuntimeReady } from "./websearch-broker"
 import { createSearchInspectionRoutes, createSearchRoutePlan, parseSearchProviderResponse, searchProviderResponseTruncated, type SearchCredentialRefs } from "./websearch-adapters"
 import { Config } from "@/config/config"
 import { Auth } from "@/auth"
@@ -58,20 +58,22 @@ export function prepareSearchEffectArguments(input: {
     credentialRefs: input.credentialRefs ?? {},
   })
   if (plan.routes.length === 0) throw new Error("No explicitly enabled web-search route is available for Guard admission")
-  const arguments_: SearchEffectArgumentsV1 = {
+  const arguments_: SearchEffectArgumentsV1 = Object.freeze({
     query: model.query.trim(),
     limit: rawLimit,
-    ...(domains === undefined ? {} : { domains }),
-    routes: plan.routes.slice(0, 10).map((routeKey) => ({ routeKey, attemptCount: 2 as const })),
-    ...(plan.credentialRefsByRoute.length ? { credentialRefsByRoute: plan.credentialRefsByRoute.slice(0, 10) } : {}),
-  }
+    ...(domains === undefined ? {} : { domains: Object.freeze([...domains]) }),
+    routes: Object.freeze(plan.routes.slice(0, 10).map((routeKey) => Object.freeze({ routeKey, attemptCount: 2 as const }))),
+    ...(plan.credentialRefsByRoute.length ? {
+      credentialRefsByRoute: Object.freeze(plan.credentialRefsByRoute.slice(0, 10).map((entry) => Object.freeze({ ...entry }))),
+    } : {}),
+  })
   return { arguments: arguments_, execution: arguments_ }
 }
 
 /** Exact model-requested domain filters; bounded and duplicate-free. */
 function boundedDomainFilters(value: unknown): readonly string[] {
   if (!Array.isArray(value) || value.length > 100 ||
-    !value.every((domain) => typeof domain === "string" && domain.length >= 1 && domain.length <= 253 &&
+    !Array.from(value).every((domain) => typeof domain === "string" && domain.length >= 1 && domain.length <= 253 &&
       /^[A-Za-z0-9.*-]+(?:\.[A-Za-z0-9.*-]+)*$/.test(domain) &&
       /^(\*\.)?[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/.test(domain)) ||
     new Set(value).size !== value.length) {
@@ -87,6 +89,8 @@ export type WebSearchCascadeRequestV1 = SearchEffectArgumentsV1 & {
 }
 
 const BLAKE3_DIGEST = /^blake3:[0-9a-f]{64}$/
+const SEARCH_ATTEMPT_REF = /^search-attempt_[a-f0-9]{64}$/
+const BYO_SEARCH_ROUTE_IDS = new Set(["brave", "exa", "youcom", "tavily", "firecrawl", "parallel"])
 
 /** Bounded identifier rule shared by SecretBroker's `Identifier` schema: no
  * whitespace and no ASCII control characters. */
@@ -158,18 +162,45 @@ export function webSearchCascadeRequestV1(input: WebSearchCascadeRequestV1): Web
     }
     credentialRefsByRoute = input.credentialRefsByRoute
   }
-  return {
+  return Object.freeze({
     sessionID,
     effectID,
     capabilityLeaseDigest: input.capabilityLeaseDigest,
     query: input.query,
     limit: input.limit,
-    ...(domains === undefined ? {} : { domains: input.domains }),
-    routes: input.routes.map((route) => ({ routeKey: route.routeKey, attemptCount: 2 as const })),
-    ...(credentialRefsByRoute === undefined ? {} : { credentialRefsByRoute }),
-  }
+    ...(domains === undefined ? {} : { domains: Object.freeze([...domains]) }),
+    routes: Object.freeze(input.routes.map((route) => Object.freeze({ routeKey: route.routeKey, attemptCount: 2 as const }))),
+    ...(credentialRefsByRoute === undefined ? {} : {
+      credentialRefsByRoute: Object.freeze(credentialRefsByRoute.map((entry) => Object.freeze({ ...entry }))),
+    }),
+  })
 }
 
+/** Exact guarded HostKernel envelope assembled from the admitted search projection and trusted execution bindings. */
+export type WebSearchCascadeHostKernelRequestV1 = WebSearchCascadeRequestV1 & {
+  readonly challengeID?: string
+  readonly locationID?: string
+  readonly directAttempt?: DirectAttemptScopeV1
+  readonly managedAttempt?: ManagedAttemptScopeV1
+}
+
+/**
+ * Production RPC projection. Credential references are carried only from the
+ * already-approved effect arguments and revalidated against that exact route
+ * plan; this builder never selects routes or credentials from model input.
+ */
+export function webSearchCascadeHostKernelRequestV1(
+  input: WebSearchCascadeHostKernelRequestV1,
+): Readonly<Record<string, unknown>> {
+  const admitted = webSearchCascadeRequestV1(input)
+  return Object.freeze({
+    ...admitted,
+    ...(input.challengeID ? { challengeID: input.challengeID } : {}),
+    ...(input.locationID ? { locationID: input.locationID } : {}),
+    ...(input.directAttempt ? { directAttempt: input.directAttempt } : {}),
+    ...(input.managedAttempt ? { managedAttempt: input.managedAttempt } : {}),
+  })
+}
 export type SearchCascadeScopeV1 = {
   sessionID: string
   messageID: string
@@ -273,6 +304,24 @@ export interface Interface {
   inspect(input: { settings?: SearchCascadeSettings; workspace: string }): Effect.Effect<SearchProviderStatus[], never>
 }
 
+/**
+ * Explicit state persistence dependency for the guarded runtime. Production
+ * composition must provide owner-owned durable/shared stores; absent stores,
+ * the runtime fails closed instead of silently using process-local globals.
+ */
+export type SearchRuntimeStateStores = Readonly<{
+  cooldownStore: SearchCooldownStore
+  attemptStore: SearchAttemptStore
+}>
+
+function isSearchRuntimeStateStores(input: SearchRuntimeStateStores | undefined): input is SearchRuntimeStateStores {
+  return !!input &&
+    typeof input.cooldownStore?.get === "function" &&
+    typeof input.cooldownStore?.set === "function" &&
+    typeof input.attemptStore?.list === "function" &&
+    typeof input.attemptStore?.record === "function"
+}
+
 export class SearchRuntimeError extends Error {
   constructor(
     message: string,
@@ -355,6 +404,13 @@ export function validateCascadeResponseRoutes(
   if (response.status !== "UNKNOWN" && response.attempts.some((item) => item.status === "UNKNOWN")) {
     throw new Error("HostKernel must preserve an unknown route outcome as an UNKNOWN aggregate outcome")
   }
+  if (response.status === "NEEDS_APPROVAL" && (
+    response.attempts.length > 0 || response.selectedProvider !== undefined || response.body !== undefined ||
+    response.receiptRef !== undefined || response.managedAttempt !== undefined || response.attemptScopeTransition !== undefined ||
+    response.cascadeRef !== undefined || response.cascadeDigest !== undefined || response.routeIndex !== undefined || response.nextRoute !== undefined
+  )) {
+    throw new Error("HostKernel needs-approval web-search response contains dispatch evidence")
+  }
   if ((previousStatus === "RETRYABLE_FAILURE" ||
     (previousStatus === "NOT_DISPATCHED" && (previousNotDispatchedFailure === "timed_out" || previousNotDispatchedFailure === "transport_failure"))) &&
     previousAttempt === 1 && response.status !== "UNKNOWN" && response.status !== "CANCELLED") {
@@ -425,6 +481,11 @@ export function validateCascadeResponseRoutes(
       throw new Error("HostKernel returned FAILED without a settled terminal non-authentication 4xx receipt")
     }
   }
+  if (response.status === "UNKNOWN" && (
+    response.body !== undefined || response.selectedProvider !== undefined || response.receiptRef !== undefined
+  )) {
+    throw new Error("HostKernel returned result or receipt evidence for an UNKNOWN web-search outcome")
+  }
   if (response.status === "UNKNOWN" && response.attempts.some((item) => item.status === "SUCCEEDED")) {
     throw new Error("HostKernel reported an unknown cascade after a successful route")
   }
@@ -482,7 +543,7 @@ function parseAndValidateCascadeResponse(
       "HostKernel returned malformed web-search evidence after dispatch; outcome remains UNKNOWN and no route was retried.",
       [],
       "UNKNOWN",
-      typeof value.receiptRef === "string" && value.receiptRef.length <= 256 ? value.receiptRef : undefined,
+      undefined,
       digest && (!pinned || digest === pinned) ? digest : pinned,
     )
   }
@@ -522,13 +583,24 @@ export function decodeSuccessfulCascadeResults(
 export class Service extends Context.Service<Service, Interface>()("@horizoncode/WebSearchRuntime") {}
 
 export function parseCascadeResponse(value: Readonly<Record<string, unknown>>): SearchCascadeResponseV1 {
-  const allowed = new Set(["status", "selectedProvider", "body", "attempts", "receiptRef", "managedAttempt", "attemptScopeTransition", "cascadeRef", "cascadeDigest", "routePlanDigest", "routeIndex", "nextRoute"])
+  const allowed = new Set(["schemaVersion", "status", "selectedProvider", "body", "attempts", "receiptRef", "managedAttempt", "attemptScopeTransition", "cascadeRef", "cascadeDigest", "routePlanDigest", "routeIndex", "nextRoute"])
   if (Object.keys(value).some((key) => !allowed.has(key))) throw new Error("HostKernel returned an unknown web-search response field")
   if (value.status !== "SUCCEEDED" && value.status !== "FAILED" && value.status !== "EXHAUSTED" && value.status !== "CANCELLED" && value.status !== "UNKNOWN" && value.status !== "NEEDS_APPROVAL" && value.status !== "NOT_DISPATCHED" && value.status !== "RECONCILED_RESULT_UNAVAILABLE" && value.status !== "WAITING_SECRET") {
     throw new Error("HostKernel returned an invalid web-search status")
   }
+  // Rust's cancel_search_cascade terminal projection is the only producer that
+  // carries a response-version marker. Keep it narrow so no other operation can
+  // silently widen the wire contract.
+  if (value.schemaVersion !== undefined && (value.schemaVersion !== 1 || (value.status !== "CANCELLED" && value.status !== "UNKNOWN"))) {
+    throw new Error("HostKernel returned an invalid web-search response version")
+  }
+  if (value.schemaVersion !== undefined && (typeof value.cascadeRef !== "string" || typeof value.cascadeDigest !== "string")) {
+    throw new Error("HostKernel returned an incomplete web-search cancellation projection")
+  }
   if (!Array.isArray(value.attempts) || value.attempts.length > 20) throw new Error("HostKernel returned invalid web-search route receipts")
-  const attempts = value.attempts.map((raw): SearchCascadeAttemptReceiptV1 => {
+  // Array#map skips sparse holes. Materialize the bounded wire array first so
+  // every route attempt is validated, including missing indexed entries.
+  const attempts = Array.from(value.attempts).map((raw): SearchCascadeAttemptReceiptV1 => {
     if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new Error("HostKernel returned an invalid route receipt")
     const item = raw as Record<string, unknown>
     const provider = item.provider
@@ -640,6 +712,17 @@ export function parseCascadeResponse(value: Readonly<Record<string, unknown>>): 
   if ((value.status === "SUCCEEDED" || value.status === "FAILED" || value.status === "EXHAUSTED" || value.status === "CANCELLED" || value.status === "RECONCILED_RESULT_UNAVAILABLE") && typeof value.receiptRef !== "string") {
     throw new Error("HostKernel omitted the durable web-search aggregate receipt")
   }
+  if (value.status === "UNKNOWN" && value.receiptRef !== undefined && value.receiptRef !== null) {
+    throw new Error("HostKernel returned result or receipt evidence for an UNKNOWN web-search outcome")
+  }
+  if (value.status === "NEEDS_APPROVAL" && (
+    attempts.length > 0 || (selectedProvider !== undefined && selectedProvider !== null) ||
+    (value.body !== undefined && value.body !== null) || (value.receiptRef !== undefined && value.receiptRef !== null) ||
+    (value.managedAttempt !== undefined && value.managedAttempt !== null) || value.attemptScopeTransition !== undefined ||
+    value.cascadeRef !== undefined || value.cascadeDigest !== undefined || value.routeIndex !== undefined || value.nextRoute !== undefined
+  )) {
+    throw new Error("HostKernel needs-approval web-search response contains dispatch evidence")
+  }
   if (value.status === "NOT_DISPATCHED" && (
     value.attempts.length !== 0 || routePlanDigest !== undefined ||
     value.selectedProvider !== undefined || value.body !== undefined ||
@@ -668,7 +751,11 @@ export function parseCascadeResponse(value: Readonly<Record<string, unknown>>): 
       ["providerRequest", "request", "trusted"].some((key) => {
         const field = authorizationRecord[key]
         return typeof field !== "object" || field === null || Array.isArray(field)
-      })) {
+      }) ||
+      typeof authorizationRecord.attemptRef !== "string" || !SEARCH_ATTEMPT_REF.test(authorizationRecord.attemptRef) ||
+      typeof authorizationRecord.attemptDigest !== "string" || !BLAKE3_DIGEST.test(authorizationRecord.attemptDigest) ||
+      typeof authorizationRecord.routeKey !== "string" || !BYO_SEARCH_ROUTE_IDS.has(authorizationRecord.routeKey) ||
+      !Number.isSafeInteger(authorizationRecord.attempt) || (authorizationRecord.attempt !== 1 && authorizationRecord.attempt !== 2)) {
       throw new Error("HostKernel returned an invalid BYO search authorization projection")
     }
     if (typeof value.cascadeRef !== "string" || !/^search_cascade_[a-f0-9]{64}$/.test(value.cascadeRef) ||
@@ -687,8 +774,17 @@ export function parseCascadeResponse(value: Readonly<Record<string, unknown>>): 
       routeIndex: value.routeIndex as number,
       nextRoute: authorizationRecord,
     }
-  } else if (["cascadeRef", "cascadeDigest", "routeIndex", "nextRoute"].some((key) => value[key] !== undefined)) {
+  } else if (
+    (value.schemaVersion === undefined || (value.status !== "CANCELLED" && value.status !== "UNKNOWN")) &&
+    ["cascadeRef", "cascadeDigest", "routeIndex", "nextRoute"].some((key) => value[key] !== undefined)
+  ) {
     throw new Error("HostKernel returned orphaned BYO web-search continuation fields")
+  }
+  if (value.schemaVersion !== undefined) {
+    cascade = {
+      cascadeRef: value.cascadeRef as string,
+      cascadeDigest: value.cascadeDigest as string,
+    }
   }
   let managedAttempt: ManagedAttemptScopeV1 | undefined
   let attemptScopeTransition: "effect_receipt" | undefined
@@ -820,22 +916,20 @@ const guardedLayer = Layer.effect(
         const leasePins = input.lease as EffectLease & { readonly challengeID?: string; readonly locationID?: string }
         const challengeID = input.challenge?.challengeID ?? leasePins.challengeID
         const locationID = input.challenge?.approval?.locationID ?? leasePins.locationID
-        const body = {
-          ...webSearchCascadeRequestV1({
-            sessionID: input.sessionID,
-            effectID: input.lease.effectID,
-            capabilityLeaseDigest: input.lease.capabilityLeaseDigest,
-            query: input.query,
-            limit: input.limit,
-            ...(input.domains === undefined ? {} : { domains: input.domains }),
-            routes: input.routes,
-            ...(input.credentialRefsByRoute?.length ? { credentialRefsByRoute: input.credentialRefsByRoute } : {}),
-          }),
+        const body = webSearchCascadeHostKernelRequestV1({
+          sessionID: input.sessionID,
+          effectID: input.lease.effectID,
+          capabilityLeaseDigest: input.lease.capabilityLeaseDigest,
+          query: input.query,
+          limit: input.limit,
+          ...(input.domains === undefined ? {} : { domains: input.domains }),
+          routes: input.routes,
+          ...(input.credentialRefsByRoute?.length ? { credentialRefsByRoute: input.credentialRefsByRoute } : {}),
           ...(challengeID ? { challengeID } : {}),
           ...(locationID ? { locationID } : {}),
           ...(input.directAttempt ? { directAttempt: input.directAttempt } : {}),
           ...(input.managedAttempt ? { managedAttempt: input.managedAttempt } : {}),
-        }
+        })
         const request = supervisor.requestHostKernel("execution.v1", "execute_search_cascade", body, { cancelOnInterrupt: true })
         let response: Readonly<Record<string, unknown>> | undefined
         try {
@@ -1166,9 +1260,14 @@ function attemptProjection(attempts: readonly SearchCascadeAttemptReceiptV1[]): 
 }
 
 /** Convert one host-owned aggregate cascade into the existing result contract. */
-export function make(capability: WebSearchGuardedCapability, config: Config.Interface): Interface {
+export function make(
+  capability: WebSearchGuardedCapability,
+  config: Config.Interface,
+  stateStoresInput?: SearchRuntimeStateStores,
+): Interface {
+  const stateStores = isSearchRuntimeStateStores(stateStoresInput) ? stateStoresInput : undefined
   const routeReady = (route: SearchRouteID) =>
-    capability.ready && capability.supportedProviders.includes(route) &&
+    !!stateStores && capability.ready && capability.supportedProviders.includes(route) &&
     (capability.runtimeReady?.[route] ?? searchRouteRuntimeReady(route))
   return {
     inspect(input) {
@@ -1188,15 +1287,21 @@ export function make(capability: WebSearchGuardedCapability, config: Config.Inte
           supportedProviders: capability.supportedProviders,
           credentialRefs,
         })
-        const cooldownUntil = yield* Effect.promise(() => Promise.all(settings.enabled.map(async (provider) => [
-          provider,
-          await processSearchCooldownStore.get({ workspace: input.workspace, provider }),
-        ] as const)).then(Object.fromEntries))
+        const cooldownUntil = stateStores
+          ? yield* Effect.promise(() => Promise.all(settings.enabled.map(async (provider) => [
+            provider,
+            await stateStores.cooldownStore.get({ workspace: input.workspace, provider }),
+          ] as const)).then(Object.fromEntries))
+          : {}
         return inspectSearchProviders({
           settings,
           routes,
-          attempts: yield* Effect.promise(() => processSearchAttemptStore.list({ workspace: input.workspace })),
-          failures: yield* Effect.promise(() => processSearchAttemptStore.listFailures?.({ workspace: input.workspace }) ?? Promise.resolve([])),
+          attempts: stateStores
+            ? yield* Effect.promise(() => stateStores.attemptStore.list({ workspace: input.workspace }))
+            : [],
+          failures: stateStores
+            ? yield* Effect.promise(() => stateStores.attemptStore.listFailures?.({ workspace: input.workspace }) ?? Promise.resolve([]))
+            : [],
           cooldownUntil,
           runtimeReady: Object.fromEntries(SEARCH_ROUTE_IDS.map((route) => [
             route,
@@ -1208,15 +1313,17 @@ export function make(capability: WebSearchGuardedCapability, config: Config.Inte
     prepareEffectArguments(modelArgs) {
       return Effect.gen(function* () {
         const current = yield* config.get()
-        const credentialRefs = yield* Effect.tryPromise({
-          try: () => capability.credentialRefs(),
-          catch: () => new Error("SecretBroker route references are unavailable."),
-        })
+        const supportedProviders = capability.supportedProviders.filter(routeReady)
+        const credentialRefs = supportedProviders.length === 0
+          ? {} as SearchCredentialRefs
+          : yield* Effect.tryPromise({
+            try: () => capability.credentialRefs(),
+            catch: () => new Error("SecretBroker route references are unavailable."),
+          })
         return prepareSearchEffectArguments({
           modelArgs,
           settings: normalizeSearchCascadeSettings(current.websearch),
-          supportedProviders: capability.supportedProviders.filter((route) =>
-            routeReady(route)),
+          supportedProviders,
           runtimeReady: Object.fromEntries(SEARCH_ROUTE_IDS.map((route) => [route, routeReady(route)])),
           credentialRefs,
         })
@@ -1225,10 +1332,12 @@ export function make(capability: WebSearchGuardedCapability, config: Config.Inte
     search(input) {
       return Effect.tryPromise({
         try: async () => {
-          if (!capability.ready || input.execution.routes.some((route) =>
+          if (!stateStores || !capability.ready || input.execution.routes.some((route) =>
             !routeReady(route.routeKey))) {
             throw new Error("The prepared web-search route plan contains a route that has not passed its Guard/SecretBroker release gate.")
           }
+          const attemptStore = stateStores.attemptStore
+          const cooldownStore = stateStores.cooldownStore
           if (input.execution.routes.length === 0 || input.execution.routes.length > 10) {
             throw new Error("The prepared web-search route plan is invalid.")
           }
@@ -1250,7 +1359,7 @@ export function make(capability: WebSearchGuardedCapability, config: Config.Inte
               "HostKernel returned invalid web-search evidence after dispatch; outcome remains UNKNOWN and no route was retried.",
               [],
               "UNKNOWN",
-              dispatchResponse.receiptRef,
+              undefined,
               dispatchResponse.routePlanDigest && dispatchResponse.routePlanDigest === challengeRoutePlanDigest
                 ? dispatchResponse.routePlanDigest
                 : challengeRoutePlanDigest,
@@ -1261,7 +1370,7 @@ export function make(capability: WebSearchGuardedCapability, config: Config.Inte
               "HostKernel route-plan digest differs from the exact approved consent pin; outcome remains UNKNOWN.",
               attemptProjection(response.attempts),
               "UNKNOWN",
-              response.receiptRef,
+              undefined,
               challengeRoutePlanDigest,
             )
           }
@@ -1284,10 +1393,10 @@ export function make(capability: WebSearchGuardedCapability, config: Config.Inte
           const attempts = attemptProjection(response.attempts)
           const workspace = input.scope.workspace || capability.workspace()
           for (const attempt of attempts) {
-            await processSearchAttemptStore.record({ workspace, attempt })
+            await attemptStore.record({ workspace, attempt })
             if (attempt.status === "rate_limited") {
               const delay = Math.min(60_000, Math.max(1_000, attempt.retryAfterMs ?? 60_000))
-              await processSearchCooldownStore.set({ workspace, provider: attempt.provider, until: Date.now() + delay })
+              await cooldownStore.set({ workspace, provider: attempt.provider, until: Date.now() + delay })
             }
           }
           if (response.status === "UNKNOWN") {

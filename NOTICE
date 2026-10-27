@@ -9,8 +9,9 @@ owner/legal reviewer.
 OpenCode-derived software
 Copyright (c) 2025 opencode
 Source: https://github.com/anomalyco/opencode
-The pinned upstream source and its license are preserved in opencode/ for
-provenance. This notice does not replace the separate upstream license terms.
+OpenCode is licensed under the MIT License; the license text is preserved in
+opencode/LICENSE. This notice does not replace the separate upstream license
+terms.
 
 This file records first-party license selection and known upstream attribution
 only. It is not a complete third-party notice inventory. The exact built

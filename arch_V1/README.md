@@ -46,7 +46,7 @@ A research report, audit snapshot, archived plan, source repository, test result
 | Agents, subagents, skills, hooks, MCP | 29-AGENTS-SKILLS-HOOKS-MCP.md |
 | Context, indexing, §30.26–30.30 (compile, epochs, speed, accuracy, reliability) | 30-CONTEXT-INDEXING-LOCAL-MODELS.md |
 | Streaming UI, artifacts, analytics, automations; §31.22 activity cards; §31.23 code display/RAM | 31-UI-PERFORMANCE-ARTIFACTS-ANALYTICS.md |
-| V1 audit package (backlog, **wire tracker**, inventory, runbook, source alignment, **migration parity**) | 46-V1-DESIGN-AUDIT.md, 46-V1-WIRE-TRACKER.md, 46-V1-SOURCE-ALIGNMENT-AUDIT.md, 46-V1-MIGRATION-PARITY.md, 46-V1-IMPLEMENTATION-BACKLOG.md |
+| V1 audit package (backlog, **wire tracker**, **execution queue**, inventory, runbook, source alignment, **migration parity**) | 46-V1-DESIGN-AUDIT.md, 46-V1-RELEASE-EXECUTION-QUEUE.md, 46-V1-WIRE-TRACKER.md, 46-V1-SOURCE-ALIGNMENT-AUDIT.md, 46-V1-MIGRATION-PARITY.md, 46-V1-IMPLEMENTATION-BACKLOG.md |
 | Real-work, security and regression acceptance | 32-TASK-BASED-AGENT-TEST-CATALOG.md |
 | Canonical capability IDs; §33.32–33 exposure tiers + Horizon Coding Profile | 33-BUILTIN-CAPABILITIES-CATALOG.md |
 | Runtime service interfaces including browser, desktop, web search, DAP and REPL | 37-RUNTIME-SERVICE-LLD.md |

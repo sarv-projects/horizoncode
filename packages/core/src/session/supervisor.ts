@@ -7,6 +7,7 @@
  */
 
 import { createHash, randomUUID } from "node:crypto"
+import { ID as WorkspaceID } from "@opencode-ai/core/workspace"
 import {
   closeSync,
   existsSync,
@@ -1295,7 +1296,12 @@ function validCodeModeAuthenticatedRequest(serviceID: string, operation: string,
     body.schemaVersion !== 1 || !/^ses_[A-Za-z0-9_-]{1,128}$/.test(context.sessionID) || !/^loc_[0-9a-f]{64}$/.test(context.locationID) ||
     !/^[A-Za-z0-9._:-]{1,256}$/.test(context.callID) ||
     ((context.lane === "managed_attempt") !== (context.managedAttempt !== undefined))) return false
-  if (context.lane === "direct_session") return context.managedAttempt === undefined && body.lane === "direct_session" && body.sessionID === context.sessionID
+  if (
+    body.sessionID !== context.sessionID ||
+    body.locationID !== context.locationID ||
+    body.callID !== context.callID
+  ) return false
+  if (context.lane === "direct_session") return context.managedAttempt === undefined && body.lane === "direct_session"
   if (!context.managedAttempt || body.lane !== "managed_attempt" || body.runID !== context.managedAttempt.runID ||
     body.taskID !== context.managedAttempt.taskID || body.attemptID !== context.managedAttempt.attemptID) return false
   try {
@@ -5113,6 +5119,9 @@ const layer = Layer.effect(
     })
     const registeredLocations = new Map<string, string>()
     const locationBySession = new Map<string, string>()
+    /** Deterministic local workspace identity for one canonical directory. */
+    const localWorkspaceIDFor = (root: string): WorkspaceID =>
+      WorkspaceID.make(`wrk_local_${createHash("sha256").update(root).digest("hex").slice(0, 32)}`)
     const registerHostLocationFor = Effect.fn("SessionSupervisor.registerHostLocationFor")(function* (
       locationRef: typeof LocationSchema.Ref.Type,
       principal: TrustedPrincipal,
@@ -5122,10 +5131,15 @@ const layer = Layer.effect(
         return yield* Effect.fail(fail("authorization", "Location registration requires authenticated ServerAuth context"))
       }
       const root = locationRef?.directory
-      const workspaceID = locationRef?.workspaceID
       if (typeof root !== "string" || root.length === 0 || Buffer.byteLength(root, "utf8") > 4096) {
         return yield* Effect.fail(fail("location", "Location root is invalid"))
       }
+      // HostKernel refuses direct-session authority (effects and permission-mode
+      // snapshots) for a Location without a workspace. A default local install has
+      // no worktree workspace, so every direct Location is bound to the local
+      // workspace derived from its canonical directory. Sessions keep their own
+      // unchanged workspace shape; only the HostKernel Location carries this.
+      const workspaceID = locationRef?.workspaceID ?? localWorkspaceIDFor(root)
       const key = `${principal.subject}\0${root}\0${workspaceID ?? ""}`
       const registered = registeredLocations.get(key)
       if (registered) return registered
@@ -5521,7 +5535,7 @@ const layer = Layer.effect(
         return yield* Effect.fail(fail("authorization", "direct Session permission mode requires authenticated ServerAuth"))
       }
       const locationID = yield* registerHostLocationFor(input.locationRef, trusted.principal)
-      const response = yield* requestHostKernel("effects.v1", "direct_session_permission_mode_snapshot", {
+      const response = yield* requestHostKernel("effects.v2", "direct_session_permission_mode_snapshot", {
         sessionID: input.sessionID,
         locationID,
       }, { trustedPrincipal: trusted.principal })
@@ -5559,7 +5573,7 @@ const layer = Layer.effect(
         return yield* Effect.fail(fail("authorization", "direct Session permission mode update is invalid"))
       }
       const locationID = yield* registerHostLocationFor(input.locationRef, trusted.principal)
-      const response = yield* requestHostKernel("effects.v1", "set_direct_session_permission_mode", {
+      const response = yield* requestHostKernel("effects.v2", "set_direct_session_permission_mode", {
         sessionID: input.sessionID,
         locationID,
         sandboxMode: input.sandboxMode,
@@ -6616,7 +6630,7 @@ const layer = Layer.effect(
         // the normal approval UI.
         const directGrantPreflightDigest = !attemptScope &&
           authorization.callbackEventSequence === undefined && challenge.allowEnabled
-          ? yield* requestHostKernel("effects.v1", "preflight_direct_session_grant_protocol_effect", {
+          ? yield* requestHostKernel("effects.v2", "preflight_direct_session_grant_protocol_effect", {
               sessionID: input.sessionID,
               locationID,
               challengeID: challenge.challengeID,
@@ -7229,7 +7243,7 @@ const layer = Layer.effect(
             arguments: call.arguments,
           })),
           ...(input.workspaceCommandProfiles?.length ? { workspaceCommandProfiles: input.workspaceCommandProfiles } : {}),
-        }),
+        }, { trustedPrincipal: trusted.principal }),
       )
       if (response.status === "denied") {
         const reason = response.reason
@@ -7452,7 +7466,7 @@ const layer = Layer.effect(
           // grant hint so the user is not prompted on every pre-authorized edit.
           if (input.managedAttempt ||
             trusted.principal.kind !== "server_auth" || !trusted.principal.subject) return false
-          const response = yield* requestHostKernel("effects.v1", "preflight_direct_session_grant_batch", {
+          const response = yield* requestHostKernel("effects.v2", "preflight_direct_session_grant_batch", {
             sessionID: request.sessionID,
             locationID: request.locationID,
             batchID: request.batchID,
@@ -7722,7 +7736,12 @@ const layer = Layer.effect(
       readonly managedAttempt?: ManagedAttemptScopeV1
       readonly trustedPrincipal: TrustedPrincipal
     }) {
-      const locationID = yield* registerHostLocationFor(input.locationRef, input.trustedPrincipal)
+      // The ToolBatch registered this Session's Location and bound every prepared
+      // lease to it. Re-registering from a workspace-less ref would mint a second
+      // Location and the kernel would refuse the lease as a binding mismatch.
+      const locationID =
+        locationBySession.get(input.sessionID) ??
+        (yield* registerHostLocationFor(input.locationRef, input.trustedPrincipal))
       if (input.directAttempt && (!input.directTurnScope ||
         !sameDirectTurnScopeCore(input.directTurnScope, { ...input.directTurnScope, directAttempt: input.directAttempt }))) {
         return yield* Effect.fail(fail("authorization", "direct effect Attempt does not match its DirectTurnScope"))
@@ -7738,7 +7757,7 @@ const layer = Layer.effect(
         ...(input.directTurnScope ? { directTurnScope: directTurnScopeToWire(input.directTurnScope) } : {}),
         ...(input.managedAttempt ? { managedAttempt: managedAttemptScopeToWire(input.managedAttempt) } : {}),
         content: input.content,
-      })
+      }, { trustedPrincipal: input.trustedPrincipal })
       if (response.status !== "settled" || typeof response.existed !== "boolean") {
         return yield* Effect.fail(fail("protocol", "Rust returned an invalid write receipt"))
       }
@@ -7826,7 +7845,12 @@ const layer = Layer.effect(
         catch: (error) =>
           error instanceof SessionSupervisorError ? error : fail("effect", "files.patch operations are invalid"),
       })
-      const locationID = yield* registerHostLocationFor(input.locationRef, input.trustedPrincipal)
+      // The ToolBatch registered this Session's Location and bound every prepared
+      // lease to it. Re-registering from a workspace-less ref would mint a second
+      // Location and the kernel would refuse the lease as a binding mismatch.
+      const locationID =
+        locationBySession.get(input.sessionID) ??
+        (yield* registerHostLocationFor(input.locationRef, input.trustedPrincipal))
       if (input.directAttempt && (!input.directTurnScope ||
         !sameDirectTurnScopeCore(input.directTurnScope, { ...input.directTurnScope, directAttempt: input.directAttempt }))) {
         return yield* Effect.fail(fail("authorization", "direct effect Attempt does not match its DirectTurnScope"))
@@ -7842,7 +7866,7 @@ const layer = Layer.effect(
         ...(input.directTurnScope ? { directTurnScope: directTurnScopeToWire(input.directTurnScope) } : {}),
         ...(input.managedAttempt ? { managedAttempt: managedAttemptScopeToWire(input.managedAttempt) } : {}),
         operations: input.operations,
-      })
+      }, { trustedPrincipal: input.trustedPrincipal })
       if (response.status !== "settled") {
         return yield* Effect.fail(fail("protocol", "Rust returned an invalid patch receipt"))
       }

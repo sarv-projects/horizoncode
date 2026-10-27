@@ -2913,13 +2913,12 @@ impl HostRunDispatchP8OwnerReceiptV1 {
         blake3_digest(&self.binding_digest)?;
         id(&self.owner_log_id)?;
         if self.owner_log_sequence.is_empty()
-            || self.owner_log_sequence.len() > 32
+            || self.owner_log_sequence.len() > 20
             || !self.owner_log_sequence.bytes().all(|byte| byte.is_ascii_digit())
-            || self
-                .owner_log_sequence
-                .parse::<u64>()
-                .map_err(|_| ManagedError::Invalid("HostRun P8 OwnerLog sequence is invalid"))?
-                == 0
+            || self.owner_log_sequence.parse::<u64>().is_err()
+            || self.owner_log_sequence.parse::<u64>().ok().is_none_or(|sequence| {
+                sequence == 0 || sequence.to_string() != self.owner_log_sequence
+            })
         {
             return Err(ManagedError::Invalid(
                 "HostRun P8 OwnerLog sequence is invalid",
@@ -4739,6 +4738,24 @@ mod host_run_persisted_projection_tests {
                 .map(|byte| format!("{byte:02x}"))
                 .collect::<String>()
         )
+    }
+
+    #[test]
+    fn host_run_p8_receipt_requires_canonical_positive_u64_sequence() {
+        let receipt = |owner_log_sequence: &str| HostRunDispatchP8OwnerReceiptV1 {
+            schema_version: HostRunDispatchP8OwnerReceiptV1::SCHEMA_VERSION,
+            dispatch_key_digest: digest(0xc2),
+            binding_digest: digest(0xc3),
+            owner_log_id: "ownerlog_host_run".to_owned(),
+            owner_log_sequence: owner_log_sequence.to_owned(),
+            owner_log_event_digest: digest(0xc4),
+        };
+
+        assert!(receipt("1").validate().is_ok());
+        assert!(receipt("18446744073709551615").validate().is_ok());
+        assert!(receipt("01").validate().is_err());
+        assert!(receipt("0").validate().is_err());
+        assert!(receipt("18446744073709551616").validate().is_err());
     }
 
     /// Repository-local scratch root. Honors TMPDIR (tests are run with TMPDIR
@@ -10062,6 +10079,175 @@ mod managed_verification_evidence_tests {
     }
 
     #[test]
+    fn finalize_run_rejects_multiple_task_proofs_before_final_revision() {
+        let old_revision = digest('a');
+        let final_revision = digest('b');
+        let verifier_id = "server_auth.independent".to_owned();
+        let spec = SpecVersionDraft {
+            parent_version_id: None,
+            objective: "verify all managed Tasks at the final workspace revision".into(),
+            project_ref: "project://test".into(),
+            workspace_ref: "workspace://test".into(),
+            capability_scope: vec![],
+            scope: vec!["src/**".into()],
+            constraints: Vec::new(),
+            criteria: vec![
+                AcceptanceCriterion { id: "tests-pass".into(), description: "tests pass".into() },
+                AcceptanceCriterion { id: "lint-pass".into(), description: "lint passes".into() },
+            ],
+            budget: SpecBudget {
+                max_tasks: 2,
+                max_attempts_per_task: 1,
+                max_run_duration_ms: 1_000,
+                max_memory_bytes: None,
+                max_disk_bytes: None,
+                max_workers: 2,
+                max_tokens: None,
+                max_cost_micros: None,
+            },
+            source_digests: vec![old_revision.clone()],
+            proposed_by: "server_auth.author".into(),
+        };
+        let spec_digest = spec.digest();
+        let mut snapshot = ManagedSnapshot::default();
+        snapshot.specs.insert(
+            "spec-multi-final".into(),
+            SpecVersion {
+                digest: spec_digest,
+                content: spec,
+                accepted: true,
+                accepted_by: Some("server_auth.reviewer".into()),
+                accepted_at_ms: Some(1),
+                reviewer_id: Some("server_auth.reviewer".into()),
+                reviewer_assigned_revision: Some(1),
+                reviewed_revision: Some(2),
+                rejected_by: None,
+                rejected_at_ms: None,
+            },
+        );
+
+        let make_task_attempt = |task_id: &str, criterion_id: &str, attempt_id: &str,
+                                 effect_id: &str, receipt_seed: char| {
+            let mut evidence = valid_evidence();
+            evidence.verifier_id = verifier_id.clone();
+            evidence.source_revision = old_revision.clone();
+            evidence.criteria[0].criterion_id = criterion_id.into();
+            evidence.evidence_digest = verification_evidence_digest(&evidence);
+            let receipt_digest = digest(receipt_seed);
+            let criterion_ids = vec![criterion_id.to_owned()];
+            let task_evidence = TaskVerificationEvidence {
+                attempt_id: attempt_id.into(),
+                verifier_id: verifier_id.clone(),
+                source_revision: old_revision.clone(),
+                evidence_digest: task_typed_verification_digest(
+                    task_id, attempt_id, &receipt_digest, &criterion_ids, &evidence,
+                ),
+            };
+            let task = Task {
+                candidate_generation: 0,
+                title: None,
+                purpose: None,
+                dependencies: Vec::new(),
+                criterion_ids,
+                required_capabilities: Vec::new(),
+                agent_profile_revision: None,
+                profile_token_budget: None,
+                profile_owner_binding_digest: None,
+                ready: false,
+                active_attempt: None,
+                pending_verification_attempt: None,
+                unknown_effect: false,
+                verified_revision: Some(old_revision.clone()),
+                verification_evidence: Some(task_evidence),
+                failed_criterion_ids: Vec::new(),
+                attempt_count: 1,
+            };
+            let attempt = AttemptRecord {
+                run_id: "run-multi-final".into(),
+                task_id: task_id.into(),
+                executor_principal: "server_auth.executor".into(),
+                owner_epoch: evidence.profile.owner_epoch,
+                location_id: "location-1".into(),
+                session_id: format!("session-{task_id}"),
+                workspace_revision: Some(old_revision.clone()),
+                delegation_binding: None,
+                effects: vec![BoundEffect {
+                    effect_id: effect_id.into(),
+                    location_id: "location-1".into(),
+                    session_id: format!("session-{task_id}"),
+                    bound_revision: 1,
+                }],
+                effect_waves: Vec::new(),
+                effect_receipts: BTreeMap::from([(
+                    effect_id.into(),
+                    ManagedAttemptEffectReceiptV1 {
+                        executor_principal: "server_auth.executor".into(),
+                        owner_epoch: evidence.profile.owner_epoch,
+                        bound_revision: 1,
+                        location_id: "location-1".into(),
+                        session_id: format!("session-{task_id}"),
+                        capability_id: "files.write".into(),
+                        capability_lease_digest: digest('c'),
+                        outcome: AttemptEffectOutcomeV1::Succeeded,
+                        target_receipt_digest: Some(digest('d')),
+                        before_workspace_revision: old_revision.clone(),
+                        after_workspace_revision: Some(old_revision.clone()),
+                    },
+                )]),
+                verifier_intents: BTreeMap::new(),
+                verifier_evidence: Some(evidence),
+                phase: AttemptPhase::Succeeded,
+                receipt_digest: Some(receipt_digest),
+                failure_code: None,
+                retryable: None,
+            };
+            (task, attempt)
+        };
+
+        let (task_one, attempt_one) = make_task_attempt("task-one", "tests-pass", "attempt-one", "effect-one", 'e');
+        let (task_two, attempt_two) = make_task_attempt("task-two", "lint-pass", "attempt-two", "effect-two", 'f');
+        snapshot.attempts.insert("attempt-one".into(), attempt_one);
+        snapshot.attempts.insert("attempt-two".into(), attempt_two);
+        snapshot.runs.insert(
+            "run-multi-final".into(),
+            Run {
+                spec_id: "spec-multi-final".into(),
+                phase: RunPhase::Verifying,
+                started_at_ms: None,
+                tasks: BTreeMap::from([
+                    ("task-one".into(), task_one),
+                    ("task-two".into(), task_two),
+                ]),
+                session_link: None,
+                final_revision: Some(old_revision.clone()),
+                verifier_id: Some(verifier_id.clone()),
+                criterion_evidence: BTreeMap::new(),
+                verification_evidence: None,
+                verification_history: Vec::new(),
+                failure_code: None,
+            },
+        );
+        snapshot.apply(&ManagedCommand::BeginVerification {
+            run_id: "run-multi-final".into(),
+            final_revision: final_revision.clone(),
+            verifier_id,
+        }).unwrap();
+
+        let result = snapshot.apply(&ManagedCommand::FinalizeRun {
+            run_id: "run-multi-final".into(),
+            final_revision,
+        });
+
+        assert!(matches!(
+            result,
+            Err(ManagedError::Conflict(
+                "Task aggregate evidence or settled receipt is stale or incomplete"
+            ))
+        ));
+        assert_eq!(snapshot.runs["run-multi-final"].phase, RunPhase::Verifying);
+    }
+
+    #[test]
     fn same_revision_verification_retry_is_rejected_when_typed_evidence_exists() {
         let evidence = valid_evidence();
         let revision = evidence.source_revision.clone();
@@ -10694,6 +10880,7 @@ mod host_run_dispatch_binding_tests {
 
         commit_verifier_evidence(&mut snapshot);
         let run = snapshot.runs.get_mut("run-host-run").unwrap();
+        run.final_revision = Some(digest('a'));
         let task = run.tasks.get_mut("task-host-run").unwrap();
         task.active_attempt = None;
         task.verified_revision = Some(digest('a'));
@@ -10710,6 +10897,156 @@ mod host_run_dispatch_binding_tests {
         );
         assert_eq!(succeeded.attempt_receipt_digest, Some(digest('b')));
         assert_eq!(succeeded.verified_revision, Some(digest('a')));
+    }
+
+    /// Builds the nearest complete positive HostRun reducer fixture while
+    /// varying only the admitted, final, Task, and verifier revision pins.
+    /// The Run's `final_revision` is the P2 final-revision fact; HostKernel must
+    /// independently confirm it with the final Guarded Inspect.
+    fn host_run_terminal_revision_fixture(
+        admitted_revision: &str,
+        final_inspect_revision: &str,
+        task_verified_revision: &str,
+        task_evidence_revision: &str,
+        verifier_revision: &str,
+    ) -> (
+        ManagedSnapshot,
+        HostRunDispatchBindingV1,
+        HostRunProcessEffectProjectionV1,
+    ) {
+        let mut snapshot = snapshot_with_live_attempt();
+        {
+            let attempt = snapshot.attempts.get_mut("attempt-host-run").unwrap();
+            attempt.workspace_revision = Some(admitted_revision.to_owned());
+            attempt
+                .delegation_binding
+                .as_mut()
+                .unwrap()
+                .source_revision = admitted_revision.to_owned();
+        }
+        let binding = commit_binding(&mut snapshot);
+        commit_wave_and_receipt(&mut snapshot, &binding);
+        let effect_receipt = snapshot
+            .attempts
+            .get_mut("attempt-host-run")
+            .unwrap()
+            .effect_receipts
+            .get_mut("effect-1")
+            .unwrap();
+        effect_receipt.before_workspace_revision = admitted_revision.to_owned();
+        effect_receipt.after_workspace_revision = Some(admitted_revision.to_owned());
+
+        let request = snapshot
+            .host_run_projection_requests(&binding.dispatch_key_digest)
+            .unwrap()
+            .remove(0);
+        let projection = HostRunProcessEffectProjectionV1::decode(&projection_value(
+            &request,
+            "SUCCEEDED",
+            "PROVED",
+        ))
+        .unwrap();
+        projection.validate_against(&request).unwrap();
+
+        {
+            let attempt = snapshot.attempts.get_mut("attempt-host-run").unwrap();
+            attempt.phase = AttemptPhase::Succeeded;
+            attempt.receipt_digest = Some(digest('b'));
+        }
+        commit_verifier_evidence(&mut snapshot);
+        {
+            let attempt = snapshot.attempts.get_mut("attempt-host-run").unwrap();
+            let verifier_evidence = attempt.verifier_evidence.as_mut().unwrap();
+            verifier_evidence.source_revision = verifier_revision.to_owned();
+            let evidence_digest = verification_evidence_digest(verifier_evidence);
+            verifier_evidence.evidence_digest = evidence_digest;
+        }
+
+        let run = snapshot.runs.get_mut("run-host-run").unwrap();
+        run.final_revision = Some(final_inspect_revision.to_owned());
+        let task = run.tasks.get_mut("task-host-run").unwrap();
+        task.active_attempt = None;
+        task.verified_revision = Some(task_verified_revision.to_owned());
+        task.verification_evidence = Some(TaskVerificationEvidence {
+            attempt_id: "attempt-host-run".into(),
+            verifier_id: "server_auth:verifier".into(),
+            source_revision: task_evidence_revision.to_owned(),
+            evidence_digest: digest('c'),
+        });
+
+        (snapshot, binding, projection)
+    }
+
+    #[test]
+    fn reconcile_final_revision_accepts_post_admission_workspace_change() {
+        let admitted = digest('a');
+        let final_revision = digest('b');
+        let (snapshot, binding, projection) = host_run_terminal_revision_fixture(
+            &admitted,
+            &final_revision,
+            &final_revision,
+            &final_revision,
+            &final_revision,
+        );
+        assert_eq!(binding.admitted_workspace_revision, admitted);
+
+        let reconciliation =
+            snapshot.reconcile_host_run(&binding.dispatch_key_digest, &[projection]);
+        assert_eq!(reconciliation.status, HostRunReconciliationStatusV1::Succeeded);
+        assert_eq!(reconciliation.verified_revision, Some(final_revision));
+    }
+
+    #[test]
+    fn reconcile_final_revision_rejects_task_and_verifier_mismatches() {
+        let final_revision = digest('b');
+        let other_revision = digest('c');
+
+        let (task_mismatch, task_binding, task_projection) = host_run_terminal_revision_fixture(
+            &final_revision,
+            &final_revision,
+            &other_revision,
+            &final_revision,
+            &final_revision,
+        );
+        assert_eq!(
+            task_mismatch
+                .reconcile_host_run(&task_binding.dispatch_key_digest, &[task_projection])
+                .status,
+            HostRunReconciliationStatusV1::Unknown,
+        );
+
+        let (verifier_mismatch, verifier_binding, verifier_projection) =
+            host_run_terminal_revision_fixture(
+                &final_revision,
+                &final_revision,
+                &final_revision,
+                &final_revision,
+                &other_revision,
+            );
+        assert_eq!(
+            verifier_mismatch
+                .reconcile_host_run(&verifier_binding.dispatch_key_digest, &[verifier_projection])
+                .status,
+            HostRunReconciliationStatusV1::Unknown,
+        );
+    }
+
+    #[test]
+    fn reconcile_final_revision_rejects_inspect_disagreeing_with_task_and_verifier() {
+        let admitted_revision = digest('b');
+        let task_and_verifier_revision = digest('b');
+        let stale_inspect_revision = digest('c');
+        let (snapshot, binding, projection) = host_run_terminal_revision_fixture(
+            &admitted_revision,
+            &stale_inspect_revision,
+            &task_and_verifier_revision,
+            &task_and_verifier_revision,
+            &task_and_verifier_revision,
+        );
+
+        let reconciliation =
+            snapshot.reconcile_host_run(&binding.dispatch_key_digest, &[projection]);
+        assert_eq!(reconciliation.status, HostRunReconciliationStatusV1::Unknown);
     }
 
     #[test]
@@ -10919,6 +11256,7 @@ mod host_run_dispatch_binding_tests {
             .phase = AttemptPhase::Succeeded;
         snapshot.attempts.get_mut("attempt-host-run").unwrap().receipt_digest = Some(digest('b'));
         let run = snapshot.runs.get_mut("run-host-run").unwrap();
+        run.final_revision = Some(digest('a'));
         let task = run.tasks.get_mut("task-host-run").unwrap();
         task.active_attempt = None;
         task.verified_revision = Some(digest('a'));
@@ -11038,42 +11376,30 @@ mod managed_delegation_admission_tests {
     fn facts_for_snapshot(snapshot: &ManagedSnapshot) -> ManagedDelegationAdmissionFactsV1 {
         let task = &snapshot.runs["run-1"].tasks["task-1"];
         let accepted_spec_digest = snapshot.specs["spec-1"].digest.clone();
-        let context_selection = crate::context_selection::ContextSelectionV1::test_fixture();
+        // Managed admission requires a managed-lane ContextSelection bound to this
+        // Attempt (lane=managed + attemptID + requestSequence) whose agent-profile
+        // source matches the Task pin; a direct-lane selection is never admissible.
+        let context_selection = crate::context_selection::ContextSelectionV1::decode_json(&json!({
+            "schemaVersion": 1, "lane": "managed",
+            "sessionID": "ses_01J9ABCDEF0123456789ABCDEFGH",
+            "requestID": "ctxreq_01J9ABCDEF0123456789ABCDEFGH",
+            "attemptID": "attempt-1", "requestSequence": "1",
+            "mode": "conversation_slice", "sourceRevision": "12",
+            "sources": [
+                {"kind": "session-message", "sourceID": "msg_01J9ABCDEF0123456789ABCDEFGH", "sourceRevision": "12", "contentDigest": format!("sha256:{}", "a".repeat(64)), "sourceAuthority": "session-store", "trust": "user", "included": true, "inclusionReason": "history"},
+                {"kind": "provider-input", "sourceID": "ctxreq_01J9ABCDEF0123456789ABCDEFGH", "sourceRevision": "1", "contentDigest": format!("blake3:{}", "b".repeat(64)), "sourceAuthority": "core-prompt-compiler", "trust": "mixed", "included": true, "inclusionReason": "current_request"},
+                {"kind": "managed-task", "sourceID": "task-1", "sourceRevision": "1", "contentDigest": format!("blake3:{}", "9".repeat(64)), "sourceAuthority": "managed-control", "trust": "workspace", "included": true, "inclusionReason": "required"},
+                {"kind": "accepted-spec", "sourceID": "spec-1", "sourceRevision": "1", "contentDigest": format!("blake3:{}", "6".repeat(64)), "sourceAuthority": "managed-control", "trust": "workspace", "included": true, "inclusionReason": "required"},
+                {"kind": "agent-profile", "sourceID": "agent-profile", "sourceRevision": "7", "contentDigest": digest('a'), "sourceAuthority": "core-config", "trust": "system", "included": true, "inclusionReason": "profile"},
+                {"kind": "tool", "sourceID": "toolset:horizon.native", "sourceRevision": "blake3:2e76c0a2b5575398bb1f0e70bbf5f9f952680e9f1320c45b9aebe87950dfcd41", "contentDigest": "blake3:2e76c0a2b5575398bb1f0e70bbf5f9f952680e9f1320c45b9aebe87950dfcd41", "sourceAuthority": "tool-registry", "trust": "system", "included": true, "inclusionReason": "selected_tool", "harnessRevision": 1}
+            ]
+        })).expect("managed ContextSelection fixture must be valid");
         let session_id = context_selection.session_id.clone();
         let bounded_context = BoundedContextSelectionProofV1::from_core_selection(
             &context_selection,
             &session_id,
         )
         .unwrap();
-        let owner = crate::resource_budget::AuthenticatedOwnerContext::test_fixture(
-            "server_auth:executor",
-            "workspace-1",
-            &session_id,
-            "run-1",
-            "task-1",
-            "attempt-1",
-            3,
-        );
-        let worker_binding = crate::worker_pool::VerifiedAttemptBinding::test_fixture(
-            "goal-admission",
-            "run-1",
-            "task-1",
-            "attempt-1",
-            3,
-            &digest('b'),
-            &accepted_spec_digest,
-        );
-        let durable_lease = crate::worker_durable::DurableManagedLeaseProofV1::test_fixture(
-            &owner,
-            &worker_binding,
-            "child-exec",
-            "goal-admission",
-            "ticket-1",
-            "workspace-lease",
-            "budget-lease",
-            vec!["resource-lease".into()],
-            1,
-        );
         let parent_attempt = AuthenticatedAttemptAdmissionProofV1 {
             goal_id: "goal-admission".into(),
             attempt_id: "parent-attempt".into(),
@@ -11130,6 +11456,108 @@ mod managed_delegation_admission_tests {
                 &profile.profile_id, profile.revision, &profile_digest, &owner_digest,
                 &digest('c'), proof.guard_policy_revision(), proof.capabilities(),
             ).expect("fixture facts rederive the effective permission scope");
+        // P8 admits only the current `PreAdmissionReserved` lease projection:
+        // context-bound pins, no attached delegation and no admission pins.
+        // Rebuild that exact proof shape through P8's own fixture constructor so
+        // these owner facts exercise the real admission contract instead of the
+        // retired LegacyAdmitted fixture.
+        // Keep each JSON object in its own macro invocation. serde_json's
+        // recursive token expansion otherwise exceeds the default recursion
+        // limit for this complete admission proof; do not raise a crate-wide
+        // limit for a test fixture.
+        let lease_facts = json!({
+            "goalId": "goal-admission",
+            "runId": "run-1",
+            "taskId": "task-1",
+            "attemptId": "attempt-1",
+            "principalRef": "server_auth:executor",
+            "workspaceBinding": "workspace-1",
+            "sessionId": session_id.clone(),
+            "ownerEpoch": 3,
+            "sourceRevision": digest('b'),
+            "acceptedSpecDigest": accepted_spec_digest.clone(),
+            "workerExecutionId": "child-exec",
+            "ticketId": "ticket-1",
+            "workspaceLeaseId": "workspace-lease",
+            "budgetLeaseId": "budget-lease",
+            "resourceLeaseIds": ["resource-lease"],
+        });
+        let owner_pins = json!({
+            "principalRef": "server_auth:executor",
+            "workspaceBinding": "workspace-1",
+            "sessionId": session_id.clone(),
+            "runId": "run-1",
+            "taskId": "task-1",
+            "attemptId": "attempt-1",
+            "ownerEpoch": 3,
+        });
+        let worktree_pin = json!({
+            "worktreeId": "worktree-1",
+            "baseRevision": digest('d'),
+        });
+        let parent_execution_record = json!({
+            "workerExecutionId": "parent-exec",
+            "goalId": "goal-admission",
+            "runId": "run-1",
+            "principalRef": "server_auth:executor",
+            "workspaceBinding": "workspace-1",
+            "sessionId": session_id.clone(),
+            "locationId": "location-1",
+            "ownerEpoch": 3,
+            "processIncarnation": "incarnation-1",
+            "processIdentity": { "pid": 1, "startIdentity": 1 },
+            "sourceRevision": digest('b'),
+            "acceptedSpecDigest": accepted_spec_digest.clone(),
+            "expiresAtMs": 60_000,
+        });
+        let parent_proof = json!({
+            "kind": "RootCoordinator",
+            "execution": parent_execution_record,
+            "ownerLogId": "worker-test-pool",
+            "ownerLogSequence": "1",
+            "ownerLogEventDigest": digest('0'),
+            "workerPoolRevision": 1,
+        });
+        let pre_admission_pins = json!({
+            "owner": owner_pins,
+            "goalId": "goal-admission",
+            "taskRevision": "task-revision-1",
+            "taskAttemptCount": 1,
+            "candidateGeneration": 0,
+            "acceptedSpecDigest": accepted_spec_digest.clone(),
+            "workspaceRevision": digest('b'),
+            "locationId": "location-1",
+            "processIncarnation": "incarnation-1",
+            "profileId": profile.profile_id.clone(),
+            "profileRevision": profile.revision,
+            "profileDigest": profile_digest.clone(),
+            "profilePermissionCeilingDigest": digest('c'),
+            "contextSelectionDigest": bounded_context.context_selection_digest.clone(),
+            "acceptedScopeDigest": scope_digest.clone(),
+            "capabilityCeilingDigest": proof.effective_ceiling_digest().to_owned(),
+            "specMaxWorkers": 1,
+            "resourcePolicyRevision": 1,
+            "resourcePolicyDigest": digest('9'),
+            "dimension": "ACTIVE_WORKERS",
+            "amount": 1,
+            "expiresAtMs": 60_000,
+            "worktree": worktree_pin,
+            "worktreePoolRevision": 7,
+            "idempotencyKey": "admission-fixture-1",
+            "parentProof": parent_proof,
+            "stagedPreAdmission": true,
+        });
+        let lease_proof = json!({
+            "facts": lease_facts,
+            "preAdmissionPins": pre_admission_pins,
+            "ownerLogId": "worker-test-pool",
+            "workerPoolRevision": 1,
+            "ownerLogSequence": "1",
+            "ownerLogEventDigest": digest('0'),
+        });
+        let lease_record = json!({ "leaseProof": lease_proof });
+        let durable_lease =
+            crate::worker_durable::pre_admission_fixture::lease_proof(&lease_record);
         ManagedDelegationAdmissionFactsV1::from_owner_proofs(
             AuthenticatedAttemptAdmissionProofV1 {
                 goal_id: "goal-admission".into(),
@@ -11290,7 +11718,9 @@ mod managed_delegation_admission_tests {
                 task_id: "task-1".into(),
                 executor_principal: "server_auth.executor".into(),
                 owner_epoch: 3,
-                location_id: "location-1".into(),
+                // A managed Attempt is admitted against the registered child
+                // worktree Location, never the parent root Location.
+                location_id: "worktree-location-1".into(),
                 session_id: "session-1".into(),
                 workspace_revision: Some(digest('b')),
                 delegation_binding: None,
@@ -11306,6 +11736,28 @@ mod managed_delegation_admission_tests {
             },
         );
         snapshot
+    }
+
+    fn test_session_link() -> SessionLink {
+        let session_id = "session-1".to_owned();
+        SessionLink {
+            session_id: session_id.clone(),
+            source_store_id: "store-fixture".into(),
+            source_instance_id: "instance-fixture".into(),
+            source_cursor: CursorV1 {
+                owner_kind: "session".into(),
+                owner_id: session_id,
+                seq: "1".into(),
+                event_digest: digest('c'),
+            },
+            source_epoch: 1,
+            latest_observed_message_id: None,
+            latest_observed_part_id: None,
+            source_digest: format!("sha256:{}", "c".repeat(64)),
+            redaction_profile: "session-redacted-v1".into(),
+            owner_epoch: 3,
+            protocol_version: 1,
+        }
     }
 
     fn private_test_root() -> std::path::PathBuf {
@@ -11391,39 +11843,46 @@ mod managed_delegation_admission_tests {
                     accepted_at_ms: 1,
                 },
             )?;
+            let spec_digest = control.snapshot().specs["spec-1"].digest.clone();
             control.apply(
                 4,
-                "start-run",
-                ManagedCommand::StartRun {
+                "plan-run",
+                ManagedCommand::PlanRun {
                     run_id: "run-1".into(),
                     spec_id: "spec-1".into(),
+                    spec_digest: spec_digest.clone(),
+                    tasks: vec![PlannedTaskV1 {
+                        task_id: "task-1".into(),
+                        title: Some("Perform the accepted managed task".into()),
+                        purpose: Some("Complete the accepted managed task exactly once".into()),
+                        dependencies: vec![],
+                        criterion_ids: vec!["tests".into()],
+                        required_capabilities: vec![],
+                        agent_profile_revision: ProfileRevisionRefV1 {
+                            profile_id: "agent-profile".into(),
+                            revision: 7,
+                            definition_digest: digest('a'),
+                        },
+                        profile_token_budget: 64_000,
+                        profile_owner_binding_digest: ProfileOwnerBindingV1::Builtin.digest(),
+                    }],
                 },
             )?;
+            // Admission requires the explicit authenticated start that pins the Run's
+            // root SessionLink; a legacy StartRun can never grant admission eligibility.
+            let start_revision = control.snapshot().revision;
+            let plan_digest = planned_task_set_digest(&control.snapshot().runs["run-1"]);
             control.apply(
-                5,
-                "add-task",
-                ManagedCommand::AddTaskPinnedProfile {
+                start_revision,
+                "start-run",
+                ManagedCommand::StartPlannedRun {
                     run_id: "run-1".into(),
-                    task_id: "task-1".into(),
-                    dependencies: vec![],
-                    criterion_ids: vec!["tests".into()],
-                    required_capabilities: vec![],
-                    agent_profile_revision: ProfileRevisionRefV1 {
-                        profile_id: "agent-profile".into(),
-                        revision: 7,
-                        definition_digest: digest('a'),
-                    },
-                    // Same pinned profile budget this fixture's Task carries.
-                    profile_token_budget: 64_000,
-                    profile_owner_binding_digest: ProfileOwnerBindingV1::Builtin.digest(),
-                },
-            )?;
-            control.apply(
-                6,
-                "ready-task",
-                ManagedCommand::MarkTaskReady {
-                    run_id: "run-1".into(),
-                    task_id: "task-1".into(),
+                    spec_id: "spec-1".into(),
+                    spec_digest,
+                    plan_digest,
+                    expected_goal_revision: start_revision,
+                    started_by: "server_auth:reviewer".into(),
+                    session_link: Some(test_session_link()),
                 },
             )?;
 
@@ -11616,8 +12075,10 @@ mod managed_delegation_admission_tests {
             .is_err()
         );
 
+        // The measured child-worktree revision is the source lease revision;
+        // a stale measurement must fail admission.
         let mut stale_source = facts();
-        stale_source.workspace_source_lease.source_revision = digest('f');
+        stale_source.worktree.workspace_revision = digest('f');
         assert!(
             mint_delegation_binding(&snapshot, "run-1", "task-1", "attempt-1", &stale_source, 13,)
                 .is_err()
@@ -11657,6 +12118,33 @@ mod managed_delegation_admission_tests {
         assert!(mint_delegation_binding(&snapshot, "run-1", "task-1", "attempt-1", &facts, 13).is_err());
         assert_eq!(snapshot.revision, 12);
         assert!(snapshot.attempt_delegation_binding("attempt-1").is_none());
+    }
+
+    #[test]
+    fn scheduler_fails_closed_when_active_and_verification_attempts_disagree() {
+        let mut snapshot = accepted_attempt_snapshot();
+        snapshot.specs.get_mut("spec-1").unwrap().content.budget.max_workers = 2;
+        snapshot.session_links_pinned_at_start.insert("run-1".into());
+
+        let run = snapshot.runs.get_mut("run-1").unwrap();
+        let active_task = run.tasks.get_mut("task-1").unwrap();
+        active_task.pending_verification_attempt = Some("attempt-verification".into());
+
+        let mut candidate = active_task.clone();
+        candidate.dependencies.clear();
+        candidate.ready = true;
+        candidate.active_attempt = None;
+        candidate.pending_verification_attempt = None;
+        candidate.attempt_count = 0;
+        run.tasks.insert("task-2".into(), candidate);
+
+        let mut pending_attempt = snapshot.attempts["attempt-1"].clone();
+        pending_attempt.task_id = "task-1".into();
+        pending_attempt.location_id = "location-2".into();
+        pending_attempt.session_id = "session-verification".into();
+        snapshot.attempts.insert("attempt-verification".into(), pending_attempt);
+
+        assert_eq!(snapshot.next_schedulable_task("run-1"), None);
     }
 }
 
@@ -11996,6 +12484,11 @@ impl ManagedSnapshot {
         let mut active_locations = BTreeSet::new();
         for (task_id, task) in run.tasks.iter().filter(|(_, task)| task.active_attempt.is_some()
             || task.pending_verification_attempt.is_some() || task.unknown_effect) {
+            if task.active_attempt.as_deref().zip(task.pending_verification_attempt.as_deref())
+                .is_some_and(|(active, pending)| active != pending)
+            {
+                return None;
+            }
             let attempt_id = task.active_attempt.as_deref().or(task.pending_verification_attempt.as_deref())?;
             let attempt = self.attempts.get(attempt_id)?;
             if attempt.run_id != run_id || attempt.task_id != task_id.as_str()
@@ -12292,10 +12785,29 @@ impl ManagedSnapshot {
                         Some(&binding_digest),
                     );
                 };
+                // Admission is the start pin. Terminal verification must instead
+                // agree with the exact durable final revision that HostKernel
+                // independently confirms through Guarded Inspect.
+                let Some(final_revision) = run.final_revision.as_deref() else {
+                    return HostRunReconciliationV1::unknown(
+                        dispatch_key_digest,
+                        HOST_RUN_UNKNOWN_TASK_UNVERIFIED,
+                        Some(binding),
+                        Some(&binding_digest),
+                    );
+                };
+                if managed_digest(final_revision).is_err() {
+                    return HostRunReconciliationV1::unknown(
+                        dispatch_key_digest,
+                        HOST_RUN_UNKNOWN_TASK_UNVERIFIED,
+                        Some(binding),
+                        Some(&binding_digest),
+                    );
+                }
                 if evidence.attempt_id != binding.attempt_id
-                    || task.verified_revision.as_deref()
-                        != Some(binding.admitted_workspace_revision.as_str())
-                    || evidence.source_revision != binding.admitted_workspace_revision
+                    || task.verified_revision.as_deref() != Some(final_revision)
+                    || evidence.source_revision != final_revision
+                    || full_evidence.source_revision != final_revision
                 {
                     return HostRunReconciliationV1::unknown(
                         dispatch_key_digest,
@@ -15442,6 +15954,7 @@ impl ManagedSnapshot {
                     let evidence_criteria = evidence.criteria.iter().map(|item| item.criterion_id.as_str()).collect::<BTreeSet<_>>();
                     if task.unknown_effect || task.active_attempt.is_some() || task.pending_verification_attempt.is_some()
                         || task.verified_revision.as_deref() != Some(task_evidence.source_revision.as_str())
+                        || task_evidence.source_revision.as_str() != final_revision.as_str()
                         || task_evidence.evidence_digest != task_typed_verification_digest(
                             task_id, &task_evidence.attempt_id, receipt_digest, &task.criterion_ids, evidence,
                         )
@@ -20151,5 +20664,197 @@ mod direct_attempt_profile_admission_tests {
                 1,
             )
             .is_err());
+    }
+}
+
+/// P8 `PreAdmissionReserved` fixture consumption at the admission-reducer
+/// boundary: every fact/pin carries the fixture's own value (nothing substituted
+/// from a P2 placeholder), and each conjunct of
+/// `durable_lease_proof_matches_attempt` is evaluated individually so a single
+/// generator defect is reported precisely instead of collapsing into one opaque
+/// `false`.
+#[cfg(test)]
+mod pre_admission_fixture_admission_tests {
+    use super::*;
+    use crate::worker_durable::pre_admission_fixture;
+
+    fn pre_admission_admission_facts(
+        record: &serde_json::Value,
+    ) -> ManagedDelegationAdmissionFactsV1 {
+        let lease = pre_admission_fixture::lease_proof(record);
+        let facts_json = &record["leaseProof"]["facts"];
+        let pins_json = &record["leaseProof"]["preAdmissionPins"];
+        let attempt = AuthenticatedAttemptAdmissionProofV1 {
+            goal_id: pre_admission_fixture::txt(facts_json, "goalId").to_owned(),
+            attempt_id: pre_admission_fixture::txt(facts_json, "attemptId").to_owned(),
+            run_id: pre_admission_fixture::txt(facts_json, "runId").to_owned(),
+            task_id: pre_admission_fixture::txt(facts_json, "taskId").to_owned(),
+            executor_principal: pre_admission_fixture::txt(facts_json, "principalRef").to_owned(),
+            location_id: pre_admission_fixture::txt(pins_json, "locationId").to_owned(),
+            workspace_binding: pre_admission_fixture::txt(facts_json, "workspaceBinding").to_owned(),
+            session_id: pre_admission_fixture::txt(facts_json, "sessionId").to_owned(),
+            owner_epoch: pre_admission_fixture::num(facts_json, "ownerEpoch"),
+        };
+        let accepted_spec = pre_admission_fixture::txt(facts_json, "acceptedSpecDigest").to_owned();
+        let permission_ceiling =
+            pre_admission_fixture::txt(pins_json, "profilePermissionCeilingDigest").to_owned();
+        let registered_profile = RegisteredAgentProfileProofV1 {
+            profile_id: pre_admission_fixture::txt(pins_json, "profileId").to_owned(),
+            profile_revision: pre_admission_fixture::num(pins_json, "profileRevision"),
+            profile_digest: pre_admission_fixture::txt(pins_json, "profileDigest").to_owned(),
+            profile_source: "builtin".into(),
+            permission_ceiling_digest: permission_ceiling.clone(),
+            capability_ceiling: vec![],
+            provider_id: "provider-test".into(),
+            model_id: "model-test".into(),
+            token_budget: Some(16_000),
+            owner_binding: ProfileOwnerBindingV1::Builtin,
+        };
+        let bounded_context = BoundedContextSelectionProofV1 {
+            context_selection_digest: pre_admission_fixture::txt(pins_json, "contextSelectionDigest")
+                .to_owned(),
+            selection: crate::context_selection::ContextSelectionV1::test_fixture(),
+        };
+        let effective_capability_ceiling =
+            crate::guard::EffectiveCapabilityCeilingProofV1::test_fixture_for_owner(
+                &attempt.attempt_id,
+                attempt.owner_epoch,
+                &attempt.run_id,
+                &attempt.task_id,
+                &pre_admission_fixture::txt(pins_json, "acceptedScopeDigest").to_owned(),
+                &registered_profile.profile_id,
+                registered_profile.profile_revision,
+                &registered_profile.profile_digest,
+                &ProfileOwnerBindingV1::Builtin.digest(),
+                &permission_ceiling,
+                vec![],
+            );
+        let parent_execution =
+            ParentExecutionProofV1::test_fixture_for(&attempt, "parent-exec", &accepted_spec);
+        let worktree = ManagedWorktreeAdmissionProjectionV1 {
+            worktree_id: "worktree-fixture".into(),
+            base_revision: pre_admission_fixture::txt(facts_json, "sourceRevision").to_owned(),
+            pool_revision: 1,
+            root_location_id: attempt.location_id.clone(),
+            p8_workspace_binding: attempt.workspace_binding.clone(),
+            location_id: attempt.location_id.clone(),
+            workspace_id: attempt.workspace_binding.clone(),
+            workspace_ref: attempt.workspace_binding.clone(),
+            canonical_root: "/tmp/horizoncode-test-worktree".into(),
+            workspace_revision: pre_admission_fixture::txt(facts_json, "sourceRevision").to_owned(),
+        };
+        ManagedDelegationAdmissionFactsV1::from_owner_proofs(
+            attempt,
+            registered_profile,
+            bounded_context,
+            lease,
+            effective_capability_ceiling,
+            format!("blake3:{}", "c".repeat(64)),
+            parent_execution,
+            worktree,
+            crate::protocol::ManagedProviderRouteBindingV1 {
+                provider_id: "provider-test".into(),
+                model_id: "model-test".into(),
+                harness_id: "harness-test".into(),
+                route_id: "llm_test".into(),
+                endpoint_revision: format!("blake3:{}", "e".repeat(64)),
+                credential_lease_ref: Some("credential-ref-1".into()),
+            },
+        )
+    }
+
+    #[test]
+    fn pre_admission_reserved_fixture_satisfies_admission_lease_match() {
+        let record = pre_admission_fixture::load();
+        let facts = pre_admission_admission_facts(&record);
+        let lease = &facts.durable_managed_lease;
+        let Some(pins) = lease.pre_admission_pins() else {
+            panic!("fixture proof must carry pre-admission pins");
+        };
+        use crate::resource_budget::{BudgetDimension, ReservationState};
+        use crate::worker_durable::DurableManagedLeaseProofPurposeV1;
+        let mut mismatches: Vec<&'static str> = Vec::new();
+        let mut check = |ok: bool, label: &'static str| {
+            if !ok {
+                mismatches.push(label);
+            }
+        };
+        check(
+            lease.purpose() == DurableManagedLeaseProofPurposeV1::PreAdmissionReserved,
+            "purpose==PreAdmissionReserved",
+        );
+        check(lease.delegation_binding_digest().is_none(), "delegation-null");
+        check(lease.worker_state() == ReservationState::Reserved, "worker-state==Reserved");
+        check(lease.principal_ref() == facts.authenticated_attempt.executor_principal, "lease-principal");
+        check(lease.workspace_binding() == facts.authenticated_attempt.workspace_binding, "lease-workspace-binding");
+        check(lease.session_id() == facts.authenticated_attempt.session_id, "lease-session");
+        check(lease.run_id() == facts.authenticated_attempt.run_id, "lease-run");
+        check(lease.task_id() == facts.authenticated_attempt.task_id, "lease-task");
+        check(lease.attempt_id() == facts.authenticated_attempt.attempt_id, "lease-attempt");
+        check(lease.goal_id() == facts.authenticated_attempt.goal_id, "lease-goal");
+        check(lease.owner_epoch() == facts.authenticated_attempt.owner_epoch, "lease-owner-epoch");
+        check(lease.worker_execution_id() == facts.child_execution_id, "lease-worker-execution==child-execution");
+        check(pins.goal_id() == facts.authenticated_attempt.goal_id, "pins-goal");
+        check(pins.run_id() == facts.authenticated_attempt.run_id, "pins-run");
+        check(pins.task_id() == facts.authenticated_attempt.task_id, "pins-task");
+        check(pins.attempt_id() == facts.authenticated_attempt.attempt_id, "pins-attempt");
+        check(pins.owner_epoch() == facts.authenticated_attempt.owner_epoch, "pins-owner-epoch");
+        check(pins.principal_ref() == facts.authenticated_attempt.executor_principal, "pins-principal");
+        check(pins.workspace_binding() == facts.authenticated_attempt.workspace_binding, "pins-workspace-binding");
+        check(pins.session_id() == facts.authenticated_attempt.session_id, "pins-session");
+        check(pins.location_id() == facts.authenticated_attempt.location_id, "pins-location");
+        check(pins.accepted_spec_digest() == lease.accepted_spec_digest(), "pins-accepted-spec==lease-accepted-spec");
+        check(pins.workspace_revision() == lease.source_revision(), "pins-workspace-revision==lease-source-revision");
+        check(facts.worktree.root_location_id == facts.authenticated_attempt.location_id, "worktree-root-location");
+        check(facts.worktree.p8_workspace_binding == facts.authenticated_attempt.workspace_binding, "worktree-p8-binding");
+        check(pins.profile_id() == facts.registered_profile.profile_id, "pins-profile-id");
+        check(pins.profile_revision() == facts.registered_profile.profile_revision, "pins-profile-revision");
+        check(pins.profile_digest() == facts.registered_profile.profile_digest, "pins-profile-digest");
+        check(
+            pins.profile_permission_ceiling_digest() == facts.registered_profile.permission_ceiling_digest,
+            "pins-profile-permission-ceiling",
+        );
+        check(
+            pins.context_selection_digest()
+                == Some(facts.bounded_context.context_selection_digest.as_str()),
+            "pins-context-selection",
+        );
+        check(
+            pins.accepted_scope_digest() == facts.effective_capability_ceiling.accepted_scope_digest(),
+            "pins-accepted-scope",
+        );
+        check(
+            pins.capability_ceiling_digest() == facts.effective_capability_ceiling.effective_ceiling_digest(),
+            "pins-capability-ceiling==guard-derived-ceiling",
+        );
+        check(pins.dimension() == BudgetDimension::ActiveWorkers, "pins-dimension==ACTIVE_WORKERS");
+        check(pins.amount() == 1, "pins-amount==1");
+        check(
+            lease.workspace_lease_id() == facts.workspace_source_lease.workspace_lease_id,
+            "lease-workspace-lease",
+        );
+        check(lease.budget_lease_id() == facts.resource_leases.budget_lease_id, "lease-budget-lease");
+        check(
+            lease.resource_lease_ids().to_vec() == facts.resource_leases.resource_lease_ids,
+            "lease-resource-leases",
+        );
+        check(!lease.ticket_id().is_empty(), "lease-ticket-nonempty");
+        check(!lease.owner_log_id().is_empty(), "lease-owner-log-id-nonempty");
+        check(lease.owner_log_sequence().parse::<u64>().is_ok_and(|seq| seq > 0), "lease-owner-log-sequence>0");
+        check(blake3_digest(lease.owner_log_event_digest()).is_ok(), "lease-owner-log-event-digest-blake3");
+        check(lease.worker_pool_revision() > 0, "lease-worker-pool-revision>0");
+        check(
+            facts.parent_execution.matches_child(&facts.authenticated_attempt, lease),
+            "parent-execution-matches-child",
+        );
+        assert_eq!(
+            mismatches,
+            Vec::<&'static str>::new(),
+            "every individually checked P8 PreAdmissionReserved fact/pin must match",
+        );
+        assert!(
+            durable_lease_proof_matches_attempt(&facts),
+            "the regenerated P8 fixture must satisfy the full P2 admission reducer",
+        );
     }
 }

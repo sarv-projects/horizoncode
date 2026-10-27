@@ -4,6 +4,7 @@
  * typed Guard/ExecutionHost route is implemented and verified. Until then all lifecycle
  * operations fail closed.
  */
+// CODE_PRESENT / UNWIRED: typed process/protocol adapters exist, but HostKernel runtime readiness remains false until P1/P2 acceptance.
 export type LanguageServiceProcessOperation =
   | "server.spawn"
   | "server.install"

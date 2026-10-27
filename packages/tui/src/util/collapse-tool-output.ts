@@ -227,7 +227,7 @@ function exceedsUtf8Limit(value: string, limit: number) {
 function sliceUtf8(value: string, maxBytes: number) {
   let bytes = 0
   let index = 0
-  const limit = Math.max(0, Math.floor(maxBytes))
+  const limit = Number.isFinite(maxBytes) ? Math.max(0, Math.floor(maxBytes)) : 0
   while (index < value.length) {
     const code = value.charCodeAt(index)
     const next = index + 1 < value.length ? value.charCodeAt(index + 1) : 0

@@ -88,7 +88,9 @@ def append_capture_output(path, payload):
             output_fd = os.open(name, flags | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=parent_fd)
         info = os.fstat(output_fd)
         if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
-                or info.st_dev != parent_device or info.st_size + len(payload) > MAX_CAPTURE_FILE_BYTES):
+                or info.st_dev != parent_device or info.st_size + len(payload) > MAX_CAPTURE_FILE_BYTES
+                or not hasattr(os, "geteuid") or info.st_uid != os.geteuid()
+                or info.st_mode & 0o077 or info.st_mode & 0o111):
             raise ValueError("RC0 output is not a bounded private repository file")
         try:
             import fcntl
@@ -96,13 +98,15 @@ def append_capture_output(path, payload):
             raise ValueError("safe locked RC0 output is unavailable on this platform") from exc
         fcntl.flock(output_fd, fcntl.LOCK_EX)
         after_lock = os.fstat(output_fd)
-        if (after_lock.st_dev, after_lock.st_ino) != (info.st_dev, info.st_ino):
+        if ((after_lock.st_dev, after_lock.st_ino) != (info.st_dev, info.st_ino)
+                or not stat.S_ISREG(after_lock.st_mode) or after_lock.st_nlink != 1
+                or after_lock.st_dev != parent_device or after_lock.st_uid != os.geteuid()
+                or after_lock.st_mode & 0o077 or after_lock.st_mode & 0o111
+                or after_lock.st_size + len(payload) > MAX_CAPTURE_FILE_BYTES):
             raise ValueError("RC0 output identity changed while acquiring its append lock")
         if after_lock.st_size:
             if not hasattr(os, "pread") or os.pread(output_fd, 1, after_lock.st_size - 1) != b"\n":
                 raise ValueError("RC0 output has an incomplete trailing record; refusing to append")
-        if after_lock.st_size + len(payload) > MAX_CAPTURE_FILE_BYTES:
-            raise ValueError("RC0 output exceeds its repository artifact bound")
         view = memoryview(payload)
         while view:
             written = os.write(output_fd, view)
@@ -145,6 +149,11 @@ def append_capture_output(path, payload):
 #     NOT_ATTESTED and every capture stays ``release_eligible: False``.
 TRUSTED_ATTESTATION_SOURCES = ()
 TRUSTED_ATTESTATION_VERIFIERS = {}
+# No P1/P2 runtime currently authenticates the complete registration evidence
+# bundle. Static source-presence checks, caller-provided references, and a generic
+# callback are not owner provenance. The callback slot is informational only and
+# registration stays disabled until an owner-issued typed proof interface exists.
+TRUSTED_REGISTRATION_PROVENANCE_VERIFIER = None
 ATTESTATION_SIGNATURE_ALGORITHMS = ("hmac-sha256",)
 MIN_ATTESTATION_KEY_BYTES = 32
 MAX_ATTESTATION_KEY_BYTES = 64
@@ -470,15 +479,303 @@ def attestation_covers(attestation, selected, commit, *, outcomes=None):
 
 
 
+# --- Trusted source configuration/registration (the trust boundary) ---------
+# Registration is the ONLY way a source/verifier ever enters the registries
+# above. It fails closed until the cross-phase HostRun chain has actually
+# landed in source AND the caller supplies the exact evidence references and a
+# private repository-contained key; a caller-asserted payload can never stand in
+# for the landed interfaces. P2's authenticated chain has not fully landed, so
+# registration is expected to fail today and RC0 stays NOT_ATTESTED.
+
+class TrustedRegistrationError(ValueError):
+    """A trusted-source registration was rejected before touching the registries."""
+
+
+# The exact cross-phase interfaces RC0 attestation depends on (§12.23/§37.31/
+# §32.54). These values are pinned here so a registration cannot negotiate a
+# looser contract than the architecture requires.
+P2_HOSTRUN_REQUIRED_CONTRACT = {
+    "bind_operation": "managed.v1/host_run.bind",
+    "bind_identity_source": "p8_frozen_invocation",
+    "receipt_operation": "managed.v1/host_run.bind_receipt",
+    "cursor_resolution": "durable_owner_log_resolved",
+    "mirror_event_kind": "HostRunDispatchBoundV1",
+}
+P1_PROJECTION_REQUIRED_CONTRACT = {
+    "projection_trait": "HostRunEffectProjectionSourceV1",
+    "install_call": "install_host_run_effect_projection_source",
+}
+TRUSTED_SOURCE_REGISTRATION_FIELDS = (
+    "schema", "source", "algorithm", "key_path",
+    "p2_hostrun", "p1_projection", "independent_verifier",
+)
+TRUSTED_SOURCE_REGISTRATION_SCHEMA = "horizoncode.rc0.trusted-source-registration.v1"
+ATTESTATION_FILE_FIELDS = (
+    "source", "commit", "session_ids", "run_ids", "session_run_ids",
+    "session_owner_identities", "host_run_receipt_refs",
+    "independent_verifier_evidence_refs", "owner_log_event_digests",
+    "session_outcome_digests", "source_signature_digest", "source_signature",
+)
+MAX_ATTESTATION_FILE_BYTES = 1_048_576
+MAX_ATTESTATION_SOURCE_BYTES = 8 * 1_048_576
+
+
+def _repository_source_text(relative_path):
+    """Bounded, no-follow read of one repository source file for contract scans."""
+    data = read_repository_input(relative_path, MAX_ATTESTATION_SOURCE_BYTES,
+                                 "HostRun contract source")
+    return data.decode("utf-8", "replace")
+
+
+def _rust_function_region(source, function_name):
+    """One Rust function/method's source region (signature → next same-level fn).
+
+    Region extraction keeps the contract scan anchored on *production* code: a
+    `#[cfg(test)]` fixture that merely mentions a marker elsewhere in a
+    multi-megabyte file can never satisfy a production gap.
+    """
+    match = re.search(
+        rf"^[ \t]*(?:pub(?:\([^)]*\))? )?fn {re.escape(function_name)}\(",
+        source, re.M)
+    if match is None:
+        return ""
+    following = re.search(
+        r"^[ \t]{0,4}(?:pub(?:\([^)]*\))? )?fn |^\}", source[match.end():], re.M)
+    end = match.end() + following.start() if following else len(source)
+    return source[match.start():end]
+
+
+def landed_hostrun_contract_gaps():
+    """Exact cross-phase interfaces absent from the landing source (read-only).
+
+    An empty list means source-present only -- never runtime acceptance or an
+    authenticated positive fixture. Each condition is checked inside the
+    owning production function (or the startup struct literal), so test-only
+    references cannot close a gap. P8's `worker_durable.rs` resolver and
+    frozen-invocation type are read here at most; this harness never edits
+    P2-owned kernel source.
+    """
+    gaps = []
+    host_kernel = _repository_source_text("kernel/src/host_kernel.rs")
+    bind_region = _rust_function_region(host_kernel, "managed_host_run_bind")
+    if "resolve_frozen_invocation(" not in bind_region:
+        gaps.append(
+            "P2 managed_host_run_bind must set bind_identity_source="
+            f"{P2_HOSTRUN_REQUIRED_CONTRACT['bind_identity_source']} by resolving "
+            "the frozen invocation from P8's durable store for the dispatch-key "
+            "lookup claim instead of reading manifestDigest/evaluatorTaskId/armId/"
+            "taskGroup from the RPC body")
+    receipt_region = _rust_function_region(host_kernel, "managed_host_run_bind_receipt")
+    if "resolve_host_run_dispatch_bound_receipt(" not in receipt_region:
+        gaps.append(
+            "P2 managed_host_run_bind_receipt must resolve the submitted OwnerLog "
+            "cursor through P8's durable resolver resolve_host_run_dispatch_bound_"
+            "receipt before record_host_run_p8_owner_receipt; request-body cursor "
+            "fields are claims, not proof (cursor_resolution="
+            f"{P2_HOSTRUN_REQUIRED_CONTRACT['cursor_resolution']})")
+    # The P1 install must wire the field at HostKernel startup (a struct
+    # literal `Some(...)`), not merely define the installer or call it in a test.
+    if "host_run_effect_projection: Some(" not in host_kernel:
+        gaps.append(
+            "P1 must satisfy install_call="
+            f"{P1_PROJECTION_REQUIRED_CONTRACT['install_call']}(Box<dyn ...>) at "
+            "HostKernel startup (currently defined but never called, so "
+            "host_run.inspect stays unavailable/UNKNOWN)")
+    return gaps
+
+
+def attestation_registry_status():
+    """Registry state plus the exact interfaces still blocking configuration."""
+    gaps = landed_hostrun_contract_gaps()
+    configured = (bool(TRUSTED_ATTESTATION_SOURCES)
+                  and bool(TRUSTED_ATTESTATION_VERIFIERS) and not gaps)
+    return {
+        "status": "CONFIGURED" if configured else "NOT_CONFIGURED",
+        "sources": list(TRUSTED_ATTESTATION_SOURCES),
+        "verifiers": sorted(TRUSTED_ATTESTATION_VERIFIERS),
+        "contract_gaps": gaps,
+    }
+
+
+def _require_contract(section_name, section, required):
+    if not isinstance(section, dict):
+        raise TrustedRegistrationError(f"{section_name} must be an object")
+    for name, expected in required.items():
+        actual = section.get(name)
+        if actual != expected:
+            raise TrustedRegistrationError(
+                f"{section_name}.{name} must be {expected!r}, got {actual!r}")
+
+
+def _registration_evidence_refs(section_name, section):
+    refs = section.get("evidence_refs")
+    if not isinstance(refs, list) or not refs:
+        raise TrustedRegistrationError(
+            f"{section_name}.evidence_refs must be a non-empty array")
+    for ref in refs:
+        if not isinstance(ref, str) or not ref or len(ref) > 256:
+            raise TrustedRegistrationError(
+                f"{section_name}.evidence_refs entries must be non-empty strings "
+                "of at most 256 bytes")
+    return refs
+
+
+def register_trusted_attestation_source(registration):
+    """Configure one trusted owner source and its keyed verifier, or fail closed.
+
+    The structural checks and source scan are necessary but not sufficient:
+    caller-provided evidence-reference strings and arbitrary callbacks do not
+    prove authenticated P1/P2 or independent-verifier provenance. The current
+    callback slot is non-authoritative and is never invoked; registration stays
+    disabled until an owner-issued typed provenance proof is integrated.
+    Registration never attests a capture by itself -- every capture still needs
+    :func:`attestation_covers`.
+    """
+    if not isinstance(registration, dict):
+        raise TrustedRegistrationError("registration must be a JSON object")
+    missing = [name for name in TRUSTED_SOURCE_REGISTRATION_FIELDS
+               if name not in registration]
+    unknown = sorted(set(registration) - set(TRUSTED_SOURCE_REGISTRATION_FIELDS))
+    if missing or unknown:
+        raise TrustedRegistrationError(
+            f"registration fields are incomplete or unknown: missing={missing} "
+            f"unknown={unknown}")
+    if registration["schema"] != TRUSTED_SOURCE_REGISTRATION_SCHEMA:
+        raise TrustedRegistrationError(
+            f"schema must be {TRUSTED_SOURCE_REGISTRATION_SCHEMA!r}")
+    source = registration["source"]
+    if not isinstance(source, str) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{1,63}",
+                                                       source):
+        raise TrustedRegistrationError(
+            "source must match [a-z0-9][a-z0-9._-]{1,63}")
+    if source in TRUSTED_ATTESTATION_SOURCES:
+        raise TrustedRegistrationError(f"source {source!r} is already registered")
+    if registration["algorithm"] != "hmac-sha256":
+        raise TrustedRegistrationError(
+            "algorithm must be hmac-sha256 (unsupported algorithms are rejected, "
+            "never hand-rolled)")
+    _require_contract("p2_hostrun", registration["p2_hostrun"],
+                      P2_HOSTRUN_REQUIRED_CONTRACT)
+    _require_contract("p1_projection", registration["p1_projection"],
+                      P1_PROJECTION_REQUIRED_CONTRACT)
+    p2_refs = _registration_evidence_refs("p2_hostrun", registration["p2_hostrun"])
+    p1_refs = _registration_evidence_refs("p1_projection",
+                                          registration["p1_projection"])
+    verifier_refs = _registration_evidence_refs("independent_verifier",
+                                                registration["independent_verifier"])
+    if set(verifier_refs) & (set(p2_refs) | set(p1_refs)):
+        raise TrustedRegistrationError(
+            "independent_verifier.evidence_refs must be independent of the P2/P1 "
+            "producer evidence")
+    key_path = registration["key_path"]
+    if not isinstance(key_path, str) or not key_path:
+        raise TrustedRegistrationError("key_path must be a non-empty string")
+    gaps = landed_hostrun_contract_gaps()
+    if gaps:
+        raise TrustedRegistrationError(
+            "trusted source registration is blocked until the authenticated "
+            "HostRun chain lands:\n- " + "\n- ".join(gaps))
+    provenance_verifier = TRUSTED_REGISTRATION_PROVENANCE_VERIFIER
+    if provenance_verifier is not None:
+        raise TrustedRegistrationError(
+            "unbound provenance callback is not accepted; an owner-issued "
+            "provenance verifier is required")
+    raise TrustedRegistrationError(
+        "authenticated owner-registration provenance verifier is unavailable; "
+        "static source presence and caller-supplied evidence refs are not proof")
+
+
+def load_attestation(path):
+    """Strictly decode, construct and cryptographically verify one attestation.
+
+    The file is caller-supplied: it must carry exactly the authority-bearing
+    fields, name a configured trusted source, and pass that source's registered
+    keyed verifier. With an empty or untrusted registry every load raises, so no
+    capture can become ATTESTED from caller claims.
+    """
+    data = read_repository_input(path, MAX_ATTESTATION_FILE_BYTES, "attestation")
+    try:
+        decoded = json.loads(data.decode("utf-8"),
+                             object_pairs_hook=_reject_duplicate_json_properties)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(
+            f"attestation file is not strict JSON: {error.__class__.__name__}"
+        ) from error
+    if not isinstance(decoded, dict):
+        raise ValueError("attestation file must be a JSON object")
+    missing = [name for name in ATTESTATION_FILE_FIELDS if name not in decoded]
+    unknown = sorted(set(decoded) - set(ATTESTATION_FILE_FIELDS))
+    if missing or unknown:
+        raise ValueError("attestation file fields are incomplete or unknown: "
+                         f"missing={missing} unknown={unknown}")
+    fields = {}
+    for name in ATTESTATION_FILE_FIELDS:
+        value = decoded[name]
+        if isinstance(value, list):
+            value = tuple(tuple(item) if isinstance(item, list) else item
+                          for item in value)
+        fields[name] = value
+    attestation = AttestationV1(**fields)
+    if not verify_attestation(attestation):
+        raise ValueError("attestation signature did not verify against the "
+                         "registered verifier")
+    return attestation
+
+
+def attestation_record_state(attested, eligible):
+    """Truthful capture-row attestation/eligibility fields.
+
+    ``ATTESTED`` requires a configured trusted source whose registered verifier
+    accepted an attestation covering exactly these sessions, commit and outcome
+    rows; ``BASELINE`` additionally requires every shape/provenance check in
+    :func:`baseline_eligible`. Neither can be produced from caller claims.
+    """
+    if eligible:
+        blocked = None
+    elif attested:
+        blocked = ("attestation verified for these sessions, but the capture "
+                   "inputs failed a shape/provenance check; a baseline still "
+                   "requires every check in baseline_eligible")
+    else:
+        blocked = ATTESTATION_BLOCKED_REASON
+    return {
+        "owner_sample_attestation": "ATTESTED" if attested else "NOT_ATTESTED",
+        "status": "BASELINE" if eligible else "NOT_BASELINE",
+        "release_eligible": bool(eligible),
+        "provisional_raw_sample": not eligible,
+        "blocked_reason": blocked,
+    }
+
+
+def capture_attestation_provenance(attestation):
+    """Expose only the exact source and payload digest of a verified attestation."""
+    if attestation is None:
+        return {
+            "owner_attestation_source": None,
+            "owner_attestation_signature_digest": None,
+        }
+    if not verify_attestation(attestation):
+        raise ValueError("owner attestation does not verify against its registered source")
+    return {
+        "owner_attestation_source": attestation.source,
+        "owner_attestation_signature_digest": attestation.source_signature_digest,
+    }
+
+
 class Budget:
     def __init__(self, max_bytes=MAX_BYTES, max_work=MAX_WORK):
+        if (type(max_bytes) is not int or max_bytes < 0
+                or type(max_work) is not int or max_work < 0):
+            raise ValueError("budget limits must be nonnegative integers")
         self.max_bytes = min(max_bytes, MAX_BYTES)
         self.max_work = min(max_work, MAX_WORK)
         self.bytes = 0
         self.work = 0
 
     def charge_work(self, amount=1):
-        if amount < 0 or self.work + amount > self.max_work:
+        if type(amount) is not int or amount < 0:
+            raise ValueError("work charge must be a nonnegative integer")
+        if self.work + amount > self.max_work:
             raise ValueError("sample work budget exceeded")
         self.work += amount
 
@@ -1208,7 +1505,9 @@ def load_owner_snapshot(path):
         item = value["aggregate"].get(metric)
         _validate_owner_metric(item, f"owner snapshot aggregate.{metric}")
     resource_limits = value.get("resourceLimits")
-    if schema_version == 2 and resource_limits is not None:
+    if schema_version == 3 and resource_limits is None:
+        raise ValueError("schema v3 owner snapshot must report resourceLimits")
+    if schema_version in (2, 3) and resource_limits is not None:
         required_limits = {"cpuTime", "memory", "processCount", "fileDescriptors"}
         if not isinstance(resource_limits, list) or len(resource_limits) != len(required_limits):
             raise ValueError("owner snapshot resourceLimits must report all four dimensions")
@@ -1219,14 +1518,16 @@ def load_owner_snapshot(path):
             dimension = row.get("dimension")
             status = row.get("status")
             enforced = row.get("enforced")
-            if dimension not in required_limits or dimension in by_dimension:
+            if (not isinstance(dimension, str) or dimension not in required_limits
+                    or dimension in by_dimension):
                 raise ValueError("owner snapshot resource limit dimension is missing or duplicated")
             if type(enforced) is not bool or status not in ("ENFORCED", "MONITORING_ONLY", "UNSUPPORTED"):
                 raise ValueError("owner snapshot resource limit status is invalid")
             if status == "ENFORCED":
                 if set(row) != {"dimension", "status", "enforced", "limit", "reason"}:
                     raise ValueError("enforced resource limit fields are not canonical")
-                if enforced is not True or not is_canonical_decimal(row.get("limit"), positive=True) or row.get("reason") is not None:
+                if enforced is not True or not is_canonical_u64_decimal(
+                        row.get("limit"), positive=True) or row.get("reason") is not None:
                     raise ValueError("enforced resource limit lacks a positive verified limit")
             elif status == "MONITORING_ONLY":
                 if set(row) != {"dimension", "status", "enforced", "observed", "reason"}:
@@ -1234,8 +1535,9 @@ def load_owner_snapshot(path):
                 if enforced is not False or row.get("limit") is not None or row.get("reason") is not None:
                     raise ValueError("monitoring-only resource limit claims enforcement")
                 observed = row.get("observed")
-                if observed is not None and not is_canonical_decimal(observed):
-                    raise ValueError("monitoring-only observation must be a canonical decimal or null")
+                if observed is not None and not is_canonical_u64_decimal(observed):
+                    raise ValueError(
+                        "monitoring-only observation must be a canonical u64 decimal or null")
             else:
                 if set(row) != {"dimension", "status", "enforced", "reason"}:
                     raise ValueError("unsupported resource limit fields are not canonical")
@@ -1347,7 +1649,10 @@ def read_repository_input(path, limit, label):
             raise ValueError(f"{label} file cannot be opened without following links") from error
         before = os.fstat(file_fd)
         if before.st_size > limit:
-            raise ValueError(f"{label} file exceeds the 1 MiB input bound")
+            bound = (f"{limit // 1_048_576} MiB"
+                     if limit >= 1_048_576 and limit % 1_048_576 == 0
+                     else f"{limit} bytes")
+            raise ValueError(f"{label} file exceeds the {bound} input bound")
         if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
                 or before.st_dev != root_device):
             raise ValueError(f"{label} is not a bounded repository-local regular file")
@@ -1505,17 +1810,17 @@ def _cache_evidence_row(row):
     for key in ("family", "principal", "workspace", "sourceGeneration", "buildVersion"):
         if not isinstance(row.get(key), str) or not row[key] or len(row[key]) > 256:
             raise ValueError(f"cache family {key} is invalid")
-    if not is_canonical_decimal(row.get("generation"), positive=True):
-        raise ValueError("cache family generation is invalid")
+    if not is_canonical_u64_decimal(row.get("generation"), positive=True):
+        raise ValueError("cache family generation must be a positive u64 decimal")
     for key in ("maxBytes", "maxAccountedSourceBytes", "maxEntries", "ttlMs", "lastUsedMs", "ownerPinCount"):
-        if not is_canonical_decimal(row.get(key), positive=False):
-            raise ValueError(f"cache family {key} is invalid")
+        if not is_canonical_u64_decimal(row.get(key), positive=False):
+            raise ValueError(f"cache family {key} must be a u64 decimal")
     if int(row["maxBytes"]) == 0 or int(row["maxEntries"]) == 0:
         raise ValueError("cache family bounds must be positive")
     for key in ("allocatedBytes", "accountedSourceBytes", "entryCount"):
         value = row.get(key)
-        if value is not None and not is_canonical_decimal(value):
-            raise ValueError(f"cache family {key} must be a decimal string or null")
+        if value is not None and not is_canonical_u64_decimal(value):
+            raise ValueError(f"cache family {key} must be a u64 decimal string or null")
     if row.get("allocatedBytes") is not None and int(row["allocatedBytes"]) > int(row["maxBytes"]):
         raise ValueError("cache family allocation exceeds its declared bound")
     if row.get("entryCount") is not None and int(row["entryCount"]) > int(row["maxEntries"]):
@@ -1566,8 +1871,8 @@ def load_cache_evidence(path):
             raise ValueError("cache evidence repeats one family key")
         seen.add(key)
     for key in ("measuredBytes", "measuredEntries", "accountedSourceBytes"):
-        if value.get(key) is not None and not is_canonical_decimal(value[key]):
-            raise ValueError(f"cache evidence {key} must be a decimal string or null")
+        if value.get(key) is not None and not is_canonical_u64_decimal(value[key]):
+            raise ValueError(f"cache evidence {key} must be a u64 decimal string or null")
     if value.get("evictionOwner") != CACHE_EVICTION_OWNER:
         raise ValueError("cache evidence does not name the canonical eviction owner")
     if value.get("reclaimedBytes") is not None:
@@ -1914,6 +2219,8 @@ def main():
     parser.add_argument("--local-inference-identity", type=identity_arg,
                         help="caller-supplied local model MODEL=PID:START_IDENTITY when local inference is included (unverified provenance)")
     parser.add_argument("--outcomes", type=Path, help="JSON object mapping sessions to expected/actual/status task outcomes (caller-supplied, unverified: Run attestation is required for eligibility)")
+    parser.add_argument("--attestation", type=Path, action="append", default=[],
+                        help="repository-contained owner AttestationV1 JSON file; each file must name a configured trusted source and pass its registered keyed verifier, otherwise capture refuses to run (repeat per 1/5/10/20 scenario subset)")
     parser.add_argument("--owner-snapshot", type=Path, action="append", default=[],
                         help="bounded P8 Rust owner-sampler JSON envelope; ingestion only, NOT an attestation; repeat once per Session")
     parser.add_argument("--cache-evidence", type=Path, action="append", default=[],
@@ -1949,6 +2256,19 @@ def main():
     missing = [flag for flag, value in required.items() if not value or not str(value).strip()]
     if missing:
         parser.error("the following arguments are required unless --selfcheck is used: " + ", ".join(missing))
+
+    # Attestation input is loaded before any measurement. With an empty or
+    # untrusted registry every load fails, so the capture refuses to run rather
+    # than writing a NOT_ATTESTED row from a caller-supplied file.
+    if args.attestation and args.preflight:
+        parser.error("--attestation is not accepted in --preflight mode: "
+                     "preflight never verifies provenance")
+    attestations = []
+    for attestation_path in args.attestation:
+        try:
+            attestations.append(load_attestation(attestation_path))
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+            parser.error(f"invalid --attestation: {error}")
 
     grouped = {}
     for session, pid, start in args.identity:
@@ -2074,9 +2394,14 @@ def main():
             session_results.append({"session_id": session,
                 "owner_identity": {"pid": pid, "start_identity": str(start)},
                 "task_outcome": outcomes.get(session), "sample": sample_tree(pid, start)})
+        covering = next(
+            (attestation for attestation in attestations
+             if attestation_covers(attestation, selected, commit, outcomes=outcomes)),
+            None)
         eligible = (len(selected) == session_count and bool(args.scenario.strip()) and baseline_eligible(
             selected, session_results, outcomes, commit, clean_tree, args.provider_model,
-            args.build, args.harness, args.local_inference, local_inference_sample, machine))
+            args.build, args.harness, args.local_inference, local_inference_sample, machine,
+            attestation=covering))
         agent_totals = aggregate_process_trees([item["sample"] for item in session_results])
         combined_samples = [item["sample"] for item in session_results]
         if args.local_inference == "included" and local_inference_sample:
@@ -2102,14 +2427,12 @@ def main():
                 "limits": sample.get("resource_limits"),
                 "provenance": sample.get("resource_limits_provenance", "UNAVAILABLE"),
             } for sample in selected_owner_samples],
-            "baseline_eligible": eligible, "status": "NOT_BASELINE",
-            "provisional_raw_sample": True,
+            "baseline_eligible": eligible,
+            **capture_attestation_provenance(covering),
             "input_provenance": "UNVERIFIED_CALLER_SUPPLIED",
-            "release_eligible": False,
-            "blocked_reason": ATTESTATION_BLOCKED_REASON,
+            **attestation_record_state(covering is not None, eligible),
             "owner_samples_ingested": len(owner_samples),
             "owner_sample_digests": [sample["snapshot_digest"] for sample in owner_samples],
-            "owner_sample_attestation": "NOT_ATTESTED",
             "owner_worker_samples": [{key: sample[key] for key in (
                 "session_id", "run_id", "task_id", "attempt_id", "owner_log_id", "owner_log_sequence",
                 "owner_log_event_digest", "snapshot_digest", "worker_count",

@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Effect, Layer, Schema, Context } from "effect"
+import { Effect, Layer, Schema, Context, Option } from "effect"
 import { NonNegativeInt } from "@opencode-ai/core/schema"
 import { Global } from "@opencode-ai/core/global"
 import { SecretBrokerV1 } from "@opencode-ai/schema/secret-broker-v1"
@@ -11,9 +12,19 @@ import type {
   ManagedAttemptScopeV1,
 } from "@opencode-ai/core/session/supervisor"
 import { createLazyProductionCredentialBroker, CredentialStoreError } from "./credential-broker-runtime"
+import { makeCredentialMutationAuthorizer } from "./credential-mutation-authorizer"
+import { makeCredentialUseAuthorizer, type CredentialUseAuthorizer } from "./credential-use-authorizer"
 import { SecureInputVault } from "./secure-input"
 import type { TrustedSecretUseContext } from "./secret-broker"
 import { SecretBrokerError } from "./secret-broker"
+import { TrustedPrincipalContext, type TrustedPrincipal } from "@opencode-ai/core/trusted-principal"
+import {
+  exactMutationGrant,
+  mutationBinding,
+  principalRefOf,
+  putBinding,
+  type CredentialMutationAuthorizer,
+} from "./secret-mutation"
 import {
   decodeSearchSecretAuthorization,
   decodeSearchDispatchPermit,
@@ -27,20 +38,26 @@ import {
   type ManagedProviderSendPermitV1,
   type PreparedManagedProviderTransportV1,
   type PreparedDirectProviderTransportV1,
+  type ProviderTransportRequest,
   createPinnedDirectProviderFetch,
+  dispatchAuthorizedDirectFreeProviderRequest as dispatchDirectFreeProviderTransport,
   prepareDirectProviderTransportRequest,
+  providerRequestDigest,
 } from "./provider-transport"
 
 export const OAUTH_DUMMY_KEY = "opencode-oauth-dummy-key"
 
+export type { CredentialMutationAuthorizer, CredentialMutationGrant } from "./secret-mutation"
+
 const credentialStorageUnavailable = () =>
   new AuthError({ message: "Secure credential storage is unavailable; provider credential changes are disabled" })
 
-// §12.17 defines the SecretBroker records and says native input must arrive
-// through a protected one-use channel, but §14.7/§37 do not yet define the
-// authenticated Guard grant/RPC that authorizes put or revoke. Keep these
-// mutation entry points closed until that contract is implemented end to end.
-const SECRET_MUTATION_GUARD_READY = false
+// §14.22 requires a trusted native input channel bound to the authenticated
+// principal and the exact write operation. Put/rotate/revoke stay closed until
+// a HostKernel `secret.v1` grant is supplied through CredentialMutationAuthorizer
+// and validated against that exact binding.
+const revokeIdempotencyKey = (secretRef: string, expectedVersion?: number) =>
+  `revoke_${expectedVersion ?? "current"}_${createHash("sha256").update(secretRef).digest("hex")}`
 
 export class Oauth extends Schema.Class<Oauth>("OAuth")({
   type: Schema.Literal("oauth"),
@@ -77,6 +94,20 @@ export interface Interface {
   readonly set: (key: string, info: Info) => Effect.Effect<void, AuthError>
   readonly remove: (key: string) => Effect.Effect<void, AuthError>
   readonly putCredential: (input: SecretBrokerV1.PutRequestV1) => Effect.Effect<SecretBrokerV1.MetadataV1, AuthError>
+  /**
+   * Issue a one-use native-input handle bound to the trusted authenticated
+   * principal and this exact write intent. The handle is never persisted.
+   */
+  readonly issueCredentialHandle: (input: {
+    readonly bytes: Uint8Array
+    readonly providerId: string
+    readonly operation: "put" | "rotate" | "revoke"
+    readonly expectedVersion?: number
+    readonly idempotencyKey: string
+    readonly secretRef?: SecretBrokerV1.SecretRef
+  }) => Effect.Effect<string, AuthError>
+  /** True only when a trusted grant channel and authenticated principal are installed. */
+  readonly credentialMutationAvailable: () => Effect.Effect<boolean>
   readonly describeCredential: (secretRef: SecretBrokerV1.SecretRef) => Effect.Effect<SecretBrokerV1.MetadataV1, AuthError>
   /** Trusted, metadata-only Route → SecretRef projection for built-in search. */
   readonly searchCredentialRefs: () => Effect.Effect<Partial<Record<SearchCredentialRoute, SecretBrokerV1.SecretRef>>, AuthError>
@@ -88,6 +119,7 @@ export interface Interface {
     secretRef: SecretBrokerV1.SecretRef,
     expectedVersion?: number,
   ) => Effect.Effect<SecretBrokerV1.RevocationReceiptV1, AuthError>
+
   /**
    * Mints a one-use credential reference lease from internal Guard-authorized
    * context. This does not expose credential bytes or enable provider dispatch;
@@ -273,6 +305,9 @@ export function makeService(
   credentialBroker: CredentialBroker,
   providerAuthorizer?: ProviderCredentialAuthorizer,
   supervisor?: SessionSupervisorInterface,
+  mutationAuthorizer?: CredentialMutationAuthorizer,
+  secureInput?: SecureInputVault,
+  providerUseAuthorizer?: CredentialUseAuthorizer,
 ): Interface {
   const wrap = <A>(operation: () => Promise<A>) =>
     Effect.tryPromise({
@@ -291,11 +326,19 @@ export function makeService(
     remove: Effect.fn("Auth.remove")(function* (_key: string) {
       return yield* Effect.fail(credentialStorageUnavailable())
     }),
-    putCredential: Effect.fn("Auth.putCredential")((input: SecretBrokerV1.PutRequestV1) =>
-      SECRET_MUTATION_GUARD_READY
-        ? wrap(() => credentialBroker.put(input))
-        : Effect.fail(credentialStorageUnavailable()),
-    ),
+    putCredential: Effect.fn("Auth.putCredential")(function* (input: SecretBrokerV1.PutRequestV1) {
+      if (!mutationAuthorizer) return yield* Effect.fail(credentialStorageUnavailable())
+      const principal = yield* Effect.serviceOption(TrustedPrincipalContext)
+      if (Option.isNone(principal)) return yield* Effect.fail(credentialStorageUnavailable())
+      const binding = putBinding(input, principal.value.principal)
+      if (!binding) return yield* Effect.fail(credentialStorageUnavailable())
+      const grant = yield* Effect.tryPromise({
+        try: () => mutationAuthorizer.authorize(binding, principal.value.principal),
+        catch: () => credentialStorageUnavailable(),
+      })
+      if (!exactMutationGrant(grant, binding)) return yield* Effect.fail(credentialStorageUnavailable())
+      return yield* wrap(() => credentialBroker.put(input, binding))
+    }),
     describeCredential: Effect.fn("Auth.describeCredential")((secretRef: SecretBrokerV1.SecretRef) =>
       wrap(() => credentialBroker.describe(secretRef)),
     ),
@@ -309,18 +352,68 @@ export function makeService(
         Effect.catch(() => Effect.succeed({} as Partial<Record<string, SecretBrokerV1.SecretRef>>)),
       ),
     ),
-    revokeCredential: Effect.fn("Auth.revokeCredential")(
-      (secretRef: SecretBrokerV1.SecretRef, expectedVersion?: number) =>
-        SECRET_MUTATION_GUARD_READY
-          ? wrap(() => credentialBroker.revoke(secretRef, expectedVersion))
-          : Effect.fail(credentialStorageUnavailable()),
-    ),
+    revokeCredential: Effect.fn("Auth.revokeCredential")(function* (
+      secretRef: SecretBrokerV1.SecretRef,
+      expectedVersion?: number,
+    ) {
+      if (!mutationAuthorizer) return yield* Effect.fail(credentialStorageUnavailable())
+      const principal = yield* Effect.serviceOption(TrustedPrincipalContext)
+      if (Option.isNone(principal)) return yield* Effect.fail(credentialStorageUnavailable())
+      const current = yield* wrap(() => credentialBroker.describe(secretRef))
+      const binding = mutationBinding(principal.value.principal, {
+        providerId: current.providerId,
+        operation: "revoke",
+        expectedVersion,
+        secretRef,
+        idempotencyKey: revokeIdempotencyKey(secretRef, expectedVersion),
+      })
+      if (!binding) return yield* Effect.fail(credentialStorageUnavailable())
+      const grant = yield* Effect.tryPromise({
+        try: () => mutationAuthorizer.authorize(binding, principal.value.principal),
+        catch: () => credentialStorageUnavailable(),
+      })
+      if (!exactMutationGrant(grant, binding)) return yield* Effect.fail(credentialStorageUnavailable())
+      return yield* wrap(() => credentialBroker.revoke(secretRef, expectedVersion))
+    }),
+    issueCredentialHandle: Effect.fn("Auth.issueCredentialHandle")(function* (input: {
+      readonly bytes: Uint8Array
+      readonly providerId: string
+      readonly operation: "put" | "rotate" | "revoke"
+      readonly expectedVersion?: number
+      readonly idempotencyKey: string
+      readonly secretRef?: SecretBrokerV1.SecretRef
+    }) {
+      if (!secureInput) {
+        input.bytes.fill(0)
+        return yield* Effect.fail(credentialStorageUnavailable())
+      }
+      const principal = yield* Effect.serviceOption(TrustedPrincipalContext)
+      if (Option.isNone(principal)) {
+        input.bytes.fill(0)
+        return yield* Effect.fail(credentialStorageUnavailable())
+      }
+      const binding = mutationBinding(principal.value.principal, input)
+      if (!binding) {
+        input.bytes.fill(0)
+        return yield* Effect.fail(credentialStorageUnavailable())
+      }
+      return yield* Effect.tryPromise({
+        try: async () => secureInput.issue(input.bytes, binding),
+        catch: () => new AuthError({ message: "Secure credential input is unavailable" }),
+      })
+    }),
+    credentialMutationAvailable: Effect.fn("Auth.credentialMutationAvailable")(function* () {
+      if (!mutationAuthorizer || !secureInput) return false
+      const principal = yield* Effect.serviceOption(TrustedPrincipalContext)
+      return !Option.isNone(principal) && principalRefOf(principal.value.principal) !== undefined
+    }),
     authorizeCredentialUse: Effect.fn("Auth.authorizeCredentialUse")((input: SecretBrokerV1.UseRequestV1) => {
       if (!providerAuthorizer) {
         return Effect.fail(new AuthError({ message: "Guarded provider credential authorization is unavailable" }))
       }
       return wrap(async () => credentialBroker.authorizeUse(input, await providerAuthorizer.authorize(input)))
     }),
+
     dispatchAuthorizedSearchRequest: Effect.fn("Auth.dispatchAuthorizedSearchRequest")((input: {
       authorization: unknown
       scope: {
@@ -585,53 +678,95 @@ export function makeService(
         ...(input.signal === undefined ? {} : { signal: input.signal }),
       })
     }),
-    dispatchPinnedDirectProviderRequest: Effect.fn("Auth.dispatchPinnedDirectProviderRequest")((input: {
+    dispatchPinnedDirectProviderRequest: Effect.fn("Auth.dispatchPinnedDirectProviderRequest")(function* (input: {
       route: DirectProviderTransport.DirectProviderRouteV1
       request: Request
       pin: (input: DirectProviderTransport.DirectProviderPinV1) => Effect.Effect<DirectProviderTransport.DirectProviderJournalV1, unknown>
-    }) => Effect.tryPromise({
-      try: async () => {
-        const route: DirectProviderRouteV1 = {
-          ...input.route,
-          anonymousOpenCodeFree: input.route.providerID === "opencode",
-          credentialHeader: { name: "authorization", prefix: "Bearer " },
-        }
-        const prepared = await prepareDirectProviderTransportRequest({ route, input: input.request })
-        const journal = await Effect.runPromise(input.pin({
-          endpointRevision: prepared.route.endpointRevision,
-          transportRequestDigest: prepared.transportRequestDigest,
-        }))
-        if (journal.state !== "PINNED" || !/^[A-Za-z0-9._:-]{1,256}$/.test(journal.sessionID) ||
-          !/^[A-Za-z0-9._:-]{1,256}$/.test(journal.requestID) || !/^blake3:[a-f0-9]{64}$/.test(journal.pinDigest) ||
-          journal.providerID !== prepared.route.providerID ||
-          journal.modelID !== prepared.route.modelID || journal.harnessID !== prepared.route.harnessID ||
-          journal.routeRevision !== prepared.route.routeRevision || journal.endpointRevision !== prepared.route.endpointRevision ||
-          journal.transportRequestDigest !== prepared.transportRequestDigest) {
-          throw new SecretBrokerError("CONFLICT", "Direct provider request differs from its durable Core journal pin")
-        }
-        const requestFetch = createPinnedDirectProviderFetch({
-          prepared,
-          expectedPinDigest: journal.pinDigest,
-          expectedTransportDigest: journal.transportRequestDigest,
-          journalState: journal.state,
-          beginDispatch: () => Effect.runPromise(journal.beginDispatch()),
-          markUnknown: (reason) => Effect.runPromise(journal.markUnknown(reason)),
-          send: (request) => fetch(request.url, {
-            method: request.method,
-            headers: request.headers,
-            ...(request.method === "GET" || request.body === "" ? {} : { body: request.body }),
-            signal: request.signal,
-            redirect: "error",
-            credentials: "omit",
-            cache: "no-store",
-            referrerPolicy: "no-referrer",
-          }),
-          signal: input.request.signal,
-        })
-        return requestFetch(input.request)
-      },
-      catch: () => new AuthError({ message: "Pinned direct provider transport is unavailable" }),
-    })),
+    }) {
+      const principalOption = yield* Effect.serviceOption(TrustedPrincipalContext)
+      const principal = Option.isSome(principalOption) ? principalOption.value.principal : undefined
+      const route: DirectProviderRouteV1 = {
+        ...input.route,
+        anonymousOpenCodeFree: input.route.providerID === "opencode",
+        ...(input.route.providerID === "openrouter" &&
+          input.route.modelID === "nvidia/nemotron-3.5-super-vl:free" &&
+          input.route.endpointBase === "https://openrouter.ai/api/v1"
+          ? { explicitFreeCredential: true as const }
+          : {}),
+        credentialHeader: { name: "authorization", prefix: "Bearer " },
+      }
+      const credentialedFree = route.explicitFreeCredential === true
+      if (credentialedFree && (!providerUseAuthorizer || principal?.kind !== "server_auth" || !principal.subject)) {
+        return yield* Effect.fail(new AuthError({ message: "Pinned free-provider use requires the same authenticated ServerAuth owner" }))
+      }
+      return yield* Effect.tryPromise({
+        try: async () => {
+          const prepared = await prepareDirectProviderTransportRequest({ route, input: input.request })
+          const journal = await Effect.runPromise(input.pin({
+            endpointRevision: prepared.route.endpointRevision,
+            transportRequestDigest: prepared.transportRequestDigest,
+          }))
+          if (journal.state !== "PINNED" || !/^[A-Za-z0-9._:-]{1,256}$/.test(journal.sessionID) ||
+            !/^[A-Za-z0-9._:-]{1,256}$/.test(journal.requestID) || !/^blake3:[a-f0-9]{64}$/.test(journal.pinDigest) ||
+            journal.providerID !== prepared.route.providerID ||
+            journal.modelID !== prepared.route.modelID || journal.harnessID !== prepared.route.harnessID ||
+            journal.routeRevision !== prepared.route.routeRevision || journal.endpointRevision !== prepared.route.endpointRevision ||
+            journal.transportRequestDigest !== prepared.transportRequestDigest) {
+            throw new SecretBrokerError("CONFLICT", "Direct provider request differs from its durable Core journal pin")
+          }
+          const requestFetch = createPinnedDirectProviderFetch({
+            prepared,
+            expectedPinDigest: journal.pinDigest,
+            expectedTransportDigest: journal.transportRequestDigest,
+            journalState: journal.state,
+            beginDispatch: () => Effect.runPromise(journal.beginDispatch()),
+            markUnknown: (reason) => Effect.runPromise(journal.markUnknown(reason)),
+            send: async (request) => {
+              const sendRequest = (authorized: ProviderTransportRequest) => fetch(authorized.url, {
+                method: authorized.method,
+                headers: authorized.headers,
+                ...(authorized.method === "GET" || authorized.body === "" ? {} : { body: authorized.body }),
+                signal: authorized.signal,
+                redirect: "error",
+                credentials: "omit",
+                cache: "no-store",
+                referrerPolicy: "no-referrer",
+              })
+              if (!credentialedFree) {
+                return sendRequest(request)
+              }
+              const actualDigest = providerRequestDigest({
+                ...prepared.transport,
+                method: request.method,
+                destination: request.url,
+                body: request.body,
+                headers: request.headers,
+              })
+              if (actualDigest !== providerRequestDigest(prepared.transport)) {
+                throw new SecretBrokerError("CONFLICT", "Pinned OpenRouter request changed before credential use")
+              }
+              const refs = await projectCredentialRefs(credentialBroker, ["openrouter"])
+              const secretRef = refs.openrouter
+              if (!secretRef || !providerUseAuthorizer || !principal) {
+                throw new SecretBrokerError("UNAVAILABLE", "A unique owner-scoped OpenRouter SecretBroker credential is unavailable")
+              }
+              return dispatchDirectFreeProviderTransport({
+                broker: credentialBroker,
+                authorizer: providerUseAuthorizer,
+                principal,
+                secretRef,
+                prepared,
+                signal: input.request.signal,
+                send: sendRequest,
+              })
+            },
+            signal: input.request.signal,
+          })
+          return requestFetch(input.request)
+        },
+        catch: () => new AuthError({ message: "Pinned direct provider transport is unavailable" }),
+      })
+    }),
   })
 }
 
@@ -663,7 +798,18 @@ const layer = Layer.effect(
         await broker.close()
       }),
     )
-    return makeService(broker, undefined, supervisor)
+    // Production grant channel: every credential mutation must obtain an exact
+    // HostKernel `secret.v1` grant for the trusted principal before the broker
+    // can write. A `host_os` principal sends no typed ServerAuth principal, so
+    // the kernel identifies the local CLI by its SO_PEERCRED uid; a
+    // `server_auth` principal is asserted as AuthenticatedPrincipalV1::ServerAuth.
+    const mutationAuthorizer = makeCredentialMutationAuthorizer((serviceID, operation, body, principal) =>
+      Effect.runPromise(supervisor.requestHostKernel(serviceID, operation, body, { trustedPrincipal: principal })),
+    )
+    const providerUseAuthorizer = makeCredentialUseAuthorizer((serviceID, operation, body, principal) =>
+      Effect.runPromise(supervisor.requestHostKernel(serviceID, operation, body, { trustedPrincipal: principal })),
+    )
+    return makeService(broker, undefined, supervisor, mutationAuthorizer, credentialInput, providerUseAuthorizer)
   }),
 )
 

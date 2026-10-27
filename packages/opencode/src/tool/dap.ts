@@ -10,6 +10,7 @@ import * as DAPSession from "@/dap/session"
  * action, while the execute-side check ensures a future registry mistake still
  * cannot start or dispatch a process.
  */
+// CODE_PRESENT / UNWIRED: the model-facing `debug` action stays hidden until integrated Guard/HostKernel acceptance.
 export const DAP_TOOL_ACCEPTANCE_READY = false
 
 const Parameters = Schema.Struct({

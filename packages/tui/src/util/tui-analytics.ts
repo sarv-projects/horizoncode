@@ -1,4 +1,5 @@
 import type { SvgRasterObservationV1 } from "./artifact-render"
+import { redactToolText } from "./collapse-tool-output"
 
 export type TuiArtifactMetricV1 =
   | "ui.artifact.render_full"
@@ -33,9 +34,28 @@ type UsageMetricV1 = { readonly status: "provider-reported" | "measured" | "esti
 const MAX_USAGE_MESSAGES = 256
 const MAX_USAGE_PARTS = 8_192
 
+function analyticsArray(value: unknown): { readonly isArray: boolean; readonly value?: unknown[] } | undefined {
+  try {
+    return Array.isArray(value) ? { isArray: true, value } : { isArray: false }
+  } catch {
+    return
+  }
+}
+
 function analyticsRecord(value: unknown): Record<string, unknown> | undefined {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return
+  if (typeof value !== "object" || value === null) return
+  const array = analyticsArray(value)
+  if (!array || array.isArray) return
   return value as Record<string, unknown>
+}
+
+function ownDataProperty(record: Readonly<Record<string, unknown>>, key: string) {
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(record, key)
+    return descriptor && Object.hasOwn(descriptor, "value") ? descriptor.value : undefined
+  } catch {
+    return undefined
+  }
 }
 
 function safeIdentity(value: unknown) {
@@ -47,15 +67,17 @@ function safeIdentity(value: unknown) {
 function usageMetric(value: unknown): UsageMetricV1 | undefined {
   const metric = analyticsRecord(value)
   if (!metric) return
-  if (metric.status === "unknown") {
-    if (Object.hasOwn(metric, "value")) return
+  const status = ownDataProperty(metric, "status")
+  if (status === "unknown") {
+    if (ownDataProperty(metric, "value") !== undefined) return
     return { status: "unknown" }
   }
+  const rawValue = ownDataProperty(metric, "value")
   if (
-    (metric.status !== "provider-reported" && metric.status !== "measured" && metric.status !== "estimated") ||
-    !Number.isSafeInteger(metric.value) || (metric.value as number) < 0
+    (status !== "provider-reported" && status !== "measured" && status !== "estimated") ||
+    !Number.isSafeInteger(rawValue) || (rawValue as number) < 0
   ) return
-  return { status: metric.status, value: metric.value as number }
+  return { status, value: rawValue as number }
 }
 
 function usageMetricText(value: unknown) {
@@ -66,26 +88,32 @@ function usageMetricText(value: unknown) {
 function usageCostText(value: unknown, hasRequestIdentity: boolean) {
   const cost = analyticsRecord(value)
   if (!cost) return "unknown"
-  if (cost.status === "unknown") return "unknown"
-  if (typeof cost.value !== "number" || !Number.isFinite(cost.value) || cost.value < 0) return "unknown"
-  if (cost.status === "provider-reported") {
-    return hasRequestIdentity ? `provider-reported:${cost.value} via provider response` : "unknown"
+  const status = ownDataProperty(cost, "status")
+  const rawValue = ownDataProperty(cost, "value")
+  if (status === "unknown") return "unknown"
+  if (typeof rawValue !== "number" || !Number.isFinite(rawValue) || rawValue < 0) return "unknown"
+  if (status === "provider-reported") {
+    return hasRequestIdentity ? `provider-reported:${rawValue} via provider response` : "unknown"
   }
-  if (cost.status === "measured") {
-    if (cost.measurementSource !== "provider-billing-receipt-v1" || !safeIdentity(cost.evidenceRef)) return "unknown"
-    return `measured:${cost.value} via ${cost.measurementSource}`
+  if (status === "measured") {
+    const measurementSource = ownDataProperty(cost, "measurementSource")
+    if (measurementSource !== "provider-billing-receipt-v1" || !safeIdentity(ownDataProperty(cost, "evidenceRef"))) return "unknown"
+    return `measured:${rawValue} via ${measurementSource}`
   }
-  if (cost.status === "estimated") {
-    const pricing = analyticsRecord(cost.pricing)
-    const tokenInputs = analyticsRecord(cost.tokenInputs)
+  if (status === "estimated") {
+    const priceSource = ownDataProperty(cost, "priceSource")
+    const pricingRevision = ownDataProperty(cost, "pricingRevision")
+    const pricing = analyticsRecord(ownDataProperty(cost, "pricing"))
+    const tokenInputs = analyticsRecord(ownDataProperty(cost, "tokenInputs"))
+    const algorithm = ownDataProperty(cost, "algorithm")
     if (
-      !safeIdentity(cost.priceSource) ||
-      typeof cost.pricingRevision !== "string" || !/^sha256:[0-9a-f]{64}$/.test(cost.pricingRevision) ||
-      cost.algorithm !== "per-million-linear-v1" ||
-      !pricing || ![pricing.input, pricing.output, pricing.cacheRead, pricing.cacheWrite].every((item) => typeof item === "number" && Number.isFinite(item) && item >= 0) ||
-      !tokenInputs || ![tokenInputs.input, tokenInputs.output, tokenInputs.reasoning, tokenInputs.cacheRead, tokenInputs.cacheWrite].every((item) => Number.isSafeInteger(item) && (item as number) >= 0)
+      !safeIdentity(priceSource) ||
+      typeof pricingRevision !== "string" || !/^sha256:[0-9a-f]{64}$/.test(pricingRevision) ||
+      algorithm !== "per-million-linear-v1" ||
+      !pricing || !["input", "output", "cacheRead", "cacheWrite"].map((key) => ownDataProperty(pricing, key)).every((item) => typeof item === "number" && Number.isFinite(item) && item >= 0) ||
+      !tokenInputs || ["input", "output", "reasoning", "cacheRead", "cacheWrite"].map((key) => ownDataProperty(tokenInputs, key)).some((item) => !Number.isSafeInteger(item) || (item as number) < 0)
     ) return "unknown"
-    return `estimated:${cost.value} via ${cost.priceSource} (${cost.pricingRevision.slice(0, 19)})`
+    return `estimated:${rawValue} via ${priceSource} (${pricingRevision.slice(0, 19)})`
   }
   return "unknown"
 }
@@ -103,10 +131,10 @@ type UsageQuality = "provider-reported" | "measured" | "estimated"
 function tokenField(tokens: Record<string, unknown> | undefined, field: (typeof TOKEN_FIELDS)[number][0]) {
   if (!tokens) return undefined
   if (field === "cacheRead" || field === "cacheWrite") {
-    const cache = analyticsRecord(tokens.cache)
-    return cache?.[field === "cacheRead" ? "read" : "write"]
+    const cache = analyticsRecord(ownDataProperty(tokens, "cache"))
+    return cache && ownDataProperty(cache, field === "cacheRead" ? "read" : "write")
   }
-  return tokens[field]
+  return ownDataProperty(tokens, field)
 }
 
 type UsageObservationV1 = {
@@ -124,8 +152,9 @@ function usageObservations(
   let scannedParts = 0
   for (const rawMessage of assistantMessages) {
     const message = analyticsRecord(rawMessage)
-    const messageID = safeIdentity(message?.id) ?? "unknown"
-    const parts = partsByMessage[messageID] ?? []
+    const messageID = safeIdentity(message && ownDataProperty(message, "id")) ?? "unknown"
+    const candidateParts = ownDataProperty(partsByMessage, messageID)
+    const parts = analyticsArray(candidateParts)?.value ?? []
     const stepObservations: UsageObservationV1[] = []
     let truncated = false
     for (const rawPart of parts) {
@@ -135,12 +164,12 @@ function usageObservations(
       }
       scannedParts++
       const part = analyticsRecord(rawPart)
-      if (part?.type !== "step-finish") continue
-      const rawIndex = part.stepFinishIndex
+      if (!part || ownDataProperty(part, "type") !== "step-finish") continue
+      const rawIndex = ownDataProperty(part, "stepFinishIndex")
       const stepFinishIndex = Number.isSafeInteger(rawIndex) && (rawIndex as number) >= 0
         ? rawIndex as number
         : undefined
-      const provenance = analyticsRecord(part.usageProvenance)
+      const provenance = analyticsRecord(ownDataProperty(part, "usageProvenance"))
       if (provenance) {
         stepObservations.push({ provenance, messageID, ...(stepFinishIndex === undefined ? {} : { stepFinishIndex }) })
       } else {
@@ -148,7 +177,7 @@ function usageObservations(
       }
     }
     if (stepObservations.length > 0) {
-      const assistantProvenance = analyticsRecord(message?.usageProvenance)
+        const assistantProvenance = analyticsRecord(message && ownDataProperty(message, "usageProvenance"))
       const lastStep = stepObservations.at(-1)
       if (assistantProvenance && lastStep && !lastStep.provenance) {
         // Older projections may lack the new per-step part field while still
@@ -165,7 +194,7 @@ function usageObservations(
       // Older projections may expose only the assistant-level record. Use it
       // only when no per-step receipts exist, avoiding a duplicate of the last
       // step that the assistant projection also carries.
-      const provenance = analyticsRecord(message?.usageProvenance)
+      const provenance = analyticsRecord(message && ownDataProperty(message, "usageProvenance"))
       observations.push(provenance ? { provenance, messageID } : { messageID, unknownReason: "usage provenance unavailable" })
     }
     if (truncated) observations.push({ messageID, unknownReason: "usage history exceeded the bounded analytics scan" })
@@ -173,10 +202,22 @@ function usageObservations(
   return observations
 }
 
+type TokenAggregateV1 = {
+  /** Sum per quality. Kept separate from `counts` so a known zero stays known. */
+  values: Record<UsageQuality, bigint>
+  /** How many observations supplied a known metric of each quality. */
+  counts: Record<UsageQuality, number>
+  unknown: number
+}
+
 function tokenTotals(observations: readonly UsageObservationV1[]) {
-  const totals = new Map<string, { values: Record<UsageQuality, bigint>; unknown: number }>()
+  const totals = new Map<string, TokenAggregateV1>()
   for (const [field] of TOKEN_FIELDS) {
-    totals.set(field, { values: { "provider-reported": 0n, measured: 0n, estimated: 0n }, unknown: 0 })
+    totals.set(field, {
+      values: { "provider-reported": 0n, measured: 0n, estimated: 0n },
+      counts: { "provider-reported": 0, measured: 0, estimated: 0 },
+      unknown: 0,
+    })
   }
   const costs: Record<UsageQuality, number> = { "provider-reported": 0, measured: 0, estimated: 0 }
   let unknownCosts = 0
@@ -199,14 +240,12 @@ function tokenTotals(observations: readonly UsageObservationV1[]) {
         continue
       }
       aggregate.values[metric.status] += BigInt(metric.value)
+      aggregate.counts[metric.status]++
     }
 
     const costText = usageCostText(
       provenance?.cost,
-      identityValid && analyticsCostHasRequestIdentity(
-        safeIdentity(provenance?.operationID),
-        safeIdentity(provenance?.requestID),
-      ),
+      identityValid && analyticsCostHasRequestIdentity(safeIdentity(provenance?.requestID)),
     )
     const costStatus = costText === "unknown" ? undefined : costText.slice(0, costText.indexOf(":")) as UsageQuality
     if (costStatus && Object.hasOwn(costs, costStatus)) costs[costStatus]++
@@ -215,10 +254,14 @@ function tokenTotals(observations: readonly UsageObservationV1[]) {
 
   const renderMetric = (field: (typeof TOKEN_FIELDS)[number][0], label: string) => {
     const aggregate = totals.get(field)!
-    const parts = (Object.entries(aggregate.values) as [UsageQuality, bigint][])
-      .filter(([, count]) => count > 0n)
-      .map(([quality, count]) => `${quality} ${count}`)
+    // Report every quality that *supplied* a value, even when the sum is zero:
+    // a provider-reported zero is known, and §31.19 forbids relabelling it as
+    // unknown provenance. `counts` therefore gates the segment, not the sum.
+    const parts = (Object.keys(aggregate.counts) as UsageQuality[])
+      .filter((quality) => aggregate.counts[quality] > 0)
+      .map((quality) => `${quality} ${aggregate.values[quality]}`)
     if (aggregate.unknown > 0) parts.push(`unknown ${aggregate.unknown}`)
+    // No observation touched this bucket at all: there is no evidence.
     if (parts.length === 0) parts.push("unknown 0")
     return `${label}: ${parts.join(" + ")}`
   }
@@ -243,7 +286,10 @@ export function projectSessionUsage(
   // panel. Counts below describe this recent-message window, not the whole
   // Session history.
   const recentMessages = messages.slice(Math.max(0, messages.length - MAX_USAGE_MESSAGES))
-  const assistantMessages = recentMessages.filter((message) => analyticsRecord(message)?.role === "assistant")
+  const assistantMessages = recentMessages.filter((message) => {
+    const record = analyticsRecord(message)
+    return record && ownDataProperty(record, "role") === "assistant"
+  })
   const observations = usageObservations(assistantMessages, partsByMessage)
   const rows: string[] = []
   let attributed = 0
@@ -270,11 +316,11 @@ export function projectSessionUsage(
     }
     attributed++
     if (rows.length >= rowLimit) continue
-    const cost = usageCostText(provenance.cost, analyticsCostHasRequestIdentity(operationID, requestID))
+    const cost = usageCostText(provenance.cost, analyticsCostHasRequestIdentity(requestID))
     const step = observation.stepFinishIndex === undefined ? "" : ` · step ${observation.stepFinishIndex}`
     const identity = `${providerID}/${modelID} · request ${requestID ?? "unknown"} · operation ${operationID ?? "unknown"}${step}`
     rows.push(
-      `${identity} · in ${usageMetricText(tokens.input)} · out ${usageMetricText(tokens.output)} · reasoning ${usageMetricText(tokens.reasoning)} · cache read ${usageMetricText(cache.read)} · cache write ${usageMetricText(cache.write)} · cost ${cost}`,
+      `${identity} · in ${usageMetricText(tokenField(tokens, "input"))} · out ${usageMetricText(tokenField(tokens, "output"))} · reasoning ${usageMetricText(tokenField(tokens, "reasoning"))} · cache read ${usageMetricText(tokenField(tokens, "cacheRead"))} · cache write ${usageMetricText(tokenField(tokens, "cacheWrite"))} · cost ${cost}`,
     )
   }
 
@@ -286,8 +332,8 @@ export function projectSessionUsage(
   ]
 }
 
-function analyticsCostHasRequestIdentity(operationID: string | undefined, requestID: string | undefined) {
-  return Boolean(operationID || requestID)
+function analyticsCostHasRequestIdentity(requestID: string | undefined) {
+  return Boolean(requestID)
 }
 
 const OBSERVATION_FORMATS: Record<string, { label: string; unit: string; source: string }> = {
@@ -302,6 +348,7 @@ const OBSERVATION_FORMATS: Record<string, { label: string; unit: string; source:
   "ui.queue.pending_events": { label: "Queue pending events", unit: "events", source: "ui-event-mux" },
   "ui.queue.pending_bytes": { label: "Queue pending bytes", unit: "bytes", source: "ui-event-mux" },
   "ui.queue.coalesced_events": { label: "Queue coalesced events", unit: "events", source: "ui-event-mux" },
+  "ui.queue.dropped_events": { label: "Queue dropped events", unit: "events", source: "ui-event-mux" },
   "ui.queue.direct_deliveries": { label: "Queue direct deliveries", unit: "events", source: "ui-event-mux" },
   "ui.stream.duplicates_suppressed": { label: "Stream duplicates suppressed", unit: "events", source: "ui-event-mux" },
   "ui.stream.resnapshots_required": { label: "Stream resnapshots required", unit: "events", source: "ui-event-mux" },
@@ -325,6 +372,8 @@ export function formatTuiObservation(observation: TuiObservationV1, nowMs = Date
     : "unknown"
   const fresh =
     validTuple &&
+    Number.isSafeInteger(nowMs) &&
+    nowMs >= 0 &&
     Number.isSafeInteger(observation.observedAtMs) &&
     observation.observedAtMs! >= 0 &&
     observation.observedAtMs! <= nowMs
@@ -372,6 +421,74 @@ const UNITS: Record<TuiArtifactMetricV1, TuiArtifactObservationV1["unit"]> = {
 const MAX_TOTAL = Number.MAX_SAFE_INTEGER
 const MAX_RENDERERS = 16
 const MAX_OBSERVATIONS_PER_REPORT = 8
+
+export type DiagnosticExportEntryV1 = { readonly label?: unknown; readonly value?: unknown }
+
+/**
+ * §31.16: diagnostic export is local and redacted unless explicitly approved.
+ * AN-007 additionally requires that no secret or raw content reaches an export
+ * unless it was explicitly selected, so every row passes through the shared
+ * recursive redaction path and the assembled payload carries an explicit byte
+ * bound with a truncation marker rather than growing with the session.
+ */
+export const DIAGNOSTIC_EXPORT_MAX_BYTES = 64 * 1024
+const DIAGNOSTIC_ROW_MAX_BYTES = 4 * 1024
+const DIAGNOSTIC_LABEL_MAX_BYTES = 128
+const DIAGNOSTIC_TRUNCATION_MARKER = "[diagnostic export truncated]"
+const EXPORT_ENCODER = new TextEncoder()
+
+function utf8Prefix(value: string, maxBytes: number) {
+  let bytes = 0
+  let index = 0
+  while (index < value.length) {
+    const code = value.charCodeAt(index)
+    const next = index + 1 < value.length ? value.charCodeAt(index + 1) : 0
+    const paired = code >= 0xd800 && code <= 0xdbff && next >= 0xdc00 && next <= 0xdfff
+    const size = paired ? 4 : code <= 0x7f ? 1 : code <= 0x7ff ? 2 : 3
+    if (bytes + size > maxBytes) break
+    bytes += size
+    index += paired ? 2 : 1
+  }
+  return value.slice(0, index)
+}
+
+function diagnosticRow(entry: unknown): { line: string; clipped: boolean } | undefined {
+  // Shape validation happens before anything is copied: a derived or
+  // malformed row can never contribute a partially-typed fragment.
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return
+  const record = entry as Record<string, unknown>
+  if (typeof record.label !== "string" || typeof record.value !== "string") return
+  const label = redactToolText(record.label)
+  const redacted = redactToolText(record.value)
+  const clipped = EXPORT_ENCODER.encode(redacted).length > DIAGNOSTIC_ROW_MAX_BYTES
+  const value = utf8Prefix(redacted, DIAGNOSTIC_ROW_MAX_BYTES)
+  return { line: `${utf8Prefix(label, DIAGNOSTIC_LABEL_MAX_BYTES)}: ${value}`, clipped }
+}
+
+/** Assembles a bounded, redacted, shape-validated local diagnostic export. */
+export function buildDiagnosticExport(entries: readonly unknown[]): string {
+  const markerBytes = EXPORT_ENCODER.encode(`\n${DIAGNOSTIC_TRUNCATION_MARKER}`).length
+  const budget = Math.max(0, DIAGNOSTIC_EXPORT_MAX_BYTES - markerBytes)
+  const lines: string[] = []
+  let bytes = 0
+  let truncated = false
+
+  for (const entry of entries) {
+    const row = diagnosticRow(entry)
+    if (!row) continue
+    if (row.clipped) truncated = true
+    const separator = lines.length > 0 ? 1 : 0
+    const size = EXPORT_ENCODER.encode(row.line).length + separator
+    if (bytes + size > budget) {
+      truncated = true
+      break
+    }
+    lines.push(row.line)
+    bytes += size
+  }
+
+  return truncated ? `${lines.join("\n")}\n${DIAGNOSTIC_TRUNCATION_MARKER}` : lines.join("\n")
+}
 
 /** Fixed-cardinality, content-free process-local projection for the TUI debug panel. */
 export function createTuiAnalyticsProjection(now: () => number = Date.now) {

@@ -44,7 +44,7 @@ const MAX_IMPORTED_FILES = 32
 const MAX_IMPORTS_PER_FILE = 32
 const MAX_PATH_BYTES = 4096
 const DIGEST_PATTERN = /^blake3:[0-9a-f]{64}$/
-const CONTROL_OR_BIDI = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/u
+const CONTROL_OR_BIDI = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u
 const SOURCE_ID = /^[A-Za-z0-9._:-]{1,256}$/
 
 const contentDigest = (content: string): string =>
@@ -52,6 +52,12 @@ const contentDigest = (content: string): string =>
 
 const hasMatchingContentDigest = (file: ProjectInstructionFileV1): boolean =>
   DIGEST_PATTERN.test(file.digest) && file.digest === contentDigest(file.content)
+
+const hasSafeDisplayPath = (file: ProjectInstructionFileV1): boolean =>
+  file.displayPath === undefined ||
+  (file.displayPath.length > 0 &&
+    Buffer.byteLength(file.displayPath, "utf8") <= MAX_PATH_BYTES &&
+    !CONTROL_OR_BIDI.test(file.displayPath))
 
 export type InstructionFileKindV1 = "agents" | "claude" | "claude_local" | "config" | "import"
 export type InstructionFileScopeV1 = "global" | "user" | "project" | "subdirectory"
@@ -166,14 +172,21 @@ const globToRegExp = (glob: string): RegExp | undefined => {
   if (body.length === 0) return undefined
   let pattern = ""
   for (let index = 0; index < body.length; index += 1) {
-    const char = body[index]!
-    if (char === "*") {
-      if (body[index + 1] === "*") {
-        pattern += ".*"
-        index += 1
-      } else {
-        pattern += "[^/]*"
-      }
+      const char = body[index]!
+      if (char === "*") {
+        if (body[index + 1] === "*") {
+          if (body[index + 2] === "/") {
+            // A globstar directory prefix also matches zero directories:
+            // `**/AGENTS.md` covers both `AGENTS.md` and nested copies.
+            pattern += "(?:.*/)?"
+            index += 2
+          } else {
+            pattern += ".*"
+            index += 1
+          }
+        } else {
+          pattern += "[^/]*"
+        }
     } else if (char === "?") {
       pattern += "[^/]"
     } else {
@@ -190,9 +203,13 @@ export function isExcludedProjectInstructionPathV1(
   relativePath: string,
   excludeGlobs: ReadonlyArray<string> = DEFAULT_PROJECT_INSTRUCTION_RESOLVER_V1.excludeGlobs,
 ): boolean {
+  const patterns = excludeGlobs.map(globToRegExp)
+  if (patterns.some((pattern) => pattern === undefined)) {
+    throw new TypeError("excludeGlobs contains an invalid pattern")
+  }
   if (relativePath.length === 0 || relativePath.startsWith("/") || CONTROL_OR_BIDI.test(relativePath)) return true
   if (relativePath.split("/").some((part) => part === "" || part === "." || part === "..")) return true
-  return excludeGlobs.some((glob) => globToRegExp(glob)?.test(relativePath.replace(/\\/gu, "/")) ?? false)
+  return patterns.some((pattern) => pattern!.test(relativePath.replace(/\\/gu, "/")))
 }
 
 const mergeResolver = (resolver?: Partial<ProjectInstructionResolverV1>): ProjectInstructionResolverV1 => {
@@ -213,6 +230,9 @@ const mergeResolver = (resolver?: Partial<ProjectInstructionResolverV1>): Projec
     throw new RangeError("maxAncestorFiles is outside its bound")
   }
   if (merged.excludeGlobs.length > MAX_EXCLUDE_GLOBS) throw new RangeError("excludeGlobs exceeds its bound")
+  if (merged.excludeGlobs.some((glob) => globToRegExp(glob) === undefined)) {
+    throw new TypeError("excludeGlobs contains an invalid pattern")
+  }
   return merged
 }
 
@@ -261,6 +281,22 @@ export function resolveProjectInstructionFilesV1(
   const cwdRelative = relativeTo(root, cwd)
   if (cwdRelative === undefined) throw new TypeError("cwd is outside the workspace root")
   if (input.candidates.length > MAX_FILES * 4) throw new RangeError("instruction candidates exceed their bound")
+  if ((input.importCandidates?.length ?? 0) > MAX_FILES * 4) {
+    throw new RangeError("instruction import candidates exceed their bound")
+  }
+  if ((input.approvedExternalImports?.length ?? 0) > MAX_FILES * 4) {
+    throw new RangeError("approved external imports exceed their bound")
+  }
+  if ((input.alreadyLoaded?.length ?? 0) > MAX_FILES * 4) {
+    throw new RangeError("already-loaded instruction identities exceed their bound")
+  }
+  if ((input.configGlobs?.length ?? 0) > MAX_EXCLUDE_GLOBS) {
+    throw new RangeError("configGlobs exceeds its bound")
+  }
+  const configPatterns = (input.configGlobs ?? []).map(globToRegExp)
+  if (configPatterns.some((pattern) => pattern === undefined)) {
+    throw new TypeError("configGlobs contains an invalid pattern")
+  }
 
   const exclude = resolver.excludeGlobs.flatMap((glob) => {
     const pattern = globToRegExp(glob)
@@ -298,6 +334,10 @@ export function resolveProjectInstructionFilesV1(
       excluded.push({ relativePath: candidate.relativePath, reason: "invalid_path" })
       continue
     }
+    if (!hasSafeDisplayPath(candidate)) {
+      excluded.push({ relativePath: candidate.relativePath, reason: "invalid_path" })
+      continue
+    }
     if (!DIGEST_PATTERN.test(candidate.digest)) {
       excluded.push({ relativePath: candidate.relativePath, reason: "invalid_path" })
       continue
@@ -312,18 +352,25 @@ export function resolveProjectInstructionFilesV1(
     }
     accepted.push(candidate)
   }
+  const acceptedPaths = new Set<string>()
+  for (const candidate of accepted) {
+    if (acceptedPaths.has(candidate.relativePath)) {
+      throw new TypeError("instruction candidate relative paths must be unique")
+    }
+    acceptedPaths.add(candidate.relativePath)
+  }
 
   // Global/user scopes load first, then root→cwd project ancestors. `config_only`
   // intentionally ignores both and keeps only explicit config globs (INST-005).
   const ancestor: ResolvedProjectInstructionSliceV1[] = []
   const ancestorSet = new Set<string>()
-  let ancestorLimit = false
+  const ancestorLimitExcluded = new Map<string, string>()
   const addAncestor = (file: ProjectInstructionFileV1) => {
+    if (ancestorSet.has(file.filepath)) return
     if (ancestor.length >= resolver.maxAncestorFiles) {
-      ancestorLimit = true
+      ancestorLimitExcluded.set(file.filepath, file.relativePath)
       return
     }
-    if (ancestorSet.has(file.filepath)) return
     ancestorSet.add(file.filepath)
     ancestor.push({ file, onDemand: false })
   }
@@ -350,13 +397,13 @@ export function resolveProjectInstructionFilesV1(
   }
   // Explicit `instructions[]` config globs are always included after project
   // slices in every mode except config_only, where they are the only source.
-  for (const file of accepted.filter((item) => item.kind === "config")) addAncestor(file)
-  if (ancestorLimit) {
-    for (const file of accepted) {
-      if (!ancestorSet.has(file.filepath) && !excluded.some((item) => item.relativePath === file.relativePath)) {
-        excluded.push({ relativePath: file.relativePath, reason: "ancestor_limit" })
-      }
+  for (const file of accepted) {
+    if (file.kind === "config" && configPatterns.some((pattern) => pattern!.test(file.relativePath))) {
+      addAncestor(file)
     }
+  }
+  for (const relativePath of ancestorLimitExcluded.values()) {
+    excluded.push({ relativePath, reason: "ancestor_limit" })
   }
 
   const onDemand: ResolvedProjectInstructionSliceV1[] = []
@@ -395,7 +442,17 @@ export function resolveProjectInstructionFilesV1(
   for (const candidate of input.importCandidates ?? []) importsByPath.set(candidate.relativePath, candidate)
   const expanded: ResolvedProjectInstructionSliceV1[] = []
   const visitedImports = new Set<string>()
-  const approved = new Set((input.approvedExternalImports ?? []).map((item) => normalizeAbsolute(item)).filter((item): item is string => item !== undefined))
+  const loadedPaths = new Set(
+    [...ancestor, ...onDemand]
+      .map((slice) => normalizeAbsolute(slice.file.filepath))
+      .filter((item): item is string => item !== undefined),
+  )
+  const approved = new Set(
+    (input.approvedExternalImports ?? [])
+      .filter((item) => item.startsWith("/"))
+      .map((item) => normalizeAbsolute(item))
+      .filter((item): item is string => item !== undefined),
+  )
   const expand = (slice: ResolvedProjectInstructionSliceV1, depth: number, stack: ReadonlySet<string>) => {
     expanded.push(slice)
     if (depth >= MAX_IMPORT_DEPTH) {
@@ -435,12 +492,18 @@ export function resolveProjectInstructionFilesV1(
           blockedImports.push({ from: slice.file.relativePath, target, reason: "invalid" })
           continue
         }
-        if (!hasMatchingContentDigest(external)) {
+        if (!hasSafeDisplayPath(external) || !hasMatchingContentDigest(external)) {
           blockedImports.push({ from: slice.file.relativePath, target, reason: "invalid" })
           continue
         }
         if (stack.has(absolute)) {
           blockedImports.push({ from: slice.file.relativePath, target, reason: "cycle" })
+          continue
+        }
+        if (loadedPaths.has(absolute)) continue
+        if (visitedImports.has(absolute)) continue
+        if (visitedImports.size >= MAX_IMPORTED_FILES) {
+          blockedImports.push({ from: slice.file.relativePath, target, reason: "import_limit" })
           continue
         }
         visitedImports.add(absolute)
@@ -456,7 +519,7 @@ export function resolveProjectInstructionFilesV1(
         blockedImports.push({ from: slice.file.relativePath, target, reason: "invalid" })
         continue
       }
-      if (!hasMatchingContentDigest(imported)) {
+      if (!hasSafeDisplayPath(imported) || !hasMatchingContentDigest(imported)) {
         blockedImports.push({ from: slice.file.relativePath, target, reason: "invalid" })
         continue
       }
@@ -464,6 +527,7 @@ export function resolveProjectInstructionFilesV1(
         blockedImports.push({ from: slice.file.relativePath, target, reason: "cycle" })
         continue
       }
+      if (loadedPaths.has(absolute)) continue
       if (visitedImports.has(absolute)) continue
       if (visitedImports.size >= MAX_IMPORTED_FILES) {
         blockedImports.push({ from: slice.file.relativePath, target, reason: "import_limit" })
@@ -548,7 +612,10 @@ export function compileProjectInstructionsV1(input: {
   // Reserve the largest plausible marker. Sample the head until half the budget,
   // then the tail until the remainder; the middle is explicitly omitted.
   const marker = markerFor(total, rendered.length)
-  const markerBytes = encoder.encode(`${marker}\n\n`).byteLength
+  // Very small caller budgets cannot fit the full diagnostic marker. Since its
+  // vocabulary is ASCII, a character prefix is also an exact UTF-8 byte prefix.
+  const markerPrefix = marker.slice(0, maxBytes)
+  const markerBytes = encoder.encode(`${markerPrefix}\n\n`).byteLength
   const budget = Math.max(0, maxBytes - markerBytes)
   const headBudget = Math.floor(budget / 2)
   const head: typeof rendered = []
@@ -571,7 +638,7 @@ export function compileProjectInstructionsV1(input: {
   }
   const omittedBytes = total - headBytes - tailBytes
   const omittedFiles = rendered.length - head.length - tail.length
-  const finalMarker = markerFor(Math.max(0, omittedBytes), Math.max(0, omittedFiles))
+  const finalMarker = markerFor(Math.max(0, omittedBytes), Math.max(0, omittedFiles)).slice(0, maxBytes)
   const text = [
     ...head.map((item) => `${item.header}${item.body}`),
     finalMarker,
@@ -669,7 +736,7 @@ export function projectInstructionLedgerEntriesV1(input: {
       sourceRef: `instruction:${source.sourceID}`,
       sourceRevision: slice.file.digest,
       trust: source.trust,
-      bytes: included.bytes,
+      bytes: Buffer.byteLength(slice.file.content, "utf8"),
       bytesKind: "exact" as const,
       tokens: { kind: "unknown" as const },
       included: true,

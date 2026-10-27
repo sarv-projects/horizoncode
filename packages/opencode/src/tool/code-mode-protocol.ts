@@ -107,6 +107,10 @@ function compareUtf8(left: string, right: string): number {
   return a.byteLength - b.byteLength
 }
 
+function compareUtf16(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
@@ -154,15 +158,21 @@ function validJson(value: unknown, depth = 0): boolean {
   if (!isRecord(value)) return false
   const entries = Object.entries(value)
   return entries.length <= 4096 && entries.every(([key, item]) =>
-    isUnicodeScalarString(key) && encoder.encode(key).byteLength <= 256 && !/[\u0000-\u001f\u007f]/.test(key) && validJson(item, depth + 1))
+    isUnicodeScalarString(key) && encoder.encode(key).byteLength <= 256 && !/[\p{Cc}]/u.test(key) && validJson(item, depth + 1))
 }
 
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`
+function canonicalJson(value: unknown, keyOrder: "utf8" | "utf16" = "utf8"): string {
+  const compare = keyOrder === "utf8" ? compareUtf8 : compareUtf16
+  if (Array.isArray(value)) return `[${Array.from(value, (item) => canonicalJson(item ?? null, keyOrder)).join(",")}]`
   if (isRecord(value)) {
-    return `{${Object.keys(value).sort(compareUtf8).map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`
+    return `{${Object.keys(value).sort(compare).map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key], keyOrder)}`).join(",")}}`
   }
   return JSON.stringify(value)
+}
+
+/** Rust `canonical_schema_json` sorts schema object keys by UTF-16 code units. */
+function canonicalSchemaJson(value: unknown): string {
+  return canonicalJson(value, "utf16")
 }
 
 function expectedToolSetDigest(tools: readonly CodeModeToolV1[]): string {
@@ -202,7 +212,7 @@ function validTool(value: unknown): value is CodeModeToolV1 {
     typeof value.description === "string" && isUnicodeScalarString(value.description) && encoder.encode(value.description).byteLength <= 4096 &&
     isRecord(value.inputSchema) && Object.keys(value.inputSchema).length <= 256 && validJson(value.inputSchema) &&
     typeof value.inputSchemaDigest === "string" && DIGEST.test(value.inputSchemaDigest) &&
-    value.inputSchemaDigest === domainDigest("horizon.tool-schema.v1", canonicalJson(value.inputSchema))
+    value.inputSchemaDigest === domainDigest("horizon.tool-schema.v1", canonicalSchemaJson(value.inputSchema))
 }
 
 function validCall(value: unknown): value is CodeModeCallV1 {
@@ -458,7 +468,7 @@ export function makeCodeModeStartFrameV1(input: {
 }): CodeModeStartV1 {
   const tools = input.tools.map((tool) => ({
     ...tool,
-    inputSchemaDigest: domainDigest("horizon.tool-schema.v1", canonicalJson(tool.inputSchema)),
+    inputSchemaDigest: domainDigest("horizon.tool-schema.v1", canonicalSchemaJson(tool.inputSchema)),
   })).toSorted((left, right) =>
     compareUtf8(left.capabilityId, right.capabilityId) || compareUtf8(left.toolName, right.toolName))
   const toolSetDigest = expectedToolSetDigest(tools)

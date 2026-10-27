@@ -199,7 +199,12 @@ export function makeHostLspProtocolAdapterV1(input: {
           params,
         },
       }
-       const receipt = await outbound.run(() => dispatchLspProtocolOperationV1(request, input.transport.protocolOp))
+       const receipt = await outbound.run(() => {
+         if (closed || quarantined || cursor.quarantined || journal.quarantined) {
+           throw new ProtocolError({ detail: "LSP HostKernel process generation is closed or quarantined" })
+         }
+         return dispatchLspProtocolOperationV1(request, input.transport.protocolOp)
+       })
       return journal.acceptOperation(request, receipt)
     } catch (error) {
       if (sequenceAllocated) failGeneration(error)
@@ -215,6 +220,9 @@ export function makeHostLspProtocolAdapterV1(input: {
     if (!handler) throw new ProtocolError({ detail: `no bounded LSP server-request handler for ${method}` })
     const validatedParams = validateLspServerRequestParamsV1(method, params)
     const result = (await handler(validatedParams)) ?? null
+    if (closed || quarantined || cursor.quarantined || journal.quarantined) {
+      throw new ProtocolError({ detail: "LSP HostKernel process generation is closed or quarantined" })
+    }
     dispatchesInFlight += 1
     try {
       const lease = await input.guard.authorizeReply({
@@ -226,6 +234,9 @@ export function makeHostLspProtocolAdapterV1(input: {
         ...(context.managedAttempt === undefined ? {} : { managedAttempt: context.managedAttempt }),
         ...(context.directAttempt === undefined ? {} : { directAttempt: context.directAttempt }),
       })
+      if (closed || quarantined || cursor.quarantined || journal.quarantined) {
+        throw new ProtocolError({ detail: "LSP HostKernel process generation is closed or quarantined" })
+      }
       const nextSequence = sequence.next(hostProcessRef)
       const request: LspProtocolReplyRequestV1 = {
         schemaVersion: 1,
@@ -244,7 +255,12 @@ export function makeHostLspProtocolAdapterV1(input: {
           result,
         },
       }
-       const receipt = await outbound.run(() => dispatchLspProtocolReplyV1(request, input.transport.protocolReply))
+       const receipt = await outbound.run(() => {
+         if (closed || quarantined || cursor.quarantined || journal.quarantined) {
+           throw new ProtocolError({ detail: "LSP HostKernel process generation is closed or quarantined" })
+         }
+         return dispatchLspProtocolReplyV1(request, input.transport.protocolReply)
+       })
       journal.acceptProtocolReply(request, receipt)
     } finally {
       dispatchesInFlight -= 1
@@ -368,7 +384,12 @@ export function makeHostLspProtocolAdapterV1(input: {
           ...(context.directAttempt === undefined ? {} : { directAttempt: context.directAttempt }),
           operation: { requestSequence: nextSequence, requestID: id, method, params },
         }
-         const receipt = await outbound.run(() => dispatchLspProtocolOperationV1(request, input.transport.protocolOp))
+          const receipt = await outbound.run(() => {
+            if (closed || quarantined || cursor.quarantined || journal.quarantined) {
+              throw new ProtocolError({ detail: "LSP HostKernel process generation is closed or quarantined" })
+            }
+            return dispatchLspProtocolOperationV1(request, input.transport.protocolOp)
+          })
         journal.acceptOperation(request, receipt)
       } catch (error) {
         const failure = error instanceof Error ? error : new Error("LSP operation dispatch outcome is unknown")

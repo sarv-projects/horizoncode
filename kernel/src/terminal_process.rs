@@ -5807,6 +5807,8 @@ mod platform {
 mod tests {
     use super::*;
     use std::ffi::OsString;
+    #[cfg(target_os = "linux")]
+    use std::os::unix::fs::PermissionsExt;
     use std::thread;
     use std::time::Instant;
 
@@ -6507,10 +6509,17 @@ mod tests {
 
     #[test]
     fn confined_preflight_rejects_cwd_outside_workspace_before_spawn() {
-        let spec = launch("touch must-not-run");
-        let root = std::env::temp_dir();
+        let base = std::env::temp_dir().join(format!("hz-pty-cwd-{}", std::process::id()));
+        let root = base.join("workspace");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut spec = launch("touch must-not-run");
+        spec.cwd = outside.clone();
         assert!(TerminalProcess::prepare_confined(spec, &root).is_err());
-        assert!(!root.join("must-not-run").exists());
+        assert!(!outside.join("must-not-run").exists());
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[test]
@@ -6609,6 +6618,80 @@ mod tests {
             wait_dead(escapee, std::time::Duration::from_secs(10)),
             "owner close must terminate escaped session descendants"
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn ps014_prepared_terminal_without_containment_identity_never_spawns() {
+        let workspace = std::env::temp_dir().join(format!("hz-ps014-no-spawn-{}", std::process::id()));
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::set_permissions(&workspace, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let marker = workspace.join("must-not-spawn");
+        let executable = std::fs::canonicalize("/bin/sh").unwrap();
+        let mut spec = launch(&format!("touch {}", marker.display()));
+        spec.cwd = workspace.clone();
+        let prepared = PreparedTerminalLaunch {
+            spec,
+            confinement: None,
+            guarantee_record: "PS-014 fixture prepared launch".to_owned(),
+            launch_digest: format!("blake3:{}", "a".repeat(64)),
+            executable_path: executable.clone(),
+            executable_digest: executable_digest(&executable).unwrap(),
+            cgroup_hierarchy_hidden: false,
+            #[cfg(target_os = "linux")]
+            cgroup: None,
+            cgroup_required: true,
+        };
+
+        let error = match TerminalProcess::spawn_prepared(prepared) {
+            Err(error) => error,
+            Ok(_) => panic!("missing containment identity must deny dispatch"),
+        };
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported, "{error:?}");
+        assert!(!marker.exists(), "deny-before-spawn must leave no filesystem effect");
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn ps014_full_access_terminal_uses_supervised_marker_and_no_cgroup_claim() {
+        let workspace = std::env::temp_dir().join(format!("hz-ps014-full-access-{}", std::process::id()));
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::set_permissions(&workspace, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut mode = crate::guard::DirectSessionPermissionModeProjectionV1 {
+            session_id: "ses_ps014_full_access".to_owned(),
+            owner_epoch: 7,
+            location_id: format!("loc_{}", "a".repeat(64)),
+            workspace_id: "wrk_ps014".to_owned(),
+            workspace_root_digest: format!("blake3:{}", "b".repeat(64)),
+            execution_backend_id: crate::guard::DIRECT_SESSION_EFFECT_BACKEND_ID.to_owned(),
+            policy_digest: format!("blake3:{}", "c".repeat(64)),
+            sandbox_mode: crate::guard::DirectSandboxModeV1::DangerFullAccess,
+            approval_policy: crate::guard::DirectApprovalPolicyV1::Never,
+            source: crate::guard::DirectPermissionModeSourceV1::UserSession,
+            revision: 1,
+            digest: String::new(),
+        };
+        mode.digest = mode.recompute_digest();
+        let mut spec = launch("exit 0");
+        spec.cwd = workspace.clone();
+        let prepared = TerminalProcess::prepare_full_access(
+            spec,
+            &workspace,
+            &mode.session_id,
+            mode.owner_epoch,
+            &mode.workspace_root_digest,
+            &mode,
+        )
+        .expect("Full Access fixture is valid on Linux");
+        assert_eq!(prepared.guarantee_record(), FULL_ACCESS_GUARANTEE_RECORD);
+        assert!(prepared.cgroup_identity().is_none());
+        let mut process = TerminalProcess::spawn_prepared(prepared).expect("Full Access dispatch");
+        assert!(matches!(
+            process.wait_timeout(std::time::Duration::from_secs(5)).unwrap(),
+            WaitOutcome::Exited(status) if status.success()
+        ));
+        std::fs::remove_dir_all(workspace).unwrap();
     }
 
     #[test]

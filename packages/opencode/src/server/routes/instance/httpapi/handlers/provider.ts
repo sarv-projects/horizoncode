@@ -59,7 +59,6 @@ export const providerHandlers = HttpApiBuilder.group(InstanceHttpApi, "provider"
           source: catalogSnapshot.source,
           freshness: catalogSnapshot.freshness,
           ...(catalogSnapshot.updatedAt === undefined ? {} : { updatedAt: catalogSnapshot.updatedAt }),
-          ...(catalogSnapshot.provenance?.sourceURL === undefined ? {} : { sourceURL: catalogSnapshot.provenance.sourceURL }),
           ...(catalogSnapshot.provenance?.retrievedAt === undefined ? {} : { retrievedAt: catalogSnapshot.provenance.retrievedAt }),
           ...(catalogSnapshot.provenance?.contentDigest === undefined ? {} : { contentDigest: catalogSnapshot.provenance.contentDigest }),
           ...(catalogSnapshot.provenance?.license === undefined ? {} : { license: catalogSnapshot.provenance.license }),

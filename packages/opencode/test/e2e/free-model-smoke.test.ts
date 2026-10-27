@@ -29,7 +29,6 @@ const cleanList = {
     source: "cache",
     freshness: "fresh",
     updatedAt: 1_700_000_000_000,
-    sourceURL: "https://models.dev/api.json",
     retrievedAt: 1_700_000_000_000,
     contentDigest: `sha256:${"a".repeat(64)}`,
     license: "CC0-1.0",

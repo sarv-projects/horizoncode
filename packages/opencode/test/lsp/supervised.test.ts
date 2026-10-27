@@ -3,8 +3,8 @@ import { Location } from "@opencode-ai/schema"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { WorkspaceV2 } from "@opencode-ai/core/workspace"
 import { LanguageServiceProcessError } from "@/lsp/launch"
-import { createSupervisedLspClientV1 } from "@/lsp/supervised"
-import type { DirectAttemptScopeV1 } from "@/session/managed-control"
+import { createSupervisedLspClientV1, snapshotLspAttemptScopeV1 } from "@/lsp/supervised"
+import type { DirectAttemptScopeV1, ManagedAttemptScopeV1 } from "@/session/managed-control"
 
 const directAttempt: DirectAttemptScopeV1 = {
   attemptID: "attempt-child-1",
@@ -47,6 +47,45 @@ const input = {
 } as unknown as Parameters<typeof createSupervisedLspClientV1>[0]
 
 describe("supervised LSP Attempt binding", () => {
+  test("snapshots nested managed worktree authority", () => {
+    const worktreeTarget = {
+      worktreeID: "worktree_1",
+      worktreeBaseRevision: `blake3:${"5".repeat(64)}`,
+      worktreePoolRevision: "3",
+      locationID: "location-1",
+      workspaceID: "wrk_child",
+      workspaceRef: "worktree_1",
+      canonicalRoot: "/workspace",
+      workspaceRevision: directAttempt.workspaceRevision,
+    }
+    const managedAttempt = {
+      goalID: "goal_1",
+      runID: "run_1",
+      taskID: "task_1",
+      attemptID: "attempt_1",
+      ownerEpoch: "1",
+      expectedManagedRevision: "1",
+      requestSequence: "1",
+      requestID: "request_1",
+      contextSelectionDigest: `blake3:${"9".repeat(64)}`,
+      locationID: "location-1",
+      sessionID: "session-child",
+      workspaceRevision: directAttempt.workspaceRevision,
+      effectiveMaxTokens: "100000",
+      remainingTokens: "100000",
+      delegationBindingDigest: `blake3:${"c".repeat(64)}`,
+      permissionScopeDigest: `blake3:${"a".repeat(64)}`,
+      worktreeTarget,
+    } as unknown as ManagedAttemptScopeV1
+
+    const snapshot = snapshotLspAttemptScopeV1({ managedAttempt })
+    worktreeTarget.canonicalRoot = "/attacker/changed"
+
+    expect(snapshot.managedAttempt?.worktreeTarget.canonicalRoot).toBe("/workspace")
+    expect(Object.isFrozen(snapshot.managedAttempt)).toBe(true)
+    expect(Object.isFrozen(snapshot.managedAttempt?.worktreeTarget)).toBe(true)
+  })
+
   test("matches the direct child Session ID before reaching the closed process gate", async () => {
     await expect(createSupervisedLspClientV1({ ...input, sessionID: "session-parent" })).rejects.toThrow(
       "supervised LSP scope does not match the authenticated Attempt workspace pins",
@@ -72,5 +111,98 @@ describe("supervised LSP Attempt binding", () => {
         workspaceID: WorkspaceV2.ID.make("wrk_foreign"),
       }),
     })).rejects.toThrow("supervised LSP location pin does not match the authenticated workspace ID")
+  })
+
+  test("rejects combining managed and direct Attempt scopes", async () => {
+    const managedAttempt = {
+      goalID: "goal_1",
+      runID: "run_1",
+      taskID: "task_1",
+      attemptID: "attempt_1",
+      ownerEpoch: "1",
+      expectedManagedRevision: "1",
+      requestSequence: "1",
+      requestID: "request_1",
+      contextSelectionDigest: `blake3:${"9".repeat(64)}`,
+      locationID: "location-1",
+      sessionID: "session-child",
+      workspaceRevision: directAttempt.workspaceRevision,
+      effectiveMaxTokens: "100000",
+      remainingTokens: "100000",
+      delegationBindingDigest: `blake3:${"c".repeat(64)}`,
+      permissionScopeDigest: `blake3:${"a".repeat(64)}`,
+      worktreeTarget: {
+        worktreeID: "worktree_1",
+        worktreeBaseRevision: `blake3:${"5".repeat(64)}`,
+        worktreePoolRevision: "3",
+        locationID: "location-1",
+        workspaceID: "wrk_child",
+        workspaceRef: "worktree_1",
+        canonicalRoot: "/workspace",
+        workspaceRevision: directAttempt.workspaceRevision,
+      },
+    }
+    await expect(createSupervisedLspClientV1({
+      ...input,
+      managedAttempt: managedAttempt as unknown as Parameters<typeof createSupervisedLspClientV1>[0]["managedAttempt"],
+    })).rejects.toThrow("supervised LSP creation cannot combine managed and direct Attempt scopes")
+  })
+
+  test("rejects a managed Attempt scope with mismatched canonicalRoot", async () => {
+    const managedAttempt = {
+      goalID: "goal_1",
+      runID: "run_1",
+      taskID: "task_1",
+      attemptID: "attempt_1",
+      ownerEpoch: "1",
+      expectedManagedRevision: "1",
+      requestSequence: "1",
+      requestID: "request_1",
+      contextSelectionDigest: `blake3:${"9".repeat(64)}`,
+      locationID: "location-1",
+      sessionID: "session-child",
+      workspaceRevision: directAttempt.workspaceRevision,
+      effectiveMaxTokens: "100000",
+      remainingTokens: "100000",
+      delegationBindingDigest: `blake3:${"c".repeat(64)}`,
+      permissionScopeDigest: `blake3:${"a".repeat(64)}`,
+      worktreeTarget: {
+        worktreeID: "worktree_1",
+        worktreeBaseRevision: `blake3:${"5".repeat(64)}`,
+        worktreePoolRevision: "3",
+        locationID: "location-1",
+        workspaceID: "wrk_child",
+        workspaceRef: "worktree_1",
+        canonicalRoot: "/other-workspace",
+        workspaceRevision: directAttempt.workspaceRevision,
+      },
+    }
+    await expect(createSupervisedLspClientV1({
+      ...input,
+      directAttempt: undefined,
+      workspaceID: undefined,
+      managedAttempt: managedAttempt as unknown as Parameters<typeof createSupervisedLspClientV1>[0]["managedAttempt"],
+    })).rejects.toThrow("supervised LSP scope does not match the managed Attempt worktree target")
+  })
+
+  test("rejects a malformed root Session scope without workspaceID or valid revision", async () => {
+    await expect(createSupervisedLspClientV1({
+      ...input,
+      directAttempt: undefined,
+      workspaceID: undefined,
+    })).rejects.toThrow("supervised LSP root Session scope is malformed")
+
+    await expect(createSupervisedLspClientV1({
+      ...input,
+      directAttempt: undefined,
+      workspaceRevision: "not-a-blake3-digest",
+    })).rejects.toThrow("supervised LSP root Session scope is malformed")
+  })
+
+  test("admits a valid root Session scope up to the closed process gate", async () => {
+    await expect(createSupervisedLspClientV1({
+      ...input,
+      directAttempt: undefined,
+    })).rejects.toBeInstanceOf(LanguageServiceProcessError)
   })
 })

@@ -144,6 +144,9 @@ test("the live session route renders redacted activity and applies canonical tex
         partID: "route-c-live-text",
         field: "text",
         delta: " with live route update",
+        offset: 20,
+        sequence: 0,
+        sourceGeneration: "route-gen-1",
       },
     },
   }
@@ -152,7 +155,13 @@ test("the live session route renders redacted activity and applies canonical tex
     payload: {
       ...deltaEvent.payload,
       id: "route-live-delta-while-reading",
-      properties: { ...deltaEvent.payload.properties, delta: " during history scroll" },
+      properties: {
+        ...deltaEvent.payload.properties,
+        delta: " during history scroll",
+        offset: 43,
+        sequence: 1,
+        sourceGeneration: "route-gen-1",
+      },
     },
   }
   let eventConnections = 0

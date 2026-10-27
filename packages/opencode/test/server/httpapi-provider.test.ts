@@ -297,7 +297,7 @@ describe("provider HttpApi", () => {
   )
 
   it.instance(
-    "keeps auth loader functions private and the config provider list scoped",
+    "keeps auth loader functions private, omits catalog URLs, and scopes the config provider list",
     Effect.gen(function* () {
       const directory = (yield* TestInstance).directory
       yield* setEnvScoped(
@@ -326,12 +326,12 @@ describe("provider HttpApi", () => {
         source: snapshot.source,
         freshness: snapshot.freshness,
         ...(snapshot.updatedAt === undefined ? {} : { updatedAt: snapshot.updatedAt }),
-        ...(snapshot.provenance?.sourceURL === undefined ? {} : { sourceURL: snapshot.provenance.sourceURL }),
         ...(snapshot.provenance?.retrievedAt === undefined ? {} : { retrievedAt: snapshot.provenance.retrievedAt }),
         ...(snapshot.provenance?.contentDigest === undefined ? {} : { contentDigest: snapshot.provenance.contentDigest }),
         ...(snapshot.provenance?.license === undefined ? {} : { license: snapshot.provenance.license }),
         ...(snapshot.provenance?.attribution === undefined ? {} : { attribution: snapshot.provenance.attribution }),
       })
+      expect(catalogSnapshot).not.toHaveProperty("sourceURL")
       expect(providerByID(configBody, "providers", "google")).toBeUndefined()
     }),
     { ...projectOptions, init: writeFunctionOptionsPlugin },

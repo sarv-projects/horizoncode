@@ -25,7 +25,7 @@ on the pinned artifact descriptor for the entire invocation; another runner targ
 the same artifact fails before reading or appending it. The journal rejects symlink
 traversal, descriptor/path replacement, uncoordinated size changes, and incomplete
 trailing records. Safe locking and descriptor-relative reads must be supported by the
-platform or the journal stays unavailable. Tests have not been run.
+platform or the journal stays unavailable. The offline Python suite has been run; this does not claim a live product evaluation, authenticated HostRun, or release evidence.
 The optional library-level seed argument cannot override the manifest's seed; if a
 caller needs a different randomized schedule, it must create a new frozen manifest
 and therefore a distinct run/artifact digest. Resumed trial rows are checked against
@@ -89,11 +89,14 @@ declared measured/estimated provenance; unknown cost stays null. All reports rem
 `HOST_RUN_ADAPTER_UNATTESTED` and `hup001Complete: false`. A library call with a
 structurally valid outcome is not release or benchmark attestation.
 
-Source-only acceptance fixtures cover selected-route/config binding, ordered HostRun
+Offline acceptance tests exercise selected-route/config binding, ordered HostRun
 dispatch indexes, UNKNOWN/no-replay behavior, cancellation, bounded local task inputs,
-and permanent non-official status. They have not been run under the implementation-first
-hold. HUP-001/002 execution remains blocked on the concrete authenticated HostRun,
-independent-verifier and RC0 evidence integrations plus explicit live-run authorization.
+and permanent non-official status with local fixtures/test doubles. Three authentic
+cross-layer positives remain explicitly skipped pending P2 admission facts, P1 terminal
+projection, and the P8 Rust OwnerLog acceptance run. These Python results do not attest
+HostRun or RC0. HUP-001/002 execution remains blocked on the concrete authenticated
+HostRun, independent-verifier and RC0 evidence integrations plus explicit live-run
+authorization.
 
 The `taskPartitions` field freezes development, smoke, and heldout task IDs and
 rejects overlap within a manifest bundle. Each pair shares one digest-bound

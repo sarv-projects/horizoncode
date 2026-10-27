@@ -467,6 +467,19 @@ export function Session() {
   let transcriptScrollPending = false
   let adjustingTranscriptWindow = false
 
+  // OpenTUI re-engages sticky-bottom when a layout change leaves the previous
+  // scroll position within one row of the new maximum. Keep its sticky flag
+  // aligned with the app's one-row follow threshold before content changes;
+  // snap that threshold row to the exact anchor so both contracts agree.
+  function syncTranscriptFollowMode() {
+    if (!scroll || scroll.isDestroyed) return false
+    const maxScrollTop = Math.max(0, scroll.scrollHeight - scroll.viewport.height)
+    const atBottom = scroll.scrollTop >= maxScrollTop - 1
+    if (atBottom && scroll.scrollTop !== maxScrollTop) scroll.scrollTo(maxScrollTop)
+    scroll.stickyScroll = atBottom
+    return atBottom
+  }
+
   function setTranscriptWindowAndRestore(next: TranscriptWindow) {
     const current = transcriptWindow()
     if (current.startIndex === next.startIndex && current.endIndex === next.endIndex) return
@@ -489,8 +502,8 @@ export function Session() {
       }
       adjustingTranscriptWindow = false
       const range = transcriptWindow()
-      const maxScrollTop = Math.max(0, scroll.scrollHeight - scroll.viewport.height)
-      setFollowTranscriptTail(range.endIndex >= messages().length && scroll.scrollTop >= maxScrollTop - 1)
+      const atBottom = syncTranscriptFollowMode()
+      setFollowTranscriptTail(range.endIndex >= messages().length && atBottom)
     }, 16)
   }
 
@@ -504,9 +517,8 @@ export function Session() {
 
       const range = transcriptWindow()
       const total = messages().length
-      const maxScrollTop = Math.max(0, scroll.scrollHeight - scroll.viewport.height)
       const atTop = scroll.scrollTop <= 1
-      const atBottom = scroll.scrollTop >= maxScrollTop - 1
+      const atBottom = syncTranscriptFollowMode()
       setFollowTranscriptTail(range.endIndex >= total && atBottom)
 
       const direction =
@@ -521,13 +533,20 @@ export function Session() {
   function scrollTranscriptBy(delta: number, userInitiated = true) {
     if (!scroll || scroll.isDestroyed) return
     scroll.scrollBy(delta)
+    syncTranscriptFollowMode()
     if (userInitiated) scheduleTranscriptBoundaryCheck()
   }
 
   function scrollTranscriptTo(position: number, userInitiated = true) {
     if (!scroll || scroll.isDestroyed) return
     scroll.scrollTo(position)
+    syncTranscriptFollowMode()
     if (userInitiated) scheduleTranscriptBoundaryCheck()
+  }
+
+  function onTranscriptUserScroll() {
+    syncTranscriptFollowMode()
+    scheduleTranscriptBoundaryCheck()
   }
 
   onCleanup(() => {
@@ -1452,8 +1471,8 @@ export function Session() {
                 stickyStart="bottom"
                 flexGrow={1}
                 scrollAcceleration={scrollAcceleration()}
-                onMouseScroll={scheduleTranscriptBoundaryCheck}
-                onMouseDrag={scheduleTranscriptBoundaryCheck}
+                onMouseScroll={onTranscriptUserScroll}
+                onMouseDrag={onTranscriptUserScroll}
               >
                 <box height={1} />
                 <Show when={sync.data.session_message_truncated[route.sessionID]}>

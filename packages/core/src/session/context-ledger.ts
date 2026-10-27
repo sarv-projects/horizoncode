@@ -103,6 +103,10 @@ export function compileContextLedgerV2(input: ContextLedgerCompileInputV2): Comp
   if (input.lane === "managed" && !input.contextSelectionDigest) {
     throw new TypeError("managed ContextLedger requires the exact HostKernel ContextSelection digest")
   }
+  const providerInput = selection.sources.find((source) => source.kind === "provider-input")
+  if (providerInput !== undefined && providerInput.contentDigest !== input.requestPayloadDigest) {
+    throw new TypeError("ContextLedger requestPayloadDigest disagrees with the pinned provider input digest")
+  }
   const refs = new Set(selection.sources.map((source) => `${source.kind}:${source.sourceID}`))
   if (entries.some((entry) => entry.included && !refs.has(entry.sourceRef))) {
     throw new TypeError("ContextLedger entry does not match a pinned ContextSelection source")

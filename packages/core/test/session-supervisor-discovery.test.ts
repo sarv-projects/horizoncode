@@ -81,6 +81,7 @@ test("validates discovery depth, strict path ordering, and mode semantics", () =
   }))).toBe(false)
   expect(repoDiscoveryPageMatchesRequest(manifestsRequest, page({
     authority: { ...page().authority, mode: "manifests" },
+    coverage: { entries: 1, bytes: 88, depth: 1 },
     entries: [{ pathRef: "src/package.json", kind: "file", depth: 1, sizeBytes: "20", manifestKind: "package_json" }],
   }))).toBe(true)
 })

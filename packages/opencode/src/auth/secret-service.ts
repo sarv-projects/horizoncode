@@ -3,8 +3,14 @@ import * as dbus from "dbus-native"
 import type { SecretBrokerV1 } from "@opencode-ai/schema/secret-broker-v1"
 import type { SecretServiceCredentialBackend } from "./secret-service-store"
 
+/**
+ * RFC 2409 group 2 (1024-bit MODP) prime. The negotiated algorithm is
+ * `dh-ietf1024-sha256-aes128-cbc-pkcs7`, so both sides exchange 128-byte values;
+ * the 768-bit group-1 prime is too small and rejects every real Secret Service
+ * public key as out of range.
+ */
 const GROUP_2_PRIME = BigInt(
-  "0xffffffffffffffffc90fdaa22168c234c4c6628b80dc1cd129024e088a67cc74020bbea63b139b22514a08798e3404ddef9519b3cd3a431b302b0a6df25f14374fe1356d6d51c245e485b576625e7ec6f44c42e9a63a3620ffffffffffffffff",
+  "0xffffffffffffffffc90fdaa22168c234c4c6628b80dc1cd129024e088a67cc74020bbea63b139b22514a08798e3404ddef9519b3cd3a431b302b0a6df25f14374fe1356d6d51c245e485b576625e7ec6f44c42e9a637ed6b0bff5cb6f406b7edee386bfb5a899fa5ae9f24117c4b1fe649286651ece65381ffffffffffffffff",
 )
 const GENERATOR = 2n
 export const SECRET_SERVICE_ALGORITHM = "dh-ietf1024-sha256-aes128-cbc-pkcs7"
@@ -19,6 +25,16 @@ function bigIntToBytes(value: bigint): Buffer {
   let hex = value.toString(16)
   if (hex.length % 2) hex = `0${hex}`
   return Buffer.from(hex, "hex")
+}
+
+/** RFC 2409 group-2 DH values are exchanged as fixed 128-byte big-endian buffers. */
+const DH_GROUP_BYTES = 128
+
+function bigIntToFixedBytes(value: bigint): Buffer {
+  const bytes = bigIntToBytes(value)
+  if (bytes.byteLength > DH_GROUP_BYTES) throw new Error("Diffie-Hellman integer exceeds the group size")
+  if (bytes.byteLength === DH_GROUP_BYTES) return bytes
+  return Buffer.concat([Buffer.alloc(DH_GROUP_BYTES - bytes.byteLength), bytes])
 }
 
 function modPow(base: bigint, exponent: bigint, modulus: bigint): bigint {
@@ -40,17 +56,19 @@ export function beginSecretServiceDhSession(options: {
 } = {}) {
   const random = options.random ?? nodeRandomBytes
   const exponent = options.privateExponent ?? (bytesToBigInt(random(128)) % (GROUP_2_PRIME - 3n)) + 2n
-  const clientPublic = bigIntToBytes(modPow(GENERATOR, exponent, GROUP_2_PRIME))
+  const clientPublic = bigIntToFixedBytes(modPow(GENERATOR, exponent, GROUP_2_PRIME))
   let key: Buffer | undefined
 
   return {
     clientPublicKey: clientPublic,
     complete(servicePublicKey: Uint8Array) {
       const remote = bytesToBigInt(servicePublicKey)
-      if (remote <= 1n || remote >= GROUP_2_PRIME - 1n || servicePublicKey.byteLength > 128) {
+      if (remote <= 1n || remote >= GROUP_2_PRIME - 1n || servicePublicKey.byteLength > DH_GROUP_BYTES) {
         throw new Error("invalid Secret Service DH public key")
       }
-      const shared = bigIntToBytes(modPow(remote, exponent, GROUP_2_PRIME))
+      // The negotiated key is derived from the fixed-width shared secret, exactly
+      // as libsecret does; a stripped leading zero would change the key.
+      const shared = bigIntToFixedBytes(modPow(remote, exponent, GROUP_2_PRIME))
       try {
         key = Buffer.from(hkdfSync("sha256", shared, Buffer.alloc(0), Buffer.alloc(0), 16))
       } finally {

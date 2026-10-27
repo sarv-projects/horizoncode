@@ -74,8 +74,10 @@ function inspectSelection(selection: ProviderDoctorV1.RequestV1["selection"], fa
     }
   }
   if (facts) {
-    const providerConfig = facts.config?.provider?.[provider]
-    const catalogProvider = facts.catalog[provider]
+    const providerConfig = facts.config?.provider && Object.hasOwn(facts.config.provider, provider)
+      ? facts.config.provider[provider]
+      : undefined
+    const catalogProvider = Object.hasOwn(facts.catalog, provider) ? facts.catalog[provider] : undefined
     const providerKnown = providerConfig !== undefined || catalogProvider !== undefined
     if (!providerKnown) {
       return {

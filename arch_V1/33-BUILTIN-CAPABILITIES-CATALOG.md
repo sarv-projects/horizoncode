@@ -4,7 +4,7 @@
 
 A capability being listed here means it belongs in the target product. It is **not** evidence that the current source already implements or verifies it. Runtime status must be one of `DESIGNED | CODE_PRESENT | WIRED | TESTED | VERIFIED | UNAVAILABLE`.
 
-The product catalog retains future capabilities as well as V1 ones. Under A-V2-31, expose only supported Linux/WSL CLI/TUI V1 actions; web/desktop application surfaces, browser automation and desktop-control entries remain unavailable/post-V1. Built-in web search is V1 as of the 2026-10-18 promotion (`DEC-V1-26`; §33.9). DAP, REPL, LSP, local guarded worker, provider/settings and TUI actions remain V1 goals but require runtime proof before exposure.
+The product catalog retains future capabilities as well as V1 ones. Under A-V2-31, expose only supported Linux/WSL CLI/TUI V1 actions; web/desktop application surfaces, browser automation and desktop-control entries remain unavailable/post-V1. Built-in web search is V1 scope as of the 2026-10-18 promotion (`DEC-V1-26`; §33.9); its broker is code-present and consent-gated, but its runtime routes are currently disabled and it returns typed unavailable until released (§33.9, §33.25). DAP, REPL, LSP, local guarded worker, provider/settings and TUI actions remain V1 goals but require runtime proof before exposure.
 
 ## 33.1 Catalog rules
 
@@ -69,6 +69,16 @@ Settings → Editors is reached through `/settings`. Profiles are immutable user
 Config; workspace writes are contained and settled as the `editor.launch` Guarded process
 effect. Prompt scratch import is not a workspace mutation. See DEC-V1-33 and §37.28.
 Terminal and GUI editor profiles use the same HostKernel/ExecutionHost path.
+
+**Runtime status (2026-10-26): DESIGNED/CODE_PRESENT — not wired; launch route absent.** The
+Explorer overlay UI source exists (`packages/tui/src/component/dialog-editor-explorer.tsx`), but
+for a valid request, `workspaceEditorOpenRequest` always returns typed `unavailable`/`host_route_unavailable`
+(`packages/tui/src/editor.ts:117-123`) and the external-editor effect returns
+`route_unavailable` while `EXTERNAL_EDITOR_ROUTE_READY = false`
+(`packages/opencode/src/lsp/external-editor.ts:31,167-172`). `openWorkspaceFileV1` has no
+production caller outside its module/test, and the Guarded `editor.launch` HostKernel route is
+absent. This records current behavior without weakening the requirement above: no editor
+process can start.
 
 ```text
 repo.detect
@@ -287,6 +297,17 @@ The read-only `web.search.providers` projection is authenticated and workspace-s
 reports local configuration and sanitized process-local attempt/cooldown state without
 probing provider health or exposing credentials, so Settings remains truthful while search
 dispatch is unavailable.
+
+**Runtime status (2026-10-26): CODE_PRESENT/WIRED at the tool boundary, consent-gated, runtime-disabled.**
+`web.search` is registered and filtered through the host/effects feature gates
+(`packages/opencode/src/tool/registry.ts:300-306`), and the tool returns typed `unavailable`
+with the exact route reason instead of dispatching when no admitted route is ready
+(`packages/opencode/src/tool/websearch.ts:129-139`). Both release seams are false:
+`WEB_SEARCH_ANONYMOUS_RUNTIME_READY = false` and `WEB_SEARCH_BYO_RUNTIME_READY = false`
+(`packages/opencode/src/tool/websearch-broker.ts:11-12`). Search is therefore not a working V1
+runtime today, but it is not the same as DAP/REPL: those are separately hard-disabled and have
+no model-facing wired path (`packages/opencode/src/dap/session.ts:314`;
+`packages/opencode/src/repl/lifecycle.ts:952`).
 
 ### Debug adapter
 
@@ -605,6 +626,13 @@ Results are top-K bounded and can expose a requested family at the next safe too
 V1 reuses the existing embedded CodeMode interpreter; it adds no second interpreter. The
 model-facing CodeMode `execute` entry (canonical capability ID `codemode.execute`) may orchestrate only exact tool definitions already admitted for the authenticated direct Session or managed Attempt. Existing `$codemode.search` provides progressive discovery within that authorized tree; it cannot reveal disabled capabilities or grant permission. Existing MCP tools may participate through Core-owned adapters only when they use the same dispatcher; no helper MCP client exists. The helper itself has no ambient filesystem, process, network, credential or registry access. A script is limited to 64 nested calls across at most 64 sequential waves of at most 32 concurrent calls, with a trusted 30-second deadline, 65,536-byte source/output caps, and 1 MiB aggregate arguments. The existing interpreter runs in a short-lived helper process under the existing Rust ExecutionHost supervisor. A bounded versioned stdio protocol sends nested calls to Core, which uses the ordinary complete ToolBatch and Guard/lease/receipt/reconciliation path. HostKernel applies fixed `CodeModeResourceProfileV1` before the first instruction: cgroup-v2 memory 536870912 bytes, CPU `100000 100000`, PIDs 64, and nofile 256; every limit is mandatory and verified. A schema-versioned digest binds these exact values; without verified OS containment or the fixed `horizoncode:codemode:bun` runtime, `codemode.execute` is unavailable on that backend. A later wave requires settled receipts and refreshed live scope; it cannot reset script-wide limits. Expose only after the dispatcher, cancellation/reap, and receipt recovery are wired; §32.41 is integrated release acceptance.
 
+**Runtime status (2026-10-26): CODE_PRESENT — hard-disabled.** `CODE_MODE_HELPER_RUNTIME_READY`
+is `false` (`packages/opencode/src/tool/code-mode.ts:21`), and `codeModeEnabled` is referenced
+only by its contract test, not by any production registry/UI gate
+(`packages/opencode/test/tool/code-mode-adapter-contract.test.ts:355-359`). The
+`CodeModeResourceProfileV1` cgroup values above are a mandatory design requirement, **not**
+verified enforcement; no helper starts while the constant is false. See §33.31.
+
 ## 33.22 Product/UI synchronization
 
 The following all read the same catalog/projections:
@@ -726,9 +754,16 @@ At the 2026-10-11 audit (with 2026-10-15 source-status corrections):
   no-leak acceptance exist. The only exception is the anonymous OpenCode offer, bounded to active
   models with complete zero pricing. Catalog/source configuration is not provider health or
   dispatch availability;
-- browser/DOM, desktop/computer control, built-in web search, DAP debugging, persistent REPL,
-  Mission Control, analytics, automation and rich custom profiles retain their runtime status
-  separately from catalog membership. Catalog presence means DESIGNED, not WIRED.
+- browser/DOM, desktop/computer control, DAP debugging, persistent REPL, Mission Control,
+  analytics, automation and rich custom profiles retain their runtime status separately from
+  catalog membership. Catalog presence means DESIGNED, not WIRED. Built-in web search is
+  different: it is V1 scope and code-present/wired at the broker boundary but runtime-disabled
+  by `WEB_SEARCH_*_RUNTIME_READY = false` and consent gates (§33.9), so it is not yet usable
+  either.
+- `codemode.execute` is CODE_PRESENT and hard-disabled by
+  `CODE_MODE_HELPER_RUNTIME_READY = false` (`packages/opencode/src/tool/code-mode.ts:21`);
+  `codeModeEnabled` has no production caller. The §33.21 cgroup profile is not verified
+  enforcement.
 
 The product UI should make these states visible during development/diagnostics so incomplete
 capabilities cannot masquerade as supported.
@@ -825,6 +860,9 @@ wrapper, but registry wiring is explicitly disabled and nested dispatch rejects 
 transport. This is dated implementation status, not the V1 target. Keep it absent until P1/P5
 deliver the Core-to-helper bridge and CM-001..012 acceptance passes; then direct exposure requires
 `CodeModeEnablementV1` bound to the authenticated Session/helper/profile/backend/policy pins.
+**Current status (2026-10-26):** CODE_PRESENT/hard-disabled — `CODE_MODE_HELPER_RUNTIME_READY =
+false` (`packages/opencode/src/tool/code-mode.ts:21`) and no production caller consumes
+`codeModeEnabled`; §33.21's cgroup profile is design, not verified enforcement.
 Managed exposure requires accepted SpecVersion capability plus Task-pinned AgentProfileV2
 authority and a live Attempt. These are distinct lane proofs, not general process authority; nested
 effects still use lane-specific Guard and owner-scope checks. Direct tools remain available for ordinary simple calls; CodeMode is

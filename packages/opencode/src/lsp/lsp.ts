@@ -119,7 +119,10 @@ interface State {
 
 export interface Interface {
   /** Run prompt work with the exact authenticated Attempt/workspace binding. */
-  readonly withExecutionScope: <A, E, R>(input: ExecutionScopeV1, effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
+  readonly withExecutionScope: <A, E, R>(
+    input: ExecutionScopeV1,
+    effect: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E, Exclude<R, ExecutionScope>>
   readonly init: () => Effect.Effect<void>
   readonly status: () => Effect.Effect<Status[]>
   readonly hasClients: (file: string) => Effect.Effect<boolean>
@@ -449,7 +452,14 @@ function validateExecutionScopeV1(input: ExecutionScopeV1): ExecutionScopeV1 {
   return Object.freeze({
     ...input,
     locationRef: Object.freeze({ ...input.locationRef }),
-    ...(input.managedAttempt === undefined ? {} : { managedAttempt: Object.freeze({ ...input.managedAttempt }) }),
+    ...(input.managedAttempt === undefined
+      ? {}
+      : {
+          managedAttempt: Object.freeze({
+            ...input.managedAttempt,
+            worktreeTarget: Object.freeze({ ...input.managedAttempt.worktreeTarget }),
+          }),
+        }),
     ...(input.directAttempt === undefined ? {} : { directAttempt: Object.freeze({ ...input.directAttempt }) }),
   })
 }

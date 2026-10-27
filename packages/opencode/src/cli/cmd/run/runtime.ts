@@ -218,12 +218,18 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
       return state.session
     }
 
-    state.session = input.resolveSession(ctx).then((next) => {
-      state.sessionID = next.sessionID
-      state.sessionTitle = next.sessionTitle ?? state.sessionTitle
-      state.agent = next.agent
+    const next = input.resolveSession(ctx).then((resolved) => {
+      state.sessionID = resolved.sessionID
+      state.sessionTitle = resolved.sessionTitle ?? state.sessionTitle
+      state.agent = resolved.agent
     })
-    return state.session
+    state.session = next
+    void next.catch(() => {
+      if (state.session === next) {
+        state.session = undefined
+      }
+    })
+    return next
   }
 
   const shell = await (deps.createRuntimeLifecycle ?? createRuntimeLifecycle)({
@@ -672,6 +678,7 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
           }
 
           const text =
+            (await streamTask.catch(() => undefined))?.formatUnknownError(error) ??
             (await state.stream?.then((item) => item.mod).catch(() => undefined))?.formatUnknownError(error) ??
             (error instanceof Error ? error.message : String(error))
           const commit = {
@@ -706,7 +713,31 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
           return
         }
 
-        void ensureStream().catch(() => {})
+        void ensureStream().catch(async (error) => {
+          if (footer.isClosed) {
+            return
+          }
+
+          const text =
+            (await streamTask.catch(() => undefined))?.formatUnknownError(error) ??
+            (error instanceof Error ? error.message : String(error))
+          const commit = {
+            kind: "error",
+            text,
+            phase: "start",
+            source: "system",
+            messageID: MessageID.ascending(),
+          } as const
+          rememberLocal(commit)
+          footer.append(commit)
+          footer.event({
+            type: "stream.patch",
+            patch: {
+              phase: "idle",
+              status: "session bootstrap failed",
+            },
+          })
+        })
       })
     }
 
@@ -733,7 +764,7 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
 
 // Local in-process mode. Creates an SDK client backed by a direct fetch to
 // the in-process server, so no external HTTP server is needed.
-export async function runInteractiveLocalMode(input: RunLocalInput): Promise<void> {
+export async function runInteractiveLocalMode(input: RunLocalInput, deps?: RunRuntimeDeps): Promise<void> {
   const sdk = createOpencodeClient({
     baseUrl: "http://opencode.internal",
     fetch: input.fetch,
@@ -754,17 +785,23 @@ export async function runInteractiveLocalMode(input: RunLocalInput): Promise<voi
         return session
       }
 
-      session = Promise.all([input.resolveAgent(), input.session(sdk)]).then(([agent, next]) => {
-        const sessionID = requireSessionID(next)
+      const next = Promise.all([input.resolveAgent(), input.session(sdk)]).then(([agent, created]) => {
+        const sessionID = requireSessionID(created)
 
         void input.share(sdk, sessionID).catch(() => {})
         return {
           sessionID,
-          sessionTitle: next?.title,
+          sessionTitle: created?.title,
           agent,
         }
       })
-      return session
+      session = next
+      void next.catch(() => {
+        if (session === next) {
+          session = undefined
+        }
+      })
+      return next
     },
     createSession: createSessionResolver(input.createSession),
     boot: async () => {
@@ -779,7 +816,7 @@ export async function runInteractiveLocalMode(input: RunLocalInput): Promise<voi
         variant: input.variant,
       }
     },
-  })
+  }, deps)
 }
 
 // Attach mode. Uses the caller-provided SDK client directly.

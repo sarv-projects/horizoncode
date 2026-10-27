@@ -137,7 +137,10 @@ function validPageInteger(value: unknown): value is number {
 export function directReadArgumentsDigestV1(arguments_: DirectReadCallV1["arguments"]): string {
   const encoded = encodeCanonicalMessagePackV1(
     { path: arguments_.path, offset: arguments_.offset, limit: arguments_.limit },
-    { maxEncodedBytes: 4096, maxDepth: 4, maxNodes: 16 },
+    // The path alone may be the full 4 KiB canonical bound; include the bounded
+    // map envelope and the two page integers instead of throwing during digest
+    // recomputation.
+    { maxEncodedBytes: 4224, maxDepth: 4, maxNodes: 16 },
   )
   return `blake3:${bytesToHex(blake3(encoded))}`
 }
@@ -538,6 +541,11 @@ export const runWave = Effect.fn("DirectReadBatch.runWave")(function* (input: {
     calls: input.calls,
   })
   if (classification.kind !== "direct_read") return { status: "unavailable" as const }
+  if (!IDENTITY.test(input.requestID))
+    return {
+      status: "denied" as const,
+      failure: fail("request", "direct read admission requires a canonical request identity"),
+    }
   const enabled = yield* input.host
     .hostFeatureEnabled("effects.v2")
     .pipe(Effect.catch(() => Effect.succeed(false)))

@@ -334,6 +334,8 @@ test("Goal review exposes the unavailable-service reason and never emits a decis
   }
 })
 
+// Boots the whole TUI app against a mocked renderer, so the budget covers module
+// load plus real app composition; measured at ~12s on Linux/Bun 1.4.2.
 test("the app goal.review command reports honestly when no SpecVersion awaits review", async () => {
   const setup = await createTestRenderer({ width: 100, height: 40, useThread: false })
   const core = await import("@opentui/core")
@@ -391,7 +393,7 @@ test("the app goal.review command reports honestly when no SpecVersion awaits re
     if (!setup.renderer.isDestroyed) setup.renderer.destroy()
     mock.restore()
   }
-})
+}, { timeout: 60_000 })
 
 test("Goal review sends only the exact proposal identity to its authenticated decision callback", async () => {
   await using tmp = await tmpdir()

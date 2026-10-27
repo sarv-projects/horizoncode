@@ -157,13 +157,13 @@ export class HostKernelDapProtocolClientV1 {
 
   async sendRequest(command: HostCommand, args: Readonly<Record<string, unknown>>): Promise<unknown> {
     this.#assertLive()
-    if (!this.#pump) throw new Error("HostKernel DAP protocol client must listen before sending requests")
     if (command === "attach" && !DAP_ATTACH_RUNTIME_READY) {
       throw new Error("DAP attach requires an accepted shared debuggee namespace and ptrace policy")
     }
     if (command === "evaluate" && this.#scope.dapPolicy?.allowEvaluate !== true) {
       throw new Error("DAP evaluate is unavailable unless the trusted immutable adapter profile enables it")
     }
+    if (!this.#pump) throw new Error("HostKernel DAP protocol client must listen before sending requests")
     let operationArgs = args
     if (command === "attach") {
       if (Object.keys(args).length !== 0) throw new TypeError("DAP attach accepts no caller-supplied target arguments")

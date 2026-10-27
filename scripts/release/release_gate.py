@@ -116,7 +116,7 @@ def _bound_install_evidence(install_matrix: dict) -> dict | None:
     ):
         return None
     scenarios = install_matrix.get("scenarios")
-    if not isinstance(scenarios, dict) or not REQUIRED_INSTALL_SCENARIOS.issubset(scenarios):
+    if not isinstance(scenarios, dict) or set(scenarios) != REQUIRED_INSTALL_SCENARIOS:
         return None
     scenario_statuses: dict[str, str] = {}
     for name, item in scenarios.items():

@@ -6,8 +6,41 @@ import { LSP } from "@/lsp/lsp"
 import * as LSPServer from "@/lsp/server"
 import { TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
+import type { ManagedAttemptScopeV1 } from "@/session/managed-control"
 
 const it = testEffect(LayerNode.compile(LSP.node))
+const digest = (digit: string) => `blake3:${digit.repeat(64)}`
+
+function managedScope(): ManagedAttemptScopeV1 {
+  return {
+    goalID: "goal_1",
+    runID: "run_1",
+    taskID: "task_1",
+    attemptID: "attempt_1",
+    ownerEpoch: "7",
+    expectedManagedRevision: "1",
+    requestSequence: "1",
+    requestID: "request_1",
+    contextSelectionDigest: digest("9"),
+    locationID: "location-1",
+    sessionID: "session-managed",
+    workspaceRevision: digest("1"),
+    effectiveMaxTokens: "100000",
+    remainingTokens: "100000",
+    delegationBindingDigest: digest("c"),
+    permissionScopeDigest: digest("a"),
+    worktreeTarget: {
+      worktreeID: "worktree_1",
+      worktreeBaseRevision: digest("5"),
+      worktreePoolRevision: "3",
+      locationID: "location-1",
+      workspaceID: "wrk_managed",
+      workspaceRef: "worktree_1",
+      canonicalRoot: "/workspace/managed",
+      workspaceRevision: digest("1"),
+    },
+  }
+}
 
 describe("LSP service lifecycle", () => {
   let spawnSpy: ReturnType<typeof spyOn>
@@ -19,6 +52,37 @@ describe("LSP service lifecycle", () => {
   afterEach(() => {
     spawnSpy.mockRestore()
   })
+
+  it.instance("snapshots nested managed worktree authority before running the prompt", () =>
+    Effect.gen(function* () {
+      const lsp = yield* LSP.Service
+      const attempt = managedScope()
+      const locationRef = {
+        directory: "/workspace/managed",
+        workspaceID: "wrk_managed" as never,
+      } as never
+      const inspect = Effect.gen(function* () {
+        const scope = yield* LSP.ExecutionScope
+        ;(attempt.worktreeTarget as { canonicalRoot: string }).canonicalRoot = "/attacker/changed"
+        expect(scope.managedAttempt?.worktreeTarget.canonicalRoot).toBe("/workspace/managed")
+        expect(Object.isFrozen(scope.managedAttempt?.worktreeTarget)).toBe(true)
+      })
+      yield* lsp.withExecutionScope(
+        {
+          sessionID: "session-managed",
+          locationID: "location-1",
+          locationRef,
+          workspaceRevision: digest("1"),
+          workspaceID: "wrk_managed",
+          managedAttempt: attempt,
+          getClients: async () => [],
+          getExistingClients: async () => [],
+          dispose: async () => {},
+        },
+        inspect,
+      )
+    }),
+  )
 
   it.instance("init() completes without error", () => LSP.Service.use((lsp) => lsp.init()))
 

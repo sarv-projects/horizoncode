@@ -125,8 +125,19 @@ const executorLayer = (harness: TransportHarness, transport?: Transport) => {
   )
 }
 
-const makeHarness = Effect.gen(function* (): Effect.Effect<TransportHarness> {
-  return { attempts: yield* Ref.make(0), dispatches: yield* Ref.make(0), routes: [] }
+// Annotating the *generator* itself (`function* (): Effect.Effect<…>`) is the
+// wrong position: TypeScript then checks every `yield*` operand against that
+// annotation and erases the success type, so `yield* makeHarness` resolved to
+// `unknown` at all eight call sites. Type the produced value instead — that
+// still proves the fixture satisfies `TransportHarness` and keeps each call
+// site fully typed without weakening any assertion.
+const makeHarness: Effect.Effect<TransportHarness> = Effect.gen(function* () {
+  const harness: TransportHarness = {
+    attempts: yield* Ref.make(0),
+    dispatches: yield* Ref.make(0),
+    routes: [],
+  }
+  return harness
 })
 
 const expectLLMError = (error: unknown) => {

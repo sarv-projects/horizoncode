@@ -1,0 +1,92 @@
+{
+  "schema": 1,
+  "status": "NOT_RUN",
+  "authorization": "Requires parent-relayed Phase-10 acceptance plus an exact clean candidate and a genuine previous release binary. This plan never authorizes execution; release_gate keeps the install matrix NOT_RUN until a real digest-bound run produces evidence.",
+  "owner": "P9",
+  "candidate_rules": {
+    "stale_legacy_output_allowed": false,
+    "stale_paths": [
+      "packages/opencode/dist"
+    ],
+    "required_inputs": [
+      "clean buildable source revision",
+      "exact candidate binary named horizoncode",
+      "candidate release-manifest.json schema 2",
+      "genuine previous release binary",
+      "approved migration fixture"
+    ],
+    "digest_binding": "candidate and previous SHA-256 recorded before the first scenario, after each install, and after the matrix"
+  },
+  "environment": {
+    "platform": "native Linux first; WSL2 is a separate acceptance lane",
+    "network_isolation": "bubblewrap unshared network for install and TUI smoke",
+    "state_root": "repository-contained temporary root; never the invoking user's home",
+    "shell_profiles": "unchanged; installer runs with --no-modify-path",
+    "remote_download": false,
+    "signing": "UNAVAILABLE by DEC-V1-12",
+    "publication": "NOT PERFORMED"
+  },
+  "scenarios": {
+    "clean_install": {
+      "status": "NOT_RUN",
+      "steps": [
+        "verify candidate SHA-256 against the pinned value",
+        "run install --binary <candidate> --sha256 <pinned candidate SHA-256> --no-modify-path into the isolated state root; require host ELF architecture match and staged digest recheck",
+        "assert horizoncode and hzcode both resolve to the same installed entrypoint",
+        "assert the installed executable digest equals the candidate digest"
+      ]
+    },
+    "tui_launch": {
+      "status": "NOT_RUN",
+      "steps": [
+        "launch the installed binary inside the network-isolated home",
+        "wait up to the bounded 10s first-frame window and drain one settled frame",
+        "SIGKILL and wait the bounded reap window before reporting leftover descendants"
+      ]
+    },
+    "upgrade": {
+      "status": "NOT_RUN",
+      "steps": [
+        "install the genuine previous release binary and record its digest",
+        "install the exact candidate over it",
+        "assert both command names activate the candidate and the recovery copy is retained"
+      ]
+    },
+    "migration": {
+      "status": "NOT_RUN",
+      "steps": [
+        "seed the approved migration fixture in the isolated state root",
+        "run the candidate and assert config migration identifiers recorded in release-manifest.json are applied",
+        "assert no user-owned config outside the isolated root is touched"
+      ]
+    },
+    "rollback": {
+      "status": "NOT_RUN",
+      "steps": [
+        "restore the retained previous canonical command and alias",
+        "assert the restored digest equals the previously recorded previous-binary digest",
+        "report the local recovery path; do not treat it as a signed update or rollback channel"
+      ]
+    },
+    "artifact_integrity": {
+      "status": "NOT_RUN",
+      "steps": [
+        "run scripts/release/audit_distribution.py --artifact <candidate>",
+        "assert schema-2 inventory validity, binary digest binding, LICENSE grant text and NOTICE attribution",
+        "record candidate-bound LICENSE/NOTICE hashes as the notice-closure input"
+      ]
+    }
+  },
+  "platform_matrix": {
+    "native_linux": "NOT_VERIFIED",
+    "wsl2": "NOT_VERIFIED",
+    "wsl": "NOT_VERIFIED",
+    "native_windows": "UNAVAILABLE",
+    "macos": "OUT_OF_SCOPE"
+  },
+  "evidence": {
+    "matrix_tool": "scripts/release/clean_install.py",
+    "gate_tool": "scripts/release/release_gate.py",
+    "expected_gate": "BLOCKED until a real digest-bound run exists; a synthetic or dry-run result never promotes platform support"
+  }
+}

@@ -1,8 +1,8 @@
-# V1 design corpus audit — 2026-10-22
+# V1 design corpus audit — 2026-10-22 (queue sync 2026-10-26)
 
 Status: **DESIGN AUDIT PASS (structural)** — ready for implementation-only work. **NOT** product VERIFIED or RELEASED.
 
-This document is the parent audit record. Detailed backlogs live in sibling `arch_V1/46-V1-*` files.
+This document is the parent audit record. Detailed backlogs live in sibling `arch_V1/46-V1-*` files. **Ordered execution:** [`46-V1-RELEASE-EXECUTION-QUEUE.md`](46-V1-RELEASE-EXECUTION-QUEUE.md). **Code/doc paths:** [`46-V1-SOURCE-ALIGNMENT-AUDIT.md`](46-V1-SOURCE-ALIGNMENT-AUDIT.md).
 
 ## Automated structural audit (re-run before release)
 

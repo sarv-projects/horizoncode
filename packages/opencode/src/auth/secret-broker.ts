@@ -1,5 +1,6 @@
 import { Schema } from "effect"
 import { SecretBrokerV1 } from "@opencode-ai/schema/secret-broker-v1"
+import type { SecureInputBinding } from "./secure-input"
 
 const MAX_SECRET_BYTES = 16 * 1024
 
@@ -54,7 +55,7 @@ export interface SecretBrokerStore {
 
 export interface SecureInputHandleConsumer {
   /** Consumes and invalidates the handle even when the caller later fails. */
-  consume(handle: string): Promise<Uint8Array>
+  consume(handle: string, binding?: SecureInputBinding): Promise<Uint8Array>
 }
 
 export class SecretBrokerError extends Error {
@@ -98,11 +99,11 @@ export function createSecretBroker(options: {
   const id = options.id ?? ((kind) => `${kind}_${crypto.randomUUID()}`)
 
   return {
-    async put(input: SecretBrokerV1.PutRequestV1): Promise<SecretBrokerV1.MetadataV1> {
+    async put(input: SecretBrokerV1.PutRequestV1, binding?: SecureInputBinding): Promise<SecretBrokerV1.MetadataV1> {
       const request = decodePut(input)
       let bytes: Uint8Array
       try {
-        const consumed = await options.secureInput.consume(request.secureInputHandle)
+        const consumed = await options.secureInput.consume(request.secureInputHandle, binding)
         if (!(consumed instanceof Uint8Array)) {
           throw new SecretBrokerError("INVALID_REQUEST", "Secure input returned an invalid payload")
         }
@@ -266,19 +267,23 @@ export function createSecretBroker(options: {
       try {
         used = await options.store.withConsumedLease(lease, nowDate.toISOString(), async (source, bytes) => {
           entered = true
-          const metadata = decodeMetadata(source)
-          if (
-            metadata.secretRef !== lease.secretRef ||
-            metadata.providerId !== lease.providerId ||
-            metadata.status !== "AVAILABLE" ||
-            metadata.version !== lease.secretVersion ||
-            !(bytes instanceof Uint8Array) ||
-            bytes.byteLength === 0 ||
-            bytes.byteLength > MAX_SECRET_BYTES
-          ) {
-            throw new SecretBrokerError("UNAVAILABLE", "Secret is unavailable for this use lease")
+          try {
+            const metadata = decodeMetadata(source)
+            if (
+              metadata.secretRef !== lease.secretRef ||
+              metadata.providerId !== lease.providerId ||
+              metadata.status !== "AVAILABLE" ||
+              metadata.version !== lease.secretVersion ||
+              !(bytes instanceof Uint8Array) ||
+              bytes.byteLength === 0 ||
+              bytes.byteLength > MAX_SECRET_BYTES
+            ) {
+              throw new SecretBrokerError("UNAVAILABLE", "Secret is unavailable for this use lease")
+            }
+            return await use(bytes)
+          } finally {
+            if (bytes instanceof Uint8Array) bytes.fill(0)
           }
-          return await use(bytes)
         })
       } catch {
         throw new SecretBrokerError("UNAVAILABLE", "Secret use lease could not be consumed")

@@ -1,6 +1,6 @@
 # V1 implementation backlog — code-only focus
 
-**Use with:** `46-V1-DESIGN-AUDIT.md`, [`46-V1-WIRE-TRACKER.md`](46-V1-WIRE-TRACKER.md) (done/not-done map), `10-DELIVERY.md`, `HANDOFF.md`.
+**Use with:** `46-V1-DESIGN-AUDIT.md`, [`46-V1-RELEASE-EXECUTION-QUEUE.md`](46-V1-RELEASE-EXECUTION-QUEUE.md) (ordered waves 0–6 + subagents), [`46-V1-WIRE-TRACKER.md`](46-V1-WIRE-TRACKER.md) (done/not-done map), `10-DELIVERY.md`, `HANDOFF.md`.
 
 Each row is **implementation + wire + test**; design is already in the cited `arch_V1` sections. Status reflects **codebase observation 2026-10-24**, not acceptance.
 
@@ -220,3 +220,13 @@ Legend: **DES** designed only · **CP** code present partial · **PART** partial
 8. **P9** last.
 
 Update [`46-V1-WIRE-TRACKER.md`](46-V1-WIRE-TRACKER.md) **Status** and this file when a row moves to WIRED; cite test command + revision in `HANDOFF.md`.
+
+---
+
+## Operator notes — model-slug resolution must self-inspect (2026-10-26)
+
+Observed in orchestration: resuming a subagent with `model: "inherit"` (a retry convention from the root `AGENTS.md` quota-recovery rule) failed with `Invalid model "inherit". Use "providerID/modelID" or "providerID/modelID#variant"`, while a separate dispatch path returned `subscription_sharing_usage_limit_exceeded` even after the user reset quota. Recovery required an operator step outside the product: enumerate the live provider/model catalog (`models` registry lookup) and re-dispatch with the exact working slug (here `opencode-go/mimo-v2.6-flash`).
+
+**Requirement:** when HorizonCode's Task/subagent dispatch rejects a model reference — invalid slug, alias, stale or unavailable model — it must be able to *inspect itself*: resolve the referenced provider/model against its own canonical model registry (the same authority as the capability/provider catalog), list the valid live slugs for the caller's provider, and either retry with an approved live model under the user's model-selection policy (`A-V2-03`: no silent model switching) or return the exact valid catalog with the error. Quota/limit errors must likewise surface the failing provider, remaining/reset context when knowable, and the approved fallback path — never a bare harness error that forces an operator to guess a slug.
+
+Constraints: self-inspection is read-only registry access, not a provider call; any automatic re-selection still obeys the user's pinned provider/model/harness and requires the same authorization as the original dispatch. This note is a product-behavior requirement candidate for the Task/dispatch seam (`37`, `32` acceptance rows); it is not yet implemented or tested.

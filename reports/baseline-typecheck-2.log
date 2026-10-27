@@ -1,0 +1,4 @@
+$ bun run --cwd packages/opencode typecheck && bun run --cwd packages/tui typecheck && bun run --cwd packages/core typecheck
+$ tsgo --noEmit
+src/session/session.ts(1920,117): error TS1005: ')' expected.
+EXIT:2

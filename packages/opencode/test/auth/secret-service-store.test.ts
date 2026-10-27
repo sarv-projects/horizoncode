@@ -128,6 +128,24 @@ describe("durable Linux Secret Service broker store", () => {
     await expect(reopened.withConsumedLease(lease, timestamp, async () => "replayed")).resolves.toBeUndefined()
   })
 
+  test("zeroes durable lease bytes and keeps the lease consumed when delivery fails", async () => {
+    const f = fixture()
+    const directory = await f.directory()
+    active.push(directory)
+    const store = await createLinuxSecretServiceStore({ directory, backend: f.backend, now: () => new Date(timestamp) })
+    await store.put(metadata, new TextEncoder().encode("test-only-secret"), "put_test_1")
+    await store.putLease(lease, 1)
+    let delivered: Uint8Array | undefined
+
+    await expect(store.withConsumedLease(lease, timestamp, async (_record, bytes) => {
+      delivered = bytes
+      throw new Error("simulated transport failure")
+    })).rejects.toThrow("simulated transport failure")
+
+    expect(delivered && [...delivered].every((byte) => byte === 0)).toBe(true)
+    await expect(store.withConsumedLease(lease, timestamp, async () => "replayed")).resolves.toBeUndefined()
+  })
+
   test("rotates an existing SecretRef only at the expected version and retires old leases/items", async () => {
     const f = fixture()
     const directory = await f.directory()

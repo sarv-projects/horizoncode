@@ -3,6 +3,13 @@ import { resolve } from "node:path"
 
 const source = resolve(import.meta.dir, "../../src")
 
+test("public CLI help uses the HorizonCode executable identity", async () => {
+  const text = await Bun.file(resolve(source, "index.ts")).text()
+
+  expect(text).toContain('.scriptName("horizoncode")')
+  expect(text).toContain('text.startsWith("horizoncode ")')
+})
+
 const releasedRuntimeIds: Record<string, ReadonlyArray<string>> = {
   "acp/directory.ts": ["@horizoncode/ACPDirectoryLoader", "@horizoncode/ACPDirectory"],
   "acp/service.ts": ["@horizoncode/ACP/Service"],

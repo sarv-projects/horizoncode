@@ -81,6 +81,13 @@ describe("provider pricing provenance (AN-002/AN-003)", () => {
   })
 })
 
+describe("provider list provenance privacy", () => {
+  test("Provider List/OpenAPI schema does not declare the raw catalog source URL", () => {
+    const fields = Provider.ListResult.fields.catalogSnapshot.fields
+    expect(Object.hasOwn(fields, "sourceURL")).toBe(false)
+  })
+})
+
 describe("toPublicInfo credential redaction", () => {
   test("raw provider credentials never leave the public projection", () => {
     const provider = Provider.fromModelsDevProvider(

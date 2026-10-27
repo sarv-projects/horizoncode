@@ -21,11 +21,12 @@ import {
   validateHostProcessScope,
   type HostProcessRefV1,
 } from "@/lsp/process-scope"
-import type {
-  Ref,
-  Registry,
-  ReplAuthorityBinding,
-  ReplSession,
+import {
+  validateReplResourceGuaranteesV1,
+  type Ref,
+  type Registry,
+  type ReplAuthorityBinding,
+  type ReplSession,
 } from "./lifecycle"
 
 export class ReplProcessUnavailableError extends Error {
@@ -73,14 +74,9 @@ function processForSession(session: ReplSession, input: HostProcessRefV1): HostP
 }
 
 function requireResourceGuarantees(status: EditorProcessStatusV1): void {
-  const guarantees = status.resourceGuarantees
-  if (
-    !guarantees ||
-    guarantees.cpuTimeEnforced !== true ||
-    guarantees.memoryEnforced !== true ||
-    guarantees.processCountEnforced !== true ||
-    guarantees.fileDescriptorsEnforced !== true
-  ) {
+  try {
+    validateReplResourceGuaranteesV1(status.resourceGuarantees)
+  } catch {
     throw new ReplProcessUnavailableError(
       "interpreter output is unavailable because HostKernel did not confirm every required OS resource limit",
     )

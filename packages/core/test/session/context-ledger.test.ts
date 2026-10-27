@@ -26,7 +26,7 @@ const selection: ContextSelectionV1 = {
     kind: "provider-input",
     sourceID: "req_direct_1",
     sourceRevision: "0",
-    contentDigest: "blake3:" + "1".repeat(64),
+    contentDigest: "blake3:" + "3".repeat(64),
     sourceAuthority: "core-prompt-compiler",
     trust: "mixed",
     included: true,
@@ -144,15 +144,36 @@ describe("ContextLedgerV2 compiler", () => {
     ).toThrow("projection does not match")
   })
 
+  test("CTX-001: rejects a request payload digest that disagrees with the pinned provider-input source", () => {
+    expect(() =>
+      compileContextLedgerV2({
+        ...base,
+        requestPayloadDigest: "blake3:" + "5".repeat(64),
+      }),
+    ).toThrow("provider input digest")
+  })
+
   test("CTX-001: the ledger digest binds the exact normalized payload and every request pin", () => {
     const first = compileContextLedgerV2(base)
 
     // One byte of the normalized provider payload (its digest and byte count)
     // changes → the request binding changes with it.
+    const alteredDigest = "blake3:" + "3".repeat(63) + "4"
     const alteredPayload = compileContextLedgerV2({
       ...base,
-      requestPayloadDigest: "blake3:" + "3".repeat(63) + "4",
+      requestPayloadDigest: alteredDigest,
       requestBytes: 129,
+      contextSelection: {
+        ...selection,
+        sources: selection.sources.map((source) =>
+          source.kind === "provider-input" ? { ...source, contentDigest: alteredDigest } : source,
+        ),
+      },
+      entries: base.entries.map((entry) =>
+        entry.sourceRef.startsWith("provider-input:")
+          ? { ...entry, digest: alteredDigest, bytes: 129 }
+          : entry,
+      ),
     })
     expect(alteredPayload.ledgerDigest).not.toBe(first.ledgerDigest)
     expect(alteredPayload.ledger.requestPayloadDigest).not.toBe(first.ledger.requestPayloadDigest)

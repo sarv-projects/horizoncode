@@ -339,6 +339,10 @@ export function createCodeModeHostKernelAdapterV1(requestHostKernel: CodeModeHos
       const binding = validateLaneBindingV1(input.binding)
       hostID(input.requestID, "requestID")
       hostID(input.executionID, "executionID")
+      if (input.reason !== "user_abort" && input.reason !== "deadline" &&
+        input.reason !== "parent_failure" && input.reason !== "shutdown") {
+        throw new TypeError("CodeMode cancellation reason is invalid")
+      }
       const result = await request("codemode_cancel", {
         schemaVersion: 1,
         ...binding,

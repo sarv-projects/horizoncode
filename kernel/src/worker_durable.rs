@@ -3411,6 +3411,13 @@ pub struct WorkerPoolControl {
     managed_quarantine_receipts: BTreeMap<String, WorkerManagedQuarantineReceiptV1>,
     worktree_removal_receipts: BTreeMap<String, WorktreeRegistrationRemovalReceiptV1>,
     worktree_retirement_receipts: BTreeMap<String, WorktreeOperationRetirementReceiptV1>,
+    host_run_dispatch_bound: BTreeMap<String, HostRunDispatchMirrorRecordV1>,
+    /// Evaluator-setup frozen invocations keyed by dispatch-key digest. Empty
+    /// until the P8/evaluator boundary mints one, so the P2 bind route fails
+    /// closed (no trusted source landed). Replayed from the OwnerLog.
+    frozen_invocations: BTreeMap<String, HostRunFrozenInvocationV1>,
+    #[cfg(test)]
+    fail_after_host_run_mirror_commit: bool,
     /// Process-local advisory hysteresis only. It is deliberately reset on
     /// reopen because no OwnerLog retention contract exists for pressure
     /// history; a new tracker starts in RECOVERING and cannot claim NORMAL
@@ -3418,6 +3425,29 @@ pub struct WorkerPoolControl {
     resource_pressure_trackers: std::collections::HashMap<AuthenticatedOwnerContext,
         crate::resource_budget::ManagedResourcePressureTrackerV1>,
     resumed_epoch: u64,
+}
+
+const HOST_RUN_DISPATCH_BOUND_EVENT: &str = "host_run_dispatch_bound";
+const HOST_RUN_FROZEN_INVOCATION_EVENT: &str = "host_run_frozen_invocation";
+
+/// P8-frozen identity of one evaluator pair. The fields are created by the
+/// evaluator boundary from its already-validated frozen manifest, not from a
+/// HostKernel binding response.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HostRunFrozenInvocationV1 {
+    pub(crate) dispatch_key_digest: String,
+    pub(crate) manifest_digest: String,
+    pub(crate) evaluator_task_id: String,
+    pub(crate) arm_id: String,
+    pub(crate) task_group: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct HostRunDispatchMirrorRecordV1 {
+    binding: crate::managed_control::HostRunDispatchBindingV1,
+    p2_receipt: crate::managed_control::HostRunDispatchBindingReceiptV1,
+    invocation: HostRunFrozenInvocationV1,
+    p8_receipt: crate::managed_control::HostRunDispatchP8OwnerReceiptV1,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -4115,6 +4145,10 @@ impl WorkerPoolControl {
             managed_quarantine_receipts: BTreeMap::new(),
             worktree_removal_receipts: BTreeMap::new(),
             worktree_retirement_receipts: BTreeMap::new(),
+            host_run_dispatch_bound: BTreeMap::new(),
+            frozen_invocations: BTreeMap::new(),
+            #[cfg(test)]
+            fail_after_host_run_mirror_commit: false,
             resource_pressure_trackers: std::collections::HashMap::new(),
             resumed_epoch: 0,
         };
@@ -4207,6 +4241,208 @@ impl WorkerPoolControl {
         }
         control.resumed_epoch = config.owner_epoch;
         Ok(control)
+    }
+
+    /// Append P8's mirror only when both the authenticated P2 binding and its
+    /// durable P2 OwnerLog commit receipt agree with this frozen evaluator pair.
+    /// The returned P8 receipt is built exclusively from OwnerLog's commit
+    /// receipt; no cursor is accepted from the caller.
+    pub(crate) fn append_host_run_dispatch_bound(
+        &mut self,
+        binding: &crate::managed_control::HostRunDispatchBindingV1,
+        p2_receipt: &crate::managed_control::HostRunDispatchBindingReceiptV1,
+        invocation: &HostRunFrozenInvocationV1,
+    ) -> Result<crate::managed_control::HostRunDispatchP8OwnerReceiptV1, WorkerDurableError> {
+        validate_host_run_mirror_input(&self.pool_id, binding, p2_receipt, invocation)?;
+        let binding_digest = binding.digest().map_err(|_| {
+            WorkerDurableError::Invalid("HostRun binding digest is invalid")
+        })?;
+        if let Some(existing) = self.host_run_dispatch_bound.get(&binding.dispatch_key_digest) {
+            if existing.binding == *binding
+                && existing.p2_receipt == *p2_receipt
+                && existing.invocation == *invocation
+            {
+                return Ok(existing.p8_receipt.clone());
+            }
+            return Err(WorkerDurableError::Conflict(
+                "HostRun dispatch key already has a different durable binding",
+            ));
+        }
+
+        let delivery_id = host_run_mirror_delivery_id(&binding.dispatch_key_digest);
+        let data = serde_json::json!({
+            "binding": binding.value(),
+            "p2BindingReceipt": p2_receipt.value(),
+            "frozenInvocation": host_run_invocation_value(invocation),
+        });
+        let mut event = OwnerEventInput {
+            schema_version: EVENT_SCHEMA_VERSION,
+            time_ms: now_ms(),
+            kind: HOST_RUN_DISPATCH_BOUND_EVENT.to_owned(),
+            data,
+            delivery_id: None,
+            command_digest: None,
+        };
+        let command_digest = OwnerLogV2::command_digest(&delivery_id, &[event.clone()])?;
+        event.delivery_id = Some(delivery_id.clone());
+        event.command_digest = Some(command_digest.clone());
+        let committed = self.log.append_batch(
+            &delivery_id,
+            &command_digest,
+            &[event],
+            self.cursor.as_ref(),
+        )?;
+        #[cfg(test)]
+        if std::mem::take(&mut self.fail_after_host_run_mirror_commit) {
+            panic!("injected interruption after HostRun OwnerLog commit");
+        }
+        let cursor = committed.owner_cursor;
+        let p8_receipt = crate::managed_control::HostRunDispatchP8OwnerReceiptV1 {
+            schema_version: crate::managed_control::HostRunDispatchP8OwnerReceiptV1::SCHEMA_VERSION,
+            dispatch_key_digest: binding.dispatch_key_digest.clone(),
+            binding_digest: binding_digest.clone(),
+            owner_log_id: cursor.owner_id.clone(),
+            owner_log_sequence: cursor.seq.clone(),
+            owner_log_event_digest: cursor.event_digest.clone(),
+        };
+        let record = HostRunDispatchMirrorRecordV1 {
+            binding: binding.clone(),
+            p2_receipt: p2_receipt.clone(),
+            invocation: invocation.clone(),
+            p8_receipt: p8_receipt.clone(),
+        };
+        self.cursor = Some(cursor);
+        self.deliveries.insert(
+            delivery_id,
+            logical_command_digest(HOST_RUN_DISPATCH_BOUND_EVENT, &serde_json::json!({
+                "binding": binding.value(),
+                "p2BindingReceipt": p2_receipt.value(),
+                "frozenInvocation": host_run_invocation_value(invocation),
+            })),
+        );
+        self.host_run_dispatch_bound
+            .insert(binding.dispatch_key_digest.clone(), record);
+        Ok(p8_receipt)
+    }
+
+    /// Resolve the supplied cursor only by exact comparison with the P8 record
+    /// reconstructed from committed OwnerLog history. The cursor is a lookup
+    /// claim, never evidence by itself.
+    pub(crate) fn resolve_host_run_dispatch_bound(
+        &self,
+        binding: &crate::managed_control::HostRunDispatchBindingV1,
+        p2_receipt: &crate::managed_control::HostRunDispatchBindingReceiptV1,
+        submitted_cursor: &CursorV1,
+    ) -> Result<crate::managed_control::HostRunDispatchP8OwnerReceiptV1, WorkerDurableError> {
+        let binding_digest = binding.digest().map_err(|_| {
+            WorkerDurableError::Invalid("HostRun binding digest is invalid")
+        })?;
+        let record = self.host_run_dispatch_bound.get(&binding.dispatch_key_digest)
+            .ok_or(WorkerDurableError::NotFound("HostRun P8 mirror is not committed"))?;
+        if &record.binding != binding
+            || &record.p2_receipt != p2_receipt
+            || p2_receipt.binding_digest != binding_digest
+            || record.binding.dispatch_key_digest != binding.dispatch_key_digest
+            || submitted_cursor.owner_kind != OWNER_KIND
+            || submitted_cursor.owner_id != record.p8_receipt.owner_log_id
+            || submitted_cursor.seq != record.p8_receipt.owner_log_sequence
+            || submitted_cursor.event_digest != record.p8_receipt.owner_log_event_digest
+        {
+            return Err(WorkerDurableError::Conflict(
+                "HostRun P8 cursor or P2 binding receipt does not resolve to the committed mirror",
+            ));
+        }
+        Ok(record.p8_receipt.clone())
+    }
+
+    /// Resolve a submitted HostRun receipt against the committed P8 OwnerLog
+    /// mirror and return only the exact receipt rebuilt from replayed history.
+    /// Request cursor fields are lookup claims, never committed evidence.
+    pub(crate) fn resolve_host_run_dispatch_bound_receipt(
+        &self,
+        binding: &crate::managed_control::HostRunDispatchBindingV1,
+        p2_receipt: &crate::managed_control::HostRunDispatchBindingReceiptV1,
+        submitted: &crate::managed_control::HostRunDispatchP8OwnerReceiptV1,
+    ) -> Result<crate::managed_control::HostRunDispatchP8OwnerReceiptV1, WorkerDurableError> {
+        let cursor = CursorV1 {
+            owner_kind: OWNER_KIND.to_owned(),
+            owner_id: submitted.owner_log_id.clone(),
+            seq: submitted.owner_log_sequence.clone(),
+            event_digest: submitted.owner_log_event_digest.clone(),
+        };
+        let resolved = self.resolve_host_run_dispatch_bound(binding, p2_receipt, &cursor)?;
+        if &resolved != submitted {
+            return Err(WorkerDurableError::Conflict(
+                "HostRun receipt differs from its committed P8 mirror receipt",
+            ));
+        }
+        Ok(resolved)
+    }
+
+    /// Evaluator-boundary seam: durably record the frozen invocation minted from
+    /// the already-validated evaluator manifest. P2's bind route only *resolves*
+    /// and never calls this; until the P8/evaluator boundary lands a minter the
+    /// store stays empty and the bind route fails closed.
+    pub(crate) fn record_frozen_invocation(
+        &mut self,
+        invocation: &HostRunFrozenInvocationV1,
+    ) -> Result<(), WorkerDurableError> {
+        validate_owner_digest(&invocation.dispatch_key_digest, "blake3:")?;
+        validate_owner_digest(&invocation.manifest_digest, "blake3:")?;
+        for value in [
+            &invocation.evaluator_task_id,
+            &invocation.arm_id,
+            &invocation.task_group,
+        ] {
+            validate_owner_token(value)?;
+        }
+        if let Some(existing) = self.frozen_invocations.get(&invocation.dispatch_key_digest) {
+            if existing == invocation {
+                return Ok(());
+            }
+            return Err(WorkerDurableError::Conflict(
+                "HostRun frozen invocation already recorded with a different tuple",
+            ));
+        }
+        let delivery_id =
+            host_run_frozen_invocation_delivery_id(&invocation.dispatch_key_digest);
+        let payload = host_run_invocation_value(invocation);
+        let mut event = OwnerEventInput {
+            schema_version: EVENT_SCHEMA_VERSION,
+            time_ms: now_ms(),
+            kind: HOST_RUN_FROZEN_INVOCATION_EVENT.to_owned(),
+            data: payload.clone(),
+            delivery_id: None,
+            command_digest: None,
+        };
+        let command_digest = OwnerLogV2::command_digest(&delivery_id, &[event.clone()])?;
+        event.delivery_id = Some(delivery_id.clone());
+        event.command_digest = Some(command_digest.clone());
+        let committed = self
+            .log
+            .append_batch(&delivery_id, &command_digest, &[event], self.cursor.as_ref())?;
+        self.cursor = Some(committed.owner_cursor);
+        self.deliveries.insert(
+            delivery_id,
+            logical_command_digest(HOST_RUN_FROZEN_INVOCATION_EVENT, &payload),
+        );
+        self.frozen_invocations
+            .insert(invocation.dispatch_key_digest.clone(), invocation.clone());
+        Ok(())
+    }
+
+    /// Resolve the frozen invocation recorded for this dispatch key. Absence
+    /// means no trusted evaluator setup exists yet — never a synthesized proof.
+    pub(crate) fn resolve_frozen_invocation(
+        &self,
+        dispatch_key_digest: &str,
+    ) -> Result<HostRunFrozenInvocationV1, WorkerDurableError> {
+        self.frozen_invocations
+            .get(dispatch_key_digest)
+            .cloned()
+            .ok_or(WorkerDurableError::NotFound(
+                "HostRun frozen invocation is not established",
+            ))
     }
 
     pub fn pool(&self) -> Option<&WorkerPool> {
@@ -10069,6 +10305,109 @@ impl WorkerPoolControl {
                         "invalid worker physical command digest",
                     ));
                 }
+                if event.kind == HOST_RUN_DISPATCH_BOUND_EVENT {
+                    if self.pool.is_none() {
+                        return Err(WorkerDurableError::ReplayConflict(
+                            "HostRun mirror precedes worker pool initialization",
+                        ));
+                    }
+                    let mirror = decode_host_run_mirror_payload(payload, &self.pool_id)?;
+                    let expected_delivery = host_run_mirror_delivery_id(
+                        &mirror.binding.dispatch_key_digest,
+                    );
+                    if delivery != expected_delivery
+                        || OwnerLogV2::command_digest(
+                            delivery,
+                            &[OwnerEventInput {
+                                schema_version: EVENT_SCHEMA_VERSION,
+                                time_ms: event.time_ms,
+                                kind: event.kind.clone(),
+                                data: payload.clone(),
+                                delivery_id: None,
+                                command_digest: None,
+                            }],
+                        )? != command_digest
+                        || self.host_run_dispatch_bound.contains_key(
+                            &mirror.binding.dispatch_key_digest,
+                        )
+                    {
+                        return Err(WorkerDurableError::ReplayConflict(
+                            "HostRun mirror delivery or dispatch key is duplicated or conflicting",
+                        ));
+                    }
+                    let binding_digest = mirror.binding.digest().map_err(|_| {
+                        WorkerDurableError::ReplayConflict("HostRun binding digest is invalid")
+                    })?;
+                    if mirror.p2_receipt.binding_digest != binding_digest
+                        || mirror.p2_receipt.dispatch_key_digest
+                            != mirror.binding.dispatch_key_digest
+                    {
+                        return Err(WorkerDurableError::ReplayConflict(
+                            "HostRun mirror P2 receipt does not commit its binding",
+                        ));
+                    }
+                    let cursor = CursorV1 {
+                        owner_kind: OWNER_KIND.to_owned(),
+                        owner_id: self.pool_id.clone(),
+                        seq: event.seq.to_string(),
+                        event_digest: format!("blake3:{}", event.event_digest.to_hex()),
+                    };
+                    let p8_receipt = crate::managed_control::HostRunDispatchP8OwnerReceiptV1 {
+                        schema_version: crate::managed_control::HostRunDispatchP8OwnerReceiptV1::SCHEMA_VERSION,
+                        dispatch_key_digest: mirror.binding.dispatch_key_digest.clone(),
+                        binding_digest,
+                        owner_log_id: cursor.owner_id.clone(),
+                        owner_log_sequence: cursor.seq.clone(),
+                        owner_log_event_digest: cursor.event_digest.clone(),
+                    };
+                    let record = HostRunDispatchMirrorRecordV1 {
+                        binding: mirror.binding,
+                        p2_receipt: mirror.p2_receipt,
+                        invocation: mirror.invocation,
+                        p8_receipt,
+                    };
+                    self.deliveries.insert(
+                        delivery.to_owned(),
+                        logical_command_digest(event.kind.as_str(), payload),
+                    );
+                    self.host_run_dispatch_bound.insert(
+                        record.binding.dispatch_key_digest.clone(),
+                        record,
+                    );
+                    continue;
+                }
+                if event.kind == HOST_RUN_FROZEN_INVOCATION_EVENT {
+                    let invocation = decode_host_run_frozen_invocation_payload(payload)?;
+                    let expected_delivery =
+                        host_run_frozen_invocation_delivery_id(&invocation.dispatch_key_digest);
+                    if delivery != expected_delivery
+                        || OwnerLogV2::command_digest(
+                            delivery,
+                            &[OwnerEventInput {
+                                schema_version: EVENT_SCHEMA_VERSION,
+                                time_ms: event.time_ms,
+                                kind: event.kind.clone(),
+                                data: payload.clone(),
+                                delivery_id: None,
+                                command_digest: None,
+                            }],
+                        )? != command_digest
+                        || self.frozen_invocations.contains_key(&invocation.dispatch_key_digest)
+                    {
+                        return Err(WorkerDurableError::ReplayConflict(
+                            "HostRun frozen invocation delivery or dispatch key is duplicated or conflicting",
+                        ));
+                    }
+                    self.deliveries.insert(
+                        delivery.to_owned(),
+                        logical_command_digest(event.kind.as_str(), payload),
+                    );
+                    self.frozen_invocations.insert(
+                        invocation.dispatch_key_digest.clone(),
+                        invocation,
+                    );
+                    continue;
+                }
                 let command = WorkerCommand::decode(
                     &event.kind,
                     payload,
@@ -10384,6 +10723,189 @@ fn validate_owner_digest(value: &str, prefix: &str) -> Result<(), WorkerDurableE
     {
         Err(WorkerDurableError::Invalid("invalid owner digest pin"))
     } else { Ok(()) }
+}
+
+fn host_run_invocation_value(invocation: &HostRunFrozenInvocationV1) -> Value {
+    json!({
+        "dispatchKeyDigest": invocation.dispatch_key_digest,
+        "manifestDigest": invocation.manifest_digest,
+        "evaluatorTaskId": invocation.evaluator_task_id,
+        "armId": invocation.arm_id,
+        "taskGroup": invocation.task_group,
+    })
+}
+
+fn validate_host_run_mirror_input(
+    pool_id: &str,
+    binding: &crate::managed_control::HostRunDispatchBindingV1,
+    p2_receipt: &crate::managed_control::HostRunDispatchBindingReceiptV1,
+    invocation: &HostRunFrozenInvocationV1,
+) -> Result<(), WorkerDurableError> {
+    // Decode the strict value representation so P8 does not rely on a
+    // crate-visible struct having been validated by its creator.
+    let checked = crate::managed_control::HostRunDispatchBindingV1::decode(&binding.value())
+        .map_err(|_| WorkerDurableError::Invalid("HostRun binding is invalid"))?;
+    let binding_digest = checked.digest()
+        .map_err(|_| WorkerDurableError::Invalid("HostRun binding digest is invalid"))?;
+    for value in [&invocation.dispatch_key_digest, &invocation.manifest_digest] {
+        validate_owner_digest(value, "blake3:")?;
+    }
+    for value in [
+        &invocation.evaluator_task_id,
+        &invocation.arm_id,
+        &invocation.task_group,
+    ] {
+        validate_owner_token(value)?;
+    }
+    if binding.owner_id != pool_id
+        || binding.dispatch_key_digest != invocation.dispatch_key_digest
+        || binding.manifest_digest != invocation.manifest_digest
+        || binding.evaluator_task_id != invocation.evaluator_task_id
+        || binding.arm_id != invocation.arm_id
+        || binding.task_group != invocation.task_group
+    {
+        return Err(WorkerDurableError::Conflict(
+            "HostRun binding differs from the frozen evaluator invocation or P8 owner",
+        ));
+    }
+    if p2_receipt.dispatch_key_digest != binding.dispatch_key_digest
+        || p2_receipt.binding_digest != binding_digest
+        || p2_receipt.owner_log_sequence == 0
+        || p2_receipt.binding_managed_revision == 0
+    {
+        return Err(WorkerDurableError::Conflict(
+            "P2 OwnerLog receipt does not commit this HostRun binding",
+        ));
+    }
+    validate_owner_digest(&p2_receipt.owner_log_event_digest, "blake3:")
+}
+
+fn host_run_mirror_delivery_id(dispatch_key_digest: &str) -> String {
+    // The delivery identity is a deterministic encoding of only the digest;
+    // the raw evaluator idempotency key is never persisted or transmitted.
+    format!(
+        "hostrun-mirror-{}",
+        dispatch_key_digest.strip_prefix("blake3:").unwrap_or_default()
+    )
+}
+
+fn host_run_frozen_invocation_delivery_id(dispatch_key_digest: &str) -> String {
+    format!(
+        "hostrun-frozen-{}",
+        dispatch_key_digest.strip_prefix("blake3:").unwrap_or_default()
+    )
+}
+
+/// Decode the strict standalone frozen-invocation payload written by
+/// `record_frozen_invocation`, re-checking every field shape on replay.
+fn decode_host_run_frozen_invocation_payload(
+    payload: &Value,
+) -> Result<HostRunFrozenInvocationV1, WorkerDurableError> {
+    let object = payload.as_object().ok_or(WorkerDurableError::Invalid(
+        "HostRun frozen invocation payload is not an object",
+    ))?;
+    if object.len() != 5 {
+        return Err(WorkerDurableError::Invalid(
+            "HostRun frozen invocation fields are invalid",
+        ));
+    }
+    let text = |field: &str| -> Result<String, WorkerDurableError> {
+        object
+            .get(field)
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .ok_or(WorkerDurableError::Invalid(
+                "HostRun frozen invocation field is invalid",
+            ))
+    };
+    let invocation = HostRunFrozenInvocationV1 {
+        dispatch_key_digest: text("dispatchKeyDigest")?,
+        manifest_digest: text("manifestDigest")?,
+        evaluator_task_id: text("evaluatorTaskId")?,
+        arm_id: text("armId")?,
+        task_group: text("taskGroup")?,
+    };
+    validate_owner_digest(&invocation.dispatch_key_digest, "blake3:")?;
+    validate_owner_digest(&invocation.manifest_digest, "blake3:")?;
+    for value in [
+        &invocation.evaluator_task_id,
+        &invocation.arm_id,
+        &invocation.task_group,
+    ] {
+        validate_owner_token(value)?;
+    }
+    Ok(invocation)
+}
+
+struct DecodedHostRunMirrorV1 {
+    binding: crate::managed_control::HostRunDispatchBindingV1,
+    p2_receipt: crate::managed_control::HostRunDispatchBindingReceiptV1,
+    invocation: HostRunFrozenInvocationV1,
+}
+
+fn decode_host_run_mirror_payload(
+    payload: &Value,
+    pool_id: &str,
+) -> Result<DecodedHostRunMirrorV1, WorkerDurableError> {
+    let object = payload.as_object().ok_or(WorkerDurableError::Invalid(
+        "HostRun mirror payload is not an object",
+    ))?;
+    if object.len() != 3
+        || !object.contains_key("binding")
+        || !object.contains_key("p2BindingReceipt")
+        || !object.contains_key("frozenInvocation")
+    {
+        return Err(WorkerDurableError::Invalid(
+            "HostRun mirror payload fields are invalid",
+        ));
+    }
+    let binding = crate::managed_control::HostRunDispatchBindingV1::decode(
+        object.get("binding").expect("checked binding key"),
+    ).map_err(|_| WorkerDurableError::ReplayConflict("HostRun mirror binding is invalid"))?;
+    let p2 = object.get("p2BindingReceipt").and_then(Value::as_object)
+        .ok_or(WorkerDurableError::Invalid("HostRun P2 receipt is invalid"))?;
+    if p2.len() != 6 || p2.get("schemaVersion").and_then(Value::as_u64) != Some(1) {
+        return Err(WorkerDurableError::Invalid("HostRun P2 receipt fields are invalid"));
+    }
+    let parse_p2_u64 = |field: &str| -> Result<u64, WorkerDurableError> {
+        let text = p2.get(field).and_then(Value::as_str)
+            .ok_or(WorkerDurableError::Invalid("HostRun P2 receipt counter is invalid"))?;
+        let value = text.parse::<u64>()
+            .map_err(|_| WorkerDurableError::Invalid("HostRun P2 receipt counter is invalid"))?;
+        if value == 0 || value.to_string() != text {
+            return Err(WorkerDurableError::Invalid("HostRun P2 receipt counter is noncanonical"));
+        }
+        Ok(value)
+    };
+    let p2_receipt = crate::managed_control::HostRunDispatchBindingReceiptV1 {
+        dispatch_key_digest: p2.get("dispatchKeyDigest").and_then(Value::as_str)
+            .ok_or(WorkerDurableError::Invalid("HostRun P2 key digest is missing"))?.to_owned(),
+        binding_digest: p2.get("bindingDigest").and_then(Value::as_str)
+            .ok_or(WorkerDurableError::Invalid("HostRun P2 binding digest is missing"))?.to_owned(),
+        owner_log_sequence: parse_p2_u64("ownerLogSequence")?,
+        owner_log_event_digest: p2.get("ownerLogEventDigest").and_then(Value::as_str)
+            .ok_or(WorkerDurableError::Invalid("HostRun P2 event digest is missing"))?.to_owned(),
+        binding_managed_revision: parse_p2_u64("bindingManagedRevision")?,
+    };
+    let invocation_obj = object.get("frozenInvocation").and_then(Value::as_object)
+        .ok_or(WorkerDurableError::Invalid("HostRun frozen invocation is invalid"))?;
+    if invocation_obj.len() != 5 {
+        return Err(WorkerDurableError::Invalid("HostRun frozen invocation fields are invalid"));
+    }
+    let text = |field: &str| -> Result<String, WorkerDurableError> {
+        invocation_obj.get(field).and_then(Value::as_str).map(str::to_owned)
+            .ok_or(WorkerDurableError::Invalid("HostRun frozen invocation field is invalid"))
+    };
+    let invocation = HostRunFrozenInvocationV1 {
+        dispatch_key_digest: text("dispatchKeyDigest")?,
+        manifest_digest: text("manifestDigest")?,
+        evaluator_task_id: text("evaluatorTaskId")?,
+        arm_id: text("armId")?,
+        task_group: text("taskGroup")?,
+    };
+    validate_host_run_mirror_input(pool_id, &binding, &p2_receipt, &invocation)
+        .map_err(|_| WorkerDurableError::ReplayConflict("HostRun mirror binding and receipt conflict"))?;
+    Ok(DecodedHostRunMirrorV1 { binding, p2_receipt, invocation })
 }
 
 fn trusted_pre_admission_value(pins: &TrustedPreAdmissionPinsV1) -> Value {
@@ -12680,6 +13202,353 @@ mod pool_open_schema_tests {
         assert!(matches!(decoded, WorkerCommand::DelegationBound {
             binding: BoundWorkerDelegationV1 { worktree_admission: None, .. }, ..
         }));
+    }
+}
+
+/// Test-only consumption of P8's canonical `PreAdmissionReserved` proof fixture
+/// (`kernel/tests/fixtures/pre-admission-reserved-proof-v1.json`). Every value
+/// is parsed from the fixture and every digest is recomputed with the canonical
+/// Rust code; a mismatch panics with a P8-defect message instead of being
+/// accepted. P8 owns the generator; this module only reads and verifies it.
+#[cfg(test)]
+pub(crate) mod pre_admission_fixture {
+    use super::*;
+
+    pub(crate) fn load() -> serde_json::Value {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("pre-admission-reserved-proof-v1.json");
+        let text = std::fs::read_to_string(&path).expect("pre-admission fixture is tracked");
+        serde_json::from_str(&text).expect("pre-admission fixture is valid JSON")
+    }
+
+    pub(crate) fn txt<'a>(value: &'a serde_json::Value, key: &str) -> &'a str {
+        value
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_else(|| panic!("fixture field {key} must be a string"))
+    }
+
+    pub(crate) fn num(value: &serde_json::Value, key: &str) -> u64 {
+        value
+            .get(key)
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_else(|| panic!("fixture field {key} must be an integer"))
+    }
+
+    fn opt_txt(value: &serde_json::Value, key: &str) -> Option<String> {
+        value
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    }
+
+    fn ids(value: &serde_json::Value, key: &str) -> Vec<String> {
+        value[key]
+            .as_array()
+            .unwrap_or_else(|| panic!("fixture field {key} must be an array"))
+            .iter()
+            .map(|item| item.as_str().expect("fixture lease id must be a string").to_owned())
+            .collect()
+    }
+
+    fn owner_from(identity: &serde_json::Value) -> AuthenticatedOwnerContext {
+        AuthenticatedOwnerContext::from_verified_ingress(
+            txt(identity, "principalRef").to_owned(),
+            txt(identity, "workspaceBinding").to_owned(),
+            txt(identity, "sessionId").to_owned(),
+            txt(identity, "runId").to_owned(),
+            txt(identity, "taskId").to_owned(),
+            txt(identity, "attemptId").to_owned(),
+            num(identity, "ownerEpoch"),
+        )
+        .expect("fixture owner scope must be valid")
+    }
+
+    /// Rebuilds the staged pre-admission pins from the fixture and recomputes
+    /// their digest with the canonical Rust staged layout.
+    pub(crate) fn pins_from_fixture(record: &serde_json::Value) -> TrustedPreAdmissionPinsV1 {
+        let pins_json = &record["leaseProof"]["preAdmissionPins"];
+        let dimension = match txt(pins_json, "dimension") {
+            "ACTIVE_WORKERS" => crate::resource_budget::BudgetDimension::ActiveWorkers,
+            other => panic!("unexpected fixture budget dimension {other}"),
+        };
+        let parent_json = &pins_json["parentProof"];
+        assert_eq!(
+            parent_json["kind"].as_str(),
+            Some("RootCoordinator"),
+            "fixture parent proof must be the RootCoordinator lineage",
+        );
+        let execution_json = &parent_json["execution"];
+        let process_json = &execution_json["processIdentity"];
+        let parent_proof = ManagedParentProofV1::RootCoordinator(RootCoordinatorExecutionProofV1 {
+            execution: RootCoordinatorExecutionV1 {
+                worker_execution_id: txt(execution_json, "workerExecutionId").to_owned(),
+                goal_id: txt(execution_json, "goalId").to_owned(),
+                run_id: txt(execution_json, "runId").to_owned(),
+                principal_ref: txt(execution_json, "principalRef").to_owned(),
+                workspace_binding: txt(execution_json, "workspaceBinding").to_owned(),
+                session_id: txt(execution_json, "sessionId").to_owned(),
+                location_id: txt(execution_json, "locationId").to_owned(),
+                owner_epoch: num(execution_json, "ownerEpoch"),
+                process_incarnation: txt(execution_json, "processIncarnation").to_owned(),
+                process_identity: ProcessIdentity {
+                    pid: num(process_json, "pid") as u32,
+                    start_identity: num(process_json, "startIdentity"),
+                },
+                source_revision: txt(execution_json, "sourceRevision").to_owned(),
+                accepted_spec_digest: txt(execution_json, "acceptedSpecDigest").to_owned(),
+                expires_at_ms: num(execution_json, "expiresAtMs"),
+            },
+            owner_log_id: txt(parent_json, "ownerLogId").to_owned(),
+            owner_log_sequence: txt(parent_json, "ownerLogSequence").to_owned(),
+            owner_log_event_digest: txt(parent_json, "ownerLogEventDigest").to_owned(),
+            worker_pool_revision: num(parent_json, "workerPoolRevision"),
+        });
+        let worktree_json = &pins_json["worktree"];
+        let mut pins = TrustedPreAdmissionPinsV1 {
+            owner: owner_from(&pins_json["owner"]),
+            goal_id: txt(pins_json, "goalId").to_owned(),
+            task_revision: txt(pins_json, "taskRevision").to_owned(),
+            task_attempt_count: num(pins_json, "taskAttemptCount"),
+            candidate_generation: num(pins_json, "candidateGeneration"),
+            accepted_spec_digest: txt(pins_json, "acceptedSpecDigest").to_owned(),
+            workspace_revision: txt(pins_json, "workspaceRevision").to_owned(),
+            location_id: txt(pins_json, "locationId").to_owned(),
+            process_incarnation: txt(pins_json, "processIncarnation").to_owned(),
+            profile_id: txt(pins_json, "profileId").to_owned(),
+            profile_revision: num(pins_json, "profileRevision"),
+            profile_digest: txt(pins_json, "profileDigest").to_owned(),
+            profile_permission_ceiling_digest: txt(pins_json, "profilePermissionCeilingDigest")
+                .to_owned(),
+            context_selection_digest: opt_txt(pins_json, "contextSelectionDigest"),
+            accepted_scope_digest: txt(pins_json, "acceptedScopeDigest").to_owned(),
+            capability_ceiling_digest: txt(pins_json, "capabilityCeilingDigest").to_owned(),
+            spec_max_workers: num(pins_json, "specMaxWorkers"),
+            resource_policy_revision: num(pins_json, "resourcePolicyRevision"),
+            resource_policy_digest: txt(pins_json, "resourcePolicyDigest").to_owned(),
+            resource_active_worker_limit: pins_json
+                .get("resourceActiveWorkerLimit")
+                .and_then(serde_json::Value::as_u64),
+            dimension,
+            amount: num(pins_json, "amount"),
+            expires_at_ms: num(pins_json, "expiresAtMs"),
+            worktree: crate::worker_pool::WorktreeBindingRequest {
+                worktree_id: txt(worktree_json, "worktreeId").to_owned(),
+                base_revision: txt(worktree_json, "baseRevision").to_owned(),
+            },
+            worktree_pool_revision: num(pins_json, "worktreePoolRevision"),
+            idempotency_key: txt(pins_json, "idempotencyKey").to_owned(),
+            parent_proof,
+            staged_pre_admission: pins_json["stagedPreAdmission"]
+                .as_bool()
+                .expect("stagedPreAdmission must be boolean"),
+            pins_digest: String::new(),
+        };
+        pins.pins_digest = pins.compute_digest();
+        pins
+    }
+
+    fn reservation_from_json(value: &serde_json::Value) -> ReservedWorkerLeaseProofV1 {
+        ReservedWorkerLeaseProofV1 {
+            attempt_id: txt(value, "attemptId").to_owned(),
+            worker_execution_id: txt(value, "workerExecutionId").to_owned(),
+            ticket_id: txt(value, "ticketId").to_owned(),
+            budget_lease_id: txt(value, "budgetLeaseId").to_owned(),
+            workspace_lease_id: txt(value, "workspaceLeaseId").to_owned(),
+            resource_lease_ids: ids(value, "resourceLeaseIds"),
+            pins_digest: txt(value, "pinsDigest").to_owned(),
+            context_selection_digest: opt_txt(value, "contextSelectionDigest"),
+            binding_digest: opt_txt(value, "bindingDigest"),
+            owner_log_id: txt(value, "ownerLogId").to_owned(),
+            owner_log_sequence: txt(value, "ownerLogSequence").to_owned(),
+            owner_log_event_digest: txt(value, "ownerLogEventDigest").to_owned(),
+            worker_pool_revision: num(value, "workerPoolRevision"),
+        }
+    }
+
+    /// Builds the fixture's `PreAdmissionReserved` lease proof: purpose/pins/
+    /// anchors exactly from the JSON, `admissionPins`/`delegation` null. The
+    /// inner facts use the canonical test constructors fed with the fixture's
+    /// own identity values; `budget_dimension` and `expires_at_ms` are the only
+    /// two fields those P1-owned constructors hardcode (`MemoryBytes`,
+    /// `u64::MAX`), and neither is read by `durable_lease_proof_matches_attempt`
+    /// — the parity test asserts the remaining eighteen fact fields instead.
+    pub(crate) fn lease_proof(record: &serde_json::Value) -> DurableManagedLeaseProofV1 {
+        let facts_json = &record["leaseProof"]["facts"];
+        let owner = owner_from(facts_json);
+        let binding = crate::worker_pool::VerifiedAttemptBinding::test_fixture(
+            txt(facts_json, "goalId"),
+            txt(facts_json, "runId"),
+            txt(facts_json, "taskId"),
+            txt(facts_json, "attemptId"),
+            num(facts_json, "ownerEpoch"),
+            txt(facts_json, "sourceRevision"),
+            txt(facts_json, "acceptedSpecDigest"),
+        );
+        let facts = crate::worker_pool::DurableWorkerLeaseFactsV1::test_fixture(
+            &owner,
+            &binding,
+            txt(facts_json, "workerExecutionId"),
+            txt(facts_json, "goalId"),
+            txt(facts_json, "ticketId"),
+            txt(facts_json, "workspaceLeaseId"),
+            txt(facts_json, "budgetLeaseId"),
+            ids(facts_json, "resourceLeaseIds"),
+        );
+        DurableManagedLeaseProofV1 {
+            facts,
+            purpose: DurableManagedLeaseProofPurposeV1::PreAdmissionReserved,
+            pre_admission_pins: Some(pins_from_fixture(record)),
+            admission_pins: None,
+            delegation: None,
+            owner_log_id: txt(&record["leaseProof"], "ownerLogId").to_owned(),
+            worker_pool_revision: num(&record["leaseProof"], "workerPoolRevision"),
+            owner_log_sequence: txt(&record["leaseProof"], "ownerLogSequence").to_owned(),
+            owner_log_event_digest: txt(&record["leaseProof"], "ownerLogEventDigest").to_owned(),
+        }
+    }
+
+    /// Recomputes every digest in the fixture's `digestChain` with the
+    /// canonical Rust layouts and compares byte-for-byte. Any mismatch panics
+    /// as a P8 generator defect; nothing is accepted on faith.
+    pub(crate) fn assert_digest_chain_matches_rust(record: &serde_json::Value) {
+        let chain = &record["digestChain"];
+        let pins = pins_from_fixture(record);
+        let pins_digest = pins.pins_digest.clone();
+        assert_eq!(
+            pins_digest,
+            txt(chain, "pinsDigest"),
+            "P8 DEFECT: recomputed staged pinsDigest differs from digestChain.pinsDigest",
+        );
+        assert_eq!(
+            record["leaseProof"]["preAdmissionPins"]["pinsDigest"].as_str(),
+            Some(txt(chain, "pinsDigest")),
+            "P8 DEFECT: fixture's embedded pinsDigest differs from digestChain.pinsDigest",
+        );
+        // Derived identity IDs must come from the CURRENT pinsDigest via the
+        // canonical pre_admission_ids derivation; a stale identity suffix cannot pass.
+        let (expected_ticket, expected_worker, _) = pre_admission_ids(&pins);
+        let expected_budget = format!("worker-reservation-{expected_worker}");
+        assert_eq!(txt(&record["derived"], "ticketID"), expected_ticket.as_str(), "P8 DEFECT: derived ticketID is stale vs pre_admission_ids(pins)");
+        assert_eq!(txt(&record["derived"], "workerExecutionID"), expected_worker.as_str(), "P8 DEFECT: derived workerExecutionID is stale vs pre_admission_ids(pins)");
+        assert_eq!(txt(&record["derived"], "budgetLeaseID"), expected_budget.as_str(), "P8 DEFECT: derived budgetLeaseID is stale vs pre_admission_ids(pins)");
+        for (label, obj) in [
+            ("leaseProof.facts", &record["leaseProof"]["facts"]),
+            ("stageAReservation", &record["stageAReservation"]),
+            ("stageBReservation", &record["stageBReservation"]),
+        ] {
+            assert_eq!(txt(obj, "ticketId"), expected_ticket.as_str(), "P8 DEFECT: {label} ticketId is stale vs pre_admission_ids(pins)");
+            assert_eq!(txt(obj, "workerExecutionId"), expected_worker.as_str(), "P8 DEFECT: {label} workerExecutionId is stale vs pre_admission_ids(pins)");
+            assert_eq!(txt(obj, "budgetLeaseId"), expected_budget.as_str(), "P8 DEFECT: {label} budgetLeaseId is stale vs pre_admission_ids(pins)");
+        }
+        let stage_a = reservation_from_json(&record["stageAReservation"]);
+        let stage_b = reservation_from_json(&record["stageBReservation"]);
+        assert_eq!(
+            stage_a.context_selection_digest().as_deref(),
+            None,
+            "fixture Stage-A reservation must stay context-free",
+        );
+        assert_eq!(
+            stage_b.context_selection_digest().as_deref(),
+            Some(txt(chain, "contextSelectionDigest")),
+            "P8 DEFECT: Stage-B context differs from digestChain.contextSelectionDigest",
+        );
+        assert_eq!(
+            stage_a.pins_digest(),
+            txt(chain, "pinsDigest"),
+            "P8 DEFECT: Stage-A reservation pins digest differs from digestChain.pinsDigest",
+        );
+        assert_eq!(
+            stage_b.pins_digest(),
+            txt(chain, "pinsDigest"),
+            "P8 DEFECT: Stage-B reservation pins digest differs from digestChain.pinsDigest",
+        );
+        let target_proof = ReservedPreAdmissionTargetProofV1::new(
+            ManagedPreAdmissionTargetPinsV1 { pins },
+            stage_a.clone(),
+        );
+        assert_eq!(
+            target_proof.proof_digest(),
+            txt(chain, "stageAProofDigest"),
+            "P8 DEFECT: recomputed Stage-A target proof differs from digestChain.stageAProofDigest",
+        );
+        assert_eq!(
+            stage_a.proof_digest(),
+            txt(chain, "stageALeaseProofDigest"),
+            "P8 DEFECT: recomputed Stage-A lease proof differs from digestChain.stageALeaseProofDigest",
+        );
+        assert_eq!(
+            stage_b.context_bound_receipt_digest(),
+            txt(chain, "stageBReceiptDigest"),
+            "P8 DEFECT: recomputed Stage-B context-bound receipt differs from digestChain.stageBReceiptDigest",
+        );
+    }
+
+    /// Asserts the constructed proof's facts identity equals the fixture JSON
+    /// (all fields the canonical test constructor can carry) and that the proof
+    /// shape is exactly `PreAdmissionReserved` with pins and null admission/
+    /// delegation records.
+    pub(crate) fn assert_proof_shape_and_facts_identity(record: &serde_json::Value) {
+        let proof = lease_proof(record);
+        let facts_json = &record["leaseProof"]["facts"];
+        assert_eq!(proof.purpose(), DurableManagedLeaseProofPurposeV1::PreAdmissionReserved);
+        assert!(proof.pre_admission_pins().is_some(), "PreAdmissionReserved proof must carry pre-admission pins");
+        assert!(proof.admission_pins.is_none(), "fixture proof must not carry admission pins");
+        assert!(proof.delegation.is_none(), "fixture proof must not carry a delegation");
+        assert_eq!(proof.goal_id(), txt(facts_json, "goalId"));
+        assert_eq!(proof.worker_execution_id(), txt(facts_json, "workerExecutionId"));
+        assert_eq!(proof.ticket_id(), txt(facts_json, "ticketId"));
+        assert_eq!(proof.principal_ref(), txt(facts_json, "principalRef"));
+        assert_eq!(proof.workspace_binding(), txt(facts_json, "workspaceBinding"));
+        assert_eq!(proof.session_id(), txt(facts_json, "sessionId"));
+        assert_eq!(proof.facts.run_id(), txt(facts_json, "runId"));
+        assert_eq!(proof.facts.task_id(), txt(facts_json, "taskId"));
+        assert_eq!(proof.facts.attempt_id(), txt(facts_json, "attemptId"));
+        assert_eq!(proof.facts.owner_epoch(), num(facts_json, "ownerEpoch"));
+        assert_eq!(proof.facts.source_revision(), txt(facts_json, "sourceRevision"));
+        assert_eq!(proof.facts.accepted_spec_digest(), txt(facts_json, "acceptedSpecDigest"));
+        assert_eq!(proof.facts.workspace_lease_id(), txt(facts_json, "workspaceLeaseId"));
+        assert_eq!(proof.facts.budget_lease_id(), txt(facts_json, "budgetLeaseId"));
+        assert_eq!(proof.facts.resource_lease_ids(), ids(facts_json, "resourceLeaseIds"));
+        assert_eq!(proof.facts.worker_state(), crate::resource_budget::ReservationState::Reserved);
+        assert_eq!(proof.facts.reserved_amount(), num(facts_json, "reservedAmount"));
+        assert!(proof.facts.process_identity().is_none(), "fixture facts carry no process identity");
+        assert_eq!(txt(facts_json, "workerState"), "RESERVED");
+        assert_eq!(txt(facts_json, "budgetDimension"), "ACTIVE_WORKERS");
+        assert_eq!(
+            proof.owner_log_sequence(), txt(&record["leaseProof"], "ownerLogSequence"),
+        );
+        assert_eq!(
+            proof.owner_log_event_digest(), txt(&record["leaseProof"], "ownerLogEventDigest"),
+        );
+        assert_eq!(
+            proof.worker_pool_revision(), num(&record["leaseProof"], "workerPoolRevision"),
+        );
+    }
+}
+
+#[cfg(test)]
+mod pre_admission_fixture_parity_tests {
+    use super::pre_admission_fixture;
+
+    /// P8's Python-emitted digest chain must equal the canonical Rust
+    /// recomputation byte-for-byte; any drift is a P8 defect, not a value to
+    /// accept or repair here.
+    #[test]
+    fn pre_admission_reserved_fixture_digest_chain_matches_rust_recomputation() {
+        let record = pre_admission_fixture::load();
+        pre_admission_fixture::assert_digest_chain_matches_rust(&record);
+    }
+
+    /// The proof consumed by the admission reducer must carry exactly the
+    /// fixture's purpose, pins and anchors, with its facts identity equal to
+    /// the fixture JSON.
+    #[test]
+    fn pre_admission_reserved_fixture_proof_shape_and_facts_identity_match() {
+        let record = pre_admission_fixture::load();
+        pre_admission_fixture::assert_proof_shape_and_facts_identity(&record);
     }
 }
 

@@ -11,6 +11,8 @@ import {
 import { AgentV2 } from "@opencode-ai/core/agent"
 import { Config as CoreConfig } from "@opencode-ai/core/config"
 import { Database } from "@opencode-ai/core/database/database"
+import { SessionTable } from "@opencode-ai/core/session/sql"
+import { eq } from "drizzle-orm"
 import { makeGlobalNode } from "@opencode-ai/core/effect/app-node"
 import { LayerNodePlatform } from "@opencode-ai/core/effect/app-node-platform"
 import { EventV2 } from "@opencode-ai/core/event"
@@ -27,6 +29,9 @@ import { layerWebSocketConstructorGlobal } from "effect/unstable/socket/Socket"
 import { OpenAIChat } from "@opencode-ai/llm/protocols/openai-chat"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 import { ServerAuth } from "../../src/server/auth"
+import { Question } from "../../src/question"
+import { QuestionID } from "../../src/question/schema"
+import { SessionID } from "@opencode-ai/schema/session-id"
 import { disposeAllInstances, tmpdirScoped } from "../fixture/fixture"
 import { testEffect, pollWithTimeout } from "../lib/effect"
 import { mkdtempSync, rmSync } from "node:fs"
@@ -70,6 +75,16 @@ const modelLayer = Layer.succeed(
 )
 let scriptedResponses: LLMEventType[][] = []
 const llmRequests: LLMRequest[] = []
+let pendingQuestions: Question.Request[] = []
+const questionLayer = Layer.succeed(
+  Question.Service,
+  Question.Service.of({
+    ask: () => Effect.die("unused"),
+    reply: () => Effect.die("denied question must not be replied to"),
+    reject: () => Effect.die("denied question must not be rejected"),
+    list: () => Effect.sync(() => pendingQuestions),
+  }),
+)
 type MockExecutorContext = {
   readonly directContext: {
     readonly pin: (input: {
@@ -190,6 +205,7 @@ const replacements = [
   [SessionSupervisor.node, observerLayer],
   [CoreConfig.agentProfileNode, agentProfilesLayer],
   [Snapshot.node, Snapshot.noopLayer],
+  [Question.node, questionLayer],
 ] as const
 
 // The production app LayerNode group exposes `WebSearchRuntime.node`, so the
@@ -328,6 +344,7 @@ function waitForIdle(directory: string, sessionID: string) {
 
 afterEach(async () => {
   scriptedResponses = []
+  pendingQuestions = []
   llmRequests.length = 0
   await disposeAllInstances()
   rmSync(databasePath, { force: true })
@@ -511,4 +528,299 @@ describe("V2 question live path", () => {
       })
     }),
   )
+
+  it.live("fails closed when a matching child owner has a conflicting ancestor", () =>
+    Effect.gen(function* () {
+      const directory = yield* tmpdirScoped({ git: true })
+      const create = (title: string) =>
+        request("/api/session", directory, {
+          method: "POST",
+          body: JSON.stringify({
+            agent: "build",
+            model: { providerID: "question-live", id: "question-live-model" },
+            location: { directory: AbsolutePath.make(directory) },
+            title,
+          }),
+        })
+      const rootResponse = yield* create("question ancestry root")
+      const childResponse = yield* create("question ancestry child")
+      const root = (yield* json<{ data: { id: string } }>(rootResponse)).data
+      const child = (yield* json<{ data: { id: string } }>(childResponse)).data
+      const sid = (id: string) => SessionID.make(id)
+      const updateSession = (id: string, values: Partial<typeof SessionTable.$inferInsert>) =>
+        Effect.gen(function* () {
+          const { db } = yield* Database.Service
+          yield* db.update(SessionTable).set(values).where(eq(SessionTable.id, sid(id))).run().pipe(Effect.orDie)
+        }).pipe(Effect.provide(Database.layerFromPath(databasePath)))
+      const readSession = (id: string) =>
+        Effect.gen(function* () {
+          const { db } = yield* Database.Service
+          return yield* db.select().from(SessionTable).where(eq(SessionTable.id, sid(id))).get().pipe(Effect.orDie)
+        }).pipe(Effect.provide(Database.layerFromPath(databasePath)))
+      const matchingOwner = (yield* readSession(root.id))?.metadata?.horizonPrincipalOwner
+      expect(matchingOwner).toBeDefined()
+      yield* updateSession(child.id, { parent_id: sid(root.id) })
+
+      const question = {
+        id: QuestionID.ascending(),
+        sessionID: sid(child.id),
+        questions: [
+          {
+            question: "What is the confidential deployment target?",
+            header: "Deployment",
+            options: [{ label: "private-cluster", description: "Internal target" }],
+            custom: false,
+          },
+        ],
+      } satisfies Question.Request
+      pendingQuestions = [question]
+
+      const sameOwnerList = yield* request("/question", directory)
+      expect(sameOwnerList.status).toBe(200)
+      expect(JSON.stringify(yield* json(sameOwnerList))).toContain(question.id)
+
+      yield* updateSession(root.id, {
+        metadata: { horizonPrincipalOwner: { kind: "server_auth", subject: "different-user" } },
+      })
+      expect((yield* readSession(child.id))?.parent_id).toBe(sid(root.id))
+      expect((yield* readSession(root.id))?.metadata?.horizonPrincipalOwner).toEqual({
+        kind: "server_auth",
+        subject: "different-user",
+      })
+
+      const listed = yield* request("/question", directory)
+      expect(listed.status).toBe(200)
+      const listBody = JSON.stringify(yield* json(listed))
+      expect(listBody).not.toContain(question.id)
+      expect(listBody).not.toContain("confidential deployment target")
+      expect(listBody).not.toContain("private-cluster")
+
+      const reply = yield* request(`/question/${question.id}/reply`, directory, {
+        method: "POST",
+        body: JSON.stringify({ answers: [["private-cluster"]] }),
+      })
+      expect(reply.status).toBe(404)
+      const replyBody = yield* reply.text
+      expect(replyBody).not.toContain("confidential deployment target")
+      expect(replyBody).not.toContain("private-cluster")
+
+      const reject = yield* request(`/question/${question.id}/reject`, directory, {
+        method: "POST",
+      })
+      expect(reject.status).toBe(404)
+      const rejectBody = yield* reject.text
+      expect(rejectBody).not.toContain("confidential deployment target")
+      expect(rejectBody).not.toContain("private-cluster")
+      pendingQuestions = []
+    }),
+  )
+
+  it.live("SSE hides a question event after conflicting ancestor update", () =>
+    Effect.gen(function* () {
+      scriptedResponses = [
+        toolCall("call-sse-question-before", [
+          { question: "What is the visible child question?", header: "Before", options: [{ label: "Visible", description: "Visible" }] },
+        ]),
+        finalText("The owner answered the visible question."),
+        toolCall("call-sse-question-after", [
+          { question: "What is the confidential SSE deployment target?", header: "After", options: [{ label: "Hidden", description: "Hidden" }] },
+        ]),
+      ]
+      const directory = yield* tmpdirScoped({ git: true })
+      const eventResponse = yield* request("/api/event", directory)
+      expect(eventResponse.status).toBe(200)
+      const events = yield* eventReader(eventResponse)
+      expect((yield* events.read()).type).toBe("server.connected")
+      const create = (title: string) =>
+        request("/api/session", directory, {
+          method: "POST",
+          body: JSON.stringify({
+            agent: "build",
+            model: { providerID: "question-live", id: "question-live-model" },
+            location: { directory: AbsolutePath.make(directory) },
+            title,
+          }),
+        })
+      const rootResponse = yield* create("SSE ancestry root")
+      const childResponse = yield* create("SSE ancestry child")
+      const conflictingChildResponse = yield* create("SSE ancestry conflicting child")
+      const root = (yield* json<{ data: { id: string } }>(rootResponse)).data
+      const child = (yield* json<{ data: { id: string } }>(childResponse)).data
+      const conflictingChild = (yield* json<{ data: { id: string } }>(conflictingChildResponse)).data
+      const sid = (id: string) => SessionID.make(id)
+      const updateSession = (id: string, values: Partial<typeof SessionTable.$inferInsert>) =>
+        Effect.gen(function* () {
+          const { db } = yield* Database.Service
+          yield* db.update(SessionTable).set(values).where(eq(SessionTable.id, sid(id))).run().pipe(Effect.orDie)
+        }).pipe(Effect.provide(Database.layerFromPath(databasePath)))
+      const readSession = (id: string) =>
+        Effect.gen(function* () {
+          const { db } = yield* Database.Service
+          return yield* db.select().from(SessionTable).where(eq(SessionTable.id, sid(id))).get().pipe(Effect.orDie)
+        }).pipe(Effect.provide(Database.layerFromPath(databasePath)))
+      const matchingOwner = (yield* readSession(root.id))?.metadata?.horizonPrincipalOwner
+      expect(matchingOwner).toBeDefined()
+      yield* updateSession(child.id, { parent_id: sid(root.id) })
+      yield* updateSession(conflictingChild.id, { parent_id: sid(root.id) })
+      const prompt = (sessionID: string) =>
+        request(`/api/session/${sessionID}/prompt`, directory, {
+          method: "POST",
+          body: JSON.stringify({ prompt: { text: "Ask the configured question." } }),
+        })
+      expect((yield* prompt(child.id)).status).toBe(200)
+      const sameOwner = yield* events.readType("question.v2.asked")
+      expect(JSON.stringify(sameOwner.data)).toContain("What is the visible child question?")
+      const sameOwnerQuestion = sameOwner.data as { id: string }
+      expect((yield* request(`/api/session/${child.id}/question/${sameOwnerQuestion.id}/reply`, directory, {
+        method: "POST",
+        body: JSON.stringify({ answers: [["Visible"]] }),
+      })).status).toBe(204)
+      yield* waitForIdle(directory, child.id)
+
+      yield* updateSession(root.id, {
+        metadata: { horizonPrincipalOwner: { kind: "server_auth", subject: "different-user" } },
+      })
+      expect((yield* readSession(child.id))?.parent_id).toBe(sid(root.id))
+      expect((yield* readSession(conflictingChild.id))?.parent_id).toBe(sid(root.id))
+      expect((yield* readSession(root.id))?.metadata?.horizonPrincipalOwner).toEqual({
+        kind: "server_auth",
+        subject: "different-user",
+      })
+      expect((yield* prompt(conflictingChild.id)).status).toBe(200)
+      yield* pollWithTimeout(
+        Effect.sync(() => (llmRequests.length >= 3 ? true : undefined)),
+        "conflicting child did not dispatch its scripted question turn",
+      )
+      const sentinelResponse = yield* create("SSE ancestry sentinel")
+      expect(sentinelResponse.status).toBe(200)
+      const sentinel = (yield* json<{ data: { id: string } }>(sentinelResponse)).data
+      let sawSentinel = false
+      let sawQuestionAfterConflict = false
+      for (let count = 0; count < 100 && !sawSentinel; count++) {
+        const event = yield* events.read()
+        const body = JSON.stringify(event.data)
+        if (event.type === "question.v2.asked") {
+          sawQuestionAfterConflict = true
+          expect((event.data as { sessionID: string }).sessionID).toBe(conflictingChild.id)
+          expect(body).not.toContain("What is the confidential SSE deployment target?")
+        }
+        sawSentinel = event.type === "session.created" && body.includes(sentinel.id)
+      }
+      expect(sawQuestionAfterConflict).toBe(false)
+      expect(sawSentinel).toBe(true)
+    }),
+    20_000,
+  )
+
+  it.live(
+    "question ancestry fails closed for a depth overflow, foreign directory, foreign workspace, and a cycle",
+    () =>
+      Effect.gen(function* () {
+        const directory = yield* tmpdirScoped({ git: true })
+        const otherDirectory = yield* tmpdirScoped({ git: true })
+        const create = (title: string) =>
+          request("/api/session", directory, {
+            method: "POST",
+            body: JSON.stringify({
+              agent: "build",
+              model: { providerID: "question-live", id: "question-live-model" },
+              location: { directory: AbsolutePath.make(directory) },
+              title,
+            }),
+          })
+        const sid = (id: string) => SessionID.make(id)
+        const updateSession = (id: string, values: Partial<typeof SessionTable.$inferInsert>) =>
+          Effect.gen(function* () {
+            const { db } = yield* Database.Service
+            yield* db.update(SessionTable).set(values).where(eq(SessionTable.id, sid(id))).run().pipe(Effect.orDie)
+          }).pipe(Effect.provide(Database.layerFromPath(databasePath)))
+        const attach = (from: string, to: string | null) =>
+          updateSession(from, { parent_id: to === null ? null : sid(to) })
+
+        const ids: string[] = []
+        for (let index = 0; index < 34; index++) {
+          const response = yield* create(`qa007 ancestry ${index}`)
+          expect(response.status).toBe(200)
+          ids.push((yield* json<{ data: { id: string } }>(response)).data.id)
+        }
+        // ids[0] is the question session; ids[1..] are its ancestors.
+        const chainThrough = (last: number) =>
+          Effect.gen(function* () {
+            for (let index = 0; index < last; index++) yield* attach(ids[index]!, ids[index + 1]!)
+            yield* attach(ids[last]!, null)
+            for (let index = last + 1; index < ids.length; index++) yield* attach(ids[index]!, null)
+          })
+        const questionOn = (sessionID: string) => {
+          pendingQuestions = [
+            {
+              id: QuestionID.ascending(),
+              sessionID: sid(sessionID),
+              questions: [
+                {
+                  question: "What is the confidential deployment target?",
+                  header: "Deployment",
+                  options: [{ label: "private-cluster", description: "Internal target" }],
+                  custom: false,
+                },
+              ],
+            } satisfies Question.Request,
+          ]
+        }
+        const list = () => request("/question", directory)
+        const expectHidden = Effect.gen(function* () {
+          const listed = yield* list()
+          expect(listed.status).toBe(200)
+          const body = JSON.stringify(yield* json(listed))
+          expect(body).not.toContain("confidential deployment target")
+          expect(body).not.toContain("private-cluster")
+        })
+        const requestOnQuestion = (suffix: string) =>
+          request(`/question/${pendingQuestions[0]!.id}${suffix}`, directory, {
+            method: "POST",
+            ...(suffix === "/reply" ? { body: JSON.stringify({ answers: [["private-cluster"]] }) } : {}),
+          })
+
+        // Positive control: the owner chain exactly at the 32-level bound stays usable.
+        yield* chainThrough(31)
+        questionOn(ids[0]!)
+        const visible = yield* list()
+        expect(visible.status).toBe(200)
+        expect(JSON.stringify(yield* json(visible))).toContain(pendingQuestions[0]!.id)
+
+        // Depth overflow: one level past the bound fails closed, and neither
+        // reply nor reject may reach the Question service.
+        yield* chainThrough(33)
+        yield* expectHidden
+        for (const suffix of ["/reply", "/reject"] as const) {
+          const response = yield* requestOnQuestion(suffix)
+          expect(response.status).toBe(404)
+          expect(response.text).not.toContain("private-cluster")
+        }
+
+        // Directory: a question session recorded outside this instance directory.
+        yield* chainThrough(31)
+        yield* updateSession(ids[0]!, { directory: otherDirectory })
+        yield* expectHidden
+        yield* updateSession(ids[0]!, { directory })
+
+        // Workspace: a question session bound to a different workspace.
+        yield* updateSession(ids[0]!, { workspace_id: "ws_qa007_foreign" as never })
+        yield* expectHidden
+        yield* updateSession(ids[0]!, { workspace_id: null })
+
+        // Cycle: a parent chain that never reaches a root.
+        yield* attach(ids[0]!, ids[1]!)
+        yield* attach(ids[1]!, ids[0]!)
+        yield* expectHidden
+        for (const suffix of ["/reply", "/reject"] as const) {
+          const response = yield* requestOnQuestion(suffix)
+          expect(response.status).toBe(404)
+          expect(response.text).not.toContain("private-cluster")
+        }
+
+        pendingQuestions = []
+      }),
+    60_000,
+  )
+
 })

@@ -435,6 +435,18 @@ const expectFailure = (effect: Effect.Effect<unknown, RepoIntel.RepoIntelError>)
 describe("tool.repo-intel", () => {
   const bridgeGeneration = `blake3:${"a".repeat(64)}`
 
+  it.live("enumerates entries from the descriptor-rooted source", () =>
+    withTmp((dir) =>
+      Effect.gen(function* () {
+        yield* write(dir, "src/a.txt", "needle\n")
+        const source = yield* RepoIntel.nodeSource.openRoot(dir)
+        const listing = yield* source.readDirectoryEntriesBounded("src", 4)
+        yield* source.close
+        expect(listing).toEqual({ entries: [{ name: "a.txt", type: "file" }], truncated: false })
+      }),
+    ),
+  )
+
   itUnavailable.live("fails unavailable before resolving a repository root without a HostKernel backend", () =>
     Effect.gen(function* () {
       const service = yield* RepoIntel.Service
@@ -569,6 +581,99 @@ describe("tool.repo-intel", () => {
       expect(calls[0].locationRef).toBe(structureRequest.locationRef)
       expect(calls[0].query).toEqual(structureQuery)
       expect(calls[0].query).not.toHaveProperty("sourceGeneration")
+    }),
+  )
+
+  it.live("rejects malformed structure requests before calling the transport", () =>
+    Effect.gen(function* () {
+      const calls: RepoIntel.RepoStructureRequestV1[] = []
+      const client = RepoIntel.repoStructureClientFromTransport({
+        query: (call) =>
+          Effect.sync(() => {
+            calls.push(call)
+            return unavailableStructurePage
+          }),
+      })
+
+      const malformedNodes = yield* Effect.exit(
+        client.query({ ...structureRequest, query: { ...structureQuery, maxNodes: 0 } }),
+      )
+      expect(Exit.isFailure(malformedNodes)).toBe(true)
+      if (Exit.isFailure(malformedNodes)) {
+        const failure = Cause.squash(malformedNodes.cause)
+        expect(failure).toMatchObject({ code: "rejected" })
+        expect(String((failure as { detail?: string }).detail)).toContain("strict query schema")
+      }
+
+      const malformedCursor = yield* Effect.exit(
+        client.query({ ...structureRequest, query: { ...structureQuery, cursor: "not-a-lease" } }),
+      )
+      expect(Exit.isFailure(malformedCursor)).toBe(true)
+      if (Exit.isFailure(malformedCursor)) {
+        expect(Cause.squash(malformedCursor.cause)).toMatchObject({ code: "rejected" })
+      }
+
+      const smuggledGeneration = yield* Effect.exit(
+        client.query({
+          ...structureRequest,
+          query: { ...structureQuery, sourceGeneration: structureGeneration } as never,
+        }),
+      )
+      expect(Exit.isFailure(smuggledGeneration)).toBe(true)
+      if (Exit.isFailure(smuggledGeneration)) {
+        expect(Cause.squash(smuggledGeneration.cause)).toMatchObject({ code: "rejected" })
+      }
+
+      expect(calls).toHaveLength(0)
+
+      const accepted = yield* client.query(structureRequest)
+      expect(accepted.queryId).toBe(structureQuery.queryId)
+      expect(calls).toHaveLength(1)
+    }),
+  )
+
+  it.live("rejects non-object structure request envelopes before reading fields or calling transport", () =>
+    Effect.gen(function* () {
+      const calls: RepoIntel.RepoStructureRequestV1[] = []
+      const client = RepoIntel.repoStructureClientFromTransport({
+        query: (call) =>
+          Effect.sync(() => {
+            calls.push(call)
+            return unavailableStructurePage
+          }),
+      })
+
+      for (const malformed of [null, undefined, 7, "request", []]) {
+        const exit = yield* Effect.exit(client.query(malformed as never))
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toMatchObject({ code: "rejected" })
+      }
+      expect(calls).toHaveLength(0)
+    }),
+  )
+
+  it.live("rejects a STALE structure page instead of returning it as a current result", () =>
+    Effect.gen(function* () {
+      const stalePage = lexicalStructurePage([], {
+        status: "STALE",
+        freshness: "stale",
+        completeness: "partial",
+      })
+      const exit = yield* Effect.exit(
+        RepoIntel.repoStructureClientFromTransport({ query: () => Effect.succeed(stalePage) })
+          .query(structureRequest),
+      )
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) {
+        expect(Cause.squash(exit.cause)).toMatchObject({ code: "generation_mismatch" })
+      }
+
+      // Positive control: a non-stale page of the same shape is still accepted.
+      const current = lexicalStructurePage([])
+      const accepted = yield* RepoIntel.repoStructureClientFromTransport({
+        query: () => Effect.succeed(current),
+      }).query(structureRequest)
+      expect(accepted.status).toBe("PARTIAL")
     }),
   )
 
@@ -803,6 +908,72 @@ describe("tool.repo-intel", () => {
       )
       expect(Exit.isFailure(rejected)).toBe(true)
       if (Exit.isFailure(rejected)) expect(Cause.squash(rejected.cause)).toMatchObject({ code: "rejected" })
+    }),
+  )
+
+  it.live("rejects a nextCursor that is not backed by result-limit truncation", () =>
+    Effect.gen(function* () {
+      const cases: ReadonlyArray<{ readonly result: Record<string, unknown>; readonly why: string }> = [
+        {
+          why: "cursor with no truncation",
+          result: {
+            status: "PARTIAL",
+            generationId: bridgeGeneration,
+            matches: [{ path: "a.txt", startLine: 1, endLine: 1 }],
+            nextCursor: "opaque-cursor",
+          },
+        },
+        {
+          why: "cursor with work-limit truncation",
+          result: {
+            status: "PARTIAL",
+            generationId: bridgeGeneration,
+            matches: [{ path: "a.txt", startLine: 1, endLine: 1 }],
+            nextCursor: "opaque-cursor",
+            truncatedBy: "work_limit",
+          },
+        },
+      ]
+      for (const testCase of cases) {
+        const backend = RepoIntel.backendFromTransport({
+          exchange: () => Effect.succeed({ operation: "query", result: testCase.result }),
+        })
+        const exit = yield* Effect.exit(
+          backend.query(
+            { generationId: bridgeGeneration, generationStatus: "PARTIAL" },
+            { operation: "text", query: "needle", maxResults: 1 },
+          ),
+        )
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isFailure(exit)) {
+          const failure = Cause.squash(exit.cause)
+          expect(failure).toMatchObject({ code: "rejected" })
+          expect(`${testCase.why}: ${String((failure as { detail?: string }).detail)}`).toContain(
+            `${testCase.why}: query response nextCursor requires result_limit truncation`,
+          )
+        }
+      }
+
+      // Positive control: the indexd contract's result-limit cursor is accepted.
+      const acceptedBackend = RepoIntel.backendFromTransport({
+        exchange: () =>
+          Effect.succeed({
+            operation: "query",
+            result: {
+              status: "PARTIAL",
+              generationId: bridgeGeneration,
+              matches: [{ path: "a.txt", startLine: 1, endLine: 1 }],
+              nextCursor: "opaque-cursor",
+              truncatedBy: "result_limit",
+            },
+          }),
+      })
+      const accepted = yield* acceptedBackend.query(
+        { generationId: bridgeGeneration, generationStatus: "PARTIAL" },
+        { operation: "text", query: "needle", maxResults: 1 },
+      )
+      expect(accepted.nextCursor).toBe("opaque-cursor")
+      expect(accepted.truncatedBy).toBe("result_limit")
     }),
   )
 
@@ -1224,6 +1395,45 @@ describe("tool.repo-intel", () => {
       expect(result.truncation).toContain("entry_limit")
       expect(result.scanned.files).toBe(1)
     }),
+  )
+
+  it.live("enforces the aggregate byte budget against the bytes actually read", () =>
+    withTmp((dir) =>
+      Effect.gen(function* () {
+        yield* write(dir, "a.txt", "expanded beyond the aggregate budget\n")
+        const base = yield* FSUtil.Service
+        let fileStatCalls = 0
+        const source: RepoIntel.RepoIntelSource = {
+          openRoot: (root) =>
+            Effect.map(RepoIntel.nodeSource.openRoot(root), (opened) => ({
+              ...opened,
+              stat: (rel) =>
+                Effect.map(opened.stat(rel), (info) => {
+                  if (rel !== "a.txt" || info?.type !== "File") return info
+                  fileStatCalls += 1
+                  // Race the first size check with a file growth before readFile;
+                  // the post-read verification sees the now-current full size.
+                  return fileStatCalls === 1 ? { ...info, size: 1 } : info
+                }),
+            })),
+        }
+        const { backend, state, buildInputs } = makeBackend()
+        const service = RepoIntel.make({ fs: base, source, backend })
+
+        const result = yield* service.searchText({
+          scope: scope(dir),
+          query: "expanded",
+          maxResults: 10,
+          budget: { maxTotalBytes: 4 },
+        })
+
+        expect(result.freshness).toBe("partial")
+        expect(result.truncation).toContain("byte_limit")
+        expect(result.scanned).toMatchObject({ files: 0, bytes: 0 })
+        expect(buildInputs[0]?.paths).toEqual([])
+        expect(state.queries).toBe(1)
+      }),
+    ),
   )
 
   it.live("reports partial results truthfully when files are skipped", () =>

@@ -6706,6 +6706,15 @@ mod tests {
             ]),
         );
         assert!(DelegationBindingV1::from_value(&Value::Map(tampered)).is_none());
+        // `capabilityCeilingDigest` is canonically SHA-256 (see
+        // `contracts-v2/delegation-binding-v1.schema.json`); an otherwise-valid
+        // BLAKE3 ceiling digest must be rejected by the strict decoder.
+        let mut tampered = fields.clone();
+        tampered.insert(
+            "capabilityCeilingDigest".into(),
+            Value::String(format!("blake3:{}", "d".repeat(64))),
+        );
+        assert!(DelegationBindingV1::from_value(&Value::Map(tampered)).is_none());
         let mut tampered = fields;
         tampered.insert("principal".into(), Value::String("reviewer-forged".into()));
         assert!(DelegationBindingV1::from_value(&Value::Map(tampered)).is_none());

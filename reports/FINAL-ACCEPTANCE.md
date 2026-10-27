@@ -1,5 +1,19 @@
 # Final V1 acceptance checklist (parent-owned)
 
+## Current evidence (2026-10-26)
+
+Repeatable V1 E2E: `bash scripts/e2e/v1-smoke.sh` (repo-local HOME/XDG/TMPDIR under `.tmp/e2e/smoke`, random loopback port, Basic auth from `OPENCODE_SERVER_PASSWORD`, trap-killed server, unauthenticated-401 negative probe, one `opencode/big-pickle` write turn asserting no `error`, exact `OK` content and cost 0; logs under `.tmp/e2e/logs/v1-smoke`).
+
+Last result at HEAD `73e3876e7` (2026-10-26): **FAIL**.
+
+```
+E2E_V1_SMOKE=FAIL
+EVIDENCE upto=assistant unauth=401 session=ses_e868bdf3cffeTyTeXcPhQA1tS6 assistant=done cost=0 write=none
+EVIDENCE_FAIL step=assistant detail=assistant error present: {"name": "UnknownError", "data": {"message": "Session supervisor direct_provider_authority failed: direct provider pins require the authenticated Core AgentProfileV2 service"}}
+```
+
+Server health, catalog, session creation and the 401 probe passed; no `.tmp/e2e/ok.txt` was written. The row stays FAIL until the same command prints `E2E_V1_SMOKE=PASS`.
+
 Run only after the nine phase reports claim source closure. No row is VERIFIED until the command has run on the exact revision and its output is captured.
 
 ## 0. Structural

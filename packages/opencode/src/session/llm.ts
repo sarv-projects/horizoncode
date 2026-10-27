@@ -243,6 +243,54 @@ export type DirectProviderAuthorityPinsV1 = {
   readonly harnessRevision: string
 }
 
+/** The single owner-scoped SecretBroker route enabled for direct free inference. */
+export const DIRECT_FREE_PROVIDER_ID = "openrouter"
+export const DIRECT_FREE_MODEL_ID = "nvidia/nemotron-3.5-super-vl:free"
+
+const CREDENTIAL_HEADER_FIELD = /auth|api[-_]?key|access[-_]?token|refresh[-_]?token|secret|credential/i
+
+function hasSensitiveHeaderValue(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false
+  return Object.entries(value as Record<string, unknown>).some(
+    ([name, item]) =>
+      CREDENTIAL_HEADER_FIELD.test(name) &&
+      item !== undefined &&
+      item !== null &&
+      (typeof item !== "string" || item.length > 0),
+  )
+}
+
+/**
+ * The exact anonymous OpenCode offer carries the literal `public` token, which
+ * is not a user credential. Every other credential-bearing projection - a user
+ * key, a declared environment source, an auth record or a sensitive header -
+ * stays closed until request-scoped SecretBroker transport and its Guard
+ * authorization are verified.
+ */
+export function hasUnadmittedCredentialProjection(input: {
+  readonly provider: Provider.Info
+  readonly model: Provider.Model
+  readonly env: Readonly<Record<string, string | undefined>>
+}): boolean {
+  const provider = input.provider
+  if (provider.env.some((name) => (input.env[name] ?? "").length > 0)) return true
+  if (provider.key !== undefined && provider.key !== null && (typeof provider.key !== "string" || provider.key.length > 0)) {
+    return true
+  }
+  if (hasSensitiveHeaderValue((provider.options as Record<string, unknown>).headers)) return true
+  const apiKey = (provider.options as Record<string, unknown>).apiKey
+  if (apiKey === "public") return !Provider.isAnonymousFreeModel(provider, input.model)
+  return apiKey !== undefined && apiKey !== null && (typeof apiKey !== "string" || apiKey.length > 0)
+}
+
+export function directFreeCredentialRouteOptIn(input: {
+  readonly managed: boolean
+  readonly providerID: string
+  readonly modelID: string
+}): boolean {
+  return !input.managed && input.providerID === DIRECT_FREE_PROVIDER_ID && input.modelID === DIRECT_FREE_MODEL_ID
+}
+
 export const resolveDirectProviderAuthorityPinsV1 = Effect.fn(
   "LLM.resolveDirectProviderAuthorityPinsV1",
 )(function* (input: {
@@ -250,6 +298,12 @@ export const resolveDirectProviderAuthorityPinsV1 = Effect.fn(
   readonly model: { readonly providerID: string; readonly id: string }
   readonly locationRef: typeof Location.Ref.Type
   readonly supervisor: Pick<SessionSupervisorInterface, "directSessionPermissionModeSnapshot">
+  /**
+   * Location-scoped AgentProfileV2 service resolved through the
+   * LocationServiceMap by the caller. The ambient service remains the fallback
+   * for hosts and tests that already provide it directly.
+   */
+  readonly agentProfiles?: Option.Option<Context.Service.Shape<typeof AgentProfileService>>
 }) {
   const principal = yield* Effect.serviceOption(TrustedPrincipalContext)
   if (Option.isNone(principal) || principal.value.principal.kind !== "server_auth" || !principal.value.principal.subject) {
@@ -258,7 +312,7 @@ export const resolveDirectProviderAuthorityPinsV1 = Effect.fn(
       reason: "direct provider pins require an authenticated ServerAuth principal",
     })
   }
-  const profiles = yield* Effect.serviceOption(AgentProfileService)
+  const profiles = input.agentProfiles ?? (yield* Effect.serviceOption(AgentProfileService))
   if (Option.isNone(profiles)) {
     return yield* new SessionSupervisorError({
       stage: "direct_provider_authority",
@@ -747,6 +801,20 @@ const live: Layer.Layer<
     const supervisor = yield* SessionSupervisor.Service
     const locations = yield* Effect.serviceOption(LocationServiceMap.Service)
 
+    // AgentProfileService is a Core Config location node: it is only bound
+    // inside the per-location LocationServiceMap, never in this global graph.
+    // Resolve it through the map for the exact turn location instead of adding
+    // the location node (and its unbound Location dependency) to this node.
+    const agentProfilesAt = (
+      ref: typeof Location.Ref.Type,
+    ): Effect.Effect<Option.Option<Context.Service.Shape<typeof AgentProfileService>>> =>
+      Option.isNone(locations)
+        ? Effect.succeed(Option.none())
+        : Effect.serviceOption(AgentProfileService).pipe(
+            Effect.provide(locations.value.get(ref)),
+            Effect.catch(() => Effect.succeed(Option.none())),
+          )
+
     const run = Effect.fn("LLM.run")(function* (input: StreamRequest) {
       // Managed provider transport remains gated until HostKernel has durably
       // prepared the exact request, routed its host-created Guard challenge
@@ -773,12 +841,44 @@ const live: Layer.Layer<
       // §15.2 pins are resolved from Core Config + HostKernel only, before any
       // provider/plugin hook runs; the route pin is finalized with the exact
       // transport route where the language model is constructed.
-      const authorityPins = yield* resolveDirectProviderAuthorityPinsV1({
+      //
+      // The pin set is an AUTHORITY projection, so it is required only for a
+      // turn that claims §15.2 authority: a managed Attempt, a direct child
+      // Attempt/turn, or an explicit caller-supplied projection. A legacy
+      // direct prompt claims none of those, so when the authenticated pin set
+      // cannot be built (no configured primary AgentProfileV2, or no reachable
+      // HostKernel permission-mode snapshot) it keeps the ordinary direct
+      // provider path instead of fabricating a pin. Credential, Guard and
+      // SecretBroker gates below are untouched by this fail-over.
+      const resolvePins = resolveDirectProviderAuthorityPinsV1({
         sessionID: input.sessionID,
         model: { providerID: input.model.providerID, id: input.model.id },
         locationRef,
         supervisor,
+        agentProfiles: yield* agentProfilesAt(locationRef),
       })
+      const authorityRequired =
+        input.managedAttempt !== undefined ||
+        input.directAttempt !== undefined ||
+        input.directTurn !== undefined ||
+        input.directProviderAuthority !== undefined
+      const authorityPins: Option.Option<DirectProviderAuthorityPinsV1> = authorityRequired
+        ? Option.some(yield* resolvePins)
+        : yield* resolvePins.pipe(
+            Effect.map(Option.some),
+            Effect.catch((error) =>
+              Effect.logWarning(
+                "legacy direct turn has no §15.2 authority pins; continuing on the ordinary direct provider path",
+                {
+                  "session.id": input.sessionID,
+                  reason: error instanceof SessionSupervisorError ? error.reason : String(error),
+                },
+              ).pipe(Effect.map((): Option.Option<DirectProviderAuthorityPinsV1> => Option.none())),
+            ),
+          )
+      const directHarnessID = Option.isSome(authorityPins)
+        ? authorityPins.value.harnessID
+        : (input.toolDiscovery?.harnessID ?? "native-rich")
       if (managedTarget) {
         if (Option.isNone(trustedPrincipal)) {
           return yield* Effect.fail(new SessionSupervisorError({ stage: "managed_worktree", reason: "managed prompt has no authenticated Core principal" }))
@@ -827,6 +927,20 @@ const live: Layer.Layer<
         hasCredentialValue(configured?.options?.apiKey) ||
         (configured?.env ?? []).some((name) => typeof process.env[name] === "string" && process.env[name]!.length > 0) ||
         sensitiveHeaders(configured?.options?.headers)
+      const directFreeOptIn = directFreeCredentialRouteOptIn({
+        managed: input.managedAttempt !== undefined,
+        providerID: input.model.providerID,
+        modelID: input.model.id,
+      })
+      // OpenRouter's AI SDK path calls its configured fetch directly and does
+      // not enter Core RequestExecutor's pinned SessionStore dispatcher. Never
+      // construct/send the synthetic placeholder until that bridge is selected.
+      if (directFreeOptIn) {
+        return yield* Effect.fail(new Auth.AuthError({
+          message: "The OpenRouter free route is unavailable until Core RequestExecutor owns its pinned provider send",
+        }))
+      }
+
       const hasCredentialedAuth =
         info !== undefined ||
         hasConfiguredCredential ||
@@ -834,19 +948,21 @@ const live: Layer.Layer<
         sensitiveHeaders(input.model.options.headers) ||
         sensitiveHeaders(input.model.headers)
       if (hasCredentialedAuth) {
-        return yield* Effect.fail(
-          new Auth.AuthError({
-            message: "Provider credentials are unavailable until request-scoped SecretBroker transport is verified",
-          }),
-        )
+        return yield* Effect.fail(new Auth.AuthError({
+          message: "Provider credentials are unavailable until request-scoped SecretBroker transport is verified",
+        }))
       }
 
       const item = yield* provider.getProvider(input.model.providerID)
-      const hasResolvedCredential =
-        hasCredentialValue(item.options.apiKey) ||
-        hasCredentialValue(item.key) ||
-        item.env.some((name) => typeof process.env[name] === "string" && process.env[name]!.length > 0) ||
-        sensitiveHeaders(item.options.headers)
+      // The literal `public` token of the exact anonymous OpenCode offer is the
+      // only credential-looking value admitted here; it is not a user secret.
+      const hasResolvedCredential = hasUnadmittedCredentialProjection({
+        provider: item,
+        model: input.model,
+        env: process.env,
+      })
+      // SecretBroker reference is metadata only. It is consumed inside Auth at
+      // the pinned request transport; it never enters Provider config or logs.
       if (hasResolvedCredential) {
         return yield* Effect.fail(
           new Auth.AuthError({
@@ -855,40 +971,44 @@ const live: Layer.Layer<
         )
       }
 
-      // The direct lane pins the route it actually uses: only the catalog-backed
-      // anonymous-free route resolves a language model here, so the pinned
-      // routeRevision/endpointRevision cannot diverge from the sending adapter.
+      // Pin the exact selected route; free credentials are not passed into the
+      // Provider projection and only enter Auth's pinned send boundary.
       const directTransport = yield* provider.getDirectLanguage({
         model: input.model,
-        harnessID: authorityPins.harnessID,
+        harnessID: directHarnessID,
         fetch,
       })
-      const directProviderAuthority = yield* Effect.try({
-        try: () =>
-          finalizeDirectProviderAuthorityV1({
-            pins: authorityPins,
-            route: directTransport.route,
-            expected: { providerID: input.model.providerID, modelID: input.model.id },
-            ...(input.directProviderAuthority === undefined ? {} : { provided: input.directProviderAuthority }),
-          }),
-        catch: (error) =>
-          new SessionSupervisorError({
-            stage: "direct_provider_authority",
-            reason: error instanceof Error ? error.message : "direct provider authority pins are invalid",
-          }),
-      })
-      yield* Effect.logInfo("direct provider authority resolved", {
-        "session.id": input.sessionID,
-        profileID: directProviderAuthority.profile.profileID,
-        profileRevision: directProviderAuthority.profile.revision,
-        trust: directProviderAuthority.profile.trust,
-        harnessID: directProviderAuthority.harnessID,
-        harnessRevision: directProviderAuthority.harnessRevision,
-        routeRevision: directProviderAuthority.route.routeRevision,
-        endpointRevision: directProviderAuthority.route.endpointRevision,
-        permissionScopeDigest: directProviderAuthority.permissionScopeDigest,
-        policyRevision: directProviderAuthority.policyRevision,
-      })
+      // Finalisation is the same authority claim: a legacy direct turn that
+      // resolved no pins never finalises (and never logs) a §15.2 projection.
+      if (Option.isSome(authorityPins)) {
+        const directProviderAuthority = yield* Effect.try({
+          try: () =>
+            finalizeDirectProviderAuthorityV1({
+              pins: authorityPins.value,
+              route: directTransport.route,
+              expected: { providerID: input.model.providerID, modelID: input.model.id },
+              ...(input.directProviderAuthority === undefined ? {} : { provided: input.directProviderAuthority }),
+            }),
+          catch: (error) =>
+            new SessionSupervisorError({
+              stage: "direct_provider_authority",
+              reason: error instanceof Error ? error.message : "direct provider authority pins are invalid",
+            }),
+        })
+        yield* Effect.logInfo("direct provider authority resolved", {
+          "session.id": input.sessionID,
+          profileID: directProviderAuthority.profile.profileID,
+          profileRevision: directProviderAuthority.profile.revision,
+          trust: directProviderAuthority.profile.trust,
+          harnessID: directProviderAuthority.harnessID,
+          harnessRevision: directProviderAuthority.harnessRevision,
+          routeRevision: directProviderAuthority.route.routeRevision,
+          endpointRevision: directProviderAuthority.route.endpointRevision,
+          routeCredential: "anonymous-free",
+          permissionScopeDigest: directProviderAuthority.permissionScopeDigest,
+          policyRevision: directProviderAuthority.policyRevision,
+        })
+      }
       const language = directTransport.language
 
       const isWorkflow = language instanceof GitLabWorkflowLanguageModel

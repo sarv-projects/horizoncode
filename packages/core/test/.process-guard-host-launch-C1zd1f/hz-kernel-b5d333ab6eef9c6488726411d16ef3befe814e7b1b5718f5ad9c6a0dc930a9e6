@@ -1,0 +1,2 @@
+#!/bin/sh
+printf 'host-kernel-startup-diagnostic\n' >&2

@@ -278,6 +278,8 @@ const layer = Layer.effect(
       const errors: ParseError[] = []
       const input: unknown = parse(text, errors, { allowTrailingComma: true })
       if (errors.length) return
+      const mixedGeneration = ConfigMigrateV1.validateMixedGeneration(input)
+      if (mixedGeneration) return yield* Effect.die(mixedGeneration)
       if (
         typeof input === "object" && input !== null && "agent_profiles" in input &&
         Array.isArray(input.agent_profiles) &&

@@ -9,7 +9,7 @@ import { useClipboard } from "../context/clipboard"
 import { useToast } from "../ui/toast"
 import { useBindings } from "../keymap"
 import { describeOS, describeTerminal } from "../util/system"
-import { formatTuiObservation, projectSessionUsage, tuiAnalyticsProjection } from "../util/tui-analytics"
+import { buildDiagnosticExport, formatTuiObservation, projectSessionUsage, tuiAnalyticsProjection } from "../util/tui-analytics"
 import { useSync } from "../context/sync"
 
 export function DialogDebug() {
@@ -52,9 +52,10 @@ export function DialogDebug() {
   })
 
   const copy = () => {
-    const text = entries()
-      .map((entry) => `${entry.label}: ${entry.value}`)
-      .join("\n")
+    // §31.16/AN-007: the exported payload is assembled by the analytics owner so
+    // every row is shape-validated, recursively redacted and byte-bounded before
+    // it leaves the process.
+    const text = buildDiagnosticExport(entries())
     void clipboard
       .write?.(text)
       .then(() => {

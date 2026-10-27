@@ -1,0 +1,436 @@
+{
+  "schema": 1,
+  "authority": [
+    "arch_V1/17 §17.7 first-party identity amendment (2026-10-23)",
+    "arch_V1/20 §20.17 staged migration procedure",
+    "arch_V1/32 NAME-001..004 acceptance"
+  ],
+  "rules": {
+    "rename_only_first_party_workspace_ids": true,
+    "never_rename_vendor_or_upstream_ids": true,
+    "pinned_snapshot_preserved": "opencode/**",
+    "host_package_target": "horizoncode",
+    "host_package_note": "Renaming the private host package 'opencode' to 'horizoncode' is a parent/product decision. bin/horizoncode, the hzcode alias, the compatibility opencode symlink and $HOME/.opencode paths stay; only the private workspace identity and its lock edges move.",
+    "execution_note": "Every MIGRATE row must land atomically with its manifest, bun.lock importer/resolution, import specifiers and generated identifiers, followed by full horizoncode:typecheck. No isolated manifest/lock rename is safe while consumers are owned by other phases."
+  },
+  "facts": {
+    "importer_scan_scope": "packages/** files with .ts/.tsx/.json/.md suffixes, excluding the package's own manifest, node_modules, dist, target, .turbo and .bun",
+    "importer_signal": "at least one in-scope file contains '<package-id>/' (a real import specifier), so the row has coupled source consumers"
+  },
+  "packages": {
+    "@opencode-ai/app": {
+      "disposition": "MIGRATE",
+      "target": "@horizoncode/app",
+      "own_manifest": "packages/app/package.json",
+      "impact": {
+        "lockfile_edges": ["packages/app importer name", "@opencode-ai/app@workspace:packages/app resolution"],
+        "has_source_importers": true,
+        "generated_identifiers": [],
+        "runtime_identifiers": []
+      }
+    },
+    "@opencode-ai/cli": {
+      "disposition": "MIGRATE",
+      "target": "@horizoncode/cli",
+      "own_manifest": "packages/cli/package.json",
+      "impact": {
+        "lockfile_edges": ["packages/cli importer name", "@opencode-ai/cli@workspace:packages/cli resolution"],
+        "has_source_importers": false,
+        "generated_identifiers": [],
+        "runtime_identifiers": []
+      }
+    },
+    "@horizoncode/client": {
+      "disposition": "DONE",
+      "own_manifest": "packages/client/package.json",
+      "impact": {
+        "lockfile_edges": ["packages/client importer name", "@horizoncode/client@workspace:packages/client resolution"],
+        "has_source_importers": true,
+        "generated_identifiers": ["packages/client/src/contract.ts middleware IDs are already @horizoncode/client/*"],
+        "runtime_identifiers": []
+      }
+    },
+    "@opencode-ai/codemode": {
+      "disposition": "MIGRATE",
+      "target": "@horizoncode/codemode",
+      "own_manifest": "packages/codemode/package.json",
+      "impact": {
+        "lockfile_edges": ["packages/codemode importer name", "@opencode-ai/codemode@workspace:packages/codemode resolution"],
+        "has_source_importers": false,
+        "generated_identifiers": [],
+        "runtime_identifiers": []
+      }
+    },
+    "@opencode-ai/console-app": {
+      "disposition": "MIGRATE",
+      "target": "@horizoncode/console-app",
+      "own_manifest": "packages/console/app/package.json",
+      "impact": {
+        "lockfile_edges": ["packages/console/app importer name", "@opencode-ai/console-app@workspace:packages/console/app resolution"],
+        "has_source_importers": false,
+        "generated_identifiers": [],
+        "runtime_identifiers": []
+      }
+    },
+    "@opencode-ai/console-core": {
+      "disposition": "MIGRATE",
+      "target": "@horizoncode/console-core",
+      "own_manifest": "packages/console/core/package.json",
+      "impact": {
+        "lockfile_edges": ["packages/console/core importer name", "@opencode-ai/console-core@workspace:packages/console/core resolution"],
+        "has_source_importers": true,
+        "generated_identifiers": [],
+        "runtime_identifiers": []
+      }
+    },
+    "@horizoncode/console-function": {
+      "disposition": "DONE",
+      "own_manifest": "packages/console/function/package.json",
+      "impact": {
+        "lockfile_edges": ["packages/console/function importer name", "@horizoncode/console-function@workspace:packages/console/function resolution"],
+        "has_source_importers": false,
+        "generated_identifiers": [],
+        "runtime_identifiers": []
+      }
+    },
+    "@opencode-ai/console-mail": {
+      "disposition": "MIGRATE",
+      "target": "@horizoncode/console-mail",
+      "own_manifest": "packages/console/mail/package.json",
+      "impact": {
+        "lockfile_edges": ["packages/console/mail importer name", "@opencode-ai/console-mail@workspace:packages/console/mail resolution"],
+        "has_source_importers": true,
+        "generated_identifiers": [],
+        "runtime_identifiers": []
+      }
+    },
+    "@opencode-ai/console-resource": {
+      "disposition": "MIGRATE",
+      "target": "@horizoncode/console-resource",
+      "own_manifest": "packages/console/resource/package.json",
+      "impact": {
+        "lockfile_edges": ["packages/console/resource importer name", "@opencode-ai/console-resource@workspace:packages/console/resource resolution"],
+        "has_source_importers": false,
+        "generated_identifiers": [],
+        "runtime_identifiers": []
+      }
+    },
+    "@opencode-ai/console-support": {
+      "disposition": "MIGRATE",
+      "target": "@horizoncode/console-support",
+      "own_manifest": "packages/console/support/package.json",
+      "impact": {
+        "lockfile_edges": ["packages/console/support importer name", "@opencode-ai/console-support@workspace:packages/console/support resolution"],
+        "has_source_importers": false,
+        "generated_identifiers": [],
+        "runtime_identifiers": []
+      }
+    },
+    "@opencode-ai/core": {
+      "disposition": "MIGRATE",
+      "target": "@horizoncode/core",
+      "own_manifest": "packages/core/package.json",
+      "impact": {
+        "lockfile_edges": ["packages/core importer name", "@opencode-ai/core@workspace:packages/core resolution"],
+        "has_source_importers": true,
+        "generated_identifiers": [],
+        "runtime_identifiers": []
+      }
+    },
+    "@horizoncode/desktop": {
+      "disposition": "DONE",
+      "own_manifest": "packages/desktop/package.json",
+      "impact": {
+        "lockfile_edges": ["packages/desktop importer name", "@horizoncode/desktop@workspace:packages/desktop resolution plus four nested dependency namespaces"],
+        "has_source_importers": false,
+        "generated_identifiers": [],
+        "runtime_identifiers": ["$HOME/.opencode/bin probe paths in WSL helpers are post-V1 compatibility facts, not rename targets"]
+      }
+    },
+    "@opencode-ai/effect-drizzle-sqlite": {
+      "disposition": "MIGRATE",
+      "target": "@horizoncode/effect-drizzle-sqlite",
+      "own_manifest": "packages/effect-drizzle-sqlite/package.json",
+      "impact": {
+        "lockfile_edges": ["packages/effect-drizzle-sqlite importer name", "@opencode-ai/effect-drizzle-sqlite@workspace:packages/effect-drizzle-sqlite resolution"],
+        "has_source_importers": false,
+        "generated_identifiers": [],
+        "runtime_identifiers": []
+      }
+    },
+    "@opencode-ai/effect-sqlite-node": {
+      "disposition": "MIGRATE",
+      "target": "@horizoncode/effect-sqlite-node",
+      "own_manifest": "packages/effect-sqlite-node/package.json",
+      "impact": {
+        "lockfile_edges": ["packages/effect-sqlite-node importer name", "@opencode-ai/effect-sqlite-node@workspace:packages/effect-sqlite-node resolution"],
+        "has_source_importers": true,
+        "generated_identifiers": [],
+        "runtime_identifiers": [
+          "~@opencode-ai/effect-sqlite-node/NodeSqliteClient (TypeId string in packages/effect-sqlite-node/src/index.ts)",
+          "@opencode-ai/effect-sqlite-node/NodeSqliteClient (Effect Context.Service key in packages/effect-sqlite-node/src/index.ts)"
+        ]
+      }
+    },
+    "@horizoncode/enterprise": {
+      "disposition": "DONE",
+      "own_manifest": "packages/enterprise/package.json",
+      "impact": {
+        "lockfile_edges": ["packages/enterprise importer name", "@horizoncode/enterprise@workspace:packages/enterprise resolution"],
+        "has_source_importers": false,
+        "generated_identifiers": [],
+        "runtime_identifiers": []
+      }
+    },
+    "@horizoncode/function": {
+      "disposition": "DONE",
+      "own_manifest": "packages/function/package.json",
+      "impact": {
+        "lockfile_edges": ["packages/function importer name", "@horizoncode/function@workspace:packages/function resolution"],
+        "has_source_importers": false,
+        "generated_identifiers": [],
+        "runtime_identifiers": []
+      }
+    },
+    "@opencode-ai/http-recorder": {
+      "disposition": "MIGRATE",
+      "target": "@horizoncode/http-recorder",
+      "own_manifest": "packages/http-recorder/package.json",
+      "impact": {
+        "lockfile_edges": ["packages/http-recorder importer name", "@opencode-ai/http-recorder@workspace:packages/http-recorder resolution"],
+        "has_source_importers": true,
+        "generated_identifiers": [],
+        "runtime_identifiers": []
+      }
+    },
+    "@opencode-ai/httpapi-codegen": {
+      "disposition": "MIGRATE",
+      "target": "@horizoncode/httpapi-codegen",
+      "own_manifest": "packages/httpapi-codegen/package.json",
+      "impact": {
+        "lockfile_edges": ["packages/httpapi-codegen importer name", "@opencode-ai/httpapi-codegen@workspace:packages/httpapi-codegen resolution"],
+        "has_source_importers": false,
+        "generated_identifiers": [
+          "packages/client/src/generated-effect/client.ts header comment: // Generated by @opencode-ai/httpapi-codegen. Do not edit."
+        ],
+        "runtime_identifiers": []
+      }
+    },
+    "@opencode-ai/llm": {
+      "disposition": "MIGRATE",
+      "target": "@horizoncode/llm",
+      "own_manifest": "packages/llm/package.json",
+      "impact": {
+        "lockfile_edges": ["packages/llm importer name", "@opencode-ai/llm@workspace:packages/llm resolution"],
+        "has_source_importers": true,
+        "generated_identifiers": [],
+        "runtime_identifiers": []
+      }
+    },
+    "opencode": {
+      "disposition": "MIGRATE",
+      "target": "horizoncode",
+      "own_manifest": "packages/opencode/package.json",
+      "impact": {
+        "lockfile_edges": [
+          "packages/opencode importer name",
+          "opencode@workspace:packages/opencode resolution",
+          "packages/web dependency edge \"opencode\": \"workspace:*\""
+        ],
+        "has_source_importers": true,
+        "generated_identifiers": [
+          "artifact binary name is already bin/horizoncode",
+          "compiled user-agent is already horizoncode/<version>"
+        ],
+        "runtime_identifiers": [
+          "compatibility opencode symlink and $HOME/.opencode paths remain compatibility facts, not rename targets"
+        ]
+      }
+    },
+    "@opencode-ai/plugin": {
+      "disposition": "MIGRATE",
+      "target": "@horizoncode/plugin",
+      "own_manifest": "packages/plugin/package.json",
+      "impact": {
+        "lockfile_edges": ["packages/plugin importer name", "@opencode-ai/plugin@workspace:packages/plugin resolution"],
+        "has_source_importers": true,
+        "generated_identifiers": [],
+        "runtime_identifiers": []
+      }
+    },
+    "@opencode-ai/protocol": {
+      "disposition": "MIGRATE",
+      "target": "@horizoncode/protocol",
+      "own_manifest": "packages/protocol/package.json",
+      "impact": {
+        "lockfile_edges": ["packages/protocol importer name", "@opencode-ai/protocol@workspace:packages/protocol resolution"],
+        "has_source_importers": true,
+        "generated_identifiers": [],
+        "runtime_identifiers": []
+      }
+    },
+    "@opencode-ai/schema": {
+      "disposition": "MIGRATE",
+      "target": "@horizoncode/schema",
+      "own_manifest": "packages/schema/package.json",
+      "impact": {
+        "lockfile_edges": ["packages/schema importer name", "@opencode-ai/schema@workspace:packages/schema resolution"],
+        "has_source_importers": true,
+        "generated_identifiers": [],
+        "runtime_identifiers": []
+      }
+    },
+    "@opencode-ai/script": {
+      "disposition": "MIGRATE",
+      "target": "@horizoncode/script",
+      "own_manifest": "packages/script/package.json",
+      "impact": {
+        "lockfile_edges": ["packages/script importer name", "@opencode-ai/script@workspace:packages/script resolution"],
+        "has_source_importers": false,
+        "generated_identifiers": [],
+        "runtime_identifiers": []
+      }
+    },
+    "@opencode-ai/sdk": {
+      "disposition": "MIGRATE",
+      "target": "@horizoncode/sdk",
+      "own_manifest": "packages/sdk/js/package.json",
+      "impact": {
+        "lockfile_edges": ["packages/sdk/js importer name", "@opencode-ai/sdk@workspace:packages/sdk/js resolution"],
+        "has_source_importers": true,
+        "generated_identifiers": [],
+        "runtime_identifiers": ["published SDK package name; publication stays unavailable by DEC-V1-12, so no registry identity change happens now"]
+      }
+    },
+    "@horizoncode/sdk-next": {
+      "disposition": "DONE",
+      "own_manifest": "packages/sdk-next/package.json",
+      "impact": {
+        "lockfile_edges": ["packages/sdk-next importer name", "@horizoncode/sdk-next@workspace:packages/sdk-next resolution"],
+        "has_source_importers": false,
+        "generated_identifiers": [],
+        "runtime_identifiers": ["@horizoncode/sdk-next/OpenCode Effect service key"]
+      }
+    },
+    "@opencode-ai/server": {
+      "disposition": "MIGRATE",
+      "target": "@horizoncode/server",
+      "own_manifest": "packages/server/package.json",
+      "impact": {
+        "lockfile_edges": ["packages/server importer name", "@opencode-ai/server@workspace:packages/server resolution"],
+        "has_source_importers": true,
+        "generated_identifiers": [],
+        "runtime_identifiers": []
+      }
+    },
+    "@opencode-ai/session-ui": {
+      "disposition": "MIGRATE",
+      "target": "@horizoncode/session-ui",
+      "own_manifest": "packages/session-ui/package.json",
+      "impact": {
+        "lockfile_edges": ["packages/session-ui importer name", "@opencode-ai/session-ui@workspace:packages/session-ui resolution"],
+        "has_source_importers": true,
+        "generated_identifiers": [],
+        "runtime_identifiers": ["consumes the vendored @opencode-ai/client tarball, which is never renamed"]
+      }
+    },
+    "@horizoncode/slack": {
+      "disposition": "DONE",
+      "own_manifest": "packages/slack/package.json",
+      "impact": {
+        "lockfile_edges": ["packages/slack importer name", "@horizoncode/slack@workspace:packages/slack resolution"],
+        "has_source_importers": false,
+        "generated_identifiers": [],
+        "runtime_identifiers": []
+      }
+    },
+    "@horizoncode/stats-app": {
+      "disposition": "DONE",
+      "own_manifest": "packages/stats/app/package.json",
+      "impact": {
+        "lockfile_edges": ["packages/stats/app importer name", "@horizoncode/stats-app@workspace:packages/stats/app resolution"],
+        "has_source_importers": false,
+        "generated_identifiers": [],
+        "runtime_identifiers": []
+      }
+    },
+    "@opencode-ai/stats-core": {
+      "disposition": "MIGRATE",
+      "target": "@horizoncode/stats-core",
+      "own_manifest": "packages/stats/core/package.json",
+      "impact": {
+        "lockfile_edges": ["packages/stats/core importer name", "@opencode-ai/stats-core@workspace:packages/stats/core resolution"],
+        "has_source_importers": true,
+        "generated_identifiers": [],
+        "runtime_identifiers": []
+      }
+    },
+    "@horizoncode/stats-server": {
+      "disposition": "DONE",
+      "own_manifest": "packages/stats/server/package.json",
+      "impact": {
+        "lockfile_edges": ["packages/stats/server importer name", "@horizoncode/stats-server@workspace:packages/stats/server resolution"],
+        "has_source_importers": false,
+        "generated_identifiers": [],
+        "runtime_identifiers": []
+      }
+    },
+    "@horizoncode/storybook": {
+      "disposition": "DONE",
+      "own_manifest": "packages/storybook/package.json",
+      "impact": {
+        "lockfile_edges": ["packages/storybook importer name", "@horizoncode/storybook@workspace:packages/storybook resolution"],
+        "has_source_importers": false,
+        "generated_identifiers": [],
+        "runtime_identifiers": []
+      }
+    },
+    "@opencode-ai/tui": {
+      "disposition": "MIGRATE",
+      "target": "@horizoncode/tui",
+      "own_manifest": "packages/tui/package.json",
+      "impact": {
+        "lockfile_edges": ["packages/tui importer name", "@opencode-ai/tui@workspace:packages/tui resolution"],
+        "has_source_importers": true,
+        "generated_identifiers": [],
+        "runtime_identifiers": []
+      }
+    },
+    "@opencode-ai/ui": {
+      "disposition": "MIGRATE",
+      "target": "@horizoncode/ui",
+      "own_manifest": "packages/ui/package.json",
+      "impact": {
+        "lockfile_edges": ["packages/ui importer name", "@opencode-ai/ui@workspace:packages/ui resolution"],
+        "has_source_importers": true,
+        "generated_identifiers": [],
+        "runtime_identifiers": []
+      }
+    },
+    "@horizoncode/web": {
+      "disposition": "DONE",
+      "own_manifest": "packages/web/package.json",
+      "impact": {
+        "lockfile_edges": ["packages/web importer name", "@horizoncode/web@workspace:packages/web resolution plus three renamed nested dependency namespaces"],
+        "has_source_importers": false,
+        "generated_identifiers": [],
+        "runtime_identifiers": ["keeps the private host dependency edge \"opencode\": \"workspace:*\" until the host package migrates"]
+      }
+    }
+  },
+  "hold_vendor": {
+    "@opencode-ai/client": "vendored tarball consumed by packages/app and packages/session-ui; third-party API identity, never renamed",
+    "@gitlab/opencode-gitlab-auth": "third-party vendor package identity",
+    "opencode-gitlab-auth": "third-party vendor package identity",
+    "opencode-poe-auth": "third-party vendor package identity",
+    "poe-oauth": "third-party upstream package; also a named license-metadata blocker",
+    "@openauthjs/openauth": "third-party upstream package; also a named license-metadata blocker",
+    "seq-queue": "third-party upstream package; also a named license-metadata blocker"
+  },
+  "preserve": [
+    "opencode/** pinned snapshot",
+    "docs/architecture-archive/**",
+    "provider/API identifiers (Provider, Auth, LLM, X-Title headers)",
+    "legal attribution in LICENSE/NOTICE"
+  ]
+}

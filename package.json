@@ -14,7 +14,7 @@
     "dev:storybook": "bun --cwd packages/storybook storybook",
     "lint": "oxlint",
     "typecheck": "bun turbo typecheck",
-    "horizoncode:typecheck": "bun run --cwd packages/opencode typecheck && bun run --cwd packages/tui typecheck && bun run --cwd packages/core typecheck",
+    "horizoncode:typecheck": "bash scripts/architecture/horizoncode_typecheck.sh",
     "upgrade-opentui": "bun run script/upgrade-opentui.ts",
     "postinstall": "bun run --cwd packages/core fix-node-pty",
     "prepare": "husky",

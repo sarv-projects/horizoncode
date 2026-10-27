@@ -33,6 +33,12 @@ import {
   type Operation,
 } from "@/repl/lifecycle"
 import {
+  cancelSupervisedReplV1,
+  readSupervisedReplOutputV1,
+  readSupervisedReplStatusV1,
+  ReplProcessUnavailableError,
+} from "@/repl/supervised"
+import {
   MAX_CALLBACK_CAPABILITIES,
   MAX_CODE_BYTES,
   MAX_OUTPUT_REFERENCES_PER_GENERATION,
@@ -1253,7 +1259,7 @@ describe("repl.lifecycle fail-closed boundary", () => {
 })
 
 describe("repl.lifecycle canonical Guard effect route", () => {
-  test("a managed Attempt cannot reach a registered route before the hard runtime gate passes", async () => {
+  test("a managed Attempt cannot reach a registered route or callback ingress before acceptance", async () => {
     const managedAttemptScope = {
       goalID: "goal-1",
       runID: "run-1",
@@ -1297,6 +1303,7 @@ describe("repl.lifecycle canonical Guard effect route", () => {
     })
     try {
       expect(replEffectRouteAvailable()).toBe(false)
+      expect(replCallbackIngressAvailable()).toBe(false)
       await expect(authorizeEffect(effectRequest("repl.execute", { managedAttemptScope, directAttemptScope: undefined })))
         .rejects.toBeInstanceOf(UnavailableError)
       expect(received).toBeUndefined()
@@ -1318,6 +1325,18 @@ describe("repl.lifecycle canonical Guard effect route", () => {
       expect((thrown as ReplLifecycle.UnavailableError).operation).toBe(operation)
       expect((thrown as ReplLifecycle.UnavailableError).reason).toBe("guard_not_verified")
     }
+  })
+
+  test("DEC-V1-27 requires each OS-enforced dimension independently", () => {
+    expect(ReplLifecycle.validateReplResourceGuaranteesV1(resourceGuarantees)).toEqual(resourceGuarantees)
+    for (const field of ["cpuTimeEnforced", "memoryEnforced", "processCountEnforced", "fileDescriptorsEnforced"] as const) {
+      expect(() => ReplLifecycle.validateReplResourceGuaranteesV1({ ...resourceGuarantees, [field]: false })).toThrow(
+        "REPL execution requires HostKernel-confirmed OS enforcement for CPU time, memory, process count, and file descriptors",
+      )
+    }
+    expect(() => ReplLifecycle.validateReplResourceGuaranteesV1(undefined)).toThrow(
+      "REPL execution requires HostKernel-confirmed OS enforcement for CPU time, memory, process count, and file descriptors",
+    )
   })
 
   test("REPL worker dispatch is refused unless the host reports every required OS resource limit", async () => {
@@ -1675,5 +1694,218 @@ describe("repl.lifecycle canonical Guard effect route", () => {
         },
       },
     })).toThrow("callback ingress is unavailable")
+  })
+})
+
+const validSupervisedStatusResponse = (over: Record<string, unknown> = {}) => ({
+  executionID: "repl-process-1",
+  generation: "1",
+  state: "RUNNING",
+  stdoutSequence: "0",
+  stderrSequence: "0",
+  exitCode: null,
+  stdoutDigest: "blake3:" + "0".repeat(64),
+  stderrDigest: "blake3:" + "0".repeat(64),
+  outputBytes: "0",
+  truncated: false,
+  receiptDigest: null,
+  resourceGuarantees,
+  ...over,
+})
+
+describe("supervised REPL process lifecycle", () => {
+  test("readSupervisedReplStatusV1 rejects non-matching process references", async () => {
+    const registry = makeRegistry()
+    const session = createSession(registry, {
+      sessionID: "repl-1",
+      language: "python",
+      scope: "workspace://ws-1",
+      nowMs: 1_000,
+      resourceLimits,
+      callbackCapabilities: ["files.read"],
+    })
+    const ref = { sessionID: "repl-1", generation: session.generation }
+
+    // Wrong kind
+    await expect(readSupervisedReplStatusV1({
+      registry,
+      ref,
+      authority,
+      processRef: { ...interpreterProcessRef, kind: "language_server" as any },
+      effectID: "effect-1",
+      challengeID: "challenge-1",
+      requestHostKernel: async () => ({}),
+    })).rejects.toThrow("HostKernel interpreter reference does not match the authenticated REPL generation and profile")
+
+    // Wrong owner epoch
+    await expect(readSupervisedReplStatusV1({
+      registry,
+      ref,
+      authority,
+      processRef: { ...interpreterProcessRef, ownerEpoch: "99" },
+      effectID: "effect-1",
+      challengeID: "challenge-1",
+      requestHostKernel: async () => ({}),
+    })).rejects.toThrow("HostKernel interpreter reference does not match the authenticated REPL generation and profile")
+
+    // Wrong profileId
+    await expect(readSupervisedReplStatusV1({
+      registry,
+      ref,
+      authority,
+      processRef: { ...interpreterProcessRef, profileID: "other-profile" },
+      effectID: "effect-1",
+      challengeID: "challenge-1",
+      requestHostKernel: async () => ({}),
+    })).rejects.toThrow("HostKernel interpreter reference does not match the authenticated REPL generation and profile")
+  })
+
+  test("readSupervisedReplStatusV1 rejects when HostKernel does not confirm OS resource limits", async () => {
+    const registry = makeRegistry()
+    const session = createSession(registry, {
+      sessionID: "repl-1",
+      language: "python",
+      scope: "workspace://ws-1",
+      nowMs: 1_000,
+      resourceLimits,
+      callbackCapabilities: ["files.read"],
+    })
+    const ref = { sessionID: "repl-1", generation: session.generation }
+
+    await expect(readSupervisedReplStatusV1({
+      registry,
+      ref,
+      authority,
+      processRef: interpreterProcessRef,
+      effectID: "effect-1",
+      challengeID: "challenge-1",
+      requestHostKernel: async () =>
+        validSupervisedStatusResponse({
+          resourceGuarantees: {
+            cpuTimeEnforced: true,
+            memoryEnforced: false,
+            processCountEnforced: true,
+            fileDescriptorsEnforced: true,
+          },
+        }),
+    })).rejects.toBeInstanceOf(ReplProcessUnavailableError)
+  })
+
+  test("readSupervisedReplStatusV1 returns status when OS resource guarantees are confirmed", async () => {
+    const registry = makeRegistry()
+    const session = createSession(registry, {
+      sessionID: "repl-1",
+      language: "python",
+      scope: "workspace://ws-1",
+      nowMs: 1_000,
+      resourceLimits,
+      callbackCapabilities: ["files.read"],
+    })
+    const ref = { sessionID: "repl-1", generation: session.generation }
+
+    const status = await readSupervisedReplStatusV1({
+      registry,
+      ref,
+      authority,
+      processRef: interpreterProcessRef,
+      effectID: "effect-1",
+      challengeID: "challenge-1",
+      requestHostKernel: async () => validSupervisedStatusResponse(),
+    })
+    expect(status.state).toBe("RUNNING")
+    expect(status.resourceGuarantees?.memoryEnforced).toBe(true)
+  })
+
+  test("readSupervisedReplOutputV1 enforces resource guarantees before returning output", async () => {
+    const registry = makeRegistry()
+    const session = createSession(registry, {
+      sessionID: "repl-1",
+      language: "python",
+      scope: "workspace://ws-1",
+      nowMs: 1_000,
+      resourceLimits,
+      callbackCapabilities: ["files.read"],
+    })
+    const ref = { sessionID: "repl-1", generation: session.generation }
+
+    // Missing CPU guarantee
+    await expect(readSupervisedReplOutputV1({
+      registry,
+      ref,
+      authority,
+      processRef: interpreterProcessRef,
+      effectID: "effect-1",
+      challengeID: "challenge-1",
+      capabilityLeaseDigest: "blake3:" + "2".repeat(64),
+      afterStdoutSequence: "0",
+      afterStderrSequence: "0",
+      maxBytes: 1024,
+      requestHostKernel: async () =>
+        validSupervisedStatusResponse({
+          resourceGuarantees: { ...resourceGuarantees, cpuTimeEnforced: false },
+        }),
+    })).rejects.toBeInstanceOf(ReplProcessUnavailableError)
+
+    // Confirmed guarantees
+    let outputRequested = false
+    const output = await readSupervisedReplOutputV1({
+      registry,
+      ref,
+      authority,
+      processRef: interpreterProcessRef,
+      effectID: "effect-1",
+      challengeID: "challenge-1",
+      capabilityLeaseDigest: "blake3:" + "2".repeat(64),
+      afterStdoutSequence: "0",
+      afterStderrSequence: "0",
+      maxBytes: 1024,
+      requestHostKernel: async (_domain: string, op: string) => {
+        if (op === "read") {
+          outputRequested = true
+          return {
+            executionID: "repl-process-1",
+            generation: "1",
+            records: [],
+            nextStdoutSequence: "0",
+            nextStderrSequence: "0",
+            eof: false,
+            truncated: false,
+            state: "RUNNING",
+            receiptDigest: null,
+          }
+        }
+        return validSupervisedStatusResponse()
+      },
+    })
+    expect(outputRequested).toBe(true)
+    expect(output.records).toEqual([])
+  })
+
+  test("cancelSupervisedReplV1 fails closed when repl.stop process effect is not allowed", async () => {
+    const registry = makeRegistry()
+    const session = createSession(registry, {
+      sessionID: "repl-1",
+      language: "python",
+      scope: "workspace://ws-1",
+      nowMs: 1_000,
+      resourceLimits,
+      callbackCapabilities: ["files.read"],
+    })
+    const ref = { sessionID: "repl-1", generation: session.generation }
+
+    await expect(cancelSupervisedReplV1({
+      registry,
+      ref,
+      authority,
+      processRef: interpreterProcessRef,
+      effectID: "effect-1",
+      challengeID: "challenge-1",
+      capabilityLeaseDigest: "blake3:" + "2".repeat(64),
+      requestHostKernel: async () => ({}),
+    })).rejects.toMatchObject({
+      _tag: "LanguageServiceProcessError",
+      operation: "repl.stop",
+      reason: "guard_not_verified",
+    })
   })
 })

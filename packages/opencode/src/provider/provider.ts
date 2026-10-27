@@ -1203,7 +1203,6 @@ export const ListResult = Schema.Struct({
     freshness: Schema.Literals(["fresh", "stale", "unknown"]),
     updatedAt: optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
     /** Imported-snapshot provenance; absent means unknown, never current. */
-    sourceURL: optional(Schema.String),
     retrievedAt: optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
     contentDigest: optional(Schema.String),
     license: optional(Schema.String),
@@ -1272,6 +1271,23 @@ export function isAnonymousFreeModel(provider: Info, model: Model): boolean {
     !hasCredentialMaterial(model.options) &&
     !hasCredentialMaterial(model.headers)
 }
+
+/** Exact zero-priced SecretBroker-backed model allowlist. Widening it requires new authority. */
+const DIRECT_FREE_CREDENTIAL_ROUTES: ReadonlySet<string> = new Set([
+  "openrouter/nvidia/nemotron-3.5-super-vl:free",
+])
+
+/**
+ * The provider itself labels this exact allowlisted route free (`:free`) and
+ * publishes explicit zero input/output prices, but omits cache rates. Cache
+ * pricing therefore stays unknown, so this only makes the route *selectable*:
+ * `getDirectFreeLanguage` still refuses every send until Core's RequestExecutor
+ * owns the pinned provider request, and no raw/env credential path is opened.
+ */
+function isProviderDeclaredFreeRoute(modelID: string, model: { readonly cost?: { readonly input?: number; readonly output?: number } }) {
+  return modelID.endsWith(":free") && model.cost?.input === 0 && model.cost?.output === 0
+}
+
 
 function redactPublicInfo(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(redactPublicInfo)
@@ -1422,6 +1438,15 @@ export interface Interface {
   >
   /** Request-scoped direct model construction. Only the explicit anonymous-free route is presently enabled. */
   readonly getDirectLanguage: (input: {
+    readonly model: Model
+    readonly harnessID: string
+    readonly fetch: typeof fetch
+  }) => Effect.Effect<{
+    readonly language: LanguageModelV3
+    readonly route: DirectProviderRouteV1
+  }, ModelNotFoundError | CredentialTransportUnavailableError | ManagedProviderRouteUnavailableError | InitError>
+  /** Build the exact OpenRouter free route with only a synthetic SDK credential. */
+  readonly getDirectFreeLanguage: (input: {
     readonly model: Model
     readonly harnessID: string
     readonly fetch: typeof fetch
@@ -1652,6 +1677,12 @@ const layer = Layer.effect(
         const modelsDev = yield* modelsDevSvc.get()
         const catalog = mapValues(modelsDev, fromModelsDevProvider)
         const database = mapValues(catalog, toPublicInfo)
+        // A unique SecretBroker reference is sufficient to expose the single
+        // credentialed free offer; no provider-config key or environment key is
+        // used to construct its SDK.
+        const credentialRefs = yield* auth.credentialRefsForProviders(["openrouter"]).pipe(
+          Effect.catch(() => Effect.succeed({} as Partial<Record<string, string>>)),
+        )
 
         const providers: Record<ProviderV2.ID, Info> = {} as Record<ProviderV2.ID, Info>
         const languages = new Map<string, LanguageModelV3>()
@@ -1888,6 +1919,28 @@ const layer = Layer.effect(
           if (provider.name) partial.name = provider.name
           if (provider.options) partial.options = provider.options
           mergeProvider(providerID, partial)
+        }
+
+        // Register only the allowlisted catalog offer when a unique SecretBroker
+        // credential exists. This does not create a config/env credential path.
+        const openrouterID = ProviderV2.ID.openrouter
+        const openrouterCredentialRef = credentialRefs[openrouterID]
+        const openrouterCatalog = database[openrouterID]
+        if (openrouterCredentialRef && openrouterCatalog && !providers[openrouterID]) {
+          const freeModels = Object.fromEntries(Object.entries(openrouterCatalog.models).filter(([modelID, model]) =>
+            DIRECT_FREE_CREDENTIAL_ROUTES.has(`${openrouterID}/${modelID}`) && model.status === "active" &&
+            model.capabilities.toolcall && (isFreeModel(model) || isProviderDeclaredFreeRoute(modelID, model)),
+          ))
+          if (Object.keys(freeModels).length === 1) {
+            const { key: _key, ...publicCatalog } = openrouterCatalog
+            providers[openrouterID] = {
+              ...publicCatalog,
+              source: "custom",
+              env: [],
+              options: { headers: { "HTTP-Referer": "https://openrouter.ai/", "X-Title": "OpenCode" } },
+              models: freeModels,
+            }
+          }
         }
 
         for (const [id, provider] of Object.entries(providers)) {
@@ -2267,6 +2320,16 @@ const layer = Layer.effect(
       )
     })
 
+    const getDirectFreeLanguage = Effect.fn("Provider.getDirectFreeLanguage")(function* (input: {
+      model: Model
+      harnessID: string
+      fetch: typeof fetch
+    }) {
+      void input
+      return yield* new ManagedProviderRouteUnavailableError({
+        reason: "OpenRouter free credentials are unavailable until Core RequestExecutor owns the pinned provider send",
+      })
+    })
     const closest = Effect.fn("Provider.closest")(function* (providerID: ProviderV2.ID, query: string[]) {
       const s = yield* InstanceState.get(state)
       const provider = s.providers[providerID]
@@ -2392,7 +2455,7 @@ const layer = Layer.effect(
       return yield* new NoModelsError({ providerID: openCodeID })
     })
 
-    return Service.of({ list, anonymousFreeModelRefs, getProvider, getModel, getLanguage, getDirectLanguage, getManagedLanguage, closest, getSmallModel, defaultModel })
+    return Service.of({ list, anonymousFreeModelRefs, getProvider, getModel, getLanguage, getDirectLanguage, getDirectFreeLanguage, getManagedLanguage, closest, getSmallModel, defaultModel })
   }),
 )
 

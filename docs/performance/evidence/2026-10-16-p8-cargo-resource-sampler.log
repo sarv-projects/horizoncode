@@ -1,0 +1,40 @@
+warning: method `target_mode` is never used
+   --> src/effect_host.rs:404:8
+    |
+235 | impl ExecutionHost {
+    | ------------------ method in this implementation
+...
+404 |     fn target_mode(&self, relative: &Path) -> io::Result<u32> {
+    |        ^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `ticket_id` is never read
+   --> src/host_kernel.rs:100:5
+    |
+ 99 | struct TicketBinding {
+    |        ------------- field in this struct
+100 |     ticket_id: String,
+    |     ^^^^^^^^^
+
+warning: `horizoncode-kernel` (lib) generated 2 warnings
+   Compiling horizoncode-kernel v0.1.0 (/home/sarvesh/business_Dev/agentx/kernel)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.45s
+     Running tests/resource_sampler.rs (kernel/target/debug/deps/resource_sampler-f8be784c6f35127e)
+
+running 12 tests
+test denied_and_unsupported_metrics_remain_unknown_and_propagate ... ok
+test detects_pid_reuse_after_counter_read_and_marks_sample_unknown ... ok
+test child_reparented_during_enumeration_is_not_attributed_to_owner ... ok
+test samples_only_the_explicit_owned_identity_and_descendants ... ok
+test parent_pid_reuse_during_child_enumeration_makes_tree_unknown ... ok
+test single_process_owner_that_already_exited_is_an_error_not_a_sample ... ok
+test single_process_reuse_after_counter_read_marks_sample_unknown ... ok
+test single_process_sampling_marks_over_budget_counters_unknown ... ok
+test source_byte_budget_is_enforced_without_reporting_partial_aggregates ... ok
+test source_work_item_budget_is_enforced_without_partial_aggregates ... ok
+test traversal_is_bounded_and_truncation_makes_aggregates_unknown ... ok
+test rejects_pid_start_identity_mismatch_before_reading_counters ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

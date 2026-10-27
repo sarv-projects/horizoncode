@@ -345,6 +345,35 @@ export interface RepoStructureClient<R = never> {
 const structureTransportRejected = (detail: string) =>
   new RepoIntelBackendError({ code: "rejected", detail })
 
+const FIRST_PAGE_SOURCE_GENERATION_PLACEHOLDER = `blake3:${"0".repeat(64)}`
+
+const validateStructureRequestQuery = (
+  query: RepoStructureRequestV1["query"],
+): RepoIntelBackendError | undefined => {
+  if (query === null || typeof query !== "object" || Array.isArray(query)) {
+    return structureTransportRejected("RepoIntel query does not match the strict query schema")
+  }
+  if (Object.prototype.hasOwnProperty.call(query, "sourceGeneration")) {
+    return structureTransportRejected("RepoIntel query must not carry caller-supplied sourceGeneration")
+  }
+  if (query.cursor !== undefined) {
+    try {
+      Schema.decodeUnknownSync(RepoIntelligenceSchema.RepoStructureCursorLeaseRefV1)(query.cursor)
+    } catch {
+      return structureTransportRejected("RepoIntel continuation cursor is malformed")
+    }
+  }
+  const candidate = query.cursor === undefined
+    ? { ...query, sourceGeneration: FIRST_PAGE_SOURCE_GENERATION_PLACEHOLDER }
+    : query
+  try {
+    Schema.decodeUnknownSync(RepoIntelligenceSchema.RepoStructureQueryV1, { onExcessProperty: "error" })(candidate)
+  } catch {
+    return structureTransportRejected("RepoIntel query does not match the strict query schema")
+  }
+  return undefined
+}
+
 /**
  * Strict consumer for `repo-intel.v1/query_structure`. Identity metadata is
  * passed to the transport out-of-body; only the canonical query DTO is serialized
@@ -354,9 +383,14 @@ const structureTransportRejected = (detail: string) =>
 export const repoStructureClientFromTransport = <R>(transport: RepoStructureTransport<R>): RepoStructureClient<R> => ({
   query: (input) =>
     Effect.gen(function* () {
-      if (!/^ses_[A-Za-z0-9_-]{1,128}$/.test(input.sessionID)) {
-        return yield* Effect.fail(structureTransportRejected("RepoIntel Session ID is malformed"))
+      if (!isRecord(input)) {
+        return yield* structureTransportRejected("RepoIntel request envelope is malformed")
       }
+      if (typeof input.sessionID !== "string" || !/^ses_[A-Za-z0-9_-]{1,128}$/.test(input.sessionID)) {
+        return yield* structureTransportRejected("RepoIntel Session ID is malformed")
+      }
+      const invalidQuery = validateStructureRequestQuery(input.query)
+      if (invalidQuery) return yield* Effect.fail(invalidQuery)
 
       const raw = yield* transport.query(input)
       const page = yield* Effect.try({
@@ -365,6 +399,14 @@ export const repoStructureClientFromTransport = <R>(transport: RepoStructureTran
       })
       if (page.queryId !== input.query.queryId) {
         return yield* Effect.fail(structureTransportRejected("RepoIntel page queryId does not match request"))
+      }
+      if (page.status === "STALE" || page.freshness === "stale") {
+        return yield* Effect.fail(
+          new RepoIntelBackendError({
+            code: "generation_mismatch",
+            detail: "RepoIntel page is stale; refusing to return it as a current result",
+          }),
+        )
       }
       if (input.query.overlayRef === undefined) {
         if (page.overlayDigest !== undefined || page.nodes.some((node) => node.overlayDigest !== undefined)) {
@@ -859,7 +901,11 @@ export const nodeSource: RepoIntelSource = {
                     }
                     return { entries, truncated }
                   } finally {
-                    await directory.close().catch(() => {})
+                    try {
+                      await directory.close()
+                    } catch {
+                      // Closing an already-read directory is best-effort across Bun and Node.
+                    }
                   }
                 }),
               ),
@@ -1309,6 +1355,13 @@ const decodeTransportQuery = (
     ) {
       return Effect.fail(bridgeRejected("query response has an invalid cursor"))
     }
+    // indexd only ever mints a continuation cursor when the result limit was
+    // hit; a cursor without that proven truncation is a malformed response.
+    if (result.truncatedBy !== "result_limit") {
+      return Effect.fail(
+        bridgeRejected("query response nextCursor requires result_limit truncation"),
+      )
+    }
   }
   if (
     result.workUnits !== undefined &&
@@ -1522,6 +1575,7 @@ export const make = (options: {
     const skipped: Array<{ readonly path: string; readonly reason: SkipReason }> = []
     let skippedCount = 0
     let scannedBytes = 0
+    let readBytes = 0
     let pathBytes = 0
     let entriesScanned = 0
     let stoppedBy: CollectionStop | undefined
@@ -1663,6 +1717,15 @@ export const make = (options: {
         skip(rel, "too_large")
         continue
       }
+      // The file may grow between stat() and readFile(); enforce the aggregate
+      // budget against the bytes actually collected, not only the earlier size.
+      // Charge before the decode check so invalid UTF-8 and skipped files can
+      // never read past the aggregate budget.
+      if (readBytes + bytes.length > limits.maxTotalBytes) {
+        stoppedBy = "byte_limit"
+        break
+      }
+      readBytes += bytes.length
       if (decodeUtf8Strict(bytes) === undefined) {
         skip(rel, "not_utf8")
         continue

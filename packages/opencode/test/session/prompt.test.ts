@@ -14,7 +14,6 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { afterAll, expect, test } from "bun:test"
 import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer, Option, Queue, Ref, Schema, Stream } from "effect"
 import path from "path"
-import { tmpdir } from "node:os"
 import { fileURLToPath } from "url"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { Agent as AgentSvc } from "../../src/agent/agent"
@@ -155,7 +154,7 @@ const lsp = Layer.succeed(
     workspaceSymbol: () => Effect.succeed([]),
     // Prompt tests never enter a workspace-bound execution scope; the mock
     // passes the effect through unchanged and fails closed for proposals.
-    withExecutionScope: (_input, effect) => effect,
+    withExecutionScope: (input, effect) => Effect.provideService(effect, LSP.ExecutionScope, input),
     postPatchDiagnostics: () => Effect.die("unexpected post-patch diagnostics"),
     codeAction: () => Effect.die("unexpected code action"),
     rename: () => Effect.die("unexpected rename proposal"),
@@ -278,8 +277,15 @@ const trustedPrincipalLayer = Layer.succeed(TrustedPrincipalContext, {
 })
 
 // Rust needs an owner-only parent for its pinned executable and observer state.
-const rustTestRoot = mkdtempSync(path.join(tmpdir(), "horizoncode-v1-rust-"))
+// Keep it directly under the repository root so generated Unix socket paths
+// fit the platform limit even when TMPDIR is package-nested.
+const rustTestRoot = mkdtempSync(path.join(path.resolve(import.meta.dir, "../../../.."), "x"))
 afterAll(() => rmSync(rustTestRoot, { recursive: true, force: true }))
+const observerSocketPath = path.join(rustTestRoot, `s-${"0".repeat(20)}`, `s-${"0".repeat(16)}.sock`)
+const hostKernelSocketPath = path.join(rustTestRoot, `host-${"0".repeat(16)}.sock`)
+if ([observerSocketPath, hostKernelSocketPath].some((socket) => Buffer.byteLength(socket, "utf8") >= 108)) {
+  throw new Error("prompt test supervisor socket root exceeds the Unix socket path limit")
+}
 const rustSupervisorPath = path.resolve(import.meta.dir, "../../../../kernel/target/debug/session_supervisor")
 const hostKernelPath = path.resolve(import.meta.dir, "../../../../kernel/target/debug/hz-kernel")
 const hostKernelAvailable = process.platform === "linux" && existsSync(hostKernelPath)
@@ -304,7 +310,7 @@ const rustSupervisorRuntimeNode = LayerNode.make({
           })
         : undefined,
       installRoot: path.join(rustTestRoot, "session-observer"),
-      stateRoot: path.join(rustTestRoot, "session-state"),
+      stateRoot: rustTestRoot,
       hostKernelAssetPath: hostKernelAvailable ? hostKernelPath : undefined,
       hostKernelManifestJSON: hostKernelDigest
         ? JSON.stringify({
@@ -316,7 +322,7 @@ const rustSupervisorRuntimeNode = LayerNode.make({
           })
         : undefined,
       hostKernelInstallRoot: path.join(rustTestRoot, "host-kernel-install"),
-      hostKernelStateRoot: path.join(rustTestRoot, "host-kernel-state"),
+      hostKernelStateRoot: rustTestRoot,
     }),
   ),
   deps: [],
@@ -336,7 +342,7 @@ const rustSessionDatabaseNode = makeGlobalNode({
 const promptTestProfile = Schema.decodeUnknownSync(AgentProfileV2.AgentProfileDefinitionV2)({
   schemaVersion: 2,
   profileId: "prompt.direct",
-  revision: 1,
+  revision: "1",
   name: "Prompt Direct",
   description: "Direct prompt test profile",
   source: "user",
@@ -349,7 +355,7 @@ const promptTestProfile = Schema.decodeUnknownSync(AgentProfileV2.AgentProfileDe
   harness: "native-minimal",
   reasoning: "low",
   variants: [],
-  instructions: { extraRefs: [], maxCompiledTokens: 4096 },
+  instructions: { extraRefs: [], maxCompiledTokens: "4096" },
   tools: [],
   allowedSkillIds: [],
   deniedSkillIds: [],

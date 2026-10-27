@@ -120,12 +120,17 @@ describe("BashTool", () => {
 /** A terminal runner double that reads TrustedPrincipalContext, proving the
  * guarded leaf supplies the authenticated principal at its own boundary. */
 const guardedFixture = () => {
-  const observed: { called: number; principal?: TrustedPrincipal } = { called: 0 }
+  const observed: {
+    called: number
+    principal?: TrustedPrincipal
+    invocation?: NonNullable<Tool.Context["workspaceCommandProfile"]>["reference"] | undefined
+  } = { called: 0 }
   const tool = BashTool.makeTool({
-    runTool: () =>
+    runTool: (input) =>
       Effect.gen(function* () {
         const { principal } = yield* TrustedPrincipalContext
         observed.principal = principal
+        observed.invocation = input.workspaceCommandProfile?.reference
         observed.called++
         return {
           status: "exited",
@@ -150,6 +155,35 @@ const guardedFixture = () => {
   })
   return { tool, observed }
 }
+
+const workspaceProfileDefinition = (): NonNullable<
+  Tool.Context["workspaceCommandProfile"]
+>["definition"] => ({
+  schemaVersion: 1,
+  profileId: "profile_build_test",
+  revision: "3",
+  enabled: true,
+  actions: ["test"],
+  executable: { selector: "/usr/bin/bun", resolvedDigest: `blake3:${"c".repeat(64)}` },
+  arguments: {
+    fixedPrefix: ["--"],
+    allowedValuesByPosition: [["focused-suite"]],
+    maxCount: 2,
+    maxBytes: 4096,
+  },
+  workingDirectory: "registered_workspace_root",
+  environment: { policy: "sanitized_allowlist", allowedNames: [] },
+  filesystem: "registered_workspace_and_isolated_temp_cache_roots",
+  network: "deny",
+  limits: {
+    maxWallTimeMs: 60_000,
+    maxStdoutBytes: 65_536,
+    maxStderrBytes: 65_536,
+    maxProcesses: 4,
+    requiredOsGuarantees: [],
+  },
+  profileDigest: `blake3:${"a".repeat(64)}`,
+})
 
 const guardedCall: ToolCall = {
   type: "tool-call",
@@ -206,6 +240,96 @@ describe("BashTool guarded execution context", () => {
       // rides in the model content.
       expect(output.structured).toMatchObject({ exit: 0, truncated: false })
       expect(output.content).toEqual([{ type: "text", text: "ok-output" }])
+    }),
+  )
+
+  it.live("passes only the exact admitted workspace profile reference to guarded execution", () =>
+    Effect.gen(function* () {
+      const { tool, observed } = guardedFixture()
+      const input = {
+        mode: "workspace_profile" as const,
+        action: "test" as const,
+        profileID: "profile_build_test",
+        revision: "3",
+        profileDigest: `blake3:${"a".repeat(64)}`,
+        arguments: ["--", "focused-suite"],
+      }
+      const context: Tool.Context = {
+        ...guardedContext({ kind: "server_auth", subject: "profile-test" }),
+        toolCallID: "call-bash-profile",
+        guardedCall: {
+          callID: "call-bash-profile",
+          capabilityID: "terminal.run",
+          arguments: input,
+        },
+        workspaceCommandProfile: {
+          callID: "call-bash-profile",
+          reference: {
+            profileId: input.profileID,
+            revision: input.revision,
+            profileDigest: input.profileDigest,
+            action: input.action,
+          },
+          definition: workspaceProfileDefinition(),
+          resolvedEnvironment: {},
+        },
+      }
+
+      const output = yield* Tool.settle(
+        tool,
+        { ...guardedCall, id: "call-bash-profile", input } as ToolCall,
+        context,
+      )
+      expect(observed.called).toBe(1)
+      expect(observed.invocation).toEqual({
+        profileId: input.profileID,
+        revision: input.revision,
+        profileDigest: input.profileDigest,
+        action: input.action,
+      })
+      expect(output.structured).toMatchObject({ exit: 0, truncated: false })
+    }),
+  )
+
+  it.live("rejects substituted profile identity, digest, action, and argv before guarded execution", () =>
+    Effect.gen(function* () {
+      const { tool, observed } = guardedFixture()
+      const input = {
+        mode: "workspace_profile" as const,
+        action: "test" as const,
+        profileID: "profile_build_test",
+        revision: "3",
+        profileDigest: `blake3:${"a".repeat(64)}`,
+        arguments: ["--", "focused-suite"],
+      }
+      const context: Tool.Context = {
+        ...guardedContext({ kind: "server_auth", subject: "profile-test" }),
+        toolCallID: "call-bash-profile",
+        guardedCall: { callID: "call-bash-profile", capabilityID: "terminal.run", arguments: input },
+        workspaceCommandProfile: {
+          callID: "call-bash-profile",
+          reference: {
+            profileId: input.profileID,
+            revision: input.revision,
+            profileDigest: input.profileDigest,
+            action: input.action,
+          },
+          definition: workspaceProfileDefinition(),
+          resolvedEnvironment: {},
+        },
+      }
+      const toolCall = { ...guardedCall, id: "call-bash-profile", input } as ToolCall
+      const cases = [
+        { ...input, revision: "4" },
+        { ...input, profileDigest: `blake3:${"b".repeat(64)}` },
+        { ...input, action: "build" as const },
+        { ...input, arguments: ["--", "other-suite"] },
+      ]
+      for (const substituted of cases) {
+        const failure = yield* Tool.settle(tool, { ...toolCall, input: substituted }, context).pipe(Effect.flip)
+        expect(failure.message).toBe("Terminal execution requires the exact Guard-admitted call, lease, and Location")
+      }
+      expect(observed.called).toBe(0)
     }),
   )
 

@@ -7,6 +7,7 @@ import {
 import { connectLinuxSecretServiceCredentialBackend } from "./secret-service"
 import { createLinuxSecretServiceStore, type SecretServiceCredentialBackend } from "./secret-service-store"
 import { SecretBrokerV1 } from "@opencode-ai/schema/secret-broker-v1"
+import type { SecureInputBinding } from "./secure-input"
 
 export class CredentialStoreError extends Error {
   constructor(
@@ -84,9 +85,9 @@ export function createCredentialBrokerRuntime(options: {
   }
 
   return {
-    async put(input: SecretBrokerV1.PutRequestV1) {
+    async put(input: SecretBrokerV1.PutRequestV1, binding?: SecureInputBinding) {
       try {
-        return await run((broker) => broker.put(input))
+        return await run((broker) => broker.put(input, binding))
       } catch (error) {
         throw safeError(error)
       }

@@ -161,6 +161,7 @@ export function formatAssistantHeader(
 }
 
 function formatPartResult(part: Part, options: TranscriptOptions, maxBytes: number) {
+  maxBytes = Math.min(maxBytes, MAX_FORMATTED_PART_BYTES)
   let result = ""
   let sourceTruncated = false
   if (part.type === "text" && !part.synthetic) {

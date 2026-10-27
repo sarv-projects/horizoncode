@@ -1388,6 +1388,34 @@
       "sealed": false
     },
     {
+      "id": "secrets.put",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "secrets.rotate",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "secrets.revoke",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
+      "id": "secrets.use",
+      "kind": "tool",
+      "effectClass": "guarded_effect",
+      "status": "designed",
+      "sealed": false
+    },
+    {
       "id": "skills.inspect",
       "kind": "tool",
       "effectClass": "read_only",

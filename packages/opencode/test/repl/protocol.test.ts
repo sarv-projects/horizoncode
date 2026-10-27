@@ -85,6 +85,66 @@ describe("repl.protocol start requests", () => {
     ])
   })
 
+  test("rejects accessor-backed start fields without invoking getters", () => {
+    let getterCalls = 0
+    const input = start()
+    Object.defineProperty(input, "scope", {
+      enumerable: true,
+      get: () => {
+        getterCalls++
+        return "workspace://ws-1"
+      },
+    })
+    let error: unknown
+    try {
+      parseStartRequest(input)
+    } catch (cause) {
+      error = cause
+    }
+    expect(getterCalls).toBe(0)
+    expect(error).toBeInstanceOf(ProtocolError)
+  })
+
+  test("rejects accessor-backed resource limits without invoking getters", () => {
+    let getterCalls = 0
+    const limits = { ...start().resourceLimits }
+    Object.defineProperty(limits, "maxMemoryBytes", {
+      enumerable: true,
+      get: () => {
+        getterCalls++
+        return 512 * 1024 * 1024
+      },
+    })
+    let error: unknown
+    try {
+      parseStartRequest(start({ resourceLimits: limits }))
+    } catch (cause) {
+      error = cause
+    }
+    expect(getterCalls).toBe(0)
+    expect(error).toBeInstanceOf(ProtocolError)
+  })
+
+  test("rejects accessor-backed callback capability arrays without invoking getters", () => {
+    let getterCalls = 0
+    const callbackCapabilities = ["files.read"]
+    Object.defineProperty(callbackCapabilities, "0", {
+      enumerable: true,
+      get: () => {
+        getterCalls++
+        return "files.read"
+      },
+    })
+    let error: unknown
+    try {
+      parseStartRequest(start({ callbackCapabilities }))
+    } catch (cause) {
+      error = cause
+    }
+    expect(getterCalls).toBe(0)
+    expect(error).toBeInstanceOf(ProtocolError)
+  })
+
   test("callback capability declarations use unique canonical IDs only", () => {
     const duplicate = capture<ProtocolError>(() =>
       parseStartRequest(start({ callbackCapabilities: ["files.read", "files.read"] })),
@@ -96,6 +156,26 @@ describe("repl.protocol start requests", () => {
 })
 
 describe("repl.protocol execute envelopes", () => {
+  test("rejects accessor-backed execute fields without invoking getters", () => {
+    let getterCalls = 0
+    const input = { generation: 1, code: "1", deadlineMs: 1000 }
+    Object.defineProperty(input, "code", {
+      enumerable: true,
+      get: () => {
+        getterCalls++
+        return "1"
+      },
+    })
+    let error: unknown
+    try {
+      parseExecuteRequest(input)
+    } catch (cause) {
+      error = cause
+    }
+    expect(getterCalls).toBe(0)
+    expect(error).toBeInstanceOf(ProtocolError)
+  })
+
   test("accepts a bounded execute request", () => {
     const request = parseExecuteRequest({ generation: 1, code: "print('hi')", deadlineMs: 10_000 })
     expect(request).toEqual({ generation: 1, code: "print('hi')", deadlineMs: 10_000 })

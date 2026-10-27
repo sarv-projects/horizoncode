@@ -19,7 +19,10 @@ use crate::resource_budget::{
     self, AuthenticatedOwnerContext, BudgetDimension, Capacity, ReservationState,
 };
 use crate::resource_sampler::ProcessIdentity;
-use crate::worker_durable::{WorkerCommand, WorkerDurableError, WorkerPoolControl, WorkerPoolOpenConfig};
+use crate::worker_durable::{
+    HostRunFrozenInvocationV1, WorkerCommand, WorkerDurableError, WorkerPoolControl,
+    WorkerPoolOpenConfig,
+};
 use crate::worker_pool::{
     CancelScope, EnqueueRequest, FanOutState, OwnerScopeKey, ReconciliationProof, TicketState,
     VerifiedAttemptBinding, WorkerClass, WorkerPoolError, WorkerSettlement,
@@ -51,6 +54,22 @@ fn temp_root() -> PathBuf {
         std::process::id()
     ));
     std::fs::create_dir_all(&root).expect("create temp root");
+    #[cfg(unix)]
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
+        .expect("owner-private state root");
+    root
+}
+
+fn host_run_temp_root() -> PathBuf {
+    let unique = NEXT_DIR.fetch_add(1, Ordering::SeqCst);
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join(".tmp")
+        .join(format!("p8-hostrun-{}-{stamp}-{unique}", std::process::id()));
+    std::fs::create_dir_all(&root).expect("create repository-local test root");
     #[cfg(unix)]
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
         .expect("owner-private state root");
@@ -1095,4 +1114,341 @@ fn created_worktree_inspect_target_requires_exact_settled_create_receipt() {
     assert_eq!(target.worktree_id(), create_pin.worktree_id());
     assert_eq!(target.base_revision(), "git-base-revision-a");
     assert_eq!(target.relative_path(), create_pin.relative_path());
+}
+
+fn host_run_fixture() -> (
+    crate::managed_control::HostRunDispatchBindingV1,
+    crate::managed_control::HostRunDispatchBindingReceiptV1,
+    HostRunFrozenInvocationV1,
+) {
+    use crate::managed_control::{HostRunDispatchBindingReceiptV1, HostRunDispatchBindingV1};
+    let invocation = HostRunFrozenInvocationV1 {
+        dispatch_key_digest: digest('a'),
+        manifest_digest: digest('b'),
+        evaluator_task_id: "eval-task-a".into(),
+        arm_id: "arm-a".into(),
+        task_group: "group-a".into(),
+    };
+    let binding = HostRunDispatchBindingV1 {
+        schema_version: HostRunDispatchBindingV1::SCHEMA_VERSION,
+        dispatch_key_digest: invocation.dispatch_key_digest.clone(),
+        manifest_digest: invocation.manifest_digest.clone(),
+        evaluator_task_id: invocation.evaluator_task_id.clone(),
+        arm_id: invocation.arm_id.clone(),
+        task_group: invocation.task_group.clone(),
+        run_id: "run-a".into(),
+        managed_task_id: "managed-task-a".into(),
+        attempt_id: "attempt-a".into(),
+        evaluation_session_id: "session-root-a".into(),
+        core_process_generation: 7,
+        owner_id: "pool-a".into(),
+        owner_epoch: EPOCH,
+        worker_execution_id: "worker-a".into(),
+        delegation_binding_digest: digest('c'),
+        accepted_spec_digest: digest('d'),
+        provider_selection_digest: digest('e'),
+        workspace_binding_digest: digest('f'),
+        admitted_workspace_revision: digest('1'),
+        attempt_scope_digest: digest('2'),
+        owner_principal_binding_digest: digest('3'),
+    };
+    let binding_digest = binding.digest().expect("binding digest");
+    let p2_receipt = HostRunDispatchBindingReceiptV1 {
+        dispatch_key_digest: invocation.dispatch_key_digest.clone(),
+        binding_digest,
+        owner_log_sequence: 19,
+        owner_log_event_digest: digest('4'),
+        binding_managed_revision: 23,
+    };
+    (binding, p2_receipt, invocation)
+}
+
+#[test]
+fn host_run_mirror_append_returns_committed_cursor_and_exact_retry_is_idempotent() {
+    let root = host_run_temp_root();
+    let mut control = WorkerPoolControl::open(&root, "pool-a", config(EPOCH)).unwrap();
+    let (binding, p2_receipt, invocation) = host_run_fixture();
+    let first = control
+        .append_host_run_dispatch_bound(&binding, &p2_receipt, &invocation)
+        .unwrap();
+    let second = control
+        .append_host_run_dispatch_bound(&binding, &p2_receipt, &invocation)
+        .unwrap();
+    assert_eq!(first, second);
+    assert_eq!(first.owner_log_id, "pool-a");
+    assert_eq!(first.owner_log_sequence, "2");
+    assert_eq!(first.dispatch_key_digest, invocation.dispatch_key_digest);
+    let stored = control
+        .host_run_dispatch_bound
+        .get(&binding.dispatch_key_digest)
+        .expect("mirror payload retained");
+    assert_eq!(stored.p2_receipt, p2_receipt);
+    assert_eq!(stored.binding, binding);
+}
+
+#[test]
+fn host_run_mirror_receipt_resolver_accepts_only_exact_committed_receipt() {
+    let root = host_run_temp_root();
+    let mut control = WorkerPoolControl::open(&root, "pool-a", config(EPOCH)).unwrap();
+    let (binding, p2_receipt, invocation) = host_run_fixture();
+    let committed = control
+        .append_host_run_dispatch_bound(&binding, &p2_receipt, &invocation)
+        .unwrap();
+
+    assert_eq!(
+        control
+            .resolve_host_run_dispatch_bound_receipt(&binding, &p2_receipt, &committed)
+            .unwrap(),
+        committed,
+    );
+    for forged in [
+        crate::managed_control::HostRunDispatchP8OwnerReceiptV1 {
+            owner_log_sequence: "1".into(),
+            ..committed.clone()
+        },
+        crate::managed_control::HostRunDispatchP8OwnerReceiptV1 {
+            owner_log_event_digest: digest('9'),
+            ..committed.clone()
+        },
+        crate::managed_control::HostRunDispatchP8OwnerReceiptV1 {
+            dispatch_key_digest: digest('8'),
+            ..committed.clone()
+        },
+    ] {
+        assert!(control
+            .resolve_host_run_dispatch_bound_receipt(&binding, &p2_receipt, &forged)
+            .is_err());
+    }
+}
+
+#[test]
+fn host_run_mirror_rejects_conflicting_binding_or_p2_commit_receipt_without_append() {
+    let root = host_run_temp_root();
+    let mut control = WorkerPoolControl::open(&root, "pool-a", config(EPOCH)).unwrap();
+    let (binding, p2_receipt, invocation) = host_run_fixture();
+    let committed = control
+        .append_host_run_dispatch_bound(&binding, &p2_receipt, &invocation)
+        .unwrap();
+    let mut conflicting_binding = binding.clone();
+    conflicting_binding.workspace_binding_digest = digest('8');
+    let mut conflicting_binding_receipt = p2_receipt.clone();
+    conflicting_binding_receipt.binding_digest = conflicting_binding.digest().unwrap();
+    assert!(control
+        .append_host_run_dispatch_bound(
+            &conflicting_binding,
+            &conflicting_binding_receipt,
+            &invocation,
+        )
+        .is_err());
+    let mut conflicting_p2_receipt = p2_receipt.clone();
+    conflicting_p2_receipt.owner_log_sequence += 1;
+    assert!(control
+        .append_host_run_dispatch_bound(&binding, &conflicting_p2_receipt, &invocation)
+        .is_err());
+    let replay = control
+        .resolve_host_run_dispatch_bound(
+            &binding,
+            &p2_receipt,
+            &protocol::CursorV1 {
+                owner_kind: "worker_pool".into(),
+                owner_id: committed.owner_log_id.clone(),
+                seq: committed.owner_log_sequence.clone(),
+                event_digest: committed.owner_log_event_digest.clone(),
+            },
+        )
+        .unwrap();
+    assert_eq!(replay, committed);
+}
+
+#[test]
+fn host_run_mirror_resolution_rejects_forged_or_stale_p8_cursor() {
+    let root = host_run_temp_root();
+    let mut control = WorkerPoolControl::open(&root, "pool-a", config(EPOCH)).unwrap();
+    let (binding, p2_receipt, invocation) = host_run_fixture();
+    let committed = control
+        .append_host_run_dispatch_bound(&binding, &p2_receipt, &invocation)
+        .unwrap();
+    let cursor = |seq: String, event_digest: String| protocol::CursorV1 {
+        owner_kind: "worker_pool".into(),
+        owner_id: committed.owner_log_id.clone(),
+        seq,
+        event_digest,
+    };
+    for forged in [
+        cursor("1".into(), committed.owner_log_event_digest.clone()),
+        cursor(committed.owner_log_sequence.clone(), digest('9')),
+        protocol::CursorV1 {
+            owner_kind: "worker_pool".into(),
+            owner_id: "foreign-owner".into(),
+            seq: committed.owner_log_sequence.clone(),
+            event_digest: committed.owner_log_event_digest.clone(),
+        },
+    ] {
+        assert!(control
+            .resolve_host_run_dispatch_bound(
+                &binding,
+                &p2_receipt,
+                &forged,
+            )
+            .is_err());
+    }
+}
+
+#[test]
+fn host_run_mirror_rejects_frozen_tuple_substitution_before_append() {
+    let root = host_run_temp_root();
+    let mut control = WorkerPoolControl::open(&root, "pool-a", config(EPOCH)).unwrap();
+    let (binding, p2_receipt, invocation) = host_run_fixture();
+    let mut foreign_invocation = invocation.clone();
+    foreign_invocation.task_group = "foreign-group".into();
+    assert!(control
+        .append_host_run_dispatch_bound(&binding, &p2_receipt, &foreign_invocation)
+        .is_err());
+
+    assert_eq!(control.host_run_dispatch_bound.len(), 0);
+}
+
+#[test]
+fn host_run_mirror_reopens_and_rebuilds_receipt_from_committed_event() {
+    let root = host_run_temp_root();
+    let mut control = WorkerPoolControl::open(&root, "pool-a", config(EPOCH)).unwrap();
+    let (binding, p2_receipt, invocation) = host_run_fixture();
+    let committed = control
+        .append_host_run_dispatch_bound(&binding, &p2_receipt, &invocation)
+        .unwrap();
+    drop(control);
+    let reopened = WorkerPoolControl::open(&root, "pool-a", config(EPOCH)).unwrap();
+    let resolved = reopened
+        .resolve_host_run_dispatch_bound(
+            &binding,
+            &p2_receipt,
+            &protocol::CursorV1 {
+                owner_kind: "worker_pool".into(),
+                owner_id: committed.owner_log_id.clone(),
+                seq: committed.owner_log_sequence.clone(),
+                event_digest: committed.owner_log_event_digest.clone(),
+            },
+        )
+        .unwrap();
+    assert_eq!(resolved, committed);
+    assert_eq!(
+        reopened
+            .host_run_dispatch_bound
+            .get(&binding.dispatch_key_digest)
+            .expect("P2 commitment facts survive replay")
+            .p2_receipt,
+        p2_receipt,
+    );
+}
+
+#[test]
+fn host_run_mirror_recovers_commit_before_in_memory_publication() {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    let root = host_run_temp_root();
+    let mut control = WorkerPoolControl::open(&root, "pool-a", config(EPOCH)).unwrap();
+    let (binding, p2_receipt, invocation) = host_run_fixture();
+    control.fail_after_host_run_mirror_commit = true;
+
+    let interrupted = catch_unwind(AssertUnwindSafe(|| {
+        control.append_host_run_dispatch_bound(&binding, &p2_receipt, &invocation)
+    }));
+    assert!(interrupted.is_err(), "failure point must follow durable OwnerLog commit");
+    assert!(control.host_run_dispatch_bound.is_empty());
+    assert_eq!(control.cursor.as_ref().map(|cursor| cursor.seq.as_str()), Some("1"));
+    drop(control);
+
+    let mut reopened = WorkerPoolControl::open(&root, "pool-a", config(EPOCH)).unwrap();
+    let recovered = reopened
+        .host_run_dispatch_bound
+        .get(&binding.dispatch_key_digest)
+        .expect("OwnerLog replay publishes the already committed mirror")
+        .p8_receipt
+        .clone();
+    assert_eq!(recovered.owner_log_sequence, "2");
+    let retry = reopened
+        .append_host_run_dispatch_bound(&binding, &p2_receipt, &invocation)
+        .unwrap();
+    assert_eq!(retry, recovered, "retry after restart must not append again");
+}
+
+#[test]
+fn host_run_mirror_replay_rejects_corrupted_mirror_payload() {
+    use crate::owner_log::{DurabilityProfile, OwnerEventInput, OwnerIdentity, OwnerLogV2};
+    let root = host_run_temp_root();
+    drop(WorkerPoolControl::open(&root, "pool-a", config(EPOCH)).unwrap());
+
+    let mut log = OwnerLogV2::open(
+        &root,
+        OwnerIdentity::new("worker_pool".into(), "pool-a".into()).unwrap(),
+        DurabilityProfile::RunDurable,
+    ).unwrap();
+    let mut event = OwnerEventInput {
+        schema_version: 1,
+        time_ms: 1,
+        kind: "host_run_dispatch_bound".into(),
+        data: serde_json::json!({ "not": "a valid mirror payload" }),
+        delivery_id: None,
+        command_digest: None,
+    };
+    let delivery = "hostrun-mirror-corrupt";
+    let command_digest = OwnerLogV2::command_digest(delivery, &[event.clone()]).unwrap();
+    event.delivery_id = Some(delivery.into());
+    event.command_digest = Some(command_digest.clone());
+    log.append_batch(delivery, &command_digest, &[event], None).unwrap();
+    drop(log);
+
+    assert!(WorkerPoolControl::open(&root, "pool-a", config(EPOCH)).is_err());
+}
+
+#[test]
+fn host_run_mirror_delivery_id_conflict_does_not_mutate_committed_event() {
+    use crate::owner_log::{DurabilityProfile, OwnerEventInput, OwnerIdentity, OwnerLogV2};
+    let root = host_run_temp_root();
+    let mut control = WorkerPoolControl::open(&root, "pool-a", config(EPOCH)).unwrap();
+    let (binding, p2_receipt, invocation) = host_run_fixture();
+    let committed = control
+        .append_host_run_dispatch_bound(&binding, &p2_receipt, &invocation)
+        .unwrap();
+    drop(control);
+
+    let delivery = super::host_run_mirror_delivery_id(&binding.dispatch_key_digest);
+    let mut conflicting_binding = binding.clone();
+    conflicting_binding.arm_id = "conflicting-arm".into();
+    let conflicting_payload = serde_json::json!({
+        "binding": conflicting_binding.value(),
+        "p2BindingReceipt": p2_receipt.value(),
+        "frozenInvocation": super::host_run_invocation_value(&invocation),
+    });
+    let mut conflicting_event = OwnerEventInput {
+        schema_version: 1,
+        time_ms: 2,
+        kind: "host_run_dispatch_bound".into(),
+        data: conflicting_payload,
+        delivery_id: None,
+        command_digest: None,
+    };
+    let command_digest = OwnerLogV2::command_digest(&delivery, &[conflicting_event.clone()]).unwrap();
+    conflicting_event.delivery_id = Some(delivery.clone());
+    conflicting_event.command_digest = Some(command_digest.clone());
+    let mut log = OwnerLogV2::open(
+        &root,
+        OwnerIdentity::new("worker_pool".into(), "pool-a".into()).unwrap(),
+        DurabilityProfile::RunDurable,
+    ).unwrap();
+    assert!(log.append_batch(&delivery, &command_digest, &[conflicting_event], None).is_err());
+    drop(log);
+
+    let reopened = WorkerPoolControl::open(&root, "pool-a", config(EPOCH)).unwrap();
+    let resolved = reopened.resolve_host_run_dispatch_bound(
+        &binding,
+        &p2_receipt,
+        &protocol::CursorV1 {
+            owner_kind: "worker_pool".into(),
+            owner_id: committed.owner_log_id.clone(),
+            seq: committed.owner_log_sequence.clone(),
+            event_digest: committed.owner_log_event_digest.clone(),
+        },
+    ).unwrap();
+    assert_eq!(resolved, committed);
 }

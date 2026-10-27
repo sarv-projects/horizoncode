@@ -145,6 +145,27 @@ describe("§30.3 context operations", () => {
     expect(pinned.protectedRefs).toContain("msg_a_goal:msg_a_goal_p")
   })
 
+  test("prune rejects malformed or unbounded protected reference inputs", () => {
+    expect(() =>
+      planPrune({
+        entries: history(),
+        protectedRefs: "msg_a2:msg_a2_t" as unknown as readonly string[],
+      }),
+    ).toThrow("protectedRefs must be an array")
+    expect(() =>
+      planPrune({
+        entries: history(),
+        protectedRefs: [42 as unknown as string],
+      }),
+    ).toThrow("protectedRefs must contain only strings")
+    expect(() =>
+      planPrune({
+        entries: history(),
+        protectedRefs: Array.from({ length: 4_097 }, (_, index) => `msg_${index}`),
+      }),
+    ).toThrow("protectedRefs exceeds its bound")
+  })
+
   test("prune preview protects recent and pinned entries and records a recoverable range", () => {
     const plan = planPrune({ entries: history(), protectedRefs: ["msg_a2:msg_a2_t"] })
     expect(plan.candidates).toHaveLength(0)
@@ -223,5 +244,57 @@ describe("§30.4 pressure recovery step 0", () => {
       epochID: "epoch_3",
     })
     expect(unknown.status).toBe("unknown_context_limit")
+  })
+
+  test("malformed model limits remain unknown instead of triggering recovery", () => {
+    for (const context of [Number.NaN, Number.POSITIVE_INFINITY, -1, 1.5]) {
+      const result = planPressureRecovery({
+        entries: history(),
+        request,
+        model: { route: { defaults: { limits: { context, output: 100 } } } } as unknown as Model,
+        epochID: "epoch_invalid_context",
+      })
+      expect(result.status).toBe("unknown_context_limit")
+    }
+
+    const invalidOutput = planPressureRecovery({
+      entries: history(),
+      request: { ...request, generation: undefined } as unknown as LLMRequest,
+      model: { route: { defaults: { limits: { context: 1_000, output: -1 } } } } as unknown as Model,
+      epochID: "epoch_invalid_output",
+    })
+    expect(invalidOutput.status).toBe("unknown_context_limit")
+  })
+
+  test("an output reserve that consumes the context window reports exhaustion instead of trimming", () => {
+    const result = planPressureRecovery({
+      entries: history(),
+      request,
+      model,
+      epochID: "epoch_reserve_overflow",
+      maxOutputTokens: 2_000,
+      safetyMarginTokens: 0,
+    })
+    expect(result.status).toBe("context_budget_exceeded")
+    if (result.status !== "context_budget_exceeded") throw new Error("expected budget exhaustion")
+    expect(result.diagnostics).toMatchObject({ contextLimit: 1_000, outputReserve: 2_000, safetyMargin: 0 })
+  })
+
+  test("invalid caller-supplied reserves are rejected before planning", () => {
+    expect(() => planPressureRecovery({
+      entries: history(),
+      request,
+      model,
+      epochID: "epoch_invalid_reserve",
+      maxOutputTokens: -1,
+    })).toThrow("maxOutputTokens is invalid")
+
+    expect(() => planPressureRecovery({
+      entries: history(),
+      request,
+      model,
+      epochID: "epoch_invalid_margin",
+      safetyMarginTokens: Number.NaN,
+    })).toThrow("safetyMarginTokens is invalid")
   })
 })

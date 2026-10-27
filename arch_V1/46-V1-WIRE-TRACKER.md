@@ -2,7 +2,7 @@
 
 **Use with:** [`46-V1-IMPLEMENTATION-BACKLOG.md`](46-V1-IMPLEMENTATION-BACKLOG.md) (row IDs), [`HANDOFF.md`](../HANDOFF.md) (evidence), [`46-V1-VERIFICATION-RUNBOOK.md`](46-V1-VERIFICATION-RUNBOOK.md).
 
-**Snapshot:** 2026-10-22. Update **Status** when a wire is **WIRED** (cite test + revision in `HANDOFF.md`). Registry: **4/230** capabilities `code_present` — most rows remain open.
+**Snapshot:** 2026-10-26 (reconciled with code + [`46-V1-SOURCE-ALIGNMENT-AUDIT.md`](46-V1-SOURCE-ALIGNMENT-AUDIT.md) §5). Update **Status** to **Done** only when **WIRED** with §32 acceptance on a cited revision (`HANDOFF.md`). **Partial** = CODE_PRESENT and/or focused tests — not VERIFIED. Registry: **226 designed / 4 `code_present` / 0 `wired`** of 230.
 
 ## Status legend
 
@@ -52,7 +52,7 @@
 | W-P1-04 | SessionLink observer: ACK, replay, crash recovery | P1-06 | §13, §32.12 LANE-* | Partial |
 | W-P1-05 | SecretBroker → credentialed effects only via Guard | P1-07 | §05, §32.21 | Partial |
 | W-P1-06 | CodeMode + external editor EffectHost binding + recovery | P1-08–09 | §37.24, §37.28, EDITOR-* | Partial |
-| W-P1-07 | **DEC-V1-36** read fast path + batched read RPC (Core classifier) | P1-10 | §14.3.1, PERF-DIRECT-002,004 | Not done |
+| W-P1-07 | **DEC-V1-36** read fast path + batched read RPC (Core classifier) | P1-10 | §14.3.1, PERF-DIRECT-002,004 | Partial (`direct-read-batch.ts`, kernel RPC; PERF-DIRECT not run) |
 | W-P1-08 | Warm kernel IPC pool (provider not blocked on cold start) | P1-11 | §13.2, PERF-DIRECT-001 | Not done |
 
 ---
@@ -64,7 +64,7 @@
 | W-P2-01 | Goal/Run/Task/Attempt lifecycle | P2-01 | §11, §32.9 | Partial |
 | W-P2-02 | Per-Task verifier + aggregate Run settlement | P2-03 | DEC-V1-31, MPT-001 | Partial |
 | W-P2-03 | Bounded multi-Task DAG on distinct Locations | P2-02 | §29.18, §21, SA-* | Partial |
-| W-P2-04 | `managed_context.advance` + OwnerLog digest | P2-04 | §30.24, CTX-* | Partial |
+| W-P2-04 | `managed_context.advance` + OwnerLog digest | P2-04 | §30.24, CTX-* | Partial — `managed_context.advance`/OwnerLog work exists, but automation dispatch in this phase is inert: `AUTOMATION_INVOCATION_ENABLED=false` (`kernel/src/automation.rs:27`), `runNow` refuses (`packages/opencode/src/session/automation-control.ts:472-493`), and no cron/timezone resolver or due-occurrence producer exists (`kernel/src/automation.rs:104-105,270-276`). |
 | W-P2-05 | `providers.infer` through Guard | P2-05 | §37.23, LANE-003 | Partial |
 | W-P2-06 | Direct artifact API + root inspect/range/cancel for P7 | P2-06–07 | §37.12, artifact §32.16 | Partial |
 | W-P2-07 | CodeMode managed start (no caller lease) | P2-07 | CM-* | Partial |
@@ -77,15 +77,15 @@
 
 | ID | Wire | Backlog | Normative / tests | Status |
 |---|---|---|---|---|
-| W-P3-01 | `ensure_generation` / `query_structure` | P3-01 | §30.22–23, RD-* | Partial |
+| W-P3-01 | `ensure_generation` / `query_structure` | P3-01 | §30.22–23, RD-* | Partial — indexd is lexical-only (`indexd/src/repo_intel.rs:6-8`); symbol/reference/impact return typed unsupported (`indexd/src/repo_intel.rs:93-100`), single `blake3` dependency (`indexd/Cargo.toml`). |
 | W-P3-02 | Expose `repo.tree` / `repo.detect` when gated | P3-02 | §33.5, V1-ADAPT-004 | Partial |
 | W-P3-03 | ContextSelection pin (direct) | P3-03 | DEC-V1-32, CTX-001 | Partial |
 | W-P3-04 | ContextLedger compile + stream aligned to §30.2 | P3-04 | CTX-001–005 | Partial |
-| W-P3-05 | §30.26 compile policy + `repo-context-anchor` | P3-05 | CX-014–021 | Not done |
+| W-P3-05 | §30.26 compile policy + `repo-context-anchor` | P3-05 | CX-014–021 | Partial (`context-compile-policy.ts`; provider legs NOT_RUN) |
 | W-P3-06 | `/trim`, `/prune`, `/compact`, pressure step-0 auto-trim | P3-06 | CX-001–010, §30.4 | Partial |
 | W-P3-07 | Progressive `tools.search` / harness minimal default | P3-07 | §31.21, CX-008 | Partial |
 | W-P3-08 | Bounded history SQL | P3-08 | CX-004, UI-019 | Partial |
-| W-P3-09 | §29.23 project instruction resolver (AGENTS.md on-demand) | P3-09 | CX-022–025, INST-* | Not done |
+| W-P3-09 | §29.23 project instruction resolver (AGENTS.md on-demand) | P3-09 | CX-022–025, INST-* | Partial (`project-instruction.ts`; INST-* integration open) |
 | W-P3-10 | §30.28: compile/provider overlap, symbol-first, async index | P3-10 | SPD-A,B,D | Not done |
 | W-P3-11 | Session import/export | P3-11 | REL-N, §42 | Partial |
 
@@ -97,9 +97,9 @@
 |---|---|---|---|---|
 | W-P4-01 | LanguageServiceBroker + repo reads via HostKernel | P4-01–02 | §37.6, LS-* | Partial |
 | W-P4-02 | DAP broker | P4-03 | §37.7, §32.28 | Partial |
-| W-P4-03 | REPL broker | P4-04 | §37.8 | Partial |
+| W-P4-03 | REPL broker | P4-04 | §37.8 | Partial — no importers outside `packages/opencode/src/repl/`; 2,993 src lines are unreachable from product entry points, and `GUARDED_REPL_RUNTIME_READY=false` (`packages/opencode/src/repl/lifecycle.ts:952`). |
 | W-P4-04 | `/editor`: saved profile, Guarded launch, Explorer preview | P4 UX | §16.20, §37.28 | Partial |
-| W-P4-05 | Post-patch LSP diagnostics in tool results (accuracy) | ACC bundle | §30.29 ACC-002 | Not done |
+| W-P4-05 | Post-patch LSP diagnostics in tool results (accuracy) | ACC bundle | §30.29 ACC-002 | Partial (`apply_patch.ts` schedule + `lsp/diagnostic.test.ts`; E2E open) |
 
 ---
 
@@ -108,7 +108,7 @@
 | ID | Wire | Backlog | Normative / tests | Status |
 |---|---|---|---|---|
 | W-P5-01 | `web.search` cascade + route receipts; no hidden paid fallback | P5-01 | DEC-V1-26, WS-* | Partial |
-| W-P5-02 | CodeMode helper package, confinement, P2 lifecycle, P7 nested dispatch | P5-02 | CM-* | Partial |
+| W-P5-02 | CodeMode helper package, confinement, P2 lifecycle, P7 nested dispatch | P5-02 | CM-* | Partial — hard-disabled: `CODE_MODE_HELPER_RUNTIME_READY=false` (`packages/opencode/src/tool/code-mode.ts:21`); `codeModeEnabled` has no production caller (only `packages/opencode/test/tool/code-mode-adapter-contract.test.ts:355-359`). |
 | W-P5-03 | Browser/desktop surfaces | P5-03 | A-V2-31 | N/A |
 
 ---
@@ -122,7 +122,7 @@
 | W-P6-03 | Provider Doctor tiers (spend = consent) | P6-03 | §32.31 PD-* | Partial |
 | W-P6-04 | FeatureExposureV1 ↔ real capability status | P6-04 | FEAT-001–014 | Partial |
 | W-P6-05 | AgentProfileV2 kernel ↔ Core config | P6-05 | §32.12 | Partial |
-| W-P6-06 | **Horizon Coding Profile** (DEC-V1-37): preset, permissions, harness auto-pick | P6-06 | §16.19.1, PERF-DIRECT-005 | Not done |
+| W-P6-06 | **Horizon Coding Profile** (DEC-V1-37): preset, permissions, harness auto-pick | P6-06 | §16.19.1, PERF-DIRECT-005 | Partial (`coding-profile.ts` + tests; Settings chip consumer P4/P6) |
 | W-P6-07 | **DEC-V1-38** tiers + TUI effective tool/skill chips | P6-07 | EXP-001–005, §16.19.2 | Partial |
 | W-P6-07a | Sealed `builtin.horizoncode` in skill registry | P6-07 | EXP-002 | Partial |
 | W-P6-07b | Core/Extended/Experimental enforcement in `tools.search` / exposure | P6-07 | EXP-003–004 | Not done |
@@ -140,8 +140,8 @@
 | W-P7-05 | Checkpoints / rewind UI | P7-05 | CP-001–002, DEC-V1-25 | Partial |
 | W-P7-06 | Automations UI ↔ control API | P7-06 | AU-* | Partial |
 | W-P7-07 | Provider settlement + UNKNOWN user copy | P7-07 | UI-017, REL-001 | Partial |
-| W-P7-08 | §31.23 code display / highlight RAM budget | P7-08 | UI-024–030 | Not done |
-| W-P7-09 | Slash parity: `/debug effects`, `/view activity`, context-op help | P7-09 | §16.4.1, §31.24 | Not done |
+| W-P7-08 | §31.23 code display / highlight RAM budget | P7-08 | UI-024–030 | Partial (`code-display.ts` + tests; UI-024–030 not measured) |
+| W-P7-09 | Slash parity: `/debug effects`, `/view activity`, context-op help | P7-09 | §16.4.1, §31.24 | Partial (slash wired in TUI; **0** dedicated acceptance tests) |
 
 ---
 

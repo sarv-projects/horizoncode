@@ -28,6 +28,7 @@ const decodeLaunchResult = Schema.decodeUnknownSync(ExternalEditorLaunchResultV1
  */
 
 /** HostKernel route for external editor launch is P1/P2-owned and not routed yet. */
+// CODE_PRESENT / UNWIRED: profile planning/outcome projection exist; no accepted HostKernel launch/reconcile caller is wired.
 const EXTERNAL_EDITOR_ROUTE_READY = false
 
 export function externalEditorRouteAvailable(): boolean {

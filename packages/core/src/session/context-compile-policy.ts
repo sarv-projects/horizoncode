@@ -32,6 +32,7 @@ export const MAX_ANCHOR_PATH_BYTES = 4096
 export const MAX_ANCHOR_SYMBOL_BYTES = 512
 export const MAX_ANCHOR_SYMBOLS_PER_FILE = 96
 export const DEFAULT_COMPILE_OVERLAP_MS = 250
+const MIN_ANCHOR_BYTES = 42
 
 const MAX_IDENTIFIER_BYTES = 512
 const CONTROL_OR_BIDI = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/u
@@ -245,7 +246,17 @@ export function resolveContextCompilePolicyV1(input: ResolveContextCompilePolicy
 
 /** Stable digest of one compile-policy value for ledger/selection pinning. */
 export function contextCompilePolicyDigestV1(policy: ContextCompilePolicyV1): string {
-  return digestJson("horizon.context-compile-policy.v1", policy)
+  const validated = Schema.decodeUnknownSync(ContextCompilePolicySchema, { onExcessProperty: "error" })(policy)
+  if (validated.effective === "cache_anchor" && validated.prefixCacheSupport === "none") {
+    throw new TypeError("ContextCompilePolicy cannot claim cache_anchor without prefix-cache support")
+  }
+  if (
+    (validated.effective === "cache_anchor" && validated.anchorProjection !== "full") ||
+    (validated.effective === "minimize_tokens" && validated.anchorProjection !== "compressed")
+  ) {
+    throw new TypeError("ContextCompilePolicy projection does not match its effective tier")
+  }
+  return digestJson("horizon.context-compile-policy.v1", validated)
 }
 
 /**
@@ -364,13 +375,20 @@ export function compileRepoContextAnchorV1(input: CompileRepoContextAnchorInputV
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_ANCHOR_BYTES) {
     throw new RangeError("anchor maxBytes is outside its bound")
   }
+  if (maxBytes < MIN_ANCHOR_BYTES) {
+    throw new RangeError("anchor maxBytes cannot fit its headers")
+  }
   const maxFiles = input.maxFiles ?? MAX_ANCHOR_FILES
   if (!Number.isSafeInteger(maxFiles) || maxFiles < 0 || maxFiles > MAX_ANCHOR_FILES) {
     throw new RangeError("anchor maxFiles is outside its bound")
   }
+  if (input.files.length > MAX_ANCHOR_FILES) {
+    throw new RangeError("anchor source file count exceeds its bound")
+  }
 
   const byPath = new Map<string, string[]>()
   let omitted = 0
+  let symbolLimited = false
   for (const file of input.files) {
     if (!validRelativePath(file.pathRef)) {
       omitted += 1
@@ -384,7 +402,16 @@ export function compileRepoContextAnchorV1(input: CompileRepoContextAnchorInputV
     const symbols: string[] = []
     const seen = new Set<string>()
     for (const raw of file.symbols) {
-      if (symbols.length >= MAX_ANCHOR_SYMBOLS_PER_FILE) break
+      if (symbols.length >= MAX_ANCHOR_SYMBOLS_PER_FILE) {
+        // The per-file cap stopped emission; partial only when a still-valid
+        // symbol was actually omitted (mirrors the omitted-entry path check above).
+        symbolLimited ||= file.symbols.some((candidate) => {
+          if (candidate.length === 0 || Buffer.byteLength(candidate, "utf8") > MAX_ANCHOR_SYMBOL_BYTES) return false
+          const sanitized = sanitizeAnchorLabel(candidate)
+          return sanitized !== undefined && !seen.has(sanitized)
+        })
+        break
+      }
       if (raw.length === 0 || Buffer.byteLength(raw, "utf8") > MAX_ANCHOR_SYMBOL_BYTES) continue
       const symbol = sanitizeAnchorLabel(raw)
       if (symbol === undefined || seen.has(symbol)) continue
@@ -446,7 +473,9 @@ export function compileRepoContextAnchorV1(input: CompileRepoContextAnchorInputV
         ? "invalid_or_sensitive_entries_omitted"
         : compressedLimited
           ? "compressed_byte_limit"
-          : undefined
+          : symbolLimited
+            ? "symbol_limit"
+            : undefined
   const anchor: RepoContextAnchorV1 = {
     schemaVersion: 1,
     sessionID: input.sessionID,
@@ -495,12 +524,19 @@ export function decideContextCompileOverlapV1(input: {
   if (!Number.isSafeInteger(maxOverlapMs) || maxOverlapMs < 0 || maxOverlapMs > 5_000) {
     throw new RangeError("compile overlap bound is invalid")
   }
+  const digestPattern = /^blake3:[0-9a-f]{64}$/
+  if (!digestPattern.test(input.current.ledgerDigest)) throw new TypeError("current ledgerDigest is invalid")
+  if (input.current.compilePolicyDigest !== undefined && !digestPattern.test(input.current.compilePolicyDigest)) {
+    throw new TypeError("current compilePolicyDigest is invalid")
+  }
+  if (input.previous) {
+    if (!digestPattern.test(input.previous.ledgerDigest)) throw new TypeError("previous ledgerDigest is invalid")
+    if (input.previous.compilePolicyDigest !== undefined && !digestPattern.test(input.previous.compilePolicyDigest)) {
+      throw new TypeError("previous compilePolicyDigest is invalid")
+    }
+  }
   if (!input.previous) return { overlap: false, reason: "no_previous_ledger", maxOverlapMs }
-  if (
-    input.previous.compilePolicyDigest !== undefined &&
-    input.current.compilePolicyDigest !== undefined &&
-    input.previous.compilePolicyDigest !== input.current.compilePolicyDigest
-  ) {
+  if (input.previous.compilePolicyDigest !== input.current.compilePolicyDigest) {
     return { overlap: false, reason: "compile_policy_changed", maxOverlapMs }
   }
   return input.previous.ledgerDigest === input.current.ledgerDigest
@@ -540,6 +576,7 @@ export function resolveContextSpeedPlanV1(input: {
     throw new TypeError("RepoIntel index status is invalid")
   }
   if (input.contextLimitTokens !== undefined) positiveBound(input.contextLimitTokens, "contextLimitTokens")
+  if (typeof input.nativeTools !== "boolean") throw new TypeError("nativeTools must be a boolean")
   const current = input.indexStatus === "current"
   return {
     sendBlocked: false,
@@ -754,6 +791,8 @@ export type PrunePlanV1 = {
  * pinned entries are protected; a caller may apply the plan through the Session
  * projection and retain the returned source range/digest for later retrieval.
  */
+const MAX_PROTECTED_REFS = 4_096
+
 export function planContextPruneV1(input: {
   readonly entries: ReadonlyArray<ContextCompactionEntryV1>
   readonly protectRecentUserTurns?: number
@@ -762,6 +801,13 @@ export function planContextPruneV1(input: {
   const protectRecentUserTurns = input.protectRecentUserTurns ?? 2
   if (!Number.isSafeInteger(protectRecentUserTurns) || protectRecentUserTurns < 1 || protectRecentUserTurns > 32) {
     throw new RangeError("prune protected user-turn count is invalid")
+  }
+  if (input.protectedRefs !== undefined) {
+    if (!Array.isArray(input.protectedRefs)) throw new TypeError("protectedRefs must be an array")
+    if (input.protectedRefs.length > MAX_PROTECTED_REFS) throw new RangeError("protectedRefs exceeds its bound")
+    if (input.protectedRefs.some((ref) => typeof ref !== "string")) {
+      throw new TypeError("protectedRefs must contain only strings")
+    }
   }
   const pinned = new Set(input.protectedRefs ?? [])
   const { boundary } = protectedUserBoundary(input.entries, protectRecentUserTurns)
@@ -843,6 +889,12 @@ export function planPressureRecoveryV1(input: {
   readonly safetyMarginTokens?: number
 }): PressureRecoveryPlanV1 {
   if (!/^[A-Za-z0-9._:-]{1,256}$/.test(input.epochID)) throw new TypeError("context epoch identity is invalid")
+  if (input.maxOutputTokens !== undefined && (!Number.isSafeInteger(input.maxOutputTokens) || input.maxOutputTokens < 0)) {
+    throw new RangeError("maxOutputTokens is invalid")
+  }
+  if (input.safetyMarginTokens !== undefined && (!Number.isSafeInteger(input.safetyMarginTokens) || input.safetyMarginTokens < 0)) {
+    throw new RangeError("safetyMarginTokens is invalid")
+  }
   const estimate = (value: unknown) => Math.max(0, Math.round(JSON.stringify(value).length / 4))
   const estimatedInputTokens = estimate({
     system: input.request.system,
@@ -850,12 +902,29 @@ export function planPressureRecoveryV1(input: {
     tools: input.request.tools,
   })
   const context = input.model.route.defaults.limits?.context
-  if (context === undefined || context <= 0) return { status: "unknown_context_limit", estimatedInputTokens }
+  if (context === undefined || !Number.isSafeInteger(context) || context <= 0) {
+    return { status: "unknown_context_limit", estimatedInputTokens }
+  }
   const outputReserve =
     input.maxOutputTokens ?? input.request.generation?.maxTokens ?? input.model.route.defaults.limits?.output ?? 0
+  if (!Number.isSafeInteger(outputReserve) || outputReserve < 0) {
+    return { status: "unknown_context_limit", estimatedInputTokens }
+  }
   const toolReserve = estimate(input.request.tools ?? [])
   const safetyMargin = input.safetyMarginTokens ?? Math.max(2_048, Math.floor(context * 0.02))
+  if (!Number.isSafeInteger(safetyMargin) || safetyMargin < 0) {
+    return { status: "unknown_context_limit", estimatedInputTokens }
+  }
   const softPressureLimit = context - outputReserve - toolReserve - safetyMargin
+  if (softPressureLimit <= 0) {
+    return {
+      status: "context_budget_exceeded",
+      epochID: input.epochID,
+      estimatedInputTokens,
+      softPressureLimit,
+      diagnostics: { contextLimit: context, outputReserve, toolReserve, safetyMargin },
+    }
+  }
   if (estimatedInputTokens < softPressureLimit) return { status: "none", estimatedInputTokens, softPressureLimit }
   if (!(input.autoTrimmedEpochIDs ?? []).includes(input.epochID)) {
     const plan = planContextTrimV1({ entries: input.entries })

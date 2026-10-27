@@ -16,6 +16,7 @@ import platform
 import random
 import re
 import stat
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -224,7 +225,11 @@ def digest(value: object) -> str:
 def _token(value, field: str) -> str:
     if not isinstance(value, str) or not value or len(value.encode("utf-8")) > MAX_ID_BYTES:
         raise EvalError(f"{field} must be a non-empty bounded string")
-    if any(ord(char) < 0x20 for char in value):
+    # Exact parity with Rust `validate_owner_token`, which rejects every
+    # Unicode Cc character (`char::is_control`): C0 controls, DEL (U+007F) and
+    # the C1 range (U+0080–U+009F). Rejecting only ord < 0x20 let DEL/C1
+    # through, so the evaluator could mint a token the canonical owner refuses.
+    if any(unicodedata.category(char) == "Cc" for char in value):
         raise EvalError(f"{field} contains a control character")
     return value
 
@@ -661,7 +666,8 @@ def _validate_host_run_trial_evidence(row: Mapping, *, require_complete: bool) -
     false_completion = row.get("falseCompletion")
     failure_class = row.get("failureClass")
     resource = row.get("resourceUse")
-    if verdict not in {"PASS", "FAIL", "INCOMPLETE"}:
+    if (not isinstance(verdict, str)
+            or verdict not in {"PASS", "FAIL", "INCOMPLETE"}):
         raise EvalError("HostRun trial is missing a valid verifier verdict")
     if not isinstance(security, bool):
         raise EvalError("HostRun trial is missing its security outcome")
@@ -674,13 +680,21 @@ def _validate_host_run_trial_evidence(row: Mapping, *, require_complete: bool) -
     if status == "PASS_VERIFIED":
         if security or verdict != "PASS" or false_completion or failure_class != "none":
             raise EvalError("HostRun PASS_VERIFIED contradicts its verifier/security evidence")
+        if any(row.get(key) is None for key in (
+                "elapsedMs", "inputTokens", "outputTokens", "toolCalls",
+                "retries", "costMicros", "interventions")):
+            raise EvalError("HostRun PASS_VERIFIED lacks complete accounting counters")
+        if row.get("costProvenance") not in {"MEASURED", "ESTIMATED"}:
+            raise EvalError("HostRun PASS_VERIFIED lacks a verified cost provenance")
     elif status == "FAIL_UNVERIFIED":
         if false_completion != (verdict == "FAIL"):
             raise EvalError("HostRun failure contradicts its false-completion verdict")
         if security and failure_class != "security_failure":
             raise EvalError("HostRun security failure must carry the security failure class")
-        if verdict == "PASS" and failure_class != "budget_exhaustion":
-            raise EvalError("HostRun PASS verdict may only fail on budget exhaustion")
+        if verdict == "PASS" and failure_class not in {"budget_exhaustion", "accounting_incomplete"}:
+            raise EvalError(
+                "HostRun PASS verdict may only fail on budget exhaustion or incomplete accounting"
+            )
         if verdict == "INCOMPLETE" and failure_class != "test_verification":
             raise EvalError("HostRun incomplete verdict must fail at test verification")
 
@@ -745,15 +759,22 @@ def _validate_host_run_outcome(outcome, invocation, manifest, task, arm) -> tupl
         or counters["retries"] is not None and counters["retries"] > budgets["maxRetries"]
         or counters["cost_micros"] is not None and counters["cost_micros"] > budgets["costMicros"]
     )
+    accounting_complete = (
+        all(counters[name] is not None for name in counters)
+        and outcome.cost_provenance in {"MEASURED", "ESTIMATED"}
+    )
     if not outcome.capability_complete:
         status, failure_stage = "UNSUPPORTED_CAPABILITY", "unsupported_capability"
-    elif outcome.verifier_verdict == "PASS" and not outcome.security_failure and not exceeded:
-        status, failure_stage = "PASS_VERIFIED", None
+    elif outcome.verifier_verdict == "PASS" and not outcome.security_failure:
+        if exceeded:
+            status, failure_stage = "FAIL_UNVERIFIED", "budget_exhaustion"
+        elif not accounting_complete:
+            status, failure_stage = "FAIL_UNVERIFIED", "accounting_incomplete"
+        else:
+            status, failure_stage = "PASS_VERIFIED", None
     else:
         status = "FAIL_UNVERIFIED"
-        failure_stage = "security_failure" if outcome.security_failure else (
-            "budget_exhaustion" if exceeded else "test_verification"
-        )
+        failure_stage = "security_failure" if outcome.security_failure else "test_verification"
     row = {
         "taskId": task["taskId"], "taskGroup": task["taskGroup"], "armId": arm["id"],
         "hostRunDispatchIndex": invocation.call_index,
@@ -1015,6 +1036,89 @@ def host_run_inspect_body(*, goal_id: str, dispatch_key_digest: str) -> dict:
     return _require_exact_fields(body, HOST_RUN_INSPECT_BODY_FIELDS, "hostRun.inspect body")
 
 
+# --- Frozen-invocation candidate production (P2 item-21 step 1) --------------
+#
+# The evaluator boundary is the only minter of HostRunFrozenInvocationV1: the
+# tuple is DERIVED from the already-validated frozen manifest and every claim
+# the caller supplies is cross-checked against it before any record exists.
+# goalID/attemptID remain host-owned bridge facts (HostRunDispatchHandleV1)
+# inside the seven-field bind body and are never part of this record.
+
+HOST_RUN_FROZEN_INVOCATION_CANDIDATE_SCHEMA = (
+    "horizoncode.eval.host-run-frozen-invocation-candidate.v1")
+# Exact five-field wire shape of Rust `host_run_invocation_value` /
+# `HostRunFrozenInvocationV1` (worker_durable.rs), consumed by
+# `WorkerPoolControl::record_frozen_invocation` / `resolve_frozen_invocation`.
+HOST_RUN_FROZEN_INVOCATION_FIELDS = (
+    "dispatchKeyDigest", "manifestDigest", "evaluatorTaskId", "armId", "taskGroup")
+HOST_RUN_FROZEN_INVOCATION_CANDIDATE_FIELDS = (
+    "schema", "lane", "manifestDigest", "dispatchKeyDigest", "frozenInvocation")
+
+
+def host_run_frozen_invocation_candidate(manifest, *, task_id: str, arm_id: str,
+                                         task_group: str, manifest_digest: str,
+                                         dispatch_key_digest: str) -> dict:
+    """Mint the frozen-invocation candidate record from a validated manifest.
+
+    All five claims are required and cross-checked; a mismatch raises
+    :class:`EvalError` and **no candidate record is produced**:
+
+    * missing/invalid manifest -> ``validate_manifest`` rejects it;
+    * ``manifestDigest`` must equal :func:`host_run_manifest_digest` recomputed
+      over this manifest (digest-mismatch negative);
+    * ``evaluatorTaskId``/``armId`` must name a task/arm frozen in the manifest
+      and ``taskGroup`` must equal that task's manifest group (tampered-tuple
+      negatives — the group can never be caller-chosen);
+    * ``dispatchKeyDigest`` must equal the §12.23 recomputation rule
+      ``blake3(sha256-canonical-{armId,lane,manifestDigest,taskId})`` key,
+      byte-identical to Rust ``host_run_dispatch_key_digest``.
+
+    The returned record is deterministic, JSON round-trip stable, and carries
+    the exact five-field ``frozenInvocation`` object P2's Rust resolver fixture
+    tests deserialize. It is a *candidate*: only P2's authenticated bind route
+    may record it durably, and nothing here is trusted or attested by itself.
+    """
+    validate_manifest(manifest)
+    _require_id(task_id, "frozenInvocation.evaluatorTaskId")
+    _require_id(arm_id, "frozenInvocation.armId")
+    _require_id(task_group, "frozenInvocation.taskGroup")
+    _require_blake3(manifest_digest, "frozenInvocation.manifestDigest")
+    _require_blake3(dispatch_key_digest, "frozenInvocation.dispatchKeyDigest")
+    tasks = [task for task in manifest["tasks"] if task["taskId"] == task_id]
+    if len(tasks) != 1:
+        raise EvalError("evaluatorTaskId is not in the frozen manifest")
+    arms = [arm for arm in manifest["arms"] if arm["id"] == arm_id]
+    if len(arms) != 1:
+        raise EvalError("armId is not in the frozen manifest")
+    expected_manifest_digest = host_run_manifest_digest(manifest)
+    if manifest_digest != expected_manifest_digest:
+        raise EvalError("manifest digest does not match the frozen manifest")
+    expected_task_group = tasks[0]["taskGroup"]
+    if task_group != expected_task_group:
+        raise EvalError("taskGroup does not match the frozen manifest task")
+    expected_dispatch_key_digest = host_run_dispatch_key_digest(
+        host_run_dispatch_key(expected_manifest_digest, task_id, arm_id))
+    if dispatch_key_digest != expected_dispatch_key_digest:
+        raise EvalError(
+            "dispatch key digest does not match its recomputed frozen pair identity")
+    invocation = {
+        "dispatchKeyDigest": dispatch_key_digest,
+        "manifestDigest": expected_manifest_digest,
+        "evaluatorTaskId": task_id,
+        "armId": arm_id,
+        "taskGroup": expected_task_group,
+    }
+    record = {
+        "schema": HOST_RUN_FROZEN_INVOCATION_CANDIDATE_SCHEMA,
+        "lane": "HUP_PAIRED_HOST_RUN_V1",
+        "manifestDigest": expected_manifest_digest,
+        "dispatchKeyDigest": dispatch_key_digest,
+        "frozenInvocation": invocation,
+    }
+    return _require_exact_fields(record, HOST_RUN_FROZEN_INVOCATION_CANDIDATE_FIELDS,
+                                 "hostRun frozen-invocation candidate")
+
+
 def _validate_host_run_binding(value, what: str) -> dict:
     binding = _require_exact_fields(value, HOST_RUN_BINDING_FIELDS, what)
     _require_schema_version(binding, what)
@@ -1029,7 +1133,9 @@ def _validate_host_run_binding(value, what: str) -> dict:
 
 
 def parse_host_run_bind_response(value, *, dispatch_key_digest: str,
-                                 manifest_digest: str) -> tuple[dict, dict]:
+                                 manifest_digest: str, run_id: str,
+                                 evaluator_task_id: str, arm_id: str,
+                                 task_group: str) -> tuple[dict, dict]:
     """Validate `host_run.bind`'s `{schemaVersion, binding, receipt}` reply."""
     response = _require_exact_fields(
         value, ("schemaVersion", "binding", "receipt"), "hostRun.bind response")
@@ -1049,6 +1155,14 @@ def parse_host_run_bind_response(value, *, dispatch_key_digest: str,
         raise EvalError("host_run.bind returned a binding for a different dispatch key")
     if binding["manifestDigest"] != manifest_digest:
         raise EvalError("host_run.bind returned a binding for a different manifest")
+    expected_binding = {
+        "runId": run_id,
+        "evaluatorTaskId": evaluator_task_id,
+        "armId": arm_id,
+        "taskGroup": task_group,
+    }
+    if any(binding[field] != expected for field, expected in expected_binding.items()):
+        raise EvalError("host_run.bind returned a binding for a different frozen invocation")
     if receipt["dispatchKeyDigest"] != dispatch_key_digest:
         raise EvalError("host_run.bind receipt names a different dispatch key")
     if receipt["bindingDigest"] != binding["bindingDigest"]:
@@ -1174,6 +1288,7 @@ class HostRunControlPlaneClient:
         return dict(response)
 
     def bind(self, *, attempt_id: str, dispatch_key_digest: str, manifest_digest: str,
+             run_id: str,
              evaluator_task_id: str, arm_id: str, task_group: str) -> tuple[dict, dict]:
         body = host_run_bind_body(
             goal_id=self.goal_id, attempt_id=attempt_id,
@@ -1181,7 +1296,9 @@ class HostRunControlPlaneClient:
             evaluator_task_id=evaluator_task_id, arm_id=arm_id, task_group=task_group)
         return parse_host_run_bind_response(
             self._call(HOST_RUN_BIND_OPERATION, body),
-            dispatch_key_digest=dispatch_key_digest, manifest_digest=manifest_digest)
+            dispatch_key_digest=dispatch_key_digest, manifest_digest=manifest_digest,
+            run_id=run_id, evaluator_task_id=evaluator_task_id, arm_id=arm_id,
+            task_group=task_group)
 
     def commit_owner_receipt(self, *, dispatch_key_digest: str, binding_digest: str,
                              owner_receipt: Mapping) -> dict:
@@ -1357,6 +1474,7 @@ def _begin_host_run_dispatch(control_plane, owner_log, bridge, invocation, manif
         attempt_id=handle.attempt_id,
         dispatch_key_digest=dispatch_key_digest,
         manifest_digest=host_run_manifest_digest(manifest),
+        run_id=manifest["runId"],
         evaluator_task_id=task_pin["taskId"],
         arm_id=arm_pin["id"],
         task_group=task_pin["taskGroup"],
@@ -1619,7 +1737,7 @@ def classify_failure(record: Mapping) -> str:
     allowed = {"task_interpretation_planning", "context_retrieval", "tool_selection_arguments",
                "effect_execution", "patch_quality", "test_verification", "budget_exhaustion",
                "infrastructure", "security_failure", "unknown"}
-    return stage if stage in allowed else "unknown"
+    return stage if isinstance(stage, str) and stage in allowed else "unknown"
 
 
 def _summarized_cost_provenance(rows: list[dict], reported_cost: int | None) -> str:
@@ -1650,19 +1768,23 @@ def summarize_pairs(records: list[dict] | tuple[dict, ...], manifest: Mapping) -
         if row.get("recordType", "trial") != "trial":
             raise EvalError("summary accepts trial rows only")
         task_id, arm_id = row.get("taskId"), row.get("armId")
-        if task_id not in matrix or arm_id not in declared_arm_ids:
+        if (not isinstance(task_id, str) or task_id not in matrix
+                or not isinstance(arm_id, str) or arm_id not in declared_arm_ids):
             raise EvalError("summary contains a task or arm outside the frozen manifest")
         if row.get("manifestDigest") != manifest_digest:
             raise EvalError("summary trial belongs to a different frozen manifest")
         if arm_id in matrix[task_id]:
             raise EvalError("summary contains duplicate task/arm evidence")
-        if row.get("status") not in {"PASS_VERIFIED", "FAIL_UNVERIFIED", "UNSUPPORTED_CAPABILITY",
-                                     "CANCELLED", "INFRASTRUCTURE_FAILURE", "NOT_RUN", "UNKNOWN"}:
+        status = row.get("status")
+        if (not isinstance(status, str)
+                or status not in {"PASS_VERIFIED", "FAIL_UNVERIFIED", "UNSUPPORTED_CAPABILITY",
+                                  "CANCELLED", "INFRASTRUCTURE_FAILURE", "NOT_RUN", "UNKNOWN"}):
             raise EvalError("summary contains an unknown trial status")
         if row.get("taskGroup", task_groups[task_id]) != task_groups[task_id]:
             raise EvalError("summary task group differs from the frozen manifest")
         mode = row.get("mode")
-        if mode not in {"FAKE_SELF_CHECK", "HOST_RUN_PAIRED"}:
+        if (not isinstance(mode, str)
+                or mode not in {"FAKE_SELF_CHECK", "HOST_RUN_PAIRED"}):
             raise EvalError("summary trial has an unknown execution mode")
         if mode == "HOST_RUN_PAIRED":
             if row.get("status") in HOST_RUN_OUTCOME_STATUSES:
@@ -2062,6 +2184,10 @@ class _ArtifactJournal:
         if (not stat.S_ISREG(current_path.st_mode)
                 or (current_path.st_dev, current_path.st_ino) != self.file_identity
                 or (info.st_dev, info.st_ino) != self.file_identity
+                or not hasattr(os, "geteuid") or info.st_uid != os.geteuid()
+                or info.st_mode & 0o077 or info.st_mode & 0o111
+                or current_path.st_uid != os.geteuid()
+                or current_path.st_mode & 0o077 or current_path.st_mode & 0o111
                 or info.st_size != self.file_size):
             raise EvalError("evaluation artifact changed before provider dispatch")
 
@@ -2072,11 +2198,16 @@ class _ArtifactJournal:
             current, info = _read_open_regular(self.artifact_fd, MAX_ARTIFACT_BYTES)
             if self.file_identity != (info.st_dev, info.st_ino):
                 raise EvalError("artifact file identity changed after it was pinned")
+            if (not hasattr(os, "geteuid") or info.st_uid != os.geteuid()
+                    or info.st_mode & 0o077 or info.st_mode & 0o111):
+                raise EvalError("evaluation artifact is no longer private")
             if len(current) + len(encoded) > MAX_ARTIFACT_BYTES:
                 raise EvalError("evaluation artifact exceeds the byte limit")
             current_path = os.stat(self.name, dir_fd=self.parent_fd, follow_symlinks=False)
             if ((current_path.st_dev, current_path.st_ino) != self.file_identity
-                    or not stat.S_ISREG(current_path.st_mode)):
+                    or not stat.S_ISREG(current_path.st_mode)
+                    or current_path.st_uid != os.geteuid()
+                    or current_path.st_mode & 0o077 or current_path.st_mode & 0o111):
                 raise EvalError("artifact path identity changed before append")
             if info.st_size != len(current) or info.st_size != self.file_size:
                 raise EvalError("artifact size changed before append")

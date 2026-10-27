@@ -311,6 +311,7 @@ let route: DebugEffectRoute | undefined
  * journey are accepted together. Registering an adapter callback is not
  * evidence for those prerequisites and must never unlock this boundary.
  */
+// CODE_PRESENT / UNWIRED: DAP session/protocol support is not a production ingress; P1/P2 and namespace/ptrace acceptance remain open.
 const GUARDED_DEBUG_RUNTIME_READY = false
 
 /**

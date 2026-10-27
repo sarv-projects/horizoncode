@@ -104,6 +104,148 @@ const knownManifestForPath = (path: string): string | undefined => {
   return undefined
 }
 
+const stripComments = (text: string) => {
+  let output = ""
+  let blockDepth = 0
+  let lineComment = false
+  let quote: '"' | "'" | '"""' | undefined
+  let escaped = false
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index]!
+    const next = text[index + 1]
+    if (lineComment) {
+      if (char === "\n") {
+        lineComment = false
+        output += char
+      }
+      continue
+    }
+    if (blockDepth > 0) {
+      if (char === "/" && next === "*") {
+        blockDepth += 1
+        index += 1
+      } else if (char === "*" && next === "/") {
+        blockDepth -= 1
+        index += 1
+      }
+      continue
+    }
+    if (quote !== undefined) {
+      output += char
+      if (escaped) {
+        escaped = false
+        continue
+      }
+      if (char === "\\") {
+        escaped = true
+        continue
+      }
+      if (quote === '"""' && char === '"' && text.slice(index, index + 3) === '"""') {
+        output += '""'
+        index += 2
+        quote = undefined
+        continue
+      }
+      if ((quote === '"' || quote === "'") && char === quote) quote = undefined
+      continue
+    }
+    if (char === "/" && next === "/") {
+      lineComment = true
+      index += 1
+      continue
+    }
+    if (char === "/" && next === "*") {
+      blockDepth = 1
+      index += 1
+      continue
+    }
+    if (text.slice(index, index + 3) === '"""') {
+      output += '"""'
+      index += 2
+      quote = '"""'
+      continue
+    }
+    if (char === '"' || char === "'") {
+      output += char
+      quote = char
+      continue
+    }
+    output += char
+  }
+  return { text: output, unterminatedComment: blockDepth > 0 }
+}
+
+const stripTOMLStringsAndComments = (text: string) => {
+  let output = ""
+  let mode: "normal" | "basic" | "literal" | "multi_basic" | "multi_literal" | "comment" = "normal"
+  let escaped = false
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index]!
+    const next = text[index + 1]
+    if (mode === "comment") {
+      if (char === "\n") {
+        mode = "normal"
+        output += char
+      }
+      continue
+    }
+    if (mode === "basic") {
+      if (escaped) {
+        escaped = false
+        continue
+      }
+      if (char === "\\") {
+        escaped = true
+        continue
+      }
+      if (char === '"') mode = "normal"
+      continue
+    }
+    if (mode === "literal") {
+      if (char === "'") mode = "normal"
+      continue
+    }
+    if (mode === "multi_basic") {
+      if (char === '"' && next === '"' && text[index + 2] === '"') {
+        mode = "normal"
+        index += 2
+      }
+      continue
+    }
+    if (mode === "multi_literal") {
+      if (char === "'" && next === "'" && text[index + 2] === "'") {
+        mode = "normal"
+        index += 2
+      }
+      continue
+    }
+    if (char === "#") {
+      mode = "comment"
+      continue
+    }
+    if (char === '"' && next === '"' && text[index + 2] === '"') {
+      mode = "multi_basic"
+      index += 2
+      continue
+    }
+    if (char === "'" && next === "'" && text[index + 2] === "'") {
+      mode = "multi_literal"
+      index += 2
+      continue
+    }
+    if (char === '"') {
+      mode = "basic"
+      continue
+    }
+    if (char === "'") {
+      mode = "literal"
+      continue
+    }
+    output += char
+  }
+  return { text: output, unterminatedString: mode !== "normal" && mode !== "comment" }
+}
+
 const detectManifestFacts = (kind: string, text: string) => {
   const facts = new Set<string>()
   let parseFailed = false
@@ -148,17 +290,23 @@ const detectManifestFacts = (kind: string, text: string) => {
     case "tsconfig_json":
       mention("language: typescript")
       break
-    case "cargo_toml":
+    case "cargo_toml": {
       mention("language: rust")
       mention("package system: Cargo")
-      if (/^\s*\[\[?test\]\]?\s*$/mu.test(text)) mention("test target: declared")
+      const strippedToml = stripTOMLStringsAndComments(text)
+      if (strippedToml.unterminatedString) {
+        parseFailed = true
+        break
+      }
+      if (/^\s*\[\[?test\]\]?\s*$/mu.test(strippedToml.text)) mention("test target: declared")
       break
+    }
     case "pyproject_toml":
-      const pyprojectWithoutComments = text.replace(/^\s*#.*$/gmu, "")
+      const pyprojectWithoutComments = text.replace(/(^|\s)#.*$/gmu, "$1")
       mention("language: python")
       mention("package system: pyproject.toml")
-      if (/\[tool\.(?:pytest|tox|nox)|\[tool\.poetry\.scripts\]/u.test(pyprojectWithoutComments)) mention("test configuration: declared")
-      if (/\[tool\.(?:poetry|uv|hatch|setuptools)\]/u.test(pyprojectWithoutComments)) mention("build/package configuration: declared")
+       if (/^\s*\[tool\.(?:pytest|tox|nox)(?:\.[^\]]+)?\]/mu.test(pyprojectWithoutComments)) mention("test configuration: declared")
+      if (/^\s*\[tool\.(?:poetry|uv|hatch|setuptools)\]/mu.test(pyprojectWithoutComments)) mention("build/package configuration: declared")
       break
     case "requirements_txt":
       mention("language: python")
@@ -173,23 +321,43 @@ const detectManifestFacts = (kind: string, text: string) => {
       const mavenDependencies = mavenWithoutComments.matchAll(/<dependency\b[^>]*>([\s\S]*?)<\/dependency\s*>/giu)
       mention("language: java")
       mention("build system: Maven")
-      if ([...mavenDependencies].some(([, dependency]) => /<artifactId\b[^>]*>[^<]*junit[^<]*<\/artifactId\s*>/iu.test(dependency))) {
+      if (
+        [...mavenDependencies].some(([, dependency]) => {
+          const directDependency = dependency.replace(/<exclusions\b[^>]*>[\s\S]*?<\/exclusions\s*>/giu, "")
+          return /<artifactId\b[^>]*>[^<]*junit[^<]*<\/artifactId\s*>/iu.test(directDependency)
+        })
+      ) {
         mention("test framework: JUnit declared")
       }
       break
-    case "gradle":
+    case "gradle": {
       // Groovy/Kotlin Gradle files commonly leave old dependencies or test
       // configuration in comments; those are not active project declarations.
-      const gradleWithoutComments = text.replace(/\/\*[\s\S]*?\*\//gu, "").replace(/(^|\s)\/\/.*$/gmu, "$1")
+      // Kotlin-style nested block comments must be removed without leaking the
+      // inner active text after the first `*/`.
+      const strippedGradle = stripComments(text)
+      if (strippedGradle.unterminatedComment) {
+        parseFailed = true
+        break
+      }
       mention("build system: Gradle")
-      if (/org\.junit|useJUnitPlatform/u.test(gradleWithoutComments)) mention("test framework: JUnit declared")
+      if (/org\.junit|useJUnitPlatform/u.test(strippedGradle.text)) mention("test framework: JUnit declared")
       break
+    }
     case "csproj":
     case "sln":
-      const dotnetWithoutXmlComments = kind === "csproj" ? text.replace(/<!--[\s\S]*?-->/gu, "") : text
+      const dotnetWithoutComments = kind === "csproj"
+        ? text.replace(/<!--[\s\S]*?-->/gu, "")
+        : text.replace(/(^|\s)#.*$/gmu, "$1")
       mention("language: csharp")
       mention("build system: .NET")
-      if (/Microsoft\.NET\.Test\.Sdk|\bIsTestProject\b/iu.test(dotnetWithoutXmlComments)) mention("test project: declared")
+      const isTestProjectDeclarations = kind === "csproj"
+        ? [...dotnetWithoutComments.matchAll(/<IsTestProject>\s*(true|false)\s*<\/IsTestProject>/giu)]
+        : []
+      const isExplicitNonTest = isTestProjectDeclarations.at(-1)?.[1]?.toLowerCase() === "false"
+      if (!isExplicitNonTest && (/Microsoft\.NET\.Test\.Sdk/iu.test(dotnetWithoutComments) || /\bIsTestProject\b/iu.test(dotnetWithoutComments))) {
+        mention("test project: declared")
+      }
       break
     case "composer_json":
       try {
@@ -205,21 +373,24 @@ const detectManifestFacts = (kind: string, text: string) => {
       }
       break
     case "gemfile":
-      // Gemfiles often retain disabled test dependencies as full-line comments;
+      // Gemfiles often retain disabled test dependencies as full-line or inline comments;
       // those are not active declarations.
-      const gemfileWithoutComments = text.replace(/^\s*#.*$/gmu, "")
+      const gemfileWithoutComments = text.replace(/(^|\s)#.*$/gmu, "$1")
       mention("language: ruby")
       mention("package system: Bundler")
       if (/\brspec\b|\bminitest\b/iu.test(gemfileWithoutComments)) mention("test framework: declared")
       break
-    case "package_swift":
-      const swiftWithoutComments = text
-        .replace(/\/\*[\s\S]*?\*\//gu, "")
-        .replace(/^\s*\/\/.*$/gmu, "")
+    case "package_swift": {
+      const stripped = stripComments(text)
       mention("language: swift")
       mention("package system: SwiftPM")
-      if (/\.testTarget\s*\(/u.test(swiftWithoutComments)) mention("test target: declared")
+      if (stripped.unterminatedComment) {
+        parseFailed = true
+        break
+      }
+      if (/\.testTarget\s*\(/u.test(stripped.text)) mention("test target: declared")
       break
+    }
     case "makefile":
       mention("build system: Make")
       if (/^\s*(?:test|check)\s*:/mu.test(text)) mention("test target: declared")
@@ -295,6 +466,13 @@ const runRepoDiscovery = (
     },
   }).pipe(Effect.provideService(TrustedPrincipalContext, principal.value))
 
+  if (mode === "tree" && page.status !== "UNAVAILABLE" && page.freshness !== "current") {
+    return {
+      status: "UNAVAILABLE",
+      output: "status: UNAVAILABLE\nreason: repository discovery has no current source revision",
+      count: 0,
+    }
+  }
   if (mode === "tree" || page.status === "UNAVAILABLE") {
     return { status: page.status, output: renderDiscoveryPage(page), count: page.coverage.entries }
   }
@@ -429,20 +607,22 @@ const renderStructurePage = (page: RepoIntelligenceSchema.RepoStructurePageV1) =
     `status: ${page.status}`,
     `freshness: ${page.freshness}`,
     `completeness: ${page.completeness}`,
-    `workspace: ${page.workspaceBinding}`,
+    `workspace: ${safeDiscoveryLabel(page.workspaceBinding)}`,
     `sourceGeneration: ${page.sourceGeneration}`,
     `sourceRevision: ${page.sourceRevision}`,
     `queryID: ${page.queryId}`,
     "authority: read-only evidence; edits require a fresh canonical files.patch/Guard check",
     `source: ${page.sourceKind}; coverage: ${page.coverage.files} files, ${page.coverage.nodes} nodes, ${page.coverage.bytes} bytes`,
   ]
-  if (page.parserId !== undefined) header.push(`parser: ${page.parserId}@${page.parserVersion ?? "unknown"}`)
+  if (page.parserId !== undefined) {
+    header.push(`parser: ${safeDiscoveryLabel(page.parserId)}@${safeDiscoveryLabel(page.parserVersion ?? "unknown")}`)
+  }
   if (page.overlayDigest !== undefined) header.push(`overlayDigest: ${page.overlayDigest}`)
   if (page.fallback) header.push(`fallback: ${page.fallback.reason}`)
   const nodes = page.nodes.map(
     (node) =>
-      `${node.pathRef}:${node.byteRange.start}-${node.byteRange.end} ${node.nodeKind} ${node.symbol} ` +
-      `[node=${node.nodeId} file=${node.fileDigest} parser=${node.parserId}@${node.parserVersion}` +
+      `${safeDiscoveryLabel(node.pathRef)}:${node.byteRange.start}-${node.byteRange.end} ${safeDiscoveryLabel(node.nodeKind)} ${safeDiscoveryLabel(node.symbol)} ` +
+      `[node=${safeDiscoveryLabel(node.nodeId)} file=${safeDiscoveryLabel(node.fileDigest)} parser=${safeDiscoveryLabel(node.parserId)}@${safeDiscoveryLabel(node.parserVersion)}` +
       `${node.overlayDigest ? ` overlay=${node.overlayDigest}` : ""}]`,
   )
   const cursor = page.nextCursor ? `nextCursor: ${page.nextCursor}` : undefined
@@ -558,6 +738,19 @@ const runRepoStructureSearch = (
       },
     }).pipe(Effect.provideService(TrustedPrincipalContext, principal.value))
 
+    if (
+      (page.status === "CURRENT" || page.status === "PARTIAL") &&
+      page.freshness === "unknown" &&
+      page.nextCursor === undefined
+    ) {
+      return {
+        output: `${renderAnalysisProfile(analysisProfile)}\nstatus: UNAVAILABLE\nreason: RepoIntel freshness is unknown and no continuation cursor is available`,
+        count: 0,
+        status: "UNAVAILABLE",
+        analysisProfile,
+      }
+    }
+
     return {
       output: `${renderAnalysisProfile(analysisProfile)}\n${renderStructurePage(page)}`,
       count: Number(page.coverage.nodes),
@@ -655,7 +848,11 @@ const runRepoDefinitionCandidates = (
     const lines = document.text.split(/\r?\n/u)
     for (let index = 0; index < lines.length; index += 1) {
       const declaration = lexicalDeclarationKind(lines[index]!, params.query)
-      if (declaration) candidates.add(`${pathRef}:${index + 1} ${declaration} ${params.query} [file=${document.contentDigest}]`)
+      if (declaration) {
+        candidates.add(
+          `${safeDiscoveryLabel(pathRef)}:${index + 1} ${declaration} ${safeDiscoveryLabel(params.query)} [file=${document.contentDigest}]`,
+        )
+      }
     }
   }
   const outputRows = [...candidates].slice(0, params.maxResults ?? 50)

@@ -66,14 +66,21 @@ function mayObserveQuestionEvent(
       return false
     }
     const seen = new Set<string>()
+    let matchedOwner = false
     for (let depth = 0; depth < MAX_QUESTION_OWNER_DEPTH; depth++) {
       if (seen.has(current.id)) return false
       if (current.directory !== instanceDirectory) return false
       if (current.workspaceID !== undefined && current.workspaceID !== workspaceID) return false
       seen.add(current.id)
       const owner = current.metadata?.horizonPrincipalOwner
-      if (owner !== undefined) return ownerMatchesPrincipal(principal, owner)
+      if (owner !== undefined) {
+        // A matching child owner cannot mask conflicting authority recorded
+        // higher in the Session ancestry.
+        if (!ownerMatchesPrincipal(principal, owner)) return false
+        matchedOwner = true
+      }
       if (!current.parentID) {
+        if (matchedOwner) return true
         return legacyHostRootCompatible(principal, {
           parentID: current.parentID,
           directory: current.directory,

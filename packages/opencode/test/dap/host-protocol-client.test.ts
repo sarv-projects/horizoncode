@@ -125,17 +125,27 @@ describe("DAP HostKernel protocol client fail-closed routing", () => {
     expect(calls.host).toBe(0)
   })
 
+  test("DEC-V1-21 attach and evaluate policy denials are observable before the shared route gate", async () => {
+    const { client, calls } = makeClient({ scope: { targetHostProcessRef: terminalTarget } })
+    await expect(client.sendRequest("attach", {})).rejects.toThrow(
+      "DAP attach requires an accepted shared debuggee namespace and ptrace policy",
+    )
+    await expect(client.sendRequest("evaluate", { expression: "1" })).rejects.toThrow(
+      "DAP evaluate is unavailable unless the trusted immutable adapter profile enables it",
+    )
+    expect(calls.authorized).toBe(0)
+    expect(calls.host).toBe(0)
+  })
+
   test("keeps every DAP command, attach included, unreachable behind the closed route", async () => {
     const { client, calls } = makeClient({ scope: { targetHostProcessRef: terminalTarget } })
     expect(() => client.listen()).toThrow("unavailable until the shared Guarded HostKernel journal route is verified")
-    for (const [command, args] of [
-      ["attach", {}],
-      ["evaluate", { expression: "1" }],
-      ["continue", {}],
+    for (const [command, args, reason] of [
+      ["attach", {}, "DAP attach requires an accepted shared debuggee namespace and ptrace policy"],
+      ["evaluate", { expression: "1" }, "DAP evaluate is unavailable unless the trusted immutable adapter profile enables it"],
+      ["continue", {}, "must listen before sending requests"],
     ] as const) {
-      await expect(client.sendRequest(command, args), command).rejects.toThrow(
-        "must listen before sending requests",
-      )
+      await expect(client.sendRequest(command, args), command).rejects.toThrow(reason)
     }
     expect(calls.authorized).toBe(0)
     expect(calls.host).toBe(0)

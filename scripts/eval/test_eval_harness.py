@@ -163,6 +163,26 @@ class FakeEvaluationTests(unittest.TestCase):
         with self.assertRaises(evaluation.EvalError):
             evaluation.summarize_pairs((stale,), self.manifest)
 
+    def test_pair_summary_rejects_unhashable_task_and_arm_ids_as_eval_errors(self):
+        result = evaluation.run_fake_selfcheck(self.manifest, provider_for(self.manifest), self.artifact)
+        for field, invalid in (("taskId", ["fixture-1"]), ("armId", {"minimal": True})):
+            row = dict(result.records[0], **{field: invalid})
+            with self.subTest(field=field), self.assertRaises(evaluation.EvalError):
+                evaluation.summarize_pairs((row,), self.manifest)
+
+    def test_pair_summary_rejects_unhashable_status_and_mode(self):
+        result = evaluation.run_fake_selfcheck(self.manifest, provider_for(self.manifest), self.artifact)
+        cases = (
+            (dict(result.records[0], status=["PASS_VERIFIED"]), "status"),
+            (dict(result.records[0], mode={"fake": True}), "mode"),
+        )
+        for row, field in cases:
+            with self.subTest(field=field), self.assertRaises(evaluation.EvalError):
+                evaluation.summarize_pairs((row,), self.manifest)
+        self.assertEqual(evaluation.classify_failure({
+            "status": "FAIL_UNVERIFIED", "evidenceStage": ["unknown"]
+        }), "unknown")
+
     def test_fake_selfcheck_is_task_isolated_scored_and_persisted(self):
         provider = provider_for(self.manifest)
         result = evaluation.run_fake_selfcheck(self.manifest, provider, self.artifact)
@@ -378,9 +398,14 @@ class FakeEvaluationTests(unittest.TestCase):
                                "status": "PASS_VERIFIED", "mode": "FAKE_SELF_CHECK"})
         concurrent.close()
 
-    def test_artifact_rejects_lexically_external_path_without_access(self):
-        with self.assertRaises(evaluation.EvalError):
-            evaluation.run_fake_selfcheck(self.manifest, provider_for(self.manifest), Path("../outside.jsonl"))
+    def test_artifact_rejects_absolute_path_outside_its_trusted_root(self):
+        repository = Path(__file__).resolve().parents[2]
+        simulated_module = repository / "scripts" / "eval" / "nested" / "harness.py"
+        contained_sibling = repository / "kernel" / "outside.jsonl"
+        with patch.object(evaluation, "__file__", str(simulated_module)):
+            with self.assertRaises(evaluation.EvalError):
+                evaluation.run_fake_selfcheck(
+                    self.manifest, provider_for(self.manifest), contained_sibling)
 
     def test_artifact_resume_rejects_group_or_world_accessible_file(self):
         evaluation.run_fake_selfcheck(self.manifest, provider_for(self.manifest), self.artifact)
@@ -388,6 +413,18 @@ class FakeEvaluationTests(unittest.TestCase):
         with self.assertRaisesRegex(evaluation.EvalError, "private repository-local regular file"):
             evaluation._ArtifactJournal(
                 self.artifact, self.manifest, evaluation.digest(self.manifest))
+
+    def test_artifact_append_rechecks_privacy_after_journal_open(self):
+        journal = evaluation._ArtifactJournal(
+            self.artifact, self.manifest, evaluation.digest(self.manifest))
+        try:
+            before = self.artifact.read_bytes()
+            self.artifact.chmod(0o640)
+            with self.assertRaisesRegex(evaluation.EvalError, "private"):
+                journal.append({"fixture": "must-not-be-appended"})
+            self.assertEqual(self.artifact.read_bytes(), before)
+        finally:
+            journal.close()
 
     def test_artifact_rejects_deep_json_and_closes_all_descriptors(self):
         evaluation.run_fake_selfcheck(self.manifest, provider_for(self.manifest), self.artifact)
@@ -482,8 +519,8 @@ class HostRunBoundaryTests(unittest.TestCase):
             verifier_verdict="PASS", host_run_receipt_ref=f"receipt-{invocation.call_index}",
             verifier_evidence_ref=f"evidence-{invocation.call_index}",
             owner_log_event_digest="blake3:" + "b" * 64,
-            elapsed_ms=5, input_tokens=10, output_tokens=4, cost_micros=None,
-            cost_provenance="UNKNOWN", tool_calls=1, retries=0, interventions=0,
+            elapsed_ms=5, input_tokens=10, output_tokens=4, cost_micros=3,
+            cost_provenance="MEASURED", tool_calls=1, retries=0, interventions=0,
             resource_use={"status": "UNKNOWN"},
         )
 
@@ -625,6 +662,8 @@ class HostRunBoundaryTests(unittest.TestCase):
             ({"resourceUse": {"status": "UNKNOWN", "pssBytes": 1}},
              "must stay UNKNOWN"),
             ({"verifierVerdict": "ed25519"},
+             "missing a valid verifier verdict"),
+            ({"verifierVerdict": ["PASS"]},
              "missing a valid verifier verdict"),
         )
         for overrides, message in contradictions:
@@ -1001,8 +1040,8 @@ def host_outcome(manifest, invocation, **overrides):
         "host_run_receipt_ref": f"receipt-{invocation.call_index}",
         "verifier_evidence_ref": f"evidence-{invocation.call_index}",
         "owner_log_event_digest": "blake3:" + "b" * 64,
-        "elapsed_ms": 5, "input_tokens": 10, "output_tokens": 4, "cost_micros": None,
-        "cost_provenance": "UNKNOWN", "tool_calls": 1, "retries": 0, "interventions": 0,
+        "elapsed_ms": 5, "input_tokens": 10, "output_tokens": 4, "cost_micros": 3,
+        "cost_provenance": "MEASURED", "tool_calls": 1, "retries": 0, "interventions": 0,
         "resource_use": {"status": "UNKNOWN"},
     }
     values.update(overrides)
@@ -1020,7 +1059,9 @@ class FakeHostRunTransport:
     `AuthenticHostRunPositiveFixtureTests`).
     """
 
-    def __init__(self, *, verified_revision="blake3:" + "a" * 64):
+    def __init__(self, *, run_id="hup005-selfcheck-v1",
+                 verified_revision="blake3:" + "a" * 64):
+        self.run_id = run_id
         self.verified_revision = verified_revision
         self.operations = []
         self.bindings = {}
@@ -1085,7 +1126,7 @@ class FakeHostRunTransport:
             "evaluatorTaskId": body["evaluatorTaskId"],
             "armId": body["armId"],
             "taskGroup": body["taskGroup"],
-            "runId": "run-fixture",
+            "runId": self.run_id,
             "managedTaskId": body["evaluatorTaskId"],
             "attemptId": body["attemptID"],
             "evaluationSessionId": "session-fixture",
@@ -1251,7 +1292,7 @@ class HostRunControlPlaneTests(unittest.TestCase):
             control_plane=control, owner_log=owner_log)
 
     def fixture(self, **transport_kwargs):
-        transport = FakeHostRunTransport(**transport_kwargs)
+        transport = FakeHostRunTransport(run_id=self.manifest["runId"], **transport_kwargs)
         control = evaluation.HostRunControlPlaneClient(transport, "goal-fixture")
         owner_log = FakeOwnerLog()
         bridge = self._Bridge(self.manifest)
@@ -1314,7 +1355,7 @@ class HostRunControlPlaneTests(unittest.TestCase):
                 owner_log_sequence="01", owner_log_event_digest=_b3("event"))
 
     def test_bind_response_parser_rejects_tampered_and_foreign_records(self):
-        transport = FakeHostRunTransport()
+        transport = FakeHostRunTransport(run_id="run-fixture")
         key, manifest_digest = _b3("key"), _b3("manifest")
         response = transport.call(
             evaluation.MANAGED_SERVICE_ID, evaluation.HOST_RUN_BIND_OPERATION,
@@ -1324,13 +1365,19 @@ class HostRunControlPlaneTests(unittest.TestCase):
                 arm_id="minimal", task_group="development"))
         binding = response["binding"]
         parsed = evaluation.parse_host_run_bind_response(
-            response, dispatch_key_digest=key, manifest_digest=manifest_digest)
+            response, dispatch_key_digest=key, manifest_digest=manifest_digest,
+            run_id="run-fixture", evaluator_task_id="task-1", arm_id="minimal",
+            task_group="development")
         self.assertEqual(parsed[0]["bindingDigest"], binding["bindingDigest"])
         for broken in (
             {**response, "extra": 1},
             {**response, "schemaVersion": 2},
             {**response, "binding": {**binding, "dispatchKeyDigest": _b3("other")}},
             {**response, "binding": {**binding, "ownerEpoch": "0"}},
+            {**response, "binding": {**binding, "evaluatorTaskId": "foreign-task"}},
+            {**response, "binding": {**binding, "armId": "horizoncode"}},
+            {**response, "binding": {**binding, "taskGroup": "foreign-group"}},
+            {**response, "binding": {**binding, "runId": "foreign-run"}},
             {**response, "receipt": {**transport.p2_receipts[key],
                                      "bindingDigest": _b3("other")}},
             {**response, "binding": {k: v for k, v in binding.items()
@@ -1339,10 +1386,14 @@ class HostRunControlPlaneTests(unittest.TestCase):
             with self.assertRaises(evaluation.EvalError):
                 evaluation.parse_host_run_bind_response(
                     dict(broken), dispatch_key_digest=key,
-                    manifest_digest=manifest_digest)
+                    manifest_digest=manifest_digest, run_id="run-fixture",
+                    evaluator_task_id="task-1", arm_id="minimal",
+                    task_group="development")
         with self.assertRaisesRegex(evaluation.EvalError, "different manifest"):
             evaluation.parse_host_run_bind_response(
-                response, dispatch_key_digest=key, manifest_digest=_b3("other-manifest"))
+                response, dispatch_key_digest=key, manifest_digest=_b3("other-manifest"),
+                run_id="run-fixture", evaluator_task_id="task-1", arm_id="minimal",
+                task_group="development")
 
     def test_bind_receipt_response_parser_requires_recorded_status_and_exact_pins(self):
         key, binding_digest = _b3("key"), _b3("binding")
@@ -1712,13 +1763,12 @@ class AuthenticHostRunPositiveFixtureTests(unittest.TestCase):
 
     def test_stage_ab_and_guarded_create_inspect_admission_facts(self):
         self.skipTest(
-            "BLOCKED_P2: the authentic `host_run.bind` positive needs P2's managed "
-            "admission fixture built from a verified Core peer/fence, actual Guarded "
-            "Create+Inspect journal receipts, persisted Stage-A reservation + Stage-B "
-            "ContextSelection bind, and the real ContextSelection digest. P2's managed "
-            "admission positives are still 1/3 and P8 may not edit P2-owned "
-            "managed_control.rs/host_kernel.rs, so no authentic Stage-A/B fact exists "
-            "for this fixture yet.")
+            "BLOCKED_P2: the canonical fixture now carries the source-derived Guard "
+            "ceiling and Stage-A/B digest chain, but remains fixture data rather than "
+            "authenticated admission evidence. P2's exact `pre_admission_admission_facts` "
+            "classifier must recompute the updated ceiling digest; its result is still "
+            "pending, and this test cannot claim a verified Core peer/fence or actual "
+            "Guarded Create+Inspect receipts.")
 
     def test_full_inspect_terminal_resolution(self):
         self.skipTest(
@@ -1731,11 +1781,165 @@ class AuthenticHostRunPositiveFixtureTests(unittest.TestCase):
 
     def test_p8_owner_log_mirrored_append(self):
         self.skipTest(
-            "BLOCKED_P8_RUST: P8's mirrored `HostRunDispatchBoundV1` OwnerLog event "
-            "and its post-commit receipt do not exist in kernel/src/worker_durable.rs "
-            "yet, and Cargo is held by P1 for the projection work. Writing that Rust "
-            "append unverified would risk breaking the held build, so the seam is "
-            "wired behind a protocol here and the Rust append is not claimed.")
+            "BLOCKED_P8_RUST: the mirrored `HostRunDispatchBoundV1` OwnerLog append/resolve "
+            "source exists, but the new crash-window regression and the complete Rust "
+            "acceptance wave have not run on this shared revision. Prior focused owner-level "
+            "tests do not establish an authenticated P1/P2 HostRun receipt or cross-layer "
+            "runtime acceptance; offline Python consumer fixtures are not that evidence.")
+
+
+class FrozenInvocationMinterTests(unittest.TestCase):
+    """P2 item-21 step 1: the evaluator boundary mints the frozen invocation.
+
+    The candidate record's ``frozenInvocation`` is the exact five-field wire
+    object Rust's ``host_run_invocation_value`` emits and
+    ``WorkerPoolControl::record_frozen_invocation`` consumes, so P2's resolver
+    fixture tests deserialize it directly. goalID/attemptID stay host-owned
+    bridge facts and are never minted here.
+    """
+
+    @staticmethod
+    def claims(manifest, task_id="fixture-1", arm_id="minimal"):
+        manifest_digest = evaluation.host_run_manifest_digest(manifest)
+        key = evaluation.host_run_dispatch_key(manifest_digest, task_id, arm_id)
+        task_group = next((task["taskGroup"] for task in manifest["tasks"]
+                           if task["taskId"] == task_id), "fixture-repo-a")
+        return {"task_id": task_id, "arm_id": arm_id, "task_group": task_group,
+                "manifest_digest": manifest_digest,
+                "dispatch_key_digest": evaluation.host_run_dispatch_key_digest(key)}
+
+    def mint(self, manifest, **overrides):
+        claims = self.claims(manifest)
+        claims.update(overrides)
+        return evaluation.host_run_frozen_invocation_candidate(manifest, **claims)
+
+    def test_mint_emits_the_exact_five_field_frozen_invocation_wire_shape(self):
+        manifest = evaluation.selfcheck_manifest()
+        record = self.mint(manifest)
+        self.assertEqual(set(record),
+                         set(evaluation.HOST_RUN_FROZEN_INVOCATION_CANDIDATE_FIELDS))
+        self.assertEqual(record["schema"],
+                         evaluation.HOST_RUN_FROZEN_INVOCATION_CANDIDATE_SCHEMA)
+        self.assertEqual(record["lane"], "HUP_PAIRED_HOST_RUN_V1")
+        invocation = record["frozenInvocation"]
+        self.assertEqual(set(invocation),
+                         set(evaluation.HOST_RUN_FROZEN_INVOCATION_FIELDS))
+        self.assertEqual(len(invocation), 5)
+        self.assertEqual(invocation["evaluatorTaskId"], "fixture-1")
+        self.assertEqual(invocation["armId"], "minimal")
+        self.assertEqual(invocation["taskGroup"], "fixture-repo-a")
+        for field in ("manifestDigest", "dispatchKeyDigest"):
+            self.assertRegex(invocation[field], r"blake3:[0-9a-f]{64}")
+        self.assertEqual(record["manifestDigest"], invocation["manifestDigest"])
+        self.assertEqual(record["dispatchKeyDigest"], invocation["dispatchKeyDigest"])
+        # Recomputation rule: blake3 over the canonical sha256 pair key.
+        raw_key = evaluation.host_run_dispatch_key(
+            invocation["manifestDigest"], "fixture-1", "minimal")
+        self.assertEqual(invocation["dispatchKeyDigest"],
+                         evaluation.host_run_dispatch_key_digest(raw_key))
+        # Host-owned handle facts are never part of the frozen record.
+        for field in ("goalID", "attemptID", "runId"):
+            self.assertNotIn(field, record)
+            self.assertNotIn(field, invocation)
+
+    def test_mint_is_deterministic_and_json_round_trip_stable(self):
+        first = self.mint(evaluation.selfcheck_manifest())
+        second = self.mint(evaluation.selfcheck_manifest())
+        self.assertEqual(first, second)
+        wire = json.loads(json.dumps(first, sort_keys=True))
+        self.assertEqual(wire, first)
+
+    def test_mint_output_composes_the_seven_field_bind_body(self):
+        record = self.mint(evaluation.selfcheck_manifest())
+        invocation = record["frozenInvocation"]
+        body = evaluation.host_run_bind_body(
+            goal_id="goal-fixture", attempt_id="attempt-fixture",
+            dispatch_key_digest=record["dispatchKeyDigest"],
+            manifest_digest=record["manifestDigest"],
+            evaluator_task_id=invocation["evaluatorTaskId"],
+            arm_id=invocation["armId"],
+            task_group=invocation["taskGroup"])
+        self.assertEqual(set(body), set(evaluation.HOST_RUN_BIND_BODY_FIELDS))
+        self.assertEqual(len(body), 7)
+
+    def test_missing_manifest_produces_no_candidate_record(self):
+        claims = self.claims(evaluation.selfcheck_manifest())
+        for broken in (None, {}, [], {"schema": evaluation.SCHEMA}):
+            with self.subTest(broken=broken):
+                with self.assertRaises(evaluation.EvalError):
+                    evaluation.host_run_frozen_invocation_candidate(broken,
+                                                                    **claims)
+
+    def test_manifest_digest_mismatch_produces_no_candidate_record(self):
+        manifest = evaluation.selfcheck_manifest()
+        claims = self.claims(manifest)
+        claims["manifest_digest"] = "blake3:" + "a" * 64
+        with self.assertRaisesRegex(evaluation.EvalError, "manifest digest"):
+            evaluation.host_run_frozen_invocation_candidate(manifest, **claims)
+
+    def test_tampered_task_group_produces_no_candidate_record(self):
+        manifest = evaluation.selfcheck_manifest()
+        claims = self.claims(manifest)
+        claims["task_group"] = "fixture-repo-x"
+        with self.assertRaisesRegex(evaluation.EvalError, "taskGroup"):
+            evaluation.host_run_frozen_invocation_candidate(manifest, **claims)
+
+    def test_unknown_task_or_arm_produces_no_candidate_record(self):
+        manifest = evaluation.selfcheck_manifest()
+        unknown_task = self.claims(manifest, task_id="fixture-foreign")
+        with self.assertRaisesRegex(evaluation.EvalError,
+                                    "evaluatorTaskId is not in the frozen manifest"):
+            evaluation.host_run_frozen_invocation_candidate(manifest, **unknown_task)
+        unknown_arm = self.claims(manifest, arm_id="foreign-arm")
+        with self.assertRaisesRegex(evaluation.EvalError,
+                                    "armId is not in the frozen manifest"):
+            evaluation.host_run_frozen_invocation_candidate(manifest, **unknown_arm)
+
+    def test_dispatch_key_recomputation_mismatch_produces_no_candidate_record(self):
+        manifest = evaluation.selfcheck_manifest()
+        claims = self.claims(manifest)
+        claims["dispatch_key_digest"] = "blake3:" + "b" * 64
+        with self.assertRaisesRegex(evaluation.EvalError, "dispatch key"):
+            evaluation.host_run_frozen_invocation_candidate(manifest, **claims)
+
+    def test_malformed_claims_are_typed_rejections(self):
+        manifest = evaluation.selfcheck_manifest()
+        claims = self.claims(manifest)
+        claims["manifest_digest"] = "sha256:" + "c" * 64
+        with self.assertRaisesRegex(evaluation.EvalError, "blake3"):
+            evaluation.host_run_frozen_invocation_candidate(manifest, **claims)
+        claims = self.claims(manifest)
+        claims["dispatch_key_digest"] = "blake3:" + "A" * 64  # uppercase alias
+        with self.assertRaisesRegex(evaluation.EvalError, "blake3"):
+            evaluation.host_run_frozen_invocation_candidate(manifest, **claims)
+        claims = self.claims(manifest)
+        claims["task_group"] = "bad\ngroup"
+        with self.assertRaises(evaluation.EvalError):
+            evaluation.host_run_frozen_invocation_candidate(manifest, **claims)
+
+
+class TokenControlCharacterParityTests(unittest.TestCase):
+    """Python token checks must match Rust `validate_owner_token`.
+
+    Rust rejects every Unicode ``Cc`` character (``char::is_control``); the
+    Python `_token` helper only rejected ``ord < 0x20``, so DEL (U+007F) and
+    C1 controls (U+0080–U+009F) were accepted by the evaluator while the
+    canonical owner refuses them — a minted candidate could never be recorded.
+    """
+
+    def test_del_and_c1_controls_are_rejected_like_rust_char_is_control(self):
+        for value in ("\x7f", "a\x85b", "\u009f", "bad\x1besc"):
+            with self.subTest(value=repr(value)):
+                with self.assertRaises(evaluation.EvalError):
+                    evaluation._token(value, "fixture.token")
+        self.assertEqual(evaluation._token("fixture-token", "fixture.token"),
+                         "fixture-token")
+
+    def test_manifest_with_del_in_a_token_is_rejected_end_to_end(self):
+        manifest = evaluation.selfcheck_manifest()
+        manifest["runId"] = "bad\x7fname"
+        with self.assertRaises(evaluation.EvalError):
+            evaluation.validate_manifest(manifest)
 
 
 if __name__ == "__main__":

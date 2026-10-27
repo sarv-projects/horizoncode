@@ -1,0 +1,2 @@
+$ bun run --cwd packages/opencode typecheck && bun run --cwd packages/tui typecheck && bun run --cwd packages/core typecheck
+$ tsgo --noEmit

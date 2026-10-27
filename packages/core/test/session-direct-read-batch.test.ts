@@ -134,6 +134,12 @@ describe("direct read batch local request validation", () => {
     expect(accepted.result.status).toBe("prepared")
   })
 
+  test("accepts a canonical maximum-length path and recomputes its read digests", async () => {
+    const longPath = "a".repeat(4096)
+    const { result } = await prepare([call("read-1", longPath)], response([row({ callID: "read-1", path: longPath })]))
+    expect(result.status).toBe("prepared")
+  })
+
   test("rejects a malformed wave locally without sending a request", async () => {
     const cases: ReadonlyArray<ReadonlyArray<unknown>> = [
       [],
@@ -664,6 +670,31 @@ describe("direct read caller wave orchestration", () => {
     expect(log).toEqual(["feature:effects.v2"])
     expect(sent).toHaveLength(0)
     expect(executed).toEqual([])
+  })
+
+  test("rejects a malformed request identity before any host interaction", async () => {
+    for (const malformedRequestID of ["", "request id", `request-${"x".repeat(256)}`, "request\nid"]) {
+      const log: Log = []
+      const { host, sent } = fixture({ log })
+      const outcome = await Effect.runPromise(
+        DirectReadBatch.runWave({
+          host,
+          sessionID,
+          locationRef,
+          requestID: malformedRequestID,
+          lane: "direct_session",
+          codeMode: false,
+          calls: [call("read-1")],
+          execute: () => Effect.sync(() => [{ callID: "read-1", status: "settled" as const, output: "ok" }]),
+        }).pipe(Effect.provideService(TrustedPrincipalContext, { principal })),
+      )
+      expect(outcome.status).toBe("denied")
+      if (outcome.status !== "denied") throw new Error("expected a denied wave")
+      expect(outcome.failure.phase).toBe("request")
+      expect(outcome.failure.replay).toBe("forbidden")
+      expect(log).toEqual([])
+      expect(sent).toHaveLength(0)
+    }
   })
 
   test("a possibly-sent admission failure is UNKNOWN, is never retried and never executes", async () => {

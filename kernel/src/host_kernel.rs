@@ -23,6 +23,9 @@ use crate::protocol::{
     RpcRequestV1, RpcResponseV1, TypedErrorV1, valid_binding_id, validate_identifier,
 };
 use crate::request_cancellation::RequestCancellation;
+use crate::secret_mutation::{
+    SecretMutationIntentV1, SecretMutationJournalV1, SecretMutationReceiptV1, SecretRecordV1,
+};
 use crate::subscription::{BoundedSubscription, OfferResult};
 use crate::terminal_process::{
     MAX_OUTPUT_BYTES, MAX_STDIO_TIMEOUT, TerminalLaunchSpec, TerminalProcess, TerminationReason,
@@ -60,6 +63,7 @@ pub const TERMINAL_SERVICE_ID: &str = "terminal.v1";
 pub const EXECUTION_SERVICE_ID: &str = "execution.v1";
 pub const REPO_INTEL_SERVICE_ID: &str = "repo-intel.v1";
 pub const AUTOMATION_SERVICE_ID: &str = "automation.v1";
+pub const SECRET_SERVICE_ID: &str = "secret.v1";
 pub const CHECKPOINT_SERVICE_ID: &str = "checkpoint.v1";
 pub const DIRECT_MESSAGE_SERVICE_ID: &str = "direct.message.v1";
 pub const ARTIFACT_SERVICE_ID: &str = "artifact.v1";
@@ -2181,6 +2185,13 @@ impl HostKernel {
         let direct_attempt_limits =
             crate::managed_control::DirectAttemptProfileAdmissionControl::open(&managed_root)
                 .map_err(|_| "direct Attempt profile admission control is unavailable".to_owned())?;
+        // P1's read-only HostRun effect projection provider over this trusted
+        // state directory's per-Location effect journals. The root was created
+        // private above; a substituted or symlinked root fails startup closed
+        // rather than leaving `host_run.inspect` permanently UNKNOWN.
+        let host_run_effect_projection =
+            crate::managed_control::EffectHostRunProjectionSourceV1::open(&location_state_root)
+                .map_err(|_| "HostRun effect projection source could not be opened".to_owned())?;
         let mut host = Self {
             state_dir: state_dir.to_owned(),
             locations,
@@ -2216,7 +2227,7 @@ impl HostKernel {
             direct_message_root,
             managed_message_root,
             managed: HashMap::new(),
-            host_run_effect_projection: None,
+            host_run_effect_projection: Some(Box::new(host_run_effect_projection)),
             worker_pool: None,
             resource_sample_sequence: 0,
             authenticated_core_peer: None,
@@ -4143,7 +4154,7 @@ impl HostKernel {
         fence: &FrameFence,
         context: (&str, &str, &str, &str, Option<&Value>),
     ) -> Result<Option<Value>, HostError> {
-        let (context_session, location_id, _call_id, lane, managed_value) = context;
+        let (context_session, location_id, call_id, lane, managed_value) = context;
         let subject = require_managed_server_auth(Some(authenticated_principal), principal)?;
         let location = self.locations.get(location_id).ok_or((
             "location_not_registered", ErrorCategoryV1::Authorization, "CodeMode Location is not registered",
@@ -4151,9 +4162,9 @@ impl HostKernel {
         self.validate_direct_session_location_owner(&location, subject)?;
         let fields = match lane {
             "direct_session" => strict_fields(&request.body,
-                &["schemaVersion", "lane", "sessionID", "requestId"], &[])?,
+                &["schemaVersion", "lane", "sessionID", "requestId", "executionID"], &[])?,
             "managed_attempt" => strict_fields(&request.body,
-                &["schemaVersion", "lane", "runID", "taskID", "attemptID", "requestId"], &[])?,
+                &["schemaVersion", "lane", "runID", "taskID", "attemptID", "requestId", "executionID"], &[])?,
             _ => return Err(invalid()),
         };
         if fields.get("schemaVersion") != Some(&Value::Unsigned(1))
@@ -4167,8 +4178,14 @@ impl HostKernel {
         if session_id != context_session { return Err(("effect_denied", ErrorCategoryV1::Authorization,
             "CodeMode inspect Session differs from private Tool.Context")); }
         let request_id = text(fields, "requestId")?;
+        let execution_id = text(fields, "executionID")?;
         validate_effect_identifier(session_id)?;
         validate_effect_identifier(request_id)?;
+        validate_effect_identifier(execution_id)?;
+        if request_id != call_id {
+            return Err(("effect_denied", ErrorCategoryV1::Authorization,
+                "CodeMode request ID differs from the private Tool.Context call ID"));
+        }
         let effect_host = EffectHost::open_live(&location.effect_state_dir, Some(&location.canonical_root))
             .map_err(|_| ("effect_unavailable", ErrorCategoryV1::Unavailable, "CodeMode EffectHost journal is unavailable"))?;
         let authority = if lane == "direct_session" {
@@ -4205,6 +4222,10 @@ impl HostKernel {
             || authority.owner_epoch != fence.owner_epoch()
         { return Err(("code_mode_recovery_unavailable", ErrorCategoryV1::Uncertain,
             "CodeMode execution differs from authenticated scope")); }
+        if authority.execution_id != execution_id {
+            return Err(("code_mode_recovery_unavailable", ErrorCategoryV1::Uncertain,
+                "CodeMode executionID differs from the exact recovered durable execution"));
+        }
         let state = effect_host.inspect_code_mode_execution(&authority)
             .map_err(|_| ("code_mode_recovery_unavailable", ErrorCategoryV1::Uncertain,
                 "CodeMode state is incomplete or ambiguous"))?;
@@ -4329,13 +4350,17 @@ impl HostKernel {
         request_id: &str,
         fields: &BTreeMap<String, Value>,
     ) -> Result<(RegisteredLocation, crate::effect_host::CodeModeExecutionAuthorityV1), HostError> {
-        let (context_session, location_id, _outer_call_id, lane, managed_value) = context;
+        let (context_session, location_id, outer_call_id, lane, managed_value) = context;
         let subject = require_managed_server_auth(Some(authenticated_principal), principal)?;
         let location = self.locations.get(location_id).ok_or((
             "location_not_registered", ErrorCategoryV1::Authorization, "CodeMode Location is not registered",
         ))?.clone();
         self.validate_direct_session_location_owner(&location, subject)?;
         validate_effect_identifier(request_id)?;
+        if request_id != outer_call_id {
+            return Err(("effect_denied", ErrorCategoryV1::Authorization,
+                "CodeMode request ID differs from the private Tool.Context call ID"));
+        }
         let effect_host = EffectHost::open_live(&location.effect_state_dir, Some(&location.canonical_root))
             .map_err(|_| ("effect_unavailable", ErrorCategoryV1::Unavailable, "CodeMode EffectHost journal is unavailable"))?;
         let authority = match lane {
@@ -5108,6 +5133,9 @@ impl HostKernel {
             && request.service_id != MANAGED_SERVICE_ID
             && request.service_id != EXECUTION_SERVICE_ID
             && request.service_id != DIRECT_MESSAGE_SERVICE_ID
+            && request.service_id != AUTOMATION_SERVICE_ID
+            && request.service_id != SECRET_SERVICE_ID
+            && request.service_id != CHECKPOINT_SERVICE_ID
         {
             Err((
                 "capability_unavailable",
@@ -5548,6 +5576,12 @@ impl HostKernel {
                     | "automations.enable" | "automations.disable" | "automations.list"
                     | "automations.inspect" | "automations.history" | "automations.reconcile") => {
                     self.automation_rpc(request, authenticated_principal, principal, fence)
+                }
+                (SECRET_SERVICE_ID, "authorize_put" | "authorize_rotate" | "authorize_revoke") => {
+                    self.secret_mutation_rpc(request, authenticated_principal, principal, fence)
+                }
+                (SECRET_SERVICE_ID, "authorize_use" | "redeem_use") => {
+                    self.secret_use_rpc(request, authenticated_principal, principal, fence)
                 }
                 (CHECKPOINT_SERVICE_ID, "checkpoint.list") => {
                     self.checkpoint_rpc(request, authenticated_principal, principal)
@@ -15988,11 +16022,12 @@ impl HostKernel {
         ))
     }
 
-    /// P8's authenticated pre-dispatch append call site for the private
-    /// `HostRunDispatchBindingV1`. The strict body carries only the dispatch
-    /// key digest (never the raw key) plus P8's evaluator manifest correlation
-    /// (manifest digest, evaluator task, arm, task group) and the managed
-    /// Attempt to bind. Every authority pin is HostKernel-derived: managed
+    /// P8's authenticated pre-dispatch binding call site for the private
+    /// `HostRunDispatchBindingV1`. The strict request body contains exactly
+    /// `goalID`, `attemptID`, and `dispatchKeyDigest`; it carries no caller-supplied
+    /// evaluator identity. HostKernel resolves the frozen P8 invocation by the
+    /// dispatch-key digest and verifies that it recomputes to that key. Every
+    /// authority pin is HostKernel-derived: managed
     /// identity from the live snapshot, the evaluation Session from the Run's
     /// start-pinned SessionLink, the Core process generation from the
     /// authenticated peer, worker/owner-log identity from P8's durable
@@ -16014,24 +16049,49 @@ impl HostKernel {
                 "goalID",
                 "attemptID",
                 "dispatchKeyDigest",
-                "manifestDigest",
-                "evaluatorTaskId",
-                "armId",
-                "taskGroup",
             ],
             &[],
         )?;
         let goal_id = text(fields, "goalID")?;
         let attempt_id = text(fields, "attemptID")?;
         let dispatch_key_digest = text(fields, "dispatchKeyDigest")?;
-        let manifest_digest = text(fields, "manifestDigest")?;
-        if !is_blake3_digest(dispatch_key_digest) || !is_blake3_digest(manifest_digest) {
+        if !is_blake3_digest(dispatch_key_digest) {
             return Err(invalid());
         }
-        let evaluator_task_id = text(fields, "evaluatorTaskId")?;
-        let arm_id = text(fields, "armId")?;
-        let task_group = text(fields, "taskGroup")?;
         let subject = require_host_run_server_auth(authenticated_principal, principal)?;
+        // Evaluator identity authority is the P8-frozen proof, never the RPC
+        // body. Resolve it by the dispatch-key lookup claim: with no trusted
+        // minter landed the store is empty so this stays unavailable (fail
+        // closed), and a proof whose manifest/task/arm do not recompute to the
+        // submitted key is a conflict.
+        let frozen = {
+            let worker_pool = self.worker_pool.as_ref().ok_or((
+                "worker_pool_unavailable",
+                ErrorCategoryV1::Unavailable,
+                "durable P8 frozen-invocation resolver is unavailable",
+            ))?;
+            worker_pool
+                .resolve_frozen_invocation(dispatch_key_digest)
+                .map_err(|_| {
+                    (
+                        "host_run_frozen_invocation_unavailable",
+                        ErrorCategoryV1::Unavailable,
+                        "P8 frozen evaluator invocation is not established for this dispatch key",
+                    )
+                })?
+        };
+        if host_run_dispatch_key_digest(
+            &frozen.manifest_digest,
+            &frozen.evaluator_task_id,
+            &frozen.arm_id,
+        )
+        .as_deref()
+            != Ok(dispatch_key_digest)
+        {
+            return Err(managed_conflict(
+                "frozen invocation does not recompute to the submitted dispatch key",
+            ));
+        }
         // The Core process generation is the authenticated peer's OS start
         // identity: derived, never accepted from the request body.
         let peer = self.authenticated_core_peer_facts(fence)?;
@@ -16194,10 +16254,10 @@ impl HostKernel {
             EffectAttemptScopeV1::Managed(scope).digest().map_err(|_| invalid())?;
         let identity = crate::managed_control::HostRunEvaluationIdentityV1 {
             dispatch_key_digest: dispatch_key_digest.to_owned(),
-            manifest_digest: manifest_digest.to_owned(),
-            evaluator_task_id: evaluator_task_id.to_owned(),
-            arm_id: arm_id.to_owned(),
-            task_group: task_group.to_owned(),
+            manifest_digest: frozen.manifest_digest.clone(),
+            evaluator_task_id: frozen.evaluator_task_id.clone(),
+            arm_id: frozen.arm_id.clone(),
+            task_group: frozen.task_group.clone(),
             evaluation_session_id: session_link.session_id.clone(),
             core_process_generation: peer.start_identity(),
             owner_id: reservation.owner_log_id().to_owned(),
@@ -16269,18 +16329,60 @@ impl HostKernel {
             owner_log_event_digest: text(fields, "ownerLogEventDigest")?.to_owned(),
         };
         receipt.validate().map_err(managed_error)?;
-        let delivery_id = host_run_bind_receipt_delivery_id(&receipt.dispatch_key_digest);
+        let (binding, p2_receipt) = {
+            let snapshot = self.managed_control(goal_id)?.snapshot();
+            let binding = snapshot
+                .host_run_dispatch_binding(&receipt.dispatch_key_digest)
+                .cloned()
+                .ok_or(managed_conflict(
+                    "HostRun P8 receipt requires its committed P2 binding",
+                ))?;
+            let p2_receipt = snapshot
+                .host_run_dispatch_binding_receipt(&receipt.dispatch_key_digest)
+                .cloned()
+                .ok_or(managed_conflict(
+                    "HostRun P8 receipt requires its committed P2 binding receipt",
+                ))?;
+            (binding, p2_receipt)
+        };
+        let worker_pool = self.worker_pool.as_ref().ok_or((
+            "worker_pool_unavailable",
+            ErrorCategoryV1::Unavailable,
+            "durable P8 OwnerLog resolver is unavailable",
+        ))?;
+        let resolved = resolve_host_run_p8_owner_receipt(&receipt, |submitted| {
+            worker_pool
+                .resolve_host_run_dispatch_bound_receipt(&binding, &p2_receipt, submitted)
+                .map_err(|_| {
+                    managed_conflict(
+                        "HostRun P8 receipt does not resolve to the canonical durable OwnerLog event",
+                    )
+                })
+        })?;
+        let delivery_id = host_run_bind_receipt_delivery_id(&resolved.dispatch_key_digest);
         self.managed_control(goal_id)?
-            .record_host_run_p8_owner_receipt(&delivery_id, receipt.clone())
+            .record_host_run_p8_owner_receipt(&delivery_id, resolved.clone())
             .map_err(managed_error)?;
         Ok(Some(map_value([
             ("schemaVersion", Value::Unsigned(1)),
             ("status", Value::String("RECORDED".to_owned())),
             (
                 "receipt",
-                Value::from_json_value(&receipt.value()).ok_or_else(invalid)?,
+                Value::from_json_value(&resolved.value()).ok_or_else(invalid)?,
             ),
         ])))
+    }
+
+    fn host_run_verifier_set_matches_run_revision(
+        snapshot: &ManagedSnapshot,
+        run_id: &str,
+        set_final_revision: &str,
+    ) -> bool {
+        snapshot
+            .runs
+            .get(run_id)
+            .and_then(|run| run.final_revision.as_deref())
+            == Some(set_final_revision)
     }
 
     /// Joins a snapshot-level SUCCEEDED HostRun reconciliation with the durable
@@ -16344,7 +16446,11 @@ impl HostKernel {
             || set.run_id != binding.run_id
             || set.attempt_id != binding.attempt_id
             || set.owner_epoch != binding.owner_epoch
-            || set.final_revision != binding.admitted_workspace_revision
+            || !Self::host_run_verifier_set_matches_run_revision(
+                &snapshot,
+                &binding.run_id,
+                &set.final_revision,
+            )
             // The verifier set is committed after this binding is recorded, so
             // its managed revision may only be newer — never from an earlier
             // epoch of the managed Run than the binding itself.
@@ -26198,8 +26304,12 @@ impl HostKernel {
             scope_hasher.update(part);
         }
         let scope_digest = format!("blake3:{}", scope_hasher.finalize().to_hex());
-        let registry_root = self.state_dir.join("automation-registry")
-            .join(scope_digest.trim_start_matches("blake3:"));
+        let automation_root = self.state_dir.join("automation-registry");
+        ensure_private_directory(&automation_root).map_err(|_| (
+            "automation_unavailable", ErrorCategoryV1::Unavailable,
+            "automation registry storage is unavailable",
+        ))?;
+        let registry_root = automation_root.join(scope_digest.trim_start_matches("blake3:"));
         ensure_private_directory(&registry_root).map_err(|_| (
             "automation_unavailable", ErrorCategoryV1::Unavailable,
             "automation registry storage is unavailable",
@@ -26361,6 +26471,806 @@ impl HostKernel {
         Ok(Some(response))
     }
 
+    /// Authenticated owner-scoped SecretBroker mutation authorization. The
+    /// request carries metadata only; identity comes from the typed ServerAuth
+    /// principal and the exact one-use Guard/EffectHost lease is consumed inside
+    /// this call before any durable receipt exists.
+    fn secret_mutation_rpc(
+        &mut self,
+        request: &RpcRequestV1,
+        authenticated_principal: Option<&crate::protocol::AuthenticatedPrincipalV1>,
+        principal: &str,
+        fence: &FrameFence,
+    ) -> Result<Option<Value>, HostError> {
+        let operation = match request.operation.as_str() {
+            "authorize_put" => "put",
+            "authorize_rotate" => "rotate",
+            "authorize_revoke" => "revoke",
+            _ => return Err(invalid()),
+        };
+        let fields = strict_fields(
+            &request.body,
+            &["providerId", "idempotencyKey"],
+            &["secretRef", "expectedVersion", "label"],
+        )?;
+        let owner_key = match authenticated_principal {
+            Some(crate::protocol::AuthenticatedPrincipalV1::ServerAuth { subject })
+                if valid_server_auth_subject(subject)
+                    && principal == format!("server_auth:{subject}") => subject.to_owned(),
+            // A local CLI is identified by the kernel-attested peer credentials
+            // (SO_PEERCRED uid plus executable identity), never by request
+            // fields. A grant alone cannot move credential bytes: it is
+            // redeemable only inside the process that holds the matching
+            // one-use vault handle, so this adds no remote or cross-process path.
+            None if valid_principal(principal) && principal.starts_with("host_os_uid:") => {
+                principal.to_owned()
+            }
+            _ => {
+                return Err((
+                    "missing_principal",
+                    ErrorCategoryV1::Authorization,
+                    "secret mutation requires an authenticated server or host OS principal",
+                ))
+            }
+        };
+        let provider_id = text(fields, "providerId")?;
+        if !valid_secret_wire_id(provider_id) {
+            return Err(invalid());
+        }
+        let idempotency_key = text(fields, "idempotencyKey")?;
+        if !valid_secret_text(idempotency_key, 256) {
+            return Err(invalid());
+        }
+        let secret_ref = match fields.get("secretRef") {
+            None => None,
+            Some(Value::String(value)) if valid_secret_wire_id(value) => Some(value.clone()),
+            _ => return Err(invalid()),
+        };
+        let expected_version = if fields.contains_key("expectedVersion") {
+            let version = canonical_decimal_revision(fields, "expectedVersion")?;
+            if version == 0 {
+                return Err(invalid());
+            }
+            Some(version)
+        } else {
+            None
+        };
+        let label = match fields.get("label") {
+            None => None,
+            Some(Value::String(value)) if valid_secret_text(value, 128) => Some(value.clone()),
+            _ => return Err(invalid()),
+        };
+        match operation {
+            "put" => {
+                if secret_ref.is_some() != expected_version.is_some() {
+                    return Err(invalid());
+                }
+            }
+            "rotate" | "revoke" => {
+                if secret_ref.is_none() || expected_version.is_none() {
+                    return Err(invalid());
+                }
+            }
+            _ => return Err(invalid()),
+        }
+
+        let owner_binding = crate::guard::location_principal_binding(&owner_key);
+        let mut scope_hasher = blake3::Hasher::new();
+        scope_hasher.update(b"horizoncode.secret-mutation-scope.v1\0");
+        scope_hasher.update(&(owner_binding.len() as u64).to_be_bytes());
+        scope_hasher.update(owner_binding.as_bytes());
+        let scope_digest = format!("blake3:{}", scope_hasher.finalize().to_hex());
+        let scope_hex = scope_digest.strip_prefix("blake3:").ok_or_else(invalid)?;
+        let secret_root = self.state_dir.join("secret-mutation");
+        ensure_private_directory(&secret_root).map_err(|_| secret_mutation_unavailable())?;
+        let scope_root = secret_root.join(scope_hex);
+        ensure_private_directory(&scope_root).map_err(|_| secret_mutation_unavailable())?;
+        let journal_root = scope_root.join("journal");
+        ensure_private_directory(&journal_root).map_err(|_| secret_mutation_unavailable())?;
+        let effects_root = scope_root.join("effects");
+        ensure_private_directory(&effects_root).map_err(|_| secret_mutation_unavailable())?;
+        let mut journal = SecretMutationJournalV1::open(&journal_root, &scope_digest)
+            .map_err(secret_journal_error)?;
+
+        let request_digest = secret_mutation_request_digest(
+            operation,
+            provider_id,
+            secret_ref.as_deref(),
+            expected_version,
+            idempotency_key,
+            label.as_deref(),
+            &owner_binding,
+        )?;
+        let target = match secret_ref.as_deref() {
+            Some(value) => value.to_owned(),
+            None => secret_ref_for_create(&scope_digest, provider_id, idempotency_key),
+        };
+        let capability_id = secret_mutation_capability(operation);
+
+        if let Some(receipt) = journal.receipt(idempotency_key).cloned() {
+            if !secret_mutation_receipt_matches(
+                &receipt,
+                operation,
+                provider_id,
+                secret_ref.as_deref(),
+                expected_version,
+                idempotency_key,
+                label.as_deref(),
+                &request_digest,
+            ) {
+                return Err(secret_mutation_conflict());
+            }
+            let mut effect_host = open_secret_effect_host(&effects_root)?;
+            match effect_host.inspect_guarded_control_effect(
+                &receipt.challenge_id,
+                &receipt.effect_id,
+                &receipt.user_action_id,
+                principal,
+                capability_id,
+                &receipt.effect_intent_digest,
+                &receipt.capability_lease_digest,
+            ) {
+                Ok(crate::effect_host::GuardedControlEffectStateV1::Settled {
+                    receipt_digest,
+                }) if receipt_digest == receipt.receipt_digest => {}
+                Ok(crate::effect_host::GuardedControlEffectStateV1::Started)
+                | Ok(crate::effect_host::GuardedControlEffectStateV1::Unknown) => {
+                    effect_host
+                        .settle_guarded_control_effect(
+                            &receipt.challenge_id,
+                            &receipt.effect_id,
+                            &receipt.capability_lease_digest,
+                            &receipt.receipt_digest,
+                        )
+                        .map_err(|_| secret_mutation_unknown())?;
+                }
+                _ => return Err(secret_mutation_unknown()),
+            }
+            return Ok(Some(secret_mutation_value(&receipt, "REPLAY")));
+        }
+
+        if let Some(intent) = journal.intent(idempotency_key).cloned() {
+            if intent.request_digest != request_digest
+                || intent.operation != operation
+                || intent.provider_id != provider_id
+                || intent.secret_ref != target
+                || intent.expected_version != expected_version
+                || intent.label != label
+            {
+                return Err(secret_mutation_conflict());
+            }
+            return Err(secret_mutation_unknown());
+        }
+
+        let resulting_version = match operation {
+            "put" => journal.validate_put(&target, provider_id, expected_version),
+            "rotate" => journal.validate_rotate(
+                &target,
+                provider_id,
+                expected_version.ok_or_else(invalid)?,
+            ),
+            "revoke" => journal.validate_revoke(
+                &target,
+                provider_id,
+                expected_version.ok_or_else(invalid)?,
+            ),
+            _ => return Err(invalid()),
+        }
+        .map_err(secret_journal_error)?;
+        if matches!(operation, "put" | "rotate") && journal.has_unsettled_for_target(&target) {
+            return Err(secret_mutation_unknown());
+        }
+        let effective_label = label
+            .clone()
+            .or_else(|| journal.record(&target).and_then(|record| record.label.clone()));
+        let arguments = map_value([
+            ("operation", Value::String(operation.to_owned())),
+            ("providerId", Value::String(provider_id.to_owned())),
+            ("secretRef", Value::String(target.clone())),
+            (
+                "expectedVersion",
+                expected_version
+                    .map(|value| Value::String(value.to_string()))
+                    .unwrap_or(Value::Nil),
+            ),
+            (
+                "resultingVersion",
+                Value::String(resulting_version.to_string()),
+            ),
+            (
+                "idempotencyKey",
+                Value::String(idempotency_key.to_owned()),
+            ),
+            (
+                "label",
+                effective_label
+                    .clone()
+                    .map(Value::String)
+                    .unwrap_or(Value::Nil),
+            ),
+        ]);
+        let user_action_id =
+            secret_mutation_action_id(&scope_digest, idempotency_key, &request_digest);
+        let mut effect_host = open_secret_effect_host(&effects_root)?;
+        let now = unix_ms();
+        let mut prepare_request = request.clone();
+        prepare_request.service_id = EFFECTS_SERVICE_ID.to_owned();
+        prepare_request.operation = "prepare_user_effect".to_owned();
+        prepare_request.body = map_value([
+            ("userActionId", Value::String(user_action_id.clone())),
+            ("capabilityId", Value::String(capability_id.to_owned())),
+            ("arguments", arguments.clone()),
+        ]);
+        let response = effect_host.handle_request("", principal, &prepare_request, true, fence);
+        if response.outcome == RpcOutcomeV1::Error {
+            let code = response
+                .error
+                .as_ref()
+                .map(|error| error.code.as_str())
+                .unwrap_or("");
+            return Err(match code {
+                "effect_denied" => secret_mutation_denied(),
+                "effect_conflict" => secret_mutation_conflict(),
+                _ => secret_mutation_unavailable(),
+            });
+        }
+        let Some(Value::Map(body)) = response.body else {
+            return Err(secret_mutation_unavailable());
+        };
+        match get_text(&body, "status")? {
+            "denied" => return Err(secret_mutation_denied()),
+            "needs_approval" => {}
+            _ => return Err(secret_mutation_unavailable()),
+        }
+        let challenge_id = get_text(&body, "challengeId")?.to_owned();
+        let effect_id = get_text(&body, "effectId")?.to_owned();
+        let input_digest = get_text(&body, "inputDigest")?.to_owned();
+        let expires_at_ms = get_unsigned(&body, "expiresAtUnixMs")?;
+        validate_effect_identifier(&challenge_id)?;
+        validate_effect_identifier(&effect_id)?;
+        validate_effect_identifier(&user_action_id)?;
+        if !is_blake3_digest(&input_digest) {
+            return Err(secret_mutation_unavailable());
+        }
+        let mut approve_request = request.clone();
+        approve_request.service_id = EFFECTS_SERVICE_ID.to_owned();
+        approve_request.operation = "resolve_approval".to_owned();
+        approve_request.body = map_value([
+            ("sessionId", Value::String(String::new())),
+            ("challengeId", Value::String(challenge_id.clone())),
+            ("approved", Value::Bool(true)),
+        ]);
+        let response = effect_host.handle_request("", principal, &approve_request, true, fence);
+        if response.outcome == RpcOutcomeV1::Error {
+            let code = response
+                .error
+                .as_ref()
+                .map(|error| error.code.as_str())
+                .unwrap_or("");
+            return Err(match code {
+                "effect_denied" => secret_mutation_denied(),
+                "effect_conflict" => secret_mutation_conflict(),
+                _ => secret_mutation_unavailable(),
+            });
+        }
+        let Some(Value::Map(body)) = response.body else {
+            return Err(secret_mutation_unavailable());
+        };
+        if get_text(&body, "status")? != "approved" {
+            return Err(secret_mutation_denied());
+        }
+
+        let binding = CapabilityBinding {
+            challenge_id: challenge_id.clone(),
+            effect_id: effect_id.clone(),
+            batch_id: None,
+            session_id: String::new(),
+            location_id: scope_digest.clone(),
+            capability_id: capability_id.to_owned(),
+            principal: principal.to_owned(),
+            user_action_id: Some(user_action_id.clone()),
+            approved_arguments: arguments.clone(),
+            launch_profile: None,
+            approved_arguments_digest: input_digest.clone(),
+            managed_attempt_digest: None,
+            managed_root_scope_digest: None,
+            managed_root_scope: None,
+            attempt_scope: None,
+            direct_turn_scope: None,
+            lease_digest: None,
+            owner_epoch: fence.owner_epoch(),
+            search_secret_use_attempts: HashMap::new(),
+        };
+        // The lease is bound to this exact challenge/effect/principal/epoch and
+        // action digest. It is never exposed to another request; EffectHost
+        // accepts it once at begin and settles the same lease with the receipt.
+        let lease_digest = issue_lease_digest(&binding, fence.owner_epoch())?;
+
+        let intent = SecretMutationIntentV1 {
+            idempotency_key: idempotency_key.to_owned(),
+            request_digest: request_digest.clone(),
+            operation: operation.to_owned(),
+            provider_id: provider_id.to_owned(),
+            secret_ref: target.clone(),
+            expected_version,
+            resulting_version,
+            label: effective_label.clone(),
+            challenge_id: challenge_id.clone(),
+            effect_id: effect_id.clone(),
+            user_action_id: user_action_id.clone(),
+            effect_intent_digest: input_digest.clone(),
+            capability_lease_digest: lease_digest.clone(),
+            created_at_ms: now,
+        };
+        journal.append_intent(intent).map_err(secret_journal_error)?;
+
+        match effect_host.begin_guarded_control_effect(
+            &challenge_id,
+            &effect_id,
+            &user_action_id,
+            principal,
+            capability_id,
+            &input_digest,
+            &lease_digest,
+        ) {
+            Ok(crate::effect_host::GuardedControlEffectStateV1::Started) => {}
+            _ => return Err(secret_mutation_unknown()),
+        }
+
+        let mut receipt = SecretMutationReceiptV1 {
+            idempotency_key: idempotency_key.to_owned(),
+            request_digest: request_digest.clone(),
+            operation: operation.to_owned(),
+            provider_id: provider_id.to_owned(),
+            secret_ref: target.clone(),
+            expected_version,
+            resulting_version,
+            revoked_version: if operation == "revoke" {
+                expected_version
+            } else {
+                None
+            },
+            label: effective_label.clone(),
+            challenge_id: challenge_id.clone(),
+            effect_id: effect_id.clone(),
+            user_action_id: user_action_id.clone(),
+            effect_intent_digest: input_digest.clone(),
+            capability_lease_digest: lease_digest.clone(),
+            expires_at_ms,
+            grant_id: String::new(),
+            receipt_digest: String::new(),
+            committed_at_ms: now,
+        };
+        let receipt_digest = crate::secret_mutation::receipt_core_digest(&receipt);
+        receipt.receipt_digest = receipt_digest.clone();
+        receipt.grant_id = secret_mutation_grant_id(&receipt_digest);
+        let created_at_ms = journal
+            .record(&target)
+            .map_or(now, |record| record.created_at_ms);
+        let record = SecretRecordV1 {
+            secret_ref: target.clone(),
+            provider_id: provider_id.to_owned(),
+            label: effective_label.clone(),
+            revoked: operation == "revoke",
+            version: resulting_version,
+            created_at_ms,
+            updated_at_ms: now,
+        };
+        journal
+            .commit(receipt.clone(), record, now)
+            .map_err(secret_journal_error)?;
+        effect_host
+            .settle_guarded_control_effect(
+                &challenge_id,
+                &effect_id,
+                &lease_digest,
+                &receipt_digest,
+            )
+            .map_err(|_| secret_mutation_unknown())?;
+        Ok(Some(secret_mutation_value(&receipt, "COMMITTED")))
+    }
+    /// Authenticated owner-scoped SecretBroker provider **use** authorization.
+    /// The request carries metadata only: the exact target version, provider,
+    /// destination, operation digest, purpose and a bounded expiry window. The
+    /// kernel mints a one-use lease through the same Guard/EffectHost
+    /// PREPARED -> STARTED -> durable receipt mechanics as secret mutations. The
+    /// lease never exposes credential bytes and never contacts a provider.
+    fn secret_use_rpc(
+        &mut self,
+        request: &RpcRequestV1,
+        authenticated_principal: Option<&crate::protocol::AuthenticatedPrincipalV1>,
+        principal: &str,
+        fence: &FrameFence,
+    ) -> Result<Option<Value>, HostError> {
+        match request.operation.as_str() {
+            "authorize_use" => {
+                self.authorize_secret_use(request, authenticated_principal, principal, fence)
+            }
+            "redeem_use" => {
+                self.redeem_secret_use(request, authenticated_principal, principal, fence)
+            }
+            _ => Err(invalid()),
+        }
+    }
+
+    fn authorize_secret_use(
+        &mut self,
+        request: &RpcRequestV1,
+        authenticated_principal: Option<&crate::protocol::AuthenticatedPrincipalV1>,
+        principal: &str,
+        fence: &FrameFence,
+    ) -> Result<Option<Value>, HostError> {
+        let fields = strict_fields(
+            &request.body,
+            &[
+                "secretRef",
+                "providerId",
+                "destination",
+                "operationDigest",
+                "purpose",
+                "idempotencyKey",
+            ],
+            &["maxExpiresAt", "ttlMs"],
+        )?;
+        let owner_key = secret_owner_key(authenticated_principal, principal)?;
+        let secret_ref = text(fields, "secretRef")?;
+        if !valid_secret_wire_id(secret_ref) {
+            return Err(invalid());
+        }
+        let provider_id = text(fields, "providerId")?;
+        if !valid_secret_wire_id(provider_id) {
+            return Err(invalid());
+        }
+        let destination = text(fields, "destination")?;
+        if !crate::secret_use::valid_use_destination(destination) {
+            return Err(invalid());
+        }
+        let operation_digest = text(fields, "operationDigest")?;
+        if !is_blake3_digest(operation_digest) {
+            return Err(invalid());
+        }
+        let purpose = text(fields, "purpose")?;
+        if purpose != crate::secret_use::USE_PURPOSE_PROVIDER_REQUEST {
+            return Err(invalid());
+        }
+        let idempotency_key = text(fields, "idempotencyKey")?;
+        if !valid_secret_text(idempotency_key, 256) {
+            return Err(invalid());
+        }
+        let now = unix_ms();
+        let (expires_at_ms, window_binding) =
+            match (fields.get("maxExpiresAt"), fields.get("ttlMs")) {
+                (Some(Value::Unsigned(max_expires_at)), None) => {
+                    if *max_expires_at <= now
+                        || *max_expires_at
+                            > now.saturating_add(crate::secret_use::MAX_USE_TTL_MS)
+                    {
+                        return Err(secret_use_expired());
+                    }
+                    (*max_expires_at, format!("max:{max_expires_at}"))
+                }
+                (None, Some(Value::Unsigned(ttl_ms))) => {
+                    if *ttl_ms == 0 || *ttl_ms > crate::secret_use::MAX_USE_TTL_MS {
+                        return Err(secret_use_expired());
+                    }
+                    let expires = now.checked_add(*ttl_ms).ok_or_else(secret_use_expired)?;
+                    (expires, format!("ttl:{ttl_ms}"))
+                }
+                _ => return Err(invalid()),
+            };
+
+        let owner_binding = crate::guard::location_principal_binding(&owner_key);
+        let scope_digest = secret_owner_scope_digest(&owner_key);
+        let (journal_root, effects_root, use_journal_root) =
+            secret_scope_roots(&self.state_dir, &scope_digest)?;
+        let mutation_journal = SecretMutationJournalV1::open(&journal_root, &scope_digest)
+            .map_err(secret_journal_error)?;
+        let mut journal =
+            crate::secret_use::SecretUseJournalV1::open(&use_journal_root, &scope_digest)
+                .map_err(secret_use_journal_error)?;
+        let capability_id = crate::guard::SECRET_USE_ID;
+        let request_digest = secret_use_request_digest(
+            provider_id,
+            secret_ref,
+            destination,
+            operation_digest,
+            purpose,
+            &window_binding,
+            idempotency_key,
+            &owner_binding,
+        )?;
+
+        if let Some(grant) = journal.grant_for_key(idempotency_key).cloned() {
+            if !secret_use_grant_matches(
+                &grant,
+                &request_digest,
+                provider_id,
+                secret_ref,
+                destination,
+                operation_digest,
+                purpose,
+                idempotency_key,
+            ) {
+                return Err(secret_use_conflict());
+            }
+            let mut effect_host = open_secret_effect_host(&effects_root)?;
+            match effect_host.inspect_guarded_control_effect(
+                &grant.lease.challenge_id,
+                &grant.lease.effect_id,
+                &grant.lease.user_action_id,
+                principal,
+                capability_id,
+                &grant.lease.effect_intent_digest,
+                &grant.lease.capability_lease_digest,
+            ) {
+                Ok(crate::effect_host::GuardedControlEffectStateV1::Settled {
+                    receipt_digest,
+                }) if receipt_digest == grant.receipt_digest => {}
+                Ok(crate::effect_host::GuardedControlEffectStateV1::Started)
+                | Ok(crate::effect_host::GuardedControlEffectStateV1::Unknown) => {
+                    effect_host
+                        .settle_guarded_control_effect(
+                            &grant.lease.challenge_id,
+                            &grant.lease.effect_id,
+                            &grant.lease.capability_lease_digest,
+                            &grant.receipt_digest,
+                        )
+                        .map_err(|_| secret_mutation_unknown())?;
+                }
+                _ => return Err(secret_mutation_unknown()),
+            }
+            let state = if journal.redemption(&grant.lease.lease_id).is_some() {
+                "CONSUMED"
+            } else {
+                "ISSUED"
+            };
+            return Ok(Some(secret_use_value(&grant, state, "REPLAY")));
+        }
+
+        if let Some(intent) = journal.intent(idempotency_key).cloned() {
+            if intent.request_digest != request_digest
+                || intent.operation_digest != operation_digest
+                || intent.provider_id != provider_id
+                || intent.secret_ref != secret_ref
+                || intent.destination != destination
+                || intent.purpose != purpose
+            {
+                return Err(secret_use_conflict());
+            }
+            return Err(secret_mutation_unknown());
+        }
+
+        // The target must exist, be AVAILABLE and belong to the exact provider in
+        // this authenticated owner scope. These checks happen before any durable
+        // intent, so a denial writes no receipt and changes no state.
+        let record = mutation_journal
+            .record(secret_ref)
+            .cloned()
+            .ok_or_else(secret_mutation_not_found)?;
+        if record.provider_id != provider_id {
+            return Err(secret_provider_mismatch());
+        }
+        if record.revoked {
+            return Err(secret_revoked());
+        }
+        let secret_version = record.version;
+
+        let arguments = map_value([
+            ("operation", Value::String("use".to_owned())),
+            ("providerId", Value::String(provider_id.to_owned())),
+            ("secretRef", Value::String(secret_ref.to_owned())),
+            (
+                "secretVersion",
+                Value::String(secret_version.to_string()),
+            ),
+            (
+                "operationDigest",
+                Value::String(operation_digest.to_owned()),
+            ),
+            ("destination", Value::String(destination.to_owned())),
+            ("purpose", Value::String(purpose.to_owned())),
+            (
+                "expiresAtUnixMs",
+                Value::Unsigned(expires_at_ms),
+            ),
+            ("maxRequests", Value::Unsigned(1)),
+        ]);
+        let user_action_id =
+            secret_use_action_id(&scope_digest, idempotency_key, &request_digest);
+        let mut effect_host = open_secret_effect_host(&effects_root)?;
+        let mut prepare_request = request.clone();
+        prepare_request.service_id = EFFECTS_SERVICE_ID.to_owned();
+        prepare_request.operation = "prepare_user_effect".to_owned();
+        prepare_request.body = map_value([
+            ("userActionId", Value::String(user_action_id.clone())),
+            ("capabilityId", Value::String(capability_id.to_owned())),
+            ("arguments", arguments.clone()),
+        ]);
+        let response = effect_host.handle_request("", principal, &prepare_request, true, fence);
+        if response.outcome == RpcOutcomeV1::Error {
+            let code = response
+                .error
+                .as_ref()
+                .map(|error| error.code.as_str())
+                .unwrap_or("");
+            return Err(match code {
+                "effect_denied" => secret_mutation_denied(),
+                "effect_conflict" => secret_use_conflict(),
+                _ => secret_mutation_unavailable(),
+            });
+        }
+        let Some(Value::Map(body)) = response.body else {
+            return Err(secret_mutation_unavailable());
+        };
+        match get_text(&body, "status")? {
+            "denied" => return Err(secret_mutation_denied()),
+            "needs_approval" => {}
+            _ => return Err(secret_mutation_unavailable()),
+        }
+        let challenge_id = get_text(&body, "challengeId")?.to_owned();
+        let effect_id = get_text(&body, "effectId")?.to_owned();
+        let input_digest = get_text(&body, "inputDigest")?.to_owned();
+        validate_effect_identifier(&challenge_id)?;
+        validate_effect_identifier(&effect_id)?;
+        validate_effect_identifier(&user_action_id)?;
+        if !is_blake3_digest(&input_digest) {
+            return Err(secret_mutation_unavailable());
+        }
+        let mut approve_request = request.clone();
+        approve_request.service_id = EFFECTS_SERVICE_ID.to_owned();
+        approve_request.operation = "resolve_approval".to_owned();
+        approve_request.body = map_value([
+            ("sessionId", Value::String(String::new())),
+            ("challengeId", Value::String(challenge_id.clone())),
+            ("approved", Value::Bool(true)),
+        ]);
+        let response = effect_host.handle_request("", principal, &approve_request, true, fence);
+        if response.outcome == RpcOutcomeV1::Error {
+            let code = response
+                .error
+                .as_ref()
+                .map(|error| error.code.as_str())
+                .unwrap_or("");
+            return Err(match code {
+                "effect_denied" => secret_mutation_denied(),
+                "effect_conflict" => secret_use_conflict(),
+                _ => secret_mutation_unavailable(),
+            });
+        }
+        let Some(Value::Map(body)) = response.body else {
+            return Err(secret_mutation_unavailable());
+        };
+        if get_text(&body, "status")? != "approved" {
+            return Err(secret_mutation_denied());
+        }
+
+        let binding = CapabilityBinding {
+            challenge_id: challenge_id.clone(),
+            effect_id: effect_id.clone(),
+            batch_id: None,
+            session_id: String::new(),
+            location_id: scope_digest.clone(),
+            capability_id: capability_id.to_owned(),
+            principal: principal.to_owned(),
+            user_action_id: Some(user_action_id.clone()),
+            approved_arguments: arguments.clone(),
+            launch_profile: None,
+            approved_arguments_digest: input_digest.clone(),
+            managed_attempt_digest: None,
+            managed_root_scope_digest: None,
+            managed_root_scope: None,
+            attempt_scope: None,
+            direct_turn_scope: None,
+            lease_digest: None,
+            owner_epoch: fence.owner_epoch(),
+            search_secret_use_attempts: HashMap::new(),
+        };
+        let capability_lease_digest = issue_lease_digest(&binding, fence.owner_epoch())?;
+        let lease_id = secret_use_lease_id(&scope_digest, idempotency_key, &request_digest);
+        let lease = crate::secret_use::SecretUseLeaseV1 {
+            lease_id,
+            idempotency_key: idempotency_key.to_owned(),
+            request_digest: request_digest.clone(),
+            secret_ref: secret_ref.to_owned(),
+            secret_version,
+            provider_id: provider_id.to_owned(),
+            operation_digest: operation_digest.to_owned(),
+            destination: destination.to_owned(),
+            purpose: purpose.to_owned(),
+            issued_at_ms: now,
+            expires_at_ms,
+            challenge_id: challenge_id.clone(),
+            effect_id: effect_id.clone(),
+            user_action_id: user_action_id.clone(),
+            effect_intent_digest: input_digest.clone(),
+            capability_lease_digest: capability_lease_digest.clone(),
+        };
+        let intent = crate::secret_use::SecretUseIntentV1 {
+            idempotency_key: idempotency_key.to_owned(),
+            request_digest: request_digest.clone(),
+            secret_ref: secret_ref.to_owned(),
+            provider_id: provider_id.to_owned(),
+            operation_digest: operation_digest.to_owned(),
+            destination: destination.to_owned(),
+            purpose: purpose.to_owned(),
+            expires_at_ms,
+            challenge_id: challenge_id.clone(),
+            effect_id: effect_id.clone(),
+            user_action_id: user_action_id.clone(),
+            effect_intent_digest: input_digest.clone(),
+            capability_lease_digest: capability_lease_digest.clone(),
+            created_at_ms: now,
+        };
+        journal
+            .append_intent(intent)
+            .map_err(secret_use_journal_error)?;
+
+        match effect_host.begin_guarded_control_effect(
+            &challenge_id,
+            &effect_id,
+            &user_action_id,
+            principal,
+            capability_id,
+            &input_digest,
+            &capability_lease_digest,
+        ) {
+            Ok(crate::effect_host::GuardedControlEffectStateV1::Started) => {}
+            _ => return Err(secret_mutation_unknown()),
+        }
+
+        let committed_at_ms = unix_ms().max(now);
+        let receipt_digest = crate::secret_use::receipt_digest(&lease, committed_at_ms);
+        let grant = crate::secret_use::SecretUseGrantV1 {
+            lease,
+            committed_at_ms,
+            receipt_digest: receipt_digest.clone(),
+        };
+        journal
+            .commit_lease(grant.clone(), committed_at_ms)
+            .map_err(secret_use_journal_error)?;
+        effect_host
+            .settle_guarded_control_effect(
+                &challenge_id,
+                &effect_id,
+                &capability_lease_digest,
+                &receipt_digest,
+            )
+            .map_err(|_| secret_mutation_unknown())?;
+        Ok(Some(secret_use_value(&grant, "ISSUED", "COMMITTED")))
+    }
+
+    fn redeem_secret_use(
+        &mut self,
+        request: &RpcRequestV1,
+        authenticated_principal: Option<&crate::protocol::AuthenticatedPrincipalV1>,
+        principal: &str,
+        _fence: &FrameFence,
+    ) -> Result<Option<Value>, HostError> {
+        let fields = strict_fields(&request.body, &["leaseId", "idempotencyKey"], &[])?;
+        let owner_key = secret_owner_key(authenticated_principal, principal)?;
+        let lease_id = text(fields, "leaseId")?;
+        if !valid_secret_wire_id(lease_id) {
+            return Err(invalid());
+        }
+        let redeem_key = text(fields, "idempotencyKey")?;
+        if !valid_secret_text(redeem_key, 256) {
+            return Err(invalid());
+        }
+        let scope_digest = secret_owner_scope_digest(&owner_key);
+        let (_, _, use_journal_root) = secret_scope_roots(&self.state_dir, &scope_digest)?;
+        let mut journal =
+            crate::secret_use::SecretUseJournalV1::open(&use_journal_root, &scope_digest)
+                .map_err(secret_use_journal_error)?;
+        let grant = journal
+            .grant_for_lease(lease_id)
+            .cloned()
+            .ok_or_else(secret_mutation_not_found)?;
+        let redemption = journal
+            .redeem(lease_id, redeem_key, unix_ms())
+            .map_err(secret_use_journal_error)?;
+        Ok(Some(secret_use_redemption_value(&grant, &redemption)))
+    }
+
     fn checkpoint_rpc(
         &mut self,
         request: &RpcRequestV1,
@@ -26397,8 +27307,12 @@ impl HostKernel {
             scope_hasher.update(&(part.len() as u64).to_be_bytes());
             scope_hasher.update(part);
         }
-        let root = self.state_dir.join("checkpoints")
-            .join(scope_hasher.finalize().to_hex().to_string());
+        let checkpoint_root = self.state_dir.join("checkpoints");
+        ensure_private_directory(&checkpoint_root).map_err(|_| (
+            "checkpoint_unavailable", ErrorCategoryV1::Unavailable,
+            "checkpoint journal storage is unavailable",
+        ))?;
+        let root = checkpoint_root.join(scope_hasher.finalize().to_hex().to_string());
         ensure_private_directory(&root).map_err(|_| (
             "checkpoint_unavailable", ErrorCategoryV1::Unavailable,
             "checkpoint journal storage is unavailable",
@@ -33437,6 +34351,10 @@ fn workspace_snapshot_with_hook(
     let mut stack = vec![PathBuf::new()];
     let mut directories = HashMap::from([(PathBuf::new(), root_identity)]);
     let mut entries: Vec<(String, PathBuf, WorkspaceEntryIdentity)> = Vec::new();
+    // Symbolic links are never followed: their target string is hashed instead, so
+    // a workspace containing links (for example `node_modules/.bin`) still gets a
+    // precise revision rather than an unconditional refusal.
+    let mut symlinks: HashMap<PathBuf, Vec<u8>> = HashMap::new();
     let mut total_bytes = 0u64;
     while let Some(relative_directory) = stack.pop() {
         let directory_fd = open_workspace_directory(&root_fd, &relative_directory, &directories)?;
@@ -33451,19 +34369,60 @@ fn workspace_snapshot_with_hook(
         })?;
         for entry in read {
             let entry = entry.map_err(|_| invalid())?;
-            if entry.file_name() == ".git" {
+            let name = entry.file_name();
+            // Dependency, build, and cache trees are excluded from the revision:
+            // they routinely hold hundreds of thousands of files (and links), are
+            // reproducible, and are never Guarded effect targets. Everything a user
+            // can edit or a tool can write stays in the digest.
+            if matches!(
+                name.to_str(),
+                Some(
+                    ".git"
+                        | "node_modules"
+                        | "target"
+                        | "target-p2"
+                        | "dist"
+                        | ".turbo"
+                        | ".bun"
+                        | ".cache"
+                        | "__pycache__"
+                )
+            ) {
                 continue;
             }
-            let name = entry.file_name();
             let relative_path = relative_directory.join(&name);
             let path = workspace_proc_fd(&directory_fd).join(&name);
             let metadata = fs::symlink_metadata(&path).map_err(|_| invalid())?;
             if metadata.file_type().is_symlink() {
-                return Err((
-                    "effect_denied",
-                    ErrorCategoryV1::Authorization,
-                    "workspace revision cannot include symbolic links",
+                // Checkpoint observation needs real file contents, so it keeps
+                // refusing links; a revision digest only needs their identity.
+                if require_single_link {
+                    return Err((
+                        "effect_denied",
+                        ErrorCategoryV1::Authorization,
+                        "checkpoint observation cannot include symbolic links",
+                    ));
+                }
+                let target = fs::read_link(&path).map_err(|_| invalid())?;
+                let target = target.to_str().ok_or_else(invalid)?.as_bytes().to_vec();
+                if target.is_empty() || target.len() > 4096 || target.contains(&0) {
+                    return Err((
+                        "effect_denied",
+                        ErrorCategoryV1::Authorization,
+                        "workspace revision cannot include this symbolic link target",
+                    ));
+                }
+                let display_path = relative_path
+                    .to_str()
+                    .ok_or_else(invalid)?
+                    .replace('\\', "/");
+                symlinks.insert(relative_path.clone(), target);
+                entries.push((
+                    display_path,
+                    relative_path,
+                    workspace_entry_identity(&metadata),
                 ));
+                continue;
             }
             let identity = workspace_entry_identity(&metadata);
             if metadata.is_dir() {
@@ -33533,6 +34492,35 @@ fn workspace_snapshot_with_hook(
     let mut hasher = blake3::Hasher::new();
     let mut observed_files = Vec::with_capacity(entries.len());
     for (relative, path, enumerated_identity) in entries {
+        if let Some(target) = symlinks.get(&path) {
+            before_file_open(&root.join(&path));
+            let current_path = root.join(&path);
+            let current = fs::symlink_metadata(&current_path).map_err(|_| invalid())?;
+            if !current.file_type().is_symlink()
+                || workspace_entry_identity(&current) != enumerated_identity
+            {
+                return Err((
+                    "stale_workspace_revision",
+                    ErrorCategoryV1::Conflict,
+                    "workspace symbolic link changed during revision verification",
+                ));
+            }
+            let current_target = fs::read_link(&current_path).map_err(|_| invalid())?;
+            let current_target = current_target.to_str().ok_or_else(invalid)?.as_bytes();
+            if current_target != target.as_slice() {
+                return Err((
+                    "stale_workspace_revision",
+                    ErrorCategoryV1::Conflict,
+                    "workspace symbolic link target changed during revision verification",
+                ));
+            }
+            hasher.update(&(relative.len() as u64).to_be_bytes());
+            hasher.update(relative.as_bytes());
+            hasher.update(b"symlink");
+            hasher.update(&(current_target.len() as u64).to_be_bytes());
+            hasher.update(current_target);
+            continue;
+        }
         before_file_open(&root.join(&path));
         let (parent, name) = open_workspace_parent(&root_fd, &path, &directories)?;
         let mut file = open_workspace_child(&parent, &name, libc::O_RDONLY | libc::O_NONBLOCK)
@@ -37109,6 +38097,600 @@ fn automation_registry_error(error: crate::automation::AutomationRegistryErrorV1
     }
 }
 
+fn valid_secret_text(value: &str, max_bytes: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= max_bytes
+        && !value.chars().any(char::is_control)
+        && !value.contains('\0')
+}
+
+fn valid_secret_wire_id(value: &str) -> bool {
+    valid_secret_text(value, 256)
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b':'))
+}
+
+fn secret_mutation_capability(operation: &str) -> &'static str {
+    match operation {
+        "put" => crate::guard::SECRET_PUT_ID,
+        "rotate" => crate::guard::SECRET_ROTATE_ID,
+        "revoke" => crate::guard::SECRET_REVOKE_ID,
+        _ => crate::guard::SECRET_PUT_ID,
+    }
+}
+
+fn secret_mutation_request_digest(
+    operation: &str,
+    provider_id: &str,
+    secret_ref: Option<&str>,
+    expected_version: Option<u64>,
+    idempotency_key: &str,
+    label: Option<&str>,
+    owner_binding: &str,
+) -> Result<String, HostError> {
+    let value = map_value([
+        ("schemaVersion", Value::Unsigned(1)),
+        ("operation", Value::String(operation.to_owned())),
+        ("providerId", Value::String(provider_id.to_owned())),
+        (
+            "secretRef",
+            secret_ref
+                .map(|value| Value::String(value.to_owned()))
+                .unwrap_or(Value::Nil),
+        ),
+        (
+            "expectedVersion",
+            expected_version
+                .map(|value| Value::String(value.to_string()))
+                .unwrap_or(Value::Nil),
+        ),
+        (
+            "idempotencyKey",
+            Value::String(idempotency_key.to_owned()),
+        ),
+        (
+            "label",
+            label
+                .map(|value| Value::String(value.to_owned()))
+                .unwrap_or(Value::Nil),
+        ),
+        ("ownerBinding", Value::String(owner_binding.to_owned())),
+    ]);
+    let encoded = crate::messagepack::encode(&value, crate::messagepack::FRAME_LIMITS)
+        .map_err(|_| invalid())?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"horizoncode.secret-mutation-request.v1\0");
+    hasher.update(&encoded);
+    Ok(format!("blake3:{}", hasher.finalize().to_hex()))
+}
+
+fn secret_ref_for_create(scope_digest: &str, provider_id: &str, idempotency_key: &str) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"horizoncode.secret-ref.v1\0");
+    for part in [
+        scope_digest.as_bytes(),
+        provider_id.as_bytes(),
+        idempotency_key.as_bytes(),
+    ] {
+        hasher.update(&(part.len() as u64).to_be_bytes());
+        hasher.update(part);
+    }
+    let hex = hasher.finalize().to_hex().to_string();
+    format!("secret_{}", &hex[..40])
+}
+
+fn secret_mutation_action_id(
+    scope_digest: &str,
+    idempotency_key: &str,
+    request_digest: &str,
+) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"horizoncode.secret-mutation-action.v1\0");
+    for part in [
+        scope_digest.as_bytes(),
+        idempotency_key.as_bytes(),
+        request_digest.as_bytes(),
+    ] {
+        hasher.update(&(part.len() as u64).to_be_bytes());
+        hasher.update(part);
+    }
+    let hex = hasher.finalize().to_hex().to_string();
+    format!("secret_action_{}", &hex[..40])
+}
+
+fn secret_mutation_grant_id(receipt_digest: &str) -> String {
+    format!(
+        "secret_grant_{}",
+        receipt_digest.strip_prefix("blake3:").unwrap_or(receipt_digest)
+    )
+}
+
+fn secret_mutation_receipt_id(receipt_digest: &str) -> String {
+    format!(
+        "secret_receipt_{}",
+        receipt_digest.strip_prefix("blake3:").unwrap_or(receipt_digest)
+    )
+}
+
+fn secret_mutation_receipt_matches(
+    receipt: &SecretMutationReceiptV1,
+    operation: &str,
+    provider_id: &str,
+    secret_ref: Option<&str>,
+    expected_version: Option<u64>,
+    idempotency_key: &str,
+    label: Option<&str>,
+    request_digest: &str,
+) -> bool {
+    receipt.request_digest == request_digest
+        && receipt.operation == operation
+        && receipt.provider_id == provider_id
+        && receipt.idempotency_key == idempotency_key
+        && receipt.expected_version == expected_version
+        && secret_ref.is_none_or(|value| receipt.secret_ref == value)
+        && label.is_none_or(|value| receipt.label.as_deref() == Some(value))
+}
+
+fn open_secret_effect_host(root: &Path) -> Result<EffectHost, HostError> {
+    EffectHost::open(root, Some(root)).map_err(|_| secret_mutation_unavailable())
+}
+
+fn secret_mutation_value(receipt: &SecretMutationReceiptV1, status: &str) -> Value {
+    let receipt_id = secret_mutation_receipt_id(&receipt.receipt_digest);
+    let grant = map_value([
+        ("schemaVersion", Value::Unsigned(1)),
+        ("operation", Value::String(receipt.operation.clone())),
+        ("providerId", Value::String(receipt.provider_id.clone())),
+        ("secretRef", Value::String(receipt.secret_ref.clone())),
+        (
+            "expectedVersion",
+            receipt
+                .expected_version
+                .map(|value| Value::String(value.to_string()))
+                .unwrap_or(Value::Nil),
+        ),
+        (
+            "version",
+            Value::String(receipt.resulting_version.to_string()),
+        ),
+        (
+            "label",
+            receipt
+                .label
+                .clone()
+                .map(Value::String)
+                .unwrap_or(Value::Nil),
+        ),
+        (
+            "revokedVersion",
+            receipt
+                .revoked_version
+                .map(|value| Value::String(value.to_string()))
+                .unwrap_or(Value::Nil),
+        ),
+        ("expiresAtUnixMs", Value::Unsigned(receipt.expires_at_ms)),
+        ("grantID", Value::String(receipt.grant_id.clone())),
+        (
+            "grantDigest",
+            Value::String(receipt.capability_lease_digest.clone()),
+        ),
+        ("receiptID", Value::String(receipt_id.clone())),
+        (
+            "receiptDigest",
+            Value::String(receipt.receipt_digest.clone()),
+        ),
+    ]);
+    let mut body = map_value([
+        ("status", Value::String(status.to_owned())),
+        ("grant", grant),
+    ]);
+    if let Some(revoked_version) = receipt.revoked_version
+        && let Value::Map(fields) = &mut body
+    {
+        fields.insert(
+            "revocation".to_owned(),
+            map_value([
+                ("schemaVersion", Value::Unsigned(1)),
+                ("secretRef", Value::String(receipt.secret_ref.clone())),
+                (
+                    "revokedVersion",
+                    Value::String(revoked_version.to_string()),
+                ),
+                (
+                    "revokedAtUnixMs",
+                    Value::Unsigned(receipt.committed_at_ms),
+                ),
+                ("receiptID", Value::String(receipt_id)),
+            ]),
+        );
+    }
+    body
+}
+
+fn secret_owner_key(
+    authenticated_principal: Option<&crate::protocol::AuthenticatedPrincipalV1>,
+    principal: &str,
+) -> Result<String, HostError> {
+    match authenticated_principal {
+        Some(crate::protocol::AuthenticatedPrincipalV1::ServerAuth { subject })
+            if valid_server_auth_subject(subject)
+                && principal == format!("server_auth:{subject}") =>
+        {
+            Ok(subject.to_owned())
+        }
+        // A local CLI is identified by the kernel-attested peer credentials
+        // (SO_PEERCRED uid), never by request fields. A use lease alone cannot
+        // move credential bytes: it is redeemable only inside the exact
+        // authenticated owner scope that requested it.
+        None if valid_principal(principal) && principal.starts_with("host_os_uid:") => {
+            Ok(principal.to_owned())
+        }
+        _ => Err((
+            "missing_principal",
+            ErrorCategoryV1::Authorization,
+            "secret use requires an authenticated server or host OS principal",
+        )),
+    }
+}
+
+fn secret_owner_scope_digest(owner_key: &str) -> String {
+    let owner_binding = crate::guard::location_principal_binding(owner_key);
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"horizoncode.secret-mutation-scope.v1\0");
+    hasher.update(&(owner_binding.len() as u64).to_be_bytes());
+    hasher.update(owner_binding.as_bytes());
+    format!("blake3:{}", hasher.finalize().to_hex())
+}
+
+fn secret_scope_roots(
+    state_dir: &Path,
+    scope_digest: &str,
+) -> Result<(std::path::PathBuf, std::path::PathBuf, std::path::PathBuf), HostError> {
+    let scope_hex = scope_digest.strip_prefix("blake3:").ok_or_else(invalid)?;
+    let secret_root = state_dir.join("secret-mutation");
+    ensure_private_directory(&secret_root).map_err(|_| secret_mutation_unavailable())?;
+    let scope_root = secret_root.join(scope_hex);
+    ensure_private_directory(&scope_root).map_err(|_| secret_mutation_unavailable())?;
+    let journal_root = scope_root.join("journal");
+    ensure_private_directory(&journal_root).map_err(|_| secret_mutation_unavailable())?;
+    let effects_root = scope_root.join("effects");
+    ensure_private_directory(&effects_root).map_err(|_| secret_mutation_unavailable())?;
+    let use_journal_root = scope_root.join("use-journal");
+    ensure_private_directory(&use_journal_root).map_err(|_| secret_mutation_unavailable())?;
+    Ok((journal_root, effects_root, use_journal_root))
+}
+
+fn secret_use_request_digest(
+    provider_id: &str,
+    secret_ref: &str,
+    destination: &str,
+    operation_digest: &str,
+    purpose: &str,
+    window_binding: &str,
+    idempotency_key: &str,
+    owner_binding: &str,
+) -> Result<String, HostError> {
+    let value = map_value([
+        ("schemaVersion", Value::Unsigned(1)),
+        ("operation", Value::String("use".to_owned())),
+        ("providerId", Value::String(provider_id.to_owned())),
+        ("secretRef", Value::String(secret_ref.to_owned())),
+        ("destination", Value::String(destination.to_owned())),
+        (
+            "operationDigest",
+            Value::String(operation_digest.to_owned()),
+        ),
+        ("purpose", Value::String(purpose.to_owned())),
+        ("window", Value::String(window_binding.to_owned())),
+        (
+            "idempotencyKey",
+            Value::String(idempotency_key.to_owned()),
+        ),
+        ("ownerBinding", Value::String(owner_binding.to_owned())),
+    ]);
+    let encoded = crate::messagepack::encode(&value, crate::messagepack::FRAME_LIMITS)
+        .map_err(|_| invalid())?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"horizoncode.secret-use-request.v1\0");
+    hasher.update(&encoded);
+    Ok(format!("blake3:{}", hasher.finalize().to_hex()))
+}
+
+fn secret_use_grant_matches(
+    grant: &crate::secret_use::SecretUseGrantV1,
+    request_digest: &str,
+    provider_id: &str,
+    secret_ref: &str,
+    destination: &str,
+    operation_digest: &str,
+    purpose: &str,
+    idempotency_key: &str,
+) -> bool {
+    grant.lease.request_digest == request_digest
+        && grant.lease.idempotency_key == idempotency_key
+        && grant.lease.provider_id == provider_id
+        && grant.lease.secret_ref == secret_ref
+        && grant.lease.destination == destination
+        && grant.lease.operation_digest == operation_digest
+        && grant.lease.purpose == purpose
+}
+
+fn secret_use_lease_id(
+    scope_digest: &str,
+    idempotency_key: &str,
+    request_digest: &str,
+) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"horizoncode.secret-use-lease-id.v1\0");
+    for part in [
+        scope_digest.as_bytes(),
+        idempotency_key.as_bytes(),
+        request_digest.as_bytes(),
+    ] {
+        hasher.update(&(part.len() as u64).to_be_bytes());
+        hasher.update(part);
+    }
+    let hex = hasher.finalize().to_hex().to_string();
+    format!("secret_lease_{}", &hex[..40])
+}
+
+fn secret_use_action_id(
+    scope_digest: &str,
+    idempotency_key: &str,
+    request_digest: &str,
+) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"horizoncode.secret-use-action.v1\0");
+    for part in [
+        scope_digest.as_bytes(),
+        idempotency_key.as_bytes(),
+        request_digest.as_bytes(),
+    ] {
+        hasher.update(&(part.len() as u64).to_be_bytes());
+        hasher.update(part);
+    }
+    let hex = hasher.finalize().to_hex().to_string();
+    format!("secret_action_{}", &hex[..40])
+}
+
+fn secret_use_receipt_id(receipt_digest: &str) -> String {
+    format!(
+        "secret_use_receipt_{}",
+        receipt_digest
+            .strip_prefix("blake3:")
+            .unwrap_or(receipt_digest)
+    )
+}
+
+fn secret_use_lease_value(grant: &crate::secret_use::SecretUseGrantV1, state: &str) -> Value {
+    let lease = &grant.lease;
+    map_value([
+        ("schemaVersion", Value::Unsigned(1)),
+        ("leaseId", Value::String(lease.lease_id.clone())),
+        ("secretRef", Value::String(lease.secret_ref.clone())),
+        (
+            "secretVersion",
+            Value::String(lease.secret_version.to_string()),
+        ),
+        ("providerId", Value::String(lease.provider_id.clone())),
+        (
+            "operationDigest",
+            Value::String(lease.operation_digest.clone()),
+        ),
+        ("destination", Value::String(lease.destination.clone())),
+        ("purpose", Value::String(lease.purpose.clone())),
+        ("state", Value::String(state.to_owned())),
+        ("issuedAt", Value::Unsigned(lease.issued_at_ms)),
+        ("expiresAt", Value::Unsigned(lease.expires_at_ms)),
+        ("maxRequests", Value::Unsigned(1)),
+    ])
+}
+
+fn secret_use_receipt_value(grant: &crate::secret_use::SecretUseGrantV1) -> Value {
+    let lease = &grant.lease;
+    map_value([
+        ("schemaVersion", Value::Unsigned(1)),
+        (
+            "receiptID",
+            Value::String(secret_use_receipt_id(&grant.receipt_digest)),
+        ),
+        (
+            "receiptDigest",
+            Value::String(grant.receipt_digest.clone()),
+        ),
+        ("leaseID", Value::String(lease.lease_id.clone())),
+        ("secretRef", Value::String(lease.secret_ref.clone())),
+        (
+            "secretVersion",
+            Value::String(lease.secret_version.to_string()),
+        ),
+        ("providerId", Value::String(lease.provider_id.clone())),
+        (
+            "operationDigest",
+            Value::String(lease.operation_digest.clone()),
+        ),
+        ("destination", Value::String(lease.destination.clone())),
+        ("purpose", Value::String(lease.purpose.clone())),
+        ("expiresAtUnixMs", Value::Unsigned(lease.expires_at_ms)),
+        ("committedAtUnixMs", Value::Unsigned(grant.committed_at_ms)),
+    ])
+}
+
+fn secret_use_value(
+    grant: &crate::secret_use::SecretUseGrantV1,
+    state: &str,
+    status: &str,
+) -> Value {
+    map_value([
+        ("status", Value::String(status.to_owned())),
+        ("lease", secret_use_lease_value(grant, state)),
+        ("receipt", secret_use_receipt_value(grant)),
+    ])
+}
+
+fn secret_use_redemption_value(
+    grant: &crate::secret_use::SecretUseGrantV1,
+    redemption: &crate::secret_use::SecretUseRedemptionV1,
+) -> Value {
+    let lease = &grant.lease;
+    map_value([
+        ("status", Value::String("CONSUMED".to_owned())),
+        (
+            "redemption",
+            map_value([
+                ("schemaVersion", Value::Unsigned(1)),
+                ("leaseID", Value::String(lease.lease_id.clone())),
+                ("secretRef", Value::String(lease.secret_ref.clone())),
+                (
+                    "secretVersion",
+                    Value::String(lease.secret_version.to_string()),
+                ),
+                ("providerId", Value::String(lease.provider_id.clone())),
+                (
+                    "operationDigest",
+                    Value::String(lease.operation_digest.clone()),
+                ),
+                ("destination", Value::String(lease.destination.clone())),
+                ("purpose", Value::String(lease.purpose.clone())),
+                ("state", Value::String("CONSUMED".to_owned())),
+                ("redeemedAt", Value::Unsigned(redemption.redeemed_at_ms)),
+                ("maxRequests", Value::Unsigned(1)),
+                (
+                    "leaseReceiptDigest",
+                    Value::String(redemption.lease_receipt_digest.clone()),
+                ),
+                (
+                    "redemptionDigest",
+                    Value::String(redemption.redemption_digest.clone()),
+                ),
+            ]),
+        ),
+    ])
+}
+
+fn secret_provider_mismatch() -> HostError {
+    (
+        "secret_provider_mismatch",
+        ErrorCategoryV1::Conflict,
+        "secret target belongs to a different provider",
+    )
+}
+
+fn secret_revoked() -> HostError {
+    (
+        "secret_revoked",
+        ErrorCategoryV1::Conflict,
+        "secret target is revoked and cannot be used",
+    )
+}
+
+fn secret_use_expired() -> HostError {
+    (
+        "expired",
+        ErrorCategoryV1::Authorization,
+        "secret use expiry is in the past or outside the authorized window",
+    )
+}
+
+fn secret_use_conflict() -> HostError {
+    (
+        "secret_conflict",
+        ErrorCategoryV1::Conflict,
+        "secret use idempotency or target binding conflicts with durable state",
+    )
+}
+
+fn secret_use_consumed() -> HostError {
+    (
+        "secret_use_consumed",
+        ErrorCategoryV1::Conflict,
+        "secret use lease was already redeemed and cannot be reused",
+    )
+}
+
+fn secret_use_journal_error(error: crate::secret_use::SecretUseJournalErrorV1) -> HostError {
+    use crate::secret_use::SecretUseJournalErrorV1 as E;
+    match error {
+        E::NotFound => secret_mutation_not_found(),
+        E::Conflict => secret_use_conflict(),
+        E::Expired => secret_use_expired(),
+        E::Consumed => secret_use_consumed(),
+        E::Unsettled => secret_mutation_unknown(),
+        E::Invalid => invalid(),
+        E::Capacity | E::Persistence(_) | E::Corrupt => secret_mutation_unavailable(),
+    }
+}
+
+fn secret_mutation_unavailable() -> HostError {
+    (
+        "secret_unavailable",
+        ErrorCategoryV1::Unavailable,
+        "secret mutation journal or effect authority is unavailable",
+    )
+}
+
+fn secret_mutation_denied() -> HostError {
+    (
+        "secret_denied",
+        ErrorCategoryV1::Authorization,
+        "Guard denied the secret mutation grant",
+    )
+}
+
+fn secret_mutation_conflict() -> HostError {
+    (
+        "secret_conflict",
+        ErrorCategoryV1::Conflict,
+        "secret mutation idempotency or target binding conflicts with durable state",
+    )
+}
+
+fn secret_mutation_unknown() -> HostError {
+    (
+        "secret_outcome_unknown",
+        ErrorCategoryV1::Uncertain,
+        "secret mutation outcome is UNKNOWN and must not be retried",
+    )
+}
+
+fn secret_mutation_stale() -> HostError {
+    (
+        "secret_stale_version",
+        ErrorCategoryV1::Conflict,
+        "secret target version is stale; prepare a new exact mutation",
+    )
+}
+
+fn secret_mutation_not_found() -> HostError {
+    (
+        "secret_not_found",
+        ErrorCategoryV1::NotFound,
+        "secret target was not found in the authenticated owner scope",
+    )
+}
+
+fn secret_journal_error(error: crate::secret_mutation::SecretJournalErrorV1) -> HostError {
+    use crate::secret_mutation::SecretJournalErrorV1 as E;
+    match error {
+        E::NotFound => secret_mutation_not_found(),
+        E::StaleVersion { .. } => secret_mutation_stale(),
+        E::ProviderMismatch => (
+            "secret_provider_mismatch",
+            ErrorCategoryV1::Conflict,
+            "secret target belongs to a different provider",
+        ),
+        E::Revoked => (
+            "secret_revoked",
+            ErrorCategoryV1::Conflict,
+            "secret target is revoked and cannot be mutated",
+        ),
+        E::IdempotencyConflict => secret_mutation_conflict(),
+        E::Unsettled => secret_mutation_unknown(),
+        E::Invalid => invalid(),
+        E::Capacity | E::Persistence(_) | E::Corrupt => secret_mutation_unavailable(),
+    }
+}
 fn checkpoint_preview_value(preview: &crate::checkpoint::CheckpointRestorePreviewV1) -> Value {
     use crate::checkpoint::{CheckpointFileKindV1, CheckpointRestoreModeV1, RestoreConflictKindV1};
     let mode = match preview.mode { CheckpointRestoreModeV1::Full => "FULL", CheckpointRestoreModeV1::SelectedPaths => "SELECTED_PATHS" };
@@ -38320,6 +39902,41 @@ fn managed_effect_wave_delivery_id(
 /// Deterministic delivery identity for one HostRun binding append. Deriving it
 /// from the dispatch-key digest makes an identical replay idempotent while a
 /// different payload for the same key fails as a reused delivery.
+fn host_run_dispatch_key_digest(
+    manifest_digest: &str,
+    evaluator_task_id: &str,
+    arm_id: &str,
+) -> Result<String, ()> {
+    if !is_blake3_digest(manifest_digest)
+        || evaluator_task_id.is_empty()
+        || evaluator_task_id.len() > 256
+        || arm_id.is_empty()
+        || arm_id.len() > 256
+    {
+        return Err(());
+    }
+
+    // serde_json's default Map is key-sorted; serializing this object therefore
+    // matches the evaluator's compact, recursively sorted canonical JSON tuple.
+    let canonical = serde_json::to_vec(&serde_json::json!({
+        "armId": arm_id,
+        "lane": "HUP_PAIRED_HOST_RUN_V1",
+        "manifestDigest": manifest_digest,
+        "taskId": evaluator_task_id,
+    }))
+    .map_err(|_| ())?;
+    let manifest_task_arm_digest = ring::digest::digest(&ring::digest::SHA256, &canonical);
+    let raw_key = format!(
+        "sha256:{}",
+        manifest_task_arm_digest
+            .as_ref()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    );
+    Ok(format!("blake3:{}", blake3::hash(raw_key.as_bytes()).to_hex()))
+}
+
 fn host_run_bind_delivery_id(dispatch_key_digest: &str) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"horizoncode.host-run-bind-delivery.v1\0");
@@ -38333,6 +39950,259 @@ fn host_run_bind_receipt_delivery_id(dispatch_key_digest: &str) -> String {
     hasher.update(b"horizoncode.host-run-bind-receipt-delivery.v1\0");
     hasher.update(dispatch_key_digest.as_bytes());
     format!("host_run_bind_receipt_{}", hasher.finalize().to_hex())
+}
+
+/// A request cursor is only a lookup claim. Return a P8 receipt only after the
+/// canonical durable resolver has rebuilt and exactly matched it.
+fn resolve_host_run_p8_owner_receipt(
+    submitted: &crate::managed_control::HostRunDispatchP8OwnerReceiptV1,
+    resolve: impl FnOnce(
+        &crate::managed_control::HostRunDispatchP8OwnerReceiptV1,
+    ) -> Result<crate::managed_control::HostRunDispatchP8OwnerReceiptV1, HostError>,
+) -> Result<crate::managed_control::HostRunDispatchP8OwnerReceiptV1, HostError> {
+    let resolved = resolve(submitted)?;
+    resolved.validate().map_err(managed_error)?;
+    if resolved != *submitted {
+        return Err(managed_conflict(
+            "HostRun P8 durable resolver returned a different OwnerLog receipt",
+        ));
+    }
+    Ok(resolved)
+}
+
+/// Caller claims for one frozen-invocation mint. Every field is cross-checked
+/// against a validated evaluator manifest and recomputed; none of them is
+/// authority on its own. P8's Python minter produces the same tuple
+/// (`host_run_frozen_invocation_candidate`); this Rust seam re-derives it so a
+/// caller can never choose the tuple it records.
+pub(crate) struct HostRunFrozenInvocationClaimsV1 {
+    pub(crate) task_id: String,
+    pub(crate) arm_id: String,
+    pub(crate) task_group: String,
+    pub(crate) manifest_digest: String,
+    pub(crate) dispatch_key_digest: String,
+}
+
+const EVAL_MANIFEST_SCHEMA: &str = "horizoncode.eval.manifest.v1";
+const EVAL_MANIFEST_REQUIRED_KEYS: [&str; 12] = [
+    "schema",
+    "runId",
+    "lane",
+    "benchmark",
+    "shared",
+    "arms",
+    "tasks",
+    "taskPartitions",
+    "analysis",
+    "comparison",
+    "failurePolicy",
+    "exclusionPolicy",
+];
+const MAX_EVAL_MANIFEST_BYTES: usize = 2 * 1024 * 1024;
+const MAX_EVAL_MANIFEST_TASKS: usize = 10_000;
+const MAX_EVAL_MANIFEST_ID_BYTES: usize = 128;
+
+fn frozen_invocation_invalid(message: &'static str) -> HostError {
+    ("host_run_frozen_invocation_invalid", ErrorCategoryV1::Validation, message)
+}
+
+fn frozen_invocation_conflict(message: &'static str) -> HostError {
+    ("host_run_frozen_invocation_conflict", ErrorCategoryV1::Conflict, message)
+}
+
+/// Frozen ids are bounded ASCII tokens: non-empty, ≤128 bytes, never
+/// whitespace or control characters (mirrors P8's `_require_id`).
+fn frozen_manifest_token_ok(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_EVAL_MANIFEST_ID_BYTES
+        && !value.chars().any(|c| c.is_control() || c.is_whitespace())
+}
+
+/// Canonical-JSON safety: Python's `allow_nan=False` and Rust's digest layout
+/// only agree for manifests without floating-point values, so any number that
+/// is not an integer is rejected rather than risking a cross-language digest
+/// divergence.
+fn manifest_contains_float(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Number(number) => number.is_f64(),
+        serde_json::Value::Array(items) => items.iter().any(manifest_contains_float),
+        serde_json::Value::Object(map) => map.values().any(manifest_contains_float),
+        _ => false,
+    }
+}
+
+/// Mint-and-record the frozen invocation from a **validated** evaluator
+/// manifest (P2 item-21 step 1, the upstream half of the bind chain). The
+/// derivation is byte-compatible with P8's `host_run_frozen_invocation_candidate`:
+///
+/// * manifest must carry the frozen v1 schema, required fields and policies;
+/// * `manifestDigest` is recomputed as BLAKE3 over compact sorted-key JSON and
+///   must equal the claim (§12.23);
+/// * `evaluatorTaskId`/`armId` must name exactly one frozen task/arm, and
+///   `taskGroup` is taken from the manifest task — never caller-chosen;
+/// * `dispatchKeyDigest` must equal `host_run_dispatch_key_digest` over the
+///   recomputed manifest digest and frozen pair.
+///
+/// On any failure nothing is written: the durable store keeps no record for
+/// this dispatch key. The caller must have validated the manifest at its
+/// authenticated boundary first; this seam re-checks every manifest-dependent
+/// claim rather than trusting it. No production caller exists yet — the trigger
+/// is an authenticated evaluator-manifest admission path, which is not live.
+pub(crate) fn record_frozen_invocation_from_validated_manifest(
+    worker_pool: &mut crate::worker_durable::WorkerPoolControl,
+    manifest: &serde_json::Value,
+    claims: HostRunFrozenInvocationClaimsV1,
+) -> Result<crate::worker_durable::HostRunFrozenInvocationV1, HostError> {
+    let manifest_object = manifest
+        .as_object()
+        .ok_or_else(|| frozen_invocation_invalid("evaluator manifest must be an object"))?;
+    for key in EVAL_MANIFEST_REQUIRED_KEYS {
+        if !manifest_object.contains_key(key) {
+            return Err(frozen_invocation_invalid(
+                "evaluator manifest lacks a required frozen field",
+            ));
+        }
+    }
+    if manifest_object.get("schema").and_then(serde_json::Value::as_str) != Some(EVAL_MANIFEST_SCHEMA) {
+        return Err(frozen_invocation_invalid(
+            "evaluator manifest schema is not the frozen v1 schema",
+        ));
+    }
+    if manifest_object.get("failurePolicy").and_then(serde_json::Value::as_str)
+        != Some("typed_fail_closed_v1")
+    {
+        return Err(frozen_invocation_invalid(
+            "evaluator manifest failurePolicy must stay typed fail-closed",
+        ));
+    }
+    if manifest_object.get("exclusionPolicy").and_then(serde_json::Value::as_str)
+        != Some("declared_partition_only_v1")
+    {
+        return Err(frozen_invocation_invalid(
+            "evaluator manifest exclusionPolicy must stay partition-declared",
+        ));
+    }
+    match manifest_object.get("lane").and_then(serde_json::Value::as_str) {
+        Some("development" | "smoke" | "heldout") => {}
+        _ => return Err(frozen_invocation_invalid("evaluator manifest lane is not frozen")),
+    }
+    let canonical = serde_json::to_string(manifest)
+        .map_err(|_| frozen_invocation_invalid("evaluator manifest is not canonical JSON"))?;
+    if canonical.len() > MAX_EVAL_MANIFEST_BYTES {
+        return Err(frozen_invocation_invalid(
+            "evaluator manifest exceeds the canonical byte limit",
+        ));
+    }
+    if manifest_contains_float(manifest) {
+        return Err(frozen_invocation_invalid(
+            "evaluator manifest must not contain floating-point values",
+        ));
+    }
+    for value in [&claims.task_id, &claims.arm_id, &claims.task_group] {
+        if !frozen_manifest_token_ok(value) {
+            return Err(frozen_invocation_invalid(
+                "frozen invocation id claim is invalid",
+            ));
+        }
+    }
+    if !is_blake3_digest(&claims.manifest_digest) || !is_blake3_digest(&claims.dispatch_key_digest) {
+        return Err(frozen_invocation_invalid(
+            "frozen invocation digest claim is not a canonical blake3 digest",
+        ));
+    }
+    let tasks = manifest_object
+        .get("tasks")
+        .and_then(serde_json::Value::as_array)
+        .filter(|tasks| !tasks.is_empty() && tasks.len() <= MAX_EVAL_MANIFEST_TASKS)
+        .ok_or_else(|| frozen_invocation_invalid("evaluator manifest has no frozen tasks"))?;
+    for task in tasks {
+        let task_id = task
+            .get("taskId")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| frozen_invocation_invalid("frozen task lacks a taskId"))?;
+        let task_group = task
+            .get("taskGroup")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| frozen_invocation_invalid("frozen task lacks a taskGroup"))?;
+        if !frozen_manifest_token_ok(task_id) || !frozen_manifest_token_ok(task_group) {
+            return Err(frozen_invocation_invalid("frozen task id or group is invalid"));
+        }
+    }
+    let arms = manifest_object
+        .get("arms")
+        .and_then(serde_json::Value::as_array)
+        .filter(|arms| !arms.is_empty())
+        .ok_or_else(|| frozen_invocation_invalid("evaluator manifest has no frozen arms"))?;
+    for arm in arms {
+        let arm_id = arm
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| frozen_invocation_invalid("frozen arm lacks an id"))?;
+        if !frozen_manifest_token_ok(arm_id) {
+            return Err(frozen_invocation_invalid("frozen arm id is invalid"));
+        }
+    }
+    // Cross-checks: from here on, nothing is written if any claim diverges
+    // from the validated manifest.
+    let matching_tasks: Vec<&serde_json::Value> = tasks
+        .iter()
+        .filter(|task| task.get("taskId").and_then(serde_json::Value::as_str) == Some(claims.task_id.as_str()))
+        .collect();
+    if matching_tasks.len() != 1 {
+        return Err(frozen_invocation_invalid(
+            "frozen task id is not in the evaluator manifest",
+        ));
+    }
+    let manifest_task_group = matching_tasks[0]
+        .get("taskGroup")
+        .and_then(serde_json::Value::as_str)
+        .expect("frozen task taskGroup was validated above");
+    if claims.task_group != manifest_task_group {
+        return Err(frozen_invocation_conflict(
+            "taskGroup differs from the frozen manifest task",
+        ));
+    }
+    if arms
+        .iter()
+        .filter(|arm| arm.get("id").and_then(serde_json::Value::as_str) == Some(claims.arm_id.as_str()))
+        .count()
+        != 1
+    {
+        return Err(frozen_invocation_invalid(
+            "arm id is not in the evaluator manifest",
+        ));
+    }
+    let recomputed_manifest_digest =
+        format!("blake3:{}", blake3::hash(canonical.as_bytes()).to_hex());
+    if recomputed_manifest_digest != claims.manifest_digest {
+        return Err(frozen_invocation_conflict(
+            "manifest digest does not recompute from the validated manifest",
+        ));
+    }
+    let recomputed_dispatch_key = host_run_dispatch_key_digest(
+        &claims.manifest_digest,
+        &claims.task_id,
+        &claims.arm_id,
+    )
+    .map_err(|_| frozen_invocation_invalid("frozen pair identity cannot be recomputed"))?;
+    if recomputed_dispatch_key != claims.dispatch_key_digest {
+        return Err(frozen_invocation_conflict(
+            "dispatch key does not equal its recomputed frozen pair identity",
+        ));
+    }
+    let invocation = crate::worker_durable::HostRunFrozenInvocationV1 {
+        dispatch_key_digest: recomputed_dispatch_key,
+        manifest_digest: recomputed_manifest_digest,
+        evaluator_task_id: claims.task_id,
+        arm_id: claims.arm_id,
+        task_group: manifest_task_group.to_owned(),
+    };
+    worker_pool
+        .record_frozen_invocation(&invocation)
+        .map_err(|_| {
+            frozen_invocation_conflict("frozen invocation could not be recorded durably")
+        })?;
+    Ok(invocation)
 }
 
 /// ServerAuth gate shared by the HostRun bind/receipt routes: the typed
@@ -40412,7 +42282,7 @@ fn canonical_decimal_revision(
 ) -> Result<u64, HostError> {
     let value = text(fields, key)?;
     let revision = value.parse::<u64>().map_err(|_| invalid())?;
-    if revision.to_string() != value || revision > 9_007_199_254_740_991 {
+    if revision.to_string() != value {
         return Err(invalid());
     }
     Ok(revision)
@@ -41244,6 +43114,112 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn host_run_dispatch_key_digest_is_recomputed_from_canonical_pair_tuple() {
+        let manifest_digest = format!("blake3:{}", "1".repeat(64));
+        let key = host_run_dispatch_key_digest(&manifest_digest, "task-α", "arm-β").unwrap();
+        let canonical = r#"{"armId":"arm-β","lane":"HUP_PAIRED_HOST_RUN_V1","manifestDigest":"blake3:1111111111111111111111111111111111111111111111111111111111111111","taskId":"task-α"}"#;
+        let sha = ring::digest::digest(&ring::digest::SHA256, canonical.as_bytes());
+        let raw_key = format!("sha256:{}", sha.as_ref().iter().map(|byte| format!("{byte:02x}")).collect::<String>());
+        assert_eq!(
+            key,
+            format!("blake3:{}", blake3::hash(raw_key.as_bytes()).to_hex())
+        );
+        assert!(host_run_dispatch_key_digest("blake3:bad", "task-α", "arm-β").is_err());
+    }
+
+    #[test]
+    fn host_run_receipt_is_not_accepted_without_exact_durable_resolution() {
+        let submitted = crate::managed_control::HostRunDispatchP8OwnerReceiptV1 {
+            schema_version: crate::managed_control::HostRunDispatchP8OwnerReceiptV1::SCHEMA_VERSION,
+            dispatch_key_digest: format!("blake3:{}", "1".repeat(64)),
+            binding_digest: format!("blake3:{}", "2".repeat(64)),
+            owner_log_id: "owner-log-p8".to_owned(),
+            owner_log_sequence: "7".to_owned(),
+            owner_log_event_digest: "3".repeat(64),
+        };
+        // A substituted canonical receipt is a conflicting P8 mirror: the
+        // resolver answered, but not with the claim, so it must fail closed and
+        // the route's persist step (modelled by `map`) must stay unreachable.
+        let mut resolved = false;
+        let mut persisted = false;
+        let substituted = crate::managed_control::HostRunDispatchP8OwnerReceiptV1 {
+            owner_log_sequence: "8".to_owned(),
+            ..submitted.clone()
+        };
+        let result = resolve_host_run_p8_owner_receipt(&submitted, |_| {
+            resolved = true;
+            Ok(substituted)
+        })
+        .map(|canonical| {
+            persisted = true;
+            canonical
+        });
+
+        assert!(resolved, "P2 must consult the canonical P8 durable resolver");
+        assert_eq!(
+            result.expect_err("a different canonical receipt must fail closed").0,
+            "managed_conflict",
+        );
+        assert!(!persisted, "unresolved cursor claims cannot be persisted");
+
+        // A forged/stale cursor never resolves at all: P8 rebuilds the receipt
+        // from committed OwnerLog history and rejects the mismatch.
+        let mut resolver_called = false;
+        let mut forged_persisted = false;
+        let forged = crate::managed_control::HostRunDispatchP8OwnerReceiptV1 {
+            owner_log_event_digest: "9".repeat(64),
+            ..submitted.clone()
+        };
+        let result = resolve_host_run_p8_owner_receipt(&forged, |_| {
+            resolver_called = true;
+            Err(managed_conflict("P8 durable resolution rejected the forged receipt"))
+        })
+        .map(|canonical| {
+            forged_persisted = true;
+            canonical
+        });
+        assert!(resolver_called);
+        assert!(!forged_persisted, "rejected forged cursor cannot be persisted");
+        assert_eq!(
+            result.expect_err("forged or stale P8 cursor must not resolve").0,
+            "managed_conflict",
+        );
+
+        // A conflicting P8 receipt is likewise rejected by the resolver and
+        // never reaches persistence.
+        let mut conflicting_persisted = false;
+        let conflicting = resolve_host_run_p8_owner_receipt(&submitted, |_| {
+            Err(managed_conflict("P8 durable resolution rejected the conflicting receipt"))
+        })
+        .map(|canonical| {
+            conflicting_persisted = true;
+            canonical
+        });
+        assert!(!conflicting_persisted);
+        assert_eq!(
+            conflicting.expect_err("conflicting cursor must not resolve").0,
+            "managed_conflict",
+        );
+
+        // An exact replay resolves to the same canonical receipt and is
+        // therefore idempotent for the route's deterministic delivery ID.
+        let mut replay_persisted = false;
+        let replay = resolve_host_run_p8_owner_receipt(&submitted, |claim| Ok(claim.clone()))
+            .map(|canonical| {
+                replay_persisted = true;
+                canonical
+            })
+            .expect("exact replay remains idempotent after canonical resolution");
+        assert!(replay_persisted);
+        assert_eq!(replay, submitted);
+        assert_eq!(
+            host_run_bind_receipt_delivery_id(&submitted.dispatch_key_digest),
+            host_run_bind_receipt_delivery_id(&replay.dispatch_key_digest),
+            "an exact replay must reuse the same deterministic P2 delivery ID",
+        );
+    }
+
+    #[test]
     fn mcp_error_is_not_a_successful_empty_search_result() {
         assert_eq!(search_mcp_result_count(br#"{"jsonrpc":"2.0","error":{"code":-32000,"message":"failed"}}"#), None);
         assert_eq!(search_mcp_result_count(br#"{"jsonrpc":"2.0","result":{"isError":true,"content":[]}}"#), None);
@@ -41257,6 +43233,43 @@ mod tests {
         assert_eq!(verifier_execution_status(RunPhase::Cancelled), "CANCELLED");
         assert_eq!(verifier_execution_status(RunPhase::Succeeded), "SUCCEEDED");
         assert_eq!(verifier_execution_status(RunPhase::Failed), "FAILED");
+    }
+
+    #[test]
+    fn canonical_decimal_revision_accepts_full_u64_and_rejects_noncanonical_values() {
+        let parse = |value: Value| {
+            let fields = BTreeMap::from([("revision".to_owned(), value)]);
+            canonical_decimal_revision(&fields, "revision")
+        };
+
+        for (wire, expected) in [
+            ("9007199254740992", 9_007_199_254_740_992),
+            ("18446744073709551615", u64::MAX),
+        ] {
+            assert_eq!(
+                parse(Value::String(wire.to_owned())).expect("canonical u64 must be accepted"),
+                expected,
+                "wire value {wire} must remain exact"
+            );
+        }
+
+        for wire in [
+            "00",
+            "01",
+            "+1",
+            "-1",
+            "1.0",
+            " 1",
+            "1 ",
+            "",
+            "18446744073709551616",
+        ] {
+            assert!(
+                parse(Value::String(wire.to_owned())).is_err(),
+                "non-canonical or out-of-range value {wire:?} must be rejected"
+            );
+        }
+        assert!(parse(Value::Unsigned(1)).is_err(), "JSON numeric revisions must be rejected");
     }
 
     fn state_dir() -> PathBuf {
@@ -42019,6 +44032,71 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn closed_guarded_pty_gate_denies_preflight_and_launch_before_effects() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join(format!(".hz-pty-closed-gate-{}-{nonce}", std::process::id()));
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&workspace, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut host = HostKernel::open(&root).unwrap();
+        let location = RegisteredLocation {
+            canonical_root: fs::canonicalize(&workspace).unwrap(),
+            workspace_id: "closed-pty-test".to_owned(),
+            principal_binding: None,
+            effect_state_dir: root.join("effects"),
+        };
+
+        let preflight_error = match host.prepare_terminal_consent_launch(
+            crate::guard::TERMINAL_RUN_ID,
+            &Value::Nil,
+            None,
+            &location,
+            None,
+            None,
+            "session-closed-pty-test",
+            7,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("closed PTY gate admitted consent preflight"),
+        };
+        assert_eq!(preflight_error.0, "capability_unavailable");
+
+        let run_request = request("terminal.run", Value::Nil, 7, "inc_test");
+        let run_error = match host.run_terminal(
+            &run_request,
+            "server_auth:closed-pty-test",
+            &fence(),
+            None,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("closed PTY gate admitted one-shot execution"),
+        };
+        assert_eq!(run_error.0, "capability_unavailable");
+
+        let start_request = request("terminal.start", Value::Nil, 7, "inc_test");
+        let start_error = match host.start_terminal(
+            &start_request,
+            "server_auth:closed-pty-test",
+            &fence(),
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("closed PTY gate admitted interactive execution"),
+        };
+        assert_eq!(start_error.0, "capability_unavailable");
+        assert!(host.terminals.is_empty());
+        assert!(host.stdio_prepared.is_empty());
+        assert!(host.stdio_process_refs.is_empty());
+
+        drop(host);
+        fs::remove_dir_all(root).unwrap();
+    }
+
     fn request(operation: &str, body: Value, epoch: u64, incarnation: &str) -> RpcRequestV1 {
         RpcRequestV1 {
             owner_epoch: epoch,
@@ -42082,6 +44160,290 @@ mod tests {
             Some(Value::String(value)) => value.clone(),
             _ => panic!("registered Location ID"),
         }
+    }
+
+    fn seed_durable_direct_codemode_execution(
+        host: &HostKernel,
+        location_id: &str,
+        principal: &str,
+        session_id: &str,
+    ) -> (crate::effect_host::CodeModeExecutionAuthorityV1, PathBuf) {
+        let location = host.locations.get(location_id).expect("registered CodeMode Location");
+        let effect_state_dir = location.effect_state_dir.clone();
+        let canonical_root = location.canonical_root.clone();
+        drop(EffectHost::open_live(&effect_state_dir, Some(&canonical_root)).unwrap());
+
+        let now_unix_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+        let deadline_unix_ms = now_unix_ms + 10_000;
+        let request_id = "inspect-request".to_owned();
+        let execution_id = "exec_inspect".to_owned();
+        let effect_id = "effect_inspect".to_owned();
+        let challenge_id = "challenge_inspect".to_owned();
+        let batch_id = "batch_inspect".to_owned();
+        let call_id = "call_inspect".to_owned();
+        let capability_lease_digest = format!("blake3:{}", "1".repeat(64));
+        let workspace_revision_digest = format!("blake3:{}", "2".repeat(64));
+        let turn_context_digest = format!("sha256:{}", "3".repeat(64));
+        let outer_receipt_digest = format!("blake3:{}", "4".repeat(64));
+        let enablement_digest = format!("blake3:{}", "5".repeat(64));
+        let helper_digest = format!("sha256:{}", "6".repeat(64));
+        let policy_digest = format!("blake3:{}", "7".repeat(64));
+        let execution_digest = format!("blake3:{}", "8".repeat(64));
+        let authorized_tools: Vec<crate::codemode_protocol::CodeModeToolV1> = Vec::new();
+        let authority = crate::effect_host::CodeModeExecutionAuthorityV1 {
+            request_id,
+            execution_id,
+            effect_id,
+            challenge_id,
+            principal: principal.to_owned(),
+            session_id: session_id.to_owned(),
+            location_id: location_id.to_owned(),
+            owner_epoch: 7,
+            generation: 1,
+            capability_lease_digest: capability_lease_digest.clone(),
+            authority_scope: crate::effect_host::CodeModeAuthorityScopeV1::DirectSession {
+                workspace_revision_digest: workspace_revision_digest.clone(),
+                direct_session_grant_digest: None,
+            },
+            direct_turn_scope_digest: None,
+            tool_set_digest: crate::codemode_protocol::authorized_tool_set_digest(&authorized_tools)
+                .expect("empty authorized tool set digest"),
+            authorized_tools,
+            enablement_digest,
+            helper_digest,
+            resource_profile_digest: crate::terminal_process::CodeModeResourceProfileV1::digest(),
+            policy_digest,
+            turn_context_digest: turn_context_digest.clone(),
+            deadline_unix_ms,
+        };
+
+        let database_path = effect_state_dir.join("effects.sqlite");
+        let database = Connection::open(&database_path).unwrap();
+        database.pragma_update(None, "foreign_keys", "ON").unwrap();
+        database.execute(
+            "INSERT INTO effect_challenges(challenge_id,effect_id,session_id,principal,batch_id,call_id,
+                capability_id,relative_path,requested_path,target,resource,existed,argument_digest,content_digest,
+                expires_at_ms,status,turn_context_digest,origin_kind,capability_lease_digest)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,'','','','',0,?8,?8,?9,'PREPARED',?10,'session_batch',?11)",
+            params![
+                authority.challenge_id,
+                authority.effect_id,
+                authority.session_id,
+                authority.principal,
+                batch_id,
+                call_id,
+                crate::guard::CODE_MODE_EXECUTE_ID,
+                capability_lease_digest,
+                deadline_unix_ms as i64,
+                turn_context_digest,
+                authority.capability_lease_digest,
+            ],
+        ).unwrap();
+        database.execute(
+            "INSERT INTO stdio_executions(execution_id,intent_id,effect_id,challenge_id,principal,session_id,
+                location_id,capability_id,capability_lease_digest,owner_epoch,generation,workspace_revision,
+                profile_ref,execution_digest,confinement_record,status,created_at_ms,updated_at_ms)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'profile_inspect',?13,'test','RUNNING',?14,?14)",
+            params![
+                authority.execution_id,
+                "intent_inspect",
+                authority.effect_id,
+                authority.challenge_id,
+                authority.principal,
+                authority.session_id,
+                authority.location_id,
+                crate::guard::CODE_MODE_EXECUTE_ID,
+                authority.capability_lease_digest,
+                authority.owner_epoch as i64,
+                authority.generation as i64,
+                workspace_revision_digest,
+                execution_digest,
+                now_unix_ms as i64,
+            ],
+        ).unwrap();
+        drop(database);
+
+        let mut effect_host = EffectHost::open_live(&effect_state_dir, Some(&canonical_root)).unwrap();
+        effect_host.register_code_mode_execution(&authority).unwrap();
+        drop(effect_host);
+
+        let database = Connection::open(&database_path).unwrap();
+        database.execute(
+            "UPDATE effect_challenges SET status='SETTLED',approved=1,receipt_digest=?1 WHERE challenge_id=?2",
+            params![outer_receipt_digest, authority.challenge_id],
+        ).unwrap();
+        database.execute(
+            "UPDATE stdio_executions SET status='SETTLED',receipt_digest=?1,observed_workspace_revision=?2 WHERE execution_id=?3",
+            params![outer_receipt_digest, workspace_revision_digest, authority.execution_id],
+        ).unwrap();
+        drop(database);
+
+        let mut effect_host = EffectHost::open_live(&effect_state_dir, Some(&canonical_root)).unwrap();
+        effect_host.complete_code_mode_execution(&authority).unwrap();
+        (authority, database_path)
+    }
+
+    #[test]
+    fn codemode_inspect_matches_durable_execution_id_and_rejects_mismatch_before_inspection() {
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let temp_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tmp-p2");
+        fs::create_dir_all(&temp_root).unwrap();
+        let directory = temp_root.join(format!("codemode-inspect-durable-{}-{nonce}", std::process::id()));
+        fs::create_dir(&directory).unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+        let workspace = directory.join("codemode-inspect-workspace");
+        fs::create_dir(&workspace).unwrap();
+        fs::set_permissions(&workspace, fs::Permissions::from_mode(0o700)).unwrap();
+        let owner = authenticated_server_auth("codemode-inspect-owner");
+        let mut host = HostKernel::open(&directory).unwrap();
+        host.set_effects_enabled(true);
+        let location_id = register_direct_read_location(&mut host, &workspace, &owner);
+        let principal = "server_auth:codemode-inspect-owner";
+        let session_id = "inspect-session";
+        let (authority, database_path) =
+            seed_durable_direct_codemode_execution(&host, &location_id, principal, session_id);
+        let context = (session_id, location_id.as_str(), authority.request_id.as_str(), "direct_session", None);
+
+        let matching_request = request(
+            "codemode_inspect",
+            map(&[
+                ("schemaVersion", Value::Unsigned(1)),
+                ("lane", string("direct_session")),
+                ("sessionID", string(session_id)),
+                ("requestId", string(&authority.request_id)),
+                ("executionID", string(&authority.execution_id)),
+            ]),
+            7,
+            "inc_test",
+        );
+        let mismatched_context = (session_id, location_id.as_str(), "different-outer-call", "direct_session", None);
+        let correlation_error = host
+            .codemode_inspect(&matching_request, &owner, principal, &fence(), mismatched_context)
+            .expect_err("requestId must match the authenticated private Tool.Context call ID");
+        assert_eq!(correlation_error.0, "effect_denied");
+        assert!(correlation_error.2.contains("private Tool.Context call ID"));
+
+        let matched = host
+            .codemode_inspect(&matching_request, &owner, principal, &fence(), context)
+            .expect("the exact durable execution ID should be inspectable")
+            .expect("CodeMode inspect state");
+        let Value::Map(matched) = matched else { panic!("CodeMode inspect state map") };
+        assert_eq!(matched.get("executionID"), Some(&Value::String(authority.execution_id.clone())));
+        assert_eq!(matched.get("status"), Some(&Value::String("COMPLETE".to_owned())));
+
+        // Prove the mismatch guard runs before inspecting the durable wave cursor:
+        // recovery deliberately ignores this field, while inspection cannot decode it.
+        let database = Connection::open(&database_path).unwrap();
+        assert_eq!(database.execute(
+            "UPDATE code_mode_runs SET next_wave='not-an-integer' WHERE request_id=?1",
+            [&authority.request_id],
+        ).unwrap(), 1);
+        drop(database);
+        let inspection_error = host
+            .codemode_inspect(&matching_request, &owner, principal, &fence(), context)
+            .expect_err("the corrupt cursor must reach the inspection failure path");
+        assert_eq!(inspection_error.2, "CodeMode state is incomplete or ambiguous");
+
+        let mismatched_request = request(
+            "codemode_inspect",
+            map(&[
+                ("schemaVersion", Value::Unsigned(1)),
+                ("lane", string("direct_session")),
+                ("sessionID", string(session_id)),
+                ("requestId", string(&authority.request_id)),
+                ("executionID", string("exec_other")),
+            ]),
+            7,
+            "inc_test",
+        );
+        let mismatch_error = host
+            .codemode_inspect(&mismatched_request, &owner, principal, &fence(), context)
+            .expect_err("a different executionID must be rejected before durable inspection");
+        assert_eq!(mismatch_error.0, "code_mode_recovery_unavailable");
+        assert_eq!(
+            mismatch_error.2,
+            "CodeMode executionID differs from the exact recovered durable execution",
+        );
+
+        drop(host);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn codemode_inspect_requires_and_parses_execution_id_correlation() {
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let temp_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tmp-p2");
+        fs::create_dir_all(&temp_root).unwrap();
+        let directory = temp_root.join(format!("codemode-inspect-{}-{nonce}", std::process::id()));
+        fs::create_dir(&directory).unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+        let workspace = directory.join("codemode-inspect-workspace");
+        fs::create_dir(&workspace).unwrap();
+        fs::set_permissions(&workspace, fs::Permissions::from_mode(0o700)).unwrap();
+        let owner = authenticated_server_auth("codemode-inspect-owner");
+        let mut host = HostKernel::open(&directory).unwrap();
+        host.set_effects_enabled(true);
+        let location_id = register_direct_read_location(&mut host, &workspace, &owner);
+        let principal = "server_auth:codemode-inspect-owner";
+        let context = (
+            "inspect-session",
+            location_id.as_str(),
+            "inspect-request",
+            "direct_session",
+            None,
+        );
+
+        let missing_execution_id = request(
+            "codemode_inspect",
+            map(&[
+                ("schemaVersion", Value::Unsigned(1)),
+                ("lane", string("direct_session")),
+                ("sessionID", string("inspect-session")),
+                ("requestId", string("inspect-request")),
+            ]),
+            7,
+            "inc_test",
+        );
+        let missing_error = host
+            .codemode_inspect(
+                &missing_execution_id,
+                &owner,
+                principal,
+                &fence(),
+                context,
+            )
+            .expect_err("inspect must reject a missing executionID before recovery");
+        assert_eq!(missing_error.0, "invalid_effect_request");
+
+        let correlated_execution_id = request(
+            "codemode_inspect",
+            map(&[
+                ("schemaVersion", Value::Unsigned(1)),
+                ("lane", string("direct_session")),
+                ("sessionID", string("inspect-session")),
+                ("requestId", string("inspect-request")),
+                ("executionID", string("exec_inspect")),
+            ]),
+            7,
+            "inc_test",
+        );
+        let correlated_error = host
+            .codemode_inspect(
+                &correlated_execution_id,
+                &owner,
+                principal,
+                &fence(),
+                context,
+            )
+            .expect_err("the request shape must accept executionID before durable lookup");
+        assert_eq!(
+            correlated_error.0,
+            "code_mode_recovery_unavailable",
+            "without a matching durable execution, failure must happen at recovery rather than DTO parsing",
+        );
+
+        drop(host);
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -43452,8 +45814,28 @@ mod tests {
         let state = state_dir();
         let mut host = HostKernel::open(&state).unwrap();
         let fence = fence();
-        let key_digest = format!("blake3:{}", "a".repeat(64));
         let manifest_digest = format!("blake3:{}", "b".repeat(64));
+        let key_digest = host_run_dispatch_key_digest(
+            &manifest_digest,
+            "evaluator-task-1",
+            "arm-1",
+        )
+        .unwrap();
+        // Establish the durable worker owner and a matching frozen proof so the
+        // ServerAuth/no-peer case reaches the peer gate (frozen resolution and
+        // recompute both pass) rather than failing earlier at resolution.
+        host.open_worker_owner(1).unwrap();
+        host.worker_pool
+            .as_mut()
+            .unwrap()
+            .record_frozen_invocation(&crate::worker_durable::HostRunFrozenInvocationV1 {
+                dispatch_key_digest: key_digest.clone(),
+                manifest_digest: manifest_digest.clone(),
+                evaluator_task_id: "evaluator-task-1".to_owned(),
+                arm_id: "arm-1".to_owned(),
+                task_group: "group-1".to_owned(),
+            })
+            .unwrap();
 
         // A malformed body is rejected before any authentication or durable
         // state is read.
@@ -43477,10 +45859,6 @@ mod tests {
                 ("goalID", string("goal-host-run")),
                 ("attemptID", string("attempt-host-run")),
                 ("dispatchKeyDigest", string(&key_digest)),
-                ("manifestDigest", string(&manifest_digest)),
-                ("evaluatorTaskId", string("evaluator-task-1")),
-                ("armId", string("arm-1")),
-                ("taskGroup", string("group-1")),
             ])
         };
 
@@ -43535,6 +45913,745 @@ mod tests {
         );
         drop(host);
         fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn host_run_bind_rejects_rpc_supplied_evaluator_identity() {
+        let state = state_dir();
+        let mut host = HostKernel::open(&state).unwrap();
+        let fence = fence();
+        let manifest = format!("blake3:{}", "b".repeat(64));
+        let key = host_run_dispatch_key_digest(&manifest, "evaluator-task-1", "arm-1").unwrap();
+        // The evaluator correlation fields are untrusted RPC data. The bind
+        // route must reject them as excess rather than derive identity authority
+        // from them, so only goalID/attemptID/dispatchKeyDigest are accepted.
+        let body = map_value([
+            ("goalID", string("goal-host-run")),
+            ("attemptID", string("attempt-host-run")),
+            ("dispatchKeyDigest", string(&key)),
+            ("manifestDigest", string(&manifest)),
+            ("evaluatorTaskId", string("evaluator-task-1")),
+            ("armId", string("arm-1")),
+            ("taskGroup", string("group-1")),
+        ]);
+        let mut req = request("host_run.bind", body, 7, "inc_test");
+        req.service_id = MANAGED_SERVICE_ID.to_owned();
+        req.delivery_id = Some("host-run-rpc-identity".to_owned());
+        let response = host.handle_request(&req, "server_auth:reviewer", &fence);
+        assert_eq!(response.outcome, RpcOutcomeV1::Error);
+        assert_eq!(
+            response.error.as_ref().unwrap().code,
+            "invalid_effect_request",
+            "RPC-supplied evaluator identity must be rejected as an excess field",
+        );
+        drop(host);
+        fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn host_run_bind_fails_closed_without_a_frozen_invocation() {
+        let state = state_dir();
+        let mut host = HostKernel::open(&state).unwrap();
+        host.open_worker_owner(1).unwrap();
+        let fence = fence();
+        let key = format!("blake3:{}", "a".repeat(64));
+        let body = map_value([
+            ("goalID", string("goal-host-run")),
+            ("attemptID", string("attempt-host-run")),
+            ("dispatchKeyDigest", string(&key)),
+        ]);
+        let mut req = request("host_run.bind", body, 7, "inc_test");
+        req.service_id = MANAGED_SERVICE_ID.to_owned();
+        req.delivery_id = Some("host-run-no-frozen".to_owned());
+        let response = host.handle_request(&req, "server_auth:reviewer", &fence);
+        assert_eq!(response.outcome, RpcOutcomeV1::Error);
+        assert_eq!(
+            response.error.as_ref().unwrap().code,
+            "host_run_frozen_invocation_unavailable",
+            "with no trusted minter the bind must fail closed, never accept a caller identity",
+        );
+        drop(host);
+        fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn host_run_bind_rejects_a_frozen_invocation_that_does_not_recompute_to_the_key() {
+        let state = state_dir();
+        let mut host = HostKernel::open(&state).unwrap();
+        host.open_worker_owner(1).unwrap();
+        let key = format!("blake3:{}", "a".repeat(64));
+        // Proof stored under `key` whose manifest/task/arm recompute to a
+        // DIFFERENT key: a substituted/corrupted tuple, never accepted.
+        let forged = crate::worker_durable::HostRunFrozenInvocationV1 {
+            dispatch_key_digest: key.clone(),
+            manifest_digest: format!("blake3:{}", "b".repeat(64)),
+            evaluator_task_id: "evaluator-task-1".to_owned(),
+            arm_id: "arm-1".to_owned(),
+            task_group: "group-1".to_owned(),
+        };
+        host
+            .worker_pool
+            .as_mut()
+            .unwrap()
+            .record_frozen_invocation(&forged)
+            .unwrap();
+        let fence = fence();
+        let body = map_value([
+            ("goalID", string("goal-host-run")),
+            ("attemptID", string("attempt-host-run")),
+            ("dispatchKeyDigest", string(&key)),
+        ]);
+        let mut req = request("host_run.bind", body, 7, "inc_test");
+        req.service_id = MANAGED_SERVICE_ID.to_owned();
+        req.delivery_id = Some("host-run-recompute-mismatch".to_owned());
+        let response = host.handle_request(&req, "server_auth:reviewer", &fence);
+        assert_eq!(response.outcome, RpcOutcomeV1::Error);
+        assert_eq!(
+            response.error.as_ref().unwrap().code,
+            "managed_conflict",
+            "a frozen proof that does not recompute to the submitted key must conflict",
+        );
+        drop(host);
+        fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn host_run_frozen_invocation_survives_reopen_and_re_resolves() {
+        let state = state_dir();
+        let manifest = format!("blake3:{}", "b".repeat(64));
+        let task = "evaluator-task-1";
+        let arm = "arm-1";
+        let key = host_run_dispatch_key_digest(&manifest, task, arm).unwrap();
+        let proof = crate::worker_durable::HostRunFrozenInvocationV1 {
+            dispatch_key_digest: key.clone(),
+            manifest_digest: manifest.clone(),
+            evaluator_task_id: task.to_owned(),
+            arm_id: arm.to_owned(),
+            task_group: "group-1".to_owned(),
+        };
+        {
+            let mut host = HostKernel::open(&state).unwrap();
+            host.open_worker_owner(1).unwrap();
+            host.worker_pool
+                .as_mut()
+                .unwrap()
+                .record_frozen_invocation(&proof)
+                .unwrap();
+        }
+        // Reopen replays the worker OwnerLog; the frozen proof must re-resolve
+        // and its recomputed key must match, so the route reaches the next gate
+        // (the authenticated Core peer) rather than failing closed at resolution.
+        let mut host = HostKernel::open(&state).unwrap();
+        host.open_worker_owner(1).unwrap();
+        assert_eq!(
+            host.worker_pool
+                .as_ref()
+                .unwrap()
+                .resolve_frozen_invocation(&key)
+                .unwrap(),
+            proof,
+            "the frozen proof must survive durable reopen and re-resolve",
+        );
+        let fence = fence();
+        let body = map_value([
+            ("goalID", string("goal-host-run")),
+            ("attemptID", string("attempt-host-run")),
+            ("dispatchKeyDigest", string(&key)),
+        ]);
+        let mut req = request("host_run.bind", body, 7, "inc_test");
+        req.service_id = MANAGED_SERVICE_ID.to_owned();
+        req.delivery_id = Some("host-run-frozen-reopen".to_owned());
+        let response = host.handle_request(&req, "server_auth:reviewer", &fence);
+        assert_eq!(response.outcome, RpcOutcomeV1::Error);
+        assert_eq!(
+            response.error.as_ref().unwrap().code,
+            "authenticated_peer_unavailable",
+            "resolved frozen proof must pass resolution and recompute, reaching the peer gate",
+        );
+        drop(host);
+        fs::remove_dir_all(state).unwrap();
+    }
+
+    fn d(seed: u8) -> String {
+        format!("blake3:{}", [seed; 32].iter().map(|b| format!("{b:02x}")).collect::<String>())
+    }
+
+    #[test]
+    fn host_run_committed_verifier_pins_uses_final_revision_not_admission_pin() {
+        let admitted_revision = d(0xa);
+        let final_revision = d(0xb);
+        assert_ne!(admitted_revision, final_revision);
+
+        let mut snapshot = ManagedSnapshot::default();
+        snapshot.runs.insert(
+            "run-final-pin".into(),
+            crate::managed_control::Run {
+                spec_id: "spec-final-pin".into(),
+                phase: RunPhase::Succeeded,
+                started_at_ms: Some(1),
+                tasks: std::collections::BTreeMap::new(),
+                session_link: None,
+                final_revision: Some(final_revision.clone()),
+                verifier_id: Some("server_auth:independent-verifier".into()),
+                criterion_evidence: std::collections::BTreeMap::new(),
+                verification_evidence: None,
+                verification_history: Vec::new(),
+                failure_code: None,
+            },
+        );
+
+        assert!(
+            super::HostKernel::host_run_verifier_set_matches_run_revision(
+                &snapshot,
+                "run-final-pin",
+                &final_revision,
+            ),
+            "the verifier set must be pinned to Run.final_revision, not HostRun admission",
+        );
+        assert!(
+            !super::HostKernel::host_run_verifier_set_matches_run_revision(
+                &snapshot,
+                "run-final-pin",
+                &admitted_revision,
+            ),
+            "the admission revision must not be accepted as the verifier final revision",
+        );
+    }
+
+    fn inspect_unknown_reason(body: Option<&Value>) -> String {
+        match body {
+            Some(Value::Map(fields)) => match fields.get("unknownReason") {
+                Some(Value::String(reason)) => reason.clone(),
+                other => panic!("expected an unknownReason string, found {other:?}"),
+            },
+            other => panic!("expected a reconciliation map, found {other:?}"),
+        }
+    }
+
+    /// Exact replica of the kernel's planned-Task-set digest (schema v3) over
+    /// the same fixture facts and field order; `StartPlannedRun` recomputes it
+    /// from the durable plan and refuses a mismatched Run byte-for-byte.
+    fn fixture_plan_digest(tasks: &[crate::managed_control::PlannedTaskV1]) -> String {
+        let mut sorted = tasks.to_vec();
+        sorted.sort_by(|left, right| left.task_id.cmp(&right.task_id));
+        let values = sorted
+            .iter()
+            .map(|task| {
+                let mut value = serde_json::json!({
+                    "taskId": task.task_id,
+                    "dependencies": task.dependencies,
+                    "criterionIds": task.criterion_ids,
+                    "requiredCapabilities": task.required_capabilities,
+                    "agentProfileRevision": {
+                        "profileId": task.agent_profile_revision.profile_id,
+                        "revision": task.agent_profile_revision.revision.to_string(),
+                        "definitionDigest": task.agent_profile_revision.definition_digest,
+                    },
+                    "profileOwnerBindingDigest": task.profile_owner_binding_digest,
+                });
+                value["profileTokenBudget"] = serde_json::json!(task.profile_token_budget.to_string());
+                value["title"] = serde_json::json!(task.title);
+                value["purpose"] = serde_json::json!(task.purpose);
+                value
+            })
+            .collect::<Vec<_>>();
+        format!(
+            "blake3:{}",
+            blake3::hash(
+                serde_json::json!({"schemaVersion": 3, "tasks": values})
+                    .to_string()
+                    .as_bytes()
+            )
+            .to_hex()
+        )
+    }
+
+    /// Valid root SessionLink pinned by the explicit authenticated planned-run
+    /// start; the reducer validates every correlation field before pinning it.
+    fn inspect_session_link() -> crate::managed_control::SessionLink {
+        let session_id = "ses_host_run_root";
+        crate::managed_control::SessionLink {
+            session_id: session_id.into(),
+            source_store_id: "store-fixture".into(),
+            source_instance_id: "instance-fixture".into(),
+            source_cursor: crate::protocol::CursorV1 {
+                owner_kind: "session".into(),
+                owner_id: session_id.into(),
+                seq: "1".into(),
+                event_digest: d(0xc),
+            },
+            source_epoch: 1,
+            latest_observed_message_id: None,
+            latest_observed_part_id: None,
+            source_digest: format!("sha256:{}", "c".repeat(64)),
+            redaction_profile: "session-redacted-v1".into(),
+            owner_epoch: 3,
+            protocol_version: 1,
+        }
+    }
+
+    /// Seeds a durable managed Goal with one live Attempt, its delegation and a
+    /// committed HostRun binding plus one effect wave and its receipt, so
+    /// `host_run.inspect` reaches the projection source. Commands go through the
+    /// durable owner API directly; this fixture asserts no admission proof and
+    /// confers no dispatch authority.
+    fn seed_host_run_inspect_state(state: &Path, goal_id: &str, dispatch_key: &str) {
+        use crate::managed_control::{
+            AcceptanceCriterion, AttemptEffectOutcomeV1, GoalDraft, ManagedAttemptEffectReceiptProofV1,
+            ManagedAttemptEffectWaveEdgeV1, ManagedCommand, SpecBudget, SpecVersionDraft,
+        };
+        use crate::protocol::{DelegationBindingV1, ManagedProviderRouteBindingV1};
+        let mut control =
+            crate::managed_control::ManagedControl::open(&state.join("managed-control"), goal_id)
+                .unwrap();        fn send(
+            control: &mut crate::managed_control::ManagedControl,
+            delivery: &str,
+            command: ManagedCommand,
+        ) {
+            let revision = control.snapshot().revision;
+            control.apply(revision, delivery, command).unwrap();
+        }
+        send(&mut control, "g1", ManagedCommand::CreateGoal { goal: GoalDraft {
+            objective: "Complete the HostRun inspect fixture".into(),
+            project_ref: "project-1".into(),
+            workspace_ref: "workspace-1".into(),
+            created_by: "server_auth:author".into(),
+        }});
+        let draft = SpecVersionDraft {
+            parent_version_id: None,
+            objective: "Complete the HostRun inspect fixture".into(),
+            project_ref: "project-1".into(),
+            workspace_ref: "workspace-1".into(),
+            capability_scope: vec![],
+            scope: vec!["kernel/src/**".into()],
+            constraints: vec![],
+            criteria: vec![AcceptanceCriterion { id: "tests-pass".into(), description: "tests pass".into() }],
+            budget: SpecBudget {
+                max_tasks: 1, max_attempts_per_task: 1, max_run_duration_ms: 1_000,
+                max_memory_bytes: None, max_disk_bytes: None, max_workers: 1,
+                max_tokens: Some(1_000), max_cost_micros: Some(0),
+            },
+            source_digests: vec![format!("sha256:{}", "e".repeat(64))],
+            proposed_by: "server_auth:author".into(),
+        };
+        let spec_digest = draft.digest();
+        send(&mut control, "s1", ManagedCommand::ProposeSpec { spec_id: "spec-1".into(), spec: draft, spec_digest: spec_digest.clone() });
+        send(&mut control, "s2", ManagedCommand::AssignSpecReviewer { spec_id: "spec-1".into(), spec_digest: spec_digest.clone(), reviewer_id: "server_auth:reviewer".into() });
+        send(&mut control, "s3", ManagedCommand::AcceptSpec { spec_id: "spec-1".into(), spec_digest: spec_digest.clone(), accepted_by: "server_auth:reviewer".into(), accepted_at_ms: 1 });
+        let planned_tasks = vec![crate::managed_control::PlannedTaskV1 {
+            task_id: "task-1".into(),
+            title: Some("Fixture HostRun inspect task".into()),
+            purpose: Some("Exercise the HostRun inspect route".into()),
+            dependencies: vec![],
+            criterion_ids: vec!["tests-pass".into()],
+            required_capabilities: vec![],
+            agent_profile_revision: crate::managed_control::ProfileRevisionRefV1 {
+                profile_id: "fixture-profile".into(),
+                revision: 1,
+                definition_digest: d(0xa),
+            },
+            profile_token_budget: 16_000,
+            profile_owner_binding_digest: d(0xb),
+        }];
+        let plan_digest = fixture_plan_digest(&planned_tasks);
+        send(&mut control, "r1", ManagedCommand::PlanRun {
+            run_id: "run-1".into(),
+            spec_id: "spec-1".into(),
+            spec_digest: spec_digest.clone(),
+            tasks: planned_tasks,
+        });
+        let start_revision = control.snapshot().revision;
+        send(&mut control, "r2", ManagedCommand::StartPlannedRun {
+            run_id: "run-1".into(),
+            spec_id: "spec-1".into(),
+            spec_digest: spec_digest.clone(),
+            plan_digest,
+            expected_goal_revision: start_revision,
+            started_by: "server_auth:reviewer".into(),
+            session_link: Some(inspect_session_link()),
+        });
+        send(&mut control, "a1", ManagedCommand::AdmitAttempt {
+            run_id: "run-1".into(), task_id: "task-1".into(), attempt_id: "attempt-1".into(),
+            executor_principal: "server_auth:executor".into(), owner_epoch: 3,
+            location_id: "location-1".into(), session_id: "ses_host_run_child".into(),
+        });
+        send(&mut control, "a2", ManagedCommand::StartAttempt { run_id: "run-1".into(), task_id: "task-1".into(), attempt_id: "attempt-1".into() });
+        send(&mut control, "a3", ManagedCommand::BindAttemptWorkspaceRevision { attempt_id: "attempt-1".into(), workspace_revision: d(0xa) });
+        let admitted_revision = control.snapshot().revision + 1;
+        control.bind_attempt_delegation("d1", "attempt-1", DelegationBindingV1 {
+            run_id: "run-1".into(), task_id: "task-1".into(), attempt_id: "attempt-1".into(),
+            parent_execution_id: "parent-exec".into(), child_execution_id: "child-exec".into(),
+            accepted_spec_digest: spec_digest,
+            profile_id: "fixture-profile".into(), profile_revision: 1, profile_digest: d(0xa),
+            provider_id: "provider-test".into(), model_id: "model-test".into(),
+            managed_provider_route: Some(ManagedProviderRouteBindingV1 {
+                provider_id: "provider-test".into(), model_id: "model-test".into(),
+                harness_id: "native-rich".into(), route_id: "llm_test".into(),
+                endpoint_revision: d(0x7), credential_lease_ref: None,
+            }),
+            profile_token_budget: Some(16_000), criteria_ids: vec!["tests-pass".into()],
+            workspace_lease_id: "workspace-lease".into(), source_revision: d(0xa),
+            capability_ceiling_digest: format!("sha256:{}", "b".repeat(64)),
+            permission_scope_digest: d(0x7),
+            context_selection_digest: d(0x6), budget_lease_id: "budget-lease".into(),
+            resource_lease_ids: vec![], owner_epoch: 3, admitted_managed_revision: admitted_revision,
+        }).unwrap();
+        let snapshot = control.snapshot().clone();
+        let identity = crate::managed_control::HostRunEvaluationIdentityV1 {
+            dispatch_key_digest: dispatch_key.to_owned(),
+            manifest_digest: d(0xb1),
+            evaluator_task_id: "evaluator-task-1".into(),
+            arm_id: "arm-1".into(),
+            task_group: "group-1".into(),
+            evaluation_session_id: "ses_host_run_eval".into(),
+            core_process_generation: 1,
+            owner_id: "worker-owner".into(),
+            workspace_binding_digest: d(0xc1),
+            owner_principal_binding_digest: d(0xd1),
+        };
+        let binding = crate::managed_control::HostRunDispatchBindingV1::from_authenticated_evaluator(
+            &snapshot, "attempt-1", "worker-execution-1", &d(0x5), identity,
+        ).unwrap();
+        let wave = control
+            .bind_attempt_effect_wave(
+                control.snapshot().revision, "w1", "run-1", "task-1", "attempt-1",
+                "batch-1", 0, "location-1", "ses_host_run_child", &d(0x5),
+                vec![ManagedAttemptEffectWaveEdgeV1 {
+                    call_index: 0, call_id: "call-1".into(), effect_id: "effect-1".into(),
+                    capability_id: "files.read".into(), arguments_digest: d(0x4),
+                    intent_digest: d(0x3), attempt_scope_digest: Some(d(0x5)),
+                }],
+            )
+            .unwrap();
+        control
+            .record_attempt_effect_receipt(
+                control.snapshot().revision,
+                "rcpt-1",
+                &ManagedAttemptEffectReceiptProofV1 {
+                    goal_id: goal_id.into(), run_id: "run-1".into(), task_id: "task-1".into(),
+                    attempt_id: "attempt-1".into(), effect_id: "effect-1".into(),
+                    executor_principal: "server_auth:executor".into(), owner_epoch: 3,
+                    bound_revision: wave.bound_revision, location_id: "location-1".into(),
+                    session_id: "ses_host_run_child".into(), capability_id: "files.read".into(),
+                    capability_lease_digest: d(0x1),
+                    outcome: AttemptEffectOutcomeV1::Succeeded,
+                    target_receipt_digest: Some(d(0x0)),
+                    before_workspace_revision: d(0xa),
+                    after_workspace_revision: Some(d(0xa)),
+                },
+            )
+            .unwrap();
+        // The binding is recorded last so `host_run_projection_requests` sees
+        // the committed wave and receipt exactly as the route consumes them.
+        control.record_host_run_dispatch_binding("hb1", binding).unwrap();
+
+    }
+
+    fn inspect_request(goal_id: &str, dispatch_key: &str) -> RpcRequestV1 {
+        let mut req = request(
+            "host_run.inspect",
+            map_value([
+                ("goalID", string(goal_id)),
+                ("dispatchKeyDigest", string(dispatch_key)),
+            ]),
+            7,
+            "inc_test",
+        );
+        req.service_id = MANAGED_SERVICE_ID.to_owned();
+        req.delivery_id = Some(format!("host-run-inspect-{dispatch_key}"));
+        req
+    }
+
+    /// Startup installs P1's read-only projection provider; without it the
+    /// inspect route can only resolve the typed unavailable UNKNOWN.
+    #[test]
+    fn host_run_inspect_installs_projection_source_at_startup() {
+        let state = state_dir();
+        let host = HostKernel::open(&state).unwrap();
+        assert!(
+            host.host_run_effect_projection.is_some(),
+            "HostKernel::open must install the HostRun effect projection source",
+        );
+        drop(host);
+        fs::remove_dir_all(state).unwrap();
+    }
+
+    /// A consultable source must replace the unavailable UNKNOWN: the route asks
+    /// it (spy call count proves consult) and never fabricates a terminal status.
+    #[test]
+    fn host_run_inspect_consults_the_installed_projection_source() {
+        struct SpySource {
+            calls: std::rc::Rc<std::cell::Cell<u32>>,
+        }
+        impl crate::managed_control::HostRunEffectProjectionSourceV1 for SpySource {
+            fn project_committed_batch(
+                &self,
+                _request: &crate::managed_control::HostRunProcessEffectProjectionRequestV1,
+            ) -> Result<crate::managed_control::HostRunProcessEffectProjectionV1, crate::managed_control::ManagedError> {
+                self.calls.set(self.calls.get() + 1);
+                Err(crate::managed_control::ManagedError::Conflict("spy projection unavailable"))
+            }
+        }
+        let state = state_dir();
+        let key = format!("blake3:{}", "7".repeat(64));
+        seed_host_run_inspect_state(&state, "goal-inspect-spy", &key);
+        let mut host = HostKernel::open(&state).unwrap();
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        host.install_host_run_effect_projection_source(Box::new(SpySource {
+            calls: calls.clone(),
+        }));
+        let response = host.handle_request(&inspect_request("goal-inspect-spy", &key), "server_auth:reviewer", &fence());
+        assert_eq!(response.outcome, RpcOutcomeV1::Ok, "inspect itself must answer: {:?}", response.error);
+        assert_eq!(calls.get(), 1, "the installed projection source must be consulted exactly once per committed wave");
+        assert_eq!(
+            inspect_unknown_reason(response.body.as_ref()),
+            crate::managed_control::HOST_RUN_UNKNOWN_PROJECTION_AMBIGUOUS,
+            "a failing projection must resolve as ambiguous, never a terminal status",
+        );
+        drop(host);
+        fs::remove_dir_all(state).unwrap();
+    }
+
+    /// With no source installed the route must preserve the typed unavailable
+    /// UNKNOWN for a non-empty committed projection request set.
+    #[test]
+    fn host_run_inspect_preserves_unavailable_unknown_without_a_source() {
+        let state = state_dir();
+        let key = format!("blake3:{}", "6".repeat(64));
+        seed_host_run_inspect_state(&state, "goal-inspect-none", &key);
+        let mut host = HostKernel::open(&state).unwrap();
+        host.host_run_effect_projection = None;
+        let response = host.handle_request(&inspect_request("goal-inspect-none", &key), "server_auth:reviewer", &fence());
+        assert_eq!(response.outcome, RpcOutcomeV1::Ok, "inspect itself must answer: {:?}", response.error);
+        assert_eq!(
+            inspect_unknown_reason(response.body.as_ref()),
+            crate::managed_control::HOST_RUN_UNKNOWN_PROJECTION_UNAVAILABLE,
+            "an uninstalled source must stay the typed unavailable UNKNOWN",
+        );
+        drop(host);
+        fs::remove_dir_all(state).unwrap();
+    }
+
+    /// A tampered effect journal (not a valid database) makes the read-only
+    /// source fail typed-closed; the route must report ambiguous UNKNOWN and
+    /// never a terminal status.
+    #[test]
+    fn host_run_inspect_stale_or_tampered_projection_fails_closed() {
+        let state = state_dir();
+        let key = format!("blake3:{}", "5".repeat(64));
+        seed_host_run_inspect_state(&state, "goal-inspect-tamper", &key);
+        let mut host = HostKernel::open(&state).unwrap();
+        // Source re-enumerates the Location journals on every projection call.
+        let tampered = state.join("effect-locations").join("loc-tamper");
+        fs::create_dir_all(&tampered).unwrap();
+        fs::write(tampered.join("effects.sqlite"), b"this is not a durable effect journal").unwrap();
+        let response = host.handle_request(&inspect_request("goal-inspect-tamper", &key), "server_auth:reviewer", &fence());
+        assert_eq!(response.outcome, RpcOutcomeV1::Ok, "inspect itself must answer: {:?}", response.error);
+        let body = response.body.expect("inspect must answer with a reconciliation body");
+        match &body {
+            Value::Map(fields) => assert_eq!(
+                fields.get("status").and_then(Value::as_str),
+                Some("UNKNOWN"),
+                "a tampered projection must never resolve terminal",
+            ),
+            other => panic!("expected a reconciliation map, found {other:?}"),
+        }
+        assert_eq!(
+            inspect_unknown_reason(Some(&body)),
+            crate::managed_control::HOST_RUN_UNKNOWN_PROJECTION_AMBIGUOUS,
+            "a tampered journal must fail closed as ambiguous, not unavailable or terminal",
+        );
+        drop(host);
+        fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn host_run_frozen_invocation_mint_seam_derives_tuple_from_validated_manifest() {
+        let state = state_dir();
+        let control_path = state.join("worker-owner");
+        ensure_private_directory(&control_path).unwrap();
+        let mut pool = crate::worker_durable::WorkerPoolControl::open(
+            &control_path,
+            "pool-mint",
+            crate::worker_durable::WorkerPoolOpenConfig {
+                owner_epoch: 1,
+                max_live_workers: crate::worker_pool::MAX_LIVE_WORKERS,
+                max_queued_tickets: crate::worker_pool::MAX_QUEUED_TICKETS,
+                max_worktrees: crate::worker_pool::MAX_LIVE_WORKERS,
+            },
+        )
+        .unwrap();
+        let manifest = eval_manifest();
+        let manifest_digest = manifest_digest_of(&manifest);
+        let dispatch_key = host_run_dispatch_key_digest(&manifest_digest, "task-alpha", "arm-1")
+            .unwrap();
+        let invocation = record_frozen_invocation_from_validated_manifest(
+            &mut pool,
+            &manifest,
+            HostRunFrozenInvocationClaimsV1 {
+                task_id: "task-alpha".into(),
+                arm_id: "arm-1".into(),
+                task_group: "group-alpha".into(),
+                manifest_digest: manifest_digest.clone(),
+                dispatch_key_digest: dispatch_key.clone(),
+            },
+        )
+        .expect("a valid manifest with matching claims must mint and record");
+        // Every tuple field is derived from the manifest, never echoed from the
+        // caller beyond the cross-checked claims.
+        assert_eq!(invocation.manifest_digest, manifest_digest);
+        assert_eq!(invocation.dispatch_key_digest, dispatch_key);
+        assert_eq!(invocation.evaluator_task_id, "task-alpha");
+        assert_eq!(invocation.arm_id, "arm-1");
+        assert_eq!(invocation.task_group, "group-alpha");
+        assert_eq!(pool.resolve_frozen_invocation(&dispatch_key).unwrap(), invocation);
+        drop(pool);
+        fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn host_run_frozen_invocation_mint_seam_rejects_invalid_manifests_and_caller_chosen_tuples() {
+        let state = state_dir();
+        let control_path = state.join("worker-owner");
+        ensure_private_directory(&control_path).unwrap();
+        let mut pool = crate::worker_durable::WorkerPoolControl::open(
+            &control_path,
+            "pool-mint-neg",
+            crate::worker_durable::WorkerPoolOpenConfig {
+                owner_epoch: 1,
+                max_live_workers: crate::worker_pool::MAX_LIVE_WORKERS,
+                max_queued_tickets: crate::worker_pool::MAX_QUEUED_TICKETS,
+                max_worktrees: crate::worker_pool::MAX_LIVE_WORKERS,
+            },
+        )
+        .unwrap();
+        let base = eval_manifest();
+        let real_manifest_digest = manifest_digest_of(&base);
+        let real_key =
+            host_run_dispatch_key_digest(&real_manifest_digest, "task-alpha", "arm-1").unwrap();
+        let good_claims = || HostRunFrozenInvocationClaimsV1 {
+            task_id: "task-alpha".into(),
+            arm_id: "arm-1".into(),
+            task_group: "group-alpha".into(),
+            manifest_digest: real_manifest_digest.clone(),
+            dispatch_key_digest: real_key.clone(),
+        };
+        let expect_err = |name: &str, result: Result<crate::worker_durable::HostRunFrozenInvocationV1, HostError>, code: &str| {
+            let err = result.err().unwrap_or_else(|| panic!("{name} must be rejected"));
+            assert_eq!(err.0, code, "{name} must fail with {code}");
+        };
+
+        // 1. Wrong manifest schema.
+        let mut bad_schema = base.clone();
+        bad_schema["schema"] = serde_json::json!("horizoncode.eval.manifest.v2");
+        expect_err(
+            "wrong schema",
+            record_frozen_invocation_from_validated_manifest(&mut pool, &bad_schema, good_claims()),
+            "host_run_frozen_invocation_invalid",
+        );
+        // 2. Manifest without tasks.
+        let mut no_tasks = base.clone();
+        no_tasks["tasks"] = serde_json::json!([]);
+        expect_err(
+            "no tasks",
+            record_frozen_invocation_from_validated_manifest(&mut pool, &no_tasks, good_claims()),
+            "host_run_frozen_invocation_invalid",
+        );
+        // 3. Caller-chosen task absent from the frozen manifest.
+        let mut ghost_task = good_claims();
+        ghost_task.task_id = "task-ghost".into();
+        expect_err(
+            "absent task",
+            record_frozen_invocation_from_validated_manifest(&mut pool, &base, ghost_task),
+            "host_run_frozen_invocation_invalid",
+        );
+        // 4. Caller-chosen arm absent from the frozen manifest.
+        let mut ghost_arm = good_claims();
+        ghost_arm.arm_id = "arm-ghost".into();
+        expect_err(
+            "absent arm",
+            record_frozen_invocation_from_validated_manifest(&mut pool, &base, ghost_arm),
+            "host_run_frozen_invocation_invalid",
+        );
+        // 5. Tampered task group — the group can never be caller-chosen.
+        let mut forged_group = good_claims();
+        forged_group.task_group = "group-forged".into();
+        expect_err(
+            "tampered group",
+            record_frozen_invocation_from_validated_manifest(&mut pool, &base, forged_group),
+            "host_run_frozen_invocation_conflict",
+        );
+        // 6. Manifest digest claim that does not recompute from the manifest.
+        let mut forged_manifest_digest = good_claims();
+        forged_manifest_digest.manifest_digest =
+            format!("blake3:{}", "9".repeat(64));
+        expect_err(
+            "manifest digest mismatch",
+            record_frozen_invocation_from_validated_manifest(&mut pool, &base, forged_manifest_digest),
+            "host_run_frozen_invocation_conflict",
+        );
+        // 7. Dispatch key that does not equal its recomputed pair identity.
+        let mut forged_key = good_claims();
+        forged_key.dispatch_key_digest = format!("blake3:{}", "8".repeat(64));
+        expect_err(
+            "dispatch key mismatch",
+            record_frozen_invocation_from_validated_manifest(&mut pool, &base, forged_key),
+            "host_run_frozen_invocation_conflict",
+        );
+        // 8. Non-canonical digest claim.
+        let mut non_blake3 = good_claims();
+        non_blake3.manifest_digest = "sha256:not-blake3".into();
+        expect_err(
+            "non-blake3 claim",
+            record_frozen_invocation_from_validated_manifest(&mut pool, &base, non_blake3),
+            "host_run_frozen_invocation_invalid",
+        );
+
+        // Nothing was recorded by any rejected case.
+        assert!(
+            pool.resolve_frozen_invocation(&real_key).is_err(),
+            "no rejected case may leave a durable frozen invocation record",
+        );
+        assert!(
+            pool.resolve_frozen_invocation(&format!("blake3:{}", "8".repeat(64))).is_err(),
+            "a forged dispatch key must never be recorded",
+        );
+        drop(pool);
+        fs::remove_dir_all(state).unwrap();
+    }
+
+    fn eval_manifest() -> serde_json::Value {
+        serde_json::json!({
+            "schema": "horizoncode.eval.manifest.v1",
+            "runId": "run-hup-fixture-1",
+            "lane": "development",
+            "benchmark": {
+                "name": "bench",
+                "version": "1",
+                "split": "test",
+                "splitDigest": format!("blake3:{}", "d".repeat(64)),
+                "scoringField": "score",
+                "evaluatorDigest": format!("blake3:{}", "e".repeat(64)),
+            },
+            "shared": { "prompt": "shared prompt" },
+            "arms": [{ "id": "arm-1" }, { "id": "arm-2" }],
+            "tasks": [
+                { "taskId": "task-alpha", "taskGroup": "group-alpha" },
+                { "taskId": "task-beta", "taskGroup": "group-beta" },
+            ],
+            "taskPartitions": ["task-alpha"],
+            "analysis": {},
+            "comparison": {},
+            "failurePolicy": "typed_fail_closed_v1",
+            "exclusionPolicy": "declared_partition_only_v1",
+        })
+    }
+
+    /// Canonical manifest digest, byte-identical to P8's
+    /// `host_run_manifest_digest`: BLAKE3 over compact sorted-key JSON.
+    fn manifest_digest_of(manifest: &serde_json::Value) -> String {
+        let canonical = serde_json::to_string(manifest).expect("fixture manifest serializes");
+        format!("blake3:{}", blake3::hash(canonical.as_bytes()).to_hex())
     }
 
     #[test]
@@ -43788,6 +46905,34 @@ mod tests {
             result.is_err(),
             "a replaced path must fail closed before hashing bytes"
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn workspace_revision_hashes_symlink_targets_without_following_them() {
+        let root = state_dir();
+        let workspace = root.join("workspace");
+        fs::create_dir(&workspace).unwrap();
+        fs::write(root.join("outside.txt"), b"outside").unwrap();
+        fs::write(workspace.join("file.txt"), b"inside").unwrap();
+        symlink("../outside.txt", workspace.join("link")).unwrap();
+        let first = workspace_revision_digest(&workspace).unwrap();
+
+        // The link target's contents are never read: editing outside the workspace
+        // must not change its revision.
+        fs::write(root.join("outside.txt"), b"changed-outside").unwrap();
+        assert_eq!(workspace_revision_digest(&workspace).unwrap(), first);
+
+        // Dependency/build trees are excluded so a real project with installed
+        // packages stays within the bounded revision walk.
+        fs::create_dir(workspace.join("node_modules")).unwrap();
+        fs::write(workspace.join("node_modules/dependency.js"), b"dependency").unwrap();
+        assert_eq!(workspace_revision_digest(&workspace).unwrap(), first);
+
+        // Repointing the link is a real workspace change and must be detected.
+        fs::remove_file(workspace.join("link")).unwrap();
+        symlink("../other.txt", workspace.join("link")).unwrap();
+        assert_ne!(workspace_revision_digest(&workspace).unwrap(), first);
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { SecureInputVault } from "../../src/auth/secure-input"
+import { SecureInputVault, type SecureInputBinding } from "../../src/auth/secure-input"
 import { createCredentialBrokerRuntime } from "../../src/auth/credential-broker-runtime"
 import type { SecretServiceCredentialBackend } from "../../src/auth/secret-service-store"
 import { SECRET_STORE_DIRECTORY } from "../../src/auth/secret-service-store"
@@ -40,6 +40,14 @@ function keyring() {
     } satisfies SecretServiceCredentialBackend,
   }
 }
+
+const secureBinding = (suffix: string, rotation?: { expectedVersion: number }): SecureInputBinding => ({
+  principalRef: "host-os:local",
+  providerId: "example-provider",
+  operation: rotation ? "rotate" : "put",
+  ...(rotation ? { expectedVersion: rotation.expectedVersion } : {}),
+  idempotencyKey: `credential-${suffix}`,
+})
 
 function request(secureInputHandle: string, suffix: string, rotation?: { secretRef: SecretBrokerV1.SecretRef; expectedVersion: number }) {
   return {
@@ -81,23 +89,25 @@ describe("lazy Linux credential broker runtime", () => {
 
     const first = makeRuntime()
     const firstBytes = new TextEncoder().encode("first-secret-value")
-    const created = await first.put(request(input.issue(firstBytes), "create"))
+    const created = await first.put(request(input.issue(firstBytes, secureBinding("create")), "create"), secureBinding("create"))
     expect(firstBytes.every((byte) => byte === 0)).toBe(true)
     expect(created).toMatchObject({ providerId: "example-provider", status: "AVAILABLE", version: 1 })
     expect(JSON.stringify(created)).not.toContain("first-secret-value")
 
     const rotationBytes = new TextEncoder().encode("second-secret-value")
-    const rotated = await first.put(request(input.issue(rotationBytes), "rotate", {
+    const rotateBinding = secureBinding("rotate", { expectedVersion: created.version })
+    const rotated = await first.put(request(input.issue(rotationBytes, rotateBinding), "rotate", {
       secretRef: created.secretRef,
       expectedVersion: created.version,
-    }))
+    }), rotateBinding)
     expect(rotated.secretRef).toBe(created.secretRef)
     expect(rotated.version).toBe(2)
     expect(rotationBytes.every((byte) => byte === 0)).toBe(true)
-    await expect(first.put(request(input.issue(new TextEncoder().encode("stale")), "stale", {
+    const staleBinding = secureBinding("stale", { expectedVersion: 1 })
+    await expect(first.put(request(input.issue(new TextEncoder().encode("stale"), staleBinding), "stale", {
       secretRef: created.secretRef,
       expectedVersion: 1,
-    }))).rejects.toMatchObject({ code: "CONFLICT" })
+    }), staleBinding)).rejects.toMatchObject({ code: "CONFLICT" })
 
     await first.close()
     const restarted = makeRuntime()
@@ -114,7 +124,7 @@ describe("lazy Linux credential broker runtime", () => {
     roots.push(directory)
     const input = new SecureInputVault()
     const runtime = createCredentialBrokerRuntime({ directory, secureInput: input, openBackend: async () => keyring().backend })
-    const metadata = await runtime.put(request(input.issue(new TextEncoder().encode("provider-secret")), "lease"))
+    const metadata = await runtime.put(request(input.issue(new TextEncoder().encode("provider-secret"), secureBinding("lease")), "lease"), secureBinding("lease"))
     const expiresAt = new Date(Date.now() + 60_000).toISOString()
     const trusted = {
       requesterRef: "attempt_test",
@@ -168,8 +178,8 @@ describe("lazy Linux credential broker runtime", () => {
       },
     })
     await expect(runtime.describe("secret_missing" as SecretBrokerV1.SecretRef)).rejects.toMatchObject({ code: "UNAVAILABLE" })
-    const first = runtime.put(request(input.issue(new TextEncoder().encode("secret-a")), "concurrent-a"))
-    const second = runtime.put(request(input.issue(new TextEncoder().encode("secret-b")), "concurrent-b"))
+    const first = runtime.put(request(input.issue(new TextEncoder().encode("secret-a"), secureBinding("concurrent-a")), "concurrent-a"), secureBinding("concurrent-a"))
+    const second = runtime.put(request(input.issue(new TextEncoder().encode("secret-b"), secureBinding("concurrent-b")), "concurrent-b"), secureBinding("concurrent-b"))
     await Bun.sleep(1)
     expect(opens).toBe(2)
     releaseOpen()
@@ -199,7 +209,7 @@ describe("lazy Linux credential broker runtime", () => {
       async close() { closes++ },
     } satisfies SecretServiceCredentialBackend & { close: () => Promise<void> }
     const runtime = createCredentialBrokerRuntime({ directory, secureInput: input, openBackend: async () => backend })
-    const put = runtime.put(request(input.issue(new TextEncoder().encode("in-flight-secret")), "close-race"))
+    const put = runtime.put(request(input.issue(new TextEncoder().encode("in-flight-secret"), secureBinding("close-race")), "close-race"), secureBinding("close-race"))
     await entered
     const close = runtime.close()
     await Bun.sleep(1)

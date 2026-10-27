@@ -36,7 +36,14 @@ export function required(config: Info) {
   return Option.isSome(config.password) && config.password.value !== ""
 }
 
+/** Authentication is configured only when `required()` holds, i.e. a non-empty
+ * password. An unset *or empty* configured password must never authorize a
+ * guessed credential pair: `Some("") === ""` would otherwise mint a
+ * `server_auth` identity for any peer from the trivially guessable
+ * `opencode:` header, while the middleware simultaneously reports auth as
+ * not configured. Identity then comes solely from the trusted-loopback rule. */
 export function authorized(credentials: DecodedCredentials, config: Info) {
+  if (!required(config)) return false
   const primary =
     Option.isSome(config.password) &&
     credentials.username === config.username &&

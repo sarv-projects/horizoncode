@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, spyOn, test } from "bun:test"
 import {
   ExternalEditor,
 } from "@/lsp/external-editor"
@@ -52,24 +52,30 @@ const completed = (over: Record<string, unknown> = {}) => ({
 })
 
 describe("external editor open planning", () => {
-  test("fails closed before invoking the host while the HostKernel route is unavailable", async () => {
+  test("fails closed without calling the host or spawning a process while the HostKernel route is unavailable", async () => {
     let called = 0
-    const result = await ExternalEditor.openWorkspaceFileV1({
-      host: {
-        launch: async () => { called += 1; return completed() },
-        waitForClose: async () => { called += 1; return completed() },
-      },
-      profile,
-      selected,
-      sessionId: "ses_1",
-      locationId: "loc_1",
-      pathRef: "src/main.ts",
-      sourceRevision: REVISION,
-      contentDigest: FILE_DIGEST,
-    })
-    expect(called).toBe(0)
-    expect(result).toMatchObject({ status: "unavailable", reason: "route_unavailable" })
-    expect(ExternalEditor.externalEditorRouteAvailable()).toBe(false)
+    const spawn = spyOn(Bun, "spawn")
+    try {
+      const result = await ExternalEditor.openWorkspaceFileV1({
+        host: {
+          launch: async () => { called += 1; return completed() },
+          waitForClose: async () => { called += 1; return completed() },
+        },
+        profile,
+        selected,
+        sessionId: "ses_1",
+        locationId: "loc_1",
+        pathRef: "src/main.ts",
+        sourceRevision: REVISION,
+        contentDigest: FILE_DIGEST,
+      })
+      expect(called).toBe(0)
+      expect(result).toMatchObject({ status: "unavailable", reason: "route_unavailable" })
+      expect(ExternalEditor.externalEditorRouteAvailable()).toBe(false)
+      expect(spawn).not.toHaveBeenCalled()
+    } finally {
+      spawn.mockRestore()
+    }
   })
 
   test("builds a workspace-file request bound to the immutable profile and exact digests", () => {

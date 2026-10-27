@@ -311,6 +311,28 @@ describe("transcript", () => {
       expect(result).toContain("## Assistant (Build · Claude Sonnet 4 · 5.4s)")
       expect(result).toContain("Hi there")
     })
+
+    test("caps each formatted part while formatting a message", () => {
+      const msg: UserMessage = {
+        id: "msg_large_part",
+        sessionID: "ses_123",
+        role: "user",
+        agent: "build",
+        model: { providerID: "anthropic", modelID: "claude-sonnet-4-20250514" },
+        time: { created: 1000000 },
+      }
+      const parts: Part[] = [{
+        id: "p_large",
+        sessionID: "ses_123",
+        messageID: "msg_large_part",
+        type: "text",
+        text: "x".repeat(128 * 1024),
+      }]
+
+      const result = formatMessage(msg, parts, options)
+
+      expect(result).toContain("message truncated by HorizonCode export limits")
+    })
   })
 
   describe("formatTranscript", () => {

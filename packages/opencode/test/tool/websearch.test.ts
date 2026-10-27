@@ -35,7 +35,7 @@ import { SecretBrokerV1 } from "@opencode-ai/schema/secret-broker-v1"
 const TEST_ROUTE_PLAN_DIGEST = `blake3:${"a".repeat(64)}`
 const TEST_CASCADE_REF = `search_cascade_${"c".repeat(64)}`
 const TEST_SEARCH_AUTHORIZATION_PROJECTION = {
-  attemptRef: "attempt_1",
+  attemptRef: `search-attempt_${"a".repeat(64)}`,
   attemptDigest: TEST_ROUTE_PLAN_DIGEST,
   routeKey: "brave",
   attempt: 1,
@@ -320,6 +320,81 @@ describe("websearch ordered cascade", () => {
     })
   })
 
+  
+  test("production HostKernel request includes the exact admitted BYO credential references", () => {
+    const secretRef = Schema.decodeUnknownSync(SecretBrokerV1.SecretRef)("secret_ref")
+    const credentialRefsByRoute = [{ routeKey: "brave" as const, secretRef }]
+    const directAttempt = {
+      attemptID: "attempt-search-1",
+      parentSessionID: "ses-parent",
+      childSessionID: "ses-child",
+      profileID: "profile-search",
+      profileRevision: "1",
+      profileDigest: TEST_ROUTE_PLAN_DIGEST,
+      ownerEpoch: "1",
+      expectedRevision: "1",
+      locationID: "location-search-1",
+      workspaceID: "workspace-search-1",
+      workspaceRevision: "1",
+      capabilityDigest: TEST_ROUTE_PLAN_DIGEST,
+      permissionsDigest: TEST_ROUTE_PLAN_DIGEST,
+      budgetDigest: TEST_ROUTE_PLAN_DIGEST,
+      scopeDigest: TEST_ROUTE_PLAN_DIGEST,
+    }
+    const body = WebSearchRuntime.webSearchCascadeHostKernelRequestV1({
+      sessionID: "ses_websearch_test",
+      effectID: "effect-search-production-envelope",
+      capabilityLeaseDigest: TEST_ROUTE_PLAN_DIGEST,
+      challengeID: "challenge-search-1",
+      locationID: "location-search-1",
+      directAttempt,
+      query: "docs",
+      limit: 4,
+      routes: [{ routeKey: "brave", attemptCount: 2 }],
+      credentialRefsByRoute,
+    })
+
+    expect(body).toEqual({
+      sessionID: "ses_websearch_test",
+      effectID: "effect-search-production-envelope",
+      capabilityLeaseDigest: TEST_ROUTE_PLAN_DIGEST,
+      challengeID: "challenge-search-1",
+      locationID: "location-search-1",
+      directAttempt,
+      query: "docs",
+      limit: 4,
+      routes: [{ routeKey: "brave", attemptCount: 2 }],
+      credentialRefsByRoute: [{ routeKey: "brave", secretRef }],
+    })
+    expect(body.credentialRefsByRoute).toEqual(credentialRefsByRoute)
+    expect(body.credentialRefsByRoute).not.toBe(credentialRefsByRoute)
+    expect(Object.isFrozen(body.credentialRefsByRoute)).toBe(true)
+  })
+  test("detaches the admitted request from mutable caller-owned search inputs", () => {
+    const secretRef = Schema.decodeUnknownSync(SecretBrokerV1.SecretRef)("secret_ref")
+    const domains = ["example.com"]
+    const routes = [{ routeKey: "brave" as const, attemptCount: 2 as const }]
+    const credentials = [{ routeKey: "brave" as const, secretRef }]
+    const admitted = WebSearchRuntime.webSearchCascadeRequestV1({
+      sessionID: "ses_websearch_test",
+      effectID: "effect-search-1",
+      capabilityLeaseDigest: TEST_ROUTE_PLAN_DIGEST,
+      query: "docs",
+      limit: 4,
+      domains,
+      routes,
+      credentialRefsByRoute: credentials,
+    })
+
+    domains[0] = "attacker.example"
+    ;(routes as Array<{ routeKey: string; attemptCount: number }>)[0] = { routeKey: "exa", attemptCount: 2 }
+    ;(credentials as Array<{ routeKey: string; secretRef: unknown }>)[0] = { routeKey: "exa", secretRef }
+
+    expect(admitted.domains).toEqual(["example.com"])
+    expect(admitted.routes).toEqual([{ routeKey: "brave", attemptCount: 2 }])
+    expect(admitted.credentialRefsByRoute).toEqual([{ routeKey: "brave", secretRef }])
+  })
+
   test("rejects credential references, routes and attempt counts outside the admitted plan", () => {
     const secretRef = Schema.decodeUnknownSync(SecretBrokerV1.SecretRef)("secret_ref")
     type Request = Parameters<typeof WebSearchRuntime.webSearchCascadeRequestV1>[0]
@@ -357,6 +432,11 @@ describe("websearch ordered cascade", () => {
       ...base,
       capabilityLeaseDigest: "not-a-digest",
     })).toThrow("capability lease digest")
+    const sparseDomains = new Array(1)
+    expect(() => invoke({
+      ...base,
+      domains: sparseDomains,
+    })).toThrow("domain filters")
     // Unknown-cost credentialed routes keep their opaque reference; the
     // projection never drops it to make a route look free or anonymous.
     expect(WebSearchRuntime.webSearchCascadeRequestV1(base).credentialRefsByRoute).toBeUndefined()
@@ -602,6 +682,27 @@ describe("websearch ordered cascade", () => {
     expect(projected.execution).toBe(projected.arguments)
   })
 
+  test("freezes the pre-admission projection against later model-input mutation", () => {
+    const domains = ["example.com"]
+    const projected = prepareSearchEffectArguments({
+      modelArgs: { query: "docs", domains },
+      settings: {
+        querySharingConsent: "anonymous_free_v1",
+        enabled: ["exa_keyless"],
+        order: ["exa_keyless"],
+      },
+      supportedProviders: ["exa_keyless"],
+      runtimeReady: { exa_keyless: true },
+    })
+
+    domains[0] = "attacker.example"
+
+    expect(projected.arguments.domains).toEqual(["example.com"])
+    expect(Object.isFrozen(projected.arguments)).toBe(true)
+    expect(Object.isFrozen(projected.arguments.domains)).toBe(true)
+    expect(Object.isFrozen(projected.arguments.routes[0])).toBe(true)
+  })
+
   test("aggregate projection rejects an empty HostKernel-supported route plan", () => {
     expect(() => prepareSearchEffectArguments({
       modelArgs: { query: "docs", numResults: 4 },
@@ -637,6 +738,53 @@ describe("websearch ordered cascade", () => {
       ...base,
       modelArgs: { query: "docs", domains: ["example.org."] },
     })).toThrow("domain filters")
+    const sparseDomains = new Array(1)
+    expect(() => prepareSearchEffectArguments({
+      ...base,
+      modelArgs: { query: "docs", domains: sparseDomains },
+    })).toThrow("domain filters")
+  })
+
+  test("rejects sparse HostKernel route-attempt arrays", () => {
+    const attempts = new Array(1)
+    expect(() => parseCascadeResponse({
+      status: "UNKNOWN",
+      attempts,
+      routePlanDigest: TEST_ROUTE_PLAN_DIGEST,
+    })).toThrow("invalid route receipt")
+  })
+
+  test("accepts the Rust terminal cancel_search_cascade projection", () => {
+    // Rust's cancel_search_cascade emits schemaVersion=1 on its terminal
+    // CANCELLED projection; the decoder must not reject that producer shape.
+    const response = parseCascadeResponse({
+      schemaVersion: 1,
+      cascadeRef: TEST_CASCADE_REF,
+      cascadeDigest: TEST_ROUTE_PLAN_DIGEST,
+      status: "CANCELLED",
+      routePlanDigest: TEST_ROUTE_PLAN_DIGEST,
+      receiptRef: "aggregate-cancelled-receipt",
+      attempts: [],
+    })
+    expect(response).toMatchObject({
+      status: "CANCELLED",
+      cascadeRef: TEST_CASCADE_REF,
+      cascadeDigest: TEST_ROUTE_PLAN_DIGEST,
+      routePlanDigest: TEST_ROUTE_PLAN_DIGEST,
+      receiptRef: "aggregate-cancelled-receipt",
+      attempts: [],
+    })
+    for (const schemaVersion of [0, 2, "1"]) {
+      expect(() => parseCascadeResponse({
+        schemaVersion,
+        cascadeRef: TEST_CASCADE_REF,
+        cascadeDigest: TEST_ROUTE_PLAN_DIGEST,
+        status: "CANCELLED",
+        routePlanDigest: TEST_ROUTE_PLAN_DIGEST,
+        receiptRef: "aggregate-cancelled-receipt",
+        attempts: [],
+      })).toThrow()
+    }
   })
 
   test("maps an empty domain filter to an authenticated pre-dispatch outcome", () => {
@@ -1006,7 +1154,10 @@ describe("websearch ordered cascade", () => {
         })
       },
       workspace: () => "/workspace",
-    } as any, { get: async () => ({ websearch: undefined }) } as any)
+    } as any, { get: async () => ({ websearch: undefined }) } as any, {
+      cooldownStore: createProcessSearchCooldownStore(),
+      attemptStore: createProcessSearchAttemptStore(),
+    })
 
     let failure: unknown
     try {
@@ -1021,6 +1172,7 @@ describe("websearch ordered cascade", () => {
 
     expect(failure).toBeInstanceOf(SearchRuntimeError)
     expect(failure).toMatchObject({ outcome: "UNKNOWN", routePlanDigest: TEST_ROUTE_PLAN_DIGEST })
+    expect(failure).toHaveProperty("receiptRef", undefined)
     expect(dispatches).toBe(1)
   })
 
@@ -1060,6 +1212,71 @@ describe("websearch ordered cascade", () => {
       selectedProvider: "brave" as const,
       attempts: [hostAttempt("brave", 0, "SUCCEEDED")],
     }, execution)).toThrow("outside the approved route order")
+  })
+
+  test("UNKNOWN cascade outcomes cannot expose a result body or selected provider", () => {
+    const execution = {
+      query: "docs",
+      limit: 4,
+      routes: [{ routeKey: "exa_keyless" as const, attemptCount: 2 as const }],
+    }
+    const unknown = {
+      status: "UNKNOWN" as const,
+      routePlanDigest: TEST_ROUTE_PLAN_DIGEST,
+      attempts: [hostAttempt("exa_keyless", 0, "UNKNOWN")],
+    }
+
+    expect(validateCascadeResponseRoutes(unknown, execution)).toBe(unknown)
+    expect(() => validateCascadeResponseRoutes({
+      ...unknown,
+      body: { results: [{ title: "unreconciled", url: "https://example.test/" }] },
+    }, execution)).toThrow("UNKNOWN web-search outcome")
+    expect(() => validateCascadeResponseRoutes({
+      ...unknown,
+      selectedProvider: "exa_keyless" as const,
+    }, execution)).toThrow()
+  })
+
+  test("UNKNOWN cascade outcomes cannot expose an aggregate receipt reference", async () => {
+    const execution = {
+      query: "docs",
+      limit: 4,
+      routes: [{ routeKey: "exa_keyless" as const, attemptCount: 2 as const }],
+    }
+    const unknown = {
+      status: "UNKNOWN" as const,
+      routePlanDigest: TEST_ROUTE_PLAN_DIGEST,
+      receiptRef: "possibly-unsettled-aggregate",
+      attempts: [hostAttempt("exa_keyless", 0, "UNKNOWN")],
+    }
+
+    expect(() => parseCascadeResponse(unknown)).toThrow("UNKNOWN web-search outcome")
+    expect(() => validateCascadeResponseRoutes(unknown, execution)).toThrow("UNKNOWN web-search outcome")
+
+    const runtime = WebSearchRuntime.make({
+      ready: true,
+      supportedProviders: ["exa_keyless"],
+      runtimeReady: { exa_keyless: true },
+      credentialRefs: async () => ({}),
+      executeSearchCascade: async () => unknown,
+      workspace: () => "/workspace",
+    } as any, {} as any, {
+      cooldownStore: createProcessSearchCooldownStore(),
+      attemptStore: createProcessSearchAttemptStore(),
+    })
+    let failure: unknown
+    try {
+      await Effect.runPromise(runtime.search({
+        execution,
+        scope: { sessionID: "ses_test", messageID: "msg_test", callID: "call_test", workspace: "/workspace" },
+        challenge: { approval: { consent: { routePlanDigest: TEST_ROUTE_PLAN_DIGEST } } } as any,
+      }))
+    } catch (error) {
+      failure = error
+    }
+    expect(failure).toBeInstanceOf(SearchRuntimeError)
+    expect((failure as SearchRuntimeError).outcome).toBe("UNKNOWN")
+    expect((failure as SearchRuntimeError).receiptRef).toBeUndefined()
   })
 
   test("HostKernel search receipts cannot claim an unapproved retry or route order", () => {
@@ -1340,6 +1557,24 @@ describe("websearch ordered cascade", () => {
     })
   })
 
+  test("a needs-approval aggregate cannot carry route dispatch or result evidence", () => {
+    const execution = {
+      query: "docs",
+      limit: 4,
+      routes: [{ routeKey: "exa_keyless" as const, attemptCount: 2 as const }],
+    }
+    const attemptedApproval = {
+      status: "NEEDS_APPROVAL" as const,
+      selectedProvider: "exa_keyless" as const,
+      body: { results: [{ title: "result", url: "https://example.test/" }] },
+      receiptRef: "aggregate-receipt",
+      attempts: [{ ...hostAttempt("exa_keyless", 0, "SUCCEEDED"), httpStatus: 200, resultCount: 1 }],
+    }
+
+    expect(() => parseCascadeResponse(attemptedApproval)).toThrow("needs-approval web-search response contains dispatch evidence")
+    expect(() => validateCascadeResponseRoutes(attemptedApproval, execution)).toThrow("needs-approval web-search response contains dispatch evidence")
+  })
+
   test("an empty successful route result advances without retrying that route", () => {
     const execution = {
       query: "docs",
@@ -1614,6 +1849,32 @@ describe("websearch ordered cascade", () => {
       limit: 4,
       routes: [{ routeKey: "exa_keyless", attemptCount: 2 }, { routeKey: "brave", attemptCount: 2 }],
     })).toThrow("next approved route")
+  })
+
+  test("rejects malformed BYO continuation identities before Auth", () => {
+    const base = {
+      status: "WAITING_SECRET",
+      cascadeRef: TEST_CASCADE_REF,
+      cascadeDigest: `blake3:${"a".repeat(64)}`,
+      routePlanDigest: `blake3:${"b".repeat(64)}`,
+      routeIndex: 0,
+      attempts: [],
+    }
+    const malformed: Array<Record<string, unknown>> = [
+      { ...TEST_SEARCH_AUTHORIZATION_PROJECTION, attemptRef: 42 },
+      { ...TEST_SEARCH_AUTHORIZATION_PROJECTION, attemptRef: "attempt_1" },
+      { ...TEST_SEARCH_AUTHORIZATION_PROJECTION, attemptDigest: `sha256:${"a".repeat(64)}` },
+      { ...TEST_SEARCH_AUTHORIZATION_PROJECTION, routeKey: "exa_keyless" },
+      { ...TEST_SEARCH_AUTHORIZATION_PROJECTION, attempt: "2" },
+      { ...TEST_SEARCH_AUTHORIZATION_PROJECTION, attempt: 3 },
+    ]
+    for (const nextRoute of malformed) {
+      expect(() => parseCascadeResponse({ ...base, nextRoute })).toThrow("invalid BYO search authorization projection")
+    }
+    expect(() => parseCascadeResponse({
+      ...base,
+      nextRoute: TEST_SEARCH_AUTHORIZATION_PROJECTION,
+    })).not.toThrow()
   })
 
   test("a settled success with an absent or unusable body is result-unavailable, not exhaustion", () => {

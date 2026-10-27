@@ -1,0 +1,31 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-7.4.4, pluggy-1.4.0 -- /usr/bin/python3
+rootdir: /home/sarvesh/business_Dev/agentx/scripts/perf
+plugins: anyio-4.12.1, colcon-core-0.20.1, cov-4.1.0, typeguard-4.1.5
+collecting ... collected 23 items
+
+test_rc0.py::Rc0BaselineTests::test_complete_clean_samples_with_matching_outcomes_are_eligible PASSED [  4%]
+test_rc0.py::Rc0BaselineTests::test_dirty_head_is_not_an_exact_commit_baseline PASSED [  8%]
+test_rc0.py::Rc0BaselineTests::test_rejects_sample_for_a_different_owner_identity PASSED [ 13%]
+test_rc0.py::Rc0BaselineTests::test_rejects_truncated_or_unknown_process_trees PASSED [ 17%]
+test_rc0.py::Rc0BaselineTests::test_rejects_unknown_or_missing_process_identity PASSED [ 21%]
+test_rc0.py::Rc0BaselineTests::test_requires_all_platform_counters_for_every_process PASSED [ 26%]
+test_rc0.py::Rc0BaselineTests::test_requires_every_requested_session_to_have_raw_samples PASSED [ 30%]
+test_rc0.py::Rc0BaselineTests::test_requires_selected_harness_identity PASSED [ 34%]
+test_rc0.py::Rc0BaselineTests::test_task_actual_must_match_expected_and_pass PASSED [ 39%]
+test_rc0.py::Rc0BudgetTests::test_source_read_cannot_exceed_remaining_byte_budget PASSED [ 43%]
+test_rc0.py::Rc0BudgetTests::test_work_counter_stops_at_configured_limit PASSED [ 47%]
+test_rc0.py::Rc0ChildFenceTests::test_parent_pid_reuse_during_child_walk_is_rejected PASSED [ 52%]
+test_rc0.py::Rc0ChildFenceTests::test_reparented_child_is_not_returned_as_owned PASSED [ 56%]
+test_rc0.py::Rc0LinuxCounterTests::test_counts_include_private_bytes_from_the_same_smaps_read PASSED [ 60%]
+test_rc0.py::Rc0LinuxCounterTests::test_missing_private_fields_are_unknown_not_a_partial_sum PASSED [ 65%]
+test_rc0.py::Rc0LinuxCounterTests::test_missing_smaps_marks_pss_and_private_unknown_with_reason PASSED [ 69%]
+test_rc0.py::Rc0LinuxCounterTests::test_permission_denied_smaps_is_unknown_with_reason PASSED [ 73%]
+test_rc0.py::Rc0SmapsPrivateBytesTests::test_private_bytes_requires_all_three_fields PASSED [ 78%]
+test_rc0.py::Rc0SampleTreeTests::test_child_exit_during_walk_keeps_scope_explicit PASSED [ 82%]
+test_rc0.py::Rc0SampleTreeTests::test_owner_missing_before_sampling_is_an_explicit_unknown_scope PASSED [ 86%]
+test_rc0.py::Rc0SampleTreeTests::test_stale_owner_start_identity_yields_unknown_without_metrics PASSED [ 91%]
+test_rc0.py::Rc0SampleTreeTests::test_tree_walk_measures_only_owned_descendants PASSED [ 95%]
+test_rc0.py::Rc0SelfcheckTests::test_selfcheck_measures_its_own_bounded_tree PASSED [100%]
+
+============================== 23 passed in 0.51s ==============================

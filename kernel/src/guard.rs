@@ -188,6 +188,16 @@ pub const AUTOMATION_CREATE_ID: &str = "automations.create";
 pub const AUTOMATION_UPDATE_ID: &str = "automations.update";
 pub const AUTOMATION_ENABLE_ID: &str = "automations.enable";
 pub const AUTOMATION_DISABLE_ID: &str = "automations.disable";
+/// Authenticated owner-scoped SecretBroker metadata mutations. Credential bytes
+/// never enter Guard; only the exact provider/target/version/idempotency binding
+/// and a bounded label are authorized.
+pub const SECRET_PUT_ID: &str = "secrets.put";
+pub const SECRET_ROTATE_ID: &str = "secrets.rotate";
+pub const SECRET_REVOKE_ID: &str = "secrets.revoke";
+/// One-use provider request authorization for an existing AVAILABLE secret.
+/// Metadata only: target version, provider, destination, operation digest,
+/// purpose and a bounded expiry. Credential bytes never enter Guard.
+pub const SECRET_USE_ID: &str = "secrets.use";
 /// Debug-adapter session control and expression evaluation (§33.9/§37.7). IDs are the
 /// canonical `debug.*` family from the capability catalog.
 pub const DEBUG_START_ID: &str = "debug.start";
@@ -230,6 +240,8 @@ pub const OUTBOUND_HTTP_POLICY_ID: &str = "outbound-http.local.v1";
 pub const PROVIDER_INFERENCE_POLICY_ID: &str = "provider-inference.managed.v1";
 pub const AGENT_MESSAGE_POLICY_ID: &str = "agent-message.local.v1";
 pub const AUTOMATION_POLICY_ID: &str = "automation-definition.local.v1";
+pub const SECRET_MUTATION_POLICY_ID: &str = "secret-mutation.owner.v1";
+pub const SECRET_USE_POLICY_ID: &str = "secret-use.owner.v1";
 pub const CODE_MODE_POLICY_ID: &str = "codemode-helper.local.v1";
 pub const EDITOR_PROCESS_POLICY_ID: &str = "external-editor.local.v1";
 const POLICY_BYTES: &[u8] =
@@ -254,6 +266,8 @@ const HTTP_POLICY_BYTES: &[u8] = b"horizoncode.guard.outbound-http.local.v1:http
 const PROVIDER_INFERENCE_POLICY_BYTES: &[u8] = b"horizoncode.guard.provider-inference.managed.v1:managed-attempt;selected-provider-model-harness-route-endpoint;request-transport-secret-operation-digests;consent-budget;one-use;no-fallback";
 const AGENT_MESSAGE_POLICY_BYTES: &[u8] = b"horizoncode.guard.agent-message.local.v1:authenticated-parent-child;profile-pinned;bounded-mailbox;one-use";
 const AUTOMATION_POLICY_BYTES: &[u8] = b"horizoncode.guard.automation-definition.local.v1:server-auth-owner;definition-cas;durable-idempotent-receipt;one-use";
+const SECRET_MUTATION_POLICY_BYTES: &[u8] = b"horizoncode.guard.secret-mutation.owner.v1:server-auth-owner;version-cas;durable-idempotent-receipt;one-use;no-credential-bytes";
+const SECRET_USE_POLICY_BYTES: &[u8] = b"horizoncode.guard.secret-use.owner.v1:server-auth-owner;available-secret;provider-binding;bounded-expiry;one-use;no-credential-bytes";
 const CODE_MODE_POLICY_BYTES: &[u8] = b"horizoncode.guard.codemode-helper.local.v1:ask;explicit-enablement;fixed-host-resolved-helper;exact-resource-profile;bounded-source-tool-set;one-use";
 const EDITOR_PROCESS_POLICY_BYTES: &[u8] = b"horizoncode.guard.external-editor.local.v1:user-only;root-session;trusted-profile;literal-argv;permission-mode;process-tree-containment;workspace-fence;one-use";
 pub(crate) const CODE_MODE_GUARANTEES: &[&str] = &["explicit_codemode_enablement","fixed_host_resolved_helper","exact_resource_profile","bounded_source_tool_set","one_use"];
@@ -284,6 +298,21 @@ pub(crate) const AGENT_MESSAGE_GUARANTEES: &[&str] = &[
     "immutable_profile_and_permission_scope",
     "bounded_mailbox",
     "one_use",
+];
+pub(crate) const SECRET_MUTATION_GUARANTEES: &[&str] = &[
+    "authenticated_owner_scope",
+    "secret_version_compare_and_swap",
+    "durable_idempotent_receipt",
+    "one_use",
+    "no_credential_bytes",
+];
+pub(crate) const SECRET_USE_GUARANTEES: &[&str] = &[
+    "authenticated_owner_scope",
+    "available_secret_target",
+    "provider_and_operation_binding",
+    "bounded_expiry",
+    "one_use",
+    "no_credential_bytes",
 ];
 pub(crate) const AUTOMATION_GUARANTEES: &[&str] = &[
     "authenticated_workspace_owner",
@@ -317,6 +346,24 @@ pub const PROTOCOL_IO_CAPABILITY_IDS: &[&str] = &[
     DEBUG_SCOPES_ID,
 ];
 
+/// SecretBroker metadata mutations are authenticated owner actions. They never
+/// carry credential bytes and never bind a workspace Location.
+pub fn is_secret_mutation_action(action_id: &str) -> bool {
+    matches!(action_id, SECRET_PUT_ID | SECRET_ROTATE_ID | SECRET_REVOKE_ID)
+}
+
+pub fn is_secret_use_action(action_id: &str) -> bool {
+    action_id == SECRET_USE_ID
+}
+
+/// Guard-owned durable control effects settled through EffectHost
+/// `begin/inspect/settle_guarded_control_effect`. Automation definitions and
+/// metadata-only secret mutations share the same PREPARED/SETTLED mechanics.
+pub fn is_guarded_control_action(action_id: &str) -> bool {
+    is_automation_definition_action(action_id)
+        || is_secret_mutation_action(action_id)
+        || is_secret_use_action(action_id)
+}
 pub fn is_automation_definition_action(action_id: &str) -> bool {
     matches!(action_id, AUTOMATION_CREATE_ID | AUTOMATION_UPDATE_ID | AUTOMATION_ENABLE_ID | AUTOMATION_DISABLE_ID)
 }
@@ -1055,7 +1102,11 @@ fn effective_capability_ceiling_digest(
     let encoded = crate::messagepack::encode(&value, crate::messagepack::FRAME_LIMITS)?;
     let mut preimage = b"horizoncode.effective-capability-ceiling.v1\0".to_vec();
     preimage.extend_from_slice(&encoded);
-    Ok(format!("blake3:{}", blake3::hash(&preimage).to_hex()))
+    // CapabilityCeilingDigest is canonically SHA-256 (contracts-v2/delegation-binding-v1.schema.json):
+    // SHA-256 over the same domain-separated preimage, not BLAKE3, so the minted
+    // DelegationBinding satisfies the canonical strict decoder.
+    let digest = ring::digest::digest(&ring::digest::SHA256, &preimage);
+    Ok(format!("sha256:{}", digest.as_ref().iter().map(|byte| format!("{byte:02x}")).collect::<String>()))
 }
 
 /// Guard proof for a bounded read-only RepoIntel root. It grants no write, process,
@@ -1219,6 +1270,10 @@ pub fn approval_policy(action_id: &str) -> Option<(&'static str, String, Vec<&'s
         (AGENT_MESSAGE_POLICY_ID, AGENT_MESSAGE_POLICY_BYTES, AGENT_MESSAGE_GUARANTEES)
     } else if is_automation_definition_action(action_id) {
         (AUTOMATION_POLICY_ID, AUTOMATION_POLICY_BYTES, AUTOMATION_GUARANTEES)
+    } else if is_secret_mutation_action(action_id) {
+        (SECRET_MUTATION_POLICY_ID, SECRET_MUTATION_POLICY_BYTES, SECRET_MUTATION_GUARANTEES)
+    } else if is_secret_use_action(action_id) {
+        (SECRET_USE_POLICY_ID, SECRET_USE_POLICY_BYTES, SECRET_USE_GUARANTEES)
     } else if action_id == FILES_WRITE_ID
         || action_id == FILES_PATCH_ID
         || action_id == TERMINAL_RUN_ID
@@ -1248,6 +1303,8 @@ pub fn authorize(request: &AuthorizationRequestV1<'_>, decision_id: &str) -> Gua
     let provider_inference_action = is_provider_inference_action(request.action_id);
     let agent_message_action = request.action_id == AGENTS_MESSAGE_ID;
     let automation_action = is_automation_definition_action(request.action_id);
+    let secret_mutation_action = is_secret_mutation_action(request.action_id);
+    let secret_use_action = is_secret_use_action(request.action_id);
     let (policy_bytes, expected_policy_id, expected_guarantees) = if agent_message_action {
         (AGENT_MESSAGE_POLICY_BYTES, AGENT_MESSAGE_POLICY_ID, AGENT_MESSAGE_GUARANTEES)
     } else if editor_action {
@@ -1271,6 +1328,10 @@ pub fn authorize(request: &AuthorizationRequestV1<'_>, decision_id: &str) -> Gua
         (PROVIDER_INFERENCE_POLICY_BYTES, PROVIDER_INFERENCE_POLICY_ID, PROVIDER_INFERENCE_GUARANTEES)
     } else if automation_action {
         (AUTOMATION_POLICY_BYTES, AUTOMATION_POLICY_ID, AUTOMATION_GUARANTEES)
+    } else if secret_mutation_action {
+        (SECRET_MUTATION_POLICY_BYTES, SECRET_MUTATION_POLICY_ID, SECRET_MUTATION_GUARANTEES)
+    } else if secret_use_action {
+        (SECRET_USE_POLICY_BYTES, SECRET_USE_POLICY_ID, SECRET_USE_GUARANTEES)
     } else {
         (POLICY_BYTES, WORKSPACE_WRITE_POLICY_ID, GUARANTEES)
     };
@@ -1284,6 +1345,8 @@ pub fn authorize(request: &AuthorizationRequestV1<'_>, decision_id: &str) -> Gua
         || code_mode_action
         || editor_action
         || automation_action
+        || secret_mutation_action
+        || secret_use_action
         || http_action
         || provider_inference_action
         || agent_message_action
@@ -1320,6 +1383,8 @@ pub fn authorize(request: &AuthorizationRequestV1<'_>, decision_id: &str) -> Gua
         || provider_inference_action
         || agent_message_action
         || automation_action
+        || secret_mutation_action
+        || secret_use_action
         || protocol_io_action
         || broker_action);
     // A Session label is optional for actions that a human can originate directly
@@ -1331,6 +1396,8 @@ pub fn authorize(request: &AuthorizationRequestV1<'_>, decision_id: &str) -> Gua
         || request.action_id == TERMINAL_START_ID
         || provider_inference_action
         || automation_action
+        || secret_mutation_action
+        || secret_use_action
         || (broker_action
             && matches!(
                 request.origin.kind,
@@ -1372,11 +1439,24 @@ pub fn authorize(request: &AuthorizationRequestV1<'_>, decision_id: &str) -> Gua
         Some("unsupported_action")
     } else if provider_inference_action && request.origin.kind != EffectOriginKindV1::ManagedRun {
         Some("provider_inference_requires_managed_attempt")
+    } else if editor_action && request.origin.kind != EffectOriginKindV1::UserAction {
+        // `editor.launch` is a user-only effect: a model batch, managed run, or
+        // root lifecycle origin must never receive a challenge or lease.
+        Some("editor_requires_user_action")
+    } else if matches!(
+        request.action_id,
+        GIT_WORKTREE_ACQUIRE_ID | GIT_WORKTREE_LIST_ID | GIT_WORKTREE_RELEASE_ID
+    ) && request.origin.kind != EffectOriginKindV1::ManagedRoot {
+        // Worktree lifecycle is a HostKernel-owned root operation; ordinary
+        // batches, user actions and managed Attempts cannot select it.
+        Some("git_worktree_requires_managed_root")
     } else if request.origin.kind == EffectOriginKindV1::UserAction
         && request.action_id != TERMINAL_RUN_ID
         && request.action_id != TERMINAL_START_ID
         && !agent_message_action
         && !automation_action
+        && !secret_mutation_action
+        && !secret_use_action
         && !protocol_io_action
         && !broker_action
     {
@@ -1394,6 +1474,10 @@ pub fn authorize(request: &AuthorizationRequestV1<'_>, decision_id: &str) -> Gua
         Some("unsupported_managed_root_action")
     } else if automation_action && request.origin.kind != EffectOriginKindV1::UserAction {
         Some("automation_requires_authenticated_user_action")
+    } else if secret_mutation_action && request.origin.kind != EffectOriginKindV1::UserAction {
+        Some("secret_mutation_requires_authenticated_user_action")
+    } else if secret_use_action && request.origin.kind != EffectOriginKindV1::UserAction {
+        Some("secret_use_requires_authenticated_user_action")
     } else if request.origin.kind == EffectOriginKindV1::SessionBatch
         && is_model_control_denied(request.action_id)
     {
@@ -2200,6 +2284,184 @@ mod tests {
         let decision = authorize(&missing_profile_binding, "missing_verifier_profile");
         assert_eq!(decision.decision, DecisionKind::Deny);
         assert_eq!(decision.reason_code, Some("executable_unverified"));
+    }
+
+    #[test]
+    fn cp01_enabled_origin_matrix_reaches_ask_for_each_enabled_pair() {
+        let root = Path::new("/workspace");
+        let ask = |request: &AuthorizationRequestV1<'_>, label: &str| {
+            let decision = authorize(request, "cp01_enabled");
+            assert_eq!(decision.decision, DecisionKind::Ask, "{label}: {decision:?}");
+            assert_eq!(decision.reason_code, None, "{label}: {decision:?}");
+        };
+
+        for action in [FILES_WRITE_ID, FILES_PATCH_ID] {
+            let target = root.join("file.txt");
+            let mut request = request(root, &target, "file.txt");
+            request.action_id = action;
+            ask(&request, action);
+        }
+        for action in [TERMINAL_RUN_ID, TERMINAL_START_ID] {
+            let mut request = request(root, root, ".");
+            request.action_id = action;
+            ask(&request, action);
+        }
+
+        let mut code_mode = request(root, root, ".");
+        code_mode.action_id = CODE_MODE_EXECUTE_ID;
+        code_mode.executable = Some(trusted_executable("/usr/bin/bun"));
+        code_mode.policy_snapshot_ids = &[CODE_MODE_POLICY_ID];
+        code_mode.requested_guarantees = CODE_MODE_GUARANTEES;
+        ask(&code_mode, CODE_MODE_EXECUTE_ID);
+
+        let mut web_search = request(root, root, ".");
+        web_search.action_id = WEB_SEARCH_ID;
+        web_search.policy_snapshot_ids = &[OUTBOUND_HTTP_POLICY_ID];
+        web_search.requested_guarantees = HTTP_GUARANTEES;
+        ask(&web_search, WEB_SEARCH_ID);
+
+        let mut protocol_read = request(root, root, ".");
+        protocol_read.action_id = LANGUAGE_DIAGNOSTICS_ID;
+        protocol_read.policy_snapshot_ids = &[PROTOCOL_IO_POLICY_ID];
+        protocol_read.requested_guarantees = PROTOCOL_IO_GUARANTEES;
+        ask(&protocol_read, LANGUAGE_DIAGNOSTICS_ID);
+
+        let mut user_terminal = request(root, root, ".");
+        user_terminal.action_id = TERMINAL_RUN_ID;
+        user_terminal.origin.kind = EffectOriginKindV1::UserAction;
+        user_terminal.origin.session_id = "";
+        user_terminal.turn_context_digest = "";
+        ask(&user_terminal, "user_action:terminal.run");
+
+        let mut user_language = broker_request(root, LANGUAGE_SERVER_START_ID, Some(trusted_executable("/usr/bin/rust-analyzer")));
+        user_language.origin.kind = EffectOriginKindV1::UserAction;
+        user_language.origin.session_id = "";
+        user_language.turn_context_digest = "";
+        ask(&user_language, "user_action:language.start");
+
+        let mut user_editor = broker_request(root, EDITOR_LAUNCH_ID, Some(trusted_executable("/usr/bin/vim")));
+        user_editor.origin.kind = EffectOriginKindV1::UserAction;
+        user_editor.origin.session_id = "";
+        user_editor.turn_context_digest = "";
+        user_editor.policy_snapshot_ids = &[EDITOR_PROCESS_POLICY_ID];
+        user_editor.requested_guarantees = EDITOR_PROCESS_GUARANTEES;
+        ask(&user_editor, "user_action:editor.launch");
+
+        let mut user_automation = request(root, root, ".");
+        user_automation.action_id = AUTOMATION_CREATE_ID;
+        user_automation.origin.kind = EffectOriginKindV1::UserAction;
+        user_automation.origin.session_id = "";
+        user_automation.turn_context_digest = "";
+        user_automation.policy_snapshot_ids = &[AUTOMATION_POLICY_ID];
+        user_automation.requested_guarantees = AUTOMATION_GUARANTEES;
+        ask(&user_automation, "user_action:automations.create");
+
+        let mut provider = request(root, root, ".");
+        provider.action_id = PROVIDERS_INFER_ID;
+        provider.origin.kind = EffectOriginKindV1::ManagedRun;
+        provider.origin.session_id = "ses_managed_provider";
+        provider.origin.scope_digest = Some(WORKSPACE_BINDING);
+        provider.turn_context_digest = "";
+        provider.policy_snapshot_ids = &[PROVIDER_INFERENCE_POLICY_ID];
+        provider.requested_guarantees = PROVIDER_INFERENCE_GUARANTEES;
+        ask(&provider, "managed_run:providers.infer");
+
+        let mut verifier = broker_request(root, BUILTIN_VERIFIER_ID, Some(trusted_executable("/usr/bin/verifier")));
+        verifier.origin.kind = EffectOriginKindV1::ManagedRun;
+        verifier.origin.session_id = "ses_managed_verifier";
+        verifier.origin.batch_id = "verification_run_1";
+        verifier.origin.call_id = "criterion_1";
+        verifier.request_id = "verification_run_1";
+        verifier.turn_context_digest = "";
+        ask(&verifier, "managed_run:builtin.verifier");
+
+        for action in [GIT_WORKTREE_ACQUIRE_ID, GIT_WORKTREE_LIST_ID, GIT_WORKTREE_RELEASE_ID] {
+            let mut managed_root = broker_request(root, action, Some(trusted_executable("/usr/bin/git")));
+            managed_root.origin.kind = EffectOriginKindV1::ManagedRoot;
+            managed_root.origin.session_id = "root_coordinator";
+            managed_root.origin.scope_digest = Some(WORKSPACE_BINDING);
+            managed_root.turn_context_digest = "";
+            ask(&managed_root, action);
+        }
+    }
+
+    #[test]
+    fn cp01_disabled_origin_pairs_fail_closed_before_preparation() {
+        let root = Path::new("/workspace");
+        let deny = |request: &AuthorizationRequestV1<'_>, label: &str, reason: &'static str| {
+            let decision = authorize(request, "cp01_disabled");
+            assert_eq!(decision.decision, DecisionKind::Deny, "{label}: {decision:?}");
+            assert_eq!(decision.reason_code, Some(reason), "{label}: {decision:?}");
+        };
+
+        let mut session_editor = broker_request(root, EDITOR_LAUNCH_ID, Some(trusted_executable("/usr/bin/vim")));
+        deny(&session_editor, "session_batch:editor.launch", "editor_requires_user_action");
+
+        session_editor.origin.kind = EffectOriginKindV1::ManagedRun;
+        deny(&session_editor, "managed_run:editor.launch", "editor_requires_user_action");
+
+        let mut user_write = request(root, root, ".");
+        user_write.origin.kind = EffectOriginKindV1::UserAction;
+        user_write.origin.session_id = "";
+        user_write.turn_context_digest = "";
+        deny(&user_write, "user_action:files.write", "unsupported_user_action");
+
+        let mut managed_write = request(root, root, ".");
+        managed_write.origin.kind = EffectOriginKindV1::ManagedRun;
+        deny(&managed_write, "managed_run:files.write", "unsupported_managed_run_action");
+
+        let mut root_terminal = request(root, root, ".");
+        root_terminal.origin.kind = EffectOriginKindV1::ManagedRoot;
+        deny(&root_terminal, "managed_root:terminal.run", "unsupported_managed_root_action");
+
+        let mut session_provider = request(root, root, ".");
+        session_provider.action_id = PROVIDERS_INFER_ID;
+        deny(&session_provider, "session_batch:providers.infer", "provider_inference_requires_managed_attempt");
+
+        let mut managed_automation = request(root, root, ".");
+        managed_automation.action_id = AUTOMATION_CREATE_ID;
+        managed_automation.origin.kind = EffectOriginKindV1::ManagedRun;
+        deny(&managed_automation, "managed_run:automations.create", "unsupported_managed_run_action");
+
+        let session_verifier = broker_request(root, BUILTIN_VERIFIER_ID, Some(trusted_executable("/usr/bin/verifier")));
+        deny(&session_verifier, "session_batch:builtin.verifier", "model_process_control_denied");
+
+        let session_worktree = broker_request(root, GIT_WORKTREE_LIST_ID, Some(trusted_executable("/usr/bin/git")));
+        deny(&session_worktree, "session_batch:git.worktree.list", "git_worktree_requires_managed_root");
+
+        let mut user_worktree = broker_request(root, GIT_WORKTREE_LIST_ID, Some(trusted_executable("/usr/bin/git")));
+        user_worktree.origin.kind = EffectOriginKindV1::UserAction;
+        deny(&user_worktree, "user_action:git.worktree.list", "git_worktree_requires_managed_root");
+    }
+
+    #[test]
+    fn cp01_provider_inference_rejects_missing_scope_and_turn_context() {
+        let root = Path::new("/workspace");
+        let base = {
+            let mut request = request(root, root, ".");
+            request.action_id = PROVIDERS_INFER_ID;
+            request.origin.kind = EffectOriginKindV1::ManagedRun;
+            request.origin.session_id = "ses_managed_provider";
+            request.origin.scope_digest = Some(WORKSPACE_BINDING);
+            request.turn_context_digest = "";
+            request.policy_snapshot_ids = &[PROVIDER_INFERENCE_POLICY_ID];
+            request.requested_guarantees = PROVIDER_INFERENCE_GUARANTEES;
+            request
+        };
+        let decision = authorize(&base, "cp01_provider");
+        assert_eq!(decision.decision, DecisionKind::Ask, "{decision:?}");
+
+        let mut missing_scope = base;
+        missing_scope.origin.scope_digest = None;
+        let decision = authorize(&missing_scope, "cp01_provider_missing_scope");
+        assert_eq!(decision.decision, DecisionKind::Deny, "{decision:?}");
+        assert_eq!(decision.reason_code, Some("invalid_principal_or_origin"), "{decision:?}");
+
+        let mut turn_context = base;
+        turn_context.turn_context_digest = TURN_CONTEXT_DIGEST;
+        let decision = authorize(&turn_context, "cp01_provider_turn_context");
+        assert_eq!(decision.decision, DecisionKind::Deny, "{decision:?}");
+        assert_eq!(decision.reason_code, Some("invalid_principal_or_origin"), "{decision:?}");
     }
 
     #[test]

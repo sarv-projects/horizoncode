@@ -1,6 +1,12 @@
 import { describe, expect, spyOn, test } from "bun:test"
 import path from "node:path"
 import { Effect, Schema } from "effect"
+import { Location } from "@opencode-ai/schema"
+import { AbsolutePath } from "@opencode-ai/core/schema"
+import { WorkspaceV2 } from "@opencode-ai/core/workspace"
+import { LanguageServiceProcessError } from "@/lsp/launch"
+import { createSupervisedDapClientV1, snapshotDapAttemptScopeV1 } from "@/dap/supervised"
+import type { DirectAttemptScopeV1 } from "@/session/managed-control"
 import {
   DapSession,
   Ref as DapRef,
@@ -801,5 +807,223 @@ describe("dap.session canonical Guard effect route", () => {
     expect(guardActionID("session.evaluate")).toBe("debug.evaluate")
     expect(guardActionID("adapter.install")).toBeUndefined()
     expect(guardActionID("run_in_terminal")).toBeUndefined()
+  })
+})
+
+const directAttemptScopeForSupervised: DirectAttemptScopeV1 = {
+  attemptID: "attempt-child-1",
+  parentSessionID: "session-parent",
+  childSessionID: "session-child",
+  profileID: "agent-profile",
+  profileRevision: "1",
+  profileDigest: `blake3:${"a".repeat(64)}`,
+  ownerEpoch: "7",
+  expectedRevision: "9",
+  locationID: "location-1",
+  workspaceID: "wrk_child",
+  workspaceRevision: `blake3:${"b".repeat(64)}`,
+  capabilityDigest: `blake3:${"c".repeat(64)}`,
+  permissionsDigest: `sha256:${"d".repeat(64)}`,
+  budgetDigest: `sha256:${"e".repeat(64)}`,
+  scopeDigest: `blake3:${"f".repeat(64)}`,
+}
+
+describe("supervised DAP Attempt binding", () => {
+  const supervisedInput = {
+    config: {},
+    adapterID: "lldb",
+    sessionID: "session-child",
+    locationID: "location-1",
+    locationRef: Location.Ref.make({
+      directory: AbsolutePath.make("/workspace"),
+      workspaceID: WorkspaceV2.ID.make("wrk_child"),
+    }),
+    userActionID: "action_1",
+    callID: "call_1",
+    workspaceRevision: directAttemptScopeForSupervised.workspaceRevision,
+    workspaceID: directAttemptScopeForSupervised.workspaceID,
+    directAttempt: directAttemptScopeForSupervised,
+    supervisor: {},
+    runTrustedEffect: async () => {
+      throw new Error("closed route unexpectedly reached trusted effect runtime")
+    },
+    requestHostKernel: async () => ({}),
+  } as unknown as Parameters<typeof createSupervisedDapClientV1>[0]
+
+  test("snapshots nested managed worktree authority", () => {
+    const worktreeTarget = {
+      worktreeID: "worktree_1",
+      worktreeBaseRevision: `blake3:${"5".repeat(64)}`,
+      worktreePoolRevision: "3",
+      locationID: "location-1",
+      workspaceID: "wrk_child",
+      workspaceRef: "worktree_1",
+      canonicalRoot: "/workspace",
+      workspaceRevision: directAttemptScopeForSupervised.workspaceRevision,
+    }
+    const managedAttempt = {
+      goalID: "goal_1",
+      runID: "run_1",
+      taskID: "task_1",
+      attemptID: "attempt_1",
+      ownerEpoch: "1",
+      expectedManagedRevision: "1",
+      requestSequence: "1",
+      requestID: "request_1",
+      contextSelectionDigest: `blake3:${"9".repeat(64)}`,
+      locationID: "location-1",
+      sessionID: "session-child",
+      workspaceRevision: directAttemptScopeForSupervised.workspaceRevision,
+      effectiveMaxTokens: "100000",
+      remainingTokens: "100000",
+      delegationBindingDigest: `blake3:${"c".repeat(64)}`,
+      permissionScopeDigest: `blake3:${"a".repeat(64)}`,
+      worktreeTarget,
+    } as unknown as NonNullable<Parameters<typeof createSupervisedDapClientV1>[0]["managedAttempt"]>
+
+    const snapshot = snapshotDapAttemptScopeV1({ managedAttempt })
+    worktreeTarget.canonicalRoot = "/attacker/changed"
+
+    expect(snapshot.managedAttempt?.worktreeTarget.canonicalRoot).toBe("/workspace")
+    expect(Object.isFrozen(snapshot.managedAttempt)).toBe(true)
+    expect(Object.isFrozen(snapshot.managedAttempt?.worktreeTarget)).toBe(true)
+  })
+
+  test("matches the direct child Session ID before reaching the closed process gate", async () => {
+    await expect(createSupervisedDapClientV1({ ...supervisedInput, sessionID: "session-parent" })).rejects.toThrow(
+      "supervised DAP scope does not match the authenticated Attempt workspace pins",
+    )
+    await expect(createSupervisedDapClientV1(supervisedInput)).rejects.toBeInstanceOf(LanguageServiceProcessError)
+  })
+
+  test("rejects a LocationRef workspace that differs from the Attempt workspace before the gate", async () => {
+    await expect(createSupervisedDapClientV1({
+      ...supervisedInput,
+      locationRef: Location.Ref.make({
+        directory: AbsolutePath.make("/workspace"),
+        workspaceID: WorkspaceV2.ID.make("wrk_foreign"),
+      }),
+    })).rejects.toThrow("supervised DAP location pin does not match the authenticated workspace ID")
+  })
+
+  test("rejects a foreign-epoch debuggee target before adapter launch", async () => {
+    await expect(createSupervisedDapClientV1({
+      ...supervisedInput,
+      targetHostProcessRef: {
+        executionID: "terminal-exec-1",
+        generation: "1",
+        ownerEpoch: "8",
+        kind: "terminal_run",
+        profileID: "shell-default",
+        profileRevision: "1",
+        profileDigest: `blake3:${"c".repeat(64)}`,
+        executableDigest: `blake3:${"d".repeat(64)}`,
+      },
+    })).rejects.toThrow("DAP attach target does not match the authenticated owner epoch")
+  })
+
+  test("rejects missing or oversized userActionID and callID", async () => {
+    await expect(createSupervisedDapClientV1({ ...supervisedInput, userActionID: "" })).rejects.toThrow(
+      "supervised DAP scope requires authenticated userActionID and callID",
+    )
+    await expect(createSupervisedDapClientV1({ ...supervisedInput, userActionID: "a".repeat(161) })).rejects.toThrow(
+      "supervised DAP scope requires authenticated userActionID and callID",
+    )
+    await expect(createSupervisedDapClientV1({ ...supervisedInput, callID: "   " })).rejects.toThrow(
+      "supervised DAP scope requires authenticated userActionID and callID",
+    )
+  })
+
+  test("rejects combining managed and direct Attempt scopes", async () => {
+    const managedAttempt = {
+      goalID: "goal_1",
+      runID: "run_1",
+      taskID: "task_1",
+      attemptID: "attempt_1",
+      ownerEpoch: "1",
+      expectedManagedRevision: "1",
+      requestSequence: "1",
+      requestID: "request_1",
+      contextSelectionDigest: `blake3:${"9".repeat(64)}`,
+      locationID: "location-1",
+      sessionID: "session-child",
+      workspaceRevision: directAttemptScopeForSupervised.workspaceRevision,
+      effectiveMaxTokens: "100000",
+      remainingTokens: "100000",
+      delegationBindingDigest: `blake3:${"c".repeat(64)}`,
+      permissionScopeDigest: `blake3:${"a".repeat(64)}`,
+      worktreeTarget: {
+        worktreeID: "worktree_1",
+        worktreeBaseRevision: `blake3:${"5".repeat(64)}`,
+        worktreePoolRevision: "3",
+        locationID: "location-1",
+        workspaceID: "wrk_child",
+        workspaceRef: "worktree_1",
+        canonicalRoot: "/workspace",
+        workspaceRevision: directAttemptScopeForSupervised.workspaceRevision,
+      },
+    }
+    await expect(createSupervisedDapClientV1({
+      ...supervisedInput,
+      managedAttempt: managedAttempt as unknown as Parameters<typeof createSupervisedDapClientV1>[0]["managedAttempt"],
+    })).rejects.toThrow("supervised DAP creation cannot combine managed and direct Attempt scopes")
+  })
+
+  test("rejects a managed Attempt scope with mismatched canonicalRoot", async () => {
+    const managedAttempt = {
+      goalID: "goal_1",
+      runID: "run_1",
+      taskID: "task_1",
+      attemptID: "attempt_1",
+      ownerEpoch: "1",
+      expectedManagedRevision: "1",
+      requestSequence: "1",
+      requestID: "request_1",
+      contextSelectionDigest: `blake3:${"9".repeat(64)}`,
+      locationID: "location-1",
+      sessionID: "session-child",
+      workspaceRevision: directAttemptScopeForSupervised.workspaceRevision,
+      effectiveMaxTokens: "100000",
+      remainingTokens: "100000",
+      delegationBindingDigest: `blake3:${"c".repeat(64)}`,
+      permissionScopeDigest: `blake3:${"a".repeat(64)}`,
+      worktreeTarget: {
+        worktreeID: "worktree_1",
+        worktreeBaseRevision: `blake3:${"5".repeat(64)}`,
+        worktreePoolRevision: "3",
+        locationID: "location-1",
+        workspaceID: "wrk_child",
+        workspaceRef: "worktree_1",
+        canonicalRoot: "/other-workspace",
+        workspaceRevision: directAttemptScopeForSupervised.workspaceRevision,
+      },
+    }
+    await expect(createSupervisedDapClientV1({
+      ...supervisedInput,
+      directAttempt: undefined,
+      workspaceID: undefined,
+      managedAttempt: managedAttempt as unknown as Parameters<typeof createSupervisedDapClientV1>[0]["managedAttempt"],
+    })).rejects.toThrow("supervised DAP scope does not match the managed Attempt worktree target")
+  })
+
+  test("rejects a malformed root Session scope without workspaceID or valid revision", async () => {
+    await expect(createSupervisedDapClientV1({
+      ...supervisedInput,
+      directAttempt: undefined,
+      workspaceID: undefined,
+    })).rejects.toThrow("supervised DAP root Session scope is malformed")
+
+    await expect(createSupervisedDapClientV1({
+      ...supervisedInput,
+      directAttempt: undefined,
+      workspaceRevision: "not-a-blake3-digest",
+    })).rejects.toThrow("supervised DAP root Session scope is malformed")
+  })
+
+  test("admits a valid root Session scope up to the closed process gate", async () => {
+    await expect(createSupervisedDapClientV1({
+      ...supervisedInput,
+      directAttempt: undefined,
+    })).rejects.toBeInstanceOf(LanguageServiceProcessError)
   })
 })

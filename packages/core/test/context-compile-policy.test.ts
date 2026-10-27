@@ -153,6 +153,13 @@ describe("resolveContextCompilePolicyV1", () => {
     expect(contextCompilePolicyDigestV1(base)).not.toBe(contextCompilePolicyDigestV1(different))
     expect(contextCompilePolicyDigestV1(base)).toMatch(/^blake3:[0-9a-f]{64}$/)
   })
+
+  test("policy digest rejects values that the strict policy schema would not accept", () => {
+    const valid = resolveContextCompilePolicyV1({ route, prefixCacheSupport: "ephemeral", catalogSnapshot: catalogue() })
+    expect(() =>
+      contextCompilePolicyDigestV1({ ...valid, effective: "cache_anchor", prefixCacheSupport: "none" }),
+    ).toThrow()
+  })
 })
 
 const anchorEpoch: RepoContextAnchorEpochV1 = {
@@ -214,13 +221,40 @@ describe("RepoContextAnchorV1", () => {
     expect(compiled.anchor.partialReason).toBe("invalid_or_sensitive_entries_omitted")
   })
 
+  test("marks the anchor partial when the per-file symbol cap omits valid symbols", () => {
+    const symbols = Array.from({ length: 97 }, (_, index) => `symbol_${String(index).padStart(2, "0")}`)
+    const compiled = compileRepoContextAnchorV1({
+      ...anchorInput,
+      files: [{ pathRef: "src/safe.ts", symbols }],
+    })
+    const text = new TextDecoder().decode(compiled.fullText)
+    const line = text.split("\n").find((item) => item.startsWith("src/safe.ts\t"))
+
+    expect(line).toBeDefined()
+    expect(line!.slice("src/safe.ts\t".length).split(" ")).toHaveLength(96)
+    expect(line).not.toContain("symbol_96")
+    expect(compiled.anchor).toMatchObject({ completeness: "partial", partialReason: "symbol_limit" })
+  })
   test("bounds file and byte budgets with explicit partial coverage", () => {
     const fileLimited = compileRepoContextAnchorV1({ ...anchorInput, maxFiles: 1 })
     expect(fileLimited.anchor.fileCount).toBe(1)
     expect(fileLimited.anchor).toMatchObject({ completeness: "partial", partialReason: "file_limit" })
-    const byteLimited = compileRepoContextAnchorV1({ ...anchorInput, maxBytes: 40 })
-    expect(byteLimited.anchor.byteLength).toBeLessThanOrEqual(40)
+    const byteLimited = compileRepoContextAnchorV1({ ...anchorInput, maxBytes: 42 })
+    expect(byteLimited.anchor.byteLength).toBeLessThanOrEqual(42)
+    expect(byteLimited.compressedText.byteLength).toBeLessThanOrEqual(42)
     expect(byteLimited.anchor).toMatchObject({ completeness: "partial", partialReason: "byte_limit" })
+  })
+
+  test("rejects an anchor byte budget that cannot fit its fixed headers", () => {
+    expect(() => compileRepoContextAnchorV1({ ...anchorInput, maxBytes: 1 }))
+      .toThrow("anchor maxBytes cannot fit its headers")
+    expect(() => compileRepoContextAnchorV1({ ...anchorInput, maxBytes: 41 }))
+      .toThrow("anchor maxBytes cannot fit its headers")
+  })
+
+  test("rejects an oversized anchor source list before indexing it", () => {
+    const files = Array.from({ length: 4_097 }, (_, index) => ({ pathRef: `src/${index}.ts`, symbols: [] }))
+    expect(() => compileRepoContextAnchorV1({ ...anchorInput, files })).toThrow("anchor source file count exceeds its bound")
   })
 
   test("rejects uncorrelated generation/workspace digests and synthesizes no artifact ref", () => {
@@ -278,8 +312,41 @@ describe("§30.28 speed planning", () => {
       decideContextCompileOverlapV1({ previous, current: { ...previous, compilePolicyDigest: `blake3:${"4".repeat(64)}` } }),
     ).toMatchObject({ overlap: false, reason: "compile_policy_changed" })
     expect(
+      decideContextCompileOverlapV1({
+        previous,
+        current: { ledgerDigest: previous.ledgerDigest },
+      }),
+    ).toMatchObject({ overlap: false, reason: "compile_policy_changed" })
+    expect(
+      decideContextCompileOverlapV1({
+        previous: { ledgerDigest: previous.ledgerDigest },
+        current: previous,
+      }),
+    ).toMatchObject({ overlap: false, reason: "compile_policy_changed" })
+    expect(
       decideContextCompileOverlapV1({ current: previous }),
     ).toMatchObject({ overlap: false, reason: "no_previous_ledger" })
+  })
+
+  test("compile overlap rejects malformed ledger and policy digests", () => {
+    const valid = { ledgerDigest: `blake3:${"1".repeat(64)}`, compilePolicyDigest: `blake3:${"2".repeat(64)}` }
+    const malformedLedger = { ledgerDigest: "not-a-digest", compilePolicyDigest: valid.compilePolicyDigest }
+    const malformedPolicy = { ledgerDigest: valid.ledgerDigest, compilePolicyDigest: "also-not-a-digest" }
+
+    expect(() => decideContextCompileOverlapV1({ previous: malformedLedger, current: malformedLedger }))
+      .toThrow("ledgerDigest")
+    expect(() => decideContextCompileOverlapV1({ previous: malformedPolicy, current: malformedPolicy }))
+      .toThrow("compilePolicyDigest")
+  })
+
+  test("speed planning rejects non-boolean native tool capability input", () => {
+    expect(() =>
+      resolveContextSpeedPlanV1({
+        indexStatus: "current",
+        contextLimitTokens: 200_000,
+        nativeTools: "false" as unknown as boolean,
+      }),
+    ).toThrow("nativeTools must be a boolean")
   })
 
   test("cold RepoIntel never blocks Send and keeps symbol-first bias (SP-B/C)", () => {

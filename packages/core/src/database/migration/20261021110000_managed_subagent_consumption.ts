@@ -1,20 +1,35 @@
 import { Effect } from "effect"
+import { sql } from "drizzle-orm"
 import type { DatabaseMigration } from "../migration"
 
 export default {
   id: "20261021110000_managed_subagent_consumption",
   up(tx) {
     return Effect.gen(function* () {
-      yield* tx.run(`ALTER TABLE \`managed_subagent_inbox\` ADD COLUMN \`delivery_prompt_message_id\` text;`)
-      yield* tx.run(`ALTER TABLE \`managed_subagent_inbox\` ADD COLUMN \`delivery_scope_digest\` text;`)
-      yield* tx.run(`ALTER TABLE \`managed_subagent_inbox\` ADD COLUMN \`delivery_workspace_id\` text;`)
-      yield* tx.run(`ALTER TABLE \`managed_subagent_inbox\` ADD COLUMN \`delivery_workspace_revision\` text;`)
-      yield* tx.run(`ALTER TABLE \`managed_subagent_inbox\` ADD COLUMN \`consumption_ack_digest\` text;`)
-      yield* tx.run(`ALTER TABLE \`managed_subagent_inbox\` ADD COLUMN \`host_consumed_ack_digest\` text;`)
-      yield* tx.run(`ALTER TABLE \`managed_subagent_inbox\` ADD COLUMN \`wake_claim_request_id\` text;`)
-      yield* tx.run(`ALTER TABLE \`managed_subagent_inbox\` ADD COLUMN \`wake_claim_digest\` text;`)
-      yield* tx.run(`ALTER TABLE \`managed_subagent_inbox\` ADD COLUMN \`wake_claim_scope_digest\` text;`)
-      yield* tx.run(`ALTER TABLE \`managed_subagent_inbox\` ADD COLUMN \`wake_claim_receipt_digest\` text;`)
+      const existing = new Set(
+        (yield* tx.all<{ name: string }>(sql`SELECT name FROM pragma_table_info('managed_subagent_inbox')`)).map(
+          (row) => row.name,
+        ),
+      )
+      const addColumn = (name: string) =>
+        Effect.gen(function* () {
+          if (existing.has(name)) return
+          yield* tx.run(sql`ALTER TABLE \`managed_subagent_inbox\` ADD COLUMN ${sql.identifier(name)} text;`)
+        })
+      for (const column of [
+        "delivery_prompt_message_id",
+        "delivery_scope_digest",
+        "delivery_workspace_id",
+        "delivery_workspace_revision",
+        "consumption_ack_digest",
+        "host_consumed_ack_digest",
+        "wake_claim_request_id",
+        "wake_claim_digest",
+        "wake_claim_scope_digest",
+        "wake_claim_receipt_digest",
+      ]) {
+        yield* addColumn(column)
+      }
     })
   },
 } satisfies DatabaseMigration.Migration

@@ -121,6 +121,13 @@ test("tool argument previews and output have hard presentation bounds", () => {
   expect(redactionExpansion.output).not.toContain("token=x")
 })
 
+test("non-finite byte limits fail closed instead of disabling the output bound", () => {
+  const output = boundToolOutput("x".repeat(128), Number.NaN)
+
+  expect(output.truncated).toBe(true)
+  expect(output.output).toBe("")
+})
+
 test("expanded tool details recursively redact secret fields and cap payload size", () => {
   const display = sanitizeToolDisplayValue({
     input: { apiKey: "sk-live-private-value", filePath: "src/main.ts" },

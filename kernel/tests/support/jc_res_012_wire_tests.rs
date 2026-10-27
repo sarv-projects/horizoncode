@@ -257,9 +257,11 @@ fn binding(attempt: &str, epoch: u64) -> VerifiedAttemptBinding {
     )
 }
 
-/// JC-RES-012.K — forged Session/workspace/owner epoch or a guessed
-/// ticket/lease reference is rejected at the authenticated boundary before any
-/// index, worker admission or capacity is touched.
+/// JC-RES-012.K — WorkerPool owner-context authorization rejects forged
+/// Session/workspace/owner epoch or guessed ticket/lease references before
+/// worker admission or capacity changes. `test_fixture` constructs the context
+/// directly: this is a unit-level policy test, not proof of authenticated RPC
+/// ingress or an index boundary. Those integration claims remain unverified.
 #[test]
 fn jc_res_012_k_impersonation_never_allocates_capacity_or_attempt_slots() {
     let mut pool = pool(1);
@@ -425,9 +427,11 @@ fn jc_res_012_k_impersonation_never_allocates_capacity_or_attempt_slots() {
     assert_eq!(pool.live_worker_count(), 1);
 }
 
-/// JC-RES-012.L (Rust half) — a provider-cost or token reservation is denied
-/// before any capacity/reservation exists when the caller scope or owner epoch
-/// does not match the grant, and no charged fallback is attempted.
+/// JC-RES-012.L (Rust reservation-policy half) — a provider-cost or token
+/// reservation is denied before capacity/reservation changes when the supplied
+/// owner context has a foreign identity or stale epoch. This uses a test
+/// fixture, does not exercise Provider Doctor authentication/consent ingress,
+/// and is not evidence that a charged route cannot occur elsewhere.
 #[test]
 fn jc_res_012_l_provider_cost_and_token_grants_are_owner_epoch_scoped() {
     let mut pool = pool(1);

@@ -382,20 +382,31 @@ Unsupported model capability is not automatically agent failure if the harness d
 
 | ID | Task | Acceptance |
 |---|---|---|
-| AU-001 | cron schedule | correct timezone/next run |
-| AU-002 | app closed then reopened after missed run | declared missed-run policy |
-| AU-003 | overlapping run with `skip` | no duplicate |
-| AU-004 | overlapping run with `queue_one` | one pending |
-| AU-005 | scheduled release | still needs required release approval |
-| AU-006 | scheduled local model unavailable | blocked/logged, no cloud fallback |
-| AU-007 | automation disabled mid-run | current run semantics explicit; no future run |
-| AU-008 | event-trigger loop | recursion/cycle bounded |
+| AU-001 | cron schedule | correct timezone/next run. **BLOCKED — not implemented:** no cron parser or timezone resolver; invocation is hard-disabled (`kernel/src/automation.rs:27,104-105`). |
+| AU-002 | app closed then reopened after missed run | declared missed-run policy. **BLOCKED — not implemented:** no due-occurrence producer; callers must supply UTC occurrences (`kernel/src/automation.rs:270-276`). |
+| AU-003 | overlapping run with `skip` | no duplicate. **BLOCKED — not implemented:** no scheduler/invocation path; invocation constant false (`kernel/src/automation.rs:27`). |
+| AU-004 | overlapping run with `queue_one` | one pending. **BLOCKED — not implemented:** no scheduler/invocation path; invocation constant false (`kernel/src/automation.rs:27`). |
+| AU-005 | scheduled release | still needs required release approval. **BLOCKED — not implemented:** no scheduler/invocation path; invocation constant false (`kernel/src/automation.rs:27`). |
+| AU-006 | scheduled local model unavailable | blocked/logged, no cloud fallback. **BLOCKED — not implemented:** no scheduler/invocation path; invocation constant false (`kernel/src/automation.rs:27`). |
+| AU-007 | automation disabled mid-run | current run semantics explicit; no future run. **BLOCKED — not implemented:** no run can start; invocation constant false (`kernel/src/automation.rs:27`). |
+| AU-008 | event-trigger loop | recursion/cycle bounded. **BLOCKED — not implemented:** no event-trigger producer or invocation path (`kernel/src/automation.rs:27`). |
 | AU-009 | action schema changes after definition save | exact registry action/version/schema pin mismatch blocks save or dispatch before any effect |
 | AU-010 | malformed, noncanonical, oversized, over-depth, unsafe-number or schema-invalid fixed input | rejected before definition CAS; no occurrence is dispatched |
 | AU-011 | secret field supplied as raw credential or caller-provided schema | reject; only canonical-registry-approved opaque references may be stored |
-| AU-012 | automation definition input changes while occurrence is pending/retrying | exact definition-version and payload digest fence conflicts; no stale input dispatch |
-| AU-013 | model output attempts to replace fixed automation arguments | model-generated arguments are ignored/rejected; the persisted immutable payload is the only candidate |
-| AU-014 | action result lost during restart/cancel after one-use lease | durable receipt reconciliation or UNKNOWN; never blind redispatch |
+| AU-012 | automation definition input changes while occurrence is pending/retrying | exact definition-version and payload digest fence conflicts; no stale input dispatch. **BLOCKED — not implemented:** no occurrence can become pending/retrying; invocation constant false (`kernel/src/automation.rs:27`). |
+| AU-013 | model output attempts to replace fixed automation arguments | model-generated arguments are ignored/rejected; the persisted immutable payload is the only candidate. **BLOCKED — not implemented:** no model-driven invocation path exists; invocation constant false (`kernel/src/automation.rs:27`). |
+| AU-014 | action result lost during restart/cancel after one-use lease | durable receipt reconciliation or UNKNOWN; never blind redispatch. **BLOCKED — not implemented:** invocation/lease/receipt path is disabled (`kernel/src/automation.rs:27`); no due-occurrence producer supplies an occurrence to reconcile. |
+
+**Status (2026-10-26):** rows marked BLOCKED remain normative acceptance requirements; they are
+not deleted or weakened. The automation registry can persist definitions and caller-supplied due
+occurrences, but V1 cannot invoke an action: `AUTOMATION_INVOCATION_ENABLED = false`
+(`kernel/src/automation.rs:27`), `authorize_invocation`/`record_guarded_invocation` fail on that
+constant (`kernel/src/automation.rs:1068-1076,1100-1110`), the module deliberately has no cron
+parser or host-timezone read (`kernel/src/automation.rs:104-105,270-271`), and the Core control
+layer refuses `runNow` before HostKernel
+(`packages/opencode/src/session/automation-control.ts:472-493`). No due-occurrence producer/timer
+exists in tree. AU-009–AU-011 are definition/input validation rows that can be tested without a
+scheduler.
 
 ## 32.19 Recovery and healing
 
@@ -1371,3 +1382,20 @@ commit, kernel build, and cold vs warm kernel separately.
 `NAME-001..004` are required for the V1 naming exit in §10.12; schema/catalog strings alone do not
 pass them. Public distribution, license, signing and publish gates remain independently governed by
 §18 and are not authorized by these naming tests.
+
+## 32.54 HostRun paired-evaluation bind and recovery (DEC-V1-39, §§12.23/37.31)
+
+These are cross-owner integration requirements, not evidence that the source DTOs, fake evaluator, or mocked transport have passed. Keep every route/effect/RC0/release gate closed until the positive and negative cases run against authenticated P1/P2/P8 owners on one exact revision. No provider/HUP run is authorized here.
+
+| ID | Owners | Setup / fault | Required result |
+|---|---|---|---|
+| HOST-RUN-001 | P2/P8 | Frozen manifest/task/arm/group produces the existing canonical pair key; bind an authenticated live EXECUTING Attempt | P2 recomputes the exact key digest; all managed/process/workspace/owner pins are derived; immutable P2 binding and commitment receipt replay identically; no dispatch occurs during bind |
+| HOST-RUN-002 | P2/P8 | Substitute manifest digest, task ID, arm ID, group, key digest, Goal, Run, Task, Attempt, worker, or evaluator Session | Reject before mutation; `evaluationSessionId` remains the root Run-start SessionLink and cannot be replaced by the distinct child Attempt Session |
+| HOST-RUN-003 | P8/P2 | Append the exact `HostRunDispatchBoundV1` P8 mirror event and return its committed cursor; submit the post-commit receipt | P2 verifies through a canonical P8 durable-owner proof/lookup seam that OwnerLog ID/sequence/event digest and delivery identity name that exact committed event, with matching key and binding digests; generic ServerAuth plus shape-valid caller fields are insufficient |
+| HOST-RUN-004 | P2/P8 | Repeat the exact bind, append acknowledgement, and post-commit receipt after response loss | Resolve to the same committed binding/event/receipt with no duplicate event or dispatch; same stable delivery identities survive process restart |
+| HOST-RUN-005 | P2/P8 | Reuse a dispatch key with changed binding, or a binding with changed P8 cursor/event payload | Conflict without mutation; do not overwrite the original binding/receipt or create another dispatch authority |
+| HOST-RUN-006 | P1/P2/P8 | Reconcile before binding/receipt, with absent/incomplete/ambiguous P1 projection, missing verifier pins, stale final Inspect, or absent P8 settlement | Typed UNKNOWN/quarantine; read-only inspect; no success, verifier relaunch, redispatch, or capacity release |
+| HOST-RUN-007 | P1/P2/P8 | Crash/cancel/lost response before and after possible adapter entry, then restart and inspect | Pre-dispatch cancellation remains unindexed/NOT_RUN; after possible dispatch resolve UNKNOWN against same key/Attempt and never replay; recovery must not clear UNKNOWN from timeout or self-report |
+| HOST-RUN-008 | P1/P2/P8 | Exact terminal success, failure and cancellation with effect, verifier, final-revision Inspect and P8 settlement evidence | SUCCEEDED only when every proof is exact and complete; FAILED/CANCELLED remain distinct non-success outcomes; neither releases capacity without its separately authorized proof |
+
+All rows begin **NOT RUN**. Passing them does not by itself attest RC0: the trusted RC0 owner-sample chain, repeated matched workloads and platform-specific resource evidence remain separately required by §32.37 and §37.17–19.

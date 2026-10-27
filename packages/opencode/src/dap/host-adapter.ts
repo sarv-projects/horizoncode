@@ -230,9 +230,12 @@ export function makeHostDapProtocolAdapterV1(input: {
           ...(context.directAttempt === undefined ? {} : { directAttempt: context.directAttempt }),
           operation: { requestSequence, requestID: id, command, arguments: args },
         }
-        const receipt: HostProtocolDispatchReceiptV1 = await outbound.run(() =>
-          dispatchHostDapOperationV1(request, input.transport.protocolOp),
-        )
+        const receipt: HostProtocolDispatchReceiptV1 = await outbound.run(() => {
+          if (closed || quarantined || cursor.quarantined || journal.quarantined) {
+            throw new ProtocolError({ detail: "DAP HostKernel process generation is closed or quarantined" })
+          }
+          return dispatchHostDapOperationV1(request, input.transport.protocolOp)
+        })
         journal.acceptOperation(request, receipt)
       } catch (error) {
         const failure = error instanceof Error ? error : new Error("DAP operation dispatch outcome is unknown")

@@ -46,6 +46,7 @@ TUI_SHUTDOWN_SECONDS = 10.0
 TUI_OUTPUT_LIMIT_BYTES = 1024 * 1024
 CONTAINER_CHECKOUT = Path("/workspace")
 CONTAINER_EVIDENCE = Path("/evidence")
+MAX_CANDIDATE_METADATA_BYTES = 1024 * 1024
 
 
 def _sha256(path: Path) -> str:
@@ -131,40 +132,18 @@ def _require_regular_executable(path: Path, checkout: Path, label: str) -> Path:
     return resolved
 
 
-def _checkout_facts(checkout: Path) -> dict:
+def _source_facts(checkout: Path) -> dict:
     try:
-        top = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            cwd=checkout,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        ).stdout.strip()
-        revision = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=checkout,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        ).stdout.strip()
-        status = subprocess.run(
-            ["git", "status", "--porcelain=v1", "--untracked-files=all"],
-            cwd=checkout,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        ).stdout
-    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        return {"status": "UNVERSIONED", "revision": None, "clean": False}
-    return {
-        "status": "CLEAN" if not status else "DIRTY",
-        "root": str(Path(top).resolve()),
-        "revision": revision,
-        "clean": not status,
-    }
+        from scripts.release.audit_distribution import _git_source_facts
+    except ImportError:  # direct execution from scripts/release
+        from audit_distribution import _git_source_facts
+    return _git_source_facts(checkout)
+
+
+def _checkout_facts(checkout: Path) -> dict:
+    facts = dict(_source_facts(checkout))
+    facts["root"] = str(checkout.resolve())
+    return facts
 
 
 def _validated_state_root(state_root: Path) -> Path:
@@ -532,7 +511,7 @@ def _install(
         }
     install_script = checkout / "install"
     result = _run(
-        ["bash", str(install_script), "--binary", str(binary), "--no-modify-path"],
+        ["bash", str(install_script), "--binary", str(binary), "--sha256", expected_sha256, "--no-modify-path"],
         checkout,
         env,
         f"install:{binary.name}",
@@ -863,6 +842,73 @@ def _migration_command(
     return step, passed, reason
 
 
+def _read_json_regular_file(path: Path, *, root: Path, label: str) -> dict:
+    _reject_symlink_components(path, root, label)
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as error:
+        raise ValueError(f"{label} must be a readable regular file: {path}") from error
+    with os.fdopen(descriptor, "rb") as stream:
+        metadata = os.fstat(stream.fileno())
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > MAX_CANDIDATE_METADATA_BYTES:
+            raise ValueError(f"{label} must be a bounded regular file: {path}")
+        payload = stream.read(MAX_CANDIDATE_METADATA_BYTES + 1)
+    if len(payload) > MAX_CANDIDATE_METADATA_BYTES:
+        raise ValueError(f"{label} exceeds the metadata size bound: {path}")
+    try:
+        value = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"{label} must contain valid UTF-8 JSON: {path}") from error
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must contain a JSON object: {path}")
+    return value
+
+
+def _candidate_runtime_version(
+    candidate: Path,
+    candidate_sha256: str,
+    checkout: Path,
+    checkout_facts: dict | None = None,
+) -> str:
+    provenance_path = candidate.parent / "release-manifest.json"
+    provenance = _read_json_regular_file(
+        provenance_path, root=checkout, label="candidate release manifest"
+    )
+    facts = _checkout_facts(checkout) if checkout_facts is None else checkout_facts
+    expected_revision = facts.get("revision")
+    expected_source_state = facts.get("source_state_sha256")
+    if (
+        not isinstance(expected_revision, str)
+        or not expected_revision
+        or not isinstance(expected_source_state, str)
+        or not expected_source_state
+        or provenance.get("sourceRevision") != expected_revision
+        or provenance.get("sourceStateSha256") != expected_source_state
+    ):
+        raise ValueError(
+            "candidate release manifest does not bind the checked-out source "
+            "revision and source state"
+        )
+    candidate_size = candidate.stat(follow_symlinks=False).st_size
+    if (
+        provenance.get("schemaVersion") != 2
+        or provenance.get("binaryPath") != candidate.name
+        or provenance.get("binarySha256") != candidate_sha256
+        or provenance.get("binarySizeBytes") != candidate_size
+    ):
+        raise ValueError("candidate release manifest does not bind the exact candidate binary")
+
+    runtime_version = provenance.get("runtimeVersion")
+    if (
+        not isinstance(runtime_version, str)
+        or not runtime_version
+        or runtime_version.strip() != runtime_version
+        or any(ord(character) < 32 for character in runtime_version)
+    ):
+        raise ValueError("candidate release manifest must bind a non-empty runtimeVersion")
+    return runtime_version
+
+
 def run_matrix(
     *,
     checkout: Path,
@@ -899,6 +945,9 @@ def run_matrix(
         raise ValueError("candidate and previous artifacts must be readable regular files")
     if previous is not None:
         assert previous_sha256 is not None
+    expected_candidate_version = _candidate_runtime_version(
+        candidate, candidate_sha256, checkout, checkout_state
+    )
     if migration_fixture is not None:
         requested_fixture = Path(os.path.abspath(migration_fixture))
         if migration_fixture.is_symlink() or not migration_fixture.is_file():
@@ -935,7 +984,7 @@ def run_matrix(
         },
         "source_checkout": checkout_state,
         "artifacts": {
-            "candidate": {"path": str(candidate), "sha256": candidate_sha256},
+            "candidate": {"path": str(candidate), "sha256": candidate_sha256, "application_package_version": expected_candidate_version},
             "previous": {"path": str(previous), "sha256": previous_sha256} if previous else None,
         },
         "evidence_root": str(state_root),
@@ -1019,20 +1068,34 @@ def run_matrix(
     tui_result = _tui_smoke(clean_home, clean_env, source_checkout=checkout, state_root=state_root)
     after_profiles = _profile_hashes(clean_home)
     profiles_unchanged &= before_profiles == after_profiles
+    reported_candidate_version = version.get("_stdout", "").strip()
+    candidate_version_matches = version["passed"] and reported_candidate_version == expected_candidate_version
+    reported_alias_version = alias_result.get("_stdout", "").strip()
+    alias_version_matches = alias_result["passed"] and reported_alias_version == expected_candidate_version
     clean_passed = (
         installed["passed"]
-        and version["passed"]
+        and candidate_version_matches
         and help_result["passed"]
-        and alias_result["passed"]
+        and alias_version_matches
         and tui_result["passed"]
         and profiles_unchanged
     )
     report["scenarios"]["clean_install"] = {
         "status": "PASS" if clean_passed else "FAIL",
         "install": _public_step(installed),
-        "version": {**_public_step(version), "reported_version": version.get("_stdout", "").strip()},
+        "version": {
+            **_public_step(version),
+            "reported_version": reported_candidate_version,
+            "expected_version": expected_candidate_version,
+            "matches_expected_version": candidate_version_matches,
+        },
         "help": _public_step(help_result),
-        "alias_version": _public_step(alias_result),
+        "alias_version": {
+            **_public_step(alias_result),
+            "reported_version": reported_alias_version,
+            "expected_version": expected_candidate_version,
+            "matches_expected_version": alias_version_matches,
+        },
         "shell_profiles_unchanged": before_profiles == after_profiles,
     }
     report["scenarios"]["tui_launch"] = tui_result
@@ -1081,11 +1144,16 @@ def run_matrix(
             state_root=state_root,
         )
 
+        candidate_upgrade_version = candidate_version.get("_stdout", "").strip()
+        candidate_upgrade_version_matches = (
+            candidate_version["passed"]
+            and candidate_upgrade_version == expected_candidate_version
+        )
         upgrade_passed = (
             install_previous["passed"]
             and old_version_before["passed"]
             and install_candidate["passed"]
-            and candidate_version["passed"]
+            and candidate_upgrade_version_matches
             and bool(old_version_before.get("_stdout", "").strip())
             and bool(candidate_version.get("_stdout", "").strip())
             and old_version_before.get("_stdout", "").strip() != candidate_version.get("_stdout", "").strip()
@@ -1093,7 +1161,9 @@ def run_matrix(
         report["scenarios"]["upgrade"] = {
             "status": "PASS" if upgrade_passed else "FAIL",
             "previous_version": old_version_before.get("_stdout", "").strip(),
-            "candidate_version": candidate_version.get("_stdout", "").strip(),
+            "candidate_version": candidate_upgrade_version,
+            "expected_candidate_version": expected_candidate_version,
+            "candidate_version_matches_expected": candidate_upgrade_version_matches,
             "previous_install": _public_step(install_previous),
             "candidate_install": _public_step(install_candidate),
             "previous_binary_was_replaced": install_candidate["copied_exact_binary"],

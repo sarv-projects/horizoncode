@@ -1,0 +1,776 @@
+import { afterEach, describe, expect } from "bun:test"
+import path from "path"
+import fs from "fs/promises"
+import { Buffer } from "node:buffer"
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import {
+  SessionSupervisor,
+  type Interface as SessionSupervisorInterface,
+  type PatchReceipt,
+} from "@opencode-ai/core/session/supervisor"
+import { Cause, Deferred, Effect, Exit, Layer } from "effect"
+import { EditTool, prepareEditBatch } from "../../src/tool/edit"
+import { disposeAllInstances, TestInstance } from "../fixture/fixture"
+import { LSP } from "@/lsp/lsp"
+import { FSUtil } from "@opencode-ai/core/fs-util"
+import { Format } from "../../src/format"
+import { Agent } from "../../src/agent/agent"
+import { EventV2Bridge } from "../../src/event-v2-bridge"
+import { Truncate } from "@/tool/truncate"
+import { SessionID, MessageID } from "../../src/session/schema"
+import * as Tool from "../../src/tool/tool"
+import { testEffect } from "../lib/effect"
+import { Watcher } from "@opencode-ai/core/filesystem/watcher"
+
+type PatchRequest = Parameters<SessionSupervisorInterface["executePatch"]>[0]
+const patchRequests: PatchRequest[] = []
+let patchReceiptOverride: Partial<PatchReceipt> | undefined
+const supervisor = LayerNode.make({
+  service: SessionSupervisor.Service,
+  layer: Layer.mock(SessionSupervisor.Service, {
+    executePatch: (input) =>
+      Effect.promise(async () => {
+        patchRequests.push(input)
+        const targets = []
+        for (const operation of input.operations) {
+          if (operation.operation === "write") {
+            if (operation.contentBase64 === undefined) throw new Error("missing write content")
+            await fs.mkdir(path.dirname(operation.path), { recursive: true })
+            await fs.writeFile(operation.path, Buffer.from(operation.contentBase64, "base64"))
+          } else {
+            await fs.rm(operation.path, { force: true })
+          }
+          targets.push({
+            target: operation.path,
+            resource: operation.path,
+            operation: operation.operation,
+            existed: operation.expectedBeforeBase64 !== null,
+            ...(operation.executable !== undefined ? { executable: operation.executable } : {}),
+          })
+        }
+        return {
+          effectID: input.lease.effectID,
+          receiptDigest: `blake3:${"a".repeat(64)}`,
+          targets,
+          ...patchReceiptOverride,
+        }
+      }),
+  }),
+  deps: [],
+})
+const ctx = {
+  sessionID: SessionID.make("ses_test-edit-session"),
+  messageID: MessageID.make("msg_test"),
+  callID: "",
+  agent: "build",
+  abort: AbortSignal.any([]),
+  messages: [],
+  metadata: () => Effect.void,
+  ask: () => Effect.void,
+}
+
+afterEach(async () => {
+  await disposeAllInstances()
+  patchRequests.length = 0
+  patchReceiptOverride = undefined
+})
+
+const layer = LayerNode.compile(
+  LayerNode.group([LSP.node, FSUtil.node, Format.node, EventV2Bridge.node, Truncate.node, Agent.node, supervisor]),
+)
+
+const it = testEffect(layer)
+
+const init = Effect.fn("EditToolTest.init")(function* () {
+  const info = yield* EditTool
+  return yield* info.init()
+})
+
+const run = Effect.fn("EditToolTest.run")(function* (
+  args: Tool.InferParameters<typeof EditTool>,
+  next: Tool.Context = ctx,
+  guarded = true,
+) {
+  let actual = next
+  if (guarded) {
+    const test = yield* TestInstance
+    const afs = yield* FSUtil.Service
+    const prepared = yield* prepareEditBatch(args, test.directory, afs)
+    actual = {
+      ...next,
+      trustedPrincipal: { kind: "server_auth", subject: "test" },
+      extra: {
+        ...next.extra,
+        guardedPatch: prepared.operations,
+        guardedLease: {
+          effectID: "effect_edit_test",
+          capabilityLeaseDigest: `blake3:${"b".repeat(64)}`,
+        },
+      },
+    }
+  }
+  const tool = yield* init()
+  return yield* tool.execute(args, actual)
+})
+
+const fail = Effect.fn("EditToolTest.fail")(function* (args: Tool.InferParameters<typeof EditTool>) {
+  const exit = yield* run(args).pipe(Effect.exit)
+  if (Exit.isFailure(exit)) {
+    const err = Cause.squash(exit.cause)
+    return err instanceof Error ? err : new Error(String(err))
+  }
+  throw new Error("expected edit to fail")
+})
+
+const put = Effect.fn("EditToolTest.put")(function* (p: string, content: string) {
+  const fs = yield* FSUtil.Service
+  yield* fs.writeWithDirs(p, content)
+})
+
+const load = Effect.fn("EditToolTest.load")(function* (p: string) {
+  const fs = yield* FSUtil.Service
+  return yield* fs.readFileString(p)
+})
+
+const loadRaw = Effect.fn("EditToolTest.loadRaw")(function* (p: string) {
+  return yield* Effect.promise(() => fs.readFile(p, "utf-8"))
+})
+
+const makeDirectory = Effect.fn("EditToolTest.makeDirectory")(function* (p: string) {
+  const fs = yield* FSUtil.Service
+  yield* fs.makeDirectory(p)
+})
+
+const onceBus = Effect.fn("EditToolTest.onceBus")(function* (def: typeof Watcher.Event.Updated) {
+  const events = yield* EventV2Bridge.Service
+  const deferred = yield* Deferred.make<void>()
+  const unsub = yield* events.listen((event) => {
+    if (event.type === def.type) Deferred.doneUnsafe(deferred, Effect.void)
+    return Effect.void
+  })
+  yield* Effect.addFinalizer(() => unsub)
+  return deferred
+})
+
+describe("tool.edit", () => {
+  describe("creating new files", () => {
+    it.instance("creates new file when oldString is empty", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "newfile.txt")
+        const result = yield* run({ filePath: filepath, oldString: "", newString: "new content" })
+
+        expect(result.metadata.diff).toContain("new content")
+        expect(yield* load(filepath)).toBe("new content")
+      }),
+    )
+
+    it.instance("does not create a file when only ctx.ask acknowledges the edit", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "unguarded-create.txt")
+
+        const exit = yield* run(
+          { filePath: filepath, oldString: "", newString: "must not be written" },
+          { ...ctx, ask: () => Effect.void },
+          false,
+        ).pipe(Effect.exit)
+
+        expect(Exit.isFailure(exit)).toBe(true)
+        const filesystem = yield* FSUtil.Service
+        expect(yield* filesystem.existsSafe(filepath)).toBe(false)
+        expect(patchRequests).toHaveLength(0)
+      }),
+    )
+
+    it.instance("does not modify an existing file when only ctx.ask acknowledges the edit", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "unguarded-update.txt")
+        const original = "keep this content"
+        yield* put(filepath, original)
+
+        const exit = yield* run(
+          { filePath: filepath, oldString: "keep", newString: "replace" },
+          { ...ctx, ask: () => Effect.void },
+          false,
+        ).pipe(Effect.exit)
+
+        expect(Exit.isFailure(exit)).toBe(true)
+        expect(yield* load(filepath)).toBe(original)
+        expect(patchRequests).toHaveLength(0)
+      }),
+    )
+
+    it.instance("rejects empty oldString on existing files and leaves content unchanged", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "existing.cs")
+        const bom = String.fromCharCode(0xfeff)
+        const original = `${bom}using System;\n`
+        yield* put(filepath, original)
+
+        expect((yield* fail({ filePath: filepath, oldString: "", newString: "using Up;\n" })).message).toContain(
+          "oldString cannot be empty",
+        )
+
+        const content = yield* loadRaw(filepath)
+        expect(content).toBe(original)
+      }),
+    )
+
+    it.instance("creates new file with nested directories", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "nested", "dir", "file.txt")
+
+        yield* run({ filePath: filepath, oldString: "", newString: "nested file" })
+
+        expect(yield* load(filepath)).toBe("nested file")
+      }),
+    )
+
+    it.instance("emits add event for new files", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const updated = yield* onceBus(Watcher.Event.Updated)
+
+        yield* run({ filePath: path.join(test.directory, "new.txt"), oldString: "", newString: "content" })
+        yield* Deferred.await(updated)
+      }),
+    )
+  })
+
+  describe("editing existing files", () => {
+    it.instance("routes the edit through Guarded files.patch receipt execution", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "guarded-edit.txt")
+        const original = "old content here"
+        const updated = "new content here"
+        yield* put(filepath, original)
+        const operations = [
+          {
+            operation: "write" as const,
+            path: filepath,
+            expectedBeforeBase64: Buffer.from(original).toString("base64"),
+            contentBase64: Buffer.from(updated).toString("base64"),
+          },
+        ]
+        const guardedCtx: Tool.Context = {
+          ...ctx,
+          trustedPrincipal: { kind: "server_auth", subject: "test" },
+          extra: {
+            guardedPatch: operations,
+            guardedLease: {
+              effectID: "effect_edit_test",
+              capabilityLeaseDigest: `blake3:${"b".repeat(64)}`,
+            },
+          },
+        }
+
+        yield* run({ filePath: filepath, oldString: "old content", newString: "new content" }, guardedCtx)
+
+        expect(patchRequests).toHaveLength(1)
+        expect(patchRequests[0]).toMatchObject({
+          lease: guardedCtx.extra?.guardedLease,
+          operations,
+          trustedPrincipal: guardedCtx.trustedPrincipal,
+        })
+        expect(yield* load(filepath)).toBe(updated)
+      }),
+    )
+
+    it.instance("does not advance Attempt scope for a mismatched patch receipt", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "receipt-mismatch.txt")
+        yield* put(filepath, "original content")
+
+        const attemptScope = {
+          attemptID: "att_0123456789abcdef",
+          parentSessionID: "session_parent",
+          childSessionID: "session_1",
+          profileID: "profile_child",
+          profileRevision: "1",
+          profileDigest: `blake3:${"9".repeat(64)}`,
+          ownerEpoch: "1",
+          expectedRevision: "1",
+          locationID: "loc_child",
+          workspaceID: "wrk_child",
+          workspaceRevision: `blake3:${"a".repeat(64)}`,
+          capabilityDigest: `sha256:${"b".repeat(64)}`,
+          permissionsDigest: `sha256:${"c".repeat(64)}`,
+          budgetDigest: `sha256:${"d".repeat(64)}`,
+          scopeDigest: `sha256:${"e".repeat(64)}`,
+        }
+        const refreshedScope = { ...attemptScope, expectedRevision: "2" }
+        let currentScope = attemptScope
+        let accepted = false
+        const directAttempt = {
+          scope: attemptScope,
+          currentScope: () => currentScope,
+          acceptRefreshedScope: (input: {
+            previous: typeof attemptScope
+            refreshed: typeof refreshedScope
+            transition: "batch_bind" | "effect_receipt"
+          }) => {
+            expect(input.previous).toEqual(currentScope)
+            expect(input.transition).toBe("effect_receipt")
+            accepted = true
+            currentScope = input.refreshed
+          },
+        }
+        patchReceiptOverride = {
+          targets: [
+            {
+              target: `${filepath}.unexpected`,
+              resource: filepath,
+              operation: "write",
+              existed: true,
+            },
+          ],
+          directAttempt: refreshedScope,
+          attemptScopeTransition: "effect_receipt",
+        }
+
+        const exit = yield* run(
+          { filePath: filepath, oldString: "original", newString: "changed" },
+          { ...ctx, extra: { directAttempt } },
+        ).pipe(Effect.exit)
+
+        expect(Exit.isFailure(exit)).toBe(true)
+        expect(patchRequests).toHaveLength(1)
+        expect(accepted).toBe(false)
+        expect(currentScope).toEqual(attemptScope)
+      }),
+    )
+
+    it.instance("replaces text in existing file", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "existing.txt")
+        yield* put(filepath, "old content here")
+
+        const result = yield* run({ filePath: filepath, oldString: "old content", newString: "new content" })
+
+        expect(result.output).toContain("Edit applied successfully")
+        expect(yield* load(filepath)).toBe("new content here")
+      }),
+    )
+
+    it.instance("replaces the first visible line in BOM files", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "existing.cs")
+        const bom = String.fromCharCode(0xfeff)
+        yield* put(filepath, `${bom}using System;\nclass Test {}\n`)
+
+        const result = yield* run({ filePath: filepath, oldString: "using System;", newString: "using Up;" })
+
+        expect(result.metadata.diff).toContain("-using System;")
+        expect(result.metadata.diff).toContain("+using Up;")
+        expect(result.metadata.diff).not.toContain(bom)
+
+        const content = yield* loadRaw(filepath)
+        expect(content.charCodeAt(0)).toBe(0xfeff)
+        expect(content.slice(1)).toBe("using Up;\nclass Test {}\n")
+      }),
+    )
+
+    it.instance("throws error when file does not exist", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        expect(
+          (yield* fail({ filePath: path.join(test.directory, "nonexistent.txt"), oldString: "old", newString: "new" }))
+            .message,
+        ).toContain("not found")
+      }),
+    )
+
+    it.instance("throws error when oldString equals newString", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.txt")
+        yield* put(filepath, "content")
+
+        expect((yield* fail({ filePath: filepath, oldString: "same", newString: "same" })).message).toContain(
+          "identical",
+        )
+      }),
+    )
+
+    it.instance("throws error when oldString not found in file", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.txt")
+        yield* put(filepath, "actual content")
+
+        expect(yield* fail({ filePath: filepath, oldString: "not in file", newString: "replacement" })).toBeInstanceOf(
+          Error,
+        )
+      }),
+    )
+
+    it.instance("rejects loose block-anchor matches and leaves content unchanged", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.ts")
+        const original = [
+          "function configure() {",
+          "  keepImportantState()",
+          "  removeAllUserData()",
+          "  archiveBackups()",
+          "  auditLog()",
+          "}",
+        ].join("\n")
+        yield* put(filepath, original)
+
+        expect(
+          (yield* fail({
+            filePath: filepath,
+            oldString: ["function configure() {", "  const enabled = true", "}"].join("\n"),
+            newString: ["function configure() {", "  const enabled = false", "}"].join("\n"),
+          })).message,
+        ).toContain("Could not find oldString")
+        expect(yield* load(filepath)).toBe(original)
+      }),
+    )
+
+    it.instance("rejects block-anchor matches with unrelated middle content", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.ts")
+        const original = ["function configure() {", "  removeAllUserData()", "}"].join("\n")
+        yield* put(filepath, original)
+
+        expect(
+          (yield* fail({
+            filePath: filepath,
+            oldString: ["function configure() {", "  const enabled = true", "}"].join("\n"),
+            newString: ["function configure() {", "  const enabled = false", "}"].join("\n"),
+          })).message,
+        ).toContain("Could not find oldString")
+        expect(yield* load(filepath)).toBe(original)
+      }),
+    )
+
+    it.instance("replaces all occurrences with replaceAll option", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.txt")
+        yield* put(filepath, "foo bar foo baz foo")
+
+        yield* run({ filePath: filepath, oldString: "foo", newString: "qux", replaceAll: true })
+
+        expect(yield* load(filepath)).toBe("qux bar qux baz qux")
+      }),
+    )
+
+    it.instance("emits change event for existing files", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.txt")
+        yield* put(filepath, "original")
+        const updated = yield* onceBus(Watcher.Event.Updated)
+
+        yield* run({ filePath: filepath, oldString: "original", newString: "modified" })
+        yield* Deferred.await(updated)
+      }),
+    )
+  })
+
+  describe("edge cases", () => {
+    it.instance("handles multiline replacements", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.txt")
+        yield* put(filepath, "line1\nline2\nline3")
+
+        yield* run({ filePath: filepath, oldString: "line2", newString: "new line 2\nextra line" })
+
+        expect(yield* load(filepath)).toBe("line1\nnew line 2\nextra line\nline3")
+      }),
+    )
+
+    it.instance("handles CRLF line endings", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.txt")
+        yield* put(filepath, "line1\r\nold\r\nline3")
+
+        yield* run({ filePath: filepath, oldString: "old", newString: "new" })
+
+        expect(yield* load(filepath)).toBe("line1\r\nnew\r\nline3")
+      }),
+    )
+
+    it.instance("throws error when oldString equals newString", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.txt")
+        yield* put(filepath, "content")
+
+        expect((yield* fail({ filePath: filepath, oldString: "", newString: "" })).message).toContain("identical")
+      }),
+    )
+
+    it.instance("throws error when path is directory", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const dirpath = path.join(test.directory, "adir")
+        yield* makeDirectory(dirpath)
+
+        expect((yield* fail({ filePath: dirpath, oldString: "old", newString: "new" })).message).toContain("directory")
+      }),
+    )
+
+    it.instance("tracks file diff statistics", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.txt")
+        yield* put(filepath, "line1\nline2\nline3")
+
+        const result = yield* run({ filePath: filepath, oldString: "line2", newString: "new line a\nnew line b" })
+
+        expect(result.metadata.filediff).toBeDefined()
+        expect(result.metadata.filediff.file).toBe(filepath)
+        expect(result.metadata.filediff.additions).toBeGreaterThan(0)
+      }),
+    )
+  })
+
+  describe("line endings", () => {
+    const old = "alpha\nbeta\ngamma"
+    const next = "alpha\nbeta-updated\ngamma"
+    const alt = "alpha\nbeta\nomega"
+
+    const normalize = (text: string, ending: "\n" | "\r\n") => {
+      const normalized = text.replaceAll("\r\n", "\n")
+      if (ending === "\n") return normalized
+      return normalized.replaceAll("\n", "\r\n")
+    }
+
+    const count = (content: string) => {
+      const crlf = content.match(/\r\n/g)?.length ?? 0
+      const lf = content.match(/\n/g)?.length ?? 0
+      return {
+        crlf,
+        lf: lf - crlf,
+      }
+    }
+
+    const expectLf = (content: string) => {
+      const counts = count(content)
+      expect(counts.crlf).toBe(0)
+      expect(counts.lf).toBeGreaterThan(0)
+    }
+
+    const expectCrlf = (content: string) => {
+      const counts = count(content)
+      expect(counts.lf).toBe(0)
+      expect(counts.crlf).toBeGreaterThan(0)
+    }
+
+    type Input = {
+      content: string
+      oldString: string
+      newString: string
+      replaceAll?: boolean
+    }
+
+    const apply = Effect.fn("EditToolTest.lineEndings.apply")(function* (input: Input) {
+      const test = yield* TestInstance
+      const filePath = path.join(test.directory, "test.txt")
+      yield* put(filePath, input.content)
+      yield* run({
+        filePath,
+        oldString: input.oldString,
+        newString: input.newString,
+        replaceAll: input.replaceAll,
+      })
+      return yield* load(filePath)
+    })
+
+    it.instance("preserves LF with LF multi-line strings", () =>
+      Effect.gen(function* () {
+        const content = normalize(old + "\n", "\n")
+        const output = yield* apply({
+          content,
+          oldString: normalize(old, "\n"),
+          newString: normalize(next, "\n"),
+        })
+        expect(output).toBe(normalize(next + "\n", "\n"))
+        expectLf(output)
+      }),
+    )
+
+    it.instance("preserves CRLF with CRLF multi-line strings", () =>
+      Effect.gen(function* () {
+        const content = normalize(old + "\n", "\r\n")
+        const output = yield* apply({
+          content,
+          oldString: normalize(old, "\r\n"),
+          newString: normalize(next, "\r\n"),
+        })
+        expect(output).toBe(normalize(next + "\n", "\r\n"))
+        expectCrlf(output)
+      }),
+    )
+
+    it.instance("preserves LF when old/new use CRLF", () =>
+      Effect.gen(function* () {
+        const content = normalize(old + "\n", "\n")
+        const output = yield* apply({
+          content,
+          oldString: normalize(old, "\r\n"),
+          newString: normalize(next, "\r\n"),
+        })
+        expect(output).toBe(normalize(next + "\n", "\n"))
+        expectLf(output)
+      }),
+    )
+
+    it.instance("preserves CRLF when old/new use LF", () =>
+      Effect.gen(function* () {
+        const content = normalize(old + "\n", "\r\n")
+        const output = yield* apply({
+          content,
+          oldString: normalize(old, "\n"),
+          newString: normalize(next, "\n"),
+        })
+        expect(output).toBe(normalize(next + "\n", "\r\n"))
+        expectCrlf(output)
+      }),
+    )
+
+    it.instance("preserves LF when newString uses CRLF", () =>
+      Effect.gen(function* () {
+        const content = normalize(old + "\n", "\n")
+        const output = yield* apply({
+          content,
+          oldString: normalize(old, "\n"),
+          newString: normalize(next, "\r\n"),
+        })
+        expect(output).toBe(normalize(next + "\n", "\n"))
+        expectLf(output)
+      }),
+    )
+
+    it.instance("preserves CRLF when newString uses LF", () =>
+      Effect.gen(function* () {
+        const content = normalize(old + "\n", "\r\n")
+        const output = yield* apply({
+          content,
+          oldString: normalize(old, "\r\n"),
+          newString: normalize(next, "\n"),
+        })
+        expect(output).toBe(normalize(next + "\n", "\r\n"))
+        expectCrlf(output)
+      }),
+    )
+
+    it.instance("preserves LF with mixed old/new line endings", () =>
+      Effect.gen(function* () {
+        const content = normalize(old + "\n", "\n")
+        const output = yield* apply({
+          content,
+          oldString: "alpha\nbeta\r\ngamma",
+          newString: "alpha\r\nbeta\nomega",
+        })
+        expect(output).toBe(normalize(alt + "\n", "\n"))
+        expectLf(output)
+      }),
+    )
+
+    it.instance("preserves CRLF with mixed old/new line endings", () =>
+      Effect.gen(function* () {
+        const content = normalize(old + "\n", "\r\n")
+        const output = yield* apply({
+          content,
+          oldString: "alpha\r\nbeta\ngamma",
+          newString: "alpha\nbeta\r\nomega",
+        })
+        expect(output).toBe(normalize(alt + "\n", "\r\n"))
+        expectCrlf(output)
+      }),
+    )
+
+    it.instance("replaceAll preserves LF for multi-line blocks", () =>
+      Effect.gen(function* () {
+        const blockOld = "alpha\nbeta"
+        const blockNew = "alpha\nbeta-updated"
+        const content = normalize(blockOld + "\n" + blockOld + "\n", "\n")
+        const output = yield* apply({
+          content,
+          oldString: normalize(blockOld, "\n"),
+          newString: normalize(blockNew, "\n"),
+          replaceAll: true,
+        })
+        expect(output).toBe(normalize(blockNew + "\n" + blockNew + "\n", "\n"))
+        expectLf(output)
+      }),
+    )
+
+    it.instance("replaceAll preserves CRLF for multi-line blocks", () =>
+      Effect.gen(function* () {
+        const blockOld = "alpha\nbeta"
+        const blockNew = "alpha\nbeta-updated"
+        const content = normalize(blockOld + "\n" + blockOld + "\n", "\r\n")
+        const output = yield* apply({
+          content,
+          oldString: normalize(blockOld, "\r\n"),
+          newString: normalize(blockNew, "\r\n"),
+          replaceAll: true,
+        })
+        expect(output).toBe(normalize(blockNew + "\n" + blockNew + "\n", "\r\n"))
+        expectCrlf(output)
+      }),
+    )
+  })
+
+  describe("concurrent editing", () => {
+    it.instance("rejects a stale edit plan before dispatch and allows a fresh retry", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.txt")
+        const original = "top = 0\nmiddle = keep\nbottom = 0\n"
+        const bottomArgs = {
+          filePath: filepath,
+          oldString: "bottom = 0",
+          newString: "bottom = 2",
+        }
+        yield* put(filepath, original)
+        const afs = yield* FSUtil.Service
+        const staleBottom = yield* prepareEditBatch(bottomArgs, test.directory, afs)
+
+        yield* run({
+          filePath: filepath,
+          oldString: "top = 0",
+          newString: "top = 1",
+        })
+        const admittedCalls = patchRequests.length
+        const staleCtx: Tool.Context = {
+          ...ctx,
+          trustedPrincipal: { kind: "server_auth", subject: "test" },
+          extra: {
+            guardedPatch: staleBottom.operations,
+            guardedLease: {
+              effectID: "effect_edit_test",
+              capabilityLeaseDigest: `blake3:${"b".repeat(64)}`,
+            },
+          },
+        }
+        const staleExit = yield* run(bottomArgs, staleCtx, false).pipe(Effect.exit)
+
+        expect(Exit.isFailure(staleExit)).toBe(true)
+        expect(patchRequests).toHaveLength(admittedCalls)
+        expect(yield* load(filepath)).toBe("top = 1\nmiddle = keep\nbottom = 0\n")
+
+        yield* run(bottomArgs)
+        expect(patchRequests).toHaveLength(admittedCalls + 1)
+        expect(yield* load(filepath)).toBe("top = 1\nmiddle = keep\nbottom = 2\n")
+      }),
+    )
+  })
+})
