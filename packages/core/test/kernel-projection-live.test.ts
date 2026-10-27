@@ -388,7 +388,7 @@ describe("OpenCode EventV2 -> Rust Session supervisor", () => {
             )
             const locationRef = {
               directory: AbsolutePath.make(workspace),
-              workspaceID: WorkspaceV2.ID.make("workspace_projection_test"),
+              workspaceID: WorkspaceV2.ID.make("wrk_projection_test"),
             }
             const admission = yield* supervisor.prepareToolBatch({
               sessionID,
