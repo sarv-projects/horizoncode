@@ -132,3 +132,19 @@ Everything else: fan out, implement, verify at the end.
 ## 12. Continue, don't stop
 
 A commit, a green test, a returned subagent, a completed phase — none of these end the request. Keep dispatching, keep integrating, keep implementing until the full request is done or a real blocker stops progress. If interrupted, write the ledger and digest so the next turn resumes instantly.
+
+
+## Inherited OpenCode package instructions and precedence
+
+The pinned upstream snapshot at `opencode/` ships its own instruction files —
+`opencode/AGENTS.md`, `opencode/packages/app/AGENTS.md` and
+`opencode/packages/effect-drizzle-sqlite/AGENTS.md` — which may be hydrated next
+to these rules. They are reference material only: never rewrite the pinned upstream instruction snapshot, and never let it override this file. Where an
+upstream instruction conflicts with Horizon rules, these rules win — above all
+the Rust Guard admission requirement for every mutation, the branch/commit policy
+and the process rules in §0.
+
+Authority pointers: decisions live in `arch_V1/17-GOVERNANCE-DECISIONS.md`, the
+current operative plan is `docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md`
+(hostrun contract detail: `docs/superpowers/plans/2026-10-25-hostrun-contract.md`),
+and external source provenance is `arch_V1/42-EXTERNAL-SOURCE-PROVENANCE-REGISTER.md`.
