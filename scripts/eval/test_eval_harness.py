@@ -1780,11 +1780,14 @@ class AuthenticHostRunPositiveFixtureTests(unittest.TestCase):
             "a durable fixture it can resolve: `resolve_projection_effect` requires the "
             "persisted challenge to carry `origin_kind = managed_run` plus a matching "
             "`managed_attempt_digest`, lease digest, arguments/intent digests and a "
-            "terminal process row with a quiescence proof. Producing those rows means "
-            "driving a managed Attempt terminal wave through HostKernel, so this "
-            "assertion belongs to a Rust test (the three existing inspect tests use a "
-            "spy source, an absent source, or a tampered journal), not to this offline "
-            "Python bridge.")
+            "terminal process row with a quiescence proof. Exactly that read path is "
+            "now proven in Rust by "
+            "`projection_resolves_settled_terminal_process_rows_from_the_real_journal` "
+            "(exit 0 -> Succeeded, exit 1 -> Failed, a live row -> UNKNOWN). What is "
+            "still missing is only the writer side: producing those rows means driving "
+            "a managed Attempt terminal wave through HostKernel, so the remaining "
+            "assertion belongs to a Rust end-to-end test, not to this offline Python "
+            "bridge.")
 
     def test_p8_owner_log_mirrored_append(self):
         self.skipTest(

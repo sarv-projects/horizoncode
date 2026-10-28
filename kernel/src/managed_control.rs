@@ -3720,9 +3720,30 @@ fn projection_process_rows(
 ) -> Result<Vec<ProjectionProcessRowV1>, ManagedError> {
     let mut rows = Vec::new();
     for table in PROJECTION_PROCESS_TABLES {
+        // `terminal_runs` and `external_editor_runs` pin the owner epoch and the
+        // process generation inside the durable cgroup identity blob instead of
+        // dedicated columns, which is what the row comment below describes.
+        // Selecting a column that does not exist made every terminal effect
+        // unprojectable (the read failed and `host_run.inspect` could only answer
+        // ambiguous UNKNOWN), so a missing pin projects as NULL and the identity
+        // blob remains the authority that is validated afterwards.
+        let column_exists = |name: &str| -> Result<bool, ManagedError> {
+            connection
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name=?1"),
+                    params![name],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map(|count| count > 0)
+                .map_err(|_| {
+                    ManagedError::Conflict("HostRun projection cannot inspect a process table")
+                })
+        };
+        let owner_epoch = if column_exists("owner_epoch")? { "owner_epoch" } else { "NULL" };
+        let generation = if column_exists("generation")? { "generation" } else { "NULL" };
         let statement = format!(
             "SELECT status,exit_code,quiescence_digest,cgroup_identity,\
-                    owner_epoch,generation FROM {table} WHERE effect_id=?1"
+                    {owner_epoch} AS owner_epoch,{generation} AS generation FROM {table} WHERE effect_id=?1"
         );
         let mut statement = connection.prepare(&statement).map_err(|_| {
             ManagedError::Conflict("HostRun projection cannot read a persisted process record")
@@ -11099,6 +11120,123 @@ mod host_run_dispatch_binding_tests {
         wrong_identity["dispatchKeyDigest"] = Value::String(digest('9'));
         let wrong_identity = HostRunProcessEffectProjectionV1::decode(&wrong_identity).unwrap();
         assert!(wrong_identity.validate_against(&request).is_err());
+    }
+
+    /// P8: a settled effect with a durable `terminal_runs` process row resolves
+    /// to a terminal outcome through the production EffectHost projection source.
+    ///
+    /// The rows are seeded into the schema EffectHost itself creates, because a
+    /// managed terminal wave cannot be produced without the complete managed
+    /// Attempt lifecycle; what this test proves is the read path — the production
+    /// source opens a real journal, joins the committed batch pins, and maps
+    /// exit 0/1 to `Succeeded`/`Failed` with a proved quiescence. Before this
+    /// test the read could not succeed at all: `projection_process_rows` selected
+    /// `owner_epoch`/`generation` from `terminal_runs`, which has neither column,
+    /// so every terminal effect failed closed as ambiguous UNKNOWN.
+    #[test]
+    fn projection_resolves_settled_terminal_process_rows_from_the_real_journal() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut snapshot = snapshot_with_live_attempt();
+        let binding = commit_binding(&mut snapshot);
+        commit_wave_and_receipt(&mut snapshot, &binding);
+        let request = snapshot
+            .host_run_projection_requests(&binding.dispatch_key_digest)
+            .unwrap()
+            .remove(0);
+        let effect = request.effects[0].clone();
+
+        let base = std::env::temp_dir().join(format!(
+            "hz-projection-terminal-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let locations = base.join("effect-locations");
+        let location = locations.join("loc-projection-terminal");
+        std::fs::create_dir_all(&location).unwrap();
+        std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::set_permissions(&locations, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::set_permissions(&location, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // Real schema, created by EffectHost itself; no hand-written DDL.
+        drop(crate::effect_host::EffectHost::open_live(&location, Some(&base)).unwrap());
+
+        let connection = Connection::open(location.join("effects.sqlite")).unwrap();
+        let seed = |exit_code: i64| {
+            connection
+                .execute("DELETE FROM terminal_runs", [])
+                .unwrap();
+            connection
+                .execute("DELETE FROM effect_challenges", [])
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO effect_challenges(challenge_id,effect_id,session_id,principal,
+                        batch_id,call_id,capability_id,relative_path,requested_path,target,resource,
+                        existed,argument_digest,content_digest,expires_at_ms,status,receipt_digest,
+                        turn_context_digest,origin_kind,managed_attempt_digest,call_index,
+                        arguments_digest,admitted_intent_digest,capability_lease_digest)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,'.','.','.','.',0,?8,?8,?9,'SETTLED',?10,?8,
+                        'managed_run',?11,0,?12,?13,?14)",
+                    params![
+                        "ch_projection_terminal",
+                        effect.effect_id,
+                        request.session_id,
+                        request.principal,
+                        request.batch_id,
+                        effect.call_id,
+                        effect.capability_id,
+                        digest('0'),
+                        1_700_000_000_000_i64 + 60_000,
+                        digest('1'),
+                        request.attempt_scope_digest,
+                        effect.arguments_digest,
+                        effect.effect_intent_digest,
+                        effect.capability_lease_digest,
+                    ],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO terminal_runs(effect_id,status,terminal_status,exit_code,
+                        receipt_digest,quiescence_digest,created_at_ms)
+                     VALUES (?1,'SETTLED','exited',?2,?3,?4,?5)",
+                    params![effect.effect_id, exit_code, digest('1'), digest('2'), 1_700_000_000_000_i64],
+                )
+                .unwrap();
+        };
+
+        let source = EffectHostRunProjectionSourceV1::open(&locations).unwrap();
+
+        seed(0);
+        let succeeded = source.project_committed_batch(&request).unwrap();
+        assert_eq!(
+            succeeded.effects[0].outcome,
+            HostRunEffectOutcomeV1::Succeeded,
+            "an exact zero exit must project a terminal success"
+        );
+        assert_eq!(succeeded.process_quiescence, ProcessQuiescenceV1::Proved);
+        assert!(succeeded.effects[0].receipt_digest.is_some());
+
+        seed(1);
+        let failed = source.project_committed_batch(&request).unwrap();
+        assert_eq!(
+            failed.effects[0].outcome,
+            HostRunEffectOutcomeV1::Failed,
+            "a non-zero exit must project a terminal failure, never a success"
+        );
+
+        // A still-live process row is ambiguous, never terminal.
+        connection
+            .execute(
+                "UPDATE terminal_runs SET status='RUNNING' WHERE effect_id=?1",
+                params![effect.effect_id],
+            )
+            .unwrap();
+        let live = source.project_committed_batch(&request).unwrap();
+        assert_eq!(live.effects[0].outcome, HostRunEffectOutcomeV1::Unknown);
+
+        drop(connection);
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     /// P8 negative matrix: a stale owner epoch or process generation on the
