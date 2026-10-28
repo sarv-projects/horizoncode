@@ -1,5 +1,24 @@
 # HorizonCode — Current implementation handoff
 
+## 2026-10-28 16:05 UTC — terminal journeys green, all three P8 cases addressed (round 14)
+
+`V1-RUST-VERIFY=PASS steps=32`, `V1-TERMINAL-E2E=PASS journeys=3`, `V1-FINAL-VERIFY=PASS
+steps=31`, eval harness `OK (skipped=1)`.
+
+P8 cases closed this round: the mirrored-append crash window now has a durable Rust
+regression (binding survives, missing receipt never invented by replay, exact cursor
+idempotent, conflicting cursor rejected without mutation) and a Python boundary test for the
+six-field `host_run.bind_receipt` body. The projection read path and the Stage-A/B classifier
+check closed in the previous round.
+
+One skip remains: `test_full_inspect_terminal_resolution` — its remaining half needs a managed
+Attempt terminal wave driven through HostKernel, which the offline Python bridge cannot
+produce; the read half is proven in Rust by
+`projection_resolves_settled_terminal_process_rows_from_the_real_journal`.
+
+Also fixed: step 08's silent startup failure now reports kernel stderr and whether the child
+exited or the deadline expired.
+
 ## 2026-10-28 14:05 UTC — projection resolves terminal effects; 2 of 3 P8 cases closed (round 13)
 
 `V1-FINAL-VERIFY=PASS steps=31`, `V1-RUST-VERIFY=PASS steps=32`, `V1-TERMINAL-E2E=PASS`.

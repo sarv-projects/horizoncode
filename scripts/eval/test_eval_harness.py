@@ -1816,12 +1816,66 @@ class AuthenticHostRunPositiveFixtureTests(unittest.TestCase):
             "bridge.")
 
     def test_p8_owner_log_mirrored_append(self):
-        self.skipTest(
-            "BLOCKED_P8_RUST: the mirrored `HostRunDispatchBoundV1` OwnerLog append/resolve "
-            "source exists, but the new crash-window regression and the complete Rust "
-            "acceptance wave have not run on this shared revision. Prior focused owner-level "
-            "tests do not establish an authenticated P1/P2 HostRun receipt or cross-layer "
-            "runtime acceptance; offline Python consumer fixtures are not that evidence.")
+        """The P8 cursor reaches HostKernel only as the exact six-field receipt.
+
+        The durable half — mirror appended, process death before the receipt
+        commits, replay never invents the missing receipt, an exact cursor is
+        idempotent and a conflicting cursor is rejected without mutation — is
+        proven in Rust by
+        ``mirrored_p8_owner_receipt_survives_the_append_to_dispatch_crash_window``
+        (kernel/src/managed_control.rs), which runs inside the complete
+        acceptance wave. What this test owns is the evaluator boundary: the
+        cursor facts are typed by the production body builder and are never
+        minted from an event body.
+        """
+        goal_id = "goal-p8-mirror"
+        dispatch = "blake3:" + "11" * 32
+        binding = "blake3:" + "22" * 32
+        cursor = {
+            "owner_log_id": "owner-log-p8-evaluator",
+            "owner_log_sequence": "7",
+            "owner_log_event_digest": "blake3:" + "33" * 32,
+        }
+
+        body = evaluation.host_run_bind_receipt_body(
+            goal_id=goal_id, dispatch_key_digest=dispatch,
+            binding_digest=binding, **cursor)
+        self.assertEqual(
+            set(body), set(evaluation.HOST_RUN_BIND_RECEIPT_BODY_FIELDS),
+            "the mirrored append submits exactly the six-field receipt body")
+        self.assertEqual(body["goalID"], goal_id)
+        self.assertEqual(body["dispatchKeyDigest"], dispatch)
+        self.assertEqual(body["bindingDigest"], binding)
+        self.assertEqual(body["ownerLogID"], cursor["owner_log_id"])
+        self.assertEqual(body["ownerLogSequence"], cursor["owner_log_sequence"])
+        self.assertEqual(body["ownerLogEventDigest"], cursor["owner_log_event_digest"])
+
+        # The bare-hex cursor digest form Rust accepts is accepted here too.
+        bare = evaluation.host_run_bind_receipt_body(
+            goal_id=goal_id, dispatch_key_digest=dispatch, binding_digest=binding,
+            owner_log_id=cursor["owner_log_id"],
+            owner_log_sequence=cursor["owner_log_sequence"],
+            owner_log_event_digest="44" * 32)
+        self.assertEqual(bare["ownerLogEventDigest"], "44" * 32)
+
+        # Nothing that is not a canonical sequence, a valid OwnerLog event
+        # digest or a blake3 digest can be submitted as a cursor fact.
+        for bad in (
+            {"owner_log_sequence": "7x"},
+            {"owner_log_sequence": "007"},
+            {"owner_log_event_digest": "deadbeef"},
+            {"owner_log_event_digest": "blake3:44"},
+            {"binding_digest": "22" * 32},
+            {"owner_log_id": "owner-log\u0007"},
+            {"owner_log_id": "x" * 129},
+        ):
+            kwargs = dict(goal_id=goal_id, dispatch_key_digest=dispatch,
+                          binding_digest=binding)
+            kwargs.update(cursor)
+            kwargs.update(bad)
+            with self.assertRaises(evaluation.EvalError,
+                                   msg=f"accepted a malformed cursor fact: {bad}"):
+                evaluation.host_run_bind_receipt_body(**kwargs)
 
 
 class FrozenInvocationMinterTests(unittest.TestCase):

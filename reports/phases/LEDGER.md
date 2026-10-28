@@ -1,5 +1,28 @@
 # V1 phase execution ledger — 2026-10-22 (parent orchestration)
 
+## 2026-10-28 16:05 UTC — all three P8 cases addressed; skips 3 -> 1
+
+**Case 3 (mirrored `HostRunDispatchBoundV1` append).** New durable Rust regression
+`mirrored_p8_owner_receipt_survives_the_append_to_dispatch_crash_window` in
+`kernel/src/managed_control.rs` walks the real window on disk: the dispatch binding is
+committed, the process dies before P8's receipt is applied, reopen proves the binding
+survives while the missing receipt is **never invented by replay** and reconciliation stays
+`HOST_RUN_UNKNOWN_P8_OWNER_RECEIPT`; then the exact cursor is accepted, survives a second
+restart, replays idempotently, and a conflicting sequence is rejected without replacing the
+committed receipt. The Python side of the case now asserts the boundary contract it owns
+(the exact six-field `host_run.bind_receipt` body, bare-hex and `blake3:` cursor forms,
+fail-closed on non-canonical sequence / non-digest / overlong / control-character cursor
+facts) and cites the Rust test for the durable half.
+
+**A verifier gap surfaced and was fixed:** step 08's `hz-kernel did not create its private
+socket` panic discarded the child's stderr, so a startup refusal was undiagnosable. The test
+now captures kernel stderr, distinguishes child-exit from a startup deadline, and reports
+both. Step 08 passed twice in isolation and again in the verifier run
+`20261028-101809` (`V1-RUST-VERIFY=PASS steps=32`).
+
+Evidence this round: `V1-RUST-VERIFY=PASS steps=32`, `V1-TERMINAL-E2E=PASS`,
+`V1-FINAL-VERIFY=PASS steps=31`, eval harness `OK (skipped=1)`.
+
 ## 2026-10-28 14:05 UTC — P8: the production projection resolves terminal effects
 
 Two of the three skipped authentic-HostRun cases are now real assertions.

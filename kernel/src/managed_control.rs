@@ -11523,6 +11523,193 @@ mod host_run_dispatch_binding_tests {
 
 #[cfg(test)]
 mod managed_delegation_admission_tests {
+
+    /// P8 crash window: the mirrored `HostRunDispatchBoundV1` append and the
+    /// HostKernel receipt it authorises are two durable steps. A process death
+    /// between them must never be repaired by replay — the reopened state keeps
+    /// the binding, keeps reconciliation UNKNOWN, and accepts only the exact
+    /// cursor that the already-committed mirror produced.
+    #[test]
+    fn mirrored_p8_owner_receipt_survives_the_append_to_dispatch_crash_window() {
+        let root = private_test_root();
+        let result = (|| -> Result<(), ManagedError> {
+            let mut control = ManagedControl::open(&root, "goal-admission")?;
+            let draft = SpecVersionDraft {
+                parent_version_id: None,
+                objective: "perform one managed task".into(),
+                project_ref: "project-1".into(),
+                workspace_ref: "workspace-1".into(),
+                capability_scope: vec![],
+                scope: vec!["src/**".into()],
+                constraints: vec![],
+                criteria: vec![AcceptanceCriterion {
+                    id: "tests".into(),
+                    description: "tests pass".into(),
+                }],
+                budget: SpecBudget {
+                    max_tasks: 1,
+                    max_attempts_per_task: 1,
+                    max_run_duration_ms: 1_000,
+                    max_memory_bytes: None,
+                    max_disk_bytes: None,
+                    max_workers: 1,
+                    max_tokens: None,
+                    max_cost_micros: Some(0),
+                },
+                source_digests: vec![sha('e')],
+                proposed_by: "server_auth.author".into(),
+            };
+            let spec_digest = draft.digest();
+            control.apply(0, "create-goal", ManagedCommand::CreateGoal {
+                goal: GoalDraft {
+                    objective: draft.objective.clone(),
+                    project_ref: draft.project_ref.clone(),
+                    workspace_ref: draft.workspace_ref.clone(),
+                    created_by: draft.proposed_by.clone(),
+                },
+            })?;
+            control.apply(1, "propose-spec", ManagedCommand::ProposeSpec {
+                spec_id: "spec-1".into(),
+                spec: draft,
+                spec_digest: spec_digest.clone(),
+            })?;
+            control.apply(2, "assign-reviewer", ManagedCommand::AssignSpecReviewer {
+                spec_id: "spec-1".into(),
+                spec_digest: spec_digest.clone(),
+                reviewer_id: "server_auth.reviewer".into(),
+            })?;
+            control.apply(3, "accept-spec", ManagedCommand::AcceptSpec {
+                spec_id: "spec-1".into(),
+                spec_digest,
+                accepted_by: "server_auth.reviewer".into(),
+                accepted_at_ms: 1,
+            })?;
+            let spec_digest = control.snapshot().specs["spec-1"].digest.clone();
+            control.apply(4, "plan-run", ManagedCommand::PlanRun {
+                run_id: "run-1".into(),
+                spec_id: "spec-1".into(),
+                spec_digest: spec_digest.clone(),
+                tasks: vec![PlannedTaskV1 {
+                    task_id: "task-1".into(),
+                    title: Some("Perform the accepted managed task".into()),
+                    purpose: Some("Complete the accepted managed task exactly once".into()),
+                    dependencies: vec![],
+                    criterion_ids: vec!["tests".into()],
+                    required_capabilities: vec![],
+                    agent_profile_revision: ProfileRevisionRefV1 {
+                        profile_id: "agent-profile".into(),
+                        revision: 7,
+                        definition_digest: digest('a'),
+                    },
+                    profile_token_budget: 64_000,
+                    profile_owner_binding_digest: ProfileOwnerBindingV1::Builtin.digest(),
+                }],
+            })?;
+            let start_revision = control.snapshot().revision;
+            let plan_digest = planned_task_set_digest(&control.snapshot().runs["run-1"]);
+            control.apply(start_revision, "start-run", ManagedCommand::StartPlannedRun {
+                run_id: "run-1".into(),
+                spec_id: "spec-1".into(),
+                spec_digest,
+                plan_digest,
+                expected_goal_revision: start_revision,
+                started_by: "server_auth:reviewer".into(),
+                session_link: Some(test_session_link()),
+            })?;
+            let owner_facts = facts_for_snapshot(&control.snapshot());
+            control.admit_attempt_with_delegation(
+                "admit-attempt", "run-1", "task-1", "attempt-1", Some(owner_facts),
+            )?;
+
+            let identity = HostRunEvaluationIdentityV1 {
+                dispatch_key_digest: digest('5'),
+                manifest_digest: digest('b'),
+                evaluator_task_id: "evaluator-task-1".into(),
+                arm_id: "arm-1".into(),
+                task_group: "group-1".into(),
+                evaluation_session_id: "ses_host_run_eval".into(),
+                core_process_generation: 1,
+                owner_id: "worker-owner".into(),
+                workspace_binding_digest: digest('c'),
+                owner_principal_binding_digest: digest('d'),
+            };
+            let binding = HostRunDispatchBindingV1::from_authenticated_evaluator(
+                &control.snapshot(),
+                "attempt-1",
+                "worker-execution-1",
+                &digest('5'),
+                identity,
+            )?;
+            let dispatch_key = binding.dispatch_key_digest.clone();
+            let binding_digest = binding.digest()?;
+            control.record_host_run_dispatch_binding("hb1", binding)?;
+
+            // --- crash window: the mirror is committed, the receipt is not ---
+            drop(control);
+            let mut reopened = ManagedControl::open(&root, "goal-admission")?;
+            let recovered = reopened.snapshot();
+            assert!(
+                recovered.host_run_dispatch_bindings.contains_key(&dispatch_key),
+                "the committed dispatch binding must survive the restart"
+            );
+            assert!(
+                recovered.host_run_p8_owner_receipt(&dispatch_key).is_none(),
+                "an unapplied receipt must never be invented by replay"
+            );
+            assert_eq!(
+                recovered.reconcile_host_run(&dispatch_key, &[]).unknown_reason,
+                Some(HOST_RUN_UNKNOWN_P8_OWNER_RECEIPT),
+                "reconciliation must stay UNKNOWN while the mirror receipt is missing"
+            );
+            drop(recovered);
+
+            // P8 resumes: the exact cursor its mirror already committed is accepted.
+            let receipt = HostRunDispatchP8OwnerReceiptV1 {
+                schema_version: 1,
+                dispatch_key_digest: dispatch_key.clone(),
+                binding_digest: binding_digest.clone(),
+                owner_log_id: "owner-log-p8-evaluator".into(),
+                owner_log_sequence: "7".into(),
+                owner_log_event_digest: "0123456789abcdef".repeat(4),
+            };
+            reopened.record_host_run_p8_owner_receipt("hr1", receipt.clone())?;
+            assert!(reopened.snapshot().host_run_p8_owner_receipt(&dispatch_key).is_some());
+
+            // --- second crash: the receipt must survive the next restart too ---
+            drop(reopened);
+            let mut after = ManagedControl::open(&root, "goal-admission")?;
+            let recovered_revision = {
+                let recovered = after.snapshot();
+                assert!(
+                    recovered.host_run_p8_owner_receipt(&dispatch_key).is_some(),
+                    "the durable receipt must survive a second restart"
+                );
+                recovered.revision
+            };
+            // Exact replay is idempotent; a different cursor from the same mirror
+            // is a conflict and mutates nothing.
+            after.apply(recovered_revision, "replay-receipt",
+                ManagedCommand::RecordHostRunP8OwnerReceipt { receipt: receipt.clone() })?;
+            let mut conflicting = receipt.clone();
+            conflicting.owner_log_sequence = "8".into();
+            assert!(after.apply(
+                after.snapshot().revision,
+                "conflicting-receipt",
+                ManagedCommand::RecordHostRunP8OwnerReceipt { receipt: conflicting },
+            )
+            .is_err());
+            assert_eq!(
+                after.snapshot().host_run_p8_owner_receipt(&dispatch_key)
+                    .map(|kept| kept.owner_log_sequence.clone()),
+                Some("7".to_owned()),
+                "a conflicting cursor must never replace the committed receipt"
+            );
+            Ok(())
+        })();
+        std::fs::remove_dir_all(&root).unwrap();
+        result.unwrap();
+    }
+
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 

@@ -192,17 +192,45 @@ fn authenticated_hz_kernel_terminal_start_cleans_escaped_processes_on_owner_loss
             .arg(format!("--incarnation={incarnation}"))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            // The kernel's own startup diagnostics are the only evidence when it
+            // refuses to come up; never discard them.
+            .stderr(Stdio::piped())
             .spawn()
             .unwrap(),
     );
+    let stderr = child.0.stderr.take().map(|mut pipe| {
+        std::thread::spawn(move || {
+            let mut captured = String::new();
+            let _ = std::io::Read::read_to_string(&mut pipe, &mut captured);
+            captured
+        })
+    });
 
     let deadline = Instant::now() + Duration::from_secs(5);
-    while !socket.exists() {
-        if child.0.try_wait().unwrap().is_some() || Instant::now() >= deadline {
-            panic!("hz-kernel did not create its private socket");
+    let exited = loop {
+        if child.0.try_wait().unwrap().is_some() {
+            break true;
+        }
+        if Instant::now() >= deadline {
+            break false;
         }
         thread::sleep(Duration::from_millis(10));
+    };
+    if !socket.exists() {
+        let detail = if exited {
+            let captured = stderr
+                .and_then(|handle| handle.join().ok())
+                .unwrap_or_default();
+            let captured = captured.trim();
+            if captured.is_empty() {
+                "<exited without stderr>".to_owned()
+            } else {
+                captured.to_owned()
+            }
+        } else {
+            "<child still running when the startup deadline expired>".to_owned()
+        };
+        panic!("hz-kernel did not create its private socket (exited={exited}): {detail}");
     }
     let mut stream = connect_authenticated(
         &socket,
