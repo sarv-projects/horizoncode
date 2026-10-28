@@ -7377,7 +7377,7 @@ const layer = Layer.effect(
               locationID: request.locationID,
               batchID: request.batchID,
               challengeIDs: request.challengeIDs,
-            })
+            }, { trustedPrincipal: trusted.principal })
             const serialAttempt = resolved.nextLeaseRequired === true
             const approvedLeases: ReadonlyArray<unknown> | undefined = Array.isArray(resolved.leases) ? resolved.leases : undefined
             if (resolved.status !== "approved_set" || resolved.batchID !== request.batchID ||
@@ -7665,11 +7665,11 @@ const layer = Layer.effect(
             locationID,
             batchID: input.batchID,
             challengeIDs: [challenge.challengeID],
-          })
+          }, { trustedPrincipal: trusted.principal })
         : yield* requestHostKernel("effects.v2", "resolve_approval", {
             challengeID: challenge.challengeID,
             decision,
-          })
+          }, { trustedPrincipal: trusted.principal })
       if (decision !== "allow_once") {
         return { status: "denied" as const, reason: "Guard approval was denied" }
       }

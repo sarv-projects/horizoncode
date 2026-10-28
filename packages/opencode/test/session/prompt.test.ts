@@ -1058,6 +1058,17 @@ withRustSupervisor(
 
       const events = yield* EventV2Bridge.Service
       const supervisor = yield* SessionSupervisor.Service
+      // The default direct-session mode auto-approves an in-workspace write, so
+      // the Guard approval dialog this test exists to observe would never open.
+      // Opt this session into prompt-for-every-effect first; the assertions below
+      // then cover the real prompt -> allow_once -> lease -> receipt journey.
+      yield* supervisor.setDirectSessionPermissionMode({
+        sessionID: session.id,
+        locationRef: { directory: AbsolutePath.make(dir) },
+        sandboxMode: "workspace-write",
+        approvalPolicy: "always",
+        expectedRevision: "1",
+      })
       const approvals = yield* Queue.unbounded<GuardApprovalRequest>()
       const off = yield* events.listen((event) => {
         if (event.type === GuardApprovalRequested.type) {

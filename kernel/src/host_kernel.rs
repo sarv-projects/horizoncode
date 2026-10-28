@@ -23203,14 +23203,27 @@ impl HostKernel {
                 "approval challenge was not found",
             ))?
             .clone();
-        if binding.principal != principal
-            || binding.owner_epoch != fence.owner_epoch()
-            || binding.lease_digest.is_some()
-        {
+        // A refusal here is a fail-closed authorization decision, so the exact
+        // cause must stay operator-visible instead of collapsing to one string.
+        if binding.principal != principal {
             return Err((
                 "effect_denied",
                 ErrorCategoryV1::Authorization,
-                "approval principal, owner epoch, or one-use state does not match",
+                "approval challenge belongs to a different authenticated principal",
+            ));
+        }
+        if binding.owner_epoch != fence.owner_epoch() {
+            return Err((
+                "effect_denied",
+                ErrorCategoryV1::Authorization,
+                "approval challenge belongs to a different owner epoch",
+            ));
+        }
+        if binding.lease_digest.is_some() {
+            return Err((
+                "effect_denied",
+                ErrorCategoryV1::Authorization,
+                "approval challenge was already resolved into a one-use capability lease",
             ));
         }
         if grant_preflight_digest.is_some()
