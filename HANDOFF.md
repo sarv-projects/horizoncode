@@ -1,5 +1,22 @@
 # HorizonCode — Current implementation handoff
 
+## 2026-10-28 14:05 UTC — projection resolves terminal effects; 2 of 3 P8 cases closed (round 13)
+
+`V1-FINAL-VERIFY=PASS steps=31`, `V1-RUST-VERIFY=PASS steps=32`, `V1-TERMINAL-E2E=PASS`.
+
+Found a real product bug behind the P8 skip: `projection_process_rows` selected `owner_epoch`
+and `generation` from `terminal_runs`, which has neither column (they live in the cgroup
+identity blob), so a `terminal.run` effect could never project and `host_run.inspect` could
+only answer ambiguous UNKNOWN. Missing pins now project as NULL. The new Rust test
+`projection_resolves_settled_terminal_process_rows_from_the_real_journal` proves exit 0 ->
+Succeeded, exit 1 -> Failed, live -> Unknown through the production source.
+
+The Stage-A/B case is now a real cross-language check: P2's classifier reproduces the Rust
+fixture's ceiling and full digest chain. The eval harness reports `OK (skipped=2)`, down from 3.
+
+Remaining: the mirrored `HostRunDispatchBoundV1` append needs a Rust crash-window regression
+(mirror appended, reopen, idempotent resolve) — that is the next unit of work.
+
 ## 2026-10-28 13:40 UTC — terminal journeys green; P8 needs a managed-wave fixture (round 12)
 
 `V1-TERMINAL-E2E=PASS journeys=3`, `V1-RUST-VERIFY=PASS steps=32`,

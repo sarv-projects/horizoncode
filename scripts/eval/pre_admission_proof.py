@@ -274,6 +274,15 @@ def _effective_capability_ceiling_digest(pins: dict) -> str:
     return "sha256:" + hashlib.sha256(preimage).hexdigest()
 
 
+def effective_capability_ceiling_digest(pins: dict) -> str:
+    """P2's Guard-derived capability ceiling for one pin set.
+
+    Public entry point for the same classifier the fixture builder uses, so a
+    regression can recompute a durable fixture's ceiling instead of trusting it.
+    """
+    return _effective_capability_ceiling_digest(pins)
+
+
 def _uint(value, field: str, *, minimum: int = 0) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
         raise PreAdmissionFixtureError(

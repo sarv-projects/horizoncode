@@ -1,5 +1,35 @@
 # V1 phase execution ledger — 2026-10-22 (parent orchestration)
 
+## 2026-10-28 14:05 UTC — P8: the production projection resolves terminal effects
+
+Two of the three skipped authentic-HostRun cases are now real assertions.
+
+**Case 2 (terminal resolution) — a product bug, not just a missing fixture.**
+`EffectHostRunProjectionSourceV1::project_committed_batch` could never resolve a
+`terminal.run` effect: `projection_process_rows` selected `owner_epoch` and `generation`
+from every table in `PROJECTION_PROCESS_TABLES`, but `terminal_runs` (and
+`external_editor_runs`) pin those inside the cgroup identity blob and have neither column,
+so the read failed and `host_run.inspect` could only answer the ambiguous UNKNOWN. A missing
+pin now projects as NULL and the blob stays the authority — exactly what the row comment
+already claimed. New test
+`projection_resolves_settled_terminal_process_rows_from_the_real_journal` proves the read
+path against a real EffectHost journal: exit 0 -> `Succeeded`, exit 1 -> `Failed`, a live
+row -> `Unknown`, proved quiescence, committed receipt digest.
+
+**Case 1 (Stage-A/B admission facts) — cross-language classifier check.** P2's classifier
+reproduces the Rust fixture exactly: `effective_capability_ceiling_digest` == the pinned
+`sha256:78abcb…`, `compute_pins_digest` == `digestChain.pinsDigest`, `stage_a_proof_digest`
+== `stageAProofDigest`, `context_bound_receipt_digest` == `stageBReceiptDigest`. The public
+wrapper was added so the test recomputes rather than trusts the fixture. It asserts nothing
+about a live Core peer/fence or a real Guarded Create+Inspect receipt, and says so.
+
+**Case 3 (mirrored `HostRunDispatchBoundV1` append) is still skipped** and is the one
+remaining item: it needs a Rust crash-window regression (mirror appended, then reopen, then
+idempotent resolve) on top of the acceptance wave, which now runs green on every revision.
+
+Evidence: `V1-FINAL-VERIFY=PASS steps=31` (`OK (skipped=2)` in the eval harness, down from
+3), `V1-RUST-VERIFY=PASS steps=32`, `V1-TERMINAL-E2E=PASS journeys=3`.
+
 ## 2026-10-28 13:40 UTC — both terminal journeys PASS; P8 gap narrowed to a Rust fixture
 
 `scripts/verify/v1-terminal-e2e.sh` -> **`V1-TERMINAL-E2E=PASS journeys=3 pass=3`** (bash

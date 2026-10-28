@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import eval_harness as evaluation
+import pre_admission_proof
 
 
 def response(output="ok", expected="ok", capability_complete=True):
@@ -1762,13 +1763,38 @@ class AuthenticHostRunPositiveFixtureTests(unittest.TestCase):
     """
 
     def test_stage_ab_and_guarded_create_inspect_admission_facts(self):
-        self.skipTest(
-            "BLOCKED_P2: the canonical fixture now carries the source-derived Guard "
-            "ceiling and Stage-A/B digest chain, but remains fixture data rather than "
-            "authenticated admission evidence. P2's exact `pre_admission_admission_facts` "
-            "classifier must recompute the updated ceiling digest; its result is still "
-            "pending, and this test cannot claim a verified Core peer/fence or actual "
-            "Guarded Create+Inspect receipts.")
+        """P2's classifiers reproduce the fixture's ceiling and Stage-A/B chain.
+
+        Every value below is recomputed by P2's own classifier code from the
+        fixture's durable pins, so a fixture that drifts from the Guard-derived
+        ceiling or from the Stage-A/B digest chain fails here. This is a
+        cross-language agreement check between the Rust fixture and the Python
+        classifier; it deliberately claims nothing about a live Core peer/fence or
+        an actual Guarded Create+Inspect receipt.
+        """
+        fixture = (Path(__file__).resolve().parents[2]
+                   / "kernel/tests/fixtures/pre-admission-reserved-proof-v1.json")
+        record = json.loads(fixture.read_text())
+        pins = record["leaseProof"]["preAdmissionPins"]
+        chain = record["digestChain"]
+
+        self.assertEqual(
+            pre_admission_proof.effective_capability_ceiling_digest(pins),
+            pins["capabilityCeilingDigest"],
+            "the Guard-derived capability ceiling must reproduce the fixture pin")
+        self.assertEqual(
+            pre_admission_proof.compute_pins_digest(pins), chain["pinsDigest"])
+        stage_a = record["stageAReservation"]
+        self.assertEqual(
+            pre_admission_proof.stage_a_proof_digest(
+                chain["pinsDigest"], stage_a["workerExecutionId"],
+                stage_a["ticketId"], stage_a["workspaceLeaseId"]),
+            chain["stageAProofDigest"],
+            "Stage-A proof digest must follow from the pins digest and reservation")
+        self.assertEqual(
+            pre_admission_proof.context_bound_receipt_digest(record["stageBReservation"]),
+            chain["stageBReceiptDigest"],
+            "Stage-B receipt digest must follow from the context-bound reservation")
 
     def test_full_inspect_terminal_resolution(self):
         self.skipTest(
