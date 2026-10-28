@@ -1,5 +1,24 @@
 # HorizonCode — Current implementation handoff
 
+## 2026-10-28 12:20 UTC — push blocked by one pre-existing gate test (round 10)
+
+Repaired `node_modules` offline (`bun install --frozen-lockfile --offline`: the `effect` workspace
+symlink was broken and `node_modules/.bin/tsgo` missing). The push gate now passes every source
+audit, the typecheck, `cargo build`, the Rust `managed_control`/`resource_budget` regressions, the
+Core suites (`kernel-projection-live` 1 pass after the `wrk` fixture fix) and all OpenCode suites
+through `session/tool-batch`.
+
+It stops at the last step, `prompt.test.ts -t "V1 model write is admitted"`: no
+`GuardApprovalRequested` is published because the kernel admits that direct-mode write through the
+quiet `prepared` lease path — and the write *does* land in Rust with a real `effectID` and
+`receiptDigest`. Forcing `approvalPolicy: "always"` makes the dialog appear and resolve, but the
+next tool dispatch fails `effect_denied: "approval principal, owner epoch, or one-use state does
+not match"`, so the interactive approval flow for model tool calls is not wired end to end.
+Baseline (pre-session) copy of that test does not compile at all, CI and the final verifier never
+run it: the gate step was already red before this work.
+
+Nothing pushed: 24 commits are local, the tree is clean, and the pre-push hook was not bypassed.
+
 ## 2026-10-28 03:20 UTC — terminal containment VERIFIED (round 9)
 
 Guarded PTY execution is enabled: `GUARDED_PTY_RUNTIME_READY=true`, and every terminal.v1 run/start

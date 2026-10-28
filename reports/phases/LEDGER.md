@@ -1,5 +1,41 @@
 # V1 phase execution ledger — 2026-10-22 (parent orchestration)
 
+## 2026-10-28 12:20 UTC — push gate: source/typecheck/Rust all green; blocked on one pre-existing test
+
+`bun install --frozen-lockfile --offline` (pinned bun, cache-backed) repaired a partially
+materialised `node_modules`: `packages/core/node_modules/effect` was a broken symlink and
+`node_modules/.bin/tsgo` did not exist, so typecheck and several suites could not resolve their
+dependencies. 4697 packages installed; no tracked file changed.
+
+With that repaired, `scripts/architecture/run_push_gate.sh` passes: source audits
+(`validate_convergence` 1302 checks / 0 failures, `validate_external_sources` 439 / 0,
+`audit_workspace_packages` 0 errors, `audit_overlay_visibility` `hidden_new_source=0`,
+`audit_markdown_repo` `ACTIVE_BLOCKERS 0`), HorizonCode typecheck, `cargo build` of both pinned
+bins, `managed_control` and `resource_budget` Rust regressions, the Core suites (including
+`kernel-projection-live` **1 pass** after the `wrk`-prefixed fixture fix) and every OpenCode suite
+through `session/tool-batch`.
+
+**Blocker (step 18/18): `packages/opencode/test/session/prompt.test.ts -t "V1 model write is
+admitted"`** — `timed out waiting for Rust Guard approval`. Established by experiment:
+
+- It is **pre-existing**: the version before this session's first commit does not even compile
+  against the current schema (`Expected HorizonAgentProfileV2.Revision, got 1`), so this gate step
+  was already red before this work.
+- No `GuardApprovalRequested` is ever published for that write, because the kernel returns
+  `status: "prepared"` through the documented quiet direct-mode path
+  (`mode_approval_candidate` -> `approve_direct_mode_batch` -> one-use lease). The write *does*
+  reach Rust: it returns a real `effectID` (`eff_cbc07984…`) and `receiptDigest`
+  (`blake3:0629fa00…`), so Guard is admitted through, not bypassed.
+- Opting the session into `approvalPolicy: "always"` does emit `guard.approval.requested` and
+  `guard.approval.resolved`, but the following tool dispatch then fails:
+  `stage=effect, hostCode=effect_denied, reason="approval principal, owner epoch, or one-use state
+  does not match"` -> `Tool batch denied: Rust Guard unavailable`. The interactive approval flow
+  for **model tool calls** is therefore not wired end to end; only quiet admission works today.
+- This test is covered by neither CI (`.github/workflows/horizoncode-full-validation.yml`) nor
+  `v1-final-verify.sh`.
+
+The push hook was **not** bypassed: 24 commits remain local and the working tree is clean.
+
 ## 2026-10-28 03:20 UTC — terminal containment landed; the whole tool_batch_guard_matrix passes
 
 `GUARDED_PTY_RUNTIME_READY` is now `true` and every terminal.v1 run/start ingress is live with
