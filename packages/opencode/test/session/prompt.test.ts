@@ -1141,6 +1141,15 @@ withRustSupervisor(
             title,
             permission: [{ permission: "bash", pattern: "*", action: "allow" }],
           })
+            // The default direct-session mode auto-approves an in-workspace terminal
+            // run, so the Guard dialog this journey asserts would never open.
+            yield* supervisor.setDirectSessionPermissionMode({
+              sessionID: session.id,
+              locationRef: { directory: AbsolutePath.make(dir) },
+              sandboxMode: "workspace-write",
+              approvalPolicy: "always",
+              expectedRevision: "1",
+            })
           yield* prompt.prompt({
             sessionID: session.id,
             agent: "build",
@@ -1204,7 +1213,18 @@ withRustSupervisor(
         if (toolCall.state.status !== "completed") return
         expect(toolCall.state.metadata.output).toContain("APPROVED_MODEL_BASH")
         expect(toolCall.state.metadata.receiptRef).toBeString()
-        expect(toolCall.state.metadata.artifactRef).toBeString()
+        // The settled terminal receipt publishes a structured SourceArtifactV1
+        // reference (id + digest + length + media type), never a bare string.
+        const artifactRef = toolCall.state.metadata.artifactRef as {
+          artifactId: string
+          digest: string
+          byteLength: string
+          mediaType: string
+        }
+        expect(artifactRef.artifactId).toMatch(/^terminal_[0-9a-f]{64}$/)
+        expect(artifactRef.digest).toMatch(/^blake3:[0-9a-f]{64}$/)
+        expect(artifactRef.mediaType).toBe("application/octet-stream")
+        expect(Number(artifactRef.byteLength)).toBeGreaterThan(0)
         expect(toolCall.state.metadata.truncated).toBe(false)
         expect(approved.result.info.role).toBe("assistant")
       }).pipe(Effect.ensuring(off))
@@ -1407,13 +1427,26 @@ withRustSupervisor(
       yield* Effect.addFinalizer(() => off)
 
       const session = yield* sessions.create({ title: "approved command interpolation" })
+      // The default direct-session mode auto-approves an in-workspace terminal
+      // run, so the Guard dialog this journey asserts would never open. A slash
+      // command runs under its own explicit ServerAuth subject and a Location is
+      // bound to the subject that registered it, so the mode is set under that
+      // same principal.
+      const commandPrincipal = {
+        principal: { kind: "server_auth" as const, subject: "command-interpolation-test" },
+      }
+      yield* supervisor
+        .setDirectSessionPermissionMode({
+          sessionID: session.id,
+          locationRef: { directory: AbsolutePath.make(dir) },
+          sandboxMode: "workspace-write",
+          approvalPolicy: "always",
+          expectedRevision: "1",
+        })
+        .pipe(Effect.provideService(TrustedPrincipalContext, commandPrincipal))
       const command = yield* prompt
         .command({ sessionID: session.id, command: "probe", arguments: "", agent: "build", model: "test/test-model" })
-        .pipe(
-          Effect.provideService(TrustedPrincipalContext, {
-            principal: { kind: "server_auth", subject: "command-interpolation-test" },
-          }),
-        )
+        .pipe(Effect.provideService(TrustedPrincipalContext, commandPrincipal))
         .pipe(Effect.forkChild)
       const request = yield* awaitWithTimeout(
         Queue.take(approvals),
