@@ -1,5 +1,40 @@
 # V1 phase execution ledger — 2026-10-22 (parent orchestration)
 
+## 2026-10-28 13:05 UTC — PUSHED: Guard approval resolves for model tool batches
+
+`git push` succeeded (`db36dfdc4..a7a4c1cb9 main -> main`, 26 commits, local == remote).
+The pre-push gate passes end to end.
+
+Root cause of the last red step: the tool-batch approval path prepared its challenge with
+`{ trustedPrincipal: trusted.principal }` but issued both `resolve_approval` and
+`resolve_approval_set` **without** that option, so HostKernel authenticated the resolution as
+the host-OS peer (`host_os_uid:1000`) while the challenge belonged to `server_auth:<subject>`
+and refused with `effect_denied`. Both calls now carry the authenticated principal; the journey
+is `guard.approval.requested` -> `allow_once` -> `resolve_approval` -> one-use lease -> write
+executed with a real `effectID` + `receiptDigest` (7.1 s, 1 pass).
+
+Also in this commit: the kernel's single one-use refusal now distinguishes a different principal,
+a different owner epoch and an already-consumed lease; and the write journey opts its session into
+`approvalPolicy: "always"` because the direct-session default auto-approves an in-workspace write
+(quiet `prepared` lease) and would never open the dialog the test covers.
+
+**Remaining, outside the pre-push gate** (these are pre-existing failures that only became
+reachable now that terminal containment is live; the gate never ran them, CI does not either):
+
+- `prompt.test.ts` "V1 model bash waits for Rust approval and runs only with a receipted lease"
+  and "single slash-command shell interpolation executes after Rust approval and returns its
+  outcome" still fail. With the same `approvalPolicy: always` opt-in the first journey's batch is
+  denied with `Guard approval was denied` even though the test replies `allow_once`, and the
+  marker file is never created; a second `bash` call then sits in `running`. That points at the
+  terminal approval lifecycle issuing/consuming more than one challenge per approved run, not at
+  the principal fix. Needs its own investigation.
+- P8 authentic HostRun evidence: three cases still skipped. P1's read-only projection source is in
+  fact installed in `HostKernel::open` (`host_run_effect_projection: Some(...)`, asserted by
+  `host_run_inspect_installs_projection_source_at_startup`), so the BLOCKED_P1 skip text is stale;
+  what is genuinely missing is a test proving a real terminal SUCCEEDED/FAILED resolution through
+  that production source (the three existing inspect tests use a spy, an absent source, or a
+  tampered journal).
+
 ## 2026-10-28 12:20 UTC — push gate: source/typecheck/Rust all green; blocked on one pre-existing test
 
 `bun install --frozen-lockfile --offline` (pinned bun, cache-backed) repaired a partially

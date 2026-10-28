@@ -1,5 +1,22 @@
 # HorizonCode — Current implementation handoff
 
+## 2026-10-28 13:05 UTC — pushed; Guard approval wired for model tool batches (round 11)
+
+`git push` succeeded: `db36dfdc4..a7a4c1cb9 main -> main`, 26 commits, remote in sync, working
+tree clean, full pre-push gate green.
+
+The last blocker was a real product bug, not a stale test: the tool-batch path prepared its Guard
+challenge with the authenticated principal but resolved the approval **without** it, so HostKernel
+saw `host_os_uid:1000` against a `server_auth:<subject>` challenge and refused. Both
+`resolve_approval` and `resolve_approval_set` now pass `trustedPrincipal`; the write journey runs
+prompt -> allow_once -> lease -> receipt with a real effectID and receiptDigest.
+
+Still open, outside the gate: two terminal-approval journeys in `prompt.test.ts` (an approved
+`terminal.run` is denied / never creates its marker — the terminal approval lifecycle looks like it
+issues more than one challenge per run), and the three skipped P8 authentic-HostRun cases. P1's
+projection source turned out to be installed already, so that skip text is stale; the real gap is a
+test proving a terminal SUCCEEDED/FAILED resolution through the production source.
+
 ## 2026-10-28 12:20 UTC — push blocked by one pre-existing gate test (round 10)
 
 Repaired `node_modules` offline (`bun install --frozen-lockfile --offline`: the `effect` workspace
