@@ -23,11 +23,17 @@ reachable now that terminal containment is live; the gate never ran them, CI doe
 
 - `prompt.test.ts` "V1 model bash waits for Rust approval and runs only with a receipted lease"
   and "single slash-command shell interpolation executes after Rust approval and returns its
-  outcome" still fail. With the same `approvalPolicy: always` opt-in the first journey's batch is
-  denied with `Guard approval was denied` even though the test replies `allow_once`, and the
-  marker file is never created; a second `bash` call then sits in `running`. That points at the
-  terminal approval lifecycle issuing/consuming more than one challenge per approved run, not at
-  the principal fix. Needs its own investigation.
+  outcome" still fail. Instrumented evidence (one `guard.approval.requested` per session, so the
+  dialog is not duplicated): the surviving tool error is
+  `Session supervisor effect failed: terminal containment could not be bound; the effect must not
+  be retried`. That is the same cgroup-v2 delegation prerequisite that makes the Rust containment
+  steps run under `run_step_root` in `v1-rust-verify.sh`: an unprivileged shell in this WSL image
+  has `/sys/fs/cgroup/non-systemd` root-owned and read-only, so `ExecutionCgroupV2::create` cannot
+  bind a per-effect subtree. A bun test cannot simply run as root either — the supervisor's
+  host-state check refuses a state root whose parent is not owned by the running uid. These two
+  journeys therefore need a delegated cgroup subtree (systemd user slice or root-owned repo) before
+  they can pass here; the earlier `Guard approval was denied` line was a secondary effect of the
+  same failing run.
 - P8 authentic HostRun evidence: three cases still skipped. P1's read-only projection source is in
   fact installed in `HostKernel::open` (`host_run_effect_projection: Some(...)`, asserted by
   `host_run_inspect_installs_projection_source_at_startup`), so the BLOCKED_P1 skip text is stale;
