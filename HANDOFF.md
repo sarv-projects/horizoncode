@@ -1,5 +1,24 @@
 # HorizonCode — Current implementation handoff
 
+## 2026-10-28 13:40 UTC — terminal journeys green; P8 needs a managed-wave fixture (round 12)
+
+`V1-TERMINAL-E2E=PASS journeys=3`, `V1-RUST-VERIFY=PASS steps=32`,
+`V1-FINAL-VERIFY=PASS steps=31` (offline guarded-write E2E included).
+
+Both terminal journeys were asserting a Guard dialog that the direct-session default never opens
+(quiet `prepared` lease), so each now opts into `approvalPolicy: "always"`; the slash-command
+journey sets that mode under the synthetic ServerAuth subject that its command runs as. The
+settlement's structured `SourceArtifactV1` reference replaced a stale `toBeString()` assertion.
+
+Cgroup delegation is now tooled instead of ad-hoc: `scripts/dev/cgroup-delegate.sh` (one-time root
+delegation) + `scripts/dev/with-cgroup.sh` (enter the subtree and exec). With it the Rust guard
+matrix passes unprivileged, and `scripts/verify/v1-terminal-e2e.sh` runs the terminal journeys.
+
+P8 remains open and is now precisely scoped: the projection source is installed, but
+`resolve_projection_effect` pins `origin_kind = managed_run`, so the missing evidence is a **managed
+Attempt terminal wave** driven through HostKernel in a Rust test (a direct-session run cannot
+satisfy it). That is the next unit of work.
+
 ## 2026-10-28 13:05 UTC — pushed; Guard approval wired for model tool batches (round 11)
 
 `git push` succeeded: `db36dfdc4..a7a4c1cb9 main -> main`, 26 commits, remote in sync, working

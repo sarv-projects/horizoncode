@@ -1,5 +1,42 @@
 # V1 phase execution ledger — 2026-10-22 (parent orchestration)
 
+## 2026-10-28 13:40 UTC — both terminal journeys PASS; P8 gap narrowed to a Rust fixture
+
+`scripts/verify/v1-terminal-e2e.sh` -> **`V1-TERMINAL-E2E=PASS journeys=3 pass=3`** (bash
+approval 7.5 s, slash-command approval 5.9 s, denial 2.7 s). They now run through the real
+Rust supervisor with a real cgroup-v2 process tree.
+
+Two independent causes were fixed, neither of them the containment code:
+
+- Both journeys assert a Guard approval dialog, but the direct-session default auto-approves an
+  in-workspace `terminal.run` through the quiet `prepared` lease, so no dialog ever opened. Each
+  journey opts its session into `approvalPolicy: "always"` first. The slash-command journey runs
+  under its own explicit ServerAuth subject and a Location is bound to the subject that registered
+  it, so its mode is set **under that same principal** — otherwise the command is refused with
+  "Location is registered to a different authenticated subject".
+- The terminal settlement publishes a structured `SourceArtifactV1` reference (id, digest, byte
+  length, media type), not a bare string; the assertion checked `toBeString()` because the journey
+  had never run. It now checks the real shape.
+
+Containment needs a delegated cgroup-v2 subtree. A systemd host already has one via the user
+slice; WSL and bare container CI do not, and cgroup-v2 forbids a user from migrating itself out of
+a cgroup it does not own. New tooling: `scripts/dev/cgroup-delegate.sh` (one-time root delegation
+of a named subtree) and `scripts/dev/with-cgroup.sh` (moves a command in and execs, using
+passwordless sudo for that single migration when needed). With it, `tool_batch_guard_matrix` now
+passes **unprivileged** (9/9, 4.7 s) instead of requiring root.
+
+Verification this round: `V1-RUST-VERIFY=PASS steps=32`, `V1-FINAL-VERIFY=PASS steps=31`
+(including `E2E_V1_SMOKE=PASS`), `V1-TERMINAL-E2E=PASS journeys=3`.
+
+**P8 next step (narrowed):** the `BLOCKED_P1` text is corrected — the source *is* installed
+(`HostKernel::open` wires `EffectHostRunProjectionSourceV1`; asserted by
+`host_run_inspect_installs_projection_source_at_startup`). The real gap is a durable fixture the
+projection can resolve: `resolve_projection_effect` requires the persisted challenge to carry
+`origin_kind = managed_run` plus a matching `managed_attempt_digest`, lease digest, arguments and
+intent digests, and a terminal process row with a quiescence proof. Building that means driving a
+managed Attempt terminal wave through HostKernel in a Rust test — a direct-session run cannot
+satisfy the origin pin.
+
 ## 2026-10-28 13:05 UTC — PUSHED: Guard approval resolves for model tool batches
 
 `git push` succeeded (`db36dfdc4..a7a4c1cb9 main -> main`, 26 commits, local == remote).

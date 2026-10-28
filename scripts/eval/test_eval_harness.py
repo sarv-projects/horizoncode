@@ -1772,12 +1772,19 @@ class AuthenticHostRunPositiveFixtureTests(unittest.TestCase):
 
     def test_full_inspect_terminal_resolution(self):
         self.skipTest(
-            "BLOCKED_P1: `host_run.inspect` cannot resolve a terminal status because "
-            "P1 has not installed `HostRunEffectProjectionSourceV1` "
-            "(HostKernel::install_host_run_effect_projection_source). The route "
-            "currently answers `host_run_effect_projection_unavailable` for every "
-            "bound key, so a full SUCCEEDED/FAILED resolution — and therefore the "
-            "authentic release of a persisted row — cannot be asserted here.")
+            "BLOCKED_P8_RUST_FIXTURE: the P1 projection source IS installed now — "
+            "`HostKernel::open` wires `EffectHostRunProjectionSourceV1` and "
+            "`host_run_inspect_installs_projection_source_at_startup` asserts it, so a "
+            "bound key resolves through the real source instead of the typed "
+            "`host_run_effect_projection_unavailable` UNKNOWN. What is still missing is "
+            "a durable fixture it can resolve: `resolve_projection_effect` requires the "
+            "persisted challenge to carry `origin_kind = managed_run` plus a matching "
+            "`managed_attempt_digest`, lease digest, arguments/intent digests and a "
+            "terminal process row with a quiescence proof. Producing those rows means "
+            "driving a managed Attempt terminal wave through HostKernel, so this "
+            "assertion belongs to a Rust test (the three existing inspect tests use a "
+            "spy source, an absent source, or a tampered journal), not to this offline "
+            "Python bridge.")
 
     def test_p8_owner_log_mirrored_append(self):
         self.skipTest(
