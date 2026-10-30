@@ -17,6 +17,25 @@ if [ -f "$ENV_FILE" ]; then
 fi
 
 KERNEL_BIN="$ROOT/kernel/target/debug/hz-kernel"
+
+# A local checkout has to be runnable with ONE command. Everything the runtime
+# needs is derived here, so `bash scripts/horizoncode` behaves like an installed
+# binary instead of demanding four exports the user has to know about.
+if [ -f "$ROOT/.env" ] && [ -z "${HORIZONCODE_ENV_LOADED:-}" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "$ROOT/.env"
+  set +a
+  export HORIZONCODE_ENV_LOADED=1
+fi
+
+# Direct-session permission reads require a trusted principal. Locally the
+# terminal is the principal; a per-machine password is enough and is stable
+# across runs so sessions stay resumable.
+if [ -z "${OPENCODE_SERVER_PASSWORD:-}" ]; then
+  export OPENCODE_SERVER_PASSWORD="horizoncode-local-$(id -u)"
+fi
+
 if [ ! -x "$KERNEL_BIN" ]; then
   echo "horizoncode: building hz-kernel…" >&2
   (cd "$ROOT/kernel" && cargo build --bin hz-kernel)
@@ -48,4 +67,13 @@ if [ -z "${OPENCODE_HOST_KERNEL_MANIFEST:-}" ] && [ -n "${OPENCODE_HOST_KERNEL_A
   export OPENCODE_HOST_KERNEL_MANIFEST="{\"schemaVersion\":1,\"status\":\"available\",\"binaryName\":\"hz-kernel\",\"target\":\"linux-x64-gnu\",\"sha256\":\"$sha256\"}"
 fi
 
-exec "$ROOT/packages/horizoncode/bin/horizoncode" "$@"
+# Bun resolves tsconfig (and therefore the JSX runtime) from the current
+# directory, so the runtime must be launched from its own package or the TUI dies
+# with "Cannot find package 'react'". Remember where the user actually was and
+# open that directory when they did not name one.
+HORIZONCODE_ORIGIN="$PWD"
+cd "$ROOT/packages/horizoncode" || exit 1
+if [ "$#" -eq 0 ]; then
+  exec ./bin/horizoncode "$HORIZONCODE_ORIGIN"
+fi
+exec ./bin/horizoncode "$@"
