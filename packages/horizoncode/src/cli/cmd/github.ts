@@ -31,7 +31,7 @@ export const GithubRunCommand = effectCmd({
 
 export const GithubCommand = cmd({
   command: "github",
-  describe: "manage GitHub agent",
+  describe: "manage the GitHub agent",
   builder: (yargs) => yargs.command(GithubInstallCommand).command(GithubRunCommand).demandCommand(),
   async handler() {},
 })

@@ -2,7 +2,7 @@ import { effectCmd, fail } from "../effect-cmd"
 
 export const PrCommand = effectCmd({
   command: "pr <number>",
-  describe: "fetch and checkout a GitHub PR branch, then run opencode",
+  describe: "fetch and checkout a GitHub PR branch, then run the agent",
   instance: false,
   builder: (yargs) =>
     yargs.positional("number", {
