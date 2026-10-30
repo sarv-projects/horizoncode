@@ -21,7 +21,7 @@ echo "== HorizonCode launcher =="
 bash "$ROOT/scripts/horizoncode" --version
 
 echo "== py-task (coding + tests) =="
-bash "$ROOT/scripts/e2e/py-task.sh"
+bash "$ROOT/scripts/e2e/py-task.sh" retrykit
 
 echo "== slash dispatch (issues, translate, commit) =="
 bash "$ROOT/scripts/e2e/slash-probe-one.sh" issues translate commit

@@ -5,12 +5,22 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 mkdir -p "$ROOT/.tmp"
 failed=0
 out=""
-cleanup() {
-  if [[ -n "$out" ]]; then
+
+remove_out() {
+  if [[ -n "${out:-}" && -f "$out" ]]; then
     rm -f -- "$out"
   fi
+  out=""
 }
-trap cleanup EXIT HUP INT TERM
+
+on_signal() {
+  remove_out
+  exit 130
+}
+
+trap remove_out EXIT
+trap on_signal INT TERM
+
 for pkg in horizoncode tui core; do
   out="$(mktemp "$ROOT/.tmp/horizoncode-typecheck.XXXXXX")"
   set +e
@@ -20,11 +30,10 @@ for pkg in horizoncode tui core; do
   if [[ $ec -ne 0 ]]; then
     failed=1
   fi
-  if grep -q 'error TS' "$out"; then
+  if [[ -f "$out" ]] && grep -q 'error TS' "$out"; then
     echo "horizoncode:typecheck: diagnostics in packages/$pkg" >&2
     failed=1
   fi
-  cleanup
-  out=""
+  remove_out
 done
 exit "$failed"

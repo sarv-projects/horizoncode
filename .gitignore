@@ -1467,3 +1467,22 @@ packages/core/tmp-p7/
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# scratch and internal
+repo_take/
+opencode/
+cline-probe/
+repos/
+perf/
+sdks/
+tmp/
+target-p2/
+hz-t/
+hz-host-kernel-*/
+CURRENT_RUN.md
+STATS.md
+CONTEXT.md
+implementationtov1release.md
+session.json
+install.tmp
+screenshot-uk.png
