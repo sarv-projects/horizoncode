@@ -25,3 +25,112 @@ Most coding agents put the model in charge of deciding what tools to call. Horiz
 A TypeScript/Bun runtime handles the agent loop and terminal interface. A Rust kernel controls execution admission, permissions, leases, effects and receipts.
 
 This separation is the foundation of HorizonCode: **the model can request an action, but it cannot independently authorise that action.**
+
+## Getting started
+
+Requires **Linux or WSL2**, [Bun](https://bun.sh) and a Rust toolchain.
+
+```bash
+git clone https://github.com/sarv-projects/horizoncode.git
+cd horizoncode
+python3 scripts/architecture/bootstrap_source.py --apply   # hydrate pinned sources
+bun install --frozen-lockfile
+cargo build --locked --manifest-path kernel/Cargo.toml
+bun run dev                                               # start the TUI
+```
+
+Set a provider key, then start working:
+
+```bash
+export NVIDIA_API_KEY=nvapi-...
+hzcode                                                    # open the TUI in the current directory
+hzcode ~/code/my-project                                  # open it in a project
+hzcode --yolo                                             # allow-all execution posture
+```
+
+<p align="center">
+  <img src="docs/assets/terminal.svg" alt="HorizonCode running in a terminal" width="100%" />
+</p>
+
+## Commands
+
+| command | what it does |
+| --- | --- |
+| `hzcode [project]` | start the terminal UI (default command) |
+| `hzcode run [message..]` | run one task non-interactively and exit |
+| `hzcode serve` | start a headless server |
+| `hzcode web` | start the server and open the web interface |
+| `hzcode attach <url>` | attach this terminal to a running server |
+| `hzcode models [provider]` | list available models |
+| `hzcode providers` | manage AI providers and credentials |
+| `hzcode provider` | enter a provider key through the guarded credential channel |
+| `hzcode agent` | manage agents and subagent profiles |
+| `hzcode session` | list, resume and export sessions |
+| `hzcode stats` | token usage and cost |
+| `hzcode analytics` | harness performance metrics from recorded telemetry |
+| `hzcode export [sessionID]` | export a session as JSON |
+| `hzcode import <file>` | import a session from JSON |
+| `hzcode acp` | start an ACP (Agent Client Protocol) server |
+| `hzcode mcp` | manage MCP servers |
+| `hzcode plugin <module>` | install a plugin and update config |
+| `hzcode github` | GitHub agent |
+| `hzcode pr <number>` | check out a PR branch and run the agent on it |
+| `hzcode completion` | shell completion script |
+| `hzcode debug` | troubleshooting tools |
+| `hzcode db` | database tools |
+| `hzcode update [action]` | check for updates (apply is explicit and digest-pinned) |
+| `hzcode upgrade` | install an update (currently unavailable) |
+| `hzcode uninstall` | remove HorizonCode and its files |
+| `hzcode --help` | full usage |
+
+Inside the TUI: `ctrl+p` opens the command palette, `/` runs a slash command, `/mode` switches the execution posture, and `⏵⏵` accepts the pending edits for the turn.
+
+## Execution modes
+
+The posture is enforced by the kernel, not by a prompt.
+
+| mode | kernel posture | behaviour |
+| --- | --- | --- |
+| **Allow** | `danger-full-access` · `approvalPolicy=never` | never asks; for sandboxed or disposable work |
+| **Ask** | `workspace-write` · `on-request` | asks before anything outside the workspace |
+| **Deny** | read-only | refuses every mutation; exploration and search still work |
+
+```bash
+hzcode --yolo     # Allow
+hzcode            # Ask (default)
+```
+
+## Models
+
+HorizonCode ships no default vendor; provider and model come from [models.dev](https://models.dev) and are never silently substituted. This build was developed and measured against **NVIDIA Nemotron** through Nebius Token Factory / NVIDIA's OpenAI-compatible endpoint:
+
+```bash
+export NVIDIA_API_KEY=nvapi-...
+hzcode --model nvidia/nvidia/nemotron-3.5-super-vl-120b-a12b
+```
+
+Any provider in models.dev works the same way, including a local server.
+
+## Verifying a run
+
+Every mutation crosses the kernel and settles with a receipt, so a run can be audited instead of believed:
+
+- `hzcode session` — pick a session; the tool trace shows each call with its status.
+- `hzcode export <sessionID>` — dump the session, receipts included, as JSON.
+- `reports/` — harness reports from the runs this project was measured on, with the exact commands used.
+
+## Known limitations
+
+- The independent-evidence gate is designed and Rust-owned but not yet wired into the direct session lane, so a direct turn's "done" is still a claim.
+- Subagent delegation is implemented but currently disabled behind a flag.
+- Two edits to the same file in one message are refused by the kernel; split them.
+- A few slash commands need a mediated shell and return 503 until that path lands.
+- Native Windows is unsupported. Use WSL2.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Architecture and decisions live in [`arch_V1/`](arch_V1/README.md).
+
+## License
+
+MIT — see [LICENSE](LICENSE).
