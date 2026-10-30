@@ -1,6 +1,6 @@
 # Contributing to HorizonCode
 
-HorizonCode is an experimental, source-build coding-agent project. Contributions are welcome across guarded tool execution, managed long-horizon work, performance, integrations, tests and user experience. **This is HorizonCode's contributor workflow**, not a copy of upstream OpenCode's issue/PR policy. The original upstream guide is retained in [opencode/CONTRIBUTING.md](opencode/CONTRIBUTING.md).
+HorizonCode is an experimental, source-build coding-agent project. Contributions are welcome across guarded tool execution, managed long-horizon work, performance, integrations, tests and user experience. **This is HorizonCode's contributor workflow**, not a copy of upstream OpenCode's issue/PR policy. The original upstream guide is retained in the local pinned `opencode/` snapshot at `opencode/CONTRIBUTING.md`; that directory is untracked reference material and is not part of the tracked tree.
 
 ## Start with the implementation truth
 

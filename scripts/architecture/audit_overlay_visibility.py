@@ -5,9 +5,15 @@ The pinned upstream source is tracked under opencode/. The runnable workspace is
 hydrated at the repository root. Identical upstream copies may stay ignored, but
 any file that differs from the pinned snapshot must be Git-visible so a commit
 cannot silently omit HorizonCode behavior.
+
+Snapshot-only copies of the retired `packages/opencode` workspace and of the
+first-party deletions declared in bootstrap_source.py are hydration policy, not
+drift: the root never carries them and must never be re-hydrated, so the
+snapshot walk skips both.
 """
 from __future__ import annotations
 import hashlib
+import importlib.util
 import os
 import re
 import subprocess
@@ -85,6 +91,41 @@ SOURCE_SUFFIXES = {
     ".sql", ".proto", ".kdl", ".css", ".scss", ".html", ".xml",
 }
 
+def _load_first_party_deletions() -> frozenset[str]:
+    # scripts/architecture/bootstrap_source.py is the policy authority for the
+    # paths the first-party overlay deliberately deleted after the snapshot was
+    # pinned. Load it by path so the audit behaves identically when run
+    # directly (`python3 scripts/architecture/audit_overlay_visibility.py`),
+    # under pytest, or from any working directory. A failed load must fail
+    # loudly rather than silently fall back to a possibly stale inline copy.
+    authority = Path(__file__).resolve().parent / "bootstrap_source.py"
+    spec = importlib.util.spec_from_file_location(
+        "horizon_overlay_bootstrap_source", authority
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Bootstrap authority not loadable: {authority}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return frozenset(module.FIRST_PARTY_DELETIONS)
+
+FIRST_PARTY_DELETIONS: frozenset[str] = _load_first_party_deletions()
+
+# Hydration policy (bootstrap_source.py): the runnable workspace is
+# packages/horizoncode, and the snapshot's older packages/opencode tree is
+# retired — materialising it at the root would put two conflicting dependency
+# graphs in the same Bun workspace root. A snapshot-only copy of that subtree
+# is never overlay drift.
+RETIRED_SNAPSHOT_WORKSPACE = ("packages", "opencode")
+
+def snapshot_skip(rel: Path) -> bool:
+    # Skip the snapshot walk entries that are hydration policy rather than
+    # overlay mismatch: the retired snapshot workspace above, and every
+    # first-party deletion (bootstrap_source.py: commit bc439637a removed the
+    # upstream translated READMEs and their screenshot from the root).
+    if rel.parts[:2] == RETIRED_SNAPSHOT_WORKSPACE:
+        return True
+    return rel.as_posix() in FIRST_PARTY_DELETIONS
+
 def digest(path: Path) -> bytes:
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -114,6 +155,8 @@ def main() -> int:
             source = Path(base) / name
             rel = source.relative_to(SNAPSHOT)
             if any(part in SKIP for part in rel.parts):
+                continue
+            if snapshot_skip(rel):
                 continue
             target = ROOT / rel
             compared += 1

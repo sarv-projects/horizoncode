@@ -12,7 +12,7 @@ This is **navigation only**. It is not another product architecture, runtime con
 | Full tracked-Markdown structural audit | `python3 scripts/architecture/audit_markdown_repo.py` (from repository root), optional `--json-report` for per-file evidence; [immutable 278-file baseline manifest](audits/2026-10-15-tracked-markdown-structural-manifest.json); consult root [HANDOFF.md](../HANDOFF.md) for audited baseline and exclusions |
 | Risk, disclosure and OS sandbox qualification | [SECURITY.md](../SECURITY.md), [§05](../arch_V1/05-SECURITY.md), [§14](../arch_V1/14-EFFECTS-EXECUTION-SECURITY.md), [§18](../arch_V1/18-OPERATIONS-RELEASE.md) |
 | Original external source decisions/attribution | [§42 provenance register](../arch_V1/42-EXTERNAL-SOURCE-PROVENANCE-REGISTER.md) |
-| Chronological development notes | [CURRENT_RUN.md](../CURRENT_RUN.md); never an alternate live architecture |
+| Chronological development notes | dated status digests in the live [HANDOFF.md](../HANDOFF.md); superseded chronology retained in the archive ([2026-10-11 run record](architecture-archive/2026-10-11-pre-lean-consolidation/CURRENT_RUN.md), [2026-10-15 handoff chronology](architecture-archive/2026-10-15-handoff-pre-jcode-adoption.md)); never an alternate live architecture |
 | Root file roles / redundancy candidates | [repository-root-inventory.md](repository-root-inventory.md) |
 | V1 wire tracker (done / partial / not done) | [arch_V1/46-V1-WIRE-TRACKER.md](../arch_V1/46-V1-WIRE-TRACKER.md) |
 | Historical design and displaced notes | [architecture-archive/](architecture-archive/) — non-operative |

@@ -75,7 +75,7 @@ Explorer overlay UI source exists (`packages/tui/src/component/dialog-editor-exp
 for a valid request, `workspaceEditorOpenRequest` always returns typed `unavailable`/`host_route_unavailable`
 (`packages/tui/src/editor.ts:117-123`) and the external-editor effect returns
 `route_unavailable` while `EXTERNAL_EDITOR_ROUTE_READY = false`
-(`packages/opencode/src/lsp/external-editor.ts:31,167-172`). `openWorkspaceFileV1` has no
+(`packages/horizoncode/src/lsp/external-editor.ts:31,167-172`). `openWorkspaceFileV1` has no
 production caller outside its module/test, and the Guarded `editor.launch` HostKernel route is
 absent. This records current behavior without weakening the requirement above: no editor
 process can start.

@@ -200,149 +200,48 @@
 !/packages/client/src/generated-effect/client.ts
 !/packages/opencode/
 !/packages/opencode/script/
-!/packages/opencode/script/build.ts
-!/packages/opencode/script/publish.ts
 !/packages/containers/
 !/packages/containers/script/
 !/packages/containers/script/build.ts
 !/packages/opencode/src/
 !/packages/opencode/src/snapshot/
-!/packages/opencode/src/snapshot/index.ts
 !/packages/opencode/src/effect/
-!/packages/opencode/src/effect/bridge.ts
-!/packages/opencode/src/effect/app-runtime.ts
-!/packages/opencode/src/effect/runtime-flags.ts
 !/packages/opencode/src/session/
 !/packages/opencode/src/question/
-!/packages/opencode/src/question/owner.ts
-!/packages/opencode/src/session/direct-subagent-inbox.ts
-!/packages/opencode/src/session/run-state.ts
-!/packages/opencode/src/session/prompt.ts
-!/packages/opencode/src/session/tools.ts
-!/packages/opencode/src/session/session.ts
-!/packages/opencode/src/session/revert.ts
-!/packages/opencode/src/session/llm.ts
-!/packages/opencode/src/session/tool-batch.ts
 !/packages/opencode/src/tool/
-!/packages/opencode/src/tool/tool.ts
-!/packages/opencode/src/tool/apply_patch.ts
-!/packages/opencode/src/tool/write.ts
-!/packages/opencode/src/tool/read.ts
-!/packages/opencode/src/tool/glob.ts
-!/packages/opencode/src/tool/grep.ts
-!/packages/opencode/src/tool/history.ts
-!/packages/opencode/src/tool/history-projection.ts
-!/packages/opencode/src/tool/registry.ts
 !/packages/opencode/src/project/
-!/packages/opencode/src/project/project.ts
-!/packages/opencode/src/project/vcs.ts
 !/packages/opencode/src/git/
-!/packages/opencode/src/git/index.ts
 !/packages/opencode/src/control-plane/
-!/packages/opencode/src/control-plane/workspace.ts
 !/packages/opencode/src/acp/
-!/packages/opencode/src/acp/event.ts
-!/packages/opencode/src/acp/permission.ts
-!/packages/opencode/src/acp/service.ts
-!/packages/opencode/src/acp/session.ts
 !/packages/opencode/src/lsp/
-!/packages/opencode/src/lsp/lsp.ts
 !/packages/opencode/src/mcp/
-!/packages/opencode/src/mcp/catalog.ts
-!/packages/opencode/src/mcp/index.ts
 !/packages/opencode/src/plugin/
 !/packages/opencode/src/cli/
 !/packages/opencode/src/cli/cmd/
-!/packages/opencode/src/cli/cmd/mcp.ts
-!/packages/opencode/src/cli/cmd/providers.ts
-!/packages/opencode/src/cli/cmd/db.ts
-!/packages/opencode/src/cli/cmd/session.ts
-!/packages/opencode/src/cli/cmd/uninstall.ts
 !/packages/opencode/src/cli/cmd/debug/
-!/packages/opencode/src/cli/cmd/debug/agent.handler.ts
-!/packages/opencode/src/plugin/index.ts
 !/packages/opencode/src/plugin/tui/
-!/packages/opencode/src/plugin/tui/runtime.ts
-!/packages/opencode/src/server/routes/instance/httpapi/groups/mcp.ts
-!/packages/opencode/src/server/routes/instance/httpapi/handlers/mcp.ts
 !/packages/opencode/src/server/
 !/packages/opencode/src/server/routes/
 !/packages/opencode/src/server/routes/instance/
 !/packages/opencode/src/server/routes/instance/httpapi/
 !/packages/opencode/src/server/routes/instance/httpapi/groups/
-!/packages/opencode/src/server/routes/instance/httpapi/groups/instance.ts
-!/packages/opencode/src/server/routes/instance/httpapi/groups/workspace.ts
-!/packages/opencode/src/server/routes/instance/httpapi/groups/session.ts
-!/packages/opencode/src/server/routes/instance/httpapi/groups/control-plane.ts
 !/packages/opencode/src/server/routes/instance/httpapi/handlers/
-!/packages/opencode/src/server/routes/instance/httpapi/api.ts
-!/packages/opencode/src/server/routes/instance/httpapi/handlers/goal-review.ts
-!/packages/opencode/src/server/routes/instance/httpapi/handlers/session.ts
-!/packages/opencode/src/server/routes/instance/httpapi/handlers/instance.ts
-!/packages/opencode/src/server/routes/instance/httpapi/handlers/workspace.ts
-!/packages/opencode/src/server/routes/instance/httpapi/handlers/session-errors.ts
-!/packages/opencode/src/server/routes/instance/httpapi/handlers/control-plane.ts
-!/packages/opencode/src/server/routes/instance/httpapi/server.ts
 !/packages/opencode/test/
 !/packages/opencode/test/fixture/
-!/packages/opencode/test/fixture/db.ts
 !/packages/opencode/test/project/
-!/packages/opencode/test/project/vcs.test.ts
 !/packages/opencode/test/snapshot/
-!/packages/opencode/test/snapshot/snapshot.test.ts
 !/packages/opencode/test/control-plane/
-!/packages/opencode/test/control-plane/workspace.test.ts
 !/packages/opencode/test/cli/
-!/packages/opencode/test/cli/mcp-debug.test.ts
-!/packages/opencode/test/cli/provider-url-auth-disabled.test.ts
-!/packages/opencode/test/cli/agent-debug.test.ts
 !/packages/opencode/test/server/
-!/packages/opencode/test/server/httpapi-v2-question-live.test.ts
-!/packages/opencode/test/server/question-owner.test.ts
-!/packages/opencode/test/server/question-api-group.test.ts
-!/packages/opencode/test/server/httpapi-cors.test.ts
-!/packages/opencode/test/server/httpapi-public-openapi.test.ts
-!/packages/opencode/test/server/httpapi-control-plane.test.ts
-!/packages/opencode/test/server/httpapi-session.test.ts
 !/packages/opencode/test/server/httpapi-exercise/
-!/packages/opencode/test/server/httpapi-exercise/index.ts
 !/packages/opencode/test/session/
-!/packages/opencode/test/session/run-state-owner.test.ts
-!/packages/opencode/test/session/prompt.test.ts
-!/packages/opencode/test/session/tool-batch.test.ts
-!/packages/opencode/test/session/tools.test.ts
 !/packages/opencode/test/auth/
-!/packages/opencode/test/auth/provider-transport.test.ts
 !/packages/opencode/test/tool/
-!/packages/opencode/test/tool/write.test.ts
-!/packages/opencode/test/tool/apply_patch.test.ts
 !/packages/opencode/test/acp/
-!/packages/opencode/test/acp/permission.test.ts
-!/packages/opencode/test/acp/service-session.test.ts
-!/packages/opencode/test/acp/session.test.ts
 !/packages/opencode/test/lsp/
-!/packages/opencode/test/lsp/index.test.ts
-!/packages/opencode/test/lsp/lifecycle.test.ts
-!/packages/opencode/test/lsp/adapter-queue-lifecycle.test.ts
 !/packages/opencode/test/mcp/
-!/packages/opencode/test/mcp/index.test.ts
-!/packages/opencode/test/mcp/catalog.test.ts
-!/packages/opencode/test/mcp/headers.test.ts
-!/packages/opencode/test/mcp/lifecycle.test.ts
-!/packages/opencode/test/mcp/oauth-auto-connect.test.ts
-!/packages/opencode/test/mcp/oauth-browser.test.ts
-!/packages/opencode/test/mcp/unavailable.ts
 !/packages/opencode/test/plugin/
-!/packages/opencode/test/plugin/trigger.test.ts
-!/packages/opencode/test/plugin/tui-runtime.test.ts
-!/packages/opencode/test/plugin/auth-override.test.ts
-!/packages/opencode/test/plugin/loader-shared.test.ts
-!/packages/opencode/test/plugin/workspace-adapter.test.ts
 !/packages/opencode/test/identity/
-!/packages/opencode/test/identity/runtime-service-identity.test.ts
-!/packages/opencode/test/tool/registry.test.ts
-!/packages/opencode/test/tool/task-selector-projection.test.ts
-!/packages/opencode/test/tool/code-mode-integration.test.ts
 !/packages/schema/
 !/packages/schema/src/
 !/packages/schema/src/composition-v1.ts
@@ -453,19 +352,8 @@ tsconfig.tsbuildinfo
 !/packages/core/src/ripgrep/
 !/packages/core/src/ripgrep/binary.ts
 !/packages/opencode/test/cli/run/
-!/packages/opencode/test/cli/run/stream.transport.test.ts
-!/packages/opencode/test/cli/run/runtime.boot.test.ts
-!/packages/opencode/test/cli/run/runtime.bootstrap-resume.test.ts
 !/packages/opencode/test/effect/
-!/packages/opencode/test/effect/instance-state.test.ts
-!/packages/opencode/test/effect/app-layer-serve.test.ts
 !/packages/opencode/test/fake/
-!/packages/opencode/test/fake/provider.ts
-!/packages/opencode/test/acp/event.test.ts
-!/packages/opencode/test/session/compaction.test.ts
-!/packages/opencode/test/session/processor-effect.test.ts
-!/packages/opencode/test/session/snapshot-tool-race.test.ts
-!/packages/opencode/test/tool/lsp.test.ts
 !/packages/schema/test/agent-message-v1.test.ts
 !/packages/tui/test/component/dialog-editor-settings.test.tsx
 /artifacts/
@@ -521,14 +409,7 @@ tsconfig.tsbuildinfo
 !/packages/tui/src/context/sync.tsx
 !/packages/tui/src/context/ui-event-mux.ts
 !/packages/tui/test/component/dialog-features.test.tsx
-!/packages/opencode/src/tool/shell.ts
 !/packages/opencode/src/server/shared/
-!/packages/opencode/src/server/shared/pty-ticket.ts
-!/packages/opencode/src/server/routes/instance/httpapi/handlers/pty.ts
-!/packages/opencode/src/server/routes/instance/httpapi/middleware/authorization.ts
-!/packages/opencode/test/server/httpapi-listen.test.ts
-!/packages/opencode/test/server/httpapi-v2-pty.test.ts
-!/packages/opencode/test/tool/shell.test.ts
 !/kernel/src/host_kernel.rs
 !/kernel/src/resource_sampler.rs
 !/kernel/src/terminal.rs
@@ -566,7 +447,6 @@ tsconfig.tsbuildinfo
 !/packages/schema/src/index.ts
 
 # P1.3 host-kernel/terminal deltas beyond the pinned upstream snapshot
-!/packages/opencode/src/server/auth.ts
 !/packages/opencode/src/config/
 !/packages/server/src/middleware/
 !/kernel/tests/effects_host_process.rs
@@ -574,61 +454,21 @@ tsconfig.tsbuildinfo
 !/kernel/tests/host_terminal_process.rs
 !/packages/core/src/pty/protocol.ts
 !/packages/core/test/pty/pty-session.test.ts
-!/packages/opencode/src/config/config.ts
-!/packages/opencode/src/config/v2-compat.ts
-!/packages/opencode/test/config/v2-compat.test.ts
-!/packages/opencode/test/provider/header-timeout.test.ts
-!/packages/opencode/test/provider/amazon-bedrock.test.ts
-!/packages/opencode/test/auth/context-compile-projection.test.ts
-!/packages/opencode/test/server/control-plane-api-group.test.ts
-!/packages/opencode/test/session/direct-provider-authority.test.ts
 !/packages/core/src/session/transfer.ts
 !/packages/core/test/session-transfer.test.ts
 !/reports/e2e-free-model-plan.md
-!/packages/opencode/src/server/routes/instance/httpapi/groups/config.ts
-!/packages/opencode/src/server/routes/instance/httpapi/groups/pty.ts
-!/packages/opencode/src/server/routes/instance/httpapi/handlers/config.ts
 !/packages/protocol/src/groups/pty.ts
 !/packages/server/src/auth.ts
 !/packages/server/src/cors.ts
 !/packages/server/src/middleware/authorization.ts
 !/packages/opencode/src/agent/
-!/packages/opencode/src/agent/agent.ts
-!/packages/opencode/src/session/system.ts
 !/packages/server/src/location.ts
 !/packages/server/src/middleware/session-location.ts
-!/packages/opencode/src/session/compaction.ts
-!/packages/opencode/src/session/processor.ts
-!/packages/opencode/src/tool/task.ts
-!/packages/opencode/src/server/routes/instance/httpapi/groups/experimental.ts
-!/packages/opencode/src/server/routes/instance/httpapi/groups/file.ts
-!/packages/opencode/src/server/routes/instance/httpapi/handlers/experimental.ts
-!/packages/opencode/src/server/routes/instance/httpapi/handlers/file.ts
-!/packages/opencode/src/server/routes/instance/httpapi/server.ts
 
 # A4: expose current first-party overlay deltas discovered by the 2026-10-16 audit.
 !/packages/core/src/location-services.ts
-!/packages/opencode/src/agent/subagent-permissions.ts
-!/packages/opencode/src/acp/directory.ts
-!/packages/opencode/src/cli/cmd/agent.ts
-!/packages/opencode/src/cli/cmd/debug/file.ts
-!/packages/opencode/src/cli/cmd/debug/v2.ts
-!/packages/opencode/src/project/instance-store.ts
-!/packages/opencode/src/server/routes/instance/httpapi/public.ts
 !/packages/opencode/test/agent/
-!/packages/opencode/test/agent/agent.test.ts
-!/packages/opencode/test/agent/agent-identifier.test.ts
-!/packages/opencode/test/agent/plan-mode-subagent-bypass.test.ts
-!/packages/opencode/test/fixture/config.ts
-!/packages/opencode/test/fixture/fixture.ts
-!/packages/opencode/test/server/httpapi-instance.test.ts
-!/packages/opencode/test/server/httpapi-experimental.test.ts
-!/packages/opencode/test/server/httpapi-layer.ts
-!/packages/opencode/test/server/httpapi-pty.test.ts
-!/packages/opencode/test/session/llm.test.ts
 !/packages/opencode/test/session/llm/
-!/packages/opencode/test/session/llm/user-agent.test.ts
-!/packages/opencode/test/tool/task.test.ts
 !/packages/sdk/
 !/packages/sdk/js/
 !/packages/sdk/js/src/
@@ -640,13 +480,7 @@ tsconfig.tsbuildinfo
 
 # P6: expose provider/agent/TUI-settings overlay deltas.
 !/packages/opencode/src/provider/
-!/packages/opencode/src/provider/provider.ts
-!/packages/opencode/src/provider/error.ts
 !/packages/opencode/test/provider/
-!/packages/opencode/test/provider/model-pricing.test.ts
-!/packages/opencode/test/provider/provider.test.ts
-!/packages/opencode/test/provider/opencode-free.test.ts
-!/packages/opencode/test/provider/error.test.ts
 !/packages/tui/src/component/dialog-agent.tsx
 !/packages/tui/src/component/dialog-model.tsx
 !/packages/tui/test/component/dialog-agent.test.ts
@@ -660,27 +494,9 @@ tsconfig.tsbuildinfo
 # ignored unless they differ from the pinned opencode/ snapshot.
 # LSP/DAP/REPL service deltas and repo-intel/artifact-search tools.
 !/packages/opencode/src/dap/
-!/packages/opencode/src/dap/protocol.ts
-!/packages/opencode/src/dap/session.ts
-!/packages/opencode/src/lsp/broker.ts
 !/packages/opencode/src/repl/
-!/packages/opencode/src/repl/lifecycle.ts
-!/packages/opencode/src/repl/protocol.ts
-!/packages/opencode/src/tool/artifact-search.ts
-!/packages/opencode/src/tool/repo-intel.ts
-!/packages/opencode/src/tool/repo-tools.ts
 !/packages/opencode/test/dap/
-!/packages/opencode/test/dap/protocol.test.ts
-!/packages/opencode/test/dap/session.test.ts
-!/packages/opencode/test/dap/tool-surface.test.ts
-!/packages/opencode/test/lsp/broker.test.ts
 !/packages/opencode/test/repl/
-!/packages/opencode/test/repl/lifecycle.test.ts
-!/packages/opencode/test/repl/protocol.test.ts
-!/packages/opencode/test/tool/artifact-search.test.ts
-!/packages/opencode/test/tool/repo-intel.test.ts
-!/packages/opencode/test/tool/repo-tools.test.ts
-!/packages/opencode/test/tool/websearch.test.ts
 # Provider package deltas (google-vertex provider and provider runtime/tests).
 !/packages/llm/
 !/packages/llm/src/
@@ -699,11 +515,6 @@ tsconfig.tsbuildinfo
 !/packages/llm/src/route/transport/http.ts
 !/packages/llm/test/auth.test.ts
 !/packages/opencode/src/session/llm/
-!/packages/opencode/src/session/llm/native-runtime.ts
-!/packages/opencode/src/session/llm/request.ts
-!/packages/opencode/src/session/llm/user-agent.ts
-!/packages/opencode/test/provider/provider.test.ts
-!/packages/opencode/test/server/httpapi-provider.test.ts
 # TUI question/plugin/context deltas and core location-layer test.
 !/packages/tui/src/plugin/
 !/packages/tui/src/plugin/adapters.tsx
@@ -716,9 +527,6 @@ tsconfig.tsbuildinfo
 !/packages/tui/test/plugin/adapters.test.tsx
 !/packages/tui/test/util/model.test.ts
 !/packages/core/test/location-layer.test.ts
-!/packages/opencode/test/tool/grep.test.ts
-!/packages/opencode/test/tool/read.test.ts
-!/packages/opencode/test/server/httpapi-mcp.test.ts
 !/packages/tui/src/component/use-connected.tsx
 !/packages/tui/src/util/model.ts
 !/kernel/src/automation.rs
@@ -756,19 +564,9 @@ tsconfig.tsbuildinfo
 # 2026-10-17 exact visibility exceptions for the active C15, Guard/P4, P7 and P8 work.
 !/packages/opencode/src/format/
 !/packages/opencode/test/format/
-!/packages/opencode/src/lsp/launch.ts
-!/packages/opencode/src/lsp/server.ts
-!/packages/opencode/src/tool/question.ts
-!/packages/opencode/test/lsp/launch.test.ts
-!/packages/opencode/src/session/managed-control.ts
-!/packages/opencode/src/session/managed-run-coordinator.ts
-!/packages/opencode/test/session/managed-control.test.ts
-!/packages/opencode/src/format/index.ts
-!/packages/opencode/test/format/format.test.ts
 !/packages/core/test/session-supervisor-batch.test.ts
 !/packages/core/test/ripgrep.test.ts
 !/packages/core/test/repo-intelligence-config.test.ts
-!/packages/opencode/test/plugin/shell-origin.test.ts
 !/kernel/tests/managed_settlement_provenance.rs
 !/packages/tui/src/component/artifact-markdown.tsx
 !/packages/tui/src/component/terminal-graphics.ts
@@ -792,12 +590,7 @@ tsconfig.tsbuildinfo
 !/packages/schema/src/provider-doctor-v1.ts
 !/packages/schema/test/
 !/packages/schema/test/provider-doctor-v1.test.ts
-!/packages/opencode/src/provider/doctor.ts
-!/packages/opencode/test/provider/doctor.test.ts
 # P6 Provider Doctor offline HTTP API and TUI surface.
-!/packages/opencode/src/server/routes/instance/httpapi/groups/provider-doctor.ts
-!/packages/opencode/src/server/routes/instance/httpapi/handlers/provider-doctor.ts
-!/packages/opencode/test/provider/doctor-api.test.ts
 !/packages/tui/src/component/dialog-provider-doctor.tsx
 !/packages/tui/src/component/dialog-subagents.tsx
 !/packages/tui/src/component/dialog-subagent-message.tsx
@@ -808,78 +601,30 @@ tsconfig.tsbuildinfo
 !/packages/tui/test/component/dialog-mcp.test.ts
 # 2026-10-18 A4: launcher/installer deltas, P4 LSP client tests, and P7 activity stream must be Git-visible.
 !/install
-!/packages/opencode/package.json
 !/packages/opencode/bin/
-!/packages/opencode/bin/opencode
-!/packages/opencode/bin/horizoncode
-!/packages/opencode/Dockerfile
-!/packages/opencode/src/lsp/client.ts
-!/packages/opencode/test/lsp/client.test.ts
 !/packages/tui/src/component/activity-stream.tsx
 !/packages/tui/test/component/activity-stream.test.tsx
 !/packages/tui/test/util/transcript-window.test.ts
 !/packages/tui/test/app-goal-review-inbox.test.tsx
 # 2026-10-18 A4 (2): new agent-created first-party test found by the overlay audit during handover.
-!/packages/opencode/test/session/tool-filter.test.ts
 # 2026-10-18 A4 (3): paste-ready next-agent handoff prompt.
 # 2026-10-18 A4 (4): first-party skill-origin zero-spawn regression.
-!/packages/opencode/test/tool/skill.test.ts
 # P2: preserve the SDK generator source for the managed Goal review API.
 !/packages/sdk/js/script/build.ts
 # P7: Rust-owned checkpoint journal and preview/recovery tests.
 !/kernel/src/checkpoint.rs
 !/kernel/src/managed_verifier.rs
 # P5: V1 ordered web-search cascade service and TUI settings.
-!/packages/opencode/src/tool/websearch-broker.ts
-!/packages/opencode/src/tool/websearch.ts
-!/packages/opencode/src/tool/websearch-inspect.ts
-!/packages/opencode/src/tool/websearch-runtime.ts
-!/packages/opencode/src/tool/websearch-adapters.ts
-!/packages/opencode/src/tool/code-mode.ts
-!/packages/opencode/src/tool/code-mode-helper.ts
-!/packages/opencode/test/tool/websearch-cascade.fixture.ts
-!/packages/opencode/test/tool/code-mode.test.ts
-!/packages/opencode/src/dap/supervised.ts
-!/packages/opencode/src/lsp/supervised.ts
 !/packages/tui/src/component/dialog-websearch-settings.tsx
 !/packages/tui/test/component/dialog-websearch-settings.test.tsx
 # 2026-10-18 A4: P1 guarded legacy-origin deny tests and P6 free-provider acceptance.
-!/packages/opencode/src/cli/upgrade.ts
-!/packages/opencode/src/cli/cmd/upgrade.ts
 !/packages/opencode/src/installation/
-!/packages/opencode/src/installation/index.ts
-!/packages/opencode/src/server/routes/instance/httpapi/groups/global.ts
-!/packages/opencode/src/server/routes/instance/httpapi/groups/project.ts
-!/packages/opencode/src/server/routes/instance/httpapi/handlers/global.ts
-!/packages/opencode/src/server/routes/instance/httpapi/handlers/project.ts
-!/packages/opencode/test/server/auth.test.ts
-!/packages/opencode/test/server/httpapi-authorization.test.ts
-!/packages/opencode/test/server/httpapi-global.test.ts
-!/packages/opencode/test/server/httpapi-ui.test.ts
-!/packages/opencode/test/server/httpapi-config-features-isolation.test.ts
-!/packages/opencode/test/server/project-init-git.test.ts
-!/packages/opencode/test/server/listener-memo-map.test.ts
-!/packages/opencode/test/cli/upgrade.test.ts
 !/packages/opencode/test/installation/
-!/packages/opencode/test/installation/upgrade.test.ts
-!/packages/opencode/test/provider/doctor-live.test.ts
-!/packages/opencode/src/tool/webfetch.ts
-!/packages/opencode/test/tool/webfetch.test.ts
 # 2026-10-18 A4: P1 HTTP ExecutionHost and P6 SecretBroker source/contracts.
 !/kernel/src/http_execution.rs
 !/packages/opencode/src/auth/
-!/packages/opencode/src/auth/secret-broker.ts
-!/packages/opencode/src/auth/secret-service.ts
-!/packages/opencode/src/auth/index.ts
-!/packages/opencode/src/provider/auth.ts
 !/packages/opencode/test/auth/
-!/packages/opencode/test/auth/secret-broker.test.ts
-!/packages/opencode/src/auth/credential-broker-runtime.ts
-!/packages/opencode/test/auth/credential-broker-runtime.test.ts
-!/packages/opencode/test/auth/secret-service.test.ts
-!/packages/opencode/test/auth/auth.test.ts
 !/packages/opencode/test/config/
-!/packages/opencode/test/config/config.test.ts
 !/packages/schema/script/
 !/packages/schema/script/generate-secret-broker-v1.ts
 !/packages/schema/src/secret-broker-v1.ts
@@ -889,8 +634,6 @@ tsconfig.tsbuildinfo
 !/packages/tui/src/component/dialog-goal-verification.tsx
 !/packages/tui/src/component/dialog-guard-approval.tsx
 # 2026-10-19 A4: expose P7 fail-closed snapshot and content-free analytics changes.
-!/packages/opencode/src/cli/cmd/debug/index.ts
-!/packages/opencode/test/cli/snapshot-disabled.test.ts
 !/packages/tui/src/component/dialog-debug.tsx
 !/packages/tui/src/util/tui-analytics.ts
 !/packages/tui/test/util/tui-analytics.test.ts
@@ -901,19 +644,10 @@ tsconfig.tsbuildinfo
 !/packages/tui/test/cli/cmd/
 !/packages/tui/test/cli/cmd/tui/
 !/packages/tui/test/cli/cmd/tui/provider-options.test.ts
-!/packages/opencode/src/server/routes/instance/httpapi/handlers/provider.ts
-!/packages/opencode/src/cli/cmd/debug/snapshot.ts
 # 2026-10-19 A4: expose P6 settings/provider/skill follow-up sources and tests.
-!/packages/opencode/src/skill/index.ts
 !/packages/opencode/src/skill/
-!/packages/opencode/src/provider/digitalocean-catalog.ts
 !/packages/opencode/test/skill/
-!/packages/opencode/test/provider/cf-ai-gateway-e2e.test.ts
-!/packages/opencode/test/provider/digitalocean.test.ts
-!/packages/opencode/test/provider/cloudflare-gateway.test.ts
-!/packages/opencode/test/skill/identity.test.ts
 # P3: CX-024 skill-prompt metadata-only acceptance (V1 runbook Phase 3).
-!/packages/opencode/test/skill/cx-024-skill-metadata.test.ts
 # P6: expose the Core V2 stable-skill-ID schema and its migration regression.
 !/packages/schema/src/skill.ts
 !/packages/core/test/skill-identity.test.ts
@@ -934,49 +668,20 @@ tsconfig.tsbuildinfo
 !/packages/core/test/skill/guidance.test.ts
 # 2026-10-19 P1: zero-import external provider regression fixture.
 !/packages/opencode/test/fixtures/
-!/packages/opencode/test/fixtures/unbundled-provider.ts
 # 2026-10-19 A4: expose P1 storage GitV2 diagnostics and P6 secure input tests.
 !/packages/opencode/src/storage/
-!/packages/opencode/src/storage/storage.ts
-!/packages/opencode/src/auth/secure-input.ts
-!/packages/opencode/test/auth/secure-input.test.ts
 !/packages/opencode/src/question/
-!/packages/opencode/src/question/owner.ts
-!/packages/opencode/src/auth/secret-service-store.ts
-!/packages/opencode/src/auth/provider-transport.ts
-!/packages/opencode/test/auth/secret-service-store.test.ts
 !/indexd/tests/generation_store.rs
 # 2026-10-19 A4: expose the resumed P1 Snapshot error handling and P6 native credential path.
-!/packages/opencode/src/session/summary.ts
-!/packages/opencode/src/session/llm/native-request.ts
-!/packages/opencode/test/session/llm-native.test.ts
 # 2026-10-19 A4: expose P1 fail-closed legacy GitHub/PR CLI origin and P2 verifier journal.
-!/packages/opencode/src/cli/cmd/github.ts
-!/packages/opencode/src/cli/cmd/github.handler.ts
-!/packages/opencode/src/cli/cmd/pr.ts
-!/packages/opencode/test/cli/guarded-legacy-origins.test.ts
 !/kernel/src/verifier_journal.rs
 # 2026-10-19 A4: expose P1 subprocess-origin probes and zero-effect fixtures.
-!/packages/opencode/src/format/formatter.ts
-!/packages/opencode/src/plugin/azure.ts
-!/packages/opencode/test/git/git.test.ts
 !/packages/opencode/test/git/
-!/packages/opencode/test/installation/installation.test.ts
-!/packages/opencode/test/plugin/azure.test.ts
-!/packages/opencode/test/project/project.test.ts
-!/packages/opencode/test/format/probe-origin.test.ts
-!/packages/opencode/test/plugin/azure-origin.test.ts
 # 2026-10-19 overlay audit: expose remaining first-party P1/P6 source and regressions.
 !/packages/core/src/models-dev.ts
 !/packages/core/src/session/message-updater.ts
 !/packages/core/test/models-dev.test.ts
-!/packages/opencode/src/cli/cmd/account.ts
-!/packages/opencode/src/cli/cmd/plug.ts
-!/packages/opencode/src/session/message.ts
-!/packages/opencode/test/cli/mcp-add.test.ts
-!/packages/opencode/test/lib/cli-process.ts
 !/packages/opencode/test/lib/
-!/packages/opencode/test/cli/guarded-effectful-cli-origins.test.ts
 !/packages/schema/src/session-message.ts
 !/packages/schema/test/session-usage-provenance.test.ts
 !/kernel/tests/fixtures/delegation-binding-v1.json
@@ -986,7 +691,6 @@ tsconfig.tsbuildinfo
 !/kernel/src/agent_profile.rs
 !/kernel/src/cgroup_v2.rs
 !/kernel/tests/fixtures/agent-profile-definition-v2.json
-!/packages/opencode/test/project/worktree.test.ts
 
 # 2026-10-19 overlay audit: keep active RepoIntel and context-selection deltas visible.
 !/packages/core/src/session/context-selection.ts
@@ -1026,64 +730,36 @@ tsconfig.tsbuildinfo
 !/packages/opencode/
 !/packages/opencode/src/
 !/packages/opencode/src/tool/
-!/packages/opencode/src/tool/code-mode-protocol.ts
-!/packages/opencode/src/tool/lsp.ts
 !/packages/opencode/test/
 !/packages/opencode/test/tool/
-!/packages/opencode/test/tool/code-mode-protocol.test.ts
 !/arch_V1/contracts-v2/direct-turn-v1.schema.json
 
 # 2026-10-19 A4: expose P4's exact authenticated LSP edit batch and regression.
-!/packages/opencode/src/lsp/edits.ts
-!/packages/opencode/test/lsp/edits.test.ts
-!/packages/opencode/src/lsp/launch-profile.ts
-!/packages/opencode/src/server/routes/instance/httpapi/handlers/event.ts
 
 # 2026-10-20 A4: expose P4 trusted DAP config and launch/protocol adapters.
 !/packages/core/src/v1/config/dap.ts
-!/packages/opencode/src/lsp/protocol.ts
-!/packages/opencode/src/lsp/host-protocol-client.ts
-!/packages/opencode/src/lsp/process-lifecycle.ts
-!/packages/opencode/src/lsp/guard-authorizer.ts
-!/packages/opencode/src/dap/host-protocol-client.ts
 !/packages/opencode/test/lsp/
-!/packages/opencode/test/lsp/launch-profile.test.ts
-!/packages/opencode/test/lsp/supervised.test.ts
 
 # 2026-10-20 P3: expose authenticated RepoIntel document reader adapter.
-!/packages/opencode/src/lsp/repo-document-reader.ts
 
 # 2026-10-20 P7: expose read-only checkpoint control projection.
-!/packages/opencode/src/session/checkpoint-control.ts
 # P7: expose the authenticated managed-artifact read adapter.
-!/packages/opencode/src/session/artifact-control.ts
-!/packages/opencode/src/tool/managed-artifact-search.ts
-!/packages/opencode/test/session/checkpoint-control.test.ts
-!/packages/opencode/test/session/artifact-control.test.ts
-!/packages/opencode/src/server/routes/instance/httpapi/groups/checkpoint.ts
-!/packages/opencode/src/server/routes/instance/httpapi/handlers/checkpoint.ts
 
 # 2026-10-21 A4: expose P1 Core process and PTY pre-dispatch guards.
 !/packages/core/src/process.ts
 !/packages/core/src/pty/pty.bun.ts
 !/packages/core/src/pty/pty.node.ts
 !/packages/core/test/process-guard.test.ts
-!/packages/opencode/src/session/llm/ai-sdk.ts
 
 # 2026-10-21 P7: expose bounded transcript export and its regression fixtures.
 !/packages/tui/src/util/transcript.ts
 !/packages/tui/test/util/transcript.test.ts
 !/packages/tui/src/component/dialog-checkpoint.tsx
 !/packages/tui/test/component/dialog-checkpoint.test.tsx
-!/packages/opencode/src/server/routes/instance/httpapi/event-payload-bounds.ts
-!/packages/opencode/test/server/event-payload-bounds.test.ts
 !/packages/tui/src/routes/session/dialog-timeline.tsx
 !/packages/tui/src/routes/session/dialog-fork-from-timeline.tsx
 
 # 2026-10-20 P5: expose authenticated read-only web-search route inspection.
-!/packages/opencode/src/server/routes/instance/httpapi/groups/websearch.ts
-!/packages/opencode/src/server/routes/instance/httpapi/handlers/websearch.ts
-!/packages/opencode/src/server/routes/instance/httpapi/groups/provider.ts
 !/packages/schema/src/web-search-v1.ts
 !/scripts/release/README.md
 
@@ -1096,10 +772,8 @@ tsconfig.tsbuildinfo
 !/packages/schema/src/harness-profile-v1.ts
 !/packages/schema/src/canonical-msgpack-v1.ts
 !/packages/core/src/harness-profile.ts
-!/packages/opencode/src/tool/discovery.ts
 
 # 2026-10-21 P7: expose managed provider persisted-step receipt projection.
-!/packages/opencode/src/session/managed-provider-entry.ts
 !/packages/schema/src/managed-provider-step-finish-v1.ts
 
 # 2026-10-22 P6/P4: expose authenticated permission and editor settings components.
@@ -1109,8 +783,6 @@ tsconfig.tsbuildinfo
 !/packages/schema/src/direct-session-permission-mode-v1.ts
 
 # 2026-10-22 P3: expose authenticated read-only RepoIntel Explorer.
-!/packages/opencode/src/server/routes/instance/httpapi/groups/repo-explorer.ts
-!/packages/opencode/src/server/routes/instance/httpapi/handlers/repo-explorer.ts
 !/packages/tui/src/component/dialog-editor-explorer.tsx
 
 # 2026-10-22 P9: Git-visible release-control, packaging and Nix overlays.
@@ -1151,10 +823,6 @@ tsconfig.tsbuildinfo
 !/reports/research/competitors-cursor-devin.md
 
 # 2026-10-22 phase wave: agent-created sources and tests (exact paths).
-!/packages/opencode/src/lsp/diagnostic.ts
-!/packages/opencode/src/lsp/external-editor.ts
-!/packages/opencode/src/session/instruction.ts
-!/packages/opencode/src/tool/code-mode-run.ts
 !/packages/tui/src/context/event.ts
 !/packages/tui/test/cli/tui/
 !/packages/tui/test/cli/tui/data.test.tsx
@@ -1167,21 +835,6 @@ tsconfig.tsbuildinfo
 !/packages/core/test/context-pressure.test.ts
 !/packages/core/test/instruction-project.test.ts
 !/packages/core/test/config/coding-profile.test.ts
-!/packages/opencode/test/lsp/diagnostic.test.ts
-!/packages/opencode/test/lsp/external-editor.test.ts
-!/packages/opencode/test/provider/credential-cost.test.ts
-!/packages/opencode/test/provider/direct-route.test.ts
-!/packages/opencode/test/tool/code-mode-helper.test.ts
-!/packages/opencode/test/tool/code-mode-run.test.ts
-!/packages/opencode/test/tool/websearch-pure.test.ts
-!/packages/opencode/test/tool/code-mode-wave-receipts.fixture.ts
-!/packages/opencode/test/tool/code-mode-adapter-contract.test.ts
-!/packages/opencode/test/tool/websearch-provenance.fixture.ts
-!/packages/opencode/test/tool/websearch-provenance.test.ts
-!/packages/opencode/test/tool/websearch-runtime-store-contract.test.ts
-!/packages/opencode/test/tool/history-bounded.test.ts
-!/packages/opencode/test/tool/edit.test.ts
-!/packages/opencode/test/session/automation-control.test.ts
 !/packages/core/test/session-prompt.test.ts
 !/packages/core/test/session-runner-compile-boundary.test.ts
 !/packages/core/test/tool-output-store.test.ts
@@ -1192,16 +845,11 @@ tsconfig.tsbuildinfo
 !/packages/core/test/config/skill.test.ts
 !/packages/core/test/filesystem/
 !/packages/core/test/filesystem/watcher.test.ts
-!/packages/opencode/test/server/httpapi-instance-route-auth.test.ts
-!/packages/opencode/test/server/httpapi-v2-direct-profile-map.test.ts
-!/packages/opencode/test/server/httpapi-v2-legacy-direct-turn.test.ts
 !/packages/protocol/src/groups/question.ts
 !/packages/server/src/handlers/question.ts
 !/packages/core/test/lib/config.ts
 !/packages/core/tsconfig.a1focus.json
-!/packages/opencode/test/session/instruction.test.ts
 !/packages/opencode/test/tool/__snapshots__/
-!/packages/opencode/test/tool/__snapshots__/parameters.test.ts.snap
 !/packages/tui/src/ui/dialog-help.tsx
 !/packages/tui/src/component/activity-cards.ts
 !/packages/tui/src/util/code-display.ts
@@ -1213,28 +861,13 @@ tsconfig.tsbuildinfo
 
 # Provider-source map, metadata refresh and agent-added P6/P7 sources (2026-10-23)
 !/packages/core/src/plugin/models-dev.ts
-!/packages/opencode/src/provider/UPSTREAM.md
 !/packages/core/src/database/migration/20261023120000_managed_subagent_inbox_consumption_proof.ts
-!/packages/opencode/tsconfig.p6-focus.json
 !/packages/schema/test/external-editor-profile-v1.test.ts
 !/reports/release-readiness-2026-10-23-naming.txt
 
 # First-party overlay deltas surfaced by scripts/architecture/audit_overlay_visibility.py.
 # Every file that differs from the pinned opencode/ snapshot must be Git-visible so a
 # commit cannot silently omit HorizonCode behavior. Exact paths only.
-!/packages/opencode/src/event-v2-bridge.ts
-!/packages/opencode/src/account/account.ts
-!/packages/opencode/src/account/repo.ts
-!/packages/opencode/src/acp/usage.ts
-!/packages/opencode/src/command/index.ts
-!/packages/opencode/src/config/tui.ts
-!/packages/opencode/src/env/index.ts
-!/packages/opencode/src/image/image.ts
-!/packages/opencode/src/mcp/auth.ts
-!/packages/opencode/src/mcp/browser.ts
-!/packages/opencode/src/permission/index.ts
-!/packages/opencode/src/project/bootstrap-service.ts
-!/packages/opencode/src/server/server.ts
 !/packages/desktop/
 !/packages/desktop/package.json
 !/packages/enterprise/
@@ -1242,17 +875,6 @@ tsconfig.tsbuildinfo
 !/packages/function/
 !/packages/function/package.json
 !/scripts/architecture/test_horizoncode_typecheck.py
-!/packages/opencode/src/server/routes/instance/httpapi/websocket-tracker.ts
-!/packages/opencode/src/server/routes/instance/httpapi/middleware/instance-context.ts
-!/packages/opencode/src/server/routes/instance/httpapi/middleware/schema-error.ts
-!/packages/opencode/src/server/routes/instance/httpapi/middleware/workspace-routing.ts
-!/packages/opencode/src/session/status.ts
-!/packages/opencode/src/session/todo.ts
-!/packages/opencode/src/share/session.ts
-!/packages/opencode/src/share/share-next.ts
-!/packages/opencode/src/skill/discovery.ts
-!/packages/opencode/src/tool/truncate.ts
-!/packages/opencode/src/worktree/index.ts
 !/packages/sdk-next/README.md
 !/packages/sdk-next/src/index.ts
 
@@ -1272,7 +894,6 @@ tsconfig.tsbuildinfo
 !/packages/core/test/fixture/
 !/packages/core/test/fixture/cp01-chain.ts
 !/packages/core/test/cp01-chain-fixtures.test.ts
-!/packages/opencode/test/tool/managed-artifact-tool-init.test.ts
 
 # First-party overlay deltas (refresh by re-running audit_overlay_visibility.py at integration).
 !/packages/server/src/routes.ts
@@ -1281,15 +902,11 @@ tsconfig.tsbuildinfo
 !/packages/server/test/
 !/packages/core/test/session-revert-principal.test.ts
 !/packages/core/test/session-supervisor-read-batch-client.test.ts
-!/packages/opencode/test/agent/agent-node-deps.test.ts
-!/packages/opencode/tsconfig.p7-rows6.json
 !/packages/core/test/harness-profile-tool-projection.test.ts
 !/packages/core/test/session-runner-direct-read-routing.test.ts
 !/packages/core/tsconfig.p7-wiring.json
 !/packages/core/test/session-runner-direct-read-routing.test.ts
 !/packages/core/src/database/migration/20261025022602_cheerful_gamma_corps.ts
-!/packages/opencode/test/e2e/free-model-smoke.test.ts
-!/packages/opencode/test/e2e/free-model-smoke.ts
 !/packages/opencode/test/e2e/
 
 # Acceptance evidence must survive a commit: phase reports are already visible;
@@ -1310,10 +927,6 @@ tsconfig.tsbuildinfo
 !/packages/opencode/test/
 !/packages/opencode/test/cli/
 !/packages/opencode/test/cli/run/
-!/packages/opencode/src/cli/cmd/run/runtime.session.ts
-!/packages/opencode/src/cli/cmd/run/runtime.ts
-!/packages/opencode/src/cli/cmd/run.ts
-!/packages/opencode/test/cli/run/runtime.session.test.ts
 !/scripts/eval/blake3.py
 !/scripts/eval/test_blake3.py
 !/LICENSE
@@ -1334,9 +947,6 @@ tsconfig.tsbuildinfo
 # these exact entries the blanket `*` rule silently drops them from any commit.
 !/packages/core/test/config/feature-exposure-contract.test.ts
 !/packages/llm/test/executor-direct.test.ts
-!/packages/opencode/test/dap/host-protocol-client.test.ts
-!/packages/opencode/test/lsp/guard-authorizer.test.ts
-!/packages/opencode/test/lsp/process-lifecycle.test.ts
 # P6 retry-identity regression: a *modified overlay copy* of a pinned upstream test is
 # the exact `hidden_changed` case this audit exists to catch — without this entry the
 # HorizonCode divergence would be silently omitted from a commit.
@@ -1348,15 +958,11 @@ tsconfig.tsbuildinfo
 !/packages/tui/test/cli/cmd/tui/sync-undefined-messages.test.tsx
 !/packages/tui/test/fixture/
 !/packages/tui/test/fixture/tui-sdk.ts
-!/packages/opencode/src/lsp/protocol-dispatch-queue.ts
-!/packages/opencode/test/lsp/protocol-dispatch-queue.test.ts
 
 # Agent-owned Cargo scratch (P2 profile admission); never commit.
 kernel/tmp-p2-cargo/
 
 # Overlay visibility — first-party deltas (2026-10-26 reconciliation).
-!/packages/opencode/src/index.ts
-!/packages/opencode/test/cli/run/runtime.test.ts
 !/packages/slack/
 !/packages/slack/package.json
 !/packages/storybook/
@@ -1377,17 +983,6 @@ kernel/tmp-p2-cargo/
 !/kernel/src/secret_use.rs
 !/kernel/tests/secret_mutation_grant.rs
 !/kernel/tests/secret_use_grant.rs
-!/packages/opencode/src/auth/credential-mutation-authorizer.ts
-!/packages/opencode/src/auth/secret-mutation.ts
-!/packages/opencode/src/cli/cmd/provider.ts
-!/packages/opencode/src/tool/edit.ts
-!/packages/opencode/test/auth/credential-mutation-authorizer.test.ts
-!/packages/opencode/test/auth/credential-mutation.test.ts
-!/packages/opencode/test/auth/provider-command.test.ts
-!/packages/opencode/src/auth/credential-use-authorizer.ts
-!/packages/opencode/test/auth/credential-use-authorizer.test.ts
-!/packages/opencode/test/auth/direct-free-credential.test.ts
-!/packages/opencode/test/provider/direct-free-credential.test.ts
 !/scripts/perf/test_admission_policy_proof.py
 !/scripts/verify/v1-final-verify.sh
 !/scripts/verify/v1-rust-verify.sh

@@ -264,7 +264,7 @@ for label,bad in [
 present=[
  'packages/core/src/session/runner/llm.ts','packages/core/src/tool/registry.ts',
  'packages/core/src/session/supervisor.ts','packages/core/src/horizon/skills/horizon-docs/SKILL.md',
- 'packages/llm/src','packages/app','packages/desktop','packages/server','packages/opencode/src/lsp',
+ 'packages/llm/src','packages/app','packages/desktop','packages/server','packages/horizoncode/src/lsp',
  'kernel/src/session_projection.rs','kernel/src/owner_log.rs','indexd/src'
 ]
 for rel in present:

@@ -119,6 +119,20 @@ Every mutation crosses the kernel and settles with a receipt, so a run can be au
 - `hzcode export <sessionID>` — dump the session, receipts included, as JSON.
 - `reports/` — harness reports from the runs this project was measured on, with the exact commands used.
 
+## Project status
+
+HorizonCode is being implemented in public. **Interactive coding and the application foundation are present; the full managed-coding product is not yet released.**
+
+| In the repository now | Still being completed for V1 |
+| --- | --- |
+| Direct interactive sessions and provider/model selection | Complete branded installation and release packaging |
+| Rust Guard for supported approved file writes; bounded ToolBatch validation | Universal mediation of shell, process, plugin, MCP, subagent and other mutations |
+| Durable internal Goal / SpecVersion / Run / Task / Attempt event state | Authenticated managed UI, production scheduler/workers, leases and effect reconciliation |
+
+**Security note:** this is not a fully sandboxed, cross-platform production release. Specific execution paths and supported operating systems must pass their own tests before those protections can be claimed.
+
+Implementation record: [HANDOFF.md](HANDOFF.md). Operative plan and gates: [docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md](docs/superpowers/plans/2026-10-11-horizoncode-converged-implementation.md).
+
 ## Known limitations
 
 - The independent-evidence gate is designed and Rust-owned but not yet wired into the direct session lane, so a direct turn's "done" is still a claim.

@@ -390,7 +390,7 @@ read-only workspace confinement. The LSP Guard ID is canonical `language.start`;
 enforce CPU/memory/FD limits. No runtime acceptance or test evidence is claimed yet; P4
 must supply the Core Config projection and exercise the exact approval/launch DTO.
 
-**P4 Core adapter source status (2026-10-20):** `packages/opencode/src/lsp/launch-profile.ts`
+**P4 Core adapter source status (2026-10-20):** `packages/horizoncode/src/lsp/launch-profile.ts`
 defines the strict Core-side `ExecutionLaunchProfileDefinitionV1` decoder, shared LSP/DAP
 `execution.v1/resolve_launch_profile` and process-profile adapters, and a projection for
 explicit global legacy config entries. The config bridge now exposes global-only LSP/DAP
@@ -639,13 +639,13 @@ and this change has not been validated.
 
 **P4 Core process lifecycle adapter update (2026-10-20; source review only):** the previously
 missing Core lifecycle adapter is now source-present in
-`packages/opencode/src/lsp/process-lifecycle.ts`. It routes profile approval, prepare, launch,
+`packages/horizoncode/src/lsp/process-lifecycle.ts`. It routes profile approval, prepare, launch,
 status recovery, bounded output reads and cancellation through the existing `execution.v1`
 HostKernel owner; binds exactly one direct or managed Attempt, the immutable profile ref, the
 one-use Guard lease and returned HostProcessRef; and never spawns or retries a launch locally.
 Lost launch acknowledgement permits only exact-scope `status` reconciliation, accepting a live
 HostProcessRef only from the same HostKernel epoch. The per-operation Core Guard bridge is also
-source-present in `packages/opencode/src/lsp/guard-authorizer.ts` and delegates approval and
+source-present in `packages/horizoncode/src/lsp/guard-authorizer.ts` and delegates approval and
 lease resolution to the shared authenticated SessionSupervisor owner. Neither adapter is
 installed in a production editor route. `GUARDED_EDITOR_PROCESS_RUNTIME_READY`,
 `EDITOR_PROTOCOL_GUARD_RUNTIME_READY` and the Core language-service route remain false; source

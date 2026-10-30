@@ -21,6 +21,20 @@ SKIP = {
     ".git", ".turbo", ".cache", ".next", "dist", "build",
     "node_modules", "target", ".venv",
 }
+# Files the first-party overlay deliberately deleted from the repository after
+# the snapshot was pinned (commit bc439637a removed the upstream translated
+# READMEs and their screenshot alongside the de-upstreamed root README). Those
+# deletions are authoritative: not being on disk is not drift, and `--apply`
+# must never resurrect them from the snapshot.
+FIRST_PARTY_DELETIONS = frozenset({
+    *(
+        f"README.{lang}.md" for lang in (
+            "ar", "bn", "br", "bs", "da", "de", "es", "fr", "gr", "it",
+            "ja", "ko", "no", "pl", "ru", "th", "tr", "uk", "vi", "zh", "zht",
+        )
+    ),
+    "screenshot-uk.png",
+})
 
 
 def candidates():
@@ -36,6 +50,8 @@ def candidates():
         # root, which makes a fresh `bun install` fail with every @opencode-ai/*
         # dependency unresolved. Never materialise it.
         if relative.parts[:2] == ("packages", "opencode"):
+            continue
+        if str(relative) in FIRST_PARTY_DELETIONS:
             continue
         if source.is_symlink():
             link = source.readlink()

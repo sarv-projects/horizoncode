@@ -19,6 +19,6 @@ For a private report, provide the tested HorizonCode commit/version, OS and sand
 
 ## Scope and attribution
 
-The pinned upstream source has its **own** policies, notices and original [security documentation](opencode/SECURITY.md). Those do not automatically describe HorizonCode's implementation, protect HorizonCode's users or define where HorizonCode vulnerabilities are reported. If an issue demonstrably also affects upstream OpenCode, coordinate a separate private disclosure through its supported channel without disclosing someone else's confidential report.
+The pinned upstream source has its **own** policies, notices and original security documentation, retained in the local pinned `opencode/` snapshot at `opencode/SECURITY.md`; that directory is untracked reference material and is not part of the tracked tree. Those do not automatically describe HorizonCode's implementation, protect HorizonCode's users or define where HorizonCode vulnerabilities are reported. If an issue demonstrably also affects upstream OpenCode, coordinate a separate private disclosure through its supported channel without disclosing someone else's confidential report.
 
 Release claims require the §32 acceptance/security tests, the full platform-specific no-bypass matrix, approved packaging/attribution and actual evidence; this Markdown policy does not mark them completed.
