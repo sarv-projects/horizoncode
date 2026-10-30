@@ -669,6 +669,18 @@ export function Session() {
       run: () => dialog.replace(() => <DialogPermissions sessionID={route.sessionID} />),
     },
     {
+      // Same dialog under the name people actually reach for. Choosing the
+      // execution posture is a thing you do while working, from inside the
+      // session -- not a flag you pass at launch. `/mode` and `/permissions` are
+      // the same surface; the CLI flags exist for scripted `hzcode run`, not for
+      // interactive use.
+      title: "Execution mode",
+      value: "session.mode",
+      category: "Settings",
+      slash: { name: "mode" },
+      run: () => dialog.replace(() => <DialogPermissions sessionID={route.sessionID} />),
+    },
+    {
       title: "Open workspace Explorer",
       value: "session.editor.open",
       category: "Workspace",
