@@ -30,6 +30,13 @@ def candidates():
         relative = source.relative_to(SNAPSHOT)
         if any(segment in SKIP for segment in relative.parts):
             continue
+        # The runtime workspace is packages/horizoncode. The snapshot still carries
+        # the older packages/opencode tree, and hydrating it alongside the renamed
+        # workspace puts two conflicting dependency graphs in the same Bun workspace
+        # root, which makes a fresh `bun install` fail with every @opencode-ai/*
+        # dependency unresolved. Never materialise it.
+        if relative.parts[:2] == ("packages", "opencode"):
+            continue
         if source.is_symlink():
             link = source.readlink()
             if link.is_absolute() or not (source.parent / link).resolve().is_relative_to(SNAPSHOT.resolve()):
@@ -64,8 +71,8 @@ def main() -> int:
             shutil.copy2(source, target)
         copied += 1
 
-    if args.apply and (SNAPSHOT / "packages/opencode/package.json").is_file() and not (ROOT / "packages/opencode/package.json").is_file():
-        raise RuntimeError("Required Bun workspace packages/opencode was not hydrated")
+    if args.apply and not (ROOT / "packages/horizoncode/package.json").is_file():
+        raise RuntimeError("Required Bun workspace packages/horizoncode is missing")
 
     print(
         f"PINNED_SOURCE_BOOTSTRAP existing={existing} "
