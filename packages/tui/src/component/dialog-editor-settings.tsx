@@ -1,6 +1,6 @@
 import { createMemo, createSignal, onMount, Show } from "solid-js"
-import type { ExternalEditorProfileDefinitionV1, ExternalEditorProfileRefV1, ExternalEditorProfilesProjectionV1 } from "@opencode-ai/sdk/v2"
-// The TUI package does not currently declare @opencode-ai/schema as a
+import type { ExternalEditorProfileDefinitionV1, ExternalEditorProfileRefV1, ExternalEditorProfilesProjectionV1 } from "@horizoncode/sdk/v2"
+// The TUI package does not currently declare @horizoncode/schema as a
 // dependency. Import the canonical schema source directly so this surface
 // cannot fork its own decoder; packaging must add the workspace dependency.
 import * as ExternalEditorProfile from "../../../schema/src/external-editor-profile-v1"

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { Effect } from "effect"
-import { relayMultiCallToolBatch, SessionSupervisorError, type ToolBatchRelayPort } from "@opencode-ai/core/session/supervisor"
+import { relayMultiCallToolBatch, SessionSupervisorError, type ToolBatchRelayPort } from "@horizoncode/core/session/supervisor"
 import {
   CP01_BATCH_ID,
   CP01_DELEGATION_ROUTE,

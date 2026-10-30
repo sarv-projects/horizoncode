@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { blake3 } from "@noble/hashes/blake3.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
-import { encodeCanonicalMessagePackV1, Location } from "@opencode-ai/schema"
+import { encodeCanonicalMessagePackV1, Location } from "@horizoncode/schema"
 import fs from "node:fs"
 import path from "node:path"
 import { Effect } from "effect"

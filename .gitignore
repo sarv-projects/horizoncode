@@ -1455,3 +1455,15 @@ tmp-p2/
 packages/core/tmp-p1/
 packages/core/tmp-p7/
 /kernel/.hz-*/
+
+# HorizonCode scratch run dirs (Lead 7, 2026-10-28): keep agent scratch out of git status
+.p1-serve-diagnostic*/
+.slim/
+.pytest_cache/
+.tmp/e2e/logs/*/
+
+
+# local scratch
+__pycache__/
+*.pyc
+.pytest_cache/

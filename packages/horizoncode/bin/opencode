@@ -1,0 +1,211 @@
+#!/usr/bin/env node
+
+import childProcess from "node:child_process"
+import fs from "node:fs"
+import path from "node:path"
+import os from "node:os"
+import { fileURLToPath } from "node:url"
+
+const forwardedSignals = ["SIGINT", "SIGTERM", "SIGHUP"]
+
+function run(target, leading = []) {
+  const child = childProcess.spawn(target, [...leading, ...process.argv.slice(2)], {
+    stdio: "inherit",
+  })
+
+  child.on("error", (error) => {
+    console.error(error.message)
+    process.exit(1)
+  })
+
+  const forwarders = {}
+  for (const signal of forwardedSignals) {
+    forwarders[signal] = () => {
+      try {
+        child.kill(signal)
+      } catch {
+        // The child may have already exited.
+      }
+    }
+    process.on(signal, forwarders[signal])
+  }
+
+  child.on("exit", (code, signal) => {
+    for (const forwardedSignal of forwardedSignals) {
+      process.removeListener(forwardedSignal, forwarders[forwardedSignal])
+    }
+
+    if (signal) {
+      process.kill(process.pid, signal)
+      return
+    }
+
+    process.exit(typeof code === "number" ? code : 0)
+  })
+}
+
+const envPath = process.env.HORIZONCODE_BIN_PATH ?? process.env.OPENCODE_BIN_PATH
+
+const scriptPath = fs.realpathSync(fileURLToPath(import.meta.url))
+const scriptDir = path.dirname(scriptPath)
+
+//
+const cached = path.join(scriptDir, ".horizoncode")
+
+const platformMap = {
+  darwin: "darwin",
+  linux: "linux",
+  win32: "windows",
+}
+const archMap = {
+  x64: "x64",
+  arm64: "arm64",
+  arm: "arm",
+}
+
+let platform = platformMap[os.platform()]
+if (!platform) {
+  platform = os.platform()
+}
+if (platform === "windows") {
+  console.error(
+    "HorizonCode V1 is unavailable on native Windows. Use Linux; WSL2 remains a separate, unverified support lane.",
+  )
+  process.exit(1)
+}
+let arch = archMap[os.arch()]
+if (!arch) {
+  arch = os.arch()
+}
+const base = "horizoncode-" + platform + "-" + arch
+const binary = platform === "windows" ? "horizoncode.exe" : "horizoncode"
+
+function supportsAvx2() {
+  if (arch !== "x64") return false
+
+  if (platform === "linux") {
+    try {
+      return /(^|\s)avx2(\s|$)/i.test(fs.readFileSync("/proc/cpuinfo", "utf8"))
+    } catch {
+      return false
+    }
+  }
+
+  // Never start a helper process from the pre-kernel launcher. Linux exposes
+  // processor flags directly; other platforms conservatively select the
+  // baseline binary until a native, non-process feature probe is available.
+  return false
+}
+
+const names = (() => {
+  const avx2 = supportsAvx2()
+  const baseline = arch === "x64" && !avx2
+
+  if (platform === "linux") {
+    const musl = (() => {
+      try {
+        // The launcher is already running on this libc. Node's process report
+        // distinguishes glibc without executing `ldd` from PATH.
+        const report = process.report?.getReport()
+        if (report?.header) return !report.header.glibcVersionRuntime
+      } catch {
+        // Fall back to the explicit distribution marker when reports are absent.
+      }
+      try {
+        return fs.existsSync("/etc/alpine-release")
+      } catch {
+        return false
+      }
+    })()
+
+    if (musl) {
+      if (arch === "x64") {
+        if (baseline) return [`${base}-baseline-musl`, `${base}-musl`, `${base}-baseline`, base]
+        return [`${base}-musl`, `${base}-baseline-musl`, base, `${base}-baseline`]
+      }
+      return [`${base}-musl`, base]
+    }
+
+    if (arch === "x64") {
+      if (baseline) return [`${base}-baseline`, base, `${base}-baseline-musl`, `${base}-musl`]
+      return [base, `${base}-baseline`, `${base}-musl`, `${base}-baseline-musl`]
+    }
+    return [base, `${base}-musl`]
+  }
+
+  if (arch === "x64") {
+    if (baseline) return [`${base}-baseline`, base]
+    return [base, `${base}-baseline`]
+  }
+  return [base]
+})()
+
+function findBinary(startDir) {
+  let current = startDir
+  for (;;) {
+    const modules = path.join(current, "node_modules")
+    if (fs.existsSync(modules)) {
+      for (const name of names) {
+        const candidate = path.join(modules, name, "bin", binary)
+        if (fs.existsSync(candidate)) return candidate
+      }
+    }
+    const parent = path.dirname(current)
+    if (parent === current) {
+      return
+    }
+    current = parent
+  }
+}
+
+// A checkout that has not been packaged has no platform binary in node_modules.
+// Refusing to start there makes `horizoncode` unusable from source, which is the
+// first thing anyone evaluating the project tries, so fall back to the
+// TypeScript entrypoint that sits next to this shim and run it under bun.
+function findBun() {
+  const explicit = process.env.HORIZONCODE_BUN_PATH
+  if (explicit && fs.existsSync(explicit)) return explicit
+  let home
+  try {
+    home = os.homedir()
+  } catch {
+    home = ""
+  }
+  const candidates = [
+    ...(home ? [path.join(home, ".bun", "bin", "bun")] : []),
+    "/usr/local/bin/bun",
+    "/usr/bin/bun",
+    "/opt/homebrew/bin/bun",
+  ]
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate
+  }
+  return "bun"
+}
+
+function sourceFallback() {
+  const entry = path.resolve(scriptDir, "..", "src", "index.ts")
+  if (!fs.existsSync(entry)) return undefined
+  return { bun: findBun(), entry }
+}
+
+const resolved = envPath || (fs.existsSync(cached) ? cached : findBinary(scriptDir))
+if (resolved) {
+  run(resolved)
+} else {
+  const source = sourceFallback()
+  if (!source) {
+    console.error(
+      "HorizonCode could not resolve a compatible Linux CLI binary for this platform, and no TypeScript entrypoint was found next to this launcher. You can try manually installing " +
+        names.map((n) => `\"${n}\"`).join(" or ") +
+        " package",
+    )
+    process.exit(1)
+  }
+  console.error(
+    "HorizonCode: no packaged platform binary found; running the TypeScript entrypoint under bun (" +
+      source.bun +
+      "). Set HORIZONCODE_BIN_PATH to use a packaged binary.",
+  )
+  run(source.bun, [source.entry])
+}

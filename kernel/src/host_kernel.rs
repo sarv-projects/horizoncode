@@ -20458,6 +20458,14 @@ impl HostKernel {
             let Some(arguments @ Value::Map(_)) = call.get("arguments") else {
                 return Err(invalid());
             };
+            // Model-originated terminal batches carry only the tool-facing shape;
+            // the host projects the canonical map before any policy decision.
+            let normalized_terminal = if capability == crate::guard::TERMINAL_RUN_ID {
+                normalize_model_terminal_arguments(arguments, &self.shell_profiles)?
+            } else {
+                arguments.clone()
+            };
+            let arguments: &Value = &normalized_terminal;
             let canonical_arguments = if capability == crate::guard::TERMINAL_RUN_ID {
                 if is_workspace_command_invocation(arguments)? {
                     let projection = command_profiles.get(&call_id).ok_or_else(invalid)?;
@@ -21382,7 +21390,10 @@ impl HostKernel {
             {
                 return Err(managed_conflict("approved candidate replay has an unrelated Attempt scope"));
             }
-            validate_effect_attempt_scope(self, &refreshed_scope, principal, fence, location_id, None)?;
+            validate_effect_attempt_scope(self, &refreshed_scope, principal, fence, location_id,
+                // The persisted wave carries no receipts yet, so this scope is
+                // validated for dispatching exactly this batch.
+                effect_ids.first().map(String::as_str))?;
             effect_host.transition_batch_attempt_scope(
                 session_id, principal, effect_batch_id, &effect_ids,
                 &EffectAttemptScopeV1::Managed(previous.clone()), &refreshed_scope,
@@ -21430,7 +21441,9 @@ impl HostKernel {
         let mut refreshed = previous.clone();
         refreshed.expected_managed_revision = wave.bound_revision;
         validate_effect_attempt_scope(self, &EffectAttemptScopeV1::Managed(refreshed.clone()),
-            principal, fence, location_id, None)?;
+            // The freshly appended wave carries no receipts yet, so this
+            // scope is validated for dispatching exactly this batch.
+            principal, fence, location_id, effect_ids.first().map(String::as_str))?;
         effect_host.transition_batch_attempt_scope(
             session_id, principal, effect_batch_id, &effect_ids,
             &EffectAttemptScopeV1::Managed(previous.clone()),
@@ -22949,7 +22962,9 @@ impl HostKernel {
                 principal,
                 fence,
                 &location_id,
-                None,
+                // The wave was just bound: its own edges carry no receipts yet,
+                // so this scope is validated for dispatching exactly this batch.
+                bindings.first().map(|binding| binding.effect_id.as_str()),
             )?;
             for binding in &mut bindings {
                 binding.attempt_scope = Some(next_scope.clone());
@@ -24779,14 +24794,14 @@ impl HostKernel {
         };
         let domains = validate_search_domains_field(fields.get("domains"))?;
         let Some(Value::Array(routes)) = fields.get("routes") else { return Err(invalid()) };
-        if routes.is_empty() || routes.len() > 10 { return Err(invalid()); }
+        if routes.is_empty() || routes.len() > 11 { return Err(invalid()); }
         let mut route_keys = Vec::with_capacity(routes.len());
         let mut unique = HashSet::with_capacity(routes.len());
         for route in routes {
             let route_fields = strict_fields(route, &["routeKey", "attemptCount"], &[])?;
             let route_key = text(route_fields, "routeKey")?;
             if !unique.insert(route_key.to_owned())
-                || !matches!(route_key, "exa_keyless" | "youcom_free" | "firecrawl_keyless" | "parallel_keyless" | "brave" | "exa" | "youcom" | "tavily" | "firecrawl" | "parallel")
+                || !crate::http_execution::is_search_route_key(route_key)
                 || !matches!(route_fields.get("attemptCount"), Some(Value::Unsigned(2)))
             {
                 return Err(("effect_unavailable", ErrorCategoryV1::Unavailable,
@@ -24879,16 +24894,65 @@ impl HostKernel {
                 ])));
             }
         };
-        if challenge.challenge_id != challenge_id || challenge.effect_id != effect_id
-            || challenge.principal != principal || challenge.session_id != session_id
-            || challenge.capability_id != crate::guard::WEB_SEARCH_ID
-            || fields.get("locationID").is_some_and(|value| value != &Value::String(challenge.location_id.clone()))
-            || challenge.owner_epoch != fence.owner_epoch()
-            || challenge.lease_digest.as_deref() != Some(lease_digest)
-            || challenge.managed_attempt_digest != scope_digest
+        let debug_location_mismatch = fields.get("locationID").is_some_and(|value| value != &Value::String(challenge.location_id.clone()));
         {
-            return Err(("effect_denied", ErrorCategoryV1::Authorization,
-                "web.search request differs from the approved Guard challenge"));
+            let lease_bound = challenge.lease_digest.clone().unwrap_or_default();
+            let location_field = match fields.get("locationID") {
+                Some(Value::String(v)) => v.clone(),
+                _ => "<absent>".to_owned(),
+            };
+            let _ = std::fs::write(
+                "/tmp/hz-ws-debug.log",
+                format!(
+                    "challenge_id={} challenge_effect={} request_effect={} binding_principal={} request_principal={} binding_session={} request_session={} capability={} binding_location={} request_location={} binding_epoch={} request_epoch={} binding_lease={} request_lease={} binding_managed={:?} request_managed={:?} routes_equal={} domains_equal={} approved_digest={}\n",
+                    challenge.challenge_id.as_str(),
+                    challenge.effect_id.as_str(),
+                    effect_id,
+                    challenge.principal.as_str(),
+                    principal,
+                    challenge.session_id.as_str(),
+                    session_id,
+                    challenge.capability_id.as_str(),
+                    challenge.location_id.as_str(),
+                    location_field.as_str(),
+                    challenge.owner_epoch,
+                    fence.owner_epoch(),
+                    lease_bound.as_str(),
+                    lease_digest,
+                    &challenge.managed_attempt_digest,
+                    &scope_digest,
+                    challenge.approved_arguments.get("routes") == fields.get("routes"),
+                    challenge.approved_arguments.get("domains") == fields.get("domains"),
+                    challenge.approved_arguments_digest.as_str(),
+                ),
+            );
+        }
+        if challenge.challenge_id != challenge_id {
+            return Err(("effect_denied", ErrorCategoryV1::Authorization, "WSDEBUG challenge_id"));
+        }
+        if challenge.effect_id != effect_id {
+            return Err(("effect_denied", ErrorCategoryV1::Authorization, "WSDEBUG effect_id"));
+        }
+        if challenge.principal != principal {
+            return Err(("effect_denied", ErrorCategoryV1::Authorization, "WSDEBUG principal"));
+        }
+        if challenge.session_id != session_id {
+            return Err(("effect_denied", ErrorCategoryV1::Authorization, "WSDEBUG session_id"));
+        }
+        if challenge.capability_id != crate::guard::WEB_SEARCH_ID {
+            return Err(("effect_denied", ErrorCategoryV1::Authorization, "WSDEBUG capability_id"));
+        }
+        if debug_location_mismatch {
+            return Err(("effect_denied", ErrorCategoryV1::Authorization, "WSDEBUG location_id"));
+        }
+        if challenge.owner_epoch != fence.owner_epoch() {
+            return Err(("effect_denied", ErrorCategoryV1::Authorization, "WSDEBUG owner_epoch"));
+        }
+        if challenge.lease_digest.as_deref() != Some(lease_digest) {
+            return Err(("effect_denied", ErrorCategoryV1::Authorization, "WSDEBUG lease_digest"));
+        }
+        if challenge.managed_attempt_digest != scope_digest {
+            return Err(("effect_denied", ErrorCategoryV1::Authorization, "WSDEBUG managed_attempt_digest"));
         }
         let approved = validate_web_search_arguments(&challenge.approved_arguments)?;
         let Value::Map(approved) = approved else { return Err(invalid()) };
@@ -25100,7 +25164,12 @@ impl HostKernel {
                 ])));
             }
             let route_id = format!("web.search.{route_key}");
-            let route = match crate::http_execution::fixed_web_search_mcp_route(&route_id) {
+            // Keyless routes have two fixed transports: the anonymous MCP
+            // endpoints and the anonymous HTML endpoint. Both are compile-time
+            // allowlists; the caller never supplies a destination.
+            let mcp_route = crate::http_execution::fixed_web_search_mcp_route(&route_id);
+            let html_route = crate::http_execution::fixed_web_search_html_route(&route_id);
+            let route = match mcp_route.clone().or_else(|| html_route.clone()) {
                 Some(route) => route,
                 None => {
                     let _ = effect_host.mark_http_unknown(&http_binding);
@@ -25126,9 +25195,17 @@ impl HostKernel {
                         return Err(terminal_failure(&error));
                     }
                 };
-                let mut response = match self.http_supervisor.execute_mcp_search_with_pre_send_proof(
-                    &http_binding, &route, sequence, attempt, query, limit, domains.as_deref(), &cancel,
-                ) {
+                let dispatch = match (&mcp_route, &html_route) {
+                    (Some(route), _) => self.http_supervisor.execute_mcp_search_with_pre_send_proof(
+                        &http_binding, route, sequence, attempt, query, limit, domains.as_deref(), &cancel,
+                    ),
+                    (None, Some(route)) => self.http_supervisor.execute_html_search_with_pre_send_proof(
+                        &http_binding, route, sequence, attempt, query, limit, &cancel,
+                    ),
+                    (None, None) => return Err(("effect_unavailable", ErrorCategoryV1::Unavailable,
+                        "approved keyless search profile is unavailable")),
+                };
+                let mut response = match dispatch {
                     crate::http_execution::HttpDispatchResultV1::Response(response) => response,
                     crate::http_execution::HttpDispatchResultV1::NotDispatched { proof, failure } => {
                         let route_receipt = match effect_host.settle_http_route_attempt_not_dispatched(&http_binding, &proof) {
@@ -25186,7 +25263,7 @@ impl HostKernel {
                             .min(crate::http_execution::MAX_RETRY_AFTER_MS),
                     );
                 }
-                let result_count = search_mcp_result_count(&response.body);
+                let result_count = keyless_search_result_count(&route_key, &response.body);
                 let (status, retry_same, continue_routes) = if response.status == 429 {
                     ("RATE_LIMITED", false, true)
                 } else if matches!(response.status, 401 | 403 | 407) {
@@ -25586,7 +25663,7 @@ impl HostKernel {
             let mut next_attempt = if retry_same { attempt.saturating_add(1) } else { 1 };
             let mut next_route = cursor.routes.get(usize::from(next_index)).cloned();
             while let Some(keyless_route) = next_route.clone() {
-                if matches!(keyless_route.as_str(), "brave" | "exa" | "youcom" | "tavily" | "firecrawl" | "parallel") { break; }
+                if !crate::http_execution::is_keyless_search_route_key(&keyless_route) { break; }
                 let cancel = cancellation.as_ref().ok_or(("effect_outcome_unknown", ErrorCategoryV1::Uncertain,
                     "search continuation has no live cancellation fence"))?;
                 if cancel.is_cancelled() {
@@ -25813,14 +25890,21 @@ impl HostKernel {
         cancellation: &RequestCancellation,
     ) -> Result<(Option<crate::http_execution::HttpResponseV1>, &'static str, bool, bool, Option<usize>, String, Option<String>), HostError> {
         let route_id = format!("web.search.{route_key}");
-        let route = crate::http_execution::fixed_web_search_mcp_route(&route_id).ok_or((
-            "effect_unavailable", ErrorCategoryV1::Unavailable, "approved keyless search profile is unavailable",
-        ))?;
+        let mcp_route = crate::http_execution::fixed_web_search_mcp_route(&route_id);
+        let html_route = crate::http_execution::fixed_web_search_html_route(&route_id);
         let sequence = effect_host.begin_http_route_attempt(binding, &route_id, attempt)
             .map_err(|error| terminal_failure(&error))?;
-        let mut response = match self.http_supervisor.execute_mcp_search_with_pre_send_proof(
-            binding, &route, sequence, attempt, query, limit, domains, cancellation,
-        ) {
+        let dispatch = match (&mcp_route, &html_route) {
+            (Some(route), _) => self.http_supervisor.execute_mcp_search_with_pre_send_proof(
+                binding, route, sequence, attempt, query, limit, domains, cancellation,
+            ),
+            (None, Some(route)) => self.http_supervisor.execute_html_search_with_pre_send_proof(
+                binding, route, sequence, attempt, query, limit, cancellation,
+            ),
+            (None, None) => return Err(("effect_unavailable", ErrorCategoryV1::Unavailable,
+                "approved keyless search profile is unavailable")),
+        };
+        let mut response = match dispatch {
             crate::http_execution::HttpDispatchResultV1::Response(response) => response,
             crate::http_execution::HttpDispatchResultV1::NotDispatched { proof, failure } => {
                 let receipt = effect_host.settle_http_route_attempt_not_dispatched(binding, &proof)
@@ -25841,7 +25925,7 @@ impl HostKernel {
                 .unwrap_or(crate::http_execution::MAX_RETRY_AFTER_MS)
                 .min(crate::http_execution::MAX_RETRY_AFTER_MS));
         }
-        let count = search_mcp_result_count(&response.body);
+        let count = keyless_search_result_count(route_key, &response.body);
         let (status, retry_same, continue_routes) = if response.status == 429 {
             ("RATE_LIMITED", false, true)
         } else if matches!(response.status, 401 | 403 | 407) {
@@ -35528,6 +35612,7 @@ fn validate_web_search_arguments(arguments: &Value) -> Result<Value, HostError> 
     }
     validate_search_domains_field(fields.get("domains"))?;
     let allowed = [
+        "duckduckgo",
         "exa_keyless", "youcom_free", "firecrawl_keyless", "parallel_keyless",
         "brave", "exa", "youcom", "tavily", "firecrawl", "parallel",
     ];
@@ -35561,14 +35646,16 @@ fn validate_web_search_arguments(arguments: &Value) -> Result<Value, HostError> 
         }
         for route in routes {
             let key = text(strict_fields(route, &["routeKey", "attemptCount"], &[])?, "routeKey")?;
-            if !key.ends_with("_keyless") && key != "youcom_free" && !credential_routes.contains(key) {
+            if !crate::http_execution::is_keyless_search_route_key(key)
+                && !credential_routes.contains(key)
+            {
                 return Err(invalid());
             }
         }
     } else {
         for route in routes {
             let key = text(strict_fields(route, &["routeKey", "attemptCount"], &[])?, "routeKey")?;
-            if !key.ends_with("_keyless") && key != "youcom_free" { return Err(invalid()) }
+            if !crate::http_execution::is_keyless_search_route_key(key) { return Err(invalid()) }
         }
     }
     Ok(arguments.clone())
@@ -35622,6 +35709,10 @@ fn search_mcp_result_count(body: &[u8]) -> Option<usize> {
             value.pointer("/result/structuredContent/web/results"),
             value.pointer("/result/results"),
             value.pointer("/result/data/results"),
+            // Firecrawl publishes `{"success":true,"data":{"web":[…]}}`: the
+            // result array itself sits at `data.web`, not under `results`.
+            value.pointer("/result/data/web"),
+            value.pointer("/data/web"),
             value.pointer("/result/web/results"),
         ] {
             if let Some(items) = candidate.and_then(serde_json::Value::as_array) {
@@ -35650,6 +35741,16 @@ fn search_mcp_result_count(body: &[u8]) -> Option<usize> {
     None
 }
 
+/// Count results for one keyless route from its settled body. The HTML route
+/// normalizes rows into JSON at the transport boundary, so this is still a shape
+/// check rather than a guess: `None` settles FAILED, never a fabricated EMPTY.
+fn keyless_search_result_count(route_key: &str, body: &[u8]) -> Option<usize> {
+    if crate::http_execution::fixed_web_search_html_route(&format!("web.search.{route_key}")).is_some() {
+        return crate::search_html::normalized_result_count(body);
+    }
+    search_mcp_result_count(body)
+}
+
 /// Bounded result-shape parser for the fixed SecretBroker BYO profiles. It
 /// returns `None` for an unknown provider schema and never treats malformed
 /// JSON or absent result arrays as a successful empty search.
@@ -35670,7 +35771,7 @@ fn credentialed_search_result_count(route_key: &str, body: &[u8]) -> Option<usiz
 fn web_search_route_plan_digest(arguments: &Value) -> Option<String> {
     let Value::Map(fields) = arguments else { return None };
     let Value::Array(routes) = fields.get("routes")? else { return None };
-    if routes.is_empty() || routes.len() > 10 { return None; }
+    if routes.is_empty() || routes.len() > 11 { return None; }
     let mut unique = HashSet::with_capacity(routes.len());
     for route in routes {
         let route_fields = match route { Value::Map(fields) => fields, _ => return None };
@@ -36019,6 +36120,51 @@ fn wait_for_search_cooldown(delay_ms: u64, cancellation: &RequestCancellation) -
     }
 }
 
+/// The model-facing `bash` tool contract is `{command, cwd, timeoutMs}`: the
+/// model must not have to know a shell-profile id, and it must not be able to
+/// choose one. The HostKernel owns the registered profile registry, so it
+/// projects the canonical six-key terminal argument map here, before Guard or
+/// EffectHost ever see the call. A caller that already sends the canonical map
+/// (parent terminal start, user-initiated runs) passes through unchanged; a
+/// caller that sends anything else is rejected rather than silently widened.
+fn normalize_model_terminal_arguments(
+    value: &Value,
+    profiles: &ShellProfileRegistry,
+) -> Result<Value, HostError> {
+    let Value::Map(fields) = value else { return Err(invalid()) };
+    if fields.contains_key("mode") {
+        return Ok(value.clone());
+    }
+    if fields.keys().any(|key| !matches!(key.as_str(), "command" | "cwd" | "timeoutMs")) {
+        return Err(invalid());
+    }
+    let profile = profiles.default_profile().ok_or((
+        "profile_unavailable",
+        ErrorCategoryV1::Unavailable,
+        "no shell profile is registered; terminal.run cannot be normalized",
+    ))?;
+    let command = text(fields, "command")?;
+    if command.is_empty() || command.len() > 64 * 1024 || command.contains('\0') {
+        return Err(invalid());
+    }
+    let cwd = text(fields, "cwd")?;
+    if cwd.is_empty() || cwd.len() > 4096 || !Path::new(cwd).is_absolute() || cwd.contains('\0') {
+        return Err(invalid());
+    }
+    let timeout_ms = match fields.get("timeoutMs") {
+        Some(Value::Unsigned(value)) if (1..=600_000).contains(value) => *value,
+        _ => return Err(invalid()),
+    };
+    let mut map = std::collections::BTreeMap::new();
+    map.insert("mode".to_owned(), Value::String("shell".to_owned()));
+    map.insert("shellProfileID".to_owned(), Value::String(profile.shell_profile_id.clone()));
+    map.insert("command".to_owned(), Value::String(command.to_owned()));
+    map.insert("cwd".to_owned(), Value::String(cwd.to_owned()));
+    map.insert("timeoutMs".to_owned(), Value::Unsigned(timeout_ms));
+    map.insert("resolvedEnvironment".to_owned(), Value::Map(Default::default()));
+    Ok(Value::Map(map))
+}
+
 fn validate_terminal_arguments(
     arguments: &Value,
     location: &RegisteredLocation,
@@ -36184,30 +36330,197 @@ fn capture_output(
     }
 }
 
-/// The bounded preview prefix served with a settled run: at most 50 KiB and 2000 lines,
-/// never splitting a UTF-8 sequence. Returns whether the preview omits artifact bytes.
-fn terminal_preview(output: &[u8]) -> (String, bool) {
-    let mut end = output.len().min(MAX_PREVIEW_BYTES);
-    while end > 0 {
-        match std::str::from_utf8(&output[..end]) {
-            Ok(_) => break,
-            Err(error) if error.error_len().is_none() => end -= 1,
-            Err(_) => break,
+/// Remove ANSI escape sequences (CSI, OSC, and other two-byte escapes) so control
+/// codes can never consume the preview budget or reach the model transcript.
+fn strip_ansi(input: &str) -> std::borrow::Cow<'_, str> {
+    if !input.contains('\x1b') {
+        return std::borrow::Cow::Borrowed(input);
+    }
+    let mut clean = String::with_capacity(input.len());
+    let mut characters = input.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character != '\x1b' {
+            clean.push(character);
+            continue;
+        }
+        match characters.next() {
+            // CSI: parameter/intermediate bytes end at the first final byte.
+            Some('[') => {
+                for sequence in characters.by_ref() {
+                    if ('\u{40}'..='\u{7e}').contains(&sequence) {
+                        break;
+                    }
+                }
+            }
+            // OSC: terminated by BEL or ST (ESC \).
+            Some(']') => {
+                while let Some(sequence) = characters.next() {
+                    if sequence == '\u{7}' {
+                        break;
+                    }
+                    if sequence == '\x1b' {
+                        if characters.peek() == Some(&'\\') {
+                            characters.next();
+                        }
+                        break;
+                    }
+                }
+            }
+            // DCS/SOS/PM/APC string sequences: terminated by ST or BEL.
+            Some('P' | 'X' | '^' | '_') => {
+                while let Some(sequence) = characters.next() {
+                    if sequence == '\u{7}' {
+                        break;
+                    }
+                    if sequence == '\x1b' {
+                        if characters.peek() == Some(&'\\') {
+                            characters.next();
+                        }
+                        break;
+                    }
+                }
+            }
+            // Any other escape is a two-byte sequence.
+            Some(_) => {}
+            None => {}
         }
     }
-    let preview = String::from_utf8_lossy(&output[..end]).into_owned();
-    let truncated = end < output.len();
-    if preview.lines().count() <= MAX_PREVIEW_LINES {
-        return (preview, truncated);
+    std::borrow::Cow::Owned(clean)
+}
+
+/// The longest suffix of `value` that fits `limit` bytes without splitting a character.
+fn preview_suffix(value: &str, limit: usize) -> &str {
+    if value.len() <= limit {
+        return value;
     }
-    (
-        preview
-            .lines()
-            .take(MAX_PREVIEW_LINES)
-            .collect::<Vec<_>>()
-            .join("\n"),
-        true,
-    )
+    let mut start = value.len() - limit;
+    while start < value.len() && !value.is_char_boundary(start) {
+        start += 1;
+    }
+    &value[start..]
+}
+
+/// Drop common login-shell profile diagnostics that leak into agent tool output.
+fn drop_login_profile_noise(input: &str, preserve_trailing_newline: bool) -> String {
+    let body: String = input
+        .lines()
+        .filter(|line| !is_login_profile_noise_line(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if preserve_trailing_newline && !body.is_empty() {
+        format!("{body}\n")
+    } else {
+        body
+    }
+}
+
+fn is_login_profile_noise_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if !trimmed.contains("No such file or directory") {
+        return false;
+    }
+    trimmed.contains(".profile")
+        || trimmed.contains(".bashrc")
+        || trimmed.contains(".bash_profile")
+        || trimmed.contains(".zshrc")
+        || trimmed.contains(".zshenv")
+        || trimmed.contains(".cargo/env")
+        || trimmed.contains("/etc/profile")
+}
+
+/// Keep the bounded preview at most 50 KiB and 2000 lines, never splitting a UTF-8
+/// sequence. ANSI is stripped before truncation and the retained window is a 60/40
+/// head+tail split so a summary printed at the end of a long run survives.
+/// Returns whether the preview omits artifact bytes.
+fn terminal_preview(output: &[u8]) -> (String, bool) {
+    let raw = String::from_utf8_lossy(output);
+    let preserve_trailing = raw.ends_with('\n');
+    let clean = drop_login_profile_noise(strip_ansi(&raw).as_ref(), preserve_trailing);
+    let line_count = clean.lines().count();
+    let truncated = output.len() > MAX_PREVIEW_BYTES
+        || clean.len() > MAX_PREVIEW_BYTES
+        || line_count > MAX_PREVIEW_LINES;
+    if !truncated {
+        return (clean, false);
+    }
+    let head_line_budget = MAX_PREVIEW_LINES * 3 / 5;
+    let tail_line_budget = MAX_PREVIEW_LINES - head_line_budget;
+    let head_byte_budget = MAX_PREVIEW_BYTES * 3 / 5;
+    // Reserve one byte for the newline that joins a non-empty head and tail.
+    let tail_byte_budget = MAX_PREVIEW_BYTES - head_byte_budget - 1;
+
+    let mut head = String::new();
+    for line in clean.lines().take(head_line_budget) {
+        let separator = usize::from(!head.is_empty());
+        if head.len() + separator + line.len() > head_byte_budget {
+            break;
+        }
+        if separator == 1 {
+            head.push('\n');
+        }
+        head.push_str(line);
+    }
+
+    let mut tail = String::new();
+    for line in clean.lines().rev().take(tail_line_budget) {
+        let separator = usize::from(!tail.is_empty());
+        if tail.len() + separator + line.len() > tail_byte_budget {
+            if tail.is_empty() {
+                // A single oversized final line still contributes its last bytes.
+                tail.push_str(preview_suffix(line, tail_byte_budget));
+            }
+            break;
+        }
+        if separator == 1 {
+            tail.insert(0, '\n');
+        }
+        tail.insert_str(0, line);
+    }
+
+    let mut preview = String::with_capacity(head.len() + tail.len() + 1);
+    preview.push_str(&head);
+    if !head.is_empty() && !tail.is_empty() {
+        preview.push('\n');
+    }
+    preview.push_str(&tail);
+    (preview, true)
+}
+
+#[cfg(test)]
+mod terminal_preview_tests {
+    use super::*;
+
+    #[test]
+    fn strips_ansi_and_keeps_the_tail_summary_within_caps() {
+        let mut body = String::new();
+        for line in 0..(MAX_PREVIEW_LINES + 500) {
+            body.push_str(&format!("\x1b[31mline {line}\x1b[0m\n"));
+        }
+        body.push_str("\x1b[32mFINAL_SUMMARY: 42 passed\x1b[0m\n");
+        let (preview, truncated) = terminal_preview(body.as_bytes());
+        assert!(truncated);
+        assert!(
+            !preview.contains("\x1b["),
+            "ANSI escaped into the preview: {preview:?}"
+        );
+        assert_eq!(preview.lines().last(), Some("FINAL_SUMMARY: 42 passed"));
+        assert!(
+            preview.len() <= MAX_PREVIEW_BYTES,
+            "preview {} bytes exceeds the {MAX_PREVIEW_BYTES} byte cap",
+            preview.len()
+        );
+        assert!(preview.lines().count() <= MAX_PREVIEW_LINES);
+    }
+
+    #[test]
+    fn leaves_small_clean_output_untruncated() {
+        let (preview, truncated) = terminal_preview(b"hello\nworld\n");
+        assert_eq!(preview, "hello\nworld\n");
+        assert!(!truncated);
+    }
 }
 
 /// The Canonical exit code of an observed exit. A signal-terminated child reports the
@@ -37682,7 +37995,7 @@ fn set_search_argument_summary(
     for route in routes {
         let route = strict_fields(route, &["routeKey", "attemptCount"], &[])?;
         let route_key = text(route, "routeKey")?.to_owned();
-        let keyless = route_key.ends_with("_keyless") || route_key == "youcom_free";
+        let keyless = crate::http_execution::is_keyless_search_route_key(&route_key);
         has_unknown_cost |= !keyless;
         route_names.push(route_key.clone());
         projected.push(map_value([
@@ -39894,25 +40207,19 @@ fn tool_batch_arguments_digest(arguments: &Value) -> Result<String, HostError> {
     Ok(format!("blake3:{}", blake3::hash(&preimage).to_hex()))
 }
 
-fn managed_effect_wave_id(
-    effect_batch_id: &str,
-    scope: &ManagedAttemptScopeV1,
-    wave_index: u8,
-) -> String {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"horizoncode.managed-effect-wave-id.v1\0");
-    for value in [effect_batch_id, scope.goal_id.as_str(), scope.run_id.as_str(),
-        scope.task_id.as_str(), scope.attempt_id.as_str(), scope.session_id.as_str(),
-        scope.location_id.as_str()]
-    {
-        hasher.update(&(value.len() as u64).to_be_bytes());
-        hasher.update(value.as_bytes());
+    /// The durable wave ID is the EffectHost batch ID its approved candidates
+    /// were admitted under. `host_run.inspect`'s production projection pins a
+    /// committed wave to the persisted `effect_challenges.batch_id` rows, so a
+    /// domain-separated surrogate could never resolve. Per-wave distinctness
+    /// comes from `source_scope_digest`, `wave_index` and the recomputed
+    /// `wave_digest`, all of which stay covered by the wave preimage.
+    fn managed_effect_wave_id(
+        effect_batch_id: &str,
+        _scope: &ManagedAttemptScopeV1,
+        _wave_index: u8,
+    ) -> String {
+        effect_batch_id.to_owned()
     }
-    hasher.update(&scope.owner_epoch.to_be_bytes());
-    hasher.update(&scope.expected_managed_revision.to_be_bytes());
-    hasher.update(&[wave_index]);
-    format!("managed_wave_{}", hasher.finalize().to_hex())
-}
 
 fn managed_effect_wave_delivery_id(
     request: &RpcRequestV1,
@@ -43143,6 +43450,68 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn duckduckgo_plan_admission_binds_a_non_empty_unique_route_digest() {
+        let route = |key: &str| {
+            map_value([
+                ("routeKey", Value::String(key.to_owned())),
+                ("attemptCount", Value::Unsigned(2)),
+            ])
+        };
+        let plan = |routes: Vec<Value>, credentials: Option<Vec<Value>>| {
+            let mut fields = vec![
+                ("query", Value::String("RFC 9457 problem details".to_owned())),
+                ("limit", Value::Unsigned(5)),
+                ("routes", Value::Array(routes)),
+            ];
+            if let Some(credentials) = credentials {
+                fields.push(("credentialRefsByRoute", Value::Array(credentials)));
+            }
+            map_value_vec(fields)
+        };
+        // The keyless HTML route needs no credential reference at all.
+        let keyless = plan(vec![route("duckduckgo")], None);
+        assert!(validate_web_search_arguments(&keyless).is_ok());
+        let digest = web_search_route_plan_digest(&keyless).expect("a non-empty unique plan must bind");
+        assert!(digest.starts_with("blake3:"));
+        // Order and membership are part of the digest, so a plan cannot be
+        // substituted after admission.
+        let other = plan(vec![route("duckduckgo"), route("exa_keyless")], None);
+        assert_ne!(web_search_route_plan_digest(&other).as_deref(), Some(digest.as_str()));
+        // Duplicates are rejected, so the digest can never be ambiguous.
+        assert!(validate_web_search_arguments(&plan(
+            vec![route("duckduckgo"), route("duckduckgo")], None,
+        )).is_err());
+        // A credentialed route in the same plan still requires its reference.
+        assert!(validate_web_search_arguments(&plan(
+            vec![route("duckduckgo"), route("brave")], None,
+        )).is_err());
+        assert!(validate_web_search_arguments(&plan(
+            vec![route("duckduckgo"), route("brave")],
+            Some(vec![map_value([
+                ("routeKey", Value::String("brave".to_owned())),
+                ("secretRef", Value::String("brave.default".to_owned())),
+            ])]),
+        )).is_ok());
+        // Every documented route key is admitted; only the keyless five stand alone.
+        let all_keys = crate::http_execution::KEYLESS_SEARCH_ROUTE_KEYS
+            .iter()
+            .chain(crate::http_execution::CREDENTIALED_SEARCH_ROUTE_KEYS.iter())
+            .map(|key| route(*key))
+            .collect::<Vec<_>>();
+        assert_eq!(all_keys.len(), 11);
+        assert!(validate_web_search_arguments(&plan(all_keys, None)).is_err());
+        let keyless_keys = crate::http_execution::KEYLESS_SEARCH_ROUTE_KEYS
+            .iter()
+            .map(|key| route(*key))
+            .collect::<Vec<_>>();
+        let keyless_plan = plan(keyless_keys, None);
+        assert!(validate_web_search_arguments(&keyless_plan).is_ok());
+        assert!(web_search_route_plan_digest(&keyless_plan).is_some());
+        // An unknown route key never reaches admission.
+        assert!(validate_web_search_arguments(&plan(vec![route("duckduckgo_keyless")], None)).is_err());
+    }
+
+    #[test]
     fn host_run_dispatch_key_digest_is_recomputed_from_canonical_pair_tuple() {
         let manifest_digest = format!("blake3:{}", "1".repeat(64));
         let key = host_run_dispatch_key_digest(&manifest_digest, "task-α", "arm-β").unwrap();
@@ -43253,6 +43622,21 @@ mod tests {
         assert_eq!(search_mcp_result_count(br#"{"jsonrpc":"2.0","error":{"code":-32000,"message":"failed"}}"#), None);
         assert_eq!(search_mcp_result_count(br#"{"jsonrpc":"2.0","result":{"isError":true,"content":[]}}"#), None);
         assert_eq!(search_mcp_result_count(br#"{"jsonrpc":"2.0","result":{"structuredContent":{"results":[]}}}"#), Some(0));
+    }
+
+    #[test]
+    fn firecrawl_nested_web_rows_are_counted() {
+        // Firecrawl's keyless MCP endpoint answers with JSON text inside the
+        // content block: {"success":true,"data":{"web":[…]}}.
+        let nested = r#"{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"{\"success\":true,\"data\":{\"web\":[{\"url\":\"https://example.com/a\"}]}}"}]}}"#;
+        assert_eq!(search_mcp_result_count(nested.as_bytes()), Some(1));
+        // An already-unwrapped document keeps the same pointer.
+        let bare = br#"{"success":true,"data":{"web":[{"url":"https://example.com/a"},{"url":"https://example.com/b"}]}}"#;
+        assert_eq!(search_mcp_result_count(bare), Some(2));
+        // The pointer never turns an error frame into a successful count: a
+        // top-level `error` stays unclassifiable so the route fails closed.
+        let error = br#"{"success":false,"data":{"web":[]},"error":"blocked"}"#;
+        assert_eq!(search_mcp_result_count(error), None);
     }
 
     #[test]
@@ -46501,6 +46885,28 @@ mod tests {
         drop(host);
         fs::remove_dir_all(state).unwrap();
     }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
     #[test]
     fn host_run_frozen_invocation_mint_seam_derives_tuple_from_validated_manifest() {

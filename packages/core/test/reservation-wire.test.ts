@@ -9,7 +9,7 @@ import {
   parseBudgetDimension,
   parseReservationStatus,
   parseResourcePressureState,
-} from "@opencode-ai/core/v1/resource-reservation-wire"
+} from "@horizoncode/core/v1/resource-reservation-wire"
 
 /**
  * JC-RES-012.I cross-language roundtrip: the TypeScript consumer must agree with the

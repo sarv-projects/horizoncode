@@ -11,8 +11,8 @@
  */
 import { blake3 } from "@noble/hashes/blake3.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
-import type { ContextLedgerEntryV2 } from "@opencode-ai/schema/context-ledger-v2"
-import { ContextSelectionSourceV1 as ContextSelectionSourceSchema } from "@opencode-ai/schema/context-selection-v1"
+import type { ContextLedgerEntryV2 } from "@horizoncode/schema/context-ledger-v2"
+import { ContextSelectionSourceV1 as ContextSelectionSourceSchema } from "@horizoncode/schema/context-selection-v1"
 import { canonicalProviderInputJson } from "./context-selection"
 
 type ContextSelectionSourceV1 = typeof ContextSelectionSourceSchema.Type

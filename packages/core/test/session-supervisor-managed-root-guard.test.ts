@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { validateManagedRootGuardChallenge, type ManagedRootGuardChallengeV1 } from "@opencode-ai/core/session/supervisor"
+import { validateManagedRootGuardChallenge, type ManagedRootGuardChallengeV1 } from "@horizoncode/core/session/supervisor"
 
 const locationID = `loc_${"a".repeat(64)}`
 const digest = (digit: string) => `blake3:${digit.repeat(64)}`

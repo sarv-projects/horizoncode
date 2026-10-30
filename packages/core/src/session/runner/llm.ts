@@ -10,8 +10,8 @@ import {
   isContextOverflowFailure,
   type ToolCall,
   type ProviderErrorEvent,
-} from "@opencode-ai/llm"
-import type { DirectProviderJournalBindingV1 } from "@opencode-ai/llm/route"
+} from "@horizoncode/llm"
+import type { DirectProviderJournalBindingV1 } from "@horizoncode/llm/route"
 import { Cause, DateTime, Effect, FiberSet, Layer, Option, Semaphore, Stream } from "effect"
 import { blake3 } from "@noble/hashes/blake3.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
@@ -29,7 +29,7 @@ import {
   type ContextCompileOverlapDecisionV1,
   type ContextSpeedPlanV1,
 } from "../context-compile-policy"
-import { PrefixCacheSupportV1 as PrefixCacheSupportSchema, type ContextCompilePolicyV1 } from "@opencode-ai/schema/context-compile-policy-v1"
+import { PrefixCacheSupportV1 as PrefixCacheSupportSchema, type ContextCompilePolicyV1 } from "@horizoncode/schema/context-compile-policy-v1"
 import { PermissionV2 } from "../../permission"
 import { ProviderV2 } from "../../provider"
 import { QuestionV2 } from "../../question"
@@ -89,7 +89,7 @@ import { builtinHarnessProfileV1 } from "../../harness-profile"
  *
  * - One provider turn
  *   - [x] Translate every projected V2 Session message variant into canonical
- *     `@opencode-ai/llm` messages.
+ *     `@horizoncode/llm` messages.
  *   - [ ] Resolve policy-filtered built-in, MCP, plugin, and structured-output tool definitions.
  *   - [x] Stream exactly one `llm.stream(request)` provider turn.
  *   - [x] Persist assistant text and usage events incrementally as they arrive.
@@ -382,7 +382,7 @@ const layer = Layer.effect(
         ...(input.request.generation?.topK === undefined ? {} : { topK: input.request.generation.topK }),
         ...(input.request.providerOptions === undefined ? {} : { providerOptions: input.request.providerOptions }),
       }
-      let frozenContext: import("@opencode-ai/llm/route").DirectProviderRequestContextV1 | undefined
+      let frozenContext: import("@horizoncode/llm/route").DirectProviderRequestContextV1 | undefined
       let providerJournal: DirectProviderJournalBindingV1 | undefined
       let providerDispatchStarted = false
       const pin = (pinInput: { readonly endpointRevision: string; readonly transportRequestDigest: string }) =>

@@ -1,8 +1,8 @@
 export * as Tool from "./tool"
 
-import { ToolDefinition, ToolFailure, ToolOutput, type ToolCall } from "@opencode-ai/llm"
+import { ToolDefinition, ToolFailure, ToolOutput, type ToolCall } from "@horizoncode/llm"
 import { Effect, JsonSchema, Schema } from "effect"
-import type { Ref as LocationRef } from "@opencode-ai/schema/location"
+import type { Ref as LocationRef } from "@horizoncode/schema/location"
 import type { AgentV2 } from "../agent"
 import type { SessionMessage } from "../session/message"
 import type { SessionSchema } from "../session/schema"
@@ -54,8 +54,8 @@ export interface Context {
         readonly status: "settled" | "rejected" | "cancelled"
         readonly receiptRef: string
         readonly receiptDigest: string
-        readonly result?: import("@opencode-ai/llm").ToolResultValue
-        readonly output?: import("@opencode-ai/llm").ToolOutput
+        readonly result?: import("@horizoncode/llm").ToolResultValue
+        readonly output?: import("@horizoncode/llm").ToolOutput
         readonly errorCode?: string
       }
     | { readonly callID: string; readonly status: "unknown"; readonly errorCode?: string }

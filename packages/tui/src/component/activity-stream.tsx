@@ -1,5 +1,5 @@
 import { createMemo, createSignal, For, Show } from "solid-js"
-import type { Part } from "@opencode-ai/sdk/v2"
+import type { Part } from "@horizoncode/sdk/v2"
 import { useTheme } from "../context/theme"
 import { projectActivityCards, projectProgressCard, formatActivityDuration, type ActivityCardV1 } from "./activity-cards"
 import {

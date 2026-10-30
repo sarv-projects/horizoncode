@@ -230,11 +230,11 @@
     "opencode": {
       "disposition": "MIGRATE",
       "target": "horizoncode",
-      "own_manifest": "packages/opencode/package.json",
+      "own_manifest": "packages/horizoncode/package.json",
       "impact": {
         "lockfile_edges": [
-          "packages/opencode importer name",
-          "opencode@workspace:packages/opencode resolution",
+          "packages/horizoncode importer name",
+          "horizoncode@workspace:packages/horizoncode resolution",
           "packages/web dependency edge \"opencode\": \"workspace:*\""
         ],
         "has_source_importers": true,

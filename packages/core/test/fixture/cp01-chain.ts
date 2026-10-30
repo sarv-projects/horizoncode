@@ -6,7 +6,7 @@
  * HostKernel/EffectHost path will consume. They never mint production authority.
  */
 import { Effect } from "effect"
-import type { SessionSupervisorError } from "@opencode-ai/core/session/supervisor"
+import type { SessionSupervisorError } from "@horizoncode/core/session/supervisor"
 
 export const CP01_FIXTURE_ONLY = true as const
 export const CP01_SESSION_ID = "ses_cp01_fixture"

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Schema } from "effect"
-import * as Manifest from "@opencode-ai/schema/composition-v1"
+import * as Manifest from "@horizoncode/schema/composition-v1"
 import { COMPOSITION_LIMITS } from "../src/composition"
 import {
   preflightGlobalHookBinding,

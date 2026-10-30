@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import { Script } from "@opencode-ai/script"
+import { Script } from "@horizoncode/script"
 import { $ } from "bun"
 import { rm } from "node:fs/promises"
 import { fileURLToPath } from "node:url"

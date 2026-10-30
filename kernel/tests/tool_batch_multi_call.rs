@@ -941,3 +941,54 @@ fn tampered_non_write_challenge_cannot_execute_through_the_write_path() {
     assert_eq!(fs::read_to_string(&genuine).unwrap(), "ok");
     fixture.cleanup();
 }
+
+/// Containment is about the resolved target, not about the spelling of the
+/// path. A live fullstack run rejected `files.write` members whose absolute
+/// path merely carried `.`/`..` segments, and reported `path_outside_or_unsafe`
+/// for a path that was lexically inside the pinned workspace. The kernel must
+/// admit those and still refuse a resolved target outside the root.
+#[test]
+fn admits_lexically_contained_paths_and_denies_real_escapes() {
+    let mut fixture = Fixture::new();
+
+    let contained = format!(
+        "{}/./nested/../contained.txt",
+        fixture.workspace.display()
+    );
+    let admitted = fixture.request(
+        "prepare_tool_batch",
+        prepare_body(
+            "batch_contained",
+            vec![write_call("call_contained", Path::new(&contained), "ok")],
+        ),
+    );
+    assert_eq!(admitted.outcome, RpcOutcomeV1::Ok, "{:?}", admitted.error);
+    assert_eq!(response_string(&admitted, "status"), "needs_approval");
+    assert_eq!(fixture.challenge_rows("batch_contained").len(), 1);
+    // The challenge is bound to the resolved target, not the supplied spelling.
+    let calls = response_calls(&admitted).to_vec();
+    let challenge = call_field(&calls[0], "challengeId").to_owned();
+    assert_eq!(approve(&mut fixture, &challenge).outcome, RpcOutcomeV1::Ok);
+    assert_eq!(write(&mut fixture, &challenge, "ok").outcome, RpcOutcomeV1::Ok);
+    assert_eq!(
+        fs::read_to_string(fixture.workspace.join("contained.txt")).unwrap(),
+        "ok"
+    );
+
+    // A resolved target outside the pinned root overrides lexical noise.
+    let escape = format!("{}/../escaped.txt", fixture.workspace.display());
+    let denied = fixture.request(
+        "prepare_tool_batch",
+        prepare_body(
+            "batch_escape",
+            vec![write_call("call_escape", Path::new(&escape), "x")],
+        ),
+    );
+    assert_eq!(denied.outcome, RpcOutcomeV1::Ok, "{:?}", denied.error);
+    assert_eq!(response_string(&denied, "status"), "denied");
+    assert_eq!(response_string(&denied, "reason"), "path_outside_or_unsafe");
+    assert_eq!(fixture.challenge_rows("batch_escape").len(), 0);
+    assert!(!fixture.base.join("escaped.txt").exists());
+
+    fixture.cleanup();
+}

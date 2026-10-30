@@ -15,7 +15,7 @@ export interface RouteAttemptV1 extends Schema.Schema.Type<typeof RouteAttemptV1
 export const RouteAttemptV1 = Schema.Struct({
   providerId: ProviderId,
   routeId: AnyIdentifier,
-  routeIndex: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 9 })),
+  routeIndex: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 10 })),
   attempt: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 2 })),
   status: Schema.Literals(["succeeded", "failed", "rate_limited", "retryable_failure", "empty", "not_dispatched", "unknown"]),
   notDispatchedFailure: Schema.optional(Schema.Literals(["cancelled", "timed_out", "transport_failure"])),
@@ -109,6 +109,6 @@ export const ProviderStatusV1 = Schema.Struct({
   unavailableReason: Schema.optional(Schema.String.check(Schema.isMaxLength(256))),
 }).annotate({ identifier: "Horizon.WebSearchV1.ProviderStatusV1" })
 
-export const ProviderStatusListV1 = Schema.Array(ProviderStatusV1).check(Schema.isMaxLength(10))
+export const ProviderStatusListV1 = Schema.Array(ProviderStatusV1).check(Schema.isMaxLength(11))
   .annotate({ identifier: "Horizon.WebSearchV1.ProviderStatusListV1" })
 

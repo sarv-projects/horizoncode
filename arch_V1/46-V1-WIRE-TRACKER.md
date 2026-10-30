@@ -2,7 +2,11 @@
 
 **Use with:** [`46-V1-IMPLEMENTATION-BACKLOG.md`](46-V1-IMPLEMENTATION-BACKLOG.md) (row IDs), [`HANDOFF.md`](../HANDOFF.md) (evidence), [`46-V1-VERIFICATION-RUNBOOK.md`](46-V1-VERIFICATION-RUNBOOK.md).
 
-**Snapshot:** 2026-10-26 (reconciled with code + [`46-V1-SOURCE-ALIGNMENT-AUDIT.md`](46-V1-SOURCE-ALIGNMENT-AUDIT.md) §5). Update **Status** to **Done** only when **WIRED** with §32 acceptance on a cited revision (`HANDOFF.md`). **Partial** = CODE_PRESENT and/or focused tests — not VERIFIED. Registry: **226 designed / 4 `code_present` / 0 `wired`** of 230.
+**Snapshot:** 2026-10-26 (historical registry; reconciled with code + [`46-V1-SOURCE-ALIGNMENT-AUDIT.md`](46-V1-SOURCE-ALIGNMENT-AUDIT.md) §5). Update **Status** to **Done** only when **WIRED** with §32 acceptance on a cited revision (`HANDOFF.md`). **Partial** = CODE_PRESENT and/or focused tests — not VERIFIED. **Counts derivable from the tables below (counted 2026-10-29): 0 Done · 73 Partial · 12 Not done · 1 N/A across 86 ID rows** (CP-01–06, W-P0…W-P9, X-01–06, PB-01–05, FIN-01–07). Including the 5 exposure-tier rows and the 5 "explicitly not V1 wiring" rows the file has 96 rows: **0 Done · 76 Partial · 13 Not done · 7 N/A**. `code_present` is not a status value in this file.
+
+**2026-10-29:** sub-suite evidence (V1-RUST-VERIFY 32/32, V1-FINAL-VERIFY 31/31, tool_batch_guard_matrix 9/9) is sub-suite acceptance, NOT wire acceptance; wire status unchanged (0 wired). Do not mark rows Done without §32 acceptance on a cited revision.
+
+**2026-10-29 — correction to the registry line.** Until today the header read "226 designed / 4 `code_present` / `0 wired` of 230". Those numbers were **never derivable from this file's rows**: the tables hold 86 ID rows (96 with the tier and out-of-scope tables), carry no `code_present` column or value, and contain no `Done` row at all — `code_present` appeared only in that header sentence, and 226/230 are backlog-ID totals, not row counts here. Counted on 2026-10-29 by tallying the Status column: **0 Done · 73 Partial · 12 Not done · 1 N/A**. Separately, the §30.29 ACC bundle is not tracked here: ACC-G/H/J have no wire row at all, and ACC-F is the only one that does (W-P4-05, Partial, `packages/opencode/src/tool/apply_patch.ts:433-469`).
 
 ## Status legend
 

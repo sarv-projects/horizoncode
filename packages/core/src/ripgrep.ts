@@ -1,42 +1,37 @@
 export * as Ripgrep from "./ripgrep"
 
-import { Context, Effect, Fiber, Layer, Schema, Stream } from "effect"
-import { ChildProcess } from "effect/unstable/process"
-import { Entry, Match } from "@opencode-ai/schema/filesystem"
+import path from "path"
+import { Context, Effect, Layer, Schema } from "effect"
+import { Entry, Match } from "@horizoncode/schema/filesystem"
+import { Fff } from "#fff"
 import { makeGlobalNode } from "./effect/app-node"
-import { AppProcess, collectStream, waitForAbort } from "./process"
-import { NonNegativeInt, PositiveInt, RelativePath } from "./schema"
-import { RipgrepBinary } from "./ripgrep/binary"
+import { FSUtil } from "./fs-util"
+import { waitForAbort } from "./process"
+import { RelativePath } from "./schema"
 
 /**
- * Small core-owned ripgrep execution adapter. It deliberately exposes raw
- * process-oriented rows, not model text or permission behavior. Search maps
- * these rows into filesystem results; leaf tools own
- * presentation and permission prompts.
+ * In-process search adapter for find / glob / grep.
+ *
+ * Search used to shell out to the ripgrep binary. A spawn is a raw process
+ * origin that only an authenticated HostKernel Guard lease may authorize, so
+ * that route was hard-gated closed and every grep/glob call failed with
+ * "Ripgrep is unavailable".
+ *
+ * The same capability is already available in-process: the native fff index
+ * (the backend `FileSystemSearch.fffLayer` reads) greps with a regex engine
+ * under a bounded time budget and globs with the same syntax, and it never
+ * spawns anything. This adapter serves the Ripgrep interface from that index,
+ * so availability now reflects whether a backend can actually answer a query.
+ *
+ * Only the engine is replaced: results stay workspace-relative and containment
+ * is delegated to `FSUtil.contains` rather than reimplemented here.
  */
 
-const ERROR_BYTES = 8 * 1024
-const MAX_RECORD_BYTES = 64 * 1024
-const MAX_SUBMATCHES = 100
-
-const RawMatch = Schema.Struct({
-  type: Schema.Literal("match"),
-  data: Schema.Struct({
-    path: Schema.Struct({ text: Schema.String }),
-    lines: Schema.Struct({ text: Schema.String }),
-    line_number: PositiveInt,
-    absolute_offset: NonNegativeInt,
-    submatches: Schema.Array(
-      Schema.Struct({
-        match: Schema.Struct({ text: Schema.String }),
-        start: NonNegativeInt,
-        end: NonNegativeInt,
-      }),
-    ),
-  }),
-})
-
-type RawMatchData = (typeof RawMatch.Type)["data"]
+const SCAN_TIMEOUT_MS = 15_000
+const GREP_TIME_BUDGET_MS = 1_500
+const MAX_LINE_LENGTH = 2_000
+/** Page size used when a negated pattern forces a full scan before filtering. */
+const NEGATED_SCAN_PAGE = 4_096
 
 export class Error extends Schema.TaggedErrorClass<Error>()("Ripgrep.Error", {
   message: Schema.String,
@@ -87,224 +82,258 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/v2
 const failure = (message: string, cause?: unknown) => new Error({ message, cause })
 
 /**
- * Ripgrep is a child-process origin. PermissionV2 at the leaf tool is not a
- * HostKernel Guard lease, so it cannot authorize this spawn. Keep search
- * unavailable until the operation is backed by the authenticated HostKernel
- * read service; this gate must remain immediately before every process path.
+ * Availability of the search backend. True only when the in-process index can
+ * actually serve a query in this runtime (`#fff` binds to a no-op under Node or
+ * when the native addon is missing), so callers still fail closed instead of
+ * silently returning empty results.
  */
-export function ripgrepProcessRouteAvailable(): boolean {
-  return false
+export function searchBackendAvailable(): boolean {
+  return Fff.available()
 }
 
-const unavailable = () => failure("Ripgrep is unavailable until HostKernel Guarded read execution is wired")
+/**
+ * Historical name kept for the callers that still probe the old process gate.
+ * There is no process route left to probe: the answer mirrors the in-process
+ * backend, so it is never an unconditional `false`.
+ */
+export function ripgrepProcessRouteAvailable(): boolean {
+  return searchBackendAvailable()
+}
 
-const isInvalidPattern = (stderr: string) =>
-  stderr.includes("regex parse error") || stderr.includes("error parsing regex")
+const unavailable = () => failure("Search is unavailable: the in-process file index (fff) is not present in this runtime")
+
+/** Normalise a backend path to a workspace-relative POSIX path. */
+const posix = (value: string) =>
+  value
+    .replaceAll("\\", "/")
+    .replace(/^(?:\.\/)+/u, "")
+    .replace(/^\/+/u, "")
+
+/** Reuse the filesystem layer's containment rule; never resolve outside `root`. */
+const contained = (root: string, relative: string) =>
+  relative.length > 0 && !path.isAbsolute(relative) && FSUtil.contains(root, path.resolve(root, relative))
+
+const gitPath = (relative: string) => relative.split("/").includes(".git")
+
+const dotPath = (relative: string) => relative.split("/").some((segment) => segment.startsWith("."))
+
+/**
+ * Minimal glob matcher, used only to honour ripgrep's negated `--glob` form
+ * (`!**\/SKILL.md`) that the index cannot express as an exclusion. Supports
+ * `*`, `**`, `?` and `{a,b}`; no dependency is added for this.
+ */
+const globMatcher = (pattern: string) => {
+  let source = ""
+  for (let index = 0; index < pattern.length; index++) {
+    const char = pattern.charAt(index)
+    if (char === "*") {
+      if (pattern.charAt(index + 1) === "*") {
+        index++
+        if (pattern.charAt(index + 1) === "/") {
+          index++
+          source += "(?:.*/)?"
+        } else {
+          source += ".*"
+        }
+      } else {
+        source += "[^/]*"
+      }
+      continue
+    }
+    if (char === "?") {
+      source += "[^/]"
+      continue
+    }
+    if (char === "{") {
+      const close = pattern.indexOf("}", index)
+      if (close > index) {
+        const alternatives = pattern
+          .slice(index + 1, close)
+          .split(",")
+          .map((part) => part.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"))
+          .join("|")
+        source += `(?:${alternatives})`
+        index = close
+        continue
+      }
+    }
+    source += char.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")
+  }
+  return new RegExp(`^${source}$`, "u")
+}
+
+/**
+ * The index answers unparseable patterns with an empty result, so reject them
+ * up front instead. Inline flags such as `(?i)` are Rust-regex syntax that JS
+ * cannot compile but the backend does honour, so strip them before deciding.
+ */
+const invalidPattern = (pattern: string) => {
+  try {
+    new RegExp(pattern)
+    return false
+  } catch {}
+  try {
+    new RegExp(pattern.replace(/^\(\?[a-zA-Z]+\)/u, ""))
+    return false
+  } catch {
+    return true
+  }
+}
+
+const toMatch = (hit: Fff.Hit, relative: RelativePath): Match => {
+  const bytes = Buffer.from(hit.lineContent)
+  return Match.make({
+    entry: Entry.make({ path: relative, type: "file" }),
+    line: hit.lineNumber,
+    offset: hit.byteOffset,
+    text:
+      hit.lineContent.length > MAX_LINE_LENGTH
+        ? hit.lineContent.slice(0, MAX_LINE_LENGTH).replace(/[\uD800-\uDBFF]$/u, "") + "..."
+        : hit.lineContent,
+    submatches: hit.matchRanges.map(([start, end]) => ({
+      text: bytes.subarray(start, end).toString("utf8"),
+      start,
+      end,
+    })),
+  })
+}
 
 const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
-    const process = yield* AppProcess.Service
-    const binary = yield* RipgrepBinary.Service
+    // One index per searched root; the backend watches the tree after the first
+    // scan, so repeat queries in the same run are served from memory.
+    const pickers = new Map<string, Fff.Picker>()
 
-    const run = <A>(input: {
-      readonly cwd: string
-      readonly args: string[]
-      readonly limit: number
-      readonly signal?: AbortSignal
-      readonly parse: (line: string) => Effect.Effect<A | undefined, Error>
-      readonly pattern?: string
-      readonly onItem?: (item: A) => Effect.Effect<void>
-    }) => {
-      // No command construction, binary resolution, or spawn is allowed until
-      // the canonical Guard/ExecutionHost reader is connected. This blocks
-      // find/glob/grep for both HorizonCode and the OpenCode-derived routes.
-      if (!ripgrepProcessRouteAvailable()) {
-        return Effect.fail(unavailable())
-      }
-      const program = Effect.scoped(
-        Effect.gen(function* () {
-          const handle = yield* process.spawn(
-            ChildProcess.make(yield* binary.filepath, input.args, { cwd: input.cwd, extendEnv: true, stdin: "ignore" }),
-          )
-          const stderrFiber = yield* collectStream(handle.stderr, ERROR_BYTES).pipe(
-            Effect.map((output) => output.buffer.toString("utf8")),
-            Effect.forkScoped,
-          )
-          let observed = 0
-          const rows = yield* Stream.decodeText(handle.stdout).pipe(
-            Stream.splitLines,
-            Stream.filter((line) => line.length > 0),
-            Stream.mapEffect(input.parse),
-            Stream.filter((row): row is A => row !== undefined),
-            Stream.tap((row) => {
-              if (!input.onItem || observed++ >= input.limit) return Effect.void
-              return input.onItem(row)
-            }),
-            Stream.take(input.limit + 1),
-            Stream.runCollect,
-            Effect.map((chunk) => [...chunk]),
-          )
-          const truncated = rows.length > input.limit
-          if (truncated) return { items: rows.slice(0, input.limit), truncated, partial: false }
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        for (const picker of pickers.values()) picker.destroy()
+        pickers.clear()
+      }),
+    )
 
-          const code = yield* handle.exitCode
-          const stderr = yield* Fiber.join(stderrFiber)
-          if (input.pattern && code === 2 && isInvalidPattern(stderr)) {
-            return yield* new InvalidPatternError({ pattern: input.pattern, message: stderr.trim() })
-          }
-          if (code !== 0 && code !== 1 && code !== 2) {
-            return yield* failure(stderr.trim() || `ripgrep failed with code ${code}`)
-          }
-          return { items: code === 1 ? [] : rows, truncated: false, partial: code === 2 }
-        }),
-      )
-      const abortable = input.signal ? program.pipe(Effect.raceFirst(waitForAbort(input.signal))) : program
-      return abortable.pipe(
-        Effect.mapError((cause) =>
-          cause instanceof Error || cause instanceof InvalidPatternError
-            ? cause
-            : failure("ripgrep execution failed", cause),
+    const picker = (cwd: string): Effect.Effect<Fff.Picker, Error> =>
+      Effect.suspend(() => {
+        if (!searchBackendAvailable()) return Effect.fail(unavailable())
+        const cached = pickers.get(cwd)
+        if (cached) return Effect.succeed(cached)
+        return Effect.try({
+          try: () =>
+            Fff.create({ basePath: cwd, aiMode: true, disableMmapCache: true, disableContentIndexing: true }),
+          catch: (cause) => failure("Unable to open the in-process search index", cause),
+        }).pipe(
+          Effect.flatMap((made) => {
+            if (!made.ok) return Effect.fail(failure(`Unable to open the in-process search index: ${made.error}`))
+            pickers.set(cwd, made.value)
+            return Effect.succeed(made.value)
+          }),
+        )
+      })
+
+    /**
+     * The index scans asynchronously. Wait for that first scan (bounded) so the
+     * first query is not silently empty. A scan that only times out still answers
+     * from the partial index instead of failing the tool.
+     */
+    const ready = (cwd: string): Effect.Effect<Fff.Picker, Error> =>
+      picker(cwd).pipe(
+        Effect.flatMap((instance) =>
+          Effect.tryPromise({
+            try: () => instance.waitForScan(SCAN_TIMEOUT_MS),
+            catch: (cause) => failure("Search index scan failed", cause),
+          }).pipe(
+            Effect.flatMap((scanned) =>
+              scanned.ok ? Effect.succeed(instance) : Effect.fail(failure(`Search index unavailable: ${scanned.error}`)),
+            ),
+          ),
         ),
+      )
+
+    const query = <A>(label: string, signal: AbortSignal | undefined, run: () => A): Effect.Effect<A, Error> => {
+      const effect = Effect.suspend(() =>
+        Effect.try({ try: run, catch: (cause) => failure(`${label} failed`, cause) }),
+      )
+      if (!signal) return effect
+      // Aborts surface the platform `Error`, which is a different value from the
+      // adapter's tagged error; fold it in so callers keep a single error type.
+      return effect.pipe(
+        Effect.raceFirst(waitForAbort(signal)),
+        Effect.mapError((cause) => (cause instanceof Error ? cause : failure(`${label} aborted`, cause))),
       )
     }
 
+    const entries = (
+      root: string,
+      items: readonly { readonly relativePath: string }[],
+      hidden: boolean | undefined,
+      limit: number,
+      exclude?: RegExp,
+    ) =>
+      items
+        .map((item) => posix(item.relativePath))
+        .filter((relative) => contained(root, relative))
+        .filter((relative) => !gitPath(relative))
+        .filter((relative) => hidden === true || !dotPath(relative))
+        .filter((relative) => exclude === undefined || !exclude.test(relative))
+        .slice(0, limit)
+        .map((relative) => Entry.make({ path: RelativePath.make(relative), type: "file" }))
+
     return Service.of({
-      glob: (input) => {
-        // Keep this outer check too: args are built lazily only after Guard is
-        // available, so caller-controlled patterns never enter process argv.
-        if (!ripgrepProcessRouteAvailable()) return Effect.fail(unavailable())
-        return run<string>({
-          cwd: input.cwd,
-          limit: input.limit,
-          signal: input.signal,
-          args: [
-            "--no-config",
-            "--files",
-            ...(input.hidden ? ["--hidden"] : []),
-            ...(input.follow ? ["--follow"] : []),
-            `--glob=${input.pattern}`,
-            "--glob=!**/.git/**",
-            ".",
-          ],
-          parse: (line) =>
-            Effect.succeed(
-              line
-                .replace(/^(?:\.[\\/])+/u, "")
-                .replace(/^[\\/]+/u, "")
-                .replaceAll("\\", "/"),
-            ),
-        }).pipe(
-          Effect.map((result) =>
-            result.items.map((relative) =>
-              Entry.make({
-                path: RelativePath.make(relative),
-                type: "file",
-              }),
-            ),
-          ),
-          Effect.catchTag("Ripgrep.InvalidPatternError", (cause) => Effect.fail(failure(cause.message, cause))),
-        )
-      },
-      find: (input) => {
-        if (!ripgrepProcessRouteAvailable()) return Effect.fail(unavailable())
-        return run<Entry>({
-          cwd: input.cwd,
-          limit: input.limit,
-          signal: input.signal,
-          args: [
-            "--no-config",
-            "--files",
-            ...(input.hidden ? ["--hidden"] : []),
-            ...(input.follow ? ["--follow"] : []),
-            ...(input.pattern === "*" ? [] : [`--glob=${input.pattern}`]),
-            "--glob=!**/.git/**",
-            ".",
-          ],
-          parse: (line) => {
-            const relative = line
-              .replace(/^(?:\.[\\/])+/u, "")
-              .replace(/^[\\/]+/u, "")
-              .replaceAll("\\", "/")
-            return Effect.succeed(
-              Entry.make({
-                path: RelativePath.make(relative),
-                type: "file",
-              }),
+      find: (input) =>
+        Effect.gen(function* () {
+          const cwd = path.resolve(input.cwd)
+          const instance = yield* ready(cwd)
+          const negated = input.pattern.startsWith("!")
+          const wanted = negated ? input.pattern.slice(1) : input.pattern
+          const pattern = negated || wanted.trim().length === 0 || wanted.trim() === "*" ? "**/*" : wanted
+          const page = negated ? Math.max(input.limit * 8, NEGATED_SCAN_PAGE) : input.limit
+          const found = yield* query("find", input.signal, () =>
+            instance.glob(pattern, { pageIndex: 0, pageSize: page }),
+          )
+          if (!found.ok) return yield* Effect.fail(failure(`Search failed: ${found.error}`))
+          const limit = Math.max(input.limit, 1)
+          const result = entries(cwd, found.value.items, input.hidden, limit, negated ? globMatcher(posix(wanted)) : undefined)
+          for (const entry of result) if (input.onEntry) yield* input.onEntry(entry)
+          return result
+        }),
+      glob: (input) =>
+        Effect.gen(function* () {
+          const cwd = path.resolve(input.cwd)
+          if (!input.pattern) return yield* Effect.fail(failure("glob pattern is required"))
+          const instance = yield* ready(cwd)
+          const found = yield* query("glob", input.signal, () =>
+            instance.glob(input.pattern, { pageIndex: 0, pageSize: input.limit }),
+          )
+          if (!found.ok) return yield* Effect.fail(failure(`Search failed: ${found.error}`))
+          return entries(cwd, found.value.items, input.hidden, Math.max(input.limit, 1))
+        }),
+      grep: (input) =>
+        Effect.gen(function* () {
+          if (!input.pattern) return yield* Effect.fail(failure("pattern is required"))
+          if (invalidPattern(input.pattern))
+            return yield* Effect.fail(
+              new InvalidPatternError({ pattern: input.pattern, message: `Invalid regular expression: ${input.pattern}` }),
             )
-          },
-          onItem: input.onEntry,
-        }).pipe(
-          Effect.map((result) => result.items),
-          Effect.catchTag("Ripgrep.InvalidPatternError", (cause) => Effect.fail(failure(cause.message, cause))),
-        )
-      },
-      grep: (input) => {
-        if (!ripgrepProcessRouteAvailable()) return Effect.fail(unavailable())
-        return run<RawMatchData>({
-          ...input,
-          args: [
-            "--no-config",
-            "--json",
-            "--hidden",
-            "--no-messages",
-            ...(input.include ? [`--glob=${input.include}`] : []),
-            "--glob=!**/.git/**",
-            "--",
-            input.pattern,
-            input.file ?? ".",
-          ],
-          parse: (line) =>
-            (Buffer.byteLength(line, "utf8") > MAX_RECORD_BYTES
-              ? Effect.fail(failure(`Ripgrep JSON record exceeded ${MAX_RECORD_BYTES} bytes`))
-              : Effect.try({
-                  try: () => JSON.parse(line) as unknown,
-                  catch: (cause) => failure("Invalid ripgrep JSON output", cause),
-                })
-            ).pipe(
-              Effect.flatMap((json) => {
-                if (!json || typeof json !== "object" || !("type" in json) || json.type !== "match")
-                  return Effect.succeed(undefined)
-                return Schema.decodeUnknownEffect(RawMatch)(json).pipe(
-                  Effect.map((match) => ({
-                    ...match.data,
-                    path: { text: match.data.path.text.replace(/^\.[\\/]/, "") },
-                    submatches: match.data.submatches.slice(0, MAX_SUBMATCHES),
-                  })),
-                  Effect.mapError((cause) => failure("Invalid ripgrep match output", cause)),
-                )
-              }),
-            ),
-        }).pipe(
-          Effect.map((result) =>
-            result.items.map((match) => {
-              const relative = match.path.text
-                .replace(/^(?:\.[\\/])+/u, "")
-                .replace(/^[\\/]+/u, "")
-                .replaceAll("\\", "/")
-              return Match.make({
-                entry: Entry.make({
-                  path: RelativePath.make(relative),
-                  type: "file",
-                }),
-                line: match.line_number,
-                offset: match.absolute_offset,
-                text:
-                  match.lines.text.length > 2_000
-                    ? match.lines.text.slice(0, 2_000).replace(/[\uD800-\uDBFF]$/, "") + "..."
-                    : match.lines.text,
-                submatches: match.submatches.map((submatch) => ({
-                  text: submatch.match.text,
-                  start: submatch.start,
-                  end: submatch.end,
-                })),
-              })
-            }),
-          ),
-        )
-      },
+          const cwd = path.resolve(input.cwd)
+          const instance = yield* ready(cwd)
+          // The index takes "<glob filters> <pattern>" as one query, the same
+          // shape FileSystemSearch.fffLayer builds for its include filter.
+          const text = [input.file, input.include, input.pattern]
+            .filter((part): part is string => part !== undefined && part.trim().length > 0)
+            .join(" ")
+          const found = yield* query("grep", input.signal, () =>
+            instance.grep(text, { mode: "regex", pageSize: input.limit, timeBudgetMs: GREP_TIME_BUDGET_MS }),
+          )
+          if (!found.ok) return yield* Effect.fail(failure(`Search failed: ${found.error}`))
+          return found.value.items
+            .map((hit) => ({ hit, relative: posix(hit.relativePath) }))
+            .filter(({ relative }) => contained(cwd, relative))
+            .filter(({ relative }) => !gitPath(relative))
+            .slice(0, Math.max(input.limit, 1))
+            .map(({ hit, relative }) => toMatch(hit, RelativePath.make(relative)))
+        }),
     })
   }),
 )
 
-export const node = makeGlobalNode({ service: Service, layer: layer, deps: [RipgrepBinary.node, AppProcess.node] })
+export const node = makeGlobalNode({ service: Service, layer: layer, deps: [] })

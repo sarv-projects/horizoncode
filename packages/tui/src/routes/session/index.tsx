@@ -35,7 +35,7 @@ import type {
   UserMessage,
   TextPart,
   SessionStatus,
-} from "@opencode-ai/sdk/v2"
+} from "@horizoncode/sdk/v2"
 import { useLocal } from "../../context/local"
 import { Locale } from "../../util/locale"
 import { webSearchProviderLabel } from "../../util/tool-display"
@@ -78,6 +78,8 @@ import { formatTranscript } from "../../util/transcript"
 import { sessionEpilogue } from "../../util/presentation"
 import { setPreLayoutSiblingMargin } from "../../util/layout"
 import { useTuiConfig } from "../../config"
+
+type SessionContextApiResponse = { data: unknown }
 import { useClipboard } from "../../context/clipboard"
 import { nextThinkingMode, useThinkingMode, type ThinkingMode } from "../../context/thinking"
 import { getScrollAcceleration } from "../../util/scroll"
@@ -849,11 +851,98 @@ export function Session() {
           })
           return
         }
-        void sdk.client.session.summarize({
+        void (sdk.client.session as any).summarize({
           sessionID: route.sessionID,
           modelID: selectedModel.modelID,
           providerID: selectedModel.providerID,
         })
+        dialog.clear()
+      },
+    },
+    {
+      title: "Clear session context",
+      value: "session.context.clear",
+      category: "Session",
+      slash: { name: "clear" },
+      run: () => {
+        void (sdk.client.session as any)
+          .contextClear({ sessionID: route.sessionID })
+          .then((res: SessionContextApiResponse) => {
+            const result = res.data as unknown
+            const removed = result && typeof result === "object" && "removedMessages" in result
+              ? (result as { removedMessages: number }).removedMessages
+              : 0
+            toast.show({
+              variant: "success",
+              message: `Context cleared — new baseline started (${removed} message(s) dropped).`,
+              duration: 3000,
+            })
+          })
+          .catch((error: unknown) => {
+            toast.show({
+              variant: "error",
+              message: `Failed to clear context: ${error instanceof Error ? error.message : String(error)}`,
+              duration: 5000,
+            })
+          })
+        dialog.clear()
+      },
+    },
+    {
+      title: "Trim session context",
+      value: "session.context.trim",
+      category: "Session",
+      slash: { name: "trim" },
+      run: () => {
+        void (sdk.client.session as any)
+          .contextTrim({ sessionID: route.sessionID })
+          .then((res: SessionContextApiResponse) => {
+            const result = res.data as unknown
+            const removed = result && typeof result === "object" && "removedMessages" in result
+              ? (result as { removedMessages: number }).removedMessages
+              : 0
+            toast.show({
+              variant: "success",
+              message: `Context trimmed — reclaimed ${removed} older message(s), new baseline started.`,
+              duration: 3000,
+            })
+          })
+          .catch((error: unknown) => {
+            toast.show({
+              variant: "error",
+              message: `Failed to trim context: ${error instanceof Error ? error.message : String(error)}`,
+              duration: 5000,
+            })
+          })
+        dialog.clear()
+      },
+    },
+    {
+      title: "Prune session context",
+      value: "session.context.prune",
+      category: "Session",
+      slash: { name: "prune" },
+      run: () => {
+        void (sdk.client.session as any)
+          .contextPrune({ sessionID: route.sessionID })
+          .then((res: SessionContextApiResponse) => {
+            const result = res.data as unknown
+            const removed = result && typeof result === "object" && "removedMessages" in result
+              ? (result as { removedMessages: number }).removedMessages
+              : 0
+            toast.show({
+              variant: "success",
+              message: `Context pruned — dropped ${removed} stale message(s), new baseline started.`,
+              duration: 3000,
+            })
+          })
+          .catch((error: unknown) => {
+            toast.show({
+              variant: "error",
+              message: `Failed to prune context: ${error instanceof Error ? error.message : String(error)}`,
+              duration: 5000,
+            })
+          })
         dialog.clear()
       },
     },

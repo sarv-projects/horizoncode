@@ -4536,6 +4536,41 @@ impl WorkerPoolControl {
         WorktreeRootOwnerV1::from_live_root_proof(proof).map_err(map_worktree_lifecycle_error)
     }
 
+    /// Re-anchor a stored root-coordinator proof to the CURRENT OwnerLog
+    /// watermark. Every immutable execution fact is compared against the
+    /// registered root coordinator first; only the mutable OwnerLog anchors are
+    /// refreshed, because any later append by the same durable owner — the
+    /// Stage-B context bind and the post-admission DelegationBound among them —
+    /// moves them. Expiry and owner epoch are still enforced.
+    pub(crate) fn reanchor_root_coordinator_proof(
+        &self,
+        proof: &RootCoordinatorExecutionProofV1,
+        now_ms: u64,
+    ) -> Result<RootCoordinatorExecutionProofV1, WorkerDurableError> {
+        let root = self
+            .identities
+            .root_coordinators
+            .get(proof.worker_execution_id())
+            .ok_or(WorkerDurableError::NotFound("root coordinator unavailable"))?;
+        if root != &proof.execution
+            || root.expires_at_ms <= now_ms
+            || proof.owner_epoch() != self.resumed_epoch
+        {
+            return Err(WorkerDurableError::Conflict(
+                "root coordinator proof is stale for worktree lifecycle",
+            ));
+        }
+        let (owner_log_id, owner_log_sequence, owner_log_event_digest, pool_revision) =
+            self.owner_log_watermark()?;
+        Ok(RootCoordinatorExecutionProofV1 {
+            execution: root.clone(),
+            owner_log_id,
+            owner_log_sequence,
+            owner_log_event_digest,
+            worker_pool_revision: pool_revision,
+        })
+    }
+
     /// Choose a registered, free worktree entirely from the durable P8 pool.
     /// The caller gets an opaque target and never nominates an ID or path.
     pub(crate) fn select_worktree_lifecycle_target(
@@ -5498,7 +5533,8 @@ impl WorkerPoolControl {
         owner: &AuthenticatedOwnerContext,
     ) -> Result<ManagedAttemptWorktreeTargetV1, WorkerDurableError> {
         validate_owner_token(worker_execution_id)?;
-        let root_owner = self.resolve_worktree_root_owner(root_proof, now_ms)?;
+        let root_proof = self.reanchor_root_coordinator_proof(root_proof, now_ms)?;
+        let root_owner = self.resolve_worktree_root_owner(&root_proof, now_ms)?;
         let pins = self.identities.pre_admission_pins.get(worker_execution_id)
             .ok_or(WorkerDurableError::NotFound("managed target P8 pins unavailable"))?;
         let durable_binding = self.identities.delegation_bindings.get(worker_execution_id)
@@ -11606,7 +11642,7 @@ fn apply_worker_identity_command(
                 || worker.class != WorkerClass::IsolatedEffectful
                 || worker.owner != OwnerScopeKey::from_owner(pins.owner())
                 || worker.goal_id != pins.goal_id
-                || ticket.expected_task_revision != pins.workspace_revision
+                || ticket.expected_task_revision != pins.task_revision
                 || ticket.accepted_spec_digest != pins.accepted_spec_digest
                 || worker.worktree_lease_id.is_none()
                 || ticket.state != crate::worker_pool::TicketState::Consumed

@@ -7,8 +7,8 @@ import { ChildProcess } from "effect/unstable/process"
 import { ChildProcessSpawner, make as makeChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
 import { CrossSpawnSpawner } from "../src/cross-spawn-spawner"
 import { makeGlobalNode } from "../src/effect/app-node"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { AppProcess, collectStream, pinCodeModeHelperRoot, pinSupervisorExecutable, pinSupervisorSource } from "@opencode-ai/core/process"
+import { LayerNode } from "@horizoncode/core/effect/layer-node"
+import { AppProcess, collectStream, pinCodeModeHelperRoot, pinSupervisorExecutable, pinSupervisorSource } from "@horizoncode/core/process"
 import { testEffect } from "./lib/effect"
 
 const { effect: it } = testEffect(LayerNode.compile(AppProcess.node))

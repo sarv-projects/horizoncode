@@ -533,7 +533,7 @@ say "STEP 3/10: config ready (anonymous=true model=opencode/e2e-offline cost=0 b
 # 3b. HostKernel binary: the direct provider-authority gate requires the real
 #     HostKernel's permission-mode snapshot, which only exists when the
 #     compiled binary's embedded kernel is present. A source-mode `bun run`
-#     has no build-time defines (see packages/opencode/script/build.ts), so
+#     has no build-time defines (see packages/horizoncode/script/build.ts), so
 #     the repo-local hz-kernel binary is injected through bun --preload
 #     globals carrying the exact build manifest shape. The REAL kernel runs.
 # ---------------------------------------------------------------------------
@@ -575,12 +575,12 @@ start_server() {
   port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')
   BASE="http://127.0.0.1:$port"
   : >> "$LOGS/serve.log"
-  # Launch as DIRECT file execution from packages/opencode, NOT via `bun run`:
+  # Launch as DIRECT file execution from packages/horizoncode, NOT via `bun run`:
   # at that cwd `bun run` swaps the CLI --preload list for the project bunfig's
-  # preload (packages/opencode/bunfig.toml), silently dropping the kernel shim.
+  # preload (packages/horizoncode/bunfig.toml), silently dropping the kernel shim.
   # Direct execution honors repeatable CLI --preload flags; the bunfig's TUI
   # preload is passed explicitly to keep parity with a normal boot.
-  ( cd "$ROOT/packages/opencode" && exec env \
+  ( cd "$ROOT/packages/horizoncode" && exec env \
       "${PROVIDER_SCRUB[@]+"${PROVIDER_SCRUB[@]}"}" \
       "$BUN" --preload="@opentui/solid/preload" --preload="$RUN/kernel-preload.ts" \
       src/index.ts serve --hostname 127.0.0.1 --port "$port" ) \

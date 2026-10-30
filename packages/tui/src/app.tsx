@@ -3,9 +3,9 @@ import { registerOpencodeSpinner } from "./component/register-spinner"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { Deferred, Effect } from "effect"
 import { randomUUID } from "node:crypto"
-import { Global } from "@opencode-ai/core/global"
-import { Flag } from "@opencode-ai/core/flag/flag"
-import { InstallationVersion } from "@opencode-ai/core/installation/version"
+import { Global } from "@horizoncode/core/global"
+import { Flag } from "@horizoncode/core/flag/flag"
+import { InstallationVersion } from "@horizoncode/core/installation/version"
 import { ClipboardProvider, useClipboard } from "./context/clipboard"
 import { ExitProvider, useExit } from "./context/exit"
 import { EpilogueProvider } from "./context/epilogue"
@@ -77,7 +77,7 @@ import { boundToolOutput } from "./util/collapse-tool-output"
 import { KVProvider, useKV } from "./context/kv"
 import * as Model from "./util/model"
 import { ArgsProvider, useArgs, type Args } from "./context/args"
-import { openUrl } from "@opencode-ai/core/open"
+import { openUrl } from "@horizoncode/core/open"
 import { PromptRefProvider, usePromptRef } from "./context/prompt"
 import { TuiConfigProvider, useTuiConfig, type TuiConfig } from "./config"
 import { createTuiApiAdapters } from "./plugin/adapters"
@@ -379,12 +379,30 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
   yield* Effect.sync(() => {
     win32FlushInputBuffer()
     if (result.reason !== undefined) {
-      process.stderr.write((cliErrorMessage(result.reason) ?? errorFormat(result.reason)) + "\n")
+      safeWrite(process.stderr, (cliErrorMessage(result.reason) ?? errorFormat(result.reason)) + "\n")
       process.exitCode = 1
     }
-    if (result.epilogue) process.stdout.write(result.epilogue + "\n")
+    if (result.epilogue) safeWrite(process.stdout, result.epilogue + "\n")
   })
 })
+
+/// The terminal can already be gone when teardown runs: the window was closed,
+/// tmux detached, or stdout was piped and the reader exited. Node reports that
+/// as `EIO` on the stream, which both throws from `write` and emits an "error"
+/// event, so an unguarded farewell write replaced the exit banner with a stack
+/// trace. A failed write to a dead terminal is not an error worth reporting.
+const quietStreams = new WeakSet<object>()
+
+function safeWrite(stream: { write(text: string): unknown; destroyed?: boolean; writable?: boolean; on?: (event: string, handler: () => void) => unknown }, text: string) {
+  try {
+    if (stream.destroyed === true || stream.writable === false) return
+    if (typeof stream.on === "function" && !quietStreams.has(stream)) {
+      quietStreams.add(stream)
+      stream.on("error", () => {})
+    }
+    stream.write(text)
+  } catch {}
+}
 
 function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPluginHost }) {
   const startup = useTuiStartup()

@@ -19,7 +19,7 @@ import type {
   SnapshotFileDiff,
   ConsoleState,
   EventMessagePartDelta,
-} from "@opencode-ai/sdk/v2"
+} from "@horizoncode/sdk/v2"
 import { createStore, produce, reconcile } from "solid-js/store"
 import { useProject } from "./project"
 import { useEvent } from "./event"
@@ -307,6 +307,7 @@ export const {
         catalogSnapshot: { source: "unavailable", freshness: "unknown" },
         anonymousFreeProviders: [],
         anonymousFreeModels: [],
+        localDirectCredentials: false,
       },
       console_state: emptyConsoleState,
       capabilities: {

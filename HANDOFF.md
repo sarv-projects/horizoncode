@@ -1,3 +1,125 @@
+## DIGEST — 2026-10-29 18:10 UTC (12 lines; newest entry follows below)
+
+- **Active phase:** reliability remediation; V1 wire tracker at **0 Done**.
+- **Latest evidence:** `reports/reliability-final-state-2026-10-30.md` — retrykit API lane **13 calls / 0 tool errors / 107.6 s** (was 19 / 10 / 226.5 s); retrykit TUI 24/25; auditlog TUI **22/22 VERIFIED**; auditlog API 22 calls / 3 errors; slash commands 101 registered / 9-of-10 sample executed / `/commit` `/issues` `/changelog` broken.
+- **Owner:** docs-truth pass on `29fd33a89`; tree dirty — 187 changed paths (`git status --porcelain | wc -l`).
+- **Defects (measured today):** **A1 FIXED** — `files.write` now creates a missing parent chain inside the effect (`mkdirat` component-by-component off the workspace root fd; `inspect_write_target` separates `Present`/`Absent`/`MissingParent` from genuine denials). Proof: `kernel/tests/effect_direct_write.rs` 5/5, including `a/b/c/file.txt` created with mode `0o755`, overwrite keeps `existed: true`, `../../escape.txt` still denied. **A2 FIXED** — `Pty` typed errors now carry their `reason` in `message` (`core/src/pty.ts`), and `tool/shell.ts` explains an incomplete admitted `terminal.run` argument set instead of letting the kernel emit a bare tag. **A3 MOSTLY FIXED** — one lease per batch, normalized execution for every admission status, and batch-scoped `pendingContent` staging (`tool-batch.ts`); the `guarded operation set or lease changed` denial no longer occurs (repro test 0/3 → 3/3). **Residual:** two edits to the SAME file in one message are refused by the kernel with `stale_preimage` because patch preimages are validated against live bytes at plan time; mitigated by stating the rule in `tool/edit.txt` (auditlog went 47 calls/12 errors → 22/3).
+- **Launcher:** `packages/opencode/bin/opencode` (and the `horizoncode`/`hzcode` symlink) now falls back to the TypeScript entrypoint under bun when no packaged platform binary exists, so `horizoncode` runs from a bare checkout instead of exiting with "could not resolve a compatible Linux CLI binary".
+- **Dead lanes:** Task/subagent dispatch fails closed for all 10 `AgentProfileV2` profiles — `DIRECT_CHILD_TURN_RPC_ENABLED = false` (`packages/opencode/src/session/managed-control.ts:86`); no completion gate — `completeDirectTurn(resultDigest)` (`:8626-8645`) accepts an arbitrary string; LSP/DAP closed — `languageServiceProcessRouteAvailable()` / `hostProtocolRouteAvailable()` return `false` (`packages/opencode/src/lsp/launch.ts:37,42`).
+- **Measured product state:** fullstack 165 calls / 41 failures (75 %), 20/20 held-back tests, 2,428 lines; retrykit 19/10; auditlog 31/8 and 35/6; auditlog requirement 14 (a UI) silently dropped twice and the report renumbered "all 13"; one run claimed no test artifacts while `__pycache__` was present.
+- **Tracker:** `arch_V1/46-V1-WIRE-TRACKER.md` = **0 Done · 73 Partial · 12 Not done · 1 N/A** over 86 ID rows; the former "226 / 4 `code_present` / 0 wired" line was not derivable from those rows.
+- **Dispatch queue:** 1) A3 multi-call `edit` lease (in flight); 2) TUI-driven run of the two Python tasks (`scripts/e2e/py-task-tui.sh`); 3) slash-command coverage probe; 4) coverage + evidence gate before any completion claim (`docs/reliability/2026-10-29-reliability-program.md`); 5) revive the subagent lane only after A3.
+
+## 2026-10-29 14:10 UTC — final measured state: 5/6 issue tests fixed, 0 regressions, 3 harness-blocked
+
+Definitive table after fixing three harness measurement bugs (missing-vs-failed scoring, baseline
+probe on a single label, and Django parallel mode aborting the whole run with
+"TypeError: cannot pickle 'traceback' object" so unreported tests looked MISSING):
+
+| task | F2P | regressions | P2P unrunnable | verdict |
+|---|---|---:|---|---|
+| django-11099 | 3/3 | 0 | 0/19 | VERIFIED |
+| django-15503 | 2/2 | 0 | 0/78 | VERIFIED |
+| django-13410 | 2/2 | 0 | 15/40 | fixed, P2P unverifiable |
+| django-9296 | 1/1 | 0 | 11/20 | fixed, P2P unverifiable |
+| django-11211 | 1/1 | 0 | 11/76 | fixed, P2P unverifiable |
+| django-11820 | 1/2 | 0 | 0/61 | partial: one issue test still fails |
+| django-13820 | 0/1 | 0 | 18/24 | unverifiable (F2P label absent at this commit) |
+| django-16899 | - | - | - | env_blocked (baseline probe) |
+| matplotlib-26466 | - | - | - | needs a pytest runner (harness is Django-only) |
+| xarray-3095 | - | - | - | needs a pytest runner |
+
+So: the agent fixed every FAIL_TO_PASS test in 5 of the 6 tasks whose issue tests can be executed
+(83%), and broke a runnable test in none. The earlier "1/5 solved, 3 regressed" reading was a
+measurement artifact, twice over. `--parallel 1` is now mandatory in the runner; it alone cut
+unrunnable P2P labels from 60/76 to 11/76 on django-11211.
+
+Agent-side upgrades landed this round: verification discipline in the product harness prompt
+(all 3 harness ids, 5/5 tests), the exact venv interpreter named in the benchmark prompt (the
+agent had been running the system python and grading itself), and a ToolBatch admission fix for
+wrapped `admitted_batch` responses (12 of 35 measured tool errors).
+
+Known remaining gaps, in order: web search admits through Guard now but the kernel search cascade
+receives no routes so nothing is dispatched; grep and glob failed 100% of calls because the Ripgrep
+service was a fail-closed stub (corrected 2026-10-29 18:10 UTC: `packages/core/src/ripgrep.ts` was
+replaced at 14:12 with an in-process fff adapter, and `bun test test/ripgrep.test.ts` now gives
+4 pass / 1 fail where the only failure is the 5 s test timeout at 13.6 s; end-to-end effect
+unmeasured since); login-shell noise prefixes every shell result (316 lines in 6
+runs); matplotlib/xarray need a pytest runner; `horizoncode run` cannot mutate (no ServerAuth
+principal).
+
+## 2026-10-29 13:15 UTC — CORRECTION: no regressions were observed; 2 tasks verified
+
+The earlier entry in this file reported "4 model-category failures, three of them pass every
+FAIL_TO_PASS but regress PASS_TO_PASS by 33/55/15 tests". That reading was wrong, and the
+error was in the harness, not the agent.
+
+Cause: the final scorer counted a PASS_TO_PASS label as *failed* whenever the runner could not
+resolve it. Those labels are MISSING, not failing — the gold-patch calibration shows the same
+missing counts (django-13410: 39 missing under the gold patch; django-9296: 15; django-11211:
+60). Scoring them as regressions invented failures the model never caused.
+
+Re-scoring every existing `verify-tests.log` with passed / failed / missing separated:
+
+| task | F2P | real regressions | P2P unrunnable | verdict |
+|---|---|---:|---|---|
+| django-11099 | 3/3 | 0 | 0/19 | **VERIFIED** |
+| django-15503 | 2/2 | 0 | 0/78 | **VERIFIED** |
+| django-9296 | 1/1 | 0 | 15/20 | partial_verification |
+| django-11211 | 1/1 | 0 | 60/76 | partial_verification |
+| django-11820 | 0/2 | 0 | 61/61 | model did not fix it |
+| django-13410 | 0/2 | 0 | 35/40 | model did not fix it |
+
+So of the six tasks where the agent actually ran, it fixed the reported bug in four (11099,
+15503, 9296, 11211) and did not fix two (11820, 13410). It broke a runnable test in **zero**
+runs. The dominant defect is therefore not blast radius; it is that two instances are simply
+beyond this model.
+
+Harness fixes landed with this correction: `missing` is now a distinct bucket from `failed`;
+`verified_success` still requires a complete all-green run; an incomplete P2P set reports
+`status=partial_verification` with the count and the reason instead of a silent failure; and the
+baseline env probe tries the first four PASS_TO_PASS labels instead of only the first (a single
+unrunnable label used to mark a healthy task as env_blocked).
+
+## 2026-10-29 11:20 UTC — terminal effects execute end to end; first verified SWE-bench solve (round 15)
+
+`E2E_V1_LIVE_PROVIDER=PASS read=completed write=completed bash=completed` on a live NVIDIA
+Nemotron route: 5 model requests, 181 stream deltas, 40,043 in / 272 out tokens. The TUI PTY
+journey stays `PASS 7/7` and the kernel containment matrix is `9/9` when run in a delegated
+cgroup scope.
+
+What actually unblocked shell execution (four separate defects, all measured):
+1. `host_kernel::normalize_model_terminal_arguments` — the model-facing `bash` contract is
+   `{command, cwd, timeoutMs}`; the HostKernel now projects the canonical six-key map from its
+   own registered default shell profile instead of rejecting the call.
+2. `classify_direct_mode_challenge` treated `terminal.run` as outside the sandbox even under
+   `DangerFullAccess`, while `classify_direct_mode_batch` treated it as contained — the
+   approval step therefore denied every terminal challenge in the only posture that can host
+   one. Both classifiers now agree.
+3. `approve_direct_mode_batch` required the full batch row set while the RPC approves one
+   lease; any batch with two or more effects was unapprovable.
+4. Read-only tools were forwarded into the effect ToolBatch, which the kernel rejects as
+   `unsupported_capability`; mixed read+write turns lost both calls. Non-effect members now
+   publish an explicit `allowed` outcome and never reach the kernel.
+
+Provider lifecycle is upstream again: the harness no longer fabricates a catalog, it seeds the
+real models.dev snapshot, and `nvidia` resolves from the catalog with all nine nemotron ids.
+`horizonHarness` was leaking into the request body and NVIDIA rejected it as an unsupported
+parameter; Horizon-internal agent options are now stripped before dispatch.
+
+Benchmark (`scripts/e2e/nemotron-bench.sh`, real SWE-bench Verified, NVIDIA
+`nvidia/nemotron-3.5-super-vl-120b-a12b`): 1 verified solve, 4 model-category failures (all
+reached a patch; three of them pass every FAIL_TO_PASS but regress PASS_TO_PASS), 3 environment
+failures, 2 non-Django tasks blocked by the Django-only runner.
+
+Metrics from real records (`analytics`, 318 steps / 331 tool calls): TTFT median 715 ms
+(p95 10.6 s), time-to-first-action median 8.3 s (p95 48.7 s), model latency median 5.4 s,
+time-to-first-patch median 14.2 s, total-to-verified-success 185 s, tool-call success 48.3 %.
+
+Still open: `horizoncode run` (in-process embed) has no authenticated ServerAuth principal, so
+effects fail closed — use `serve` + TUI or the HTTP API; matplotlib/xarray need a pytest
+runner; the 22-command slash matrix is only proven for `/permissions`.
+
 # HorizonCode — Current implementation handoff
 
 ## 2026-10-28 16:05 UTC — terminal journeys green, all three P8 cases addressed (round 14)

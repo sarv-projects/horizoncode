@@ -46,3 +46,40 @@ export class Info extends Schema.Class<Info>("ConfigV2.MCP")({
   timeout: Timeout.pipe(Schema.optional),
   servers: Schema.Record(Schema.String, Server).pipe(Schema.optional),
 }) {}
+
+/**
+ * Security-relevant identity of one configured MCP server.
+ *
+ * Tuning and display fields (timeouts, enable flags) are excluded because they
+ * never change what a server can execute or where it sends data. Command, cwd,
+ * environment, URL and headers all do, so each participates in the binding.
+ * OAuth config is excluded: it changes how the same origin is authenticated,
+ * and the origin itself is already part of the binding.
+ */
+export interface ServerBinding {
+  readonly type: "local" | "remote"
+  readonly command?: readonly string[]
+  readonly cwd?: string
+  readonly environment?: Readonly<Record<string, string>>
+  readonly url?: string
+  readonly headers?: Readonly<Record<string, string>>
+}
+
+function canonicalEntries(record: Readonly<Record<string, string>> | undefined) {
+  return Object.entries(record ?? {})
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    .map(([key, value]) => `${key}=${value}`)
+    .join("\u0001")
+}
+
+/**
+ * Canonical identity string for one MCP server entry. Env and header values can
+ * carry credentials, so callers must hash this value and never log, persist or
+ * return it verbatim.
+ */
+export function serverBinding(entry: ServerBinding): string {
+  if (entry.type === "local") {
+    return ["local", (entry.command ?? []).join("\u0000"), entry.cwd ?? "", canonicalEntries(entry.environment)].join("\u0002")
+  }
+  return ["remote", entry.url ?? "", canonicalEntries(entry.headers)].join("\u0002")
+}

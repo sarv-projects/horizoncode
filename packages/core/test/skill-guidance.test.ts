@@ -1,11 +1,11 @@
 import { describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
-import { AgentV2 } from "@opencode-ai/core/agent"
-import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
-import { SkillV2 } from "@opencode-ai/core/skill"
-import { SkillGuidance } from "@opencode-ai/core/skill/guidance"
-import { AbsolutePath } from "@opencode-ai/core/schema"
-import { SystemContext } from "@opencode-ai/core/system-context"
+import { AgentV2 } from "@horizoncode/core/agent"
+import { AppNodeBuilder } from "@horizoncode/core/effect/app-node-builder"
+import { SkillV2 } from "@horizoncode/core/skill"
+import { SkillGuidance } from "@horizoncode/core/skill/guidance"
+import { AbsolutePath } from "@horizoncode/core/schema"
+import { SystemContext } from "@horizoncode/core/system-context"
 import { it } from "./lib/effect"
 
 const builtin = SkillV2.horizonDocs()

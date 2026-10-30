@@ -1,5 +1,5 @@
 import { createMemo, createSignal, onMount, Show } from "solid-js"
-import type { RepoIntelProfileProjection } from "@opencode-ai/sdk/v2"
+import type { RepoIntelProfileProjection } from "@horizoncode/sdk/v2"
 import { DialogSelect, type DialogSelectOption } from "../ui/dialog-select"
 import { useProject } from "../context/project"
 import { useSDK } from "../context/sdk"

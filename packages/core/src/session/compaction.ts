@@ -1,6 +1,6 @@
 export * as SessionCompaction from "./compaction"
 
-import { LLM, LLMError, LLMEvent, Message, type LLMRequest, type Model } from "@opencode-ai/llm"
+import { LLM, LLMError, LLMEvent, Message, type LLMRequest, type Model } from "@horizoncode/llm"
 import { DateTime, Effect, Stream } from "effect"
 import type { Config } from "../config"
 import type { EventV2 } from "../event"
@@ -166,23 +166,55 @@ const select = (
 }
 
 import {
+  applyContextWindowPlanV1,
+  clearContextWindowV1,
   planContextPruneV1,
   planContextTrimV1,
   planPressureRecoveryV1,
+  pruneContextWindowV1,
+  trimContextWindowV1,
 } from "./context-compile-policy"
+import type { ContextWindowPlanV1 } from "./context-compile-policy"
 
 export {
+  applyContextWindowPlanV1,
+  clearContextWindowV1,
+  ContextWindowPairError,
+  planContextClearWindowV1,
   planContextPruneV1 as planPrune,
+  planContextPruneWindowV1,
   planContextTrimV1 as planTrim,
+  planContextTrimWindowV1,
   planPressureRecoveryV1 as planPressureRecovery,
-}
+  pruneContextWindowV1,
+  trimContextWindowV1,
+} from "./context-compile-policy"
 export type {
+  ContextCompactionEntryV1,
+  ContextWindowOperationV1,
+  ContextWindowPayloadReplacementV1,
+  ContextWindowPlanV1,
+  ContextWindowRewriteV1,
+  ContextWindowToolPairErrorV1,
+  ContextWindowToolPairTableV1,
+  ContextWindowToolPairV1,
   PressureRecoveryPlanV1,
   PruneCandidateV1,
   PrunePlanV1,
   TrimCandidateV1,
   TrimPlanV1,
 } from "./context-compile-policy"
+
+/**
+ * A-V2-13 ledger operation bounds. Trim, prune and clear rewrite the *model
+ * window* for one provider request; they never delete a canonical history row.
+ */
+export type ContextWindowOpsOptions = {
+  readonly protectRecentUserTurns?: number
+  readonly minimumBytes?: number
+  readonly protectedRefs?: readonly string[]
+  readonly pinnedRefs?: readonly string[]
+}
 
 export const buildPrompt = (input: { readonly previousSummary?: string; readonly context: readonly string[] }) => {
   const conversation = `Here is the conversation so far:\n\n<conversation>\n${input.context.join("\n\n")}\n</conversation>`
@@ -288,11 +320,52 @@ export const make = (dependencies: Dependencies) => {
     if (plan.status === "auto_trim" && input.autoTrimApplied === true) autoTrimmedEpochIDs.add(input.epochID)
     return plan
   })
+  /**
+   * A-V2-13 `/trim`: rewrite old recoverable tool payloads to their placeholder
+   * in the model window. No message, tool_call or tool_result is removed, so the
+   * provider pairing and the canonical history both stay intact.
+   */
+  const trimWindow = (entries: readonly Entry[], options?: ContextWindowOpsOptions) =>
+    trimContextWindowV1({
+      entries,
+      ...(options?.protectRecentUserTurns === undefined
+        ? {}
+        : { protectRecentUserTurns: options.protectRecentUserTurns }),
+      ...(options?.minimumBytes === undefined ? {} : { minimumBytes: options.minimumBytes }),
+    })
+  /**
+   * A-V2-13 `/prune`: drop eligible old tool results from the model window. The
+   * assistant tool_call leaves together with its result as one atomic pair, so an
+   * orphaned tool_call/tool_result pair can never reach the provider.
+   */
+  const pruneWindow = (entries: readonly Entry[], options?: ContextWindowOpsOptions) =>
+    pruneContextWindowV1({
+      entries,
+      ...(options?.protectRecentUserTurns === undefined
+        ? {}
+        : { protectRecentUserTurns: options.protectRecentUserTurns }),
+      ...(options?.minimumBytes === undefined ? {} : { minimumBytes: options.minimumBytes }),
+      ...(options?.protectedRefs === undefined ? {} : { protectedRefs: options.protectedRefs }),
+    })
+  /**
+   * A-V2-13 `/clear`: reset the model window to system context plus pinned refs.
+   * Canonical history rows stay durable and readable.
+   */
+  const clearWindow = (entries: readonly Entry[], options?: ContextWindowOpsOptions) =>
+    clearContextWindowV1({
+      entries,
+      ...(options?.pinnedRefs === undefined ? {} : { pinnedRefs: options.pinnedRefs }),
+    })
   return {
     compactIfNeeded,
     compactAfterOverflow,
     pressureRecovery,
     trim: (entries: readonly Entry[]) => planContextTrimV1({ entries }),
     prune: (entries: readonly Entry[], protectedRefs?: readonly string[]) => planContextPruneV1({ entries, protectedRefs }),
+    trimWindow,
+    pruneWindow,
+    clearWindow,
+    applyWindowPlan: (entries: readonly Entry[], plan: ContextWindowPlanV1) =>
+      applyContextWindowPlanV1({ entries, plan }),
   }
 }

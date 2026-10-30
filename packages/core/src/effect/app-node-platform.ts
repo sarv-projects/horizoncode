@@ -1,5 +1,5 @@
 import { NodeFileSystem, NodePath } from "@effect/platform-node"
-import { DirectProviderTransport, LLMClient, RequestExecutor } from "@opencode-ai/llm/route"
+import { DirectProviderTransport, LLMClient, RequestExecutor } from "@horizoncode/llm/route"
 import { FileSystem, Path } from "effect"
 import { FetchHttpClient } from "effect/unstable/http"
 import { HttpClient } from "effect/unstable/http"

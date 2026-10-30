@@ -1,0 +1,731 @@
+import { LayerNode } from "@horizoncode/core/effect/layer-node"
+import { PermissionV1 } from "@horizoncode/core/v1/permission"
+import { Config } from "@/config/config"
+import { serviceUse } from "@horizoncode/core/effect/service-use"
+import { Provider } from "@/provider/provider"
+
+import { generateObject, streamObject, type ModelMessage } from "ai"
+import { Truncate } from "@/tool/truncate"
+import { Auth } from "../auth"
+import { ProviderTransform } from "@/provider/transform"
+
+import PROMPT_GENERATE from "./generate.txt"
+import PROMPT_COMPACTION from "./prompt/compaction.txt"
+import PROMPT_EXPLORE from "./prompt/explore.txt"
+import PROMPT_SUMMARY from "./prompt/summary.txt"
+import PROMPT_TITLE from "./prompt/title.txt"
+import { Permission } from "@/permission"
+import { mergeDeep, pipe, sortBy, values } from "remeda"
+import { Global } from "@horizoncode/core/global"
+import path from "path"
+import { Plugin } from "@/plugin"
+import { Skill } from "../skill"
+import { Effect, Context, Exit, Layer, Schema } from "effect"
+import { InstanceState } from "@/effect/instance-state"
+import * as Option from "effect/Option"
+import * as OtelTracer from "@effect/opentelemetry/Tracer"
+import { AbsolutePath, type DeepMutable } from "@horizoncode/core/schema"
+import { ProviderV2 } from "@horizoncode/core/provider"
+import { ModelV2 } from "@horizoncode/core/model"
+import { LocationServiceMap, locationServiceMapLayer } from "@horizoncode/core/location-services"
+import { Reference } from "@horizoncode/core/reference"
+import { Location } from "@horizoncode/core/location"
+import { PluginV2 } from "@horizoncode/core/plugin"
+import { SessionSupervisorError } from "@horizoncode/core/session/supervisor"
+import {
+  AgentProfileService,
+  AgentProfileConflictError,
+  AgentProfileNotFoundError,
+  AgentProfileSelectorConflictError,
+} from "@horizoncode/core/config"
+import * as AgentProfileV2 from "@horizoncode/schema/agent-profile-v2"
+import { builtinHarnessProfileV1 } from "@horizoncode/core/harness-profile"
+
+export const Info = Schema.Struct({
+  name: Schema.String,
+  description: Schema.optional(Schema.String),
+  mode: Schema.Literals(["subagent", "primary", "all"]),
+  native: Schema.optional(Schema.Boolean),
+  hidden: Schema.optional(Schema.Boolean),
+  topP: Schema.optional(Schema.Finite),
+  temperature: Schema.optional(Schema.Finite),
+  color: Schema.optional(Schema.String),
+  permission: PermissionV1.Ruleset,
+  model: Schema.optional(
+    Schema.Struct({
+      modelID: ModelV2.ID,
+      providerID: ProviderV2.ID,
+    }),
+  ),
+  variant: Schema.optional(Schema.String),
+  prompt: Schema.optional(Schema.String),
+  options: Schema.Record(Schema.String, Schema.Unknown),
+  steps: Schema.optional(Schema.Finite),
+}).annotate({ identifier: "Agent" })
+export type Info = DeepMutable<Schema.Schema.Type<typeof Info>>
+
+const GeneratedAgent = Schema.Struct({
+  identifier: Schema.String,
+  whenToUse: Schema.String,
+  systemPrompt: Schema.String,
+})
+
+export interface Interface {
+  readonly get: (agent: string) => Effect.Effect<Info, SessionSupervisorError>
+  readonly getProfile: (profileID: string, revision: string | number) => Effect.Effect<Info, SessionSupervisorError>
+  readonly list: () => Effect.Effect<
+    Info[],
+    | SessionSupervisorError
+    | AgentProfileConflictError
+    | AgentProfileNotFoundError
+    | AgentProfileSelectorConflictError
+  >
+  readonly defaultInfo: () => Effect.Effect<Info, SessionSupervisorError>
+  readonly defaultAgent: () => Effect.Effect<string, SessionSupervisorError>
+  /** The exact global Config-selected main profile, if explicitly configured. No display-name fallback. */
+  readonly primaryProfileDefinition: () => Effect.Effect<AgentProfileV2.AgentProfileDefinitionV2 | undefined, SessionSupervisorError>
+  readonly generate: (input: {
+    description: string
+    model?: { providerID: ProviderV2.ID; modelID: ModelV2.ID }
+  }) => Effect.Effect<
+    {
+      identifier: string
+      whenToUse: string
+      systemPrompt: string
+    },
+    Provider.DefaultModelError | SessionSupervisorError | Provider.CredentialTransportUnavailableError
+  >
+}
+
+/** Core AgentProfileV2 directory/config failures surfaced by `Agent.list()`. */
+export type AgentProfileDirectoryError =
+  | AgentProfileConflictError
+  | AgentProfileNotFoundError
+  | AgentProfileSelectorConflictError
+
+export const isAgentProfileDirectoryError = (error: unknown): error is AgentProfileDirectoryError =>
+  error instanceof AgentProfileConflictError ||
+  error instanceof AgentProfileNotFoundError ||
+  error instanceof AgentProfileSelectorConflictError
+
+/**
+ * Execution seams that historically declared only the host-runtime channel
+ * cannot silently drop an AgentProfileV2 directory failure. Collapse it into
+ * the typed supervisor channel with its own stage instead of dying or widening
+ * every downstream contract.
+ */
+export const agentProfileDirectoryFailure = (error: AgentProfileDirectoryError): SessionSupervisorError =>
+  new SessionSupervisorError({
+    stage: "agent-profile",
+    reason: `AgentProfileV2 directory is unavailable: ${error.message}`,
+  })
+
+type State = Omit<Interface, "generate" | "getProfile" | "primaryProfileDefinition" | "list"> & {
+  /** The in-memory built-in registry itself cannot fail; profile selection is added by `list`. */
+  readonly list: () => Effect.Effect<Info[]>
+}
+
+// AgentProfileV2 uses canonical capability IDs. The direct-session permission
+// engine still evaluates OpenCode tool IDs, so translate only the capability IDs
+// that this native harness actually exposes. Unknown entries fail closed below.
+const PROFILE_CAPABILITY_TO_TOOLS: Readonly<Record<string, readonly string[]>> = {
+  "files.read": ["read"],
+  "files.write": ["write"],
+  "files.patch": ["apply_patch"],
+  "terminal.run": ["bash"],
+  "glob.search": ["glob"],
+  "text.search": ["grep"],
+  "repo.tree": ["repo_tree"],
+  "repo.detect": ["repo_detect"],
+  "symbols.search": ["symbols_search"],
+  "definitions.find": ["definitions_find"],
+  "references.find": ["references_find"],
+  "question.ask": ["question"],
+  "tools.search": ["tools_search"],
+}
+
+function profileAgent(
+  profile: AgentProfileV2.AgentProfileDefinitionV2,
+  model?: { providerID: ProviderV2.ID; modelID: ModelV2.ID },
+): Info {
+  return {
+    name: profile.name,
+    description: profile.description,
+    mode: "subagent",
+    permission: profile.tools.flatMap((rule) =>
+      (PROFILE_CAPABILITY_TO_TOOLS[rule.toolPattern] ?? []).map((toolID) => ({
+        permission: toolID,
+        pattern: rule.resourcePattern ?? "*",
+        action: rule.effect,
+      })),
+    ),
+    model:
+      model ?? {
+        providerID: ProviderV2.ID.make(profile.model.providerId),
+        modelID: ModelV2.ID.make(profile.model.modelId),
+      },
+    prompt: [
+      profile.purpose,
+      profile.whenToUse ? `When to use: ${profile.whenToUse}` : "",
+      profile.whenNotToUse ? `When not to use: ${profile.whenNotToUse}` : "",
+    ].filter(Boolean).join("\n\n"),
+    options: {
+      horizonHarness: profile.harness,
+      reasoning: profile.reasoning,
+      ...(profile.model.reasoningEffort ? { reasoningEffort: profile.model.reasoningEffort } : {}),
+      horizonAgentProfile: {
+        profileId: profile.profileId,
+        revision: profile.revision,
+        harness: profile.harness,
+        allowedSkillIds: profile.allowedSkillIds,
+        deniedSkillIds: profile.deniedSkillIds,
+        allowedMcpServers: profile.allowedMcpServers,
+        allowedMcpToolPatterns: profile.allowedMcpToolPatterns,
+        allowedSubagentIds: profile.allowedSubagentIds,
+        deniedSubagentIds: profile.deniedSubagentIds,
+        context: profile.context,
+        memoryPolicy: profile.memoryPolicy,
+        isolation: profile.isolation,
+        inputMode: profile.inputMode,
+        lifecycleHooks: profile.lifecycleHooks,
+        limits: profile.limits,
+      },
+    },
+    native: false,
+    hidden: false,
+    topP: undefined,
+    temperature: undefined,
+    color: undefined,
+    variant: undefined,
+    steps: undefined,
+  }
+}
+
+export class Service extends Context.Service<Service, Interface>()("@horizoncode/Agent") {}
+
+export const use = serviceUse(Service)
+
+const layer = Layer.effect(
+  Service,
+  Effect.gen(function* () {
+    const config = yield* Config.Service
+    const auth = yield* Auth.Service
+    const plugin = yield* Plugin.Service
+    const skill = yield* Skill.Service
+    const provider = yield* Provider.Service
+    const locations = yield* LocationServiceMap.Service
+
+    const state = yield* InstanceState.make<State, SessionSupervisorError>(
+      Effect.fn("Agent.state")(function* (ctx) {
+        const cfg = yield* config.get()
+        const selectedHarness = cfg.harness ?? "native-rich"
+        if (!builtinHarnessProfileV1(selectedHarness)) {
+          throw new SessionSupervisorError({ stage: "agent-profile", reason: `selected harness ${selectedHarness} is unavailable` })
+        }
+        const skillDirs = yield* skill.dirs()
+        const referenceDirs = Object.keys(cfg.references ?? cfg.reference ?? {}).length
+          ? yield* Effect.gen(function* () {
+              // Both services are location-scoped: they exist only where the
+              // location service map actually materialises them. Reading them
+              // optionally keeps `Agent.node`'s own graph unchanged (these
+              // nodes are `Location`-bound, so restating them as node deps
+              // would make every root compile unbound) while still taking the
+              // full reference whitelist whenever the map supplies them. A map
+              // that does not expose them has no materialized reference set to
+              // whitelist, and the default `ask` rule keeps governing those
+              // paths.
+              const plugin = yield* Effect.serviceOption(PluginV2.Service)
+              const reference = yield* Effect.serviceOption(Reference.Service)
+              if (Option.isNone(plugin) || Option.isNone(reference)) return [] as string[]
+              yield* plugin.value.wait(PluginV2.ID.make("core/config-reference"))
+              return (yield* reference.value.list()).map((reference) => reference.path)
+            }).pipe(Effect.provide(locations.get(Location.Ref.make({ directory: AbsolutePath.make(ctx.directory) }))))
+          : []
+        const whitelistedDirs = [
+          Truncate.GLOB,
+          path.join(Global.Path.tmp, "*"),
+          ...skillDirs.map((dir) => path.join(dir, "*")),
+          ...referenceDirs.map((dir) => path.join(dir, "*")),
+        ]
+        const readonlyExternalDirectory = {
+          "*": "ask",
+          ...Object.fromEntries(whitelistedDirs.map((dir) => [dir, "allow"])),
+        } satisfies Record<string, "allow" | "ask" | "deny">
+
+        const defaults = Permission.fromConfig({
+          "*": "allow",
+          doom_loop: "ask",
+          external_directory: {
+            "*": "ask",
+            ...Object.fromEntries(whitelistedDirs.map((dir) => [dir, "allow"])),
+          },
+          question: "deny",
+          plan_enter: "deny",
+          plan_exit: "deny",
+          // mirrors github.com/github/gitignore Node.gitignore pattern for .env files
+          read: {
+            "*": "allow",
+            "*.env": "ask",
+            "*.env.*": "ask",
+            "*.env.example": "allow",
+          },
+        })
+
+        const user = Permission.fromConfig(cfg.permission ?? {})
+
+        const agents: Record<string, Info> = {
+          build: {
+            name: "build",
+            description: "The default agent. Executes tools based on configured permissions.",
+            options: {},
+            permission: Permission.merge(
+              defaults,
+              Permission.fromConfig({
+                question: "allow",
+                plan_enter: "allow",
+              }),
+              user,
+            ),
+            mode: "primary",
+            native: true,
+          },
+          plan: {
+            name: "plan",
+            description: "Plan mode. Disallows all edit tools.",
+            options: {},
+            permission: Permission.merge(
+              defaults,
+              Permission.fromConfig({
+                question: "allow",
+                plan_exit: "allow",
+                task: {
+                  general: "deny",
+                },
+                external_directory: {
+                  [path.join(Global.Path.data, "plans", "*")]: "allow",
+                },
+                edit: {
+                  "*": "deny",
+                  [path.join(".opencode", "plans", "*.md")]: "allow",
+                  [path.relative(ctx.worktree, path.join(Global.Path.data, path.join("plans", "*.md")))]: "allow",
+                },
+              }),
+              user,
+            ),
+            mode: "primary",
+            native: true,
+          },
+          general: {
+            name: "general",
+            description: `General-purpose agent for researching complex questions and executing multi-step tasks. Use this agent to execute multiple units of work in parallel.`,
+            permission: Permission.merge(
+              defaults,
+              Permission.fromConfig({
+                todowrite: "deny",
+              }),
+              user,
+            ),
+            options: {},
+            mode: "subagent",
+            native: true,
+          },
+          explore: {
+            name: "explore",
+            permission: Permission.merge(
+              defaults,
+              Permission.fromConfig({
+                "*": "deny",
+                grep: "allow",
+                glob: "allow",
+                list: "allow",
+                bash: "allow",
+                webfetch: "allow",
+                websearch: "allow",
+                read: "allow",
+                external_directory: readonlyExternalDirectory,
+              }),
+              user,
+            ),
+            description: `Fast agent specialized for exploring codebases. Use this when you need to quickly find files by patterns (eg. "src/components/**/*.tsx"), search code for keywords (eg. "API endpoints"), or answer questions about the codebase (eg. "how do API endpoints work?"). When calling this agent, specify the desired thoroughness level: "quick" for basic searches, "medium" for moderate exploration, or "very thorough" for comprehensive analysis across multiple locations and naming conventions.`,
+            prompt: PROMPT_EXPLORE,
+            options: {},
+            mode: "subagent",
+            native: true,
+          },
+          compaction: {
+            name: "compaction",
+            mode: "primary",
+            native: true,
+            hidden: true,
+            prompt: PROMPT_COMPACTION,
+            permission: Permission.merge(
+              defaults,
+              Permission.fromConfig({
+                "*": "deny",
+              }),
+              user,
+            ),
+            options: {},
+          },
+          title: {
+            name: "title",
+            mode: "primary",
+            options: {},
+            native: true,
+            hidden: true,
+            temperature: 0.5,
+            permission: Permission.merge(
+              defaults,
+              Permission.fromConfig({
+                "*": "deny",
+              }),
+              user,
+            ),
+            prompt: PROMPT_TITLE,
+          },
+          summary: {
+            name: "summary",
+            mode: "primary",
+            options: {},
+            native: true,
+            hidden: true,
+            permission: Permission.merge(
+              defaults,
+              Permission.fromConfig({
+                "*": "deny",
+              }),
+              user,
+            ),
+            prompt: PROMPT_SUMMARY,
+          },
+        }
+
+        for (const agent of Object.values(agents)) {
+          if (agent.mode !== "subagent" && agent.options.horizonHarness === undefined) {
+            agent.options.horizonHarness = selectedHarness
+          }
+        }
+
+        for (const [key, value] of Object.entries(cfg.agent ?? {})) {
+          if (value.disable) {
+            delete agents[key]
+            continue
+          }
+          let item = agents[key]
+          if (!item)
+            item = agents[key] = {
+              name: key,
+              mode: "all",
+              permission: Permission.merge(defaults, user),
+              options: {},
+              native: false,
+            }
+          if (value.model) item.model = Provider.parseModel(value.model)
+          item.variant = value.variant ?? item.variant
+          item.prompt = value.prompt ?? item.prompt
+          item.description = value.description ?? item.description
+          item.temperature = value.temperature ?? item.temperature
+          item.topP = value.top_p ?? item.topP
+          item.mode = value.mode ?? item.mode
+          item.color = value.color ?? item.color
+          item.hidden = value.hidden ?? item.hidden
+          item.name = value.name ?? item.name
+          item.steps = value.steps ?? item.steps
+          item.options = mergeDeep(item.options, value.options ?? {})
+          item.permission = Permission.merge(item.permission, Permission.fromConfig(value.permission ?? {}))
+        }
+
+        // Ensure Truncate.GLOB is allowed unless explicitly configured
+        for (const name in agents) {
+          const agent = agents[name]
+          const explicit = agent.permission.some((r) => {
+            if (r.permission !== "external_directory") return false
+            if (r.action !== "deny") return false
+            return r.pattern === Truncate.GLOB
+          })
+          if (explicit) continue
+
+          agents[name].permission = Permission.merge(
+            agents[name].permission,
+            Permission.fromConfig({ external_directory: { [Truncate.GLOB]: "allow" } }),
+          )
+        }
+
+        const get = Effect.fnUntraced(function* (agent: string) {
+          return agents[agent]
+        })
+
+        const list = Effect.fnUntraced(function* () {
+          const cfg = yield* config.get()
+          return pipe(
+            agents,
+            values(),
+            sortBy(
+              [(x) => (cfg.default_agent ? x.name === cfg.default_agent : x.name === "build"), "desc"],
+              [(x) => x.name, "asc"],
+            ),
+          )
+        })
+
+        const defaultInfo = Effect.fnUntraced(function* () {
+          const c = yield* config.get()
+          if (c.default_agent) {
+            const agent = agents[c.default_agent]
+            if (!agent) throw new Error(`default agent "${c.default_agent}" not found`)
+            if (agent.mode === "subagent") throw new Error(`default agent "${c.default_agent}" is a subagent`)
+            if (agent.hidden === true) throw new Error(`default agent "${c.default_agent}" is hidden`)
+            return agent
+          }
+          const visible = Object.values(agents).find((a) => a.mode !== "subagent" && a.hidden !== true)
+          if (!visible) throw new Error("no primary visible agent found")
+          return visible
+        })
+
+        const defaultAgent = Effect.fnUntraced(function* () {
+          return (yield* defaultInfo()).name
+        })
+
+        return {
+          get,
+          list,
+          defaultInfo,
+          defaultAgent,
+        } satisfies State
+      }),
+    )
+
+    // Extract the profile projection so `list` can reuse it without yielding
+    // its own Service tag (which would make the whole Agent layer recursively
+    // require itself).
+    const projectProfile = Effect.fn("Agent.projectProfile")(function* (
+      profileID: string,
+      revision: string,
+    ) {
+        const ctx = yield* InstanceState.context
+        return yield* Effect.gen(function* () {
+          const profiles = yield* AgentProfileService
+          const profile = yield* profiles.agentProfile(profileID, revision).pipe(
+            Effect.mapError((error) => new SessionSupervisorError({
+              stage: "agent-profile",
+              reason: `pinned profile ${profileID}@${revision} is unavailable: ${error.message}`,
+            })),
+          )
+          if (!profile.enabled || !profile.roles.includes("subagent")) {
+            return yield* new SessionSupervisorError({
+              stage: "agent-profile",
+              reason: `pinned profile ${profileID}@${revision} is disabled or is not a subagent profile`,
+            })
+          }
+          if (profile.instructions.baseRef || profile.instructions.extraRefs.length > 0) {
+            return yield* new SessionSupervisorError({
+              stage: "agent-profile",
+              reason: `pinned profile ${profileID}@${revision} references instructions that the direct-session artifact resolver cannot load`,
+            })
+          }
+          if (profile.adapter.kind !== "native" || profile.adapter.adapterId !== "horizon.native" || !builtinHarnessProfileV1(profile.harness)) {
+            return yield* new SessionSupervisorError({
+              stage: "agent-profile",
+              reason: `adapter ${profile.adapter.kind}/${profile.adapter.adapterId} with harness ${profile.harness} is not available in the direct-session runtime`,
+            })
+          }
+          if (
+            profile.tools.some((rule) => PROFILE_CAPABILITY_TO_TOOLS[rule.toolPattern] === undefined) ||
+            profile.variants.length > 0 ||
+            profile.capabilityCeiling.length > 0 ||
+            profile.pathRules.length > 0 ||
+            (profile.source !== "builtin" && profile.allowedSkillIds.length > 0) ||
+            profile.deniedSkillIds.length > 0 ||
+            profile.allowedMcpServers.length > 0 ||
+            profile.allowedMcpToolPatterns.length > 0 ||
+            profile.allowedSubagentIds.length > 0 ||
+            profile.deniedSubagentIds.length > 0 ||
+            profile.tools.some((rule) =>
+              rule.effect !== "deny" &&
+              (rule.toolPattern === "skill" || rule.toolPattern === "task" || rule.toolPattern === "mcp" || rule.toolPattern.startsWith("mcp.")),
+            ) ||
+            profile.context.isolation !== "fresh" ||
+            profile.context.maxParentHistoryTokens !== undefined ||
+            !profile.context.allowImages ||
+            !profile.context.allowDocuments ||
+            !profile.context.allowArtifacts ||
+            profile.memoryPolicy !== "none" ||
+            profile.isolation !== "workspace" ||
+            profile.inputMode !== "default" ||
+            profile.lifecycleHooks.length > 0 ||
+            profile.limits.tokenBudget !== undefined
+          ) {
+            return yield* new SessionSupervisorError({
+              stage: "agent-profile",
+              reason: `pinned profile ${profileID}@${revision} requests an unsupported tool capability, variant, capability ceiling, context, memory, isolation, hook, skill, MCP, subagent, path or token-budget control that the direct-session runtime cannot enforce`,
+            })
+          }
+          // A shipped builtin default may pin a provider/model that is not
+          // configured in this environment. Degrade it to the session default
+          // model so built-in delegation works out of the box; an explicit
+          // user-owned pin keeps failing closed on its immutable revision.
+          const pinnedModel = {
+            providerID: ProviderV2.ID.make(profile.model.providerId),
+            modelID: ModelV2.ID.make(profile.model.modelId),
+          }
+          let resolvedModel = pinnedModel
+          if (profile.source === "builtin") {
+            const pinExit = yield* provider
+              .getModel(pinnedModel.providerID, pinnedModel.modelID)
+              .pipe(Effect.map(() => pinnedModel), Effect.exit)
+            if (!Exit.isSuccess(pinExit)) {
+              const fallbackExit = yield* provider.defaultModel().pipe(Effect.exit)
+              if (!Exit.isSuccess(fallbackExit)) {
+                return yield* new SessionSupervisorError({
+                  stage: "agent-profile",
+                  reason: `builtin profile ${profile.profileId}@${profile.revision} pins an unavailable provider/model and no session default model exists`,
+                })
+              }
+              resolvedModel = fallbackExit.value
+            }
+          }
+          return profileAgent(profile, resolvedModel)
+        }).pipe(
+          Effect.provide(locations.get(Location.Ref.make({ directory: AbsolutePath.make(ctx.directory) }))),
+        )
+    })
+
+    return Service.of({
+      get: Effect.fn("Agent.get")(function* (agent: string) {
+        return yield* InstanceState.useEffect(state, (s) => s.get(agent))
+      }),
+      getProfile: Effect.fn("Agent.getProfile")(function* (profileID: string, revision: string | number) {
+        return yield* projectProfile(profileID, String(revision))
+      }),
+      list: Effect.fn("Agent.list")(function* () {
+        const ordinary = yield* InstanceState.useEffect(state, (s) => s.list())
+        const primary = ordinary.filter((item) => item.mode !== "subagent")
+        const ctx = yield* InstanceState.context
+        const profileSelectors = yield* Effect.gen(function* () {
+          const profiles = yield* AgentProfileService
+          return yield* profiles.agentProfileSelectors()
+        }).pipe(
+          Effect.provide(locations.get(Location.Ref.make({ directory: AbsolutePath.make(ctx.directory) }))),
+        )
+        const configured: Info[] = []
+        for (const selection of profileSelectors) {
+          if (!selection.profile.enabled || !selection.profile.roles.includes("subagent")) continue
+          const projection = yield* projectProfile(selection.profile.profileId, selection.profile.revision).pipe(
+            Effect.option,
+          )
+          if (Option.isSome(projection)) configured.push({ ...projection.value, name: selection.selector })
+        }
+        // Shipped and configured selector agents join the same listing
+        // contract as native primaries: default agent first, then by name.
+        const cfg = yield* config.get()
+        const defaultName = cfg.default_agent ?? "build"
+        return [...primary, ...configured].toSorted(
+          (a, b) =>
+            (b.name === defaultName ? 1 : 0) - (a.name === defaultName ? 1 : 0) || a.name.localeCompare(b.name),
+        )
+      }),
+      defaultInfo: Effect.fn("Agent.defaultInfo")(function* () {
+        return yield* InstanceState.useEffect(state, (s) => s.defaultInfo())
+      }),
+      defaultAgent: Effect.fn("Agent.defaultAgent")(function* () {
+        return yield* InstanceState.useEffect(state, (s) => s.defaultAgent())
+      }),
+      primaryProfileDefinition: Effect.fn("Agent.primaryProfileDefinition")(function* () {
+        const ctx = yield* InstanceState.context
+        return yield* Effect.gen(function* () {
+          const profiles = yield* AgentProfileService
+          return yield* profiles.primaryAgentProfile().pipe(
+            Effect.mapError((error) => new SessionSupervisorError({
+              stage: "agent-profile",
+              reason: `primary AgentProfileV2 selection is unavailable: ${error.message}`,
+            })),
+          )
+        }).pipe(
+          Effect.provide(locations.get(Location.Ref.make({ directory: AbsolutePath.make(ctx.directory) }))),
+        )
+      }),
+      generate: Effect.fn("Agent.generate")(function* (input: {
+        description: string
+        model?: { providerID: ProviderV2.ID; modelID: ModelV2.ID }
+      }) {
+        const cfg = yield* config.get()
+        const model = input.model ?? (yield* provider.defaultModel())
+        const resolved = yield* provider.getModel(model.providerID, model.modelID)
+        const language = yield* provider.getLanguage(resolved)
+        const tracer = cfg.experimental?.openTelemetry
+          ? Option.getOrUndefined(yield* Effect.serviceOption(OtelTracer.OtelTracer))
+          : undefined
+
+        const system = [PROMPT_GENERATE]
+        yield* plugin.trigger("experimental.chat.system.transform", { model: resolved }, { system })
+        const existing = yield* InstanceState.useEffect(state, (s) => s.list())
+
+        // TODO: clean this up so provider specific logic doesnt bleed over
+        const authInfo = yield* auth.get(model.providerID).pipe(Effect.orDie)
+        const isOpenaiOauth = model.providerID === "openai" && authInfo?.type === "oauth"
+
+        const params = {
+          experimental_telemetry: {
+            isEnabled: cfg.experimental?.openTelemetry,
+            tracer,
+            metadata: {
+              userId: cfg.username ?? "unknown",
+            },
+          },
+          temperature: 0.3,
+          messages: [
+            ...(isOpenaiOauth
+              ? []
+              : system.map(
+                  (item): ModelMessage => ({
+                    role: "system",
+                    content: item,
+                  }),
+                )),
+            {
+              role: "user",
+              content: `Create an agent configuration based on this request: "${input.description}".\n\nIMPORTANT: The following identifiers already exist and must NOT be used: ${existing.map((i) => i.name).join(", ")}\n  Return ONLY the JSON object, no other text, do not wrap in backticks`,
+            },
+          ],
+          model: language,
+          schema: Object.assign(
+            Schema.toStandardSchemaV1(GeneratedAgent),
+            Schema.toStandardJSONSchemaV1(GeneratedAgent),
+          ),
+        } satisfies Parameters<typeof generateObject>[0]
+
+        if (isOpenaiOauth) {
+          return yield* Effect.promise(async () => {
+            const result = streamObject({
+              ...params,
+              providerOptions: ProviderTransform.providerOptions(resolved, {
+                instructions: system.join("\n"),
+                store: false,
+              }),
+              onError: () => {},
+            })
+            for await (const part of result.fullStream) {
+              if (part.type === "error") throw part.error
+            }
+            return result.object
+          })
+        }
+
+        return yield* Effect.promise(() => generateObject(params).then((r) => r.object))
+      }),
+    })
+  }),
+)
+
+const locationServiceMapNode = LayerNode.make({
+  service: LocationServiceMap.Service,
+  layer: locationServiceMapLayer,
+  deps: [],
+})
+
+export const node = LayerNode.make({
+  service: Service,
+  layer: layer,
+  deps: [Config.node, Auth.node, Plugin.node, Skill.node, Provider.node, locationServiceMapNode],
+})
+
+export * as Agent from "./agent"

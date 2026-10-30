@@ -1,6 +1,6 @@
 /** Parse and semantically validate candidate manifests before graph resolution. */
 
-import * as Manifest from "@opencode-ai/schema/composition-v1"
+import * as Manifest from "@horizoncode/schema/composition-v1"
 import { Schema } from "effect"
 import { valid as validVersion } from "semver"
 import {

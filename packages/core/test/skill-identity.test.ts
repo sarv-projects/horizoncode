@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
-import * as SkillV2 from "@opencode-ai/core/skill"
-import { AbsolutePath } from "@opencode-ai/core/schema"
+import * as SkillV2 from "@horizoncode/core/skill"
+import { AbsolutePath } from "@horizoncode/core/schema"
 
 const digest = (content: string) => createHash("sha256").update(content).digest("hex")
 

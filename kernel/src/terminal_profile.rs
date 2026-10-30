@@ -161,6 +161,12 @@ pub struct ShellProfileRegistry {
 }
 
 impl ShellProfileRegistry {
+    /// The registered default profile. The host owns profile selection, so a
+    /// model-originated terminal batch never has to name a shell profile id.
+    pub fn default_profile(&self) -> Option<&ResolvedShellProfile> {
+        self.profiles.get(&self.default_profile_key)
+    }
+
     /// Open the durable registry file inside the owner's private state directory.
     pub fn open(path: &Path) -> Result<Self, ShellProfileError> {
         #[cfg(target_os = "linux")]

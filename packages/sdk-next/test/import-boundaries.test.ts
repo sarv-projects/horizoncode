@@ -18,21 +18,21 @@ test("documents the HorizonCode SDK package identity", async () => {
 
   expect(readme).toContain("# @horizoncode/sdk-next")
   expect(readme).toContain('import { OpenCode } from "@horizoncode/sdk-next"')
-  expect(readme).not.toContain('import { OpenCode } from "@opencode-ai/sdk-next"')
+  expect(readme).not.toContain('import { OpenCode } from "@horizoncode/sdk-next"')
 })
 
 test("uses the HorizonCode-owned SDK service identifier", async () => {
   const source = await Bun.file(join(import.meta.dir, "../src/opencode.ts")).text()
 
   expect(source).toContain('("@horizoncode/sdk-next/OpenCode")')
-  expect(source).not.toContain('("@opencode-ai/sdk-next/OpenCode")')
+  expect(source).not.toContain('("@horizoncode/sdk-next/OpenCode")')
 })
 
 test("exports generated client types from the HorizonCode workspace package", async () => {
   const source = await Bun.file(join(import.meta.dir, "../src/index.ts")).text()
 
   expect(source.match(/from "@horizoncode\/client\/effect"/g)).toHaveLength(3)
-  expect(source).not.toContain('from "@opencode-ai/client/effect"')
+  expect(source).not.toContain('from "@horizoncode/client/effect"')
 })
 
 test("bundles the client and in-memory host", async () => {

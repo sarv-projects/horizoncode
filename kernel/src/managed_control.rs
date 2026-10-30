@@ -2201,7 +2201,8 @@ impl ManagedWorktreeAdmissionProjectionV1 {
         canonical_root: String,
         measured_workspace_revision: String,
     ) -> Result<Self, ManagedError> {
-        for value in [p8_target.worktree_id(), p8_target.base_revision(), p8_target.workspace_binding()] { id(value)?; }
+        for value in [p8_target.worktree_id(), p8_target.base_revision()] { id(value)?; }
+        blake3_digest(&p8_target.workspace_binding())?;
         for value in [&location_id, &workspace_id, &workspace_ref] { id(value)?; }
         managed_digest(&measured_workspace_revision)?;
         if p8_target.pool_revision() == 0
@@ -16371,11 +16372,19 @@ impl ManagedSnapshot {
                     .runs
                     .get_mut(run_id)
                     .ok_or(ManagedError::Conflict("run missing"))?;
-                // ResumeRun only reopens a quiescent PAUSED coding Run. A Run
-                // already VERIFYING resumes through BeginVerification on its
-                // exact pinned Attempt, finalRevision and verifier assignment;
-                // it must not allocate a new coding Attempt here.
-                if run.phase != RunPhase::Paused
+                // ResumeRun only reopens a quiescent PAUSED coding Run, or a
+                // NEEDS_YOU Run whose open question was abandoned: NEEDS_YOU is
+                // reachable only after every Attempt settled, so it parks a Run
+                // without owning any live worker, lease or effect. A Run already
+                // VERIFYING resumes through BeginVerification on its exact pinned
+                // Attempt, finalRevision and verifier assignment; it must not
+                // allocate a new coding Attempt here.
+                //
+                // NEEDS_YOU is not an absorbing state: without this path a Run
+                // parked for human input could never be resumed, cancelled or
+                // failed. One admission fence covers both resumable phases so an
+                // UNKNOWN effect or a live Attempt is never reopened here.
+                if !matches!(run.phase, RunPhase::Paused | RunPhase::NeedsYou)
                     || run.tasks.values().any(|task| task.unknown_effect || task.active_attempt.is_some())
                 {
                     return Err(ManagedError::Conflict("run not safely resumable"));
@@ -16391,13 +16400,26 @@ impl ManagedSnapshot {
                     // A not-yet-started plan owns no worker, Attempt, lease or
                     // effect; discard it directly without a cancellation saga.
                     run.phase = RunPhase::Cancelled;
+                } else if run.phase == RunPhase::NeedsYou {
+                    // NEEDS_YOU parks a Run on a missing human answer but owns
+                    // no worker, lease or effect: the phase is only reachable
+                    // once every Attempt has settled. It must therefore be
+                    // cancellable, otherwise an abandoned question would pin
+                    // the Run forever. Fence on a live Attempt anyway so any
+                    // future transition that violates that invariant fails
+                    // closed instead of cancelling underneath a worker.
+                    if run.tasks.values().any(|task| task.active_attempt.is_some()) {
+                        return Err(ManagedError::Conflict(
+                            "needs-you Run still owns an active Attempt",
+                        ));
+                    }
+                    run.phase = RunPhase::Cancelling; // Same durable fence as every other cancellation.
                 } else {
                     if matches!(
                         run.phase,
                         RunPhase::Cancelling
                             | RunPhase::Cancelled
                             | RunPhase::Succeeded
-                            | RunPhase::NeedsYou
                             | RunPhase::Failed
                     ) {
                         return Err(ManagedError::Conflict(

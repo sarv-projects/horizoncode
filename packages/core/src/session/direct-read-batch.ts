@@ -21,7 +21,7 @@
  */
 import { blake3 } from "@noble/hashes/blake3.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
-import { encodeCanonicalMessagePackV1 } from "@opencode-ai/schema"
+import { encodeCanonicalMessagePackV1 } from "@horizoncode/schema"
 import { Effect } from "effect"
 import { TrustedPrincipalContext } from "../trusted-principal"
 import type { DirectSessionWorkspaceSnapshotV1, Interface as SessionSupervisorPort } from "./supervisor"

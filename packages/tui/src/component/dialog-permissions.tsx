@@ -5,8 +5,8 @@ import { useProject } from "../context/project"
 import { useSDK } from "../context/sdk"
 import { useTheme } from "../context/theme"
 import { useToast } from "../ui/toast"
-import type { DirectSessionPermissionModeV1 } from "@opencode-ai/sdk/v2"
-import { HorizonCodingProfile } from "@opencode-ai/core/config/coding-profile"
+import type { DirectSessionPermissionModeV1 } from "@horizoncode/sdk/v2"
+import { HorizonCodingProfile } from "@horizoncode/core/config/coding-profile"
 
 type Choice =
   | { dimension: "sandboxMode"; value: DirectSessionPermissionModeV1["sandboxMode"] }

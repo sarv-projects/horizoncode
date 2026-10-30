@@ -1,4 +1,4 @@
-import type { Provider } from "@opencode-ai/sdk/v2"
+import type { Provider } from "@horizoncode/sdk/v2"
 
 type PriceRates = {
   input?: number

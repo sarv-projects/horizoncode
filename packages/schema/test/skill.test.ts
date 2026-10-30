@@ -95,3 +95,53 @@ describe("SkillV2.Identity", () => {
     }
   })
 })
+
+describe("SkillV2 builtin roster", () => {
+  test("accepts every canonical shipped builtin identity", () => {
+    const entries = Object.entries(Skill.SealedBuiltinIdentitiesV1)
+    expect(entries.length).toBe(16)
+    for (const [id, identity] of entries) {
+      expect(
+        Schema.decodeUnknownSync(Skill.Identity)({
+          schemaVersion: 1,
+          id,
+          alias: identity.alias,
+          source: "builtin",
+          trust: "sealed_builtin",
+          revision: identity.revision,
+        }),
+      ).toMatchObject({ id, source: "builtin", trust: "sealed_builtin" })
+    }
+  })
+
+  test("rejects unshipped builtin IDs, wrong aliases and noncanonical revisions", () => {
+    for (const identity of [
+      {
+        schemaVersion: 1,
+        id: "builtin.mystery",
+        alias: "mystery",
+        source: "builtin",
+        trust: "sealed_builtin",
+        revision: Skill.SealedBuiltinIdentitiesV1["builtin.test-debug"].revision,
+      },
+      {
+        schemaVersion: 1,
+        id: "builtin.test-debug",
+        alias: "wrong-alias",
+        source: "builtin",
+        trust: "sealed_builtin",
+        revision: Skill.SealedBuiltinIdentitiesV1["builtin.test-debug"].revision,
+      },
+      {
+        schemaVersion: 1,
+        id: "builtin.test-debug",
+        alias: "test-debug",
+        source: "builtin",
+        trust: "sealed_builtin",
+        revision: docsRevision,
+      },
+    ]) {
+      expect(() => Schema.decodeUnknownSync(Skill.Identity)(identity)).toThrow()
+    }
+  })
+})

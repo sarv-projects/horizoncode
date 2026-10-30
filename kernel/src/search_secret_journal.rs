@@ -393,10 +393,10 @@ fn valid_attempt(attempt: &SearchSecretAttemptV1) -> bool {
 fn valid_cascade(cascade: &SearchCascadeProgressV1) -> bool {
     let short = |value: &str| !value.is_empty() && value.len() <= 256 && !value.bytes().any(|b| b.is_ascii_control());
     let digest = |value: &str| value.strip_prefix("blake3:").is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
-    // V1 has exactly four anonymous-free and six separately enabled routes.
-    // Retired/legacy route keys are invalid for continuation, so persisted cursors
-    // can never revive a route that current HostKernel admission no longer allows.
-    let route = |value: &str| matches!(value, "exa_keyless" | "youcom_free" | "firecrawl_keyless" | "parallel_keyless" | "brave" | "exa" | "youcom" | "tavily" | "firecrawl" | "parallel");
+    // V1 has five anonymous-free and six separately enabled routes. Retired or
+    // legacy route keys are invalid for continuation, so persisted cursors can
+    // never revive a route that current HostKernel admission no longer allows.
+    let route = |value: &str| crate::http_execution::is_search_route_key(value);
     short(&cascade.cascade_ref) && digest(&cascade.cascade_digest) && short(&cascade.principal)
         && short(&cascade.session_id) && short(&cascade.location_id) && short(&cascade.effect_id)
         && short(&cascade.challenge_id) && digest(&cascade.lease_digest)

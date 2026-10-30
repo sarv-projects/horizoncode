@@ -1,0 +1,13 @@
+[project]
+name = "retrykit"
+version = "1.0.0"
+description = "Small, dependency-free retry utility with exponential backoff."
+requires-python = ">=3.8"
+readme = "README.md"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["retrykit*"]

@@ -18,7 +18,7 @@ import {
   ModelsDevCatalogSourceV1 as ModelsDevCatalogSourceSchema,
   PrefixCacheSupportV1 as PrefixCacheSupportSchema,
   type ContextCompilePolicyV1,
-} from "@opencode-ai/schema/context-compile-policy-v1"
+} from "@horizoncode/schema/context-compile-policy-v1"
 import { canonicalProviderInputJson } from "./context-selection"
 
 type ContextCompilePolicyRequestedV1 = typeof ContextCompilePolicyRequestedSchema.Type
@@ -881,8 +881,8 @@ export type PressureRecoveryPlanV1 =
  */
 export function planPressureRecoveryV1(input: {
   readonly entries: ReadonlyArray<ContextCompactionEntryV1>
-  readonly request: import("@opencode-ai/llm").LLMRequest
-  readonly model: import("@opencode-ai/llm").Model
+  readonly request: import("@horizoncode/llm").LLMRequest
+  readonly model: import("@horizoncode/llm").Model
   readonly epochID: string
   readonly autoTrimmedEpochIDs?: ReadonlyArray<string>
   readonly maxOutputTokens?: number
@@ -943,4 +943,434 @@ export function planPressureRecoveryV1(input: {
     softPressureLimit,
     diagnostics: { contextLimit: context, outputReserve, toolReserve, safetyMargin },
   }
+}
+
+/* ------------------------------------------------------------------------- */
+/* A-V2-13 / DEC-V1-13 context-ledger window operations: trim/prune/clear    */
+/* ------------------------------------------------------------------------- */
+
+/**
+ * Canonical history is never deleted. `trim`, `prune` and `clear` are ledger
+ * operations over the *model window*: exactly the entries lowered into the next
+ * provider request. Every operation returns the rewritten window and never a
+ * deletion instruction, so the durable rows the projection read stay intact.
+ */
+export type ContextWindowOperationV1 = "trim" | "prune" | "clear"
+
+/** One assistant tool part, plus the call/result pair that must move together. */
+export type ContextWindowToolPairV1 = {
+  readonly messageID: string
+  readonly partID: string
+  readonly tool: string
+  readonly bytes: number
+  /** Assistant `tool_call` ref. Removing it without `resultRef` is a 400 risk. */
+  readonly callRef: string
+  /** `tool_result` ref paired with that `callRef`. */
+  readonly resultRef: string
+}
+
+export type ContextWindowPayloadReplacementV1 = {
+  readonly messageID: string
+  readonly partID: string
+  /** Surviving artifact or regenerable read reference. */
+  readonly reference: string
+  readonly placeholder: string
+}
+
+export type ContextWindowPlanV1 = {
+  readonly operation: ContextWindowOperationV1
+  /** Whole messages leaving the model window. Ids only; durable rows stay. */
+  readonly excludedMessages: ReadonlyArray<string>
+  /** Tool parts leaving whole: the assistant tool_call and its result together. */
+  readonly excludedToolPairs: ReadonlyArray<ContextWindowToolPairV1>
+  /** Trim payload rewrites that free bytes without dropping the call. */
+  readonly replacedToolPayloads: ReadonlyArray<ContextWindowPayloadReplacementV1>
+  /** Refs that must stay model-visible (system, pinned, protected evidence). */
+  readonly retainedRefs: ReadonlyArray<string>
+  readonly removedBytes: number
+}
+
+export type ContextWindowRewriteV1 = {
+  readonly operation: ContextWindowOperationV1
+  readonly entries: ReadonlyArray<ContextCompactionEntryV1>
+  readonly removedMessages: ReadonlyArray<string>
+  readonly removedToolPairs: ReadonlyArray<ContextWindowToolPairV1>
+  readonly replacedToolPayloads: ReadonlyArray<ContextWindowPayloadReplacementV1>
+  readonly removedBytes: number
+  readonly retainedRefs: ReadonlyArray<string>
+  /** True only when the rewritten window carries no orphaned tool pair. */
+  readonly toolPairsIntact: true
+}
+
+/** A plan tried to separate a provider tool pair, or the rewrite produced one. */
+export class ContextWindowPairError extends Error {
+  readonly code = "CONTEXT_WINDOW_TOOL_PAIR_UNPAIRED"
+  readonly ref: string
+
+  constructor(message: string, ref: string) {
+    super(message)
+    this.name = "ContextWindowPairError"
+    this.ref = ref
+  }
+}
+
+export const contextWindowCallRef = (messageID: string, partID: string) => `${messageID}:${partID}#call`
+export const contextWindowResultRef = (messageID: string, partID: string) => `${messageID}:${partID}#result`
+
+export type ContextWindowToolPairTableV1 = {
+  readonly calls: ReadonlyArray<{ readonly callID: string; readonly messageID: string }>
+  readonly results: ReadonlyArray<{ readonly callID: string; readonly messageID: string }>
+}
+
+export type ContextWindowToolPairErrorV1 = {
+  readonly callID: string
+  readonly messageID: string
+  readonly reason: "orphan_tool_call" | "orphan_tool_result"
+}
+
+/**
+ * Provider-level pairing table for a settled window. A completed or errored
+ * assistant tool part lowers to a `tool_call` and its `tool_result`; a
+ * pending/running part is still in flight, so it is intentionally outside the
+ * pairing check until its batch settles. A settled call without its result (or a
+ * result without its call) is the 400 shape this guard exists to catch.
+ */
+export function contextWindowToolPairsV1(
+  entries: ReadonlyArray<ContextCompactionEntryV1>,
+): ContextWindowToolPairTableV1 {
+  const calls: Array<{ callID: string; messageID: string }> = []
+  const results: Array<{ callID: string; messageID: string }> = []
+  for (const entry of entries) {
+    const message = entry.message
+    if (message.type !== "assistant") continue
+    for (const part of message.content) {
+      if (!isToolPart(part)) continue
+      if (part.state.status !== "completed" && part.state.status !== "error") continue
+      calls.push({ callID: part.id, messageID: message.id })
+      results.push({ callID: part.id, messageID: message.id })
+    }
+  }
+  return { calls, results }
+}
+
+/** Exact provider pairing check: every call answered, every result preceded. */
+export function toolPairErrorsV1(
+  input: ContextWindowToolPairTableV1,
+): ReadonlyArray<ContextWindowToolPairErrorV1> {
+  const calls = new Set(input.calls.map((call) => call.callID))
+  const results = new Set(input.results.map((result) => result.callID))
+  const errors: ContextWindowToolPairErrorV1[] = []
+  for (const call of input.calls) {
+    if (!results.has(call.callID)) {
+      errors.push({ callID: call.callID, messageID: call.messageID, reason: "orphan_tool_call" })
+    }
+  }
+  for (const result of input.results) {
+    if (!calls.has(result.callID)) {
+      errors.push({ callID: result.callID, messageID: result.messageID, reason: "orphan_tool_result" })
+    }
+  }
+  return errors
+}
+
+export function contextWindowToolPairErrorsV1(
+  entries: ReadonlyArray<ContextCompactionEntryV1>,
+): ReadonlyArray<ContextWindowToolPairErrorV1> {
+  return toolPairErrorsV1(contextWindowToolPairsV1(entries))
+}
+
+const toolPairOf = (messageID: string, part: ToolPart): ContextWindowToolPairV1 => ({
+  messageID,
+  partID: part.id,
+  tool: part.name,
+  bytes: toolPartBytes(part),
+  callRef: contextWindowCallRef(messageID, part.id),
+  resultRef: contextWindowResultRef(messageID, part.id),
+})
+
+const boundedProtectedRefs = (protectedRefs: ReadonlyArray<string> | undefined) => {
+  if (protectedRefs === undefined) return
+  if (!Array.isArray(protectedRefs)) throw new TypeError("protectedRefs must be an array")
+  if (protectedRefs.length > MAX_PROTECTED_REFS) throw new RangeError("protectedRefs exceeds its bound")
+  if (protectedRefs.some((ref) => typeof ref !== "string")) {
+    throw new TypeError("protectedRefs must contain only strings")
+  }
+}
+
+/**
+ * `/trim`: drop the oldest non-canonical payloads from the model window. The
+ * §30.3 trim planner already proves which old tool payloads are recoverable and
+ * protects recent turns, evidence and unsettled effects; this projection only
+ * rewrites those payloads to their placeholder and keeps every message, every
+ * assistant tool_call and every tool result in place.
+ */
+export function planContextTrimWindowV1(input: {
+  readonly entries: ReadonlyArray<ContextCompactionEntryV1>
+  readonly protectRecentUserTurns?: number
+  readonly minimumBytes?: number
+}): ContextWindowPlanV1 {
+  const plan = planContextTrimV1(input)
+  return {
+    operation: "trim",
+    excludedMessages: [],
+    excludedToolPairs: [],
+    replacedToolPayloads: plan.candidates.map((candidate) => ({
+      messageID: candidate.messageID,
+      partID: candidate.partID,
+      reference: candidate.reference,
+      placeholder: candidate.placeholder,
+    })),
+    retainedRefs: plan.protectedRefs,
+    removedBytes: plan.removableBytes,
+  }
+}
+
+/**
+ * `/prune`: remove eligible old tool results from the model window. A tool
+ * result never leaves alone — the assistant tool part that carries the
+ * `tool_call` leaves with it as one atomic pair, so the provider never sees an
+ * orphaned tool_call/tool_result (the 400 risk called out on the compaction
+ * projection). Only settled, recoverable, unprotected, out-of-recent-turn tool
+ * evidence is eligible; error evidence and unsettled effects always stay.
+ */
+export function planContextPruneWindowV1(input: {
+  readonly entries: ReadonlyArray<ContextCompactionEntryV1>
+  readonly protectRecentUserTurns?: number
+  readonly minimumBytes?: number
+  readonly protectedRefs?: ReadonlyArray<string>
+}): ContextWindowPlanV1 {
+  const protectRecentUserTurns = input.protectRecentUserTurns ?? 2
+  if (!Number.isSafeInteger(protectRecentUserTurns) || protectRecentUserTurns < 1 || protectRecentUserTurns > 32) {
+    throw new RangeError("prune protected user-turn count is invalid")
+  }
+  boundedProtectedRefs(input.protectedRefs)
+  const minimumBytes = input.minimumBytes ?? 512
+  if (!Number.isSafeInteger(minimumBytes) || minimumBytes < 0 || minimumBytes > 1_048_576) {
+    throw new RangeError("prune minimum byte bound is invalid")
+  }
+  const pinned = new Set(input.protectedRefs ?? [])
+  const { boundary } = protectedUserBoundary(input.entries, protectRecentUserTurns)
+  const excludedToolPairs: ContextWindowToolPairV1[] = []
+  const retainedRefs: string[] = []
+  for (let index = 0; index < input.entries.length; index += 1) {
+    const message = input.entries[index]!.message
+    if (message.type !== "assistant") {
+      if (index >= boundary) retainedRefs.push(message.id)
+      continue
+    }
+    for (const part of message.content) {
+      const ref = `${message.id}:${part.id}`
+      if (!isToolPart(part)) {
+        if (index >= boundary) retainedRefs.push(ref)
+        continue
+      }
+      if (index >= boundary || pinned.has(ref) || pinned.has(message.id)) {
+        retainedRefs.push(ref)
+        continue
+      }
+      // Error evidence and unsettled effects answer authority questions.
+      if (part.state.status !== "completed") {
+        retainedRefs.push(ref)
+        continue
+      }
+      if (TRIM_PROTECTED_TOOLS.has(part.name)) {
+        retainedRefs.push(ref)
+        continue
+      }
+      if (toolPartBytes(part) < minimumBytes) {
+        retainedRefs.push(ref)
+        continue
+      }
+      const artifact = artifactRefOf(part)
+      if (!artifact && !REREADABLE_TOOLS.has(part.name)) {
+        retainedRefs.push(ref)
+        continue
+      }
+      excludedToolPairs.push(toolPairOf(message.id, part))
+    }
+  }
+  return {
+    operation: "prune",
+    excludedMessages: [],
+    excludedToolPairs,
+    replacedToolPayloads: [],
+    retainedRefs,
+    removedBytes: excludedToolPairs.reduce((sum, pair) => sum + pair.bytes, 0),
+  }
+}
+
+/**
+ * `/clear`: reset the model window to system context plus pinned messages.
+ * System rows (the Baseline System Context projection) and pinned refs stay;
+ * every other message leaves the window. Nothing is deleted from the store, so
+ * the canonical conversation remains readable and auditable.
+ */
+export function planContextClearWindowV1(input: {
+  readonly entries: ReadonlyArray<ContextCompactionEntryV1>
+  readonly pinnedRefs?: ReadonlyArray<string>
+}): ContextWindowPlanV1 {
+  boundedProtectedRefs(input.pinnedRefs)
+  const pinned = new Set(input.pinnedRefs ?? [])
+  const excludedMessages: string[] = []
+  const retainedRefs: string[] = []
+  for (const entry of input.entries) {
+    const message = entry.message
+    if (message.type === "system" || pinned.has(message.id)) {
+      retainedRefs.push(message.id)
+      continue
+    }
+    excludedMessages.push(message.id)
+  }
+  return {
+    operation: "clear",
+    excludedMessages,
+    excludedToolPairs: [],
+    replacedToolPayloads: [],
+    retainedRefs,
+    removedBytes: 0,
+  }
+}
+
+type AssistantMessage = Extract<import("./message").SessionMessage.Message, { type: "assistant" }>
+
+const replaceToolPayload = (part: ToolPart, placeholder: string): ToolPart => {
+  if (part.state.status !== "completed") return part
+  return {
+    ...part,
+    state: {
+      ...part.state,
+      attachments: [],
+      content: [{ type: "text", text: placeholder }],
+    },
+    time: {
+      ...part.time,
+      pruned: part.time.completed ?? part.time.created,
+    },
+  }
+}
+
+/**
+ * Apply a window plan. The rewrite is validated before it is returned: every
+ * excluded tool pair must name the exact `#call`/`#result` refs derived from the
+ * part it removes, and the resulting window must carry no orphaned pair.
+ */
+export function applyContextWindowPlanV1(input: {
+  readonly entries: ReadonlyArray<ContextCompactionEntryV1>
+  readonly plan: ContextWindowPlanV1
+}): ContextWindowRewriteV1 {
+  const excludedMessages = new Set(input.plan.excludedMessages)
+  const pairs = new Map<string, ContextWindowToolPairV1>()
+  for (const pair of input.plan.excludedToolPairs) {
+    if (
+      pair.callRef !== contextWindowCallRef(pair.messageID, pair.partID) ||
+      pair.resultRef !== contextWindowResultRef(pair.messageID, pair.partID)
+    ) {
+      throw new ContextWindowPairError(
+        "a tool_result cannot leave the model window without its paired assistant tool_call",
+        pair.callRef,
+      )
+    }
+    pairs.set(`${pair.messageID}:${pair.partID}`, pair)
+  }
+  const replacements = new Map(
+    input.plan.replacedToolPayloads.map((replacement) => [
+      `${replacement.messageID}:${replacement.partID}`,
+      replacement,
+    ]),
+  )
+  const removedMessages: string[] = []
+  const removedToolPairs: ContextWindowToolPairV1[] = []
+  const replacedToolPayloads: ContextWindowPayloadReplacementV1[] = []
+  let removedBytes = 0
+
+  const entries = input.entries.flatMap((entry) => {
+    const message = entry.message
+    if (excludedMessages.has(message.id)) {
+      removedMessages.push(message.id)
+      removedBytes += Buffer.byteLength(JSON.stringify(message), "utf8")
+      return []
+    }
+    if (message.type !== "assistant") return [entry]
+    let dropped = 0
+    const content = message.content.flatMap((part): Array<AssistantPart> => {
+      const pair = pairs.get(`${message.id}:${part.id}`)
+      if (pair !== undefined) {
+        if (!isToolPart(part)) {
+          throw new ContextWindowPairError("a window pair must name an assistant tool part", pair.callRef)
+        }
+        dropped += 1
+        removedToolPairs.push(pair)
+        removedBytes += pair.bytes
+        return []
+      }
+      const replacement = replacements.get(`${message.id}:${part.id}`)
+      if (replacement !== undefined) {
+        if (!isToolPart(part)) {
+          throw new ContextWindowPairError(
+            "a trim payload replacement must name an assistant tool part",
+            `${message.id}:${part.id}`,
+          )
+        }
+        const next = replaceToolPayload(part, replacement.placeholder)
+        replacedToolPayloads.push(replacement)
+        removedBytes += Math.max(0, toolPartBytes(part) - toolPartBytes(next))
+        return [next]
+      }
+      return [part]
+    })
+    // A message that carried only pruned tool parts leaves the window whole;
+    // an empty assistant turn is not a valid provider message either.
+    if (content.length === 0 && message.content.length > 0 && dropped > 0) {
+      removedMessages.push(message.id)
+      return []
+    }
+    return [{ seq: entry.seq, message: { ...message, content } as AssistantMessage }]
+  })
+
+  const errors = contextWindowToolPairErrorsV1(entries)
+  if (errors.length > 0) {
+    const first = errors[0]!
+    throw new ContextWindowPairError(
+      `the rewritten model window carries an orphaned ${
+        first.reason === "orphan_tool_call" ? "tool_call" : "tool_result"
+      }`,
+      first.callID,
+    )
+  }
+
+  return {
+    operation: input.plan.operation,
+    entries,
+    removedMessages,
+    removedToolPairs,
+    replacedToolPayloads,
+    removedBytes,
+    retainedRefs: input.plan.retainedRefs,
+    toolPairsIntact: true,
+  }
+}
+
+/** The three ledger operations over one exact model window. */
+export function trimContextWindowV1(input: {
+  readonly entries: ReadonlyArray<ContextCompactionEntryV1>
+  readonly protectRecentUserTurns?: number
+  readonly minimumBytes?: number
+}): ContextWindowRewriteV1 {
+  return applyContextWindowPlanV1({ entries: input.entries, plan: planContextTrimWindowV1(input) })
+}
+
+export function pruneContextWindowV1(input: {
+  readonly entries: ReadonlyArray<ContextCompactionEntryV1>
+  readonly protectRecentUserTurns?: number
+  readonly minimumBytes?: number
+  readonly protectedRefs?: ReadonlyArray<string>
+}): ContextWindowRewriteV1 {
+  return applyContextWindowPlanV1({ entries: input.entries, plan: planContextPruneWindowV1(input) })
+}
+
+export function clearContextWindowV1(input: {
+  readonly entries: ReadonlyArray<ContextCompactionEntryV1>
+  readonly pinnedRefs?: ReadonlyArray<string>
+}): ContextWindowRewriteV1 {
+  return applyContextWindowPlanV1({ entries: input.entries, plan: planContextClearWindowV1(input) })
 }

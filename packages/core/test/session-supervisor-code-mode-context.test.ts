@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import type { ChildProcessHandle } from "effect/unstable/process/ChildProcessSpawner"
-import { HostKernelClientImpl, type HostKernelTransport } from "@opencode-ai/core/session/supervisor"
+import { HostKernelClientImpl, type HostKernelTransport } from "@horizoncode/core/session/supervisor"
 
 const locationID = `loc_${"a".repeat(64)}`
 const sessionID = "ses_code_mode_context"

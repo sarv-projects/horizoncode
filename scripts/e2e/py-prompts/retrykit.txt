@@ -1,0 +1,15 @@
+Implement a small production-quality Python package named retrykit from scratch.
+
+Requirements:
+1. Expose retry_call(fn, *, attempts=3, initial_delay=0.1, max_delay=2.0, retry_on=(Exception,), sleep=time.sleep).
+2. fn is a zero-argument callable. Return its result unchanged when successful.
+3. attempts is the maximum TOTAL number of calls, including the initial call. It must be a positive integer; booleans are invalid.
+4. Retry only exceptions matching retry_on. Immediately propagate non-matching exceptions. When the final permitted attempt fails, propagate its original exception unchanged.
+5. After failed attempt i (starting at 1), sleep for min(initial_delay * 2**(i-1), max_delay), but only when another attempt will be made.
+6. Validate arguments. Delays must be finite, non-negative numbers, excluding booleans. retry_on must be a non-empty tuple of Exception subclasses.
+7. Inject sleep so unit tests never need real delays.
+8. Use only the Python standard library. Do not install dependencies.
+9. Include the public package API, comprehensive unittest tests, a minimal pyproject.toml if needed, and a README with examples and documented behavior.
+10. Run the full test suite, fix failures, and report the exact test command and result.
+
+Do not stop after writing the implementation. Verify success and leave the working tree containing only the files needed for this task.

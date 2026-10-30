@@ -4,29 +4,29 @@
 // real canonical Guard/ExecutionHost path instead of mocks.
 //
 // Mirrors `packages/core/test/terminal-run-live.test.ts`: the host kernel is packaged
-// like `packages/opencode/script/build.ts` and the default Guard approval answer is
+// like `packages/horizoncode/script/build.ts` and the default Guard approval answer is
 // `allow_once` unless a case supplies a different decision.
 import { createHash } from "node:crypto"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { test } from "bun:test"
 import { Cause, Effect, Exit, Layer, Queue } from "effect"
-import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { makeGlobalNode } from "@opencode-ai/core/effect/app-node"
-import { Database } from "@opencode-ai/core/database/database"
-import { Config } from "@opencode-ai/core/config"
-import { EventV2 } from "@opencode-ai/core/event"
-import { Location } from "@opencode-ai/core/location"
-import { Pty } from "@opencode-ai/core/pty"
-import { AbsolutePath } from "@opencode-ai/core/schema"
+import { AppNodeBuilder } from "@horizoncode/core/effect/app-node-builder"
+import { LayerNode } from "@horizoncode/core/effect/layer-node"
+import { makeGlobalNode } from "@horizoncode/core/effect/app-node"
+import { Database } from "@horizoncode/core/database/database"
+import { Config } from "@horizoncode/core/config"
+import { EventV2 } from "@horizoncode/core/event"
+import { Location } from "@horizoncode/core/location"
+import { Pty } from "@horizoncode/core/pty"
+import { AbsolutePath } from "@horizoncode/core/schema"
 import {
   GuardApprovalRequested,
   SessionSupervisor,
   type GuardApprovalRequest,
   type Interface as SessionSupervisorInterface,
-} from "@opencode-ai/core/session/supervisor"
-import { TrustedPrincipalContext } from "@opencode-ai/core/trusted-principal"
+} from "@horizoncode/core/session/supervisor"
+import { TrustedPrincipalContext } from "@horizoncode/core/trusted-principal"
 import { location } from "../fixture/location"
 
 const hostKernelRust = resolve(import.meta.dir, "../../../../kernel/target/debug/hz-kernel")

@@ -55,12 +55,11 @@ jobs:
           cargo test --locked --manifest-path kernel/Cargo.toml --test effects_host_process
           (cd packages/core && bun test test/session-runner-tool-registry.test.ts)
 
-      - name: Readiness-false Guard/terminal denial suites (classified, never skipped)
-        # These three suites are RED by design while the PTY/terminal readiness
-        # gates stay false: every failing case is an explicit
-        # `capability_unavailable` denial (GUARDED_PTY_RUNTIME_READY=false), not a
-        # pass and not a bypass. They run here and are classified, so a real
-        # regression, an ignored test, or an unexplained count change fails the job.
+      - name: Guard/terminal suites (fully green, never skipped)
+        # tool_batch_guard_matrix, host_terminal_process and
+        # host_terminal_events_process are green now, so this gate is absolute:
+        # a failing test, an ignored test, or a missing/zero-test summary fails
+        # the job. A readiness-false denial is no longer tolerated.
         shell: bash
         run: |
           set -euo pipefail
@@ -76,18 +75,17 @@ jobs:
           import re
           import sys
 
-          # Documented readiness-false denials, from the P1/P2 reports recorded in
-          # reports/phases/P1.md and reports/phases/P2.md. Fewer denials means the
-          # gate may have opened: that is reported, never silently accepted.
-          EXPECTED_DENIALS = {
-              "tool_batch_guard_matrix": 6,
-              "host_terminal_process": 1,
-              "host_terminal_events_process": 1,
-          }
+          # These suites are green (tool_batch_guard_matrix 9/9 on 2026-10-29), so
+          # there is no denial tolerance left: every failure is a regression.
+          SUITES = (
+              "tool_batch_guard_matrix",
+              "host_terminal_process",
+              "host_terminal_events_process",
+          )
 
           problems = []
           log_dir = pathlib.Path(sys.argv[1])
-          for suite, expected in EXPECTED_DENIALS.items():
+          for suite in SUITES:
               log_path = log_dir / f"{suite}.log"
               text = log_path.read_text(encoding="utf-8", errors="replace")
               summaries = re.findall(r"test result: \w+\. (\d+) passed; (\d+) failed; (\d+) ignored", text)
@@ -97,25 +95,14 @@ jobs:
               passed, failed, ignored = (int(value) for value in summaries[-1])
               if ignored:
                   problems.append(f"{suite}: {ignored} ignored test(s); silently skipping is forbidden")
-              denial_markers = text.count("capability_unavailable")
-              if failed > denial_markers:
-                  problems.append(
-                      f"{suite}: {failed} failure(s) but only {denial_markers} documented "
-                      "capability_unavailable denial marker(s)"
-                  )
-              if failed > expected:
-                  problems.append(
-                      f"{suite}: {failed} failure(s) exceed the {expected} documented readiness-false denials"
-                  )
-              print(f"{suite}: {passed} passed, {failed} failed ({expected} documented denials), {ignored} ignored")
-              if failed < expected:
-                  print(
-                      f"::notice title={suite}::fewer readiness-false denials than documented "
-                      f"({failed} < {expected}); the PTY/terminal gate may have opened, so review the pinned expectation"
-                  )
+              if failed:
+                  problems.append(f"{suite}: {failed} failing test(s); this suite must stay fully green")
+              if not passed:
+                  problems.append(f"{suite}: 0 passing tests; the suite ran nothing")
+              print(f"{suite}: {passed} passed, {failed} failed, {ignored} ignored")
           if problems:
               for problem in problems:
-                  print(f"::error title=readiness-false suite drift::{problem}")
+                  print(f"::error title=guard/terminal suite drift::{problem}")
               raise SystemExit(1)
           PY
 

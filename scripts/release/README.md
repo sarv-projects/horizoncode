@@ -36,7 +36,7 @@ and Nix hash publication behavior are HorizonCode-owned disabled overlays under
 `.github/workflows/`; each has only a manual trigger, read-only permissions,
 and an unconditional false job guard. `.gitignore` contains exact exceptions
 for these five files so the overlays are Git-visible and the pinned snapshot
-remains untouched. `packages/opencode/script/publish.ts` is a first-party
+remains untouched. `packages/horizoncode/script/publish.ts` is a first-party
 fail-fast entrypoint; it does not import the upstream publisher. The container
 builder keeps host-architecture local image builds but rejects `--push` and
 `PUSH=1` before any Docker command. The distribution audit treats missing or
@@ -95,7 +95,7 @@ PYTHONPATH=. python3 scripts/release/prepare_build.py --source . \
 
 Do not run the real command while the source tree is dirty, while P1–P8
 integration is incomplete, or before Phase 10 is accepted; the preparer marks
-such builds `NON_RELEASE_QUALIFIED`. The stale `packages/opencode/dist` tree is
+such builds `NON_RELEASE_QUALIFIED`. The stale `packages/horizoncode/dist` tree is
 never a candidate input.
 
 ## Legal-file evidence rules (item 8 and item 49)
@@ -162,7 +162,7 @@ native Windows `UNAVAILABLE`.
 ## Candidate discovery and first-party notice evidence
 
 Without an explicit `--artifact`, the distribution audit selects exactly one
-candidate: a `packages/opencode/dist/<target>/bin/horizoncode` product binary
+candidate: a `packages/horizoncode/dist/<target>/bin/horizoncode` product binary
 (whose `bin` directory is the artifact root, holding `release-manifest.json`,
 `LICENSE` and `NOTICE`), or a single package-root archive. More than one match
 is reported as ambiguous and requires `--artifact`; the audit never picks one

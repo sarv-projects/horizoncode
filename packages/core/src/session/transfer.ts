@@ -40,7 +40,7 @@ import {
   type Interface as SessionInterface,
 } from "../session"
 import { TrustedPrincipalContext } from "../trusted-principal"
-import type { ToolContent } from "@opencode-ai/schema/llm"
+import type { ToolContent } from "@horizoncode/schema/llm"
 import { SessionMessage } from "./message"
 import { SessionSchema } from "./schema"
 

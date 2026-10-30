@@ -1,4 +1,4 @@
-import type { Part } from "@opencode-ai/sdk/v2"
+import type { Part } from "@horizoncode/sdk/v2"
 import { redactToolText, safeToolName, toolArgumentPreview, toolArtifactFidelity } from "../util/collapse-tool-output"
 
 type ToolPart = Extract<Part, { type: "tool" }>

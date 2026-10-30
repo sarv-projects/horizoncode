@@ -1,12 +1,12 @@
-import { TextField } from "@opencode-ai/ui/text-field"
+import { TextField } from "@horizoncode/ui/text-field"
 import * as Sentry from "@sentry/solid"
-import { Logo } from "@opencode-ai/ui/logo"
-import { Button } from "@opencode-ai/ui/button"
+import { Logo } from "@horizoncode/ui/logo"
+import { Button } from "@horizoncode/ui/button"
 import { Component, createSignal, onMount, Show } from "solid-js"
 import { createStore } from "solid-js/store"
 import { usePlatform } from "@/context/platform"
 import { useLanguage } from "@/context/language"
-import { Icon } from "@opencode-ai/ui/icon"
+import { Icon } from "@horizoncode/ui/icon"
 import { errorDescriptionKey } from "./error-description"
 
 export type InitError = {

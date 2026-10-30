@@ -5,7 +5,7 @@
     "noUncheckedIndexedAccess": false,
     "paths": {
       "@/*": [
-        "../opencode/src/*"
+        "../horizoncode/src/*"
       ]
     },
     "lib": [

@@ -10,7 +10,7 @@ import {
   projectInstructionSourceIDV1,
   resolveProjectInstructionFilesV1,
   type ProjectInstructionFileV1,
-} from "@opencode-ai/core/session/project-instruction"
+} from "@horizoncode/core/session/project-instruction"
 
 const digest = (text: string) => `blake3:${bytesToHex(blake3(new TextEncoder().encode(text)))}`
 
@@ -40,7 +40,7 @@ describe("§29.23 project instruction resolver", () => {
         file({ path: "AGENTS.md", content: "root" }),
         file({ path: "packages/AGENTS.md", content: "packages" }),
         file({ path: "packages/core/AGENTS.md", content: "core" }),
-        file({ path: "packages/opencode/AGENTS.md", content: "sibling" }),
+        file({ path: "packages/horizoncode/AGENTS.md", content: "sibling" }),
       ],
     })
     expect(result.ancestor.map((slice) => slice.file.relativePath)).toEqual([
@@ -74,7 +74,7 @@ describe("§29.23 project instruction resolver", () => {
         file({ path: "AGENTS.md", content: "root agents" }),
         file({ path: "CLAUDE.md", kind: "claude", content: "shadowed root claude" }),
         file({ path: "packages/core/AGENTS.md", content: "core agents" }),
-        file({ path: "packages/opencode/AGENTS.md", content: "sibling agents" }),
+        file({ path: "packages/horizoncode/AGENTS.md", content: "sibling agents" }),
       ],
     })
 

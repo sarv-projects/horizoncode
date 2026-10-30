@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "auditlog"
+version = "1.0.0"
+description = "Dependency-free JSONL audit log summarizer"
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [{ name = "HorizonCode" }]
+license = { text = "MIT" }
+
+[project.scripts]
+auditlog = "auditlog.cli:main"
+
+[tool.setuptools]
+packages = ["auditlog"]

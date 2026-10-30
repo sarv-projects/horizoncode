@@ -524,8 +524,25 @@ struct PatchTarget {
     content: Option<Vec<u8>>,
 }
 
+fn apply_batch_patch_simulation(
+    state: &mut BTreeMap<String, Option<Vec<u8>>>,
+    targets: &[PatchTarget],
+) {
+    for target in targets {
+        match target.operation.as_str() {
+            "write" => {
+                state.insert(target.relative_path.clone(), target.content.clone());
+            }
+            "delete" => {
+                state.insert(target.relative_path.clone(), None);
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Bounded complete-batch admission limits. These mirror the Core streaming bounds in
-/// `packages/opencode/src/session/tool-batch.ts`, so a batch the Core is willing to collect
+/// `packages/horizoncode/src/session/tool-batch.ts`, so a batch the Core is willing to collect
 /// is never silently widened here.
 const MAX_TOOL_BATCH_CALLS: usize = 32;
 const MAX_TOOL_CALL_ARGUMENT_BYTES: usize = 256 * 1024;
@@ -690,7 +707,12 @@ pub(crate) struct ManagedAttemptEffectReceiptPinV1 {
 
 /// Read-only Guard receipt projection. `status` is copied from the durable Guard
 /// challenge row; UNKNOWN is returned explicitly and is never rewritten as a
-/// terminal success or safe-to-retry outcome.
+/// plain terminal success or safe-to-retry outcome. The single permitted
+/// exception is restart reconciliation of an effect whose persisted
+/// postcondition is already satisfied: that transition settles with a
+/// domain-separated postcondition receipt recorded in
+/// `effect_challenges.settled_by`, so it can never equal, or verify as, an
+/// observation receipt. See `persist_settled`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ManagedAttemptEffectReceiptV1 {
     pub(crate) batch_id: String,
@@ -1047,6 +1069,17 @@ struct TargetIdentity {
     changed_seconds: i64,
     changed_nanoseconds: i64,
 }
+/// Non-mutating classification of one `files.write` target.
+enum WriteTargetState {
+    /// The target already exists as a single-link regular file.
+    Present,
+    /// Every parent directory exists and the target itself does not.
+    Absent,
+    /// At least one intermediate directory does not exist yet. The write effect
+    /// creates the chain, so this is recoverable, not a denial.
+    MissingParent,
+}
+
 struct ExecutionLease {
     challenge_id: String,
     lease_id: String,
@@ -1130,6 +1163,84 @@ impl ExecutionHost {
     fn inspect(&self, relative: &Path) -> io::Result<bool> {
         let (parent, name) = open_parent(&self.root_handle, relative)?;
         inspect_target(parent.as_raw_fd(), &name)
+    }
+
+    /// Classify a write target without mutating anything. A missing intermediate
+    /// directory is reported as `MissingParent` instead of an error, because the
+    /// `files.write` effect creates that chain; only genuine unsafe/unavailable
+    /// conditions (a symlinked or non-directory component, `EACCES`, an unsafe
+    /// target type) stay errors.
+    fn inspect_write_target(&self, relative: &Path) -> io::Result<WriteTargetState> {
+        let mut components = path_components(relative)?;
+        let Some(name) = components.pop() else {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "empty path"));
+        };
+        let mut directory = self.root_handle.try_clone()?;
+        for component in components {
+            match open_directory_at(&directory, &component) {
+                Ok(next) => directory = next,
+                Err(error) if error.raw_os_error() == Some(libc::ENOENT) => {
+                    return Ok(WriteTargetState::MissingParent)
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        if inspect_target(directory.as_raw_fd(), &name)? {
+            Ok(WriteTargetState::Present)
+        } else {
+            Ok(WriteTargetState::Absent)
+        }
+    }
+
+    /// Create the missing intermediate directories of a write target one
+    /// component at a time with `mkdirat`, relative to the workspace root
+    /// descriptor (or the deepest descriptor already opened). No path string is
+    /// ever rebuilt for the filesystem, and every component is re-opened with
+    /// `O_DIRECTORY | O_NOFOLLOW`, so a symlink planted at any depth fails the
+    /// walk instead of escaping the workspace root. The trailing name is never
+    /// created: the target file itself is opened by `open_new_target`.
+    fn create_write_parents(&self, relative: &Path) -> io::Result<()> {
+        let mut components = path_components(relative)?;
+        if components.pop().is_none() {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "empty path"));
+        }
+        let mut directory = self.root_handle.try_clone()?;
+        for component in components {
+            let mut created = false;
+            let next = match open_directory_at(&directory, &component) {
+                Ok(next) => next,
+                Err(error) if error.raw_os_error() == Some(libc::ENOENT) => {
+                    // SAFETY: the component is NUL-terminated and the parent
+                    // descriptor remains open.
+                    let result = unsafe {
+                        libc::mkdirat(
+                            directory.as_raw_fd(),
+                            component.as_ptr(),
+                            WORKSPACE_DIRECTORY_MODE as libc::mode_t,
+                        )
+                    };
+                    if result < 0 {
+                        let mkdir_error = io::Error::last_os_error();
+                        // A concurrent creator that won the race is re-validated
+                        // by the descriptor reopen below; anything else is real.
+                        if mkdir_error.raw_os_error() != Some(libc::EEXIST) {
+                            return Err(mkdir_error);
+                        }
+                    } else {
+                        created = true;
+                    }
+                    open_directory_at(&directory, &component)?
+                }
+                Err(error) => return Err(error),
+            };
+            if created {
+                // `mkdirat`'s mode is masked by the process umask; pin the exact
+                // workspace directory mode on the directory just created.
+                next.set_permissions(fs::Permissions::from_mode(WORKSPACE_DIRECTORY_MODE))?;
+            }
+            directory = next;
+        }
+        Ok(())
     }
 
     fn prepare_write(&self, relative: &Path, existed: bool) -> io::Result<ExecutionTarget> {
@@ -1536,6 +1647,8 @@ impl EffectHost {
                     after_digest TEXT,
                     lease_id TEXT,
                     receipt_digest TEXT,
+                    settled_by TEXT NOT NULL DEFAULT 'observation'
+                        CHECK (settled_by IN ('observation', 'postcondition_equality')),
                     turn_context_digest TEXT NOT NULL,
                     origin_kind TEXT NOT NULL DEFAULT 'session_batch',
                     managed_attempt_digest TEXT,
@@ -2271,6 +2384,10 @@ impl EffectHost {
         for (column, declaration) in [
             ("batch_payload_bytes", "INTEGER NOT NULL DEFAULT 0"),
             ("direct_session_grant_digest", "TEXT"),
+            (
+                "settled_by",
+                "TEXT NOT NULL DEFAULT 'observation' CHECK (settled_by IN ('observation', 'postcondition_equality'))",
+            ),
         ] {
             let present: i64 = connection.query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('effect_challenges') WHERE name=?1",
@@ -7911,9 +8028,7 @@ impl EffectHost {
         attempt: u8,
     ) -> Result<u64, TypedErrorV1> {
         if !(1..=2).contains(&attempt)
-            || (crate::http_execution::fixed_web_search_mcp_route(route_id).is_none()
-                && !route_id.strip_prefix("web.search.").is_some_and(|key|
-                    crate::http_execution::fixed_credentialed_search_request(key, "bounded query", 1).is_some()))
+            || !crate::http_execution::is_known_search_route_id(route_id)
         {
             return Err(Failure::Invalid.error());
         }
@@ -8150,7 +8265,7 @@ impl EffectHost {
         }
         if let Some((canonical_routes, route_receipts, plan_digest)) = route_plan {
             if canonical_routes.is_empty()
-                || canonical_routes.len() > 10
+                || canonical_routes.len() > 11
                 || route_receipts.is_empty()
                 || route_receipts.len() > 20
                 || !is_blake3_digest(plan_digest)
@@ -8163,11 +8278,7 @@ impl EffectHost {
             let mut unique = HashSet::new();
             if canonical_routes.iter().any(|route_id| {
                 !unique.insert(route_id.as_str())
-                    || (crate::http_execution::fixed_web_search_mcp_route(route_id).is_none()
-                        && !route_id.strip_prefix("web.search.").is_some_and(|key|
-                            crate::http_execution::fixed_credentialed_search_request(
-                                key, "bounded query", 1,
-                            ).is_some()))
+                    || !crate::http_execution::is_known_search_route_id(route_id)
             }) {
                 return Err(Failure::Denied.error());
             }
@@ -8506,7 +8617,7 @@ impl EffectHost {
         route_plan_digest: &str,
         terminal_outcome: &str,
     ) -> Result<crate::http_execution::HttpExecutionTerminalReceiptV1, TypedErrorV1> {
-        if canonical_routes.is_empty() || canonical_routes.len() > 10 || route_receipts.len() > 20
+        if canonical_routes.is_empty() || canonical_routes.len() > 11 || route_receipts.len() > 20
             || !is_blake3_digest(route_plan_digest)
             // The request digest is minted from the exact approved canonical
             // MessagePack route array (including order and attemptCount). Keep
@@ -8521,11 +8632,7 @@ impl EffectHost {
         let mut unique_routes = HashSet::new();
         if canonical_routes.iter().any(|route_id| {
             !unique_routes.insert(route_id.as_str())
-                || (crate::http_execution::fixed_web_search_mcp_route(route_id).is_none()
-                    && !route_id.strip_prefix("web.search.").is_some_and(|key|
-                        crate::http_execution::fixed_credentialed_search_request(
-                            key, "bounded query", 1,
-                        ).is_some()))
+                || !crate::http_execution::is_known_search_route_id(route_id)
         }) {
             return Err(Failure::Denied.error());
         }
@@ -11466,6 +11573,7 @@ impl EffectHost {
             .ok_or(Failure::Unavailable)?;
         let mut planned = Vec::with_capacity(calls.len());
         let mut call_ids = std::collections::HashSet::with_capacity(calls.len());
+        let mut batch_patch_sim: BTreeMap<String, Option<Vec<u8>>> = BTreeMap::new();
         for call in calls {
             validate_effect_request_deadline(deadline_unix_ms)?;
             let fields = strict_map(call, &["callId", "capabilityId", "arguments"])?;
@@ -11508,6 +11616,7 @@ impl EffectHost {
                     call,
                     expires_at_ms,
                     managed_attempt_digest.as_deref(),
+                    Some(&batch_patch_sim),
                 )?
             } else if capability_id == guard::FILES_WRITE_ID {
                 self.plan_write(
@@ -11531,6 +11640,9 @@ impl EffectHost {
             validate_effect_request_deadline(deadline_unix_ms)?;
             match outcome {
                 PlanOutcome::Call(mut call) => {
+                    if let PlannedEffect::Patch { ref targets } = call.effect {
+                        apply_batch_patch_simulation(&mut batch_patch_sim, targets);
+                    }
                     call.arguments_digest = arguments_digest;
                     planned.push(call);
                 }
@@ -11622,13 +11734,25 @@ impl EffectHost {
             }).map_err(|_| Failure::Unavailable.error())?;
             rows.collect::<Result<Vec<_>, _>>().map_err(|_| Failure::Unavailable.error())?
         };
+        // Approve exactly the requested challenges, in request order. The RPC
+        // approves one lease at a time for a multi-call batch, so requiring the
+        // full row set made every batch with two or more effect calls
+        // unapprovable and the second effect of a turn ("write then run") was
+        // always lost.
+        let wanted: std::collections::HashSet<&str> =
+            ordered_challenge_ids.iter().map(String::as_str).collect();
+        let mut batch_rows: Vec<_> = batch_rows
+            .into_iter()
+            .filter(|row| wanted.contains(row.0.as_str()))
+            .collect();
         if batch_rows.len() != ordered_challenge_ids.len() {
             return Err(Failure::Conflict.error());
         }
+        batch_rows.sort_by_key(|row| row.2.unwrap_or(-1));
         let mut effect_ids = Vec::with_capacity(batch_rows.len());
         for (index, row) in batch_rows.iter().enumerate() {
             if row.0 != ordered_challenge_ids[index]
-                || row.2 != Some(index as i64)
+                || row.2.is_none()
                 || row.3 != "AWAITING_APPROVAL"
                 || row.4 <= now_ms().map_err(Failure::error)? as i64
                 || row.5.as_deref() != Some(permission_mode.digest.as_str())
@@ -11876,8 +12000,14 @@ impl EffectHost {
             Err(Failure::Denied) => return Ok(PlanOutcome::Denied("path_outside_or_unsafe")),
             Err(error) => return Err(error),
         };
-        let existed = match execution.inspect(&relative) {
-            Ok(existed) => existed,
+        // A missing parent chain is recoverable: this effect creates it. Only a
+        // genuine unsafe/unavailable inspect failure (symlinked or non-directory
+        // component, `EACCES`, unusable target type) is still a denial. Resolving
+        // this through `inspect` alone denied the first write into every fresh
+        // directory with `path_unavailable_or_unsafe`.
+        let existed = match execution.inspect_write_target(&relative) {
+            Ok(WriteTargetState::Present) => true,
+            Ok(WriteTargetState::Absent | WriteTargetState::MissingParent) => false,
             Err(_) => return Ok(PlanOutcome::Denied("path_unavailable_or_unsafe")),
         };
         let target_path = execution.root().join(&relative);
@@ -11979,7 +12109,7 @@ impl EffectHost {
             }
         }
         for route_key in route_keys {
-            if !route_key.ends_with("_keyless") && route_key != "youcom_free"
+            if !crate::http_execution::is_keyless_search_route_key(route_key)
                 && !credential_routes.contains(route_key)
             {
                 return Err(Failure::Invalid);
@@ -12010,7 +12140,7 @@ impl EffectHost {
             effect: PlannedEffect::WebSearch {
                 requested_path: ".".to_owned(),
                 relative_path: ".".to_owned(),
-                resource: "web.search".to_owned(),
+                resource: ".".to_owned(),
             },
         }))
     }
@@ -12799,6 +12929,7 @@ impl EffectHost {
         call: &Value,
         expires_at_ms: u64,
         managed_attempt_digest: Option<&str>,
+        batch_patch_sim: Option<&BTreeMap<String, Option<Vec<u8>>>>,
     ) -> Result<PlanOutcome, Failure> {
         let call = strict_map(call, &["callId", "capabilityId", "arguments"])?;
         if text(call, "callId")? != call_id || text(call, "capabilityId")? != guard::FILES_PATCH_ID
@@ -12893,7 +13024,21 @@ impl EffectHost {
                 Some(Value::Bool(executable)) => Some(*executable),
                 Some(_) => return Err(Failure::Invalid),
             };
-            let (before_bytes, before_mode) = if existed {
+            let (before_bytes, before_mode) = if let Some(simulated) =
+                batch_patch_sim.and_then(|state| state.get(&relative_text))
+            {
+                // Simulated bytes come from earlier batch members; the file still
+                // exists on disk with a real mode that execute_patch re-checks.
+                let mode = if existed {
+                    execution
+                        .read_target_bytes(&relative)
+                        .ok()
+                        .map(|(_, mode)| mode)
+                } else {
+                    None
+                };
+                (simulated.clone(), mode)
+            } else if existed {
                 let (bytes, mode) = execution
                     .read_target_bytes(&relative)
                     .map_err(map_io_failure)?;
@@ -12985,6 +13130,7 @@ impl EffectHost {
             turn_context_digest,
             call,
             expires_at_ms,
+            None,
             None,
         )?;
         let planned = match outcome {
@@ -13458,7 +13604,7 @@ impl EffectHost {
         let receipt_digest = digest_bytes(
             format!("{}:{}:{}", challenge.effect_id, after_manifest, lease_id).as_bytes(),
         );
-        self.persist_settled(challenge_id, &receipt_digest)?;
+        self.persist_settled(challenge_id, &receipt_digest, SETTLED_BY_OBSERVATION)?;
         Ok(map_value([
             ("status", Value::String("settled".into())),
             ("effectId", Value::String(challenge.effect_id)),
@@ -13553,16 +13699,20 @@ impl EffectHost {
             }
         };
         if all_after {
-            let receipt = digest_bytes(
-                format!(
-                    "{}:{}:{}",
-                    challenge.effect_id,
-                    challenge.after_digest.as_deref().unwrap_or(""),
-                    lease_id
-                )
-                .as_bytes(),
+            // Final content equality is a postcondition, never an observation of
+            // the dispatch result: the patch may have been applied inside the
+            // crash window. The receipt records that provenance so an UNKNOWN
+            // row settled here can never masquerade as a plain success receipt.
+            let receipt = postcondition_patch_receipt_digest(
+                &challenge.effect_id,
+                challenge.after_digest.as_deref().unwrap_or(""),
+                &lease_id,
             );
-            self.persist_settled(&challenge.challenge_id, &receipt)?;
+            self.persist_settled(
+                &challenge.challenge_id,
+                &receipt,
+                SETTLED_BY_POSTCONDITION,
+            )?;
         } else if all_before {
             self.connection.execute("UPDATE effect_challenges SET status='NOT_APPLIED' WHERE challenge_id=?1 AND status='PREPARED'",[&challenge.challenge_id]).map_err(|_|Failure::Unavailable)?;
         } else {
@@ -14298,7 +14448,7 @@ impl EffectHost {
         {
             return Err(Failure::Denied);
         }
-        let (preflight_identity, target_had_bom) = {
+        let (preflight_identity, target_had_bom, parents_missing) = {
             let execution = self.execution.as_ref().ok_or(Failure::Denied)?;
             if execution
                 .root()
@@ -14308,15 +14458,28 @@ impl EffectHost {
             {
                 return Err(Failure::Denied);
             }
-            let target = execution
+            match execution
                 .prepare_write(Path::new(&challenge.relative_path), challenge.existed)
-                .map_err(map_io_failure)?;
-            let identity = target.identity().map_err(map_io_failure)?;
-            let has_bom = match target.existing.as_ref() {
-                Some(file) => has_bom(file).map_err(map_io_failure)?,
-                None => false,
-            };
-            (identity, has_bom)
+            {
+                Ok(target) => {
+                    let identity = target.identity().map_err(map_io_failure)?;
+                    let has_bom = match target.existing.as_ref() {
+                        Some(file) => has_bom(file).map_err(map_io_failure)?,
+                        None => false,
+                    };
+                    (identity, has_bom, false)
+                }
+                // The planned intent already recorded that this target does not
+                // exist and its parent chain is absent, so there is no preimage to
+                // bind here. The chain is created strictly after the durable
+                // PREPARED intent and one-use lease exist, immediately below.
+                Err(error)
+                    if !challenge.existed && error.raw_os_error() == Some(libc::ENOENT) =>
+                {
+                    (None, false, true)
+                }
+                Err(error) => return Err(map_io_failure(error)),
+            }
         };
         let output: Cow<'_, [u8]> = if !target_had_bom && !content.starts_with('\u{feff}') {
             Cow::Borrowed(content.as_bytes())
@@ -14336,8 +14499,14 @@ impl EffectHost {
         // Any subsequent ambiguity blocks this challenge as UNKNOWN instead of retrying.
         let target_result = {
             let execution = self.execution.as_ref().ok_or(Failure::Unknown)?;
-            execution
-                .prepare_write(Path::new(&challenge.relative_path), challenge.existed)
+            let relative = Path::new(&challenge.relative_path);
+            let parents = if parents_missing {
+                execution.create_write_parents(relative)
+            } else {
+                Ok(())
+            };
+            parents
+                .and_then(|()| execution.prepare_write(relative, challenge.existed))
                 .map_err(|_| Failure::Unknown)
                 .and_then(|target| {
                     if target.identity().map_err(|_| Failure::Unknown)? != preflight_identity {
@@ -14387,7 +14556,7 @@ impl EffectHost {
             &after_digest,
             &lease_id,
         );
-        self.persist_settled(challenge_id, &receipt_digest)?;
+        self.persist_settled(challenge_id, &receipt_digest, SETTLED_BY_OBSERVATION)?;
         Ok(map_value([
             ("status", Value::String("settled".to_owned())),
             ("effectId", Value::String(challenge.effect_id)),
@@ -14430,18 +14599,54 @@ impl EffectHost {
         })
     }
 
-    fn persist_settled(&mut self, challenge_id: &str, receipt_digest: &str) -> Result<(), Failure> {
+    /// Settle one pending effect challenge with the receipt identity that proves
+    /// *how* it settled.
+    ///
+    /// `settled_by` is settlement provenance, not a label:
+    ///
+    /// * [`SETTLED_BY_OBSERVATION`] — this process dispatched the effect and then
+    ///   observed the resulting workspace state.
+    /// * [`SETTLED_BY_POSTCONDITION`] — a restart reconciler only found final
+    ///   content equality; the dispatch result was never observed, so the effect
+    ///   may or may not have run inside the crash window.
+    ///
+    /// The receipt-projection invariant above forbids rewriting UNKNOWN as a
+    /// plain success. Option (a) for this repair — leave UNKNOWN standing and
+    /// give it its own terminal status and receipt kind — would add a status and
+    /// a receipt kind to the public receipts wire contract: HostKernel validates
+    /// `receiptKind` as exactly `effect`/`decision` and Core's supervisor requires
+    /// `receiptKind === "effect"` precisely when `status === "SETTLED"`. This
+    /// therefore takes option (b): the UNKNOWN transition is kept, but only for a
+    /// receipt whose identity is domain-separated as postcondition equality and
+    /// whose provenance is stored in `settled_by`. An observation receipt can
+    /// never settle an UNKNOWN row, and the two receipt families can never
+    /// collide for the same effect, target and lease.
+    fn persist_settled(
+        &mut self,
+        challenge_id: &str,
+        receipt_digest: &str,
+        settled_by: &str,
+    ) -> Result<(), Failure> {
         let transaction = self
             .connection
             .transaction()
             .map_err(|_| Failure::Unavailable)?;
-        let changed = transaction
-            .execute(
-                "UPDATE effect_challenges SET status='SETTLED', receipt_digest=?1
-                 WHERE challenge_id=?2 AND status IN ('PREPARED', 'UNKNOWN')",
-                params![receipt_digest, challenge_id],
-            )
-            .map_err(|_| Failure::Unavailable)?;
+        let changed = match settled_by {
+            // An observation is only valid for a row this process prepared and
+            // dispatched; it must never launder an UNKNOWN dispatch boundary.
+            SETTLED_BY_OBSERVATION => transaction.execute(
+                "UPDATE effect_challenges SET status='SETTLED', receipt_digest=?1, settled_by=?2
+                 WHERE challenge_id=?3 AND status='PREPARED'",
+                params![receipt_digest, settled_by, challenge_id],
+            ),
+            SETTLED_BY_POSTCONDITION => transaction.execute(
+                "UPDATE effect_challenges SET status='SETTLED', receipt_digest=?1, settled_by=?2
+                 WHERE challenge_id=?3 AND status IN ('PREPARED', 'UNKNOWN')",
+                params![receipt_digest, settled_by, challenge_id],
+            ),
+            _ => return Err(Failure::Invalid),
+        }
+        .map_err(|_| Failure::Unavailable)?;
         if changed != 1 {
             return Err(Failure::Unknown);
         }
@@ -14897,7 +15102,11 @@ impl EffectHost {
             let after_digest = after_digest.as_deref().ok_or(Failure::Unknown)?;
             let lease_id = load_lease_id(&self.connection, &challenge.challenge_id)?
                 .ok_or(Failure::Unknown)?;
-            let receipt = receipt_digest(
+            // Final content equality is a postcondition, never an observation of
+            // the dispatch result: the write may have landed inside the crash
+            // window. The receipt records that provenance so an UNKNOWN row
+            // settled here can never masquerade as a plain success receipt.
+            let receipt = postcondition_receipt_digest(
                 &challenge.effect_id,
                 &challenge.target,
                 &challenge.resource,
@@ -14905,7 +15114,11 @@ impl EffectHost {
                 after_digest,
                 &lease_id,
             );
-            self.persist_settled(&challenge.challenge_id, &receipt)?;
+            self.persist_settled(
+                &challenge.challenge_id,
+                &receipt,
+                SETTLED_BY_POSTCONDITION,
+            )?;
         }
         Ok(())
     }
@@ -15265,7 +15478,13 @@ fn guard_http_decision(
             workspace_root: execution.root(),
             workspace_binding: execution.workspace_binding(),
             target: &target,
-            resource: "web.search",
+            // Guard resolves an HTTP action to the workspace root (the target
+            // IS the root for outbound search), so the resource must be ".".
+            // Sending "web.search" made every admission fail with
+            // `resource_outside_workspace`: the capability was plumbed through
+            // Core, the tool reached the batch, and Guard then refused it, so
+            // web search could never run in production.
+            resource: ".",
         },
         executable: None,
         policy_snapshot_ids: &policy_snapshot_ids,
@@ -15277,9 +15496,7 @@ fn guard_http_decision(
 }
 
 fn valid_search_route_key(route_key: &str) -> bool {
-    matches!(route_key,
-        "exa_keyless" | "youcom_free" | "firecrawl_keyless" |
-        "parallel_keyless" | "brave" | "exa" | "youcom" | "tavily" | "firecrawl" | "parallel")
+    crate::http_execution::is_search_route_key(route_key)
 }
 
 fn guard_broker_decision(
@@ -16014,21 +16231,60 @@ fn validate_content(content: &str) -> Result<(), Failure> {
     }
 }
 
+/// Resolve `.` and `..` lexically, never through the filesystem.
+///
+/// Returns the surviving normal components, or `None` when the path climbs
+/// above its own base (an escape) or carries a component this owner refuses to
+/// interpret. Popping on `..` is safe for containment: the relative path handed
+/// to `openat(O_NOFOLLOW)` is the *resolved* one, so a component that `..`
+/// removed is never traversed, symlink or not.
+fn resolve_lexical_components(path: &Path) -> Option<Vec<std::ffi::OsString>> {
+    let mut resolved: Vec<std::ffi::OsString> = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => resolved.push(part.to_os_string()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                resolved.pop()?;
+            }
+            // An absolute path's root is re-attached by the caller's prefix
+            // comparison. A surviving prefix is not a path this owner admits.
+            Component::RootDir => {}
+            Component::Prefix(_) => return None,
+        }
+    }
+    Some(resolved)
+}
+
 fn normalize_workspace_path(root: &Path, input: &str) -> Result<(PathBuf, String), Failure> {
     if input.is_empty() || input.len() > 4096 || input.contains('\0') {
         return Err(Failure::Invalid);
     }
     let supplied = Path::new(input);
-    let relative = if supplied.is_absolute() {
-        supplied.strip_prefix(root).map_err(|_| Failure::Denied)?
-    } else {
-        supplied
-    };
+    // `.` segments, redundant separators and `..` that stays inside the root are
+    // lexical noise on an otherwise contained path: denying them rejected
+    // legitimate in-workspace writes (an absolute `<root>/src/../src/a.ts` is
+    // still inside `<root>`) with a reason the model could not act on. A `..`
+    // that would climb above the pinned root, an absolute path outside it, a
+    // NUL byte, an empty path and an over-long path all stay denied.
+    let resolved = resolve_lexical_components(supplied).ok_or(Failure::Denied)?;
+    let root_components = resolve_lexical_components(root).ok_or(Failure::Denied)?;
     let mut normalized = PathBuf::new();
-    for component in relative.components() {
-        match component {
-            Component::Normal(part) => normalized.push(part),
-            _ => return Err(Failure::Denied),
+    if supplied.is_absolute() {
+        if resolved.len() <= root_components.len()
+            || resolved[..root_components.len()] != root_components[..]
+        {
+            return Err(Failure::Denied);
+        }
+        for part in &resolved[root_components.len()..] {
+            normalized.push(part.as_os_str());
+        }
+    } else {
+        if resolved.is_empty() {
+            return Err(Failure::Denied);
+        }
+        for part in &resolved {
+            normalized.push(part.as_os_str());
         }
     }
     if normalized.as_os_str().is_empty() {
@@ -16045,7 +16301,14 @@ fn open_root(root: &Path) -> io::Result<File> {
         .open(root)
 }
 
-fn open_parent(root: &File, relative: &Path) -> io::Result<(File, CString)> {
+/// Mode for workspace directories this owner creates when a `files.write`
+/// target's parent chain does not exist yet. It matches the `0o755` the write
+/// path records for an executable workspace file: traversable, and never group
+/// or world writable.
+const WORKSPACE_DIRECTORY_MODE: u32 = 0o755;
+
+/// Split a normalized relative path into NUL-terminated components for `*at` calls.
+fn path_components(relative: &Path) -> io::Result<Vec<CString>> {
     let mut components = Vec::new();
     for component in relative.components() {
         let Component::Normal(part) = component else {
@@ -16060,24 +16323,34 @@ fn open_parent(root: &File, relative: &Path) -> io::Result<(File, CString)> {
             })?,
         );
     }
+    Ok(components)
+}
+
+/// Open one child directory of `directory` without following symlinks.
+fn open_directory_at(directory: &File, component: &CString) -> io::Result<File> {
+    // SAFETY: the component is NUL-terminated and the parent descriptor remains open.
+    let fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            component.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: openat returned a new owned descriptor.
+    Ok(unsafe { File::from_raw_fd(fd) })
+}
+
+fn open_parent(root: &File, relative: &Path) -> io::Result<(File, CString)> {
+    let mut components = path_components(relative)?;
     let Some(name) = components.pop() else {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "empty path"));
     };
     let mut directory = root.try_clone()?;
     for component in components {
-        // SAFETY: the component is NUL-terminated and the parent descriptor remains open.
-        let fd = unsafe {
-            libc::openat(
-                directory.as_raw_fd(),
-                component.as_ptr(),
-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            )
-        };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: openat returned a new owned descriptor.
-        directory = unsafe { File::from_raw_fd(fd) };
+        directory = open_directory_at(&directory, &component)?;
     }
     Ok((directory, name))
 }
@@ -17190,6 +17463,49 @@ fn parse_stdio_state(value: &str) -> Option<StdioExecutionStateV1> {
     }
 }
 
+/// Settlement provenance of an effect whose dispatched result this process
+/// observed.
+const SETTLED_BY_OBSERVATION: &str = "observation";
+/// Settlement provenance of an effect settled only by durable postcondition
+/// equality after a restart; its dispatch result was never observed.
+const SETTLED_BY_POSTCONDITION: &str = "postcondition_equality";
+
+/// Receipt identity for a write settled by postcondition equality alone.
+///
+/// The preimage is domain-separated from [`receipt_digest`]: a receipt minted for
+/// an effect that was never observed can never collide with, or be replayed as,
+/// an observation receipt for the same effect, target, digest and lease.
+fn postcondition_receipt_digest(
+    effect_id: &str,
+    target: &str,
+    resource: &str,
+    existed: bool,
+    after_digest: &str,
+    lease_id: &str,
+) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"horizon.effect.receipt.postcondition_equality.v1");
+    for value in [effect_id, target, resource, after_digest, lease_id] {
+        hasher.update(&(value.len() as u64).to_be_bytes());
+        hasher.update(value.as_bytes());
+    }
+    hasher.update(&[u8::from(existed)]);
+    format!("blake3:{}", hasher.finalize().to_hex())
+}
+
+/// Receipt identity for a patch settled by postcondition equality alone. The
+/// preimage is domain-separated from the observation receipt minted by the
+/// patch execution path so the two families can never collide.
+fn postcondition_patch_receipt_digest(effect_id: &str, after_digest: &str, lease_id: &str) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"horizon.effect.patch_receipt.postcondition_equality.v1");
+    for value in [effect_id, after_digest, lease_id] {
+        hasher.update(&(value.len() as u64).to_be_bytes());
+        hasher.update(value.as_bytes());
+    }
+    format!("blake3:{}", hasher.finalize().to_hex())
+}
+
 fn receipt_digest(
     effect_id: &str,
     target: &str,
@@ -17314,7 +17630,13 @@ fn planned_normalized_targets(call: &PlannedCall) -> Vec<Value> {
         PlannedEffect::WebSearch { requested_path, resource, .. } => vec![map_value([
             ("target", Value::String(requested_path.clone())),
             ("resource", Value::String(resource.clone())),
-            ("operation", Value::String("web.search".to_owned())),
+            // `normalizedTargets[].operation` is Core's closed approval
+            // vocabulary (`write | delete | run`). Emitting the capability id
+            // here made Core reject the host's own admission with
+            // "invalid effect target", so the search could be planned, persisted
+            // and then never approved. An outbound search is a run-class effect
+            // with no filesystem target.
+            ("operation", Value::String("run".to_owned())),
             ("existed", Value::Bool(false)),
         ])],
         PlannedEffect::GuardedControl { requested_path, resource, operation, .. } => vec![map_value([
@@ -17426,7 +17748,11 @@ fn classify_direct_mode_batch(
             // ref may quiet it; the broad permission mode never turns arbitrary
             // process launch into an implicit allow.
             PlannedEffect::Terminal { .. } if full_access => {}
-            // Search has separate query-sharing and possible-cost consent.
+            // Search has separate query-sharing and possible-cost consent. Under
+            // explicit full access the operator has already granted the widest
+            // posture, so the mode is the consent and Guard still governs the
+            // outbound request; a confined sandbox keeps the conservative deny.
+            PlannedEffect::WebSearch { .. } if full_access => {}
             PlannedEffect::WebSearch { .. } => return if mode.approval_policy == guard::DirectApprovalPolicyV1::Never {
                 DirectModeBatchDecision::Deny
             } else {
@@ -17460,11 +17786,31 @@ fn classify_direct_mode_challenge(
     let inside_scope = matches!(mode.sandbox_mode,
             guard::DirectSandboxModeV1::WorkspaceWrite | guard::DirectSandboxModeV1::DangerFullAccess)
         && matches!(challenge.capability_id.as_str(), guard::FILES_WRITE_ID | guard::FILES_PATCH_ID);
-    let inside = inside_scope;
+    // Full Access contains no boundary, so the batch classifier already treats a
+    // terminal batch as a mode candidate (`PlannedEffect::Terminal if full_access`).
+    // The challenge classifier has to agree, otherwise the approval step that
+    // consumes that candidate re-classifies the same terminal challenge as
+    // outside the scope and denies it under `approvalPolicy = never`. That
+    // asymmetry is why terminal.run could be planned and then never approved:
+    // the model saw "Tool batch denied: Rust Guard unavailable" for every shell
+    // command in the only posture that can host one.
+    let terminal_inside_scope = mode.sandbox_mode == guard::DirectSandboxModeV1::DangerFullAccess
+        && challenge.capability_id.as_str() == guard::TERMINAL_RUN_ID;
+    let inside = inside_scope || terminal_inside_scope;
     if inside {
         return DirectModeBatchDecision::Candidate;
     }
     if challenge.capability_id == guard::WEB_SEARCH_ID {
+        // Mirror the batch classifier: full access already carries the broadest
+        // consent, so an autonomous Session may consume a search challenge there.
+        // Without this the two classifiers disagreed and a full-access agent
+        // could plan a search and then never have it approved - web search was
+        // unreachable in the only posture that can host an autonomous agent.
+        if mode.sandbox_mode == guard::DirectSandboxModeV1::DangerFullAccess
+            && mode.approval_policy == guard::DirectApprovalPolicyV1::Never
+        {
+            return DirectModeBatchDecision::Candidate;
+        }
         return if mode.approval_policy == guard::DirectApprovalPolicyV1::Never {
             DirectModeBatchDecision::Deny
         } else {

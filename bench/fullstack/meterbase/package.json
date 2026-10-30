@@ -1,0 +1,12 @@
+{
+  "name": "meterbase",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Meterbase — usage metering & invoicing service (skeleton + visible acceptance tests)",
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "seed": "bun run src/seed.ts",
+    "test": "bun test"
+  }
+}

@@ -2,14 +2,14 @@ import fs from "fs/promises"
 import path from "path"
 import { describe, expect } from "bun:test"
 import { Effect, Exit, Layer, Option } from "effect"
-import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { LayerNodePlatform } from "@opencode-ai/core/effect/app-node-platform"
-import { FSUtil } from "@opencode-ai/core/fs-util"
-import { Global } from "@opencode-ai/core/global"
-import { Config } from "@opencode-ai/core/config"
-import { Location } from "@opencode-ai/core/location"
-import { AbsolutePath } from "@opencode-ai/core/schema"
+import { AppNodeBuilder } from "@horizoncode/core/effect/app-node-builder"
+import { LayerNode } from "@horizoncode/core/effect/layer-node"
+import { LayerNodePlatform } from "@horizoncode/core/effect/app-node-platform"
+import { FSUtil } from "@horizoncode/core/fs-util"
+import { Global } from "@horizoncode/core/global"
+import { Config } from "@horizoncode/core/config"
+import { Location } from "@horizoncode/core/location"
+import { AbsolutePath } from "@horizoncode/core/schema"
 import { location } from "../fixture/location"
 import { tmpdir } from "../fixture/tmpdir"
 import { testEffect } from "../lib/effect"
@@ -89,12 +89,14 @@ describe("Core Config AgentProfileV2 owner", () => {
             Effect.flatMap((config) => config.agentProfiles()),
             Effect.provide(configLayer({ directory, global })),
           )
-          expect(profiles.map((profile) => [String(profile.profileId), profile.revision])).toEqual([
+          expect(profiles.filter((profile) => profile.source === "user").map((profile) => [String(profile.profileId), profile.revision])).toEqual([
             ["user.reader", "1"],
             ["user.reader", "2"],
           ])
-          expect(profiles[0]).not.toHaveProperty("definitionDigest")
-          expect(profiles[0]).not.toHaveProperty("permissionCeilingDigest")
+          expect(profiles.filter((profile) => profile.source === "builtin").length).toBeGreaterThanOrEqual(10)
+          const firstUser = profiles.find((profile) => profile.source === "user")!
+          expect(firstUser).not.toHaveProperty("definitionDigest")
+          expect(firstUser).not.toHaveProperty("permissionCeilingDigest")
           const pinned = yield* Config.AgentProfileService.pipe(
             Effect.flatMap((config) => config.agentProfile("user.reader", "1")),
             Effect.provide(configLayer({ directory, global })),
@@ -104,9 +106,10 @@ describe("Core Config AgentProfileV2 owner", () => {
             Effect.flatMap((config) => config.agentProfileSelectors()),
             Effect.provide(configLayer({ directory, global })),
           )
-          expect(selectors.map((item) => [item.selector, item.profile.profileId, item.profile.revision])).toEqual([
+          expect(selectors.filter((item) => item.selector === "reader-v1").map((item) => [item.selector, item.profile.profileId, item.profile.revision])).toEqual([
             ["reader-v1", "user.reader", "1"],
           ])
+          expect(selectors.some((item) => item.selector === "explorer")).toBe(true)
           const selected = yield* Config.AgentProfileService.pipe(
             Effect.flatMap((config) => config.agentProfileSelector("reader-v1")),
             Effect.provide(configLayer({ directory, global })),
@@ -137,7 +140,7 @@ describe("Core Config AgentProfileV2 owner", () => {
             Effect.flatMap((config) => config.agentProfiles()),
             Effect.provide(configLayer({ directory, global })),
           )
-          expect(forgedDigestConfig).toEqual([])
+          expect(forgedDigestConfig.filter((profile) => profile.source === "user")).toEqual([])
 
           // A config-supplied "builtin" label is not trust. Built-ins must be
           // compiled into the owning registry, so this row stays invisible.
@@ -148,7 +151,8 @@ describe("Core Config AgentProfileV2 owner", () => {
             Effect.flatMap((config) => config.agentProfiles()),
             Effect.provide(configLayer({ directory, global })),
           )
-          expect(forgedBuiltin).toEqual([])
+          expect(forgedBuiltin.filter((profile) => profile.source === "user")).toEqual([])
+          expect(forgedBuiltin.some((profile) => String(profile.profileId) === "builtin.fake")).toBe(false)
         }),
       ),
     ),

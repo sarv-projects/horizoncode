@@ -4,9 +4,10 @@ import { makeLocationNode } from "./effect/app-node"
 import path from "path"
 import { type ParseError, parse } from "jsonc-parser"
 import { Context, Effect, Layer, Option, Schema } from "effect"
-import { Permission } from "@opencode-ai/schema/permission"
-import * as AgentProfileV2 from "@opencode-ai/schema/agent-profile-v2"
-import * as WorkspaceCommandProfileV1 from "@opencode-ai/schema/workspace-command-profile-v1"
+import { Permission } from "@horizoncode/schema/permission"
+import * as AgentProfileV2 from "@horizoncode/schema/agent-profile-v2"
+import { BuiltinAgentProfiles } from "./config/builtin-agent-profiles"
+import * as WorkspaceCommandProfileV1 from "@horizoncode/schema/workspace-command-profile-v1"
 import { FSUtil } from "./fs-util"
 import { Global } from "./global"
 import { Location } from "./location"
@@ -34,6 +35,10 @@ export class Info extends Schema.Class<Info>("Config.Info")({
   }),
   shell: Schema.String.pipe(Schema.optional).annotate({
     description: "Default shell to use for terminal and shell tool execution",
+  }),
+  shell_login: Schema.Boolean.pipe(Schema.optional).annotate({
+    description:
+      "Opt in to a login POSIX shell (--login) for terminal and shell tool execution. Disabled by default so user profile output cannot pollute tool results; enable only when a login shell is required to establish PATH.",
   }),
   git_executable: Schema.String.pipe(Schema.optional).annotate({
     description:
@@ -461,6 +466,9 @@ const agentProfileLayer = Layer.effect(
         .flatMap((entry) => entry.info.agent_profiles ?? [])
         .filter((profile) => profile.source === "user")
       const byIdentity = new Map<string, AgentProfileV2.AgentProfileDefinitionV2>()
+      for (const profile of BuiltinAgentProfiles.builtinAgentProfilesWithModelV1(latest(entries, "model"))) {
+        byIdentity.set(`${profile.profileId}@${profile.revision}`, profile)
+      }
       for (const profile of configured) {
         const identity = `${profile.profileId}@${profile.revision}`
         const prior = byIdentity.get(identity)
@@ -506,6 +514,13 @@ const agentProfileLayer = Layer.effect(
           }
           result.push({ selector, profile })
         }
+        for (const shipped of BuiltinAgentProfiles.builtinAgentProfileSelectorsV1) {
+          if (configured.has(shipped.selector)) continue
+          const profile = definitions.find(
+            (candidate) => candidate.profileId === shipped.profileId && candidate.revision === shipped.revision,
+          )
+          if (profile) result.push({ selector: shipped.selector, profile })
+        }
         return result.sort((left, right) => left.selector.localeCompare(right.selector))
       }),
       agentProfile: Effect.fn("Config.AgentProfiles.get")(function* (profileID: string, revision: AgentProfileV2.Revision) {
@@ -517,7 +532,16 @@ const agentProfileLayer = Layer.effect(
       }),
       agentProfileSelector: Effect.fn("Config.AgentProfiles.resolveSelector")(function* (selector: string) {
         const selection = (yield* selectors()).get(selector)
-        if (!selection) return yield* Effect.fail(new AgentProfileSelectorNotFoundError({ selector }))
+        if (!selection) {
+          const shipped = BuiltinAgentProfiles.builtinAgentProfileSelectorsV1.find((item) => item.selector === selector)
+          if (shipped) {
+            const profile = (yield* profiles()).find(
+              (candidate) => candidate.profileId === shipped.profileId && candidate.revision === shipped.revision,
+            )
+            if (profile) return profile
+          }
+          return yield* Effect.fail(new AgentProfileSelectorNotFoundError({ selector }))
+        }
         const profile = (yield* profiles()).find(
           (candidate) => candidate.profileId === selection.profileId && candidate.revision === selection.revision,
         )

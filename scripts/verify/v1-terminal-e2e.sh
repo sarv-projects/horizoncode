@@ -36,7 +36,7 @@ run_journey() {
   local rc=0
   printf 'V1-TERMINAL-E2E %-28s ' "$label"
   bash scripts/dev/with-cgroup.sh env -u OPENROUTER_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY \
-    timeout 300 bash -c "cd '$ROOT/packages/opencode' && bun test --timeout 180000 test/session/prompt.test.ts -t '$pattern'" \
+    timeout 300 bash -c "cd '$ROOT/packages/horizoncode' && bun test --timeout 180000 test/session/prompt.test.ts -t '$pattern'" \
     >"$log" 2>&1 || rc=$?
   if [ "$rc" -eq 0 ] && grep -Eq '^\(pass\)' "$log" && ! grep -q '^\(fail\)' "$log"; then
     pass=$((pass + 1))

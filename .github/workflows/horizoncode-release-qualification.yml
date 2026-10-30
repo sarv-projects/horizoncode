@@ -85,7 +85,7 @@ jobs:
 
       - name: Select the repository's local models catalog fixture
         env:
-          MODELS_DEV_API_JSON: ${{ github.workspace }}/opencode/packages/opencode/test/tool/fixtures/models-api.json
+          MODELS_DEV_API_JSON: ${{ github.workspace }}/opencode/packages/horizoncode/test/tool/fixtures/models-api.json
         run: test -f "$MODELS_DEV_API_JSON"
 
       - name: Build and audit an isolated candidate

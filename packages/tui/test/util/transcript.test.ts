@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { formatAssistantHeader, formatMessage, formatPart, formatTranscript } from "../../src/util/transcript"
 import { redactToolText } from "../../src/util/collapse-tool-output"
-import type { AssistantMessage, Part, Provider, UserMessage } from "@opencode-ai/sdk/v2"
+import type { AssistantMessage, Part, Provider, UserMessage } from "@horizoncode/sdk/v2"
 
 const providers: Provider[] = [
   {

@@ -2,7 +2,7 @@ import { expect, mock, test } from "bun:test"
 import { createComponent } from "solid-js"
 import { render } from "solid-js/web"
 
-import { FeatureExposure } from "@opencode-ai/core/v1/config/feature-exposure"
+import { FeatureExposure } from "@horizoncode/core/v1/config/feature-exposure"
 let sync: {
   data: { config: Record<string, unknown>; path: { directory: string } }
   updateConfig: (patch: Record<string, unknown>) => Promise<void>

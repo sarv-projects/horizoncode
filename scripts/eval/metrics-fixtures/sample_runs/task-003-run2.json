@@ -1,0 +1,14 @@
+{
+  "task_id": "task-003",
+  "model_id": "nemotron-3-super-120b-a12b",
+  "verified_success": false,
+  "duration_ms": 91000,
+  "tool_errors": 0,
+  "failure_category": "verification",
+  "session_id": "ses_a1b2c3",
+  "turns": 7,
+  "input_tokens": 5900,
+  "output_tokens": 820,
+  "cached_tokens": 2600,
+  "cost_usd": 0.0331
+}

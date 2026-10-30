@@ -1,6 +1,5 @@
 ---
 description: git commit and push
-model: opencode/kimi-k2.5
 subtask: true
 ---
 
@@ -24,14 +23,4 @@ about what user facing changes were made
 
 if there are conflicts DO NOT FIX THEM. notify me and I will fix them
 
-## GIT DIFF
-
-!`git diff`
-
-## GIT DIFF --cached
-
-!`git diff --cached`
-
-## GIT STATUS --short
-
-!`git status --short`
+Before committing, inspect the working tree with the `git_status` and `git_diff` tools (include staged and unstaged changes). Compose the commit message from that evidence, then use `bash` only for `git add`, `git commit`, and `git push` when the tree is ready.

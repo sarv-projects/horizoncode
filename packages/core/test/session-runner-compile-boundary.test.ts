@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import {
   directContextCompileOverlapV1,
   directContextSpeedPlanV1,
-} from "@opencode-ai/core/session/runner/llm"
+} from "@horizoncode/core/session/runner/llm"
 
 /**
  * §30.28 SP-A..D wiring at the direct runner's compile boundary.

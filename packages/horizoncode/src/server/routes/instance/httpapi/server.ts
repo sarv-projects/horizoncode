@@ -1,0 +1,411 @@
+import { Config as EffectConfig, Context, Effect, Layer } from "effect"
+import { HttpApiBuilder, OpenApi } from "effect/unstable/httpapi"
+import { HttpClient, HttpMiddleware, HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http"
+import * as Socket from "effect/unstable/socket/Socket"
+import { FSUtil } from "@horizoncode/core/fs-util"
+import * as Observability from "@horizoncode/core/observability"
+import { Account } from "@/account/account"
+import { Agent } from "@/agent/agent"
+import { Auth } from "@/auth"
+import { BackgroundJob } from "@/background/job"
+import { Command } from "@/command"
+import { Config } from "@/config/config"
+import { Workspace } from "@/control-plane/workspace"
+import { Env } from "@/env"
+import { EventV2Bridge } from "@/event-v2-bridge"
+import { Format } from "@/format"
+import { Git } from "@/git"
+import { Installation } from "@/installation"
+import { LSP } from "@/lsp/lsp"
+import { MCP } from "@/mcp"
+import { McpAuth } from "@/mcp/auth"
+import { Permission } from "@/permission"
+import { Plugin } from "@/plugin"
+import { PluginPtyEnvironment } from "@/plugin/pty-environment"
+import { InstanceStore } from "@/project/instance-store"
+import { Project } from "@/project/project"
+import { Vcs } from "@/project/vcs"
+import { ProviderAuth } from "@/provider/auth"
+import { Provider } from "@/provider/provider"
+import { Question } from "@/question"
+import { SessionCompaction } from "@/session/compaction"
+import { Instruction } from "@/session/instruction"
+import { LLM } from "@/session/llm"
+import { SessionProcessor } from "@/session/processor"
+import { SessionPrompt } from "@/session/prompt"
+import { SessionRevert } from "@/session/revert"
+import { SessionRunState } from "@/session/run-state"
+import { Session } from "@/session/session"
+import { SessionStatus } from "@/session/status"
+import { SessionSummary } from "@/session/summary"
+import { Todo } from "@/session/todo"
+import { SessionShare } from "@/share/session"
+import { ShareNext } from "@/share/share-next"
+import { Skill } from "@/skill"
+import { Discovery } from "@/skill/discovery"
+import { Storage } from "@/storage/storage"
+import { ToolRegistry } from "@/tool/registry"
+import { Truncate } from "@/tool/truncate"
+import { WebSearchRuntime } from "@/tool/websearch-runtime"
+import { Worktree } from "@/worktree"
+import { RuntimeFlags } from "@/effect/runtime-flags"
+import { MoveSession } from "@horizoncode/core/control-plane/move-session"
+import { Database } from "@horizoncode/core/database/database"
+import { AppNodeBuilderV1 } from "@/effect/app-node-builder-v1"
+import { LayerNode } from "@horizoncode/core/effect/layer-node"
+import { httpClient } from "@horizoncode/core/effect/app-node-platform"
+import { EventV2 } from "@horizoncode/core/event"
+import { ModelsDev } from "@horizoncode/core/models-dev"
+import { Npm } from "@horizoncode/core/npm"
+import { PermissionSaved } from "@horizoncode/core/permission/saved"
+import { ProjectV2 } from "@horizoncode/core/project"
+import { ProjectCopy } from "@horizoncode/core/project/copy"
+import { PtyTicket } from "@horizoncode/core/pty/ticket"
+import { Ripgrep } from "@horizoncode/core/ripgrep"
+import { SessionProjector } from "@horizoncode/core/session/projector"
+import { SessionSupervisor, SessionSupervisorError } from "@horizoncode/core/session/supervisor"
+import { SessionV2 } from "@horizoncode/core/session"
+import { SessionExecution } from "@horizoncode/core/session/execution"
+import * as SessionExecutionLocal from "@horizoncode/core/session/execution/local"
+import { lazy } from "@/util/lazy"
+import { CorsConfig, isAllowedCorsOrigin, type CorsOptions } from "@horizoncode/server/cors"
+import { serveUIEffect } from "@/server/shared/ui"
+import { ServerAuth } from "@/server/auth"
+import { InstanceHttpApi, RootHttpApi } from "./api"
+import { Api } from "@horizoncode/server/api"
+import { PublicApi } from "./public"
+import {
+  authorizationLayer,
+  authorizationRouterMiddleware,
+  ptyConnectAuthorizationLayer,
+  serverAuthorizationLayer,
+} from "./middleware/authorization"
+import { EventApi } from "./groups/event"
+import { PtyConnectApi } from "./groups/pty"
+import { eventHandlers } from "./handlers/event"
+import { configHandlers } from "./handlers/config"
+import { controlHandlers } from "./handlers/control"
+import { controlPlaneHandlers } from "./handlers/control-plane"
+import { goalReviewHandlers } from "./handlers/goal-review"
+import { automationHandlers } from "./handlers/automation"
+import * as CheckpointStore from "@/session/checkpoint-store"
+import { checkpointHandlers } from "./handlers/checkpoint"
+import { artifactHandlers } from "./handlers/artifact"
+import { repoExplorerHandlers } from "./handlers/repo-explorer"
+import { experimentalHandlers } from "./handlers/experimental"
+import { fileHandlers } from "./handlers/file"
+import { globalHandlers } from "./handlers/global"
+import { instanceHandlers } from "./handlers/instance"
+import { mcpHandlers } from "./handlers/mcp"
+import { permissionHandlers } from "./handlers/permission"
+import { projectHandlers } from "./handlers/project"
+import { projectCopyHandlers } from "./handlers/project-copy"
+import { providerHandlers } from "./handlers/provider"
+import { providerDoctorHandlers } from "./handlers/provider-doctor"
+import { ptyConnectHandlers, ptyHandlers } from "./handlers/pty"
+import { questionHandlers } from "./handlers/question"
+import { sessionHandlers } from "./handlers/session"
+import { syncHandlers } from "./handlers/sync"
+import { tuiHandlers } from "./handlers/tui"
+import { handlers } from "@horizoncode/server/handlers"
+import { buildLocationServiceMap, LocationServiceMap } from "@horizoncode/core/location-services"
+import { layer as locationLayer } from "@horizoncode/server/location"
+import { sessionLocationLayer } from "@horizoncode/server/middleware/session-location"
+import { PtyEnvironment } from "@horizoncode/server/pty-environment"
+import { schemaErrorLayer as v2SchemaErrorLayer } from "@horizoncode/server/middleware/schema-error"
+import { workspaceHandlers } from "./handlers/workspace"
+import { webSearchHandlers } from "./handlers/websearch"
+import { instanceContextLayer } from "./middleware/instance-context"
+import { workspaceRoutingLayer } from "./middleware/workspace-routing"
+import { disposeMiddleware } from "./lifecycle"
+import { memoMap } from "@horizoncode/core/effect/memo-map"
+import { compressionLayer } from "./middleware/compression"
+import { corsVaryFix } from "./middleware/cors-vary"
+import { errorLayer } from "./middleware/error"
+import { fenceLayer } from "./middleware/fence"
+import { schemaErrorLayer } from "./middleware/schema-error"
+
+export const context = Context.makeUnsafe<unknown>(new Map())
+
+const cors = (corsOptions?: CorsOptions) =>
+  HttpRouter.middleware(
+    HttpMiddleware.cors({
+      allowedOrigins: (origin) => isAllowedCorsOrigin(origin, corsOptions),
+      maxAge: 86_400,
+    }),
+    { global: true },
+  )
+
+// Route tree:
+// - rootApiRoutes: typed /global/* and control routes; auth is declared by RootHttpApi.
+// - eventApiRoutes: typed SSE route with instance routing context and its existing API contract.
+// - ptyConnectApiRoutes: typed WebSocket upgrade route with ticket-aware auth.
+// - instanceApiRoutes: remaining typed instance routes.
+// - uiRoute: raw catch-all fallback; auth is router middleware so public static assets can bypass it.
+const authOnlyRouterLayer = authorizationRouterMiddleware.layer.pipe(Layer.provide(ServerAuth.Config.layer))
+const httpApiAuthLayer = authorizationLayer.pipe(Layer.provide(ServerAuth.Config.layer))
+const ptyConnectHttpApiAuthLayer = ptyConnectAuthorizationLayer.pipe(Layer.provide(ServerAuth.Config.layer))
+const serverHttpApiAuthLayer = serverAuthorizationLayer.pipe(Layer.provide(ServerAuth.Config.layer))
+const workspaceRoutingLive = workspaceRoutingLayer.pipe(Layer.provide(Socket.layerWebSocketConstructorGlobal))
+const rootApiRoutes = HttpApiBuilder.layer(RootHttpApi).pipe(
+  Layer.provide([controlHandlers, controlPlaneHandlers, globalHandlers]),
+  Layer.provide(schemaErrorLayer),
+  Layer.provide(httpApiAuthLayer),
+)
+const eventApiRoutes = HttpApiBuilder.layer(EventApi).pipe(
+  Layer.provide(eventHandlers),
+  Layer.provide([httpApiAuthLayer, workspaceRoutingLive, instanceContextLayer]),
+)
+const ptyConnectApiRoutes = HttpApiBuilder.layer(PtyConnectApi).pipe(
+  Layer.provide(ptyConnectHandlers),
+  Layer.provide([ptyConnectHttpApiAuthLayer, workspaceRoutingLive, instanceContextLayer]),
+)
+const instanceApiRoutes = HttpApiBuilder.layer(InstanceHttpApi).pipe(
+  Layer.provide([
+    configHandlers,
+    experimentalHandlers,
+    fileHandlers,
+    instanceHandlers,
+    mcpHandlers,
+    projectHandlers,
+    projectCopyHandlers,
+    ptyHandlers,
+    questionHandlers,
+    permissionHandlers,
+    providerHandlers,
+    providerDoctorHandlers,
+    sessionHandlers,
+    syncHandlers,
+    tuiHandlers,
+    workspaceHandlers,
+    webSearchHandlers,
+    goalReviewHandlers,
+    automationHandlers,
+    checkpointHandlers,
+    artifactHandlers,
+    repoExplorerHandlers,
+  ]),
+)
+
+const instanceRoutes = instanceApiRoutes.pipe(
+  Layer.provide([httpApiAuthLayer, workspaceRoutingLive, instanceContextLayer, schemaErrorLayer]),
+)
+const serverRoutes = HttpApiBuilder.layer(Api).pipe(
+  Layer.provide(handlers),
+  Layer.provide(PluginPtyEnvironment.layer),
+  Layer.provide([serverHttpApiAuthLayer, v2SchemaErrorLayer]),
+)
+
+// `OpenApi.fromApi` is non-trivial; defer until /doc is actually hit so
+// processes that never serve it (CLI, scripts) don't pay at module load.
+// `HttpServerResponse.jsonUnsafe` runs JSON.stringify eagerly, so caching
+// the response also caches the serialized body — every /doc request reuses
+// the same Uint8Array instead of re-stringifying the spec.
+const docResponse = lazy(() => HttpServerResponse.jsonUnsafe(OpenApi.fromApi(PublicApi)))
+
+const docRoute = HttpRouter.use((router) => router.add("GET", "/doc", () => Effect.succeed(docResponse()))).pipe(
+  Layer.provide(authOnlyRouterLayer),
+)
+
+const uiRoute = HttpRouter.use((router) =>
+  Effect.gen(function* () {
+    const fs = yield* FSUtil.Service
+    const client = yield* HttpClient.HttpClient
+    const flags = yield* RuntimeFlags.Service
+    yield* router.add("*", "/*", (request) =>
+      serveUIEffect(request, { fs, client, disableEmbeddedWebUi: flags.disableEmbeddedWebUi }),
+    )
+  }),
+).pipe(Layer.provide(authOnlyRouterLayer))
+
+// Phantom-free contract type for the route tree. `HttpRouter.serve` computes
+// `RIn` from this union (`Request.Only<"Requires", ...>` in particular), so the
+// `Requires` marker is declared exactly as the router algebra produces it.
+type RouteRequirements =
+  | HttpRouter.HttpRouter
+  | HttpRouter.Request<"Error", unknown>
+  | HttpRouter.Request<"GlobalError", unknown>
+  | HttpRouter.Request<"Requires", unknown>
+  | HttpRouter.Request<"GlobalRequires", never>
+
+const app = LayerNode.group([
+  Npm.node,
+  FSUtil.node,
+  Database.node,
+  Auth.node,
+  Account.node,
+  Config.node,
+  Env.node,
+  Git.node,
+  Ripgrep.node,
+  Storage.node,
+  Plugin.node,
+  ModelsDev.node,
+  Provider.node,
+  ProviderAuth.node,
+  Agent.node,
+  Skill.node,
+  Discovery.node,
+  Question.node,
+  Permission.node,
+  PermissionSaved.node,
+  Todo.node,
+  Session.node,
+  SessionProjector.node,
+  SessionSupervisor.node,
+  SessionStatus.node,
+  BackgroundJob.node,
+  RuntimeFlags.node,
+  EventV2Bridge.node,
+  SessionRunState.node,
+  SessionProcessor.node,
+  SessionCompaction.node,
+  SessionRevert.node,
+  CheckpointStore.node,
+  SessionSummary.node,
+  SessionPrompt.node,
+  Instruction.node,
+  LLM.node,
+  LSP.node,
+  MCP.node,
+  McpAuth.node,
+  Command.node,
+  Truncate.node,
+  ToolRegistry.node,
+  // The instance route tree yields WebSearchRuntime.Service while its handler
+  // groups build (handlers/websearch.ts). ToolRegistry/SessionPrompt carrying
+  // this node as a private dependency does not expose it to the routes, so the
+  // production route tree died at startup with
+  // `Service not found: @horizoncode/WebSearchRuntime`. Exposing the node in the
+  // app group is what makes `opencode serve` buildable; it is the same node, so
+  // it is built once (memoized) and the Guard/HostKernel wiring is unchanged.
+  WebSearchRuntime.node,
+  Format.node,
+  Project.node,
+  Vcs.node,
+  Workspace.node,
+  Worktree.node,
+  Installation.node,
+  ShareNext.node,
+  SessionShare.node,
+  InstanceStore.node,
+  httpClient,
+  EventV2.node,
+  ProjectV2.node,
+  ProjectCopy.node,
+  PtyTicket.node,
+])
+
+// Building the location graph provisions the Rust host kernel (`Pty` depends on
+// `SessionSupervisor`), so route-layer construction can fail when the pinned
+// `hz-kernel` binary is unavailable or rejects its handshake. Declared here
+// rather than swallowed: a server that cannot provision the host kernel must
+// not start serving mediated effects.
+function routeTree(
+  corsOptions: CorsOptions | undefined,
+  replacements: LayerNode.Replacements,
+  shareServices: boolean,
+): Layer.Layer<never, EffectConfig.ConfigError | SessionSupervisorError, RouteRequirements> {
+  const locationServiceMapV2 = buildLocationServiceMap(replacements)
+
+  // The three app-service builds below (`MoveSession`, `SessionV2`, the `app`
+  // group) all reach `SessionSupervisor.node`, whose layer spawns `hz-kernel`
+  // and takes the process-exclusive host-owner lease. Effect memoizes layer
+  // construction per MemoMap, so a service graph built in a *private* map
+  // constructs a second supervisor — and a second `hz-kernel` that correctly
+  // refuses the lease the first one holds
+  // (`acquire host owner lease: supervisor lease Busy`). `shareServices`
+  // reroutes exactly those service builds through the process-wide memo map,
+  // while the route tree above them stays local to the current build, so each
+  // listener keeps its own cors/auth/ConfigProvider wiring.
+  const share = <A, E, R>(build: Layer.Layer<A, E, R>): Layer.Layer<A, E, R> =>
+    shareServices ? Layer.fromBuild((_, scope) => Layer.buildWithMemoMap(build, memoMap, scope)) : build
+
+  return Layer.mergeAll(
+    rootApiRoutes,
+    eventApiRoutes,
+    ptyConnectApiRoutes,
+    instanceRoutes,
+    serverRoutes,
+    docRoute,
+    uiRoute,
+  ).pipe(
+    Layer.provide([
+      errorLayer,
+      compressionLayer,
+      corsVaryFix,
+      fenceLayer,
+      cors(corsOptions),
+      share(AppNodeBuilderV1.build(MoveSession.node, [[LocationServiceMap.node, locationServiceMapV2]])),
+      HttpServer.layerServices,
+    ]),
+    Layer.provide(Layer.succeed(CorsConfig)(corsOptions)),
+    Layer.provide(sessionLocationLayer),
+    Layer.provide(locationLayer),
+    Layer.provide(PtyEnvironment.layer),
+    Layer.provide(
+      share(
+        AppNodeBuilderV1.build(SessionV2.node, [
+          [LocationServiceMap.node, locationServiceMapV2],
+          [SessionExecution.node, SessionExecutionLocal.node],
+          ...replacements,
+        ]),
+      ),
+    ),
+    Layer.provide(locationServiceMapV2),
+
+    Layer.provide(
+      share(
+        AppNodeBuilderV1.build(app, [
+          ...replacements,
+          [LocationServiceMap.node, locationServiceMapV2],
+        ]),
+      ),
+    ),
+    // Must stay last: layers provided later in this pipe build beneath earlier ones,
+    // so Observability must come after every service graph. Otherwise eagerly forked
+    // fibers (e.g. the ModelsDev background refresh) capture Effect's default stdout
+    // logger and corrupt the TUI (#34730).
+    Layer.provideMerge(Observability.layer),
+  )
+}
+
+/**
+ * One route tree + app-service graph, both built in the caller's memo map.
+ * Used by the lazy `webHandler` (whose memo map is already the process-wide
+ * one) and by tests that build the route tree in isolation.
+ */
+export function createRoutes(
+  corsOptions?: CorsOptions,
+  replacements: LayerNode.Replacements = [],
+): Layer.Layer<never, EffectConfig.ConfigError | SessionSupervisorError, RouteRequirements> {
+  return routeTree(corsOptions, replacements, false)
+}
+
+/**
+ * The `Server.listen` variant: the route tree is built in the listener's own
+ * memo map (per-attempt cors/auth/ConfigProvider), while the app-service graph
+ * — above all `SessionSupervisor`, which owns the one host-owner lease a
+ * process may hold — is built through the process-wide memo map shared with
+ * `ManagedRuntime.make(AppLayer, { memoMap })`. That is what keeps
+ * `hzcode serve` from constructing a second `SessionSupervisor` whose
+ * `hz-kernel` child then fails with `supervisor lease Busy`.
+ */
+export function createListenerRoutes(
+  corsOptions?: CorsOptions,
+  replacements: LayerNode.Replacements = [],
+): Layer.Layer<never, EffectConfig.ConfigError | SessionSupervisorError, RouteRequirements> {
+  return routeTree(corsOptions, replacements, true)
+}
+
+export const routes = createRoutes()
+
+export const webHandler = lazy(() =>
+  HttpRouter.toWebHandler(routes, {
+    disableLogger: true,
+    memoMap,
+    middleware: disposeMiddleware,
+  }),
+)
+
+export * as HttpApiApp from "./server"

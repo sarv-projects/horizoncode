@@ -5,6 +5,7 @@ import {
   MULTI_CALL_BATCH_FEATURE,
   SessionSupervisorError,
   directAttemptScopeToWire,
+  isGuardApprovalPrincipalBound,
   relayMultiCallToolBatch,
   type EffectAdmission,
   type EffectLease,
@@ -12,7 +13,7 @@ import {
   type GuardApprovalRequest,
   type GuardedToolCall,
   type ToolBatchRelayPort,
-} from "@opencode-ai/core/session/supervisor"
+} from "@horizoncode/core/session/supervisor"
 import { it } from "./lib/effect"
 
 /**
@@ -411,5 +412,22 @@ it.live("relay rejects a single-member batch: multi-call admission requires at l
 it.live("negotiated feature name is the stable contract the host must advertise", () => {
   return Effect.sync(() => {
     expect(MULTI_CALL_BATCH_FEATURE).toBe("effects.v2.multi-call")
+  })
+})
+
+it.live("an approval created without a principal cannot be resolved by a different principal", () => {
+  return Effect.sync(() => {
+    // `replyGuardApproval` gates resolution on this exact predicate. A pending
+    // approval stored with no creator principal is unbound, so it must fail
+    // closed for every principal instead of matching the first one that asks.
+    const hostOS = { kind: "host_os" } as const
+    const alice = { kind: "server_auth", subject: "server_auth.alice" } as const
+    const bob = { kind: "server_auth", subject: "server_auth.bob" } as const
+    expect(isGuardApprovalPrincipalBound(undefined, alice)).toBe(false)
+    expect(isGuardApprovalPrincipalBound(undefined, hostOS)).toBe(false)
+    expect(isGuardApprovalPrincipalBound(alice, bob)).toBe(false)
+    expect(isGuardApprovalPrincipalBound(bob, alice)).toBe(false)
+    expect(isGuardApprovalPrincipalBound(alice, alice)).toBe(true)
+    expect(isGuardApprovalPrincipalBound({ kind: "host_os" }, { kind: "host_os" })).toBe(true)
   })
 })

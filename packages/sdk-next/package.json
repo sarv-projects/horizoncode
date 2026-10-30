@@ -13,8 +13,8 @@
   },
   "dependencies": {
     "@horizoncode/client": "workspace:*",
-    "@opencode-ai/core": "workspace:*",
-    "@opencode-ai/server": "workspace:*",
+    "@horizoncode/core": "workspace:*",
+    "@horizoncode/server": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {

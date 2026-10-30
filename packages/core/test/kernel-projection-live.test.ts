@@ -18,51 +18,51 @@ import {
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { Cause, DateTime, Deferred, Effect, Exit, Fiber, Layer, Option, Queue, Ref, Stream } from "effect"
-import { EventV2 } from "@opencode-ai/core/event"
+import { EventV2 } from "@horizoncode/core/event"
 import { configServiceMockDefaults } from "./lib/config"
-import { Database } from "@opencode-ai/core/database/database"
-import { ProjectTable } from "@opencode-ai/core/project/sql"
-import { Project } from "@opencode-ai/core/project"
-import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { makeGlobalNode } from "@opencode-ai/core/effect/app-node"
-import { SessionInput } from "@opencode-ai/core/session/input"
-import { SessionV2 } from "@opencode-ai/core/session"
-import { SessionExecution } from "@opencode-ai/core/session/execution"
-import { SessionStore } from "@opencode-ai/core/session/store"
-import { SessionProjector } from "@opencode-ai/core/session/projector"
-import { SessionTable } from "@opencode-ai/core/session/sql"
-import { SessionEvent } from "@opencode-ai/schema/session-event"
-import { SessionID } from "@opencode-ai/schema/session-id"
-import { SessionMessage } from "@opencode-ai/schema/session-message"
-import { AbsolutePath } from "@opencode-ai/core/schema"
-import { WorkspaceV2 } from "@opencode-ai/core/workspace"
-import { Prompt } from "@opencode-ai/core/session/prompt"
+import { Database } from "@horizoncode/core/database/database"
+import { ProjectTable } from "@horizoncode/core/project/sql"
+import { Project } from "@horizoncode/core/project"
+import { AppNodeBuilder } from "@horizoncode/core/effect/app-node-builder"
+import { LayerNode } from "@horizoncode/core/effect/layer-node"
+import { makeGlobalNode } from "@horizoncode/core/effect/app-node"
+import { SessionInput } from "@horizoncode/core/session/input"
+import { SessionV2 } from "@horizoncode/core/session"
+import { SessionExecution } from "@horizoncode/core/session/execution"
+import { SessionStore } from "@horizoncode/core/session/store"
+import { SessionProjector } from "@horizoncode/core/session/projector"
+import { SessionTable } from "@horizoncode/core/session/sql"
+import { SessionEvent } from "@horizoncode/schema/session-event"
+import { SessionID } from "@horizoncode/schema/session-id"
+import { SessionMessage } from "@horizoncode/schema/session-message"
+import { AbsolutePath } from "@horizoncode/core/schema"
+import { WorkspaceV2 } from "@horizoncode/core/workspace"
+import { Prompt } from "@horizoncode/core/session/prompt"
 import {
   GuardApprovalRequested,
   SessionSupervisor,
   SessionSupervisorError,
   type GuardApprovalRequest,
-} from "@opencode-ai/core/session/supervisor"
-import { TrustedPrincipalContext } from "@opencode-ai/core/trusted-principal"
+} from "@horizoncode/core/session/supervisor"
+import { TrustedPrincipalContext } from "@horizoncode/core/trusted-principal"
 
-import { AgentV2 } from "@opencode-ai/core/agent"
-import { Config } from "@opencode-ai/core/config"
-import { LayerNodePlatform } from "@opencode-ai/core/effect/app-node-platform"
-import { Location } from "@opencode-ai/core/location"
-import { ReferenceGuidance } from "@opencode-ai/core/reference/guidance"
-import { SessionRunner } from "@opencode-ai/core/session/runner"
-import * as SessionRunnerLLM from "@opencode-ai/core/session/runner/llm"
-import { SessionRunnerModel } from "@opencode-ai/core/session/runner/model"
-import { SkillGuidance } from "@opencode-ai/core/skill/guidance"
-import { Snapshot } from "@opencode-ai/core/snapshot"
-import { SystemContext } from "@opencode-ai/core/system-context"
-import { SystemContextRegistry } from "@opencode-ai/core/system-context/registry"
-import { ToolRegistry } from "@opencode-ai/core/tool/registry"
-import { ToolOutputStore } from "@opencode-ai/core/tool-output-store"
-import { WriteTool } from "@opencode-ai/core/tool/write"
-import { LLMClient, LLMEvent, Model, type LLMClientShape } from "@opencode-ai/llm"
-import * as OpenAIChat from "@opencode-ai/llm/protocols/openai-chat"
+import { AgentV2 } from "@horizoncode/core/agent"
+import { Config } from "@horizoncode/core/config"
+import { LayerNodePlatform } from "@horizoncode/core/effect/app-node-platform"
+import { Location } from "@horizoncode/core/location"
+import { ReferenceGuidance } from "@horizoncode/core/reference/guidance"
+import { SessionRunner } from "@horizoncode/core/session/runner"
+import * as SessionRunnerLLM from "@horizoncode/core/session/runner/llm"
+import { SessionRunnerModel } from "@horizoncode/core/session/runner/model"
+import { SkillGuidance } from "@horizoncode/core/skill/guidance"
+import { Snapshot } from "@horizoncode/core/snapshot"
+import { SystemContext } from "@horizoncode/core/system-context"
+import { SystemContextRegistry } from "@horizoncode/core/system-context/registry"
+import { ToolRegistry } from "@horizoncode/core/tool/registry"
+import { ToolOutputStore } from "@horizoncode/core/tool-output-store"
+import { WriteTool } from "@horizoncode/core/tool/write"
+import { LLMClient, LLMEvent, Model, type LLMClientShape } from "@horizoncode/llm"
+import * as OpenAIChat from "@horizoncode/llm/protocols/openai-chat"
 const rust = resolve(import.meta.dir, "../../../kernel/target/debug/session_sync_probe")
 const supervisorRust = resolve(import.meta.dir, "../../../kernel/target/debug/session_supervisor")
 const hostKernelRust = resolve(import.meta.dir, "../../../kernel/target/debug/hz-kernel")
@@ -71,7 +71,7 @@ const messageID = SessionMessage.ID.make("msg_kernel_live_producer")
 
 // The host-scoped kernel owns the durable owner epoch; Core refuses to start the
 // projection-only Session supervisor without it, so every live interop case must
-// package the real `hz-kernel` binary exactly like `packages/opencode/script/build.ts` does.
+// package the real `hz-kernel` binary exactly like `packages/horizoncode/script/build.ts` does.
 function hostKernelRuntime(stateDirectory: string) {
   expect(existsSync(hostKernelRust)).toBe(true)
   return {

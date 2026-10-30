@@ -3,8 +3,8 @@ import { Schema } from "effect"
 import {
   RepoDiscoveryPageV1,
   RepoDiscoveryRequestV1,
-} from "@opencode-ai/schema/repo-intelligence-v1"
-import { repoDiscoveryPageMatchesRequest } from "@opencode-ai/core/session/supervisor"
+} from "@horizoncode/schema/repo-intelligence-v1"
+import { repoDiscoveryPageMatchesRequest } from "@horizoncode/core/session/supervisor"
 
 const digest = `blake3:${"a".repeat(64)}`
 const request = Schema.decodeUnknownSync(RepoDiscoveryRequestV1)({

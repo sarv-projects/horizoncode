@@ -56,6 +56,8 @@ pub(crate) mod owner_log_index;
 pub mod protocol;
 /// Bounded Content-Length JSON framing for supervised LSP/DAP stdio.
 pub(crate) mod protocol_framing;
+/// Panic-free decoder for the one keyless provider that answers with HTML.
+pub mod search_html;
 /// Durable HostKernel intent/ACK and bounded protocol-event replay journal.
 pub(crate) mod protocol_io_journal;
 pub(crate) mod secret_mutation;

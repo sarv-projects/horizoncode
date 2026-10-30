@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { Effect } from "effect"
-import { withRepoIntelOverlayGate } from "@opencode-ai/core/session/repo-intel-overlay"
+import { withRepoIntelOverlayGate } from "@horizoncode/core/session/repo-intel-overlay"
 
 test("an unsupported overlay fails before Location registration or generation acquisition", async () => {
   let registrations = 0

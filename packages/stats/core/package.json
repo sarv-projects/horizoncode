@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "name": "@opencode-ai/stats-core",
+  "name": "@horizoncode/stats-core",
   "version": "1.18.35",
   "private": true,
   "type": "module",

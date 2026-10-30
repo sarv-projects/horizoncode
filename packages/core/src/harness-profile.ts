@@ -3,7 +3,7 @@
 import { blake3 } from "@noble/hashes/blake3.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
 import { Schema } from "effect"
-import * as HarnessProfileSchema from "@opencode-ai/schema/harness-profile-v1"
+import * as HarnessProfileSchema from "@horizoncode/schema/harness-profile-v1"
 
 const definitions = {
   "native-rich": {
@@ -26,10 +26,26 @@ const definitions = {
   },
 } as const
 
+/**
+ * Verification discipline inherited by every built-in harness. Localising the
+ * bug is not the job; a change is done when a real command exited 0 and its
+ * output was observed across the covering tests and the surrounding suite.
+ */
+const VERIFICATION_DISCIPLINE = [
+  "Verify before you finish:",
+  "- Run the tests that cover the code you changed, then the surrounding module or package suite. The reported case alone is not coverage.",
+  "- A change is complete only when a real command exited 0 and you observed its output. An edited file, or your own confidence, is not evidence.",
+  "- If a test command is unavailable or cannot run, say so and mark the change unverified. Never present an unrun check as passing.",
+  "- Report the exact commands you ran and the result you observed.",
+  "- Keep the diff minimal: do not reformat or refactor unrelated code while fixing a bug.",
+].join("\n")
+
+const withVerification = (base: string) => base + "\n\n" + VERIFICATION_DISCIPLINE
+
 const systemPrompts: Readonly<Record<keyof typeof definitions, string>> = {
-  "native-rich": "Use HorizonCode's exposed tools to inspect and change the active workspace. Keep each tool action within its advertised inputs and authority.",
-  "native-minimal": "Use the compact tools first. Call tools_search to discover additional authorized tools when needed; discovered tools become available at the next provider request. Discovery does not grant permission.",
-  "bash-only": "Use the exposed read tools and guarded terminal tool. Do not assume unavailable tools or alternate execution paths exist.",
+  "native-rich": withVerification("Use HorizonCode's exposed tools to inspect and change the active workspace. Keep each tool action within its advertised inputs and authority."),
+  "native-minimal": withVerification("Use the compact tools first. Call tools_search to discover additional authorized tools when needed; discovered tools become available at the next provider request. Discovery does not grant permission."),
+  "bash-only": withVerification("Use the exposed read tools and guarded terminal tool. Do not assume unavailable tools or alternate execution paths exist."),
 }
 
 function canonical(value: unknown): string {

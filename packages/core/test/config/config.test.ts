@@ -3,18 +3,18 @@ import fs from "fs/promises"
 import { describe, expect } from "bun:test"
 import { Effect, Layer, Schema } from "effect"
 import { FastCheck } from "effect/testing"
-import { Config } from "@opencode-ai/core/config"
-import { ConfigProvider } from "@opencode-ai/core/config/provider"
-import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { ConfigMigrateV1 } from "@opencode-ai/core/v1/config/migrate"
-import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
-import { FSUtil } from "@opencode-ai/core/fs-util"
-import { Global } from "@opencode-ai/core/global"
-import { Location } from "@opencode-ai/core/location"
-import { Policy } from "@opencode-ai/core/policy"
-import { Project } from "@opencode-ai/core/project"
-import { AbsolutePath } from "@opencode-ai/core/schema"
+import { Config } from "@horizoncode/core/config"
+import { ConfigProvider } from "@horizoncode/core/config/provider"
+import { AppNodeBuilder } from "@horizoncode/core/effect/app-node-builder"
+import { LayerNode } from "@horizoncode/core/effect/layer-node"
+import { ConfigMigrateV1 } from "@horizoncode/core/v1/config/migrate"
+import { ConfigV1 } from "@horizoncode/core/v1/config/config"
+import { FSUtil } from "@horizoncode/core/fs-util"
+import { Global } from "@horizoncode/core/global"
+import { Location } from "@horizoncode/core/location"
+import { Policy } from "@horizoncode/core/policy"
+import { Project } from "@horizoncode/core/project"
+import { AbsolutePath } from "@horizoncode/core/schema"
 import { location } from "../fixture/location"
 import { tmpdir } from "../fixture/tmpdir"
 import { testEffect } from "../lib/effect"
@@ -99,6 +99,15 @@ describe("Config", () => {
         }),
         { numRuns: 100 },
       )
+    }),
+  )
+
+  it.effect("keeps shell login execution as an explicit boolean opt-in", () =>
+    Effect.sync(() => {
+      expect(Schema.decodeUnknownSync(Config.Info)({ shell: "/bin/bash" }).shell_login).toBeUndefined()
+      expect(Schema.decodeUnknownSync(Config.Info)({ shell: "/bin/bash", shell_login: true }).shell_login).toBe(true)
+      expect(Schema.decodeUnknownSync(Config.Info)({ shell_login: false }).shell_login).toBe(false)
+      expect(() => Schema.decodeUnknownSync(Config.Info)({ shell_login: "yes" })).toThrow()
     }),
   )
 

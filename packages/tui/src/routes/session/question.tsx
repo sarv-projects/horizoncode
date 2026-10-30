@@ -3,7 +3,7 @@ import { createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-j
 import { useRenderer } from "@opentui/solid"
 import type { TextareaRenderable } from "@opentui/core"
 import { selectedForeground, tint, useTheme } from "../../context/theme"
-import type { QuestionAnswer, QuestionV2Request } from "@opencode-ai/sdk/v2"
+import type { QuestionAnswer, QuestionV2Request } from "@horizoncode/sdk/v2"
 import { useSDK } from "../../context/sdk"
 import type { SessionQuestionRequest } from "../../context/data"
 import { SplitBorder } from "../../ui/border"

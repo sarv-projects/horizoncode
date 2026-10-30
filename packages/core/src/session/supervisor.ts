@@ -7,7 +7,7 @@
  */
 
 import { createHash, randomUUID } from "node:crypto"
-import { ID as WorkspaceID } from "@opencode-ai/core/workspace"
+import { ID as WorkspaceID } from "@horizoncode/core/workspace"
 import {
   closeSync,
   existsSync,
@@ -27,7 +27,7 @@ import { dirname, join } from "node:path"
 import { pack, unpack } from "msgpackr"
 import { blake3 } from "@noble/hashes/blake3.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
-import { encodeCanonicalMessagePackV1, Event as EventSchema, Location as LocationSchema } from "@opencode-ai/schema"
+import { encodeCanonicalMessagePackV1, Event as EventSchema, Location as LocationSchema } from "@horizoncode/schema"
 import {
   RepoGenerationRequestV1,
   RepoGenerationPinV1,
@@ -40,7 +40,7 @@ import {
   RepoDocumentReadResponseV1,
   RepoIntelPatchFenceV1,
   repoDocumentContentDigest,
-} from "@opencode-ai/schema/repo-intelligence-v1"
+} from "@horizoncode/schema/repo-intelligence-v1"
 import { AbsolutePath } from "../schema"
 import { EventV2 } from "../event"
 import { Cause, Context, Deferred, Effect, Fiber, Layer, Option, Queue, Ref, Schema, Stream } from "effect"
@@ -51,7 +51,7 @@ import { makeGlobalNode } from "../effect/app-node"
 import { LayerNode } from "../effect/layer-node"
 import { Database } from "../database/database"
 import { Global } from "../global"
-import { TrustedPrincipalContext, type TrustedPrincipal } from "../trusted-principal"
+import { TrustedPrincipalContext, sameTrustedPrincipal, type TrustedPrincipal } from "../trusted-principal"
 import { withRepoIntelOverlayGate } from "./repo-intel-overlay"
 
 import { AppProcess, pinCodeModeHelperRoot, pinSupervisorExecutable, pinSupervisorSource } from "../process"
@@ -1134,10 +1134,24 @@ export const collectManagedVerifierApprovalDecisions = (
   })
 type PendingGuardApproval = {
   readonly request: GuardApprovalRequest
-  readonly principal?: TrustedPrincipal
+  /** Creator principal. Always present: every creation site threads it. */
+  readonly principal: TrustedPrincipal
   readonly locationRef: typeof LocationSchema.Ref.Type
   readonly decision: Deferred.Deferred<GuardApprovalDecision, SessionSupervisorError>
 }
+
+/**
+ * Fail-closed binding between a pending Guard approval and the trusted principal
+ * that created it. An approval whose creator principal was never recorded is
+ * unbound: it must be unresolvable by any principal rather than resolvable by
+ * everyone. Production creation sites all thread the trusted principal, so this
+ * guard rejects only unbound entries (historical tool-batch approvals that were
+ * stored with no principal at all).
+ */
+export const isGuardApprovalPrincipalBound = (
+  expected: TrustedPrincipal | undefined,
+  actual: TrustedPrincipal,
+): boolean => expected !== undefined && sameTrustedPrincipal(expected, actual)
 
 export type HostKernelEvent = {
   readonly terminalID: string
@@ -4622,7 +4636,11 @@ const layer = Layer.effect(
                     stderr: "pipe",
                     extendEnv: false,
                   }),
-                  { timeout: "15 seconds", maxOutputBytes: 128, maxErrorBytes: 1024 },
+                  // Cold-cache measurement on a first run: the debug kernel reads and
+                  // BLAKE3-hashes the ~100 MB host executable at 40+ s (warm: ~1 s).
+                  // A 15 s timeout made every first-run on a fresh machine fail closed
+                  // with "host-digest ... Timed out", so the budget covers cold I/O.
+                  { timeout: "120 seconds", maxOutputBytes: 128, maxErrorBytes: 1024 },
                 )
                 .pipe(Effect.mapError((error) => fail("host-digest", error.message)))
               const result = yield* AppProcess.requireSuccess(output).pipe(
@@ -5064,10 +5082,9 @@ const layer = Layer.effect(
       const validPrincipal =
         actual.kind === "host_os" ||
         (actual.kind === "server_auth" && actual.subject.length > 0)
-      const samePrincipal =
-        expected === undefined ||
-        (expected.kind === actual.kind &&
-          (expected.kind === "host_os" || (actual.kind === "server_auth" && expected.subject === actual.subject)))
+      // Fail closed: `expected === undefined` is an unbound approval, never a
+      // wildcard. Only the exact creator principal may resolve it.
+      const samePrincipal = isGuardApprovalPrincipalBound(expected, actual)
       if (!validPrincipal || !samePrincipal) {
         return yield* Effect.fail(fail("approval-not-found", "Guard approval was not found", "approval-not-found"))
       }
@@ -6049,14 +6066,14 @@ const layer = Layer.effect(
     })
     const awaitGuardApproval = Effect.fn("SessionSupervisor.awaitGuardApproval")(function* (
       request: GuardApprovalRequest,
-      principal: TrustedPrincipal | undefined,
+      principal: TrustedPrincipal,
       locationRef: typeof LocationSchema.Ref.Type,
     ) {
       if (pendingApprovals.has(request.approvalID)) {
         return yield* Effect.fail(fail("approval-conflict", "Guard approval ID is already active"))
       }
       const decision = yield* Deferred.make<GuardApprovalDecision, SessionSupervisorError>()
-      const pending: PendingGuardApproval = { request, ...(principal ? { principal } : {}), locationRef, decision }
+      const pending: PendingGuardApproval = { request, principal, locationRef, decision }
       pendingApprovals.set(request.approvalID, pending)
       const timeoutMs = request.expiresAtUnixMs - Date.now()
       if (timeoutMs <= 0 || timeoutMs > 5 * 60 * 1000) {
@@ -7552,7 +7569,7 @@ const layer = Layer.effect(
             response,
           },
           {
-            requestApproval: (request) => awaitGuardApproval(request, undefined, input.locationRef),
+            requestApproval: (request) => awaitGuardApproval(request, trusted.principal, input.locationRef),
             preflightDirectGrant,
             resolveApprovalSet: resolveApprovedSet,
             leaseNextEffect,
@@ -7655,7 +7672,7 @@ const layer = Layer.effect(
         policySummary: details.policySummary,
         ...details.consent,
       }
-      const decision = yield* awaitGuardApproval(request, undefined, input.locationRef)
+      const decision = yield* awaitGuardApproval(request, trusted.principal, input.locationRef)
       if (decision === "allow_once" && !request.allowEnabled) {
         return yield* Effect.fail(fail("authorization", "Guard allow is unavailable without assessed guarantees"))
       }
@@ -8172,9 +8189,19 @@ const runtimeConfigLayer = Layer.succeed(
       typeof OPENCODE_SESSION_OBSERVER_MANIFEST === "undefined" ? undefined : OPENCODE_SESSION_OBSERVER_MANIFEST,
     installRoot: join(Global.Path.bin, "session-observer"),
     stateRoot: join(Global.Path.state, "session-observer"),
-    hostKernelAssetPath: typeof OPENCODE_HOST_KERNEL_ASSET === "undefined" ? undefined : OPENCODE_HOST_KERNEL_ASSET,
+    // A packaged build embeds the asset/manifest as compile-time defines. A source
+    // checkout has neither, so every tool batch fails closed with "host kernel is
+    // unavailable" and no live journey can run. The env fallback exists only for
+    // developer runs from source; a packaged binary can never be redirected by it
+    // because the define branch wins first.
+    hostKernelAssetPath:
+      typeof OPENCODE_HOST_KERNEL_ASSET === "undefined"
+        ? process.env.OPENCODE_HOST_KERNEL_ASSET
+        : OPENCODE_HOST_KERNEL_ASSET,
     hostKernelManifestJSON:
-      typeof OPENCODE_HOST_KERNEL_MANIFEST === "undefined" ? undefined : OPENCODE_HOST_KERNEL_MANIFEST,
+      typeof OPENCODE_HOST_KERNEL_MANIFEST === "undefined"
+        ? process.env.OPENCODE_HOST_KERNEL_MANIFEST
+        : OPENCODE_HOST_KERNEL_MANIFEST,
     hostKernelInstallRoot: join(Global.Path.bin, "hz-kernel"),
     hostKernelStateRoot: join(Global.Path.state, "hz-kernel"),
     codeModeHelperAssetPath: typeof OPENCODE_CODE_MODE_HELPER_ASSET === "undefined" ? undefined : OPENCODE_CODE_MODE_HELPER_ASSET,

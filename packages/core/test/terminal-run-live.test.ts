@@ -4,17 +4,17 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSy
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { Cause, Effect, Exit, Fiber, Layer, Queue } from "effect"
-import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { makeGlobalNode } from "@opencode-ai/core/effect/app-node"
-import { Database } from "@opencode-ai/core/database/database"
-import { Config } from "@opencode-ai/core/config"
-import { EventV2 } from "@opencode-ai/core/event"
-import { Location } from "@opencode-ai/core/location"
-import { Pty } from "@opencode-ai/core/pty"
-import { Shell } from "@opencode-ai/core/shell"
-import { AbsolutePath } from "@opencode-ai/core/schema"
-import { WorkspaceV2 } from "@opencode-ai/core/workspace"
+import { AppNodeBuilder } from "@horizoncode/core/effect/app-node-builder"
+import { LayerNode } from "@horizoncode/core/effect/layer-node"
+import { makeGlobalNode } from "@horizoncode/core/effect/app-node"
+import { Database } from "@horizoncode/core/database/database"
+import { Config } from "@horizoncode/core/config"
+import { EventV2 } from "@horizoncode/core/event"
+import { Location } from "@horizoncode/core/location"
+import { Pty } from "@horizoncode/core/pty"
+import { Shell } from "@horizoncode/core/shell"
+import { AbsolutePath } from "@horizoncode/core/schema"
+import { WorkspaceV2 } from "@horizoncode/core/workspace"
 import {
   GuardApprovalRequested,
   SessionSupervisor,
@@ -22,12 +22,12 @@ import {
   type GuardApprovalRequest,
   type DirectAttemptScopeV1,
   type Interface as SessionSupervisorInterface,
-} from "@opencode-ai/core/session/supervisor"
-import { TrustedPrincipalContext } from "@opencode-ai/core/trusted-principal"
+} from "@horizoncode/core/session/supervisor"
+import { TrustedPrincipalContext } from "@horizoncode/core/trusted-principal"
 import { location } from "./fixture/location"
 
 // Live Core -> Rust acceptance for the guarded one-shot `terminal.run` path. The
-// host-scoped kernel binary is packaged exactly like `packages/opencode/script/build.ts`
+// host-scoped kernel binary is packaged exactly like `packages/horizoncode/script/build.ts`
 // and the wider Core graph is assembled the same way `kernel-projection-live.test.ts`
 // assembles it, so these cases exercise the real Guard, effect and terminal process.
 const hostKernelCandidates = [
@@ -1353,5 +1353,145 @@ describe("guarded terminal.run through the real host kernel", () => {
     expect(Exit.isFailure(outcome.lateHostApproval)).toBe(true)
     expect(Exit.isFailure(outcome.lateCoreReply)).toBe(true)
     expect(outcome.targetExists).toBe(false)
+  }, 60000)
+})
+
+
+// ---------------------------------------------------------------------------
+// 2026-10-29 live-run regression (real HostKernel, no stubs).
+//
+// .tmp/e2e/logs/fullstack-20261029151801-571080/messages.json recorded 66 bash
+// calls; exactly the four that shared an assistant message with a second bash
+// call were refused as "Rust returned an invalid effect batch", and every one of
+// the 62 single-call messages passed. The commands below are those four calls,
+// verbatim, grouped the way the model emitted them. They reach the real
+// `EffectHost::prepare_tool_batch`: nothing here is rejection-worthy, which is
+// what makes the case a regression in the client rather than in the kernel.
+const rejectedLiveBatches = [
+  [
+    "bun --version && which bun && node --version",
+    'curl -sS -m 10 -o /tmp/rfc9457.txt -w "%{http_code}\\n" https://www.rfc-editor.org/rfc/rfc9457.txt; curl -sS -m 10 -o /tmp/rfc6750.txt -w "%{http_code}\\n" https://www.rfc-editor.org/rfc/rfc6750.txt',
+  ],
+  [
+    'curl -sSL -m 15 -o /tmp/stripe-webhooks.html -w "stripe: %{http_code} %{size_download}\\n" https://docs.stripe.com/webhooks/signatures',
+    'curl -sS -m 15 -o /tmp/ratelimit-draft.txt -w "ratelimit: %{http_code} %{size_download}\\n" https://datatracker.ietf.org/doc/html/draft-ietf-httpapi-ratelimit-headers && curl -sS -m 15 -o /tmp/ratelimit-raw.txt -w "raw: %{http_code} %{size_download}\\n" https://datatracker.ietf.org/doc/html/draft-ietf-httpapi-ratelimit-headers',
+  ],
+] as const
+
+describe("real HostKernel admission for the 2026-10-29 multi-bash rejections", () => {
+  test("admits both two-command batches the live run refused", async () => {
+    // Real `effects.v2 prepare_tool_batch` against the real HostKernel: real
+    // EffectHost planning, real Guard decision, real durable challenge rows. Only
+    // the client approval relay is out of frame, because an unanswered prompt is
+    // not what this regression is about.
+    const outcome = await withLiveHostKernel(({ supervisor, workspace, locationRef }) =>
+      Effect.gen(function* () {
+        const shellProfile = yield* registerShellProfile(supervisor)
+        const locationID = yield* supervisor.registerHostLocation(locationRef)
+        const batches: Array<{
+          readonly status: unknown
+          readonly calls: ReadonlyArray<{ readonly challengeId?: unknown; readonly effectId?: unknown; readonly callId?: unknown }>
+        }> = []
+        for (const [index, batch] of rejectedLiveBatches.entries()) {
+          const response = yield* supervisor.requestHostKernel("effects.v2", "prepare_tool_batch", {
+            sessionID,
+            locationID,
+            batchID: `batch_live_regression_${index}`,
+            turnContextDigest,
+            calls: batch.map((command, callIndex) => ({
+              callID: `call_live_regression_${index}_${callIndex}`,
+              capabilityID: "terminal.run",
+              arguments: {
+                mode: "shell",
+                shellProfileID: shellProfile,
+                command,
+                cwd: workspace,
+                timeoutMs: 30_000,
+                resolvedEnvironment,
+              },
+            })),
+          })
+          batches.push({
+            status: response.status,
+            calls: Array.isArray(response.calls)
+              ? (response.calls as ReadonlyArray<{ challengeId?: unknown; effectId?: unknown; callId?: unknown }>)
+              : [],
+          })
+        }
+        return batches
+      }),
+    )
+
+    expect(outcome).toHaveLength(2)
+    for (const [index, batch] of outcome.entries()) {
+      // Both exact commands reach Guard in one batch and each gets its own
+      // durable challenge: the shape the client wrapper then discarded.
+      expect(batch.status).toBe("needs_approval")
+      expect(batch.calls).toHaveLength(2)
+      const challengeIDs = batch.calls.map((call) => String(call.challengeId))
+      const effectIDs = batch.calls.map((call) => String(call.effectId))
+      const callIDs = batch.calls.map((call) => String(call.callId))
+      expect(callIDs).toEqual(rejectedLiveBatches[index]!.map((_, callIndex) => `call_live_regression_${index}_${callIndex}`))
+      expect(new Set(challengeIDs).size).toBe(2)
+      expect(new Set(effectIDs).size).toBe(2)
+      for (const value of [...challengeIDs, ...effectIDs]) expect(value).toMatch(/^(ch_|eff_)/)
+    }
+  }, 90000)
+
+  test("still denies a terminal.run whose cwd escapes the workspace, before any approval", async () => {
+    const outcome = await withLiveHostKernel(({ pty, approvals, workspace, locationRef }) =>
+      Effect.gen(function* () {
+        const escaped = yield* Effect.exit(
+          pty.prepareToolBatch({
+            sessionID,
+            locationRef,
+            batchID: "batch_live_regression_escape",
+            turnContextDigest,
+            calls: [
+              {
+                callID: "call_live_regression_escape",
+                capabilityID: "terminal.run",
+                arguments: { command: "touch escaped.txt", cwd: "/tmp", timeoutMs: 30_000 },
+              },
+            ],
+          }),
+        )
+        return { escaped, approvals: yield* Queue.size(approvals), escapedMarker: existsSync("/tmp/escaped.txt") }
+      }),
+    )
+
+    expect(Exit.isFailure(outcome.escaped)).toBe(true)
+    // Containment still fails closed before Guard ever asks the user.
+    expect(outcome.approvals).toBe(0)
+    expect(outcome.escapedMarker).toBe(false)
+    // And the rejection must never masquerade as the collapsed wrapper message.
+    expect(JSON.stringify(outcome.escaped)).not.toContain("invalid effect batch")
+  }, 60000)
+
+  test("still denies an unparsable terminal.run argument map with a typed error", async () => {
+    const outcome = await withLiveHostKernel(({ pty, approvals, locationRef }) =>
+      Effect.gen(function* () {
+        const unparsable = yield* Effect.exit(
+          pty.prepareToolBatch({
+            sessionID,
+            locationRef,
+            batchID: "batch_live_regression_unparsable",
+            turnContextDigest,
+            calls: [
+              {
+                callID: "call_live_regression_unparsable",
+                capabilityID: "terminal.run",
+                arguments: { command: "true", cwd: "/", timeoutMs: 30_000, shellProfileID: "profile_override" },
+              },
+            ],
+          }),
+        )
+        return { unparsable, approvals: yield* Queue.size(approvals) }
+      }),
+    )
+
+    expect(Exit.isFailure(outcome.unparsable)).toBe(true)
+    expect(outcome.approvals).toBe(0)
+    expect(JSON.stringify(outcome.unparsable)).toContain("terminal.run arguments are invalid")
   }, 60000)
 })

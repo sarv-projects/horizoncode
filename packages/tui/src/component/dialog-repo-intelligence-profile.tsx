@@ -1,5 +1,5 @@
 import { createMemo, createSignal, onMount } from "solid-js"
-import type { ConfigRepoIntelligenceV1 } from "@opencode-ai/core/v1/config/config"
+import type { ConfigRepoIntelligenceV1 } from "@horizoncode/core/v1/config/config"
 import { DialogSelect, type DialogSelectOption } from "../ui/dialog-select"
 import { useProject } from "../context/project"
 import { useSDK } from "../context/sdk"

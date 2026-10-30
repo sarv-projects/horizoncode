@@ -6,8 +6,22 @@ import { createHash } from "node:crypto"
 import { fileURLToPath } from "node:url"
 import horizonCodeContent from "./horizon/skills/horizoncode/SKILL.md" with { type: "text" }
 import horizonDocsContent from "./horizon/skills/horizon-docs/SKILL.md" with { type: "text" }
+import repoOnboardingContent from "./horizon/skills/repo-onboarding/SKILL.md" with { type: "text" }
+import planChangeContent from "./horizon/skills/plan-change/SKILL.md" with { type: "text" }
+import reviewChangeContent from "./horizon/skills/review-change/SKILL.md" with { type: "text" }
+import testDebugContent from "./horizon/skills/test-debug/SKILL.md" with { type: "text" }
+import refactorSafelyContent from "./horizon/skills/refactor-safely/SKILL.md" with { type: "text" }
+import dependencyMigrationContent from "./horizon/skills/dependency-migration/SKILL.md" with { type: "text" }
+import browserSmokeTestContent from "./horizon/skills/browser-smoke-test/SKILL.md" with { type: "text" }
+import performanceProfileContent from "./horizon/skills/performance-profile/SKILL.md" with { type: "text" }
+import securityReviewContent from "./horizon/skills/security-review/SKILL.md" with { type: "text" }
+import releaseReadinessContent from "./horizon/skills/release-readiness/SKILL.md" with { type: "text" }
+import commitPrContent from "./horizon/skills/commit-pr/SKILL.md" with { type: "text" }
+import contextRecoveryContent from "./horizon/skills/context-recovery/SKILL.md" with { type: "text" }
+import pluginAuditContent from "./horizon/skills/plugin-audit/SKILL.md" with { type: "text" }
+import worktreeHygieneContent from "./horizon/skills/worktree-hygiene/SKILL.md" with { type: "text" }
 import { Context, Effect, Layer, Schema, Types } from "effect"
-import { Skill } from "@opencode-ai/schema/skill"
+import { Skill } from "@horizoncode/schema/skill"
 import { AgentV2 } from "./agent"
 import { ConfigMarkdown } from "./config/markdown"
 import { FSUtil } from "./fs-util"
@@ -41,7 +55,7 @@ const HORIZON_DOCS_IDENTITY = Skill.HorizonDocsIdentityV1
 const sha256 = (content: string) => createHash("sha256").update(content).digest("hex")
 
 function verifySealedBuiltinRevision(
-  identity: typeof HORIZON_DOCS_IDENTITY | typeof HORIZON_CODE_IDENTITY,
+  identity: { readonly alias: string; readonly revision: string },
   content: string,
   expectedRevision?: string,
 ) {
@@ -106,6 +120,111 @@ export function horizonDocs(input?: { content: string; expectedRevision?: string
       schemaVersion: 1,
       id: HORIZON_DOCS_IDENTITY.id,
       alias: HORIZON_DOCS_IDENTITY.alias,
+      source: "builtin",
+      trust: "sealed_builtin",
+      revision,
+    },
+  })
+}
+
+const SHIPPED_BUILTIN_SKILLS = [
+  {
+    identity: Skill.SealedBuiltinIdentitiesV1["builtin.repo-onboarding"],
+    dir: "repo-onboarding",
+    content: repoOnboardingContent,
+    description: "Use when starting work in an unfamiliar repository and the agent must map stack, build/test/lint commands, rules files, entrypoints, and git state before editing.",
+  },
+  {
+    identity: Skill.SealedBuiltinIdentitiesV1["builtin.plan-change"],
+    dir: "plan-change",
+    content: planChangeContent,
+    description: "Use when a change request must become a scoped implementation plan with acceptance criteria, touched files, risk, and test strategy before any edit.",
+  },
+  {
+    identity: Skill.SealedBuiltinIdentitiesV1["builtin.review-change"],
+    dir: "review-change",
+    content: reviewChangeContent,
+    description: "Use when reviewing a diff or set of changed files for correctness, regressions, and architecture fit, returning prioritized findings with file:line evidence and no edits.",
+  },
+  {
+    identity: Skill.SealedBuiltinIdentitiesV1["builtin.test-debug"],
+    dir: "test-debug",
+    content: testDebugContent,
+    description: "Use when a test fails and the agent must reproduce, classify, and fix it with a minimal repro, root cause before fix, and failing-to-passing evidence without weakening assertions.",
+  },
+  {
+    identity: Skill.SealedBuiltinIdentitiesV1["builtin.refactor-safely"],
+    dir: "refactor-safely",
+    content: refactorSafelyContent,
+    description: "Use when a behavior-preserving refactor is needed: inventory call sites, plan small verifiable steps, prove behavior with tests before and after, and never mix in feature work.",
+  },
+  {
+    identity: Skill.SealedBuiltinIdentitiesV1["builtin.dependency-migration"],
+    dir: "dependency-migration",
+    content: dependencyMigrationContent,
+    description: "Use when migrating a dependency or API across versions: read changelogs and migration guides, inventory usages, batch mechanical updates, and verify build and tests per batch.",
+  },
+  {
+    identity: Skill.SealedBuiltinIdentitiesV1["builtin.browser-smoke-test"],
+    dir: "browser-smoke-test",
+    content: browserSmokeTestContent,
+    description: "Use when a UI change needs a real browser journey: run the available browser or CLI tooling, capture steps and console or screenshot evidence, and report pass or fail per step.",
+  },
+  {
+    identity: Skill.SealedBuiltinIdentitiesV1["builtin.performance-profile"],
+    dir: "performance-profile",
+    content: performanceProfileContent,
+    description: "Use when performance must be measured: form a hypothesis, benchmark before and after, isolate the hotspot, change one thing per measurement, and report numbers not vibes.",
+  },
+  {
+    identity: Skill.SealedBuiltinIdentitiesV1["builtin.security-review"],
+    dir: "security-review",
+    content: securityReviewContent,
+    description: "Use when defensively reviewing code or config for secrets exposure, injection, unsafe deserialization, authz gaps, and dependency risk, returning severity-ranked findings with remediation.",
+  },
+  {
+    identity: Skill.SealedBuiltinIdentitiesV1["builtin.release-readiness"],
+    dir: "release-readiness",
+    content: releaseReadinessContent,
+    description: "Use when a release candidate must be assessed: run build, tests, license, config, and packaging gates, check version bumps and changelog, and report GO or NO-GO with evidence.",
+  },
+  {
+    identity: Skill.SealedBuiltinIdentitiesV1["builtin.commit-pr"],
+    dir: "commit-pr",
+    content: commitPrContent,
+    description: "Use when preparing a bounded commit or PR: review the scoped diff, write a conventional message, attach test evidence, and avoid drive-by changes; never commit unless asked.",
+  },
+  {
+    identity: Skill.SealedBuiltinIdentitiesV1["builtin.context-recovery"],
+    dir: "context-recovery",
+    content: contextRecoveryContent,
+    description: "Use when session context is under pressure or was compacted: inspect usage, recommend trim, prune, compact, or clear actions, and list what to reload afterward without fabricating history.",
+  },
+  {
+    identity: Skill.SealedBuiltinIdentitiesV1["builtin.plugin-audit"],
+    dir: "plugin-audit",
+    content: pluginAuditContent,
+    description: "Use before enabling an extension or plugin: inspect provenance, capabilities, permissions, and supply-chain posture, then return an evidence-backed enable or block verdict.",
+  },
+  {
+    identity: Skill.SealedBuiltinIdentitiesV1["builtin.worktree-hygiene"],
+    dir: "worktree-hygiene",
+    content: worktreeHygieneContent,
+    description: "Use when cleaning up repository state: inventory worktrees, stale locks, background processes, and dirty files, then propose safe cleanup and confirm before any destructive step.",
+  },
+] as const
+
+export function builtinSkill(input: (typeof SHIPPED_BUILTIN_SKILLS)[number]): Info {
+  const revision = verifySealedBuiltinRevision(input.identity, input.content)
+  return Info.make({
+    name: input.identity.alias,
+    description: input.description,
+    location: AbsolutePath.make(fileURLToPath(new URL(`./horizon/skills/${input.dir}/SKILL.md`, import.meta.url))),
+    content: input.content,
+    identity: {
+      schemaVersion: 1,
+      id: input.identity.id,
+      alias: input.identity.alias,
       source: "builtin",
       trust: "sealed_builtin",
       revision,
@@ -234,7 +353,7 @@ const layer = Layer.effect(
     // events, following the reload policy chosen for other context sources?
     const cache = new Map<string, Info[]>()
     const list = Effect.fn("SkillV2.list")(function* () {
-      const skills: Info[] = [horizonCode(), horizonDocs()]
+      const skills: Info[] = [horizonCode(), horizonDocs(), ...SHIPPED_BUILTIN_SKILLS.map(builtinSkill)]
       for (const source of state.get().sources) {
         const key = Source.key(source)
         const loaded = cache.get(key) ?? (yield* load(source))

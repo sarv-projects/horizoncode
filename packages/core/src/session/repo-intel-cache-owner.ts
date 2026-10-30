@@ -1,4 +1,4 @@
-import type { RepoGenerationPinV1 } from "@opencode-ai/schema/repo-intelligence-v1"
+import type { RepoGenerationPinV1 } from "@horizoncode/schema/repo-intelligence-v1"
 import type { TrustedPrincipal } from "../trusted-principal"
 
 /**

@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test"
-import type { LLMRequest, Model } from "@opencode-ai/llm"
-import type { SessionMessage } from "@opencode-ai/core/session/message"
+import type { LLMRequest, Model } from "@horizoncode/llm"
+import type { SessionMessage } from "@horizoncode/core/session/message"
 import {
   planContextPruneV1 as planPrune,
   planContextTrimV1 as planTrim,
   planPressureRecoveryV1 as planPressureRecovery,
-} from "@opencode-ai/core/session/context-compile-policy"
+} from "@horizoncode/core/session/context-compile-policy"
 
 const user = (id: string, text = "continue"): SessionMessage.Message =>
   ({ id, type: "user", text, files: [], agents: [], time: { created: 0 } }) as unknown as SessionMessage.Message

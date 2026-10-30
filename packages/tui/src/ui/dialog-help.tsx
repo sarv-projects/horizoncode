@@ -36,8 +36,10 @@ export function DialogHelp() {
         <text fg={theme.textMuted}>/view activity on|off · toggle the activity digest</text>
         <text fg={theme.textMuted}>/debug ui · UI, stream and artifact diagnostics</text>
         <text fg={theme.textMuted}>/debug effects · Guard/read-fast-path effect diagnostics</text>
-        <text fg={theme.textMuted}>/trim, /prune, /clear · unavailable until context epochs/ledger operations are wired</text>
-        <text fg={theme.textMuted}>/checkpoints · read-only rewind preview; restore stays unavailable</text>
+        <text fg={theme.textMuted}>/clear · drop history and start a fresh Context Epoch baseline</text>
+        <text fg={theme.textMuted}>/trim · reclaim older history, keep a coherent recent tail, new baseline</text>
+        <text fg={theme.textMuted}>/prune · drop stale system messages per the ledger, new baseline</text>
+        <text fg={theme.textMuted}>/checkpoints · capture a checkpoint; Guard-mediated restore reverts code+chat</text>
       </box>
       <box flexDirection="row" justifyContent="flex-end" paddingBottom={1}>
         <box paddingLeft={3} paddingRight={3} backgroundColor={theme.primary} onMouseUp={() => dialog.clear()}>

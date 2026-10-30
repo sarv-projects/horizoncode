@@ -19,13 +19,16 @@ import { ConfigPluginV1 } from "./plugin"
 import { ConfigProviderV1 } from "./provider"
 import * as ConfigRepoIntelligenceV1 from "./repo-intelligence"
 import * as ConfigResourcePolicyV1 from "./resource-policy"
-import * as HarnessProfileV1 from "@opencode-ai/schema/harness-profile-v1"
-import * as WorkspaceCommandProfileV1 from "@opencode-ai/schema/workspace-command-profile-v1"
-import * as ExternalEditorProfileV1 from "@opencode-ai/schema/external-editor-profile-v1"
+import * as HarnessProfileV1 from "@horizoncode/schema/harness-profile-v1"
+import * as WorkspaceCommandProfileV1 from "@horizoncode/schema/workspace-command-profile-v1"
+import * as ExternalEditorProfileV1 from "@horizoncode/schema/external-editor-profile-v1"
 import { ConfigServerV1 } from "./server"
 import { ConfigSkillsV1 } from "./skills"
 
 export const WEB_SEARCH_ROUTE_IDS = [
+  // Keyless HTML route: no credential, no paid key, no MCP session. It is the
+  // default first route for every anonymous cascade.
+  "duckduckgo",
   "exa_keyless",
   "youcom_free",
   "firecrawl_keyless",

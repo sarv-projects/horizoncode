@@ -1,0 +1,9 @@
+HTTP/1.1 200 OK
+Content-Type: application/json; charset=utf-8
+Cache-Control: no-store
+ratelimit-limit: 120
+ratelimit-remaining: 117
+ratelimit-reset: 50
+Date: Thu, 29 Oct 2026 15:49:10 GMT
+Content-Length: 481
+

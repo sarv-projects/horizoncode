@@ -1,17 +1,18 @@
+import { createHash } from "node:crypto"
 import fs from "fs/promises"
 import path from "path"
 import { describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
-import { AgentV2 } from "@opencode-ai/core/agent"
-import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
-import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { FSUtil } from "@opencode-ai/core/fs-util"
-import { Global } from "@opencode-ai/core/global"
-import { Location } from "@opencode-ai/core/location"
-import { Project } from "@opencode-ai/core/project"
-import { AbsolutePath } from "@opencode-ai/core/schema"
-import { SkillV2 } from "@opencode-ai/core/skill"
-import { SkillDiscovery } from "@opencode-ai/core/skill/discovery"
+import { AgentV2 } from "@horizoncode/core/agent"
+import { AppNodeBuilder } from "@horizoncode/core/effect/app-node-builder"
+import { LayerNode } from "@horizoncode/core/effect/layer-node"
+import { FSUtil } from "@horizoncode/core/fs-util"
+import { Global } from "@horizoncode/core/global"
+import { Location } from "@horizoncode/core/location"
+import { Project } from "@horizoncode/core/project"
+import { AbsolutePath } from "@horizoncode/core/schema"
+import { SkillV2 } from "@horizoncode/core/skill"
+import { SkillDiscovery } from "@horizoncode/core/skill/discovery"
 import { tmpdir } from "./fixture/tmpdir"
 import { testEffect } from "./lib/effect"
 
@@ -141,7 +142,7 @@ describe("SkillV2", () => {
           yield* skill.transform((editor) => editor.source({ type: "url", url: "https://example.test/skills/" }))
 
           const listed = yield* skill.list()
-          expect(listed.map((item) => item.name)).toEqual(["horizoncode", "horizon-docs", "deploy"])
+          expect(listed.map((item) => item.name)).toEqual(['horizoncode', 'horizon-docs', 'repo-onboarding', 'plan-change', 'review-change', 'test-debug', 'refactor-safely', 'dependency-migration', 'browser-smoke-test', 'performance-profile', 'security-review', 'release-readiness', 'commit-pr', 'context-recovery', 'plugin-audit', 'worktree-hygiene', 'deploy'])
           expect((yield* skill.list()).map((item) => item.identity.id)).toEqual(listed.map((item) => item.identity.id))
           expect(pulls).toBe(1)
           const loadedDeploy = listed.find((item) => item.identity.alias === "deploy")!
@@ -159,5 +160,25 @@ describe("SkillV2", () => {
         }),
       ),
     ),
+  )
+})
+
+describe("SkillV2 builtin roster", () => {
+  it.live("ships the full 16-skill builtin roster with digest-verified identities", () =>
+    Effect.gen(function* () {
+      const skill = yield* SkillV2.Service
+      const loaded = yield* skill.list()
+      const builtins = loaded.filter((item) => item.identity.source === "builtin")
+      expect(builtins.map((item) => item.identity.id).toSorted()).toEqual(['builtin.browser-smoke-test', 'builtin.commit-pr', 'builtin.context-recovery', 'builtin.dependency-migration', 'builtin.horizon-docs', 'builtin.horizoncode', 'builtin.performance-profile', 'builtin.plan-change', 'builtin.plugin-audit', 'builtin.refactor-safely', 'builtin.release-readiness', 'builtin.repo-onboarding', 'builtin.review-change', 'builtin.security-review', 'builtin.test-debug', 'builtin.worktree-hygiene'])
+      expect(builtins).toHaveLength(16)
+      for (const item of builtins) {
+        expect(item.identity.trust).toBe("sealed_builtin")
+        expect(item.identity.revision).toBe(`sha256:${createHash("sha256").update(item.content).digest("hex")}`)
+        expect(item.description).toBeTruthy()
+        expect(item.content.length).toBeGreaterThan(400)
+      }
+      expect(SkillV2.resolveSelection(loaded, "test-debug")?.identity.id).toBe("builtin.test-debug")
+      expect(SkillV2.resolveSelection(loaded, "builtin.worktree-hygiene")?.identity.trust).toBe("sealed_builtin")
+    }),
   )
 })

@@ -333,3 +333,117 @@ fn direct_session_read_only_mode_denies_write_before_admission() {
     assert!(!fixture.workspace.join("denied.txt").exists());
     fixture.cleanup();
 }
+
+/// Defect A1: the first `files.write` into a fresh directory tree was denied
+/// with `path_unavailable_or_unsafe` because planning could not open a parent
+/// that did not exist yet. A contained write whose parent chain is missing must
+/// be admitted and must create the chain inside the effect, component by
+/// component, without ever leaving the workspace root.
+#[test]
+fn direct_session_write_creates_missing_parent_directories() {
+    let mut fixture = Fixture::new("nested");
+    let content = "nested guarded write\n";
+    let prepared = fixture.prepare_write("batch_nested_write", "a/b/c/file.txt", content);
+    assert_eq!(value_string(&prepared, "status"), "prepared");
+    let effect_id = value_string(&prepared, "effectID");
+    let lease = value_string(&prepared, "capabilityLeaseDigest");
+    // Preparation is still non-mutating: no directory and no file may exist yet.
+    assert!(!fixture.workspace.join("a").exists());
+    assert_eq!(fixture.durable_challenge_count("batch_nested_write"), 1);
+
+    let location_id = fixture.location_id.clone();
+    let settled = fixture.request(
+        "execute_write",
+        value_map([
+            ("sessionID", string(SESSION)),
+            ("locationID", string(&location_id)),
+            ("effectID", string(&effect_id)),
+            ("capabilityLeaseDigest", string(&lease)),
+            ("content", string(content)),
+        ]),
+    );
+    assert_eq!(settled.outcome, RpcOutcomeV1::Ok, "{:?}", settled.error);
+    let body = settled.body.unwrap();
+    assert_eq!(value_string(&body, "status"), "settled");
+    assert_eq!(value_string(&body, "effectID"), effect_id);
+    // Receipt shape is unchanged: the target is still the root-joined normalized
+    // path the TS side computes from the resolved parent.
+    let expected_target = fs::canonicalize(&fixture.workspace)
+        .unwrap()
+        .join("a/b/c/file.txt");
+    assert_eq!(
+        value_string(&body, "target"),
+        expected_target.to_str().unwrap()
+    );
+    assert_eq!(value_string(&body, "resource"), "a/b/c/file.txt");
+    assert_eq!(body.get("existed"), Some(&Value::Bool(false)));
+    assert!(value_string(&body, "receiptDigest").starts_with("blake3:"));
+    assert_eq!(
+        fs::read_to_string(fixture.workspace.join("a/b/c/file.txt")).unwrap(),
+        content
+    );
+    for directory in ["a", "a/b", "a/b/c"] {
+        let metadata = fs::metadata(fixture.workspace.join(directory)).unwrap();
+        assert!(metadata.is_dir(), "{directory} must be a directory");
+        assert_eq!(
+            metadata.permissions().mode() & 0o777,
+            0o755,
+            "{directory} must carry the workspace directory mode"
+        );
+    }
+    fixture.cleanup();
+}
+
+/// A path that climbs out of the workspace stays a planning denial; nothing is
+/// created anywhere on disk and no durable challenge is admitted.
+#[test]
+fn direct_session_write_outside_workspace_is_denied() {
+    let mut fixture = Fixture::new("escape");
+    let prepared = fixture.prepare_write("batch_escape_write", "../../escape.txt", "nope\n");
+    assert_eq!(value_string(&prepared, "status"), "denied");
+    assert_eq!(value_string(&prepared, "reason"), "path_outside_or_unsafe");
+    assert_eq!(fixture.durable_challenge_count("batch_escape_write"), 0);
+    assert!(!fixture.workspace.join("escape.txt").exists());
+    assert!(!fixture.base.join("escape.txt").exists());
+    fixture.cleanup();
+}
+
+/// Regression: an existing target is still truncated and overwritten in place,
+/// and the receipt still reports `existed: true`.
+#[test]
+fn direct_session_write_overwrites_an_existing_target() {
+    let mut fixture = Fixture::new("overwrite");
+    let directory = fixture.workspace.join("src");
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(directory.join("main.rs"), "old content\n").unwrap();
+
+    let content = "new content\n";
+    let prepared = fixture.prepare_write("batch_overwrite", "src/main.rs", content);
+    assert_eq!(value_string(&prepared, "status"), "prepared");
+    let effect_id = value_string(&prepared, "effectID");
+    let lease = value_string(&prepared, "capabilityLeaseDigest");
+
+    let location_id = fixture.location_id.clone();
+    let settled = fixture.request(
+        "execute_write",
+        value_map([
+            ("sessionID", string(SESSION)),
+            ("locationID", string(&location_id)),
+            ("effectID", string(&effect_id)),
+            ("capabilityLeaseDigest", string(&lease)),
+            ("content", string(content)),
+        ]),
+    );
+    assert_eq!(settled.outcome, RpcOutcomeV1::Ok, "{:?}", settled.error);
+    let body = settled.body.unwrap();
+    assert_eq!(value_string(&body, "status"), "settled");
+    assert_eq!(value_string(&body, "resource"), "src/main.rs");
+    assert_eq!(body.get("existed"), Some(&Value::Bool(true)));
+    assert_eq!(
+        fs::read_to_string(fixture.workspace.join("src/main.rs")).unwrap(),
+        content
+    );
+    // No spurious directory was created and the parent survived the overwrite.
+    assert!(fixture.workspace.join("src").is_dir());
+    fixture.cleanup();
+}

@@ -92,6 +92,7 @@ function support(value: boolean | undefined) {
 export function modelAvailabilityLabel(input: {
   providerID?: string
   connected: boolean
+  localDirectCredentials?: boolean
   source?: string
   anonymousOffer?: boolean
   status?: "active" | "alpha" | "beta" | "deprecated"
@@ -146,6 +147,7 @@ export function DialogModel(props: { providerID?: string }) {
   const [query, setQuery] = createSignal("")
 
   const connected = useConnected()
+  const localDirect = createMemo(() => sync.data.provider_next.localDirectCredentials === true)
   const providers = createDialogProviderOptions()
 
   const showExtra = createMemo(() => connected() && !props.providerID)
@@ -180,6 +182,7 @@ export function DialogModel(props: { providerID?: string }) {
               {
                 providerID: provider.id,
                 connected: sync.data.provider_next.connected.includes(provider.id),
+                localDirectCredentials: localDirect(),
                 source: provider.source,
                 anonymousOffer: sync.data.provider_next.anonymousFreeModels?.includes(`${provider.id}/${model.id}`),
                 status: model.status,
@@ -242,6 +245,7 @@ export function DialogModel(props: { providerID?: string }) {
               {
                 providerID: provider.id,
                 connected: sync.data.provider_next.connected.includes(provider.id),
+                localDirectCredentials: localDirect(),
                 source: provider.source,
                 anonymousOffer: sync.data.provider_next.anonymousFreeModels?.includes(`${provider.id}/${model}`),
                 status: info.status,
@@ -318,6 +322,7 @@ export function DialogModel(props: { providerID?: string }) {
     const selectable = modelSelectableInV1({
       providerID,
       credentialSourceDetected: sync.data.provider_next.connected.includes(providerID),
+      localDirectCredentials: localDirect(),
       anonymousOffer: sync.data.provider_next.anonymousFreeModels?.includes(`${providerID}/${modelID}`),
       status: model?.status,
       cost: model?.cost,
@@ -392,18 +397,23 @@ export function isZeroPricedModel(model: { cost?: ModelCostShape }) {
   return explicitZeroPriceLabel(model.cost) !== undefined
 }
 
-/** V1 dispatch currently supports only the anonymous, fully zero-priced offer. */
+/** V1 production default: anonymous OpenCode only. Local audited direct credentials unlock any connected catalog route. */
 export function modelSelectableInV1(input: {
   providerID: string
   credentialSourceDetected: boolean
+  localDirectCredentials?: boolean
   anonymousOffer?: boolean
   status?: "active" | "alpha" | "beta" | "deprecated"
   cost?: ModelCostShape
 }) {
-  return input.providerID === "opencode" &&
+  const opencodeAnonymous =
+    input.providerID === "opencode" &&
     input.anonymousOffer === true &&
     input.status === "active" &&
     isZeroPricedModel({ cost: input.cost })
+  if (opencodeAnonymous) return true
+  if (input.localDirectCredentials && input.credentialSourceDetected && input.status === "active") return true
+  return false
 }
 
 /**
@@ -425,6 +435,7 @@ export function modelListedInV1(input: { cost?: ModelCostShape; anonymousOffer?:
 export function modelDispatchVerdictV1(input: {
   providerID?: string
   connected: boolean
+  localDirectCredentials?: boolean
   anonymousOffer?: boolean
   status?: "active" | "alpha" | "beta" | "deprecated"
   cost?: ModelCostShape
@@ -432,11 +443,14 @@ export function modelDispatchVerdictV1(input: {
   return modelSelectableInV1({
     providerID: input.providerID ?? "",
     credentialSourceDetected: input.connected,
+    localDirectCredentials: input.localDirectCredentials,
     anonymousOffer: input.anonymousOffer,
     status: input.status,
     cost: input.cost,
   })
-    ? "Selectable by HorizonCode V1 policy; dispatch unverified"
+    ? input.localDirectCredentials && input.providerID !== "opencode"
+      ? "Selectable with local credentials; dispatch unverified"
+      : "Selectable by HorizonCode V1 policy; dispatch unverified"
     : "Dispatch unavailable in HorizonCode V1"
 }
 

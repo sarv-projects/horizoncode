@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import type { Part } from "@opencode-ai/sdk/v2"
+import type { Part } from "@horizoncode/sdk/v2"
 import { projectActivityCards, projectProgressCard } from "../../src/component/activity-cards"
 
 const tool = (input: {

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { ToolOutput, type LLMEvent, type ProviderMetadata, type ToolResultValue, type Usage } from "@opencode-ai/llm"
+import { ToolOutput, type LLMEvent, type ProviderMetadata, type ToolResultValue, type Usage } from "@horizoncode/llm"
 import { DateTime, Effect } from "effect"
 import { EventV2 } from "../../event"
 import { ModelV2 } from "../../model"

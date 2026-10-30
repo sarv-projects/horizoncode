@@ -396,6 +396,77 @@ pub fn fixed_web_search_route(route_id: &str) -> Option<HttpRoutePolicyV1> {
     })
 }
 
+/// Fixed route keys, split by credential posture. These tables are the single
+/// source of truth for every Guard/HostKernel predicate that has to decide
+/// whether a route needs a SecretBroker reference. `duckduckgo` is keyless even
+/// though its key does not carry the `_keyless` suffix the MCP routes use, so a
+/// suffix test alone silently classified it as a credentialed route.
+pub const KEYLESS_SEARCH_ROUTE_KEYS: [&str; 5] = [
+    "duckduckgo", "exa_keyless", "youcom_free", "firecrawl_keyless", "parallel_keyless",
+];
+pub const CREDENTIALED_SEARCH_ROUTE_KEYS: [&str; 6] = [
+    "brave", "exa", "youcom", "tavily", "firecrawl", "parallel",
+];
+
+pub fn is_keyless_search_route_key(route_key: &str) -> bool {
+    KEYLESS_SEARCH_ROUTE_KEYS.contains(&route_key)
+}
+
+pub fn is_credentialed_search_route_key(route_key: &str) -> bool {
+    CREDENTIALED_SEARCH_ROUTE_KEYS.contains(&route_key)
+}
+
+pub fn is_search_route_key(route_key: &str) -> bool {
+    is_keyless_search_route_key(route_key) || is_credentialed_search_route_key(route_key)
+}
+
+/// Whether a `web.search.<key>` route id has a fixed HostKernel profile: an
+/// anonymous MCP endpoint, the anonymous HTML endpoint, or a credentialed
+/// provider request. No caller-supplied destination can satisfy this.
+pub fn is_known_search_route_id(route_id: &str) -> bool {
+    fixed_web_search_mcp_route(route_id).is_some()
+        || fixed_web_search_html_route(route_id).is_some()
+        || route_id.strip_prefix("web.search.").is_some_and(|key|
+            fixed_credentialed_search_request(key, "bounded query", 1).is_some())
+}
+
+/// Browser UA for the anonymous HTML route. The endpoint answers 202 to
+/// non-browser agents, so the fixed adapter must present one.
+pub const DUCKDUCKGO_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
+AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
+
+/// Static endpoint for the one keyless route that is not an MCP server. This is
+/// a separate protocol allowlist from `fixed_web_search_mcp_route`: the
+/// transport is a single GET whose payload is HTML, not a JSON-RPC POST.
+pub fn fixed_web_search_html_route(route_id: &str) -> Option<HttpRoutePolicyV1> {
+    let (provider_id, host, path_prefix) = match route_id {
+        "web.search.duckduckgo" => ("duckduckgo", "html.duckduckgo.com", "/html/"),
+        _ => return None,
+    };
+    Some(HttpRoutePolicyV1 {
+        provider_id: provider_id.to_owned(),
+        route_id: route_id.to_owned(),
+        host: host.to_owned(),
+        port: 443,
+        resolved_addresses: Vec::new(),
+        path_prefix: path_prefix.to_owned(),
+        max_request_bytes: MAX_HTTP_REQUEST_BYTES,
+        max_response_bytes: MAX_HTTP_RESPONSE_BYTES,
+        timeout_ms: 12_000,
+    })
+}
+
+/// The only target the DuckDuckGo route can ever request. The caller supplies a
+/// bounded query, never a URL, host, method, or header.
+pub fn fixed_duckduckgo_search_target(query: &str) -> Option<String> {
+    if query.trim() != query || query.is_empty() || query.len() > 2_000 {
+        return None;
+    }
+    let mut target = reqwest::Url::parse("https://html.duckduckgo.com/html/").ok()?;
+    target.query_pairs_mut().append_pair("q", query);
+    Some(target.to_string())
+}
+
 /// Construct the fixed Brave GET target from the canonical bounded request. The
 /// caller cannot select query parameters, host, or path independently.
 pub fn fixed_brave_search_target(query: &str, limit: u8) -> Option<String> {
@@ -602,12 +673,184 @@ fn execute_mcp_search_pinned(
     }
     let addresses = resolve_public_addresses_cancellable(route, cancel)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
         .enable_time()
         .build()
         .map_err(|_| HttpExecutionErrorV1::TransportFailure)?;
     runtime.block_on(async_execute_mcp_search(
         route, &addresses, query, limit, domains, cancel,
     ))
+}
+
+fn validate_html_search(
+    route: &HttpRoutePolicyV1,
+    effect_id: &str,
+    challenge_id: &str,
+    lease_digest: &str,
+    query: &str,
+    limit: u8,
+) -> Result<(), HttpExecutionErrorV1> {
+    if fixed_web_search_html_route(&route.route_id).as_ref() != Some(route)
+        || query.trim() != query
+        || query.is_empty()
+        || query.len() > 2_000
+        || !(1..=10).contains(&limit)
+        || fixed_duckduckgo_search_target(query).is_none()
+        || !valid_blake3(lease_digest)
+        || effect_id.is_empty()
+        || challenge_id.is_empty()
+    {
+        return Err(HttpExecutionErrorV1::RouteDenied);
+    }
+    Ok(())
+}
+
+/// Execute the single bounded GET for the anonymous HTML search route under the
+/// same zero-send proof window as the MCP lifecycle: only a failure before DNS
+/// completes and before `send()` is entered counts as `NotDispatched`.
+pub(crate) fn execute_html_search_with_pre_send_proof(
+    binding: &HttpExecutionBindingV1,
+    route: &HttpRoutePolicyV1,
+    sequence: u64,
+    attempt: u8,
+    query: &str,
+    limit: u8,
+    cancel: &RequestCancellation,
+) -> HttpDispatchResultV1 {
+    if sequence == 0
+        || !(1..=2).contains(&attempt)
+        || binding.route_id != route.route_id
+        || binding.request_digest.is_empty()
+        || !valid_blake3(&binding.request_digest)
+        || !valid_blake3(&binding.capability_lease_digest)
+    {
+        return HttpDispatchResultV1::Unknown(HttpExecutionErrorV1::InvalidRequest);
+    }
+    if let Err(error) = validate_html_search(
+        route,
+        &binding.effect_id,
+        &binding.challenge_id,
+        &binding.capability_lease_digest,
+        query,
+        limit,
+    ) {
+        return HttpDispatchResultV1::Unknown(error);
+    }
+    let pre_send_failure = if cancel.is_cancelled() {
+        Some(HttpExecutionErrorV1::Cancelled)
+    } else {
+        match resolve_public_addresses_cancellable(route, cancel) {
+            Ok(addresses) if addresses.iter().all(|address| address.port() == route.port) => {
+                let runtime = match tokio::runtime::Builder::new_current_thread()
+                    .enable_io()
+                    .enable_time()
+                    .build()
+                {
+                    Ok(runtime) => runtime,
+                    Err(_) => return HttpDispatchResultV1::NotDispatched {
+                        proof: http_not_dispatched_proof(
+                            binding, route, sequence, attempt,
+                            HttpExecutionErrorV1::TransportFailure,
+                        ),
+                        failure: HttpExecutionErrorV1::TransportFailure,
+                    },
+                };
+                return match runtime.block_on(async_execute_html_search(
+                    route, &addresses, query, limit, cancel,
+                )) {
+                    Ok(response) => HttpDispatchResultV1::Response(response),
+                    Err(error) => HttpDispatchResultV1::Unknown(error),
+                };
+            }
+            Ok(_) => Some(HttpExecutionErrorV1::AddressDenied),
+            Err(error) => Some(error),
+        }
+    };
+    let Some(failure) = pre_send_failure else {
+        return HttpDispatchResultV1::Unknown(HttpExecutionErrorV1::TransportFailure);
+    };
+    if !matches!(
+        failure,
+        HttpExecutionErrorV1::Cancelled
+            | HttpExecutionErrorV1::TimedOut
+            | HttpExecutionErrorV1::TransportFailure
+    ) {
+        return HttpDispatchResultV1::Unknown(failure);
+    }
+    HttpDispatchResultV1::NotDispatched {
+        proof: http_not_dispatched_proof(binding, route, sequence, attempt, failure),
+        failure,
+    }
+}
+
+async fn async_execute_html_search(
+    route: &HttpRoutePolicyV1,
+    addresses: &[SocketAddr],
+    query: &str,
+    limit: u8,
+    cancel: &RequestCancellation,
+) -> Result<HttpResponseV1, HttpExecutionErrorV1> {
+    let timeout = Duration::from_millis(route.timeout_ms.min(12_000));
+    let client = reqwest::Client::builder()
+        .https_only(true)
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(timeout.min(Duration::from_secs(5)))
+        .timeout(timeout)
+        .resolve_to_addrs(&route.host, addresses)
+        .build()
+        .map_err(|_| HttpExecutionErrorV1::TransportFailure)?;
+    let target = fixed_duckduckgo_search_target(query)
+        .ok_or(HttpExecutionErrorV1::InvalidRequest)?;
+    let request = client
+        .get(target)
+        .header(reqwest::header::USER_AGENT, DUCKDUCKGO_USER_AGENT)
+        .header(
+            reqwest::header::ACCEPT,
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        )
+        .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9");
+    let mut response = await_cancellable(request.send(), cancel, true)
+        .await?
+        .map_err(|_| HttpExecutionErrorV1::OutcomeUnknown)?;
+    if response.status().is_redirection() {
+        return Err(HttpExecutionErrorV1::RedirectDenied);
+    }
+    let peer = response.remote_addr().ok_or(HttpExecutionErrorV1::AddressDenied)?;
+    verify_connected_peer(addresses, peer).map_err(|_| HttpExecutionErrorV1::AddressDenied)?;
+    let status = response.status().as_u16();
+    let retry_after_header = response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| value.len() <= 128)
+        .map(str::to_owned);
+    let retry_after_ms = retry_after_header.as_deref().and_then(parse_retry_after_ms);
+    let capture = read_response_body(&mut response, route.max_response_bytes, cancel).await?;
+    // A successful body is normalized into the fixed result shape here, at the
+    // transport boundary, so every downstream consumer sees the same bounded
+    // `results[]` JSON that the other providers produce. Non-2xx bodies stay
+    // raw: they are receipt evidence and never model context.
+    let body = if (200..300).contains(&status) {
+        let rows = crate::search_html::parse_duckduckgo_results(
+            &capture.bytes,
+            usize::from(limit.min(10)),
+        );
+        crate::search_html::normalized_response_body(&rows)
+    } else {
+        capture.bytes
+    };
+    let body_digest = format!("blake3:{}", blake3::hash(&body).to_hex());
+    Ok(HttpResponseV1 {
+        status,
+        retry_after_ms,
+        retry_after_header,
+        body,
+        body_digest,
+        body_truncated: capture.truncated,
+        response_complete: !capture.truncated,
+        connected_peer: Some(peer.ip()),
+    })
 }
 
 fn validate_mcp_search(
@@ -678,6 +921,7 @@ pub(crate) fn execute_mcp_search_with_pre_send_proof(
         match resolve_public_addresses_cancellable(route, cancel) {
             Ok(addresses) if addresses.iter().all(|address| address.port() == route.port) => {
                 let runtime = match tokio::runtime::Builder::new_current_thread()
+                    .enable_io()
                     .enable_time()
                     .build()
                 {
@@ -773,12 +1017,23 @@ async fn async_execute_mcp_search(
     if response.status() != reqwest::StatusCode::OK {
         return mcp_response(response, peer, route, cancel).await;
     }
-    let session_id = session_id.ok_or(HttpExecutionErrorV1::TransportFailure)?;
-    if session_id.is_empty() || session_id.len() > 256
-        || session_id.bytes().any(|byte| byte.is_ascii_control())
-    {
-        return Err(HttpExecutionErrorV1::TransportFailure);
-    }
+    // Stateless MCP tolerance: some servers (Firecrawl's keyless endpoint today)
+    // answer a complete, decodable initialize frame and assign no session at all.
+    // Requiring `Mcp-Session-Id` failed such a route before its first search
+    // request even though the transport never needed the identifier. Keep using
+    // the header whenever the server assigns one, and keep failing closed on a
+    // malformed value or any other initialize defect (status, frame, version).
+    let session_id = match session_id {
+        Some(value) => {
+            if value.is_empty() || value.len() > 256
+                || value.bytes().any(|byte| byte.is_ascii_control())
+            {
+                return Err(HttpExecutionErrorV1::TransportFailure);
+            }
+            Some(value)
+        }
+        None => None,
+    };
     let init_content_type = response.headers().get(reqwest::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok()).unwrap_or("").to_owned();
     let init_body = read_response_body(&mut response, route.max_response_bytes, cancel).await?;
@@ -797,7 +1052,7 @@ async fn async_execute_mcp_search(
     }
     let initialized = serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"});
     let (mut notification, _, notification_peer) = mcp_post(
-        &client, &target, &initialized, Some(&session_id), route, &addresses, cancel, started,
+        &client, &target, &initialized, session_id.as_deref(), route, &addresses, cancel, started,
     ).await?;
     if notification.status() != reqwest::StatusCode::ACCEPTED
         && notification.status() != reqwest::StatusCode::OK
@@ -852,7 +1107,7 @@ async fn async_execute_mcp_search(
     }
     let call = serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":params});
     let (mut final_response, _, final_peer) = mcp_post(
-        &client, &target, &call, Some(&session_id), route, &addresses, cancel, started,
+        &client, &target, &call, session_id.as_deref(), route, &addresses, cancel, started,
     ).await?;
     if final_response.status().is_redirection() {
         return Err(HttpExecutionErrorV1::RedirectDenied);
@@ -1995,6 +2250,39 @@ impl HttpExecutionSupervisor {
             binding, route, sequence, attempt, query, limit, domains, cancel,
         )
     }
+
+    /// The HTML route shares the same process-wide concurrency permit so a
+    /// saturated local queue can never be misreported as a provider outcome.
+    pub(crate) fn execute_html_search_with_pre_send_proof(
+        &self,
+        binding: &HttpExecutionBindingV1,
+        route: &HttpRoutePolicyV1,
+        sequence: u64,
+        attempt: u8,
+        query: &str,
+        limit: u8,
+        cancel: &RequestCancellation,
+    ) -> HttpDispatchResultV1 {
+        let mut active = self.active.load(Ordering::Acquire);
+        loop {
+            if active >= MAX_HTTP_CONCURRENT_REQUESTS {
+                return HttpDispatchResultV1::Unknown(HttpExecutionErrorV1::ConcurrencyLimit);
+            }
+            match self.active.compare_exchange_weak(
+                active,
+                active + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(actual) => active = actual,
+            }
+        }
+        let _permit = HttpExecutionPermit(self.active.clone());
+        execute_html_search_with_pre_send_proof(
+            binding, route, sequence, attempt, query, limit, cancel,
+        )
+    }
 }
 
 struct HttpExecutionPermit(Arc<AtomicUsize>);
@@ -2083,6 +2371,106 @@ mod tests {
             "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "query", 5, Some(&empty), &active.cancellation()),
             Err(HttpExecutionErrorV1::RouteDenied));
+    }
+
+    #[test]
+    fn duckduckgo_is_a_first_class_keyless_route_key() {
+        assert!(is_keyless_search_route_key("duckduckgo"));
+        assert!(is_search_route_key("duckduckgo"));
+        assert!(!is_credentialed_search_route_key("duckduckgo"));
+        assert!(is_known_search_route_id("web.search.duckduckgo"));
+        assert_eq!(KEYLESS_SEARCH_ROUTE_KEYS.len(), 5);
+        assert_eq!(CREDENTIALED_SEARCH_ROUTE_KEYS.len(), 6);
+        for key in KEYLESS_SEARCH_ROUTE_KEYS {
+            assert!(is_keyless_search_route_key(key), "keyless {key}");
+            assert!(is_search_route_key(key), "known {key}");
+            assert!(!is_credentialed_search_route_key(key), "not credentialed {key}");
+            assert!(is_known_search_route_id(&format!("web.search.{key}")), "profile {key}");
+        }
+        for key in CREDENTIALED_SEARCH_ROUTE_KEYS {
+            assert!(is_credentialed_search_route_key(key), "credentialed {key}");
+            assert!(is_search_route_key(key), "known {key}");
+            assert!(!is_keyless_search_route_key(key), "not keyless {key}");
+        }
+        // The historical suffix predicate would have classified the new route as
+        // credentialed and demanded a SecretBroker reference it never needs.
+        assert!(!("duckduckgo".ends_with("_keyless") || "duckduckgo" == "youcom_free"));
+        assert!(!is_search_route_key("tavily_keyless"));
+        assert!(!is_known_search_route_id("web.search.duckduckgo_extra"));
+    }
+
+    #[test]
+    fn duckduckgo_route_profile_is_fixed_and_bounded() {
+        let route = fixed_web_search_html_route("web.search.duckduckgo").expect("fixed route");
+        assert_eq!(route.provider_id, "duckduckgo");
+        assert_eq!(route.route_id, "web.search.duckduckgo");
+        assert_eq!(route.host, "html.duckduckgo.com");
+        assert_eq!(route.port, 443);
+        assert_eq!(route.path_prefix, "/html/");
+        assert_eq!(route.timeout_ms, 12_000);
+        assert_eq!(route.max_request_bytes, MAX_HTTP_REQUEST_BYTES);
+        assert_eq!(route.max_response_bytes, MAX_HTTP_RESPONSE_BYTES);
+        assert!(route.resolved_addresses.is_empty());
+        assert!(DUCKDUCKGO_USER_AGENT.contains("Mozilla/5.0"));
+        // Exactly one transport owns the id; no other allowlist grew an arm.
+        assert!(fixed_web_search_mcp_route("web.search.duckduckgo").is_none());
+        assert!(fixed_web_search_route("web.search.duckduckgo").is_none());
+        assert!(fixed_credentialed_search_request("duckduckgo", "bounded query", 5).is_none());
+        assert!(fixed_web_search_html_route("web.search.exa_keyless").is_none());
+        assert!(fixed_web_search_html_route("web.search.youcom_free").is_none());
+    }
+
+    #[test]
+    fn duckduckgo_target_is_built_from_the_query_alone() {
+        let target = fixed_duckduckgo_search_target("RFC 9457 problem details").expect("target");
+        assert_eq!(
+            target,
+            "https://html.duckduckgo.com/html/?q=RFC+9457+problem+details"
+        );
+        assert!(fixed_duckduckgo_search_target("").is_none());
+        assert!(fixed_duckduckgo_search_target(" padded").is_none());
+        assert!(fixed_duckduckgo_search_target("trailing ").is_none());
+        assert!(fixed_duckduckgo_search_target(&"q".repeat(2_001)).is_none());
+        assert!(fixed_duckduckgo_search_target(&"q".repeat(2_000)).is_some());
+    }
+
+    #[test]
+    fn duckduckgo_execution_denies_any_tampered_profile_or_bounds() {
+        let lease = "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let route = fixed_web_search_html_route("web.search.duckduckgo").expect("fixed route");
+        assert_eq!(validate_html_search(&route, "eff", "ch", lease, "q", 5), Ok(()));
+        assert_eq!(
+            validate_html_search(&route, "eff", "ch", lease, "q", 0),
+            Err(HttpExecutionErrorV1::RouteDenied)
+        );
+        assert_eq!(
+            validate_html_search(&route, "eff", "ch", lease, "q", 11),
+            Err(HttpExecutionErrorV1::RouteDenied)
+        );
+        assert_eq!(
+            validate_html_search(&route, "eff", "ch", lease, " padded", 5),
+            Err(HttpExecutionErrorV1::RouteDenied)
+        );
+        assert_eq!(
+            validate_html_search(&route, "", "ch", lease, "q", 5),
+            Err(HttpExecutionErrorV1::RouteDenied)
+        );
+        assert_eq!(
+            validate_html_search(&route, "eff", "ch", "not-a-digest", "q", 5),
+            Err(HttpExecutionErrorV1::RouteDenied)
+        );
+        let mut tampered = route.clone();
+        tampered.host = "evil.example.test".to_owned();
+        assert_eq!(
+            validate_html_search(&tampered, "eff", "ch", lease, "q", 5),
+            Err(HttpExecutionErrorV1::RouteDenied)
+        );
+        let mut long_path = route.clone();
+        long_path.path_prefix = "/html/?q=x".to_owned();
+        assert_eq!(
+            validate_html_search(&long_path, "eff", "ch", lease, "q", 5),
+            Err(HttpExecutionErrorV1::RouteDenied)
+        );
     }
 
     #[test]

@@ -1,5 +1,5 @@
 import { createMemo, createSignal, onMount, Show } from "solid-js"
-import type { RepoExplorerDiscoveryV1, RepoExplorerDocumentV1, RepoExplorerEntryV1 } from "@opencode-ai/sdk/v2"
+import type { RepoExplorerDiscoveryV1, RepoExplorerDocumentV1, RepoExplorerEntryV1 } from "@horizoncode/sdk/v2"
 import { useSDK } from "../context/sdk"
 import { useRoute } from "../context/route"
 import { useTheme } from "../context/theme"

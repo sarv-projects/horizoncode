@@ -14,7 +14,7 @@ import {
   waitForSocket,
   withApplicationFrameFence,
   type ManagedVerifierGuardChallengeV1,
-} from "@opencode-ai/core/session/supervisor"
+} from "@horizoncode/core/session/supervisor"
 import type { ChildProcessHandle } from "effect/unstable/process/ChildProcessSpawner"
 
 const base = {

@@ -3850,7 +3850,9 @@ fn cancel_fence_matches_lifecycle_from_paused_verifying_and_needs_you() {
     );
     assert_eq!(store.snapshot().revision, revision);
 
-    // NEEDS_YOU is a terminal outcome and cannot be cancelled.
+    // NEEDS_YOU parks the Run on a missing human answer, but it owns no live
+    // Attempt: an abandoned question must cancel through the same durable saga
+    // as every other phase instead of absorbing the lifecycle forever.
     send(
         &mut store,
         "start-needs-you",
@@ -3870,16 +3872,27 @@ fn cancel_fence_matches_lifecycle_from_paused_verifying_and_needs_you() {
         store.snapshot().runs["run-needs-you"].phase,
         RunPhase::NeedsYou
     );
-    assert!(
-        store
-            .apply(
-                store.snapshot().revision,
-                "cancel-needs-you",
-                ManagedCommand::RequestCancel {
-                    run_id: "run-needs-you".into(),
-                }
-            )
-            .is_err()
+    send(
+        &mut store,
+        "cancel-needs-you",
+        ManagedCommand::RequestCancel {
+            run_id: "run-needs-you".into(),
+        },
+    );
+    assert_eq!(
+        store.snapshot().runs["run-needs-you"].phase,
+        RunPhase::Cancelling
+    );
+    send(
+        &mut store,
+        "complete-cancel-needs-you",
+        ManagedCommand::CompleteCancel {
+            run_id: "run-needs-you".into(),
+        },
+    );
+    assert_eq!(
+        store.snapshot().runs["run-needs-you"].phase,
+        RunPhase::Cancelled
     );
     drop(store);
 
@@ -3894,12 +3907,126 @@ fn cancel_fence_matches_lifecycle_from_paused_verifying_and_needs_you() {
     );
     assert_eq!(
         restored.snapshot().runs["run-needs-you"].phase,
-        RunPhase::NeedsYou
+        RunPhase::Cancelled
     );
     assert!(
         restored.snapshot().runs["run-verifying"]
             .criterion_evidence
             .is_empty()
+    );
+}
+
+/// NEEDS_YOU parks a Run on a missing human answer; it must not be an absorbing
+/// state. A parked Run owns no live Attempt or UNKNOWN effect, so a human can
+/// abandon it (cancel to a terminal Run) or answer it (resume the Run) instead of
+/// leaving it pinned forever.
+#[test]
+fn needs_you_run_resumes_or_cancels_instead_of_absorbing_the_lifecycle() {
+    let root = PrivateRoot::new();
+    let mut store = ManagedControl::open(root.path(), "goal-needs-you-lifecycle").unwrap();
+    accepted_spec(&mut store, spec("server_auth.author", 2));
+
+    // An abandoned question cancels through the normal durable saga and becomes
+    // terminal CANCELLED.
+    send(
+        &mut store,
+        "start-cancel",
+        ManagedCommand::StartRun {
+            run_id: "run-parked-cancel".into(),
+            spec_id: "spec-v1".into(),
+        },
+    );
+    send(
+        &mut store,
+        "park-cancel",
+        ManagedCommand::NeedsYou {
+            run_id: "run-parked-cancel".into(),
+        },
+    );
+    assert_eq!(
+        store.snapshot().runs["run-parked-cancel"].phase,
+        RunPhase::NeedsYou
+    );
+    send(
+        &mut store,
+        "cancel-parked",
+        ManagedCommand::RequestCancel {
+            run_id: "run-parked-cancel".into(),
+        },
+    );
+    assert_eq!(
+        store.snapshot().runs["run-parked-cancel"].phase,
+        RunPhase::Cancelling
+    );
+    send(
+        &mut store,
+        "complete-parked-cancel",
+        ManagedCommand::CompleteCancel {
+            run_id: "run-parked-cancel".into(),
+        },
+    );
+    assert_eq!(
+        store.snapshot().runs["run-parked-cancel"].phase,
+        RunPhase::Cancelled
+    );
+
+    // An answered question reopens the same Run: the human answer itself lives
+    // outside this reducer, but reopening the Run must be a legal transition.
+    send(
+        &mut store,
+        "start-resume",
+        ManagedCommand::StartRun {
+            run_id: "run-parked-resume".into(),
+            spec_id: "spec-v1".into(),
+        },
+    );
+    send(
+        &mut store,
+        "park-resume",
+        ManagedCommand::NeedsYou {
+            run_id: "run-parked-resume".into(),
+        },
+    );
+    assert_eq!(
+        store.snapshot().runs["run-parked-resume"].phase,
+        RunPhase::NeedsYou
+    );
+    send(
+        &mut store,
+        "resume-parked",
+        ManagedCommand::ResumeRun {
+            run_id: "run-parked-resume".into(),
+        },
+    );
+    assert_eq!(
+        store.snapshot().runs["run-parked-resume"].phase,
+        RunPhase::Running
+    );
+
+    // The new resume path is still fenced by terminal phases: a cancelled Run
+    // never reopens.
+    assert!(
+        store
+            .apply(
+                store.snapshot().revision,
+                "resume-cancelled",
+                ManagedCommand::ResumeRun {
+                    run_id: "run-parked-cancel".into(),
+                }
+            )
+            .is_err()
+    );
+    drop(store);
+
+    // Both outcomes are durable across reopen.
+    let restored = ManagedControl::open(root.path(), "goal-needs-you-lifecycle").unwrap();
+    assert_eq!(
+        restored.snapshot().runs["run-parked-cancel"].phase,
+        RunPhase::Cancelled
+    );
+    assert_eq!(
+        restored.snapshot().runs["run-parked-resume"].phase,
+        RunPhase::Running
     );
 }
 

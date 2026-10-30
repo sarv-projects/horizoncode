@@ -1,5 +1,5 @@
 import { createMemo, createSignal, onMount } from "solid-js"
-// The TUI package does not currently declare @opencode-ai/schema as a
+// The TUI package does not currently declare @horizoncode/schema as a
 // dependency. Import the canonical schema source directly so this surface
 // cannot fork its own decoder; packaging must add the workspace dependency.
 import type { SubagentStatusV1 } from "../../../schema/src/subagent-status-v1"

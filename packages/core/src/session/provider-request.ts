@@ -1,7 +1,7 @@
 import { blake3 } from "@noble/hashes/blake3.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
-import { ContextSelectionV1, type ContextSelectionV1 as ContextSelectionValueV1 } from "@opencode-ai/schema/context-selection-v1"
-import { encodeCanonicalMessagePackV1 } from "@opencode-ai/schema"
+import { ContextSelectionV1, type ContextSelectionV1 as ContextSelectionValueV1 } from "@horizoncode/schema/context-selection-v1"
+import { encodeCanonicalMessagePackV1 } from "@horizoncode/schema"
 import { Schema } from "effect"
 import { SessionSchema } from "./schema"
 

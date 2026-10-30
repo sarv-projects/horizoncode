@@ -1,0 +1,14 @@
+{
+  "task_id": "task-001",
+  "model_id": "openrouter/nemotron-3-super-120b-a12b",
+  "verified_success": true,
+  "duration_ms": 42000,
+  "tool_errors": 0,
+  "session_id": "ses_a1b2c3",
+  "turns": 6,
+  "input_tokens": 5200,
+  "output_tokens": 900,
+  "cached_tokens": 3100,
+  "cost_usd": 0.0142,
+  "regression_free": true
+}

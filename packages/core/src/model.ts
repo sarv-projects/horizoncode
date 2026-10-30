@@ -1,5 +1,5 @@
 import { Types } from "effect"
-import { Model } from "@opencode-ai/schema/model"
+import { Model } from "@horizoncode/schema/model"
 import { ProviderV2 } from "./provider"
 
 export const ID = Model.ID
@@ -28,6 +28,21 @@ export type Info = Model.Info
 
 export type MutableInfo = Omit<Types.DeepMutable<Info>, "api"> & {
   api: ProviderV2.MutableApi<Api>
+}
+
+/**
+ * Canonical provider model identity. A model ID is the exact string the
+ * provider SDK accepts, so it may be namespace-qualified (`vendor/model`, the
+ * same shape `parse` splits) and carry a variant suffix (`model:free`). The
+ * opaque identifier charset used for profile, policy and route IDs cannot carry
+ * it, so model identity has its own bounded, printable grammar: 1..256 bytes,
+ * no whitespace and no control characters. This is the identical grammar the
+ * AgentProfileV2 model selection already requires of `modelId`.
+ */
+const CANONICAL_ID = /^[^\s\u0000-\u001f\u007f]{1,256}$/
+
+export function isID(value: unknown): value is ID {
+  return typeof value === "string" && CANONICAL_ID.test(value)
 }
 
 export function parse(input: string): { providerID: ProviderV2.ID; modelID: ID } {

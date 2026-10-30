@@ -421,6 +421,46 @@ fn lease_for_prepared_write(
     value_string(approval.body.as_ref().unwrap(), "capabilityLeaseDigest").to_owned()
 }
 
+/// Mirrors `effect_host::receipt_digest`: the receipt identity minted by the
+/// write path that dispatched the effect and observed its own result.
+fn observation_write_receipt_digest(
+    effect_id: &str,
+    target: &str,
+    resource: &str,
+    existed: bool,
+    after_digest: &str,
+    lease_id: &str,
+) -> String {
+    let mut hasher = blake3::Hasher::new();
+    for value in [effect_id, target, resource, after_digest, lease_id] {
+        hasher.update(&(value.len() as u64).to_be_bytes());
+        hasher.update(value.as_bytes());
+    }
+    hasher.update(&[u8::from(existed)]);
+    format!("blake3:{}", hasher.finalize().to_hex())
+}
+
+/// Mirrors `effect_host::postcondition_receipt_digest`: the domain-separated
+/// receipt identity minted when only durable content equality is known and the
+/// dispatch result was never observed.
+fn postcondition_write_receipt_digest(
+    effect_id: &str,
+    target: &str,
+    resource: &str,
+    existed: bool,
+    after_digest: &str,
+    lease_id: &str,
+) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"horizon.effect.receipt.postcondition_equality.v1");
+    for value in [effect_id, target, resource, after_digest, lease_id] {
+        hasher.update(&(value.len() as u64).to_be_bytes());
+        hasher.update(value.as_bytes());
+    }
+    hasher.update(&[u8::from(existed)]);
+    format!("blake3:{}", hasher.finalize().to_hex())
+}
+
 #[test]
 fn hz_kernel_process_effects_require_guard_lease_and_settle_one_use_write_and_patch() {
     let directory = TestDir::new();
@@ -1313,6 +1353,138 @@ fn hz_kernel_process_patch_restart_classifies_all_before_all_after_and_mixed_wit
             );
         }
     }
+}
+
+/// An UNKNOWN write may be reconciled from its durable postcondition, but never
+/// as a plain success receipt: the dispatch result was never observed, so the
+/// receipt must record postcondition equality and can never equal the
+/// observation receipt minted by a real dispatched write.
+#[test]
+fn hz_kernel_restart_never_settles_unknown_with_an_observation_receipt() {
+    let directory = TestDir::new();
+    let state = directory.0.join("state");
+    let workspace = directory.0.join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    fs::set_permissions(&workspace, fs::Permissions::from_mode(0o700)).unwrap();
+    let workspace = fs::canonicalize(workspace).unwrap();
+    let mut host = HostProcess::launch(&state, "effects_unknown_receipt_one", INCARNATION, true);
+    let location = host.register_location(&workspace);
+    let content = "settled by durable content equality";
+    let prepared = prepare_write(
+        &mut host,
+        &location,
+        "batch_unknown_receipt",
+        "unknown-receipt.txt",
+        content,
+    );
+    let lease = lease_for_prepared_write(&mut host, &prepared, "allow_once");
+    let settled = host.execute_write(&location, &prepared.effect_id, &lease, content);
+    assert_eq!(settled.outcome, RpcOutcomeV1::Ok, "{:?}", settled.error);
+    assert_eq!(fs::read(workspace.join("unknown-receipt.txt")).unwrap(), content.as_bytes());
+
+    // Model the crash window in which the write landed but its dispatch result
+    // was never observed: only the persisted postcondition survives.
+    let effect_db = state
+        .join("effect-locations")
+        .join(&location)
+        .join("effects.sqlite");
+    let db = Connection::open(&effect_db).unwrap();
+    let challenge: String = db
+        .query_row(
+            "SELECT challenge_id FROM effect_challenges WHERE effect_id=?1",
+            [&prepared.effect_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        db.execute(
+            "UPDATE effect_challenges SET status='UNKNOWN', receipt_digest=NULL WHERE challenge_id=?1",
+            [&challenge],
+        )
+        .unwrap(),
+        1,
+    );
+    drop(db);
+    drop(host);
+
+    let mut restarted =
+        HostProcess::launch(&state, "effects_unknown_receipt_two", INCARNATION, true);
+    assert_eq!(restarted.register_location(&workspace), location);
+    let db = Connection::open(&effect_db).unwrap();
+    let durable: (
+        String,
+        Option<String>,
+        String,
+        String,
+        String,
+        String,
+        bool,
+        String,
+        String,
+    ) = db
+        .query_row(
+            "SELECT status, receipt_digest, settled_by, effect_id, target, resource,
+                    existed, after_digest, lease_id
+             FROM effect_challenges WHERE challenge_id=?1",
+            [&challenge],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                ))
+            },
+        )
+        .unwrap();
+    let (status, receipt, settled_by, effect_id, target, resource, existed, after_digest, lease_id) =
+        durable;
+    assert_eq!(status, "SETTLED");
+    assert_eq!(settled_by, "postcondition_equality");
+    let receipt = receipt.expect("postcondition reconciliation mints a receipt");
+    assert_eq!(
+        receipt,
+        postcondition_write_receipt_digest(
+            &effect_id,
+            &target,
+            &resource,
+            existed,
+            &after_digest,
+            &lease_id
+        )
+    );
+    assert_ne!(
+        receipt,
+        observation_write_receipt_digest(
+            &effect_id,
+            &target,
+            &resource,
+            existed,
+            &after_digest,
+            &lease_id
+        ),
+        "an effect that was never observed must not carry an observation receipt"
+    );
+    drop(db);
+
+    let reconciled = restarted.request(
+        FEATURE_EFFECTS_V2,
+        "reconcile_effect",
+        value_map([
+            ("effectID", string(&prepared.effect_id)),
+            ("locationID", string(&location)),
+            ("sessionID", string(SESSION)),
+        ]),
+    );
+    assert_eq!(reconciled.outcome, RpcOutcomeV1::Ok, "{:?}", reconciled.error);
+    let body = reconciled.body.as_ref().unwrap();
+    assert_eq!(value_string(body, "status"), "settled");
+    assert_eq!(value_string(body, "receiptDigest"), receipt);
 }
 
 #[test]

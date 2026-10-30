@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="560" viewBox="0 0 960 560" role="img" aria-label="HorizonCode running in a terminal">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#12141a"/>
+      <stop offset="1" stop-color="#0b0d11"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#7c5cff"/>
+      <stop offset="1" stop-color="#37d6b0"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="960" height="560" rx="14" fill="url(#bg)"/>
+  <rect x="0.5" y="0.5" width="959" height="559" rx="14" fill="none" stroke="#252a35"/>
+
+  <!-- title bar -->
+  <rect width="960" height="38" rx="14" fill="#171a21"/>
+  <rect y="24" width="960" height="14" fill="#171a21"/>
+  <circle cx="26" cy="19" r="6" fill="#ff5f57"/>
+  <circle cx="48" cy="19" r="6" fill="#febc2e"/>
+  <circle cx="70" cy="19" r="6" fill="#28c840"/>
+  <text x="480" y="24" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" fill="#7c8496" text-anchor="middle">horizoncode — ~/meterbase</text>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14">
+    <!-- prompt -->
+    <text x="28" y="76" fill="#5c6478">~/meterbase</text>
+    <text x="120" y="76" fill="#8b93a7">$</text>
+    <text x="140" y="76" fill="#e6e9f0">hzcode</text>
+
+    <!-- banner -->
+    <text x="28" y="108" fill="url(#accent)" font-weight="700">HORIZONCODE</text>
+    <text x="150" y="108" fill="#5c6478">v1 · rust kernel + typed runtime · nvidia/nemotron-3.5-super</text>
+
+    <text x="28" y="140" fill="#7c8496">mode</text>
+    <text x="90" y="140" fill="#37d6b0">danger-full-access · approvalPolicy=never</text>
+    <text x="560" y="140" fill="#5c6478">(yolo)</text>
+
+    <!-- user turn -->
+    <text x="28" y="176" fill="#7c5cff">▌ you</text>
+    <text x="92" y="176" fill="#e6e9f0">Implement the invoicing API from TASK.md end to end.</text>
+
+    <!-- agent turns -->
+    <text x="28" y="208" fill="#37d6b0">▌ agent</text>
+    <text x="92" y="208" fill="#c8cede">Reading TASK.md, then the schema and the fixtures.</text>
+
+    <text x="92" y="236" fill="#5c6478">read  </text>
+    <text x="150" y="236" fill="#8b93a7">TASK.md</text>
+    <text x="236" y="236" fill="#3d4353">· 186 lines</text>
+    <text x="380" y="236" fill="#28c840">ok</text>
+
+    <text x="92" y="260" fill="#5c6478">bash  </text>
+    <text x="150" y="260" fill="#8b93a7">bun run seed</text>
+    <text x="300" y="260" fill="#3d4353">· 1,200 events</text>
+    <text x="470" y="260" fill="#28c840">ok</text>
+
+    <text x="92" y="284" fill="#5c6478">write </text>
+    <text x="150" y="284" fill="#8b93a7">src/billing/pricing.ts</text>
+    <text x="330" y="284" fill="#3d4353">· created parents</text>
+    <text x="500" y="284" fill="#28c840">ok</text>
+
+    <text x="92" y="308" fill="#5c6478">edit  </text>
+    <text x="150" y="308" fill="#8b93a7">src/http/routes.ts</text>
+    <text x="330" y="308" fill="#3d4353">· one lease, whole batch</text>
+    <text x="530" y="308" fill="#28c840">ok</text>
+
+    <text x="92" y="332" fill="#5c6478">search</text>
+    <text x="150" y="332" fill="#8b93a7">rfc 9457 problem details</text>
+    <text x="360" y="332" fill="#3d4353">· 8 results</text>
+    <text x="480" y="332" fill="#28c840">ok</text>
+
+    <!-- result -->
+    <text x="28" y="368" fill="#37d6b0">▌ agent</text>
+    <text x="92" y="368" fill="#c8cede">All 20 acceptance checks pass. 33 of my own tests pass too.</text>
+
+    <text x="92" y="396" fill="#5c6478">bun test test/hidden/</text>
+    <text x="300" y="396" fill="#28c840">20 pass</text>
+    <text x="380" y="396" fill="#3d4353">0 fail · 29m14s</text>
+
+    <!-- footer -->
+    <rect x="0" y="500" width="960" height="60" fill="#12141a"/>
+    <rect y="500" width="960" height="1" fill="#252a35"/>
+    <text x="28" y="526" fill="#5c6478">⏵⏵ accept edits</text>
+    <text x="190" y="526" fill="#3d4353">·</text>
+    <text x="212" y="526" fill="#5c6478">ctrl+p commands</text>
+    <text x="370" y="526" fill="#3d4353">·</text>
+    <text x="392" y="526" fill="#5c6478">/mode</text>
+    <text x="452" y="526" fill="#8b93a7">yolo</text>
+    <text x="700" y="526" fill="#3d4353">tok 426k in · 56k out</text>
+    <text x="28" y="548" fill="#2c3140">every mutation crosses the Rust kernel: one-use lease → effect → receipt</text>
+  </g>
+</svg>

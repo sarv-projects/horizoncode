@@ -1,4 +1,4 @@
-import type { GlobalEvent, QuestionRequest, QuestionV2Request } from "@opencode-ai/sdk/v2"
+import type { GlobalEvent, QuestionRequest, QuestionV2Request } from "@horizoncode/sdk/v2"
 import { testRender } from "@opentui/solid"
 import { expect, test } from "bun:test"
 import { onMount } from "solid-js"

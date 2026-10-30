@@ -8,7 +8,7 @@
 # Everything is local and hermetic:
 #   * `opencode serve` boots with TWO custom providers injected via
 #     OPENCODE_CONFIG_CONTENT, both using the BUNDLED @ai-sdk/openai-compatible
-#     adapter (loaded from packages/opencode/node_modules -- no npm registry
+#     adapter (loaded from packages/horizoncode/node_modules -- no npm registry
 #     fetch, no external provider code):
 #       - route-primary  : the pinned "paid-looking" route; baseURL points at a
 #                          LOCAL closed port -> TCP connection-refused.
@@ -58,7 +58,7 @@ export OPENCODE_SERVER_PASSWORD="${OPENCODE_SERVER_PASSWORD:-v1-routing-negative
 
 # Offline guard: never refresh models.dev; use a repo-local fixture catalog.
 export OPENCODE_DISABLE_MODELS_FETCH=1
-export OPENCODE_MODELS_PATH="$ROOT/packages/opencode/test/tool/fixtures/models-api.json"
+export OPENCODE_MODELS_PATH="$ROOT/packages/horizoncode/test/tool/fixtures/models-api.json"
 
 # Pinned route identity under test (DEC-V1-32: the exact selected route).
 PRIMARY_PROVIDER="route-primary"
@@ -365,7 +365,7 @@ start_server() {
       -u OPENCODE_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY \
       -u OPENCODE_GO_API_KEY -u GOOGLE_GENERATIVE_AI_API_KEY -u OPENROUTER_API_KEY \
       -u DEEPSEEK_API_KEY -u XAI_API_KEY -u GROQ_API_KEY -u COHERE_API_KEY -u MISTRAL_API_KEY \
-      "$BUN" run --cwd packages/opencode src/index.ts serve --hostname 127.0.0.1 --port "$SERVER_PORT" ) \
+      "$BUN" run --cwd packages/horizoncode src/index.ts serve --hostname 127.0.0.1 --port "$SERVER_PORT" ) \
     >>"$LOGS/serve.log" 2>&1 &
   SERVER_PID=$!
   for _ in $(seq 1 240); do

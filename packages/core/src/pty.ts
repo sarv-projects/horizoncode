@@ -4,13 +4,13 @@ import { randomUUID } from "node:crypto"
 import { Buffer } from "node:buffer"
 import { makeLocationNode } from "./effect/app-node"
 import { Context, Effect, Fiber, Layer, Option, Schema, Scope, Stream, Types } from "effect"
-import { Pty } from "@opencode-ai/schema/pty"
+import { Pty } from "@horizoncode/schema/pty"
 import { Config } from "./config"
 import { EventV2 } from "./event"
 import { Location } from "./location"
 import { PtyID } from "./pty/schema"
 import { Shell } from "./shell"
-import * as WorkspaceCommandProfileV1 from "@opencode-ai/schema/workspace-command-profile-v1"
+import * as WorkspaceCommandProfileV1 from "@horizoncode/schema/workspace-command-profile-v1"
 import {
   SessionSupervisor,
   SessionSupervisorError,
@@ -209,26 +209,51 @@ type Active = {
   stopStream?: () => void
 }
 
+// `Schema.TaggedErrorClass` leaves `message` empty, so every consumer that
+// renders a failure -- the model-facing tool result above all -- showed nothing
+// but the tag. A model cannot act on "Pty.InvalidInputError"; it can act on the
+// reason. The generated `toString` already prefixes the tag, so `message` here
+// carries the reason alone and both renderings stay free of duplication.
 export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("Pty.NotFoundError", {
   ptyID: PtyID,
-}) {}
+}) {
+  override get message() {
+    return `no such terminal ${String(this.ptyID)}`
+  }
+}
 
 export class ExitedError extends Schema.TaggedErrorClass<ExitedError>()("Pty.ExitedError", {
   ptyID: PtyID,
-}) {}
+}) {
+  override get message() {
+    return `terminal ${String(this.ptyID)} has exited`
+  }
+}
 
 export class InvalidInputError extends Schema.TaggedErrorClass<InvalidInputError>()("Pty.InvalidInputError", {
   reason: Schema.String,
-}) {}
+}) {
+  override get message() {
+    return this.reason
+  }
+}
 
 export class UnavailableError extends Schema.TaggedErrorClass<UnavailableError>()("Pty.UnavailableError", {
   ptyID: PtyID,
-}) {}
+}) {
+  override get message() {
+    return `terminal ${String(this.ptyID)} is unavailable`
+  }
+}
 
 export class ShellProfileUnavailableError extends Schema.TaggedErrorClass<ShellProfileUnavailableError>()(
   "Pty.ShellProfileUnavailableError",
   { profileKey: Schema.optional(Schema.String) },
-) {}
+) {
+  override get message() {
+    return this.profileKey ? `shell profile ${this.profileKey} is unavailable` : "no shell profile is available"
+  }
+}
 
 export interface Attachment {
   readonly attachmentID: string
@@ -325,8 +350,9 @@ const layer = Layer.effect(
     }
     const registerShellProfiles = Effect.fn("Pty.registerShellProfiles")(function* (selectedShell?: string) {
       const entries = yield* config.entries()
+      const shellLogin = Config.latest(entries, "shell_login") === true
       const profiles = yield* Effect.tryPromise({
-        try: () => Shell.discoverProfiles(),
+        try: () => Shell.discoverProfiles({ login: shellLogin }),
         catch: () => new ShellProfileUnavailableError({}),
       })
       const configuredShell = Config.latest(entries, "shell")

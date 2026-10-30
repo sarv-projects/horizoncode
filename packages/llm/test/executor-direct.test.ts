@@ -1,7 +1,7 @@
 import { describe, expect } from "bun:test"
 import { Effect, Layer, Ref, Schema } from "effect"
 import { Headers, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
-import { ContextSelectionV1 } from "@opencode-ai/schema/context-selection-v1"
+import { ContextSelectionV1 } from "@horizoncode/schema/context-selection-v1"
 import { LLMError } from "../src"
 import { DirectProviderTransport, RequestExecutor } from "../src/route"
 import type { DirectProviderRequestContextV1 } from "../src/route"

@@ -6,12 +6,12 @@ import {
   ContextLedgerV2,
   type ContextLedgerEntryV2,
   type ContextLedgerV2 as ContextLedgerValueV2,
-} from "@opencode-ai/schema/context-ledger-v2"
+} from "@horizoncode/schema/context-ledger-v2"
 import {
   ContextCompilePolicyV1 as ContextCompilePolicySchema,
   type ContextCompilePolicyV1,
-} from "@opencode-ai/schema/context-compile-policy-v1"
-import type { ContextSelectionV1 as ContextSelectionValueV1 } from "@opencode-ai/schema/context-selection-v1"
+} from "@horizoncode/schema/context-compile-policy-v1"
+import type { ContextSelectionV1 as ContextSelectionValueV1 } from "@horizoncode/schema/context-selection-v1"
 
 const MAX_NODES = 20_000
 const MAX_DEPTH = 24

@@ -1,7 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { testRender, useRenderer } from "@opentui/solid"
-import type { QuestionV2Request } from "@opencode-ai/sdk/v2"
+import type { QuestionV2Request } from "@horizoncode/sdk/v2"
 import { expect, test } from "bun:test"
 import { mkdir } from "node:fs/promises"
 import path from "node:path"

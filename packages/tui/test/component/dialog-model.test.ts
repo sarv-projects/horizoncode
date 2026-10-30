@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { catalogProvenanceLabel, isZeroPricedModel, modelAvailabilityLabel, modelListedInV1, modelSelectableInV1, sortModelOptions } from "../../src/component/dialog-model"
 import { providerAuthFailureMessage, providerProvenance } from "../../src/component/dialog-provider"
 import { modelPriceLabel } from "../../src/util/model"
-import { FeatureExposure } from "@opencode-ai/core/v1/config/feature-exposure"
+import { FeatureExposure } from "@horizoncode/core/v1/config/feature-exposure"
 import { featureSettingIsMutable } from "../../src/component/dialog-features"
 
 test("provider model catalog label preserves advisory provenance without implying route health", () => {
@@ -220,6 +220,18 @@ describe("modelSelectableInV1", () => {
     expect(modelSelectableInV1({ providerID: "anthropic", credentialSourceDetected: false, status: "active", cost: zeroPrice })).toBe(false)
     expect(modelSelectableInV1({ providerID: "opencode", credentialSourceDetected: false, status: "beta", cost: zeroPrice })).toBe(false)
     expect(modelSelectableInV1({ providerID: "opencode", credentialSourceDetected: false, status: "active" })).toBe(false)
+  })
+
+  test("local direct credentials unlock any connected active catalog route", () => {
+    expect(
+      modelSelectableInV1({
+        providerID: "anthropic",
+        credentialSourceDetected: true,
+        localDirectCredentials: true,
+        status: "active",
+        cost: { input: 3, output: 15 },
+      }),
+    ).toBe(true)
   })
 })
 

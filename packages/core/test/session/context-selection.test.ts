@@ -3,7 +3,7 @@ import { Schema } from "effect"
 import { SessionMessage } from "../../src/session/message"
 import { SessionSchema } from "../../src/session/schema"
 import { compile, compileDirectProviderRequestContextV1 } from "../../src/session/context-selection"
-import { ProfileId, Revision, type AgentProfileDefinitionV2 } from "@opencode-ai/schema/agent-profile-v2"
+import { ProfileId, Revision, type AgentProfileDefinitionV2 } from "@horizoncode/schema/agent-profile-v2"
 
 const sessionID = SessionSchema.ID.make("ses_01J9ABCDEF0123456789ABCDEFGH")
 const profile = {

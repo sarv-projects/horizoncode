@@ -1,0 +1,11 @@
+{
+  "task_id": "task-002",
+  "model_id": "openrouter/nemotron-3-super-120b-a12b",
+  "verified_success": false,
+  "duration_ms": 128000,
+  "tool_errors": 3,
+  "failure_category": "harness",
+  "session_id": "ses_b4d5e6",
+  "turns": 11,
+  "cost_usd": 0.0201
+}

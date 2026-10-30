@@ -1,0 +1,4 @@
+Labelled verification runs through the `bash` tool with an optional `label` parameter.
+
+Use this for task acceptance checks (FAIL_TO_PASS / PASS_TO_PASS), not open-ended exploration.
+When `label` is set, the tool reports `passed` only when the process exits 0; any other exit is `failed`.

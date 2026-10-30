@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import type { Part } from "@opencode-ai/sdk/v2"
+import type { Part } from "@horizoncode/sdk/v2"
 import { testRender, useRenderer } from "@opentui/solid"
 import { expect, test } from "bun:test"
 import { mkdir } from "node:fs/promises"

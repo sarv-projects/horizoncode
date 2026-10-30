@@ -8,16 +8,22 @@ import { Flag } from "./flag/flag"
 import { FSUtil } from "./fs-util"
 import { which } from "./util/which"
 
+/**
+ * Shell-family capabilities. `login` is deliberately absent: tool execution must
+ * never default to a login shell, because login profiles write user-environment
+ * output into every tool result (and can invalidate the provider cache prefix).
+ * A login shell is opt-in through Config `shell_login`.
+ */
 const META: Record<string, { deny?: boolean; login?: boolean; posix?: boolean; ps?: boolean }> = {
-  bash: { login: true, posix: true },
-  dash: { login: true, posix: true },
-  fish: { deny: true, login: true },
-  ksh: { login: true, posix: true },
+  bash: { posix: true },
+  dash: { posix: true },
+  fish: { deny: true },
+  ksh: { posix: true },
   nu: { deny: true },
   powershell: { ps: true },
   pwsh: { ps: true },
-  sh: { login: true, posix: true },
-  zsh: { login: true, posix: true },
+  sh: { posix: true },
+  zsh: { posix: true },
 }
 
 export type Item = {
@@ -49,7 +55,8 @@ export type Discovery = {
   distributions?: string[]
 }
 
-export function profilesFromDiscovery(discovery: Discovery): Profile[] {
+export function profilesFromDiscovery(discovery: Discovery, opts?: { readonly login?: boolean }): Profile[] {
+  const login = opts?.login === true
   const profiles: Profile[] = []
   if (discovery.platform === "linux") {
     if (discovery.bash) {
@@ -57,7 +64,7 @@ export function profilesFromDiscovery(discovery: Discovery): Profile[] {
         profileKey: "posix:bash",
         kind: "posix.bash",
         executable: discovery.bash,
-        login: true,
+        login,
       })
     }
     return profiles
@@ -119,10 +126,10 @@ export function supportsPowerShell7Path(executable: string): boolean {
   return major === undefined || Number(major) >= 7
 }
 
-export async function discoverProfiles(): Promise<Profile[]> {
+export async function discoverProfiles(opts?: { readonly login?: boolean }): Promise<Profile[]> {
   if (process.platform === "linux") {
     const bash = which("bash")
-    return profilesFromDiscovery({ platform: "linux", bash: bash ?? undefined })
+    return profilesFromDiscovery({ platform: "linux", bash: bash ?? undefined }, opts)
   }
   if (process.platform !== "win32") return []
 
@@ -257,33 +264,9 @@ function info(file: string, supported = false): Item {
 export function args(file: string, command: string, cwd: string) {
   const n = name(file)
   if (n === "nu" || n === "fish") return ["-c", command]
-  if (n === "zsh") {
-    return [
-      "-l",
-      "-c",
-      `
-        [[ -f ~/.zshenv ]] && source ~/.zshenv >/dev/null 2>&1 || true
-        [[ -f "\${ZDOTDIR:-$HOME}/.zshrc" ]] && source "\${ZDOTDIR:-$HOME}/.zshrc" >/dev/null 2>&1 || true
-        cd -- "$1"
-        eval ${JSON.stringify(command)}
-      `,
-      "opencode",
-      cwd,
-    ]
-  }
-  if (n === "bash") {
-    return [
-      "-l",
-      "-c",
-      `
-        shopt -s expand_aliases
-        [[ -f ~/.bashrc ]] && source ~/.bashrc >/dev/null 2>&1 || true
-        cd -- "$1"
-        eval ${JSON.stringify(command)}
-      `,
-      "opencode",
-      cwd,
-    ]
+  if (n === "zsh" || n === "bash" || n === "sh") {
+    // Non-login, non-rc: cwd is applied by the PTY host; avoid profile noise in tool output.
+    return ["-c", command]
   }
   if (n === "cmd") return ["/c", command]
   if (ps(file)) return ["-NoProfile", "-Command", command]

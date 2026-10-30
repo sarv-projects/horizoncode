@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { Cause, Deferred, Effect, Exit, Queue } from "effect"
-import { Pty } from "@opencode-ai/core/pty"
-import type { PtyID } from "@opencode-ai/core/pty/schema"
+import { Pty } from "@horizoncode/core/pty"
+import type { PtyID } from "@horizoncode/core/pty/schema"
 import { probeStartApproval, withLivePty } from "./live-host-kernel"
 
 // PTY-003: terminal tickets are the only way a renderer/desktop surface may attach to an

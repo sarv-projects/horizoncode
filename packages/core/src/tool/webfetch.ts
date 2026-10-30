@@ -1,6 +1,6 @@
 export * as WebFetchTool from "./webfetch"
 
-import { ToolFailure } from "@opencode-ai/llm"
+import { ToolFailure } from "@horizoncode/llm"
 import { Effect, Layer, Schema } from "effect"
 import { Parser } from "htmlparser2"
 import TurndownService from "turndown"

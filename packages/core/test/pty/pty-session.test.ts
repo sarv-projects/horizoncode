@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test"
 import { Cause, Deferred, Effect, Exit, Layer, Queue } from "effect"
-import { Config } from "@opencode-ai/core/config"
-import { EventV2 } from "@opencode-ai/core/event"
-import { Pty } from "@opencode-ai/core/pty"
-import type { PtyID } from "@opencode-ai/core/pty/schema"
+import { Config } from "@horizoncode/core/config"
+import { EventV2 } from "@horizoncode/core/event"
+import { Pty } from "@horizoncode/core/pty"
+import type { PtyID } from "@horizoncode/core/pty/schema"
 import { existsSync } from "node:fs"
 import { join } from "node:path"
 import { probeStartApproval, withLivePty } from "./live-host-kernel"
@@ -142,8 +142,8 @@ describe("pty", () => {
         const info = yield* createPty(workspace, bash, ["-c", "exit 3"])
 
         expect(info.command).toBe(bash)
-        // The registered posix bash profile is a login shell, so `-l` is appended.
-        expect(info.args).toEqual(["-c", "exit 3", "-l"])
+        // Tool execution is non-login by default, so no `-l` is appended.
+        expect(info.args).toEqual(["-c", "exit 3"])
         expect(info.cwd).toBe(workspace)
 
         expect(yield* waitForEvents(events, info.id, 2)).toEqual(["created", "exited"])
@@ -254,7 +254,7 @@ describe("pty", () => {
 })
 
 describe("pty create defaults", () => {
-  startTest("defaults command, login args, and cwd from config and location", () => {
+  startTest("defaults command, non-login args, and cwd from config and location", () => {
     if (!bash) return
     return withLivePty(
       ({ pty, workspace }) =>
@@ -263,7 +263,7 @@ describe("pty create defaults", () => {
             pty.remove(created.id).pipe(Effect.ignore),
           )
           expect(info.command).toBe(bash)
-          expect(info.args).toEqual(["-l"])
+          expect(info.args).toEqual([])
           expect(info.cwd).toBe(workspace)
           expect(info.title).toBe("configured")
         }),

@@ -521,10 +521,10 @@ say "CATALOG: inline opencode/e2e-offline api=$MOCK_BASE/v1 cost=0 (models fetch
 # 1b. HostKernel binary: the direct provider-authority gate requires the real
 #     HostKernel's permission-mode snapshot, which only exists when the
 #     compiled binary's embedded kernel is present. A source-mode `bun run`
-#     has no build-time defines (see packages/opencode/script/build.ts), so
+#     has no build-time defines (see packages/horizoncode/script/build.ts), so
 #     the repo-local hz-kernel binary is injected as build globals through an
 #     entry wrapper (a plain `--preload` is ignored here because
-#     packages/opencode/bunfig.toml pins its own preload list). The wrapper sets
+#     packages/horizoncode/bunfig.toml pins its own preload list). The wrapper sets
 #     the exact build manifest shape then imports the CLI entry, so the REAL
 #     kernel runs; no gate is mocked or weakened. If no kernel binary exists, fail closed.
 # ---------------------------------------------------------------------------
@@ -541,13 +541,13 @@ case "$KERNEL_SHA" in
   [0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ;;
   *) fail host-kernel "could not sha256sum kernel binary $KERNEL_BIN" ;;
 esac
-python3 - "$RUN/kernel-wrapper.ts" "$KERNEL_BIN" "$KERNEL_SHA" "$ROOT/packages/opencode/src/index.ts" "$PROJECT" <<'PY'
+python3 - "$RUN/kernel-wrapper.ts" "$KERNEL_BIN" "$KERNEL_SHA" "$ROOT/packages/horizoncode/src/index.ts" "$PROJECT" <<'PY'
 import json, sys
 out, asset, sha, entry, project = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
 with open(out, "w", encoding="utf-8") as f:
     f.write("// E2E source-mode wrapper: set the build-time defines the compiled binary\n")
     f.write("// embeds (script/build.ts) as globals BEFORE loading the real CLI entry.\n")
-    f.write("// A plain `--preload` is ignored here because packages/opencode/bunfig.toml\n")
+    f.write("// A plain `--preload` is ignored here because packages/horizoncode/bunfig.toml\n")
     f.write("// pins its own preload list; setting globals in the entry wrapper sidesteps\n")
     f.write("// that and still runs the REAL HostKernel permission-mode gate.\n")
     f.write("globalThis.OPENCODE_HOST_KERNEL_MANIFEST = JSON.stringify({\n")
@@ -558,7 +558,7 @@ with open(out, "w", encoding="utf-8") as f:
     f.write("  sha256: %s,\n" % json.dumps(sha))
     f.write("})\n")
     f.write("globalThis.OPENCODE_HOST_KERNEL_ASSET = %s\n" % json.dumps(asset))
-    # `bun run --cwd packages/opencode` is only a module-resolution trick; the
+    # `bun run --cwd packages/horizoncode` is only a module-resolution trick; the
     # project the server serves must stay the checkout root, or every write to a
     # repository-root path is correctly refused as outside the workspace.
     f.write("process.chdir(%s)\n" % json.dumps(project))
@@ -573,7 +573,7 @@ say "EVIDENCE host_kernel=$KERNEL_BIN sha256=$KERNEL_SHA wrapper=kernel-wrapper.
 #     TOKEN / SECRET / CREDENTIAL / PASSWORD name. OPENCODE_SERVER_PASSWORD is
 #     kept (it is this run's Basic-auth secret, not provider material).
 # ---------------------------------------------------------------------------
-python3 - "$ROOT/packages/opencode/test/tool/fixtures/models-api.json" > "$RUN/fixture-env.txt" <<'PY'
+python3 - "$ROOT/packages/horizoncode/test/tool/fixtures/models-api.json" > "$RUN/fixture-env.txt" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1], encoding="utf-8"))
 names = set()
@@ -611,7 +611,7 @@ start_server() {
   : > "$LOGS/serve.log"
   ( cd "$ROOT" && exec env \
       "${PROVIDER_SCRUB[@]+"${PROVIDER_SCRUB[@]}"}" \
-      "$BUN" run --cwd packages/opencode "$RUN/kernel-wrapper.ts" serve --hostname 127.0.0.1 --port "$port" ) \
+      "$BUN" run --cwd packages/horizoncode "$RUN/kernel-wrapper.ts" serve --hostname 127.0.0.1 --port "$port" ) \
     >>"$LOGS/serve.log" 2>&1 &
   SERVER_PID=$!
   for _ in $(seq 1 240); do

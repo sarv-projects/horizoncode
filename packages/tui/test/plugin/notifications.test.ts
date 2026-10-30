@@ -1,5 +1,5 @@
-import type { Event } from "@opencode-ai/sdk/v2"
-import type { TuiAttentionNotifyInput, TuiPluginApi, TuiPluginMeta } from "@opencode-ai/plugin/tui"
+import type { Event } from "@horizoncode/sdk/v2"
+import type { TuiAttentionNotifyInput, TuiPluginApi, TuiPluginMeta } from "@horizoncode/plugin/tui"
 import { expect, test } from "bun:test"
 import Notifications from "../../src/feature-plugins/system/notifications"
 

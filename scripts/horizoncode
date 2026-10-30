@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# HorizonCode application entry: optional .env, HostKernel, local direct provider
+# credentials (any models.dev provider via env or `horizoncode providers login`), then CLI/TUI.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+HZ_LIB_DIR="$ROOT/scripts/e2e/lib"
+# shellcheck source=lib/cgroup-scope.sh
+. "$HZ_LIB_DIR/cgroup-scope.sh"
+hz_ensure_scope "$@"
+
+ENV_FILE="$ROOT/.env"
+if [ -f "$ENV_FILE" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$ENV_FILE"
+  set +a
+fi
+
+KERNEL_BIN="$ROOT/kernel/target/debug/hz-kernel"
+if [ ! -x "$KERNEL_BIN" ]; then
+  echo "horizoncode: building hz-kernel…" >&2
+  (cd "$ROOT/kernel" && cargo build --bin hz-kernel)
+fi
+
+export HORIZONCODE_ALLOW_DIRECT_PROVIDER_CREDENTIALS=1
+export HORIZONCODE_LOCAL_CLI=1
+
+# E2E-only Nemotron profile pin (never overwrite real ~/.config on normal dev):
+if [ "${HZ_E2E_BOOTSTRAP_NEMOTRON:-0}" = "1" ]; then
+  export NEMOTRON_PROVIDER_ID="${NEMOTRON_PROVIDER_ID:-nvidia}"
+  export NEMOTRON_MODEL_ID="${NEMOTRON_MODEL_ID:-nvidia/nemotron-3.5-super-vl-120b-a12b}"
+  export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+  # shellcheck source=lib/bootstrap-horizoncode-config.sh
+  . "$HZ_LIB_DIR/bootstrap-horizoncode-config.sh"
+  hz_bootstrap_horizoncode_config
+fi
+
+cd "$ROOT"
+exec "$ROOT/packages/horizoncode/bin/horizoncode" "$@"

@@ -6,7 +6,7 @@ import { DialogSelect, type DialogSelectRef, type DialogSelectOption } from "../
 import { useTheme } from "../context/theme"
 import { TextAttributes } from "@opentui/core"
 import { useSDK } from "../context/sdk"
-import type { McpStatus } from "@opencode-ai/sdk/v2"
+import type { McpStatus } from "@horizoncode/sdk/v2"
 import { useToast } from "../ui/toast"
 
 export function mcpStatusLabel(status: McpStatus): string {

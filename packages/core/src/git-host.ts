@@ -4,7 +4,7 @@
  * processes; startup/migration callers without a trusted Location stay closed.
  */
 import { Effect } from "effect"
-import type { Location as LocationSchema } from "@opencode-ai/schema"
+import type { Location as LocationSchema } from "@horizoncode/schema"
 import type { DirectSessionWorkspaceSnapshotV1 } from "./session/supervisor"
 import { TrustedPrincipalContext } from "./trusted-principal"
 

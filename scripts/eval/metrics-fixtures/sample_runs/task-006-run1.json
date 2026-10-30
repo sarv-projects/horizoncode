@@ -1,0 +1,9 @@
+{
+  "task_id": "task-006",
+  "model_id": "openrouter/nemotron-3-super-120b-a12b",
+  "verified_success": false,
+  "duration_ms": 71000,
+  "tool_errors": 0,
+  "session_id": "ses_a1b2c3",
+  "turns": 3
+}

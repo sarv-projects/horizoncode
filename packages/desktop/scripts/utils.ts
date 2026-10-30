@@ -16,37 +16,37 @@ export function resolveChannel(): Channel {
 export const CLI_BINARIES: Array<{ rustTarget: string; package: string; os: string; cpu: string }> = [
   {
     rustTarget: "aarch64-apple-darwin",
-    package: "@opencode-ai/cli-darwin-arm64",
+    package: "@horizoncode/cli-darwin-arm64",
     os: "darwin",
     cpu: "arm64",
   },
   {
     rustTarget: "x86_64-apple-darwin",
-    package: "@opencode-ai/cli-darwin-x64-baseline",
+    package: "@horizoncode/cli-darwin-x64-baseline",
     os: "darwin",
     cpu: "x64",
   },
   {
     rustTarget: "aarch64-pc-windows-msvc",
-    package: "@opencode-ai/cli-windows-arm64",
+    package: "@horizoncode/cli-windows-arm64",
     os: "win32",
     cpu: "arm64",
   },
   {
     rustTarget: "x86_64-pc-windows-msvc",
-    package: "@opencode-ai/cli-windows-x64-baseline",
+    package: "@horizoncode/cli-windows-x64-baseline",
     os: "win32",
     cpu: "x64",
   },
   {
     rustTarget: "x86_64-unknown-linux-gnu",
-    package: "@opencode-ai/cli-linux-x64-baseline",
+    package: "@horizoncode/cli-linux-x64-baseline",
     os: "linux",
     cpu: "x64",
   },
   {
     rustTarget: "aarch64-unknown-linux-gnu",
-    package: "@opencode-ai/cli-linux-arm64",
+    package: "@horizoncode/cli-linux-arm64",
     os: "linux",
     cpu: "arm64",
   },

@@ -11,7 +11,7 @@ cleanup() {
   fi
 }
 trap cleanup EXIT HUP INT TERM
-for pkg in opencode tui core; do
+for pkg in horizoncode tui core; do
   out="$(mktemp "$ROOT/.tmp/horizoncode-typecheck.XXXXXX")"
   set +e
   (cd "$ROOT/packages/$pkg" && TMPDIR="$ROOT/.tmp" bun run typecheck 2>&1 | tee "$out")

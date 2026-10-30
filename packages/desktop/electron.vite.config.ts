@@ -1,9 +1,9 @@
 import { sentryVitePlugin } from "@sentry/vite-plugin"
 import { defineConfig } from "electron-vite"
-import appPlugin from "@opencode-ai/app/vite"
+import appPlugin from "@horizoncode/app/vite"
 import * as fs from "node:fs/promises"
 
-const OPENCODE_SERVER_DIST = "../opencode/dist/node"
+const OPENCODE_SERVER_DIST = "../horizoncode/dist/node"
 
 const channel = (() => {
   const raw = process.env.OPENCODE_CHANNEL

@@ -1,5 +1,5 @@
 import { createMemo, createSignal, onMount } from "solid-js"
-import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
+import { ConfigV1 } from "@horizoncode/core/v1/config/config"
 import { DialogSelect, type DialogSelectOption } from "../ui/dialog-select"
 import { useProject } from "../context/project"
 import { useSDK } from "../context/sdk"
@@ -171,6 +171,13 @@ const ROUTE_INFO: Record<SearchRouteID, { title: string; routeClass: SearchRoute
     costClass: "UNKNOWN",
     details: `Parallel Search uses a SecretBroker credential reference. Usage cost is unknown until current pricing is reviewed. ${BYO_UNAVAILABLE}`,
     authSource: "secret_broker",
+  },
+  duckduckgo: {
+    title: "DuckDuckGo Search",
+    routeClass: "DIRECT_SEARCH",
+    costClass: "FREE",
+    authSource: "none",
+    details: "Anonymous built-in route; dispatch stays unavailable until Guarded acceptance.",
   },
 }
 

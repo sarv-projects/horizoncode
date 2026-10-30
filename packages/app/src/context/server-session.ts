@@ -1,6 +1,6 @@
-import { Binary } from "@opencode-ai/core/util/binary"
-import { retry } from "@opencode-ai/core/util/retry"
-import type { OpenCodeEvent, SessionApi, SessionMessageInfo } from "@opencode-ai/client/promise"
+import { Binary } from "@horizoncode/core/util/binary"
+import { retry } from "@horizoncode/core/util/retry"
+import type { OpenCodeEvent, SessionApi, SessionMessageInfo } from "@horizoncode/client/promise"
 import type {
   Message,
   OpencodeClient,
@@ -10,8 +10,8 @@ import type {
   Session,
   SessionStatus,
   Todo,
-} from "@opencode-ai/sdk/v2/client"
-import type { FileDiffInfo } from "@opencode-ai/client/promise"
+} from "@horizoncode/sdk/v2/client"
+import type { FileDiffInfo } from "@horizoncode/client/promise"
 import { batch } from "solid-js"
 import { createStore, produce, reconcile } from "solid-js/store"
 import { message as cleanMessage } from "@/utils/diffs"

@@ -69,7 +69,7 @@ case "$(uname -s 2>/dev/null || echo unknown)" in
 esac
 command -v python3 >/dev/null 2>&1 || fail_preflight "python3 not found on PATH"
 [ -x "$BUN" ] || fail_preflight "BUN is not an executable: $BUN (set BUN=/path/to/bun to override)"
-[ -f "$ROOT/packages/opencode/package.json" ] || fail_preflight "packages/opencode/package.json not found under $ROOT"
+[ -f "$ROOT/packages/horizoncode/package.json" ] || fail_preflight "packages/horizoncode/package.json not found under $ROOT"
 [ -f "$ROOT/scripts/perf/test_baseline_evidence.py" ] || fail_preflight "scripts/perf/test_baseline_evidence.py not found under $ROOT"
 [ -f "$ROOT/scripts/architecture/audit_overlay_visibility.py" ] || fail_preflight "scripts/architecture/audit_overlay_visibility.py not found under $ROOT"
 
@@ -222,7 +222,7 @@ run_step 01-overlay-visibility "$ROOT" \
   python3 scripts/architecture/audit_overlay_visibility.py
 
 # 2. Focused package typechecks; reject both nonzero exits and latent TS diagnostics.
-run_step 02-opencode-typecheck "$ROOT/packages/opencode" \
+run_step 02-opencode-typecheck "$ROOT/packages/horizoncode" \
   "$BUN" run typecheck
 check_step 02b-opencode-no-ts-errors mustnot 'error TS' \
   "${STEP_LOG[02-opencode-typecheck]}"
@@ -236,33 +236,33 @@ check_step 02f-tui-no-ts-errors mustnot 'error TS' \
   "${STEP_LOG[02e-tui-typecheck]}"
 
 # 3a. P1 Guarded Edit/Write ordering and P2 managed lifecycle.
-run_step 03a-p1-tools "$ROOT/packages/opencode" \
+run_step 03a-p1-tools "$ROOT/packages/horizoncode" \
   "$BUN" test --timeout 120000 \
   test/tool/edit.test.ts test/tool/write.test.ts test/session/tools.test.ts
-run_step 03b-p2-managed-control "$ROOT/packages/opencode" \
+run_step 03b-p2-managed-control "$ROOT/packages/horizoncode" \
   "$BUN" test --timeout 30000 test/session/managed-control.test.ts
 
 # 3b. P3 exact repo freshness/byte budgets and Core symbol/compile policy.
-run_step 03c-p3-repo-intel "$ROOT/packages/opencode" \
+run_step 03c-p3-repo-intel "$ROOT/packages/horizoncode" \
   "$BUN" test --timeout 30000 test/tool/repo-tools.test.ts test/tool/repo-intel.test.ts
 run_step 03d-p3-core-context "$ROOT/packages/core" \
   "$BUN" test --timeout 30000 test/context-compile-policy.test.ts
 
 # 3c. P4 closed DAP/LSP/editor surfaces: no spawn, auth, or HostKernel dispatch.
-run_step 03e-p4-closed-editor-dap-lsp "$ROOT/packages/opencode" \
+run_step 03e-p4-closed-editor-dap-lsp "$ROOT/packages/horizoncode" \
   "$BUN" test --timeout 120000 \
   test/lsp/external-editor.test.ts test/lsp/index.test.ts \
   test/dap/tool-surface.test.ts test/dap/host-protocol-client.test.ts
 
 # 3e. P5 WebSearch/CodeMode protocol and turn-loop regressions (offline; readiness closed).
-run_step 03f-p5-search-codemode "$ROOT/packages/opencode" \
+run_step 03f-p5-search-codemode "$ROOT/packages/horizoncode" \
   "$BUN" test --timeout 60000 \
   test/tool/websearch.test.ts test/tool/code-mode.test.ts \
   test/tool/code-mode-integration.test.ts test/tool/code-mode-protocol.test.ts \
   test/tool/code-mode-run.test.ts test/tool/code-mode-helper.test.ts
 
 # 3f. P6 secret grants/transport and local provider-denial tests; no live key/provider.
-run_step 03g-p6-secretbroker-provider-closed "$ROOT/packages/opencode" \
+run_step 03g-p6-secretbroker-provider-closed "$ROOT/packages/horizoncode" \
   "$BUN" test --timeout 60000 \
   test/auth/credential-use-authorizer.test.ts \
   test/auth/credential-mutation-authorizer.test.ts test/auth/credential-mutation.test.ts \
@@ -273,7 +273,7 @@ run_step 03g-p6-secretbroker-provider-closed "$ROOT/packages/opencode" \
   test/cli/acp/initialize-auth.test.ts
 
 # 3g. P7 direct UX and mounted TUI scroll/connect behavior.
-run_step 03h-p7-opencode-direct-ux "$ROOT/packages/opencode" \
+run_step 03h-p7-opencode-direct-ux "$ROOT/packages/horizoncode" \
   "$BUN" test --timeout 60000 \
   test/session/retry.test.ts test/server/httpapi-v2-direct-profile-map.test.ts
 run_step 03i-p7-tui-scroll-connect "$ROOT/packages/tui" \
@@ -302,7 +302,7 @@ run_step 04h-p8-eval-harness "$ROOT/scripts/eval" \
   python3 -m unittest -v test_eval_harness
 check_step 04i-p8-eval-harness-nonempty must '^Ran [1-9][0-9]* tests?' \
   "${STEP_LOG[04h-p8-eval-harness]}"
-check_step 04j-p8-eval-harness-ok must '^OK( \(skipped=[0-9]+\))?$' \
+check_step 04j-p8-eval-harness-ok must '^OK$' \
   "${STEP_LOG[04h-p8-eval-harness]}"
 
 # 5. P9 synthetic release/identity tests; no candidate build, signing, or publication.

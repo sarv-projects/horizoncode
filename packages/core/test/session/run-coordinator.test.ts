@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { Deferred, Effect } from "effect"
-import { SessionRunCoordinator } from "@opencode-ai/core/session/run-coordinator"
-import { sameTrustedPrincipal, type TrustedPrincipal } from "@opencode-ai/core/trusted-principal"
+import { SessionRunCoordinator } from "@horizoncode/core/session/run-coordinator"
+import { sameTrustedPrincipal, type TrustedPrincipal } from "@horizoncode/core/trusted-principal"
 
 test("an active Session coordinator rejects another principal from joining or queueing a run", async () => {
   await Effect.runPromise(

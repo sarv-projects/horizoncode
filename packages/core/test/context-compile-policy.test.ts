@@ -10,7 +10,7 @@ import {
   resolveContextSpeedPlanV1,
   shouldReuseRepoContextAnchorV1,
   type RepoContextAnchorEpochV1,
-} from "@opencode-ai/core/session/context-compile-policy"
+} from "@horizoncode/core/session/context-compile-policy"
 
 const route = {
   providerID: "anthropic",

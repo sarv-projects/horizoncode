@@ -1,9 +1,9 @@
-import { SessionV2 } from "@opencode-ai/core/session"
-import type { Admitted } from "@opencode-ai/core/session/input"
+import { SessionV2 } from "@horizoncode/core/session"
+import type { Admitted } from "@horizoncode/core/session/input"
 import { DateTime, Effect, Stream } from "effect"
 import { HttpApiBuilder, HttpApiSchema } from "effect/unstable/httpapi"
 import { Api } from "../api"
-import { SessionsCursor } from "@opencode-ai/protocol/groups/session"
+import { SessionsCursor } from "@horizoncode/protocol/groups/session"
 import {
   ConflictError,
   ForbiddenError,
@@ -13,9 +13,9 @@ import {
   ServiceUnavailableError,
   SessionNotFoundError,
   UnknownError,
-} from "@opencode-ai/protocol/errors"
-import { AbsolutePath } from "@opencode-ai/core/schema"
-import { SessionSupervisorError } from "@opencode-ai/core/session/supervisor"
+} from "@horizoncode/protocol/errors"
+import { AbsolutePath } from "@horizoncode/core/schema"
+import { SessionSupervisorError } from "@horizoncode/core/session/supervisor"
 
 const DefaultSessionsLimit = 50
 const DefaultSessionHistoryLimit = 50

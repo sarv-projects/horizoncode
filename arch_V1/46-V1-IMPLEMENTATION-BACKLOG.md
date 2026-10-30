@@ -40,8 +40,8 @@ p95/baseline number exists anywhere in `reports/`; B1 typecheck not green (Run C
 2 of 8 packages**); B5 free-model E2E **NOT_RUN with zero provider requests**; B6 RC0 **NOT_ATTESTED**
 (allowlist empty); two `SELF-REPORT` rows.
 
-**Verified so far: ~95 distinct `RUN` command+count records** across P1–P9 + A1 (registry claim
-independently confirmed: **226 designed / 4 `code_present` of 230**). **0 of 9 phases VERIFIED.**
+**Verified so far: ~95 distinct `RUN` command+count records** across P1–P9 + A1 (registry claim **not** derivable from `46-V1-WIRE-TRACKER.md` — counted 2026-10-29 that file has
+**0 Done**, 73 Partial, 12 Not done, 1 N/A and no `code_present` value; 226/230 are backlog-ID totals). **0 of 9 phases VERIFIED.**
 
 Rows that advanced to *partially integrated* but remain blocked by named owners: P1-01/P1-02
 (focused Rust greens **11/11**, **10/10**, lib **79/79**, `direct_attempt_rpc` **10/10**; six matrix +

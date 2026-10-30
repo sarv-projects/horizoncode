@@ -15,7 +15,7 @@ export {
   TERMINAL_SOCKET_QUEUE_MAX_BYTES,
   withinTerminalBackpressureLimit,
   type TerminalFrame,
-} from "@opencode-ai/core/pty/protocol"
+} from "@horizoncode/core/pty/protocol"
 
 export const TERMINAL_PROTOCOL = "horizon.terminal.v1"
 

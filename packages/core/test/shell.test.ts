@@ -1,9 +1,9 @@
 import { describe, expect, mock, test } from "bun:test"
 import path from "path"
 import type { ChildProcess } from "child_process"
-import { Shell } from "@opencode-ai/core/shell"
-import { FSUtil } from "@opencode-ai/core/fs-util"
-import { which } from "@opencode-ai/core/util/which"
+import { Shell } from "@horizoncode/core/shell"
+import { FSUtil } from "@horizoncode/core/fs-util"
+import { which } from "@horizoncode/core/util/which"
 
 const withShell = async (shell: string | undefined, fn: () => void | Promise<void>) => {
   const prev = process.env.SHELL
@@ -30,8 +30,10 @@ describe("shell", () => {
     }
   })
 
-  test("detects login shells", () => {
-    expect(Shell.login("/bin/bash")).toBe(true)
+  test("defaults tool shells to non-login profiles", () => {
+    // Login profiles source user startup files into every tool result; login is
+    // opt-in via Config `shell_login`, never the profile default.
+    expect(Shell.login("/bin/bash")).toBe(false)
     expect(Shell.login("C:/tools/pwsh.exe")).toBe(false)
   })
 
@@ -58,10 +60,8 @@ describe("shell", () => {
   test("builds command args per shell family", () => {
     expect(Shell.args("/bin/sh", "echo hi", "/tmp")).toEqual(["-c", "echo hi"])
     expect(Shell.args("/usr/bin/fish", "echo hi", "/tmp")).toEqual(["-c", "echo hi"])
-    const zsh = Shell.args("/bin/zsh", "echo hi", "/tmp")
-    expect(zsh[0]).toBe("-l")
-    expect(zsh[1]).toBe("-c")
-    expect(zsh.at(-1)).toBe("/tmp")
+    expect(Shell.args("/bin/zsh", "echo hi", "/tmp")).toEqual(["-c", "echo hi"])
+    expect(Shell.args("/bin/bash", "echo hi", "/tmp")).toEqual(["-c", "echo hi"])
   })
 
   if (process.platform === "win32") {
@@ -139,8 +139,13 @@ describe("shell", () => {
       profileKey: "posix:bash",
       kind: "posix.bash",
       executable: "/usr/bin/bash",
-      login: true,
+      login: false,
     })
+    // A login shell is opt-in, and only for the POSIX Bash profile.
+    expect(Shell.profilesFromDiscovery(discovery, { login: true })).toMatchObject([
+      { profileKey: "posix:bash", login: true },
+    ])
+    expect(Shell.profilesFromDiscovery(discovery).every((profile) => profile.login === false)).toBe(true)
     expect(Shell.resolveProfile("/usr/bin/zsh", discovery)).toBeUndefined()
     expect(Shell.resolveProfile("bash", { platform: "linux" })).toBeUndefined()
   })

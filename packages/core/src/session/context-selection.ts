@@ -5,11 +5,11 @@ import {
   ContextSelectionV1,
   ContextSelectionSourceV1 as ContextSelectionSourceSchema,
   type ContextSelectionModeV1,
-} from "@opencode-ai/schema/context-selection-v1"
+} from "@horizoncode/schema/context-selection-v1"
 
 type ContextSelectionSourceV1 = typeof ContextSelectionSourceSchema.Type
-import * as AgentProfileV2 from "@opencode-ai/schema/agent-profile-v2"
-import type { DirectProviderRequestContextV1 } from "@opencode-ai/llm/route"
+import * as AgentProfileV2 from "@horizoncode/schema/agent-profile-v2"
+import type { DirectProviderRequestContextV1 } from "@horizoncode/llm/route"
 import { SessionMessage } from "./message"
 import { SessionSchema } from "./schema"
 

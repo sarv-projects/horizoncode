@@ -94,6 +94,7 @@ export function createDialogProviderOptions() {
   const sync = useSync()
   const dialog = useDialog()
   const toast = useToast()
+  const localDirect = () => sync.data.provider_next.localDirectCredentials === true
 
   return createMemo(() =>
     pipe(
@@ -137,6 +138,14 @@ export function createDialogProviderOptions() {
 
             if (connected) {
               dialog.replace(() => <DialogModel providerID={providerID} />)
+              return
+            }
+
+            if (localDirect()) {
+              toast.show({
+                message: `${provider.title} is not connected yet. Add a key: horizoncode providers login -p ${providerID} (or set its catalog env vars in .env), then open /models or the model list keybind.`,
+                variant: "info",
+              })
               return
             }
 

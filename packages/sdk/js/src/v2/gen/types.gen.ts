@@ -10451,6 +10451,7 @@ export type ProviderListResponses = {
     }
     anonymousFreeProviders?: Array<string>
     anonymousFreeModels?: Array<string>
+    localDirectCredentials?: boolean
   }
 }
 

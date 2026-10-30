@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test"
-import { compileContextLedgerV2 } from "@opencode-ai/core/session/context-ledger"
+import { compileContextLedgerV2 } from "@horizoncode/core/session/context-ledger"
 import {
   contextCompilePolicyDigestV1,
   resolveContextCompilePolicyV1,
-} from "@opencode-ai/core/session/context-compile-policy"
-import type { ContextSelectionV1 } from "@opencode-ai/schema/context-selection-v1"
+} from "@horizoncode/core/session/context-compile-policy"
+import type { ContextSelectionV1 } from "@horizoncode/schema/context-selection-v1"
 
 const selection: ContextSelectionV1 = {
   schemaVersion: 1,

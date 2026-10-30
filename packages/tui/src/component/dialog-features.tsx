@@ -1,5 +1,5 @@
 import { createMemo, createSignal, onMount, Show } from "solid-js"
-import { FeatureExposure } from "@opencode-ai/core/v1/config/feature-exposure"
+import { FeatureExposure } from "@horizoncode/core/v1/config/feature-exposure"
 import { DialogSelect, type DialogSelectOption } from "../ui/dialog-select"
 import { useSDK } from "../context/sdk"
 import { useProject } from "../context/project"

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { blake3 } from "@noble/hashes/blake3.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
-import { encodeCanonicalMessagePackV1, Location } from "@opencode-ai/schema"
+import { encodeCanonicalMessagePackV1, Location } from "@horizoncode/schema"
 import { Effect } from "effect"
 import { TrustedPrincipalContext, type TrustedPrincipal } from "../src/trusted-principal"
 import {

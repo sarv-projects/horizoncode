@@ -1,5 +1,5 @@
 import { Effect } from "effect"
-import { Config } from "@opencode-ai/core/config"
+import { Config } from "@horizoncode/core/config"
 
 /**
  * Fail-closed Config.Interface members that tests which only exercise `entries`

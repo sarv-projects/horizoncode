@@ -1,0 +1,35 @@
+Build a production-quality, dependency-free Python package named auditlog from scratch.
+
+Implement this CLI:
+python -m auditlog summarize PATH [--kind KIND] [--since TIMESTAMP] [--until TIMESTAMP] [--limit N]
+
+Input format: Each non-blank line is a JSON object with required fields: seq (positive integer, excluding booleans), ts (valid RFC3339 UTC timestamp ending in Z), kind (non-empty string), message (string).
+
+Behavior:
+1. Ignore blank lines.
+
+2. Validate every event. For malformed JSON or invalid records, write a useful path-and-line-number diagnostic to stderr and continue processing subsequent lines.
+
+3. If seq is duplicated, keep the first valid record and report later duplicates to stderr.
+
+4. Sort valid retained records by seq ascending.
+
+5. --kind filters by exact kind.
+
+6. --since and --until are inclusive timestamp filters. Either can be omitted.
+
+7. Reject invalid timestamp arguments, non-positive limits, and a --since later than --until with a clear CLI error and nonzero exit status.
+
+8. --limit N returns the N most recent records by seq from the filtered results, displayed in ascending seq order.
+
+9. JSON output is one object: count (number after filters, before limit), counts_by_kind (counts after filters, before limit), events (records after limit).
+
+10. Make output deterministic: sort counts_by_kind keys, use stable JSON formatting, and never write normal status messages to stdout.
+
+11. A missing or unreadable input file must fail cleanly without a traceback. Malformed individual records must not prevent valid records from being summarized.
+
+12. Use only the Python standard library. Add comprehensive unittest tests and a README documenting the schema, CLI, filtering, diagnostics, and exit behavior.
+
+13. Run tests and exercise the actual CLI against a temporary JSONL file containing valid, malformed, duplicate, and filterable records. Fix every discovered failure before finishing.
+
+14.create a perfect ui for this,decide the stack yourself.Do not stop at implementation. Verify the complete CLI behavior and report the exact test and smoke-test results.

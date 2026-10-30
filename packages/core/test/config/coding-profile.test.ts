@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import * as AgentProfileV2 from "@opencode-ai/schema/agent-profile-v2"
+import * as AgentProfileV2 from "@horizoncode/schema/agent-profile-v2"
 import { HorizonCodingProfile } from "../../src/config/coding-profile"
 
 describe("Horizon Coding Profile preset (DEC-V1-37)", () => {

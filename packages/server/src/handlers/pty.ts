@@ -1,20 +1,20 @@
-import { Pty } from "@opencode-ai/core/pty"
-import { SessionSupervisorError } from "@opencode-ai/core/session/supervisor"
-import { PtyProtocol, withinTerminalBackpressureLimit } from "@opencode-ai/core/pty/protocol"
-import { TrustedPrincipalContext } from "@opencode-ai/core/trusted-principal"
-import { Location } from "@opencode-ai/core/location"
+import { Pty } from "@horizoncode/core/pty"
+import { SessionSupervisorError } from "@horizoncode/core/session/supervisor"
+import { PtyProtocol, withinTerminalBackpressureLimit } from "@horizoncode/core/pty/protocol"
+import { TrustedPrincipalContext } from "@horizoncode/core/trusted-principal"
+import { Location } from "@horizoncode/core/location"
 import { Effect, Option, Queue } from "effect"
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiBuilder, HttpApiSchema } from "effect/unstable/httpapi"
 import * as Socket from "effect/unstable/socket/Socket"
 import { Api } from "../api"
 import { CorsConfig, type CorsOptions } from "../cors"
-import { ForbiddenError, InvalidRequestError, PtyNotFoundError, ServiceUnavailableError } from "@opencode-ai/protocol/errors"
+import { ForbiddenError, InvalidRequestError, PtyNotFoundError, ServiceUnavailableError } from "@horizoncode/protocol/errors"
 import {
   PTY_CONNECT_TICKET_QUERY,
   PTY_CONNECT_TOKEN_HEADER,
   PTY_CONNECT_TOKEN_HEADER_VALUE,
-} from "@opencode-ai/protocol/groups/pty"
+} from "@horizoncode/protocol/groups/pty"
 import { response } from "../location"
 import { PtyEnvironment } from "../pty-environment"
 

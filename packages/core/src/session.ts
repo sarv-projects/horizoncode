@@ -2,7 +2,7 @@ export * as SessionV2 from "./session"
 export * from "./session/schema"
 
 import { DateTime, Effect, Layer, Schema, Context, Stream, Option } from "effect"
-import { ListAnchor } from "@opencode-ai/schema/session"
+import { ListAnchor } from "@horizoncode/schema/session"
 import { and, asc, desc, eq, gt, like, lt, or, type SQL } from "drizzle-orm"
 import { ProjectV2 } from "./project"
 import { WorkspaceV2 } from "./workspace"
@@ -10,7 +10,7 @@ import { ModelV2 } from "./model"
 import { Location } from "./location"
 import { SessionMessage } from "./session/message"
 import { Prompt } from "./session/prompt"
-import { PromptInput } from "@opencode-ai/schema/prompt-input"
+import { PromptInput } from "@horizoncode/schema/prompt-input"
 import { EventV2 } from "./event"
 import { Snapshot } from "./snapshot"
 import { SessionSupervisor, SessionSupervisorError } from "./session/supervisor"
@@ -37,9 +37,9 @@ import { MessageDecodeError } from "./session/error"
 import { SessionEvent } from "./session/event"
 import { SessionInput } from "./session/input"
 import { SessionRevert } from "./session/revert"
-import { Revert } from "@opencode-ai/schema/revert"
+import { Revert } from "@horizoncode/schema/revert"
 import { FSUtil } from "./fs-util"
-import { SessionDurable } from "@opencode-ai/schema/durable-event-manifest"
+import { SessionDurable } from "@horizoncode/schema/durable-event-manifest"
 
 export { compileContextLedgerV2 } from "./session/context-ledger"
 export type { ContextLedgerCompileInputV2, CompiledContextLedgerV2 } from "./session/context-ledger"
@@ -138,12 +138,12 @@ export interface Interface {
     readonly sessionID: SessionSchema.ID
     /** Minted by authenticated Core ingress and reused for the exact provider dispatch. */
     readonly requestID: string
-    readonly mode: import("@opencode-ai/schema/context-selection-v1").ContextSelectionModeV1
+    readonly mode: import("@horizoncode/schema/context-selection-v1").ContextSelectionModeV1
     /** Resolved exact AgentProfileV2 revision supplied by trusted Core Config. */
     readonly agentProfile: ContextProfileRefV1
     /** Frozen adapter-visible payload; callers must dispatch this same object unchanged. */
     readonly providerInput: ProviderInputV1
-  }) => Effect.Effect<import("@opencode-ai/schema/context-selection-v1").ContextSelectionV1, NotFoundError | MessageDecodeError>
+  }) => Effect.Effect<import("@horizoncode/schema/context-selection-v1").ContextSelectionV1, NotFoundError | MessageDecodeError>
   readonly events: (input: {
     sessionID: SessionSchema.ID
     after?: number

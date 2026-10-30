@@ -2,7 +2,7 @@
 //!
 //! This module is the crate-side of the transport that replaces the TypeScript
 //! fork's fail-closed `unavailableBackend` (`RepoIntelBackend` in
-//! `packages/opencode/src/tool/repo-intel.ts`). It defines exactly one
+//! `packages/horizoncode/src/tool/repo-intel.ts`). It defines exactly one
 //! deterministic, length-prefixed, checksummed frame per RepoIntel backend call
 //! and mirrors the port one call at a time:
 //!

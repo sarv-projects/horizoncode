@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Schema } from "effect"
-import * as RepoIntelligenceSchema from "@opencode-ai/schema/repo-intelligence-v1"
+import * as RepoIntelligenceSchema from "@horizoncode/schema/repo-intelligence-v1"
 import { projectRepoIntelGenerationCacheObservation } from "../src/session/repo-intel-cache-owner"
 
 const digest = `blake3:${"a".repeat(64)}`

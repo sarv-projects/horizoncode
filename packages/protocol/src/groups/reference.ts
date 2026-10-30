@@ -1,5 +1,5 @@
-import { Location } from "@opencode-ai/schema/location"
-import { Reference } from "@opencode-ai/schema/reference"
+import { Location } from "@horizoncode/schema/location"
+import { Reference } from "@horizoncode/schema/reference"
 import { Schema } from "effect"
 import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
 import { LocationQuery, locationQueryOpenApi } from "./location"

@@ -8,7 +8,7 @@
  */
 
 import { Schema } from "effect"
-import * as AgentProfileV2 from "@opencode-ai/schema/agent-profile-v2"
+import * as AgentProfileV2 from "@horizoncode/schema/agent-profile-v2"
 
 export * as HorizonCodingProfile from "./coding-profile"
 
@@ -39,19 +39,23 @@ const CORE_CAPABILITIES = [
   "git.show",
   "git.status",
   "glob.search",
+  "plan.exit",
   "question.ask",
   "skill",
   "skills.search",
   "task",
   "terminal.output_range",
   "terminal.run",
+  "terminal.search",
   "text.search",
+  "todo.write",
   "tools.search",
   "web.search",
 ] as const
 
 /** Canonical capability IDs that require the explicitly enabled Extended tier. */
 const EXTENDED_CAPABILITIES = [
+  "artifacts.search_text",
   "codemode.execute",
   "debug.start",
   "definitions.find",

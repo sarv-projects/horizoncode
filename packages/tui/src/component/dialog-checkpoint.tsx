@@ -144,7 +144,7 @@ function CheckpointPreviewDialog(props: { preview: CheckpointPreview }) {
         <Show when={preview().conflicts.length > conflicts().length}>
           <text fg={theme.textMuted}>{`${preview().conflicts.length - conflicts().length} additional conflicts omitted`}</text>
         </Show>
-        <text fg={theme.textMuted}>Capture and restore are unavailable until Guarded HostKernel effects and same-revision VCS evidence pass acceptance.</text>
+        <text fg={theme.textMuted}>Restore from this preview is Guard-mediated; use the checkpoint list to restore.</text>
         <text fg={theme.textMuted}>Esc closes this preview.</text>
       </box>
     </Dialog>
@@ -155,6 +155,7 @@ export function DialogCheckpoint(props: { sessionID: string }) {
   const sdk = useSDK()
   const dialog = useDialog()
   const toast = useToast()
+  const { theme } = useTheme()
   const [checkpointIDs, setCheckpointIDs] = createSignal<string[]>([])
   const [loading, setLoading] = createSignal(true)
   const [error, setError] = createSignal<string>()
@@ -177,6 +178,50 @@ export function DialogCheckpoint(props: { sessionID: string }) {
       .catch(() => setError("Checkpoint list is unavailable from the authenticated runtime."))
       .finally(() => setLoading(false))
   })
+
+  async function capture() {
+    if (busy()) return
+    setBusy(true)
+    try {
+      const response = await (sdk.client as any).experimental.checkpoint.capture(
+        { sessionID: props.sessionID },
+        { throwOnError: true },
+      )
+      const body = response.data as unknown
+      if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("Capture response failed validation.")
+      const id = (body as { checkpointID?: unknown }).checkpointID
+      if (typeof id !== "string" || !ID.test(id)) throw new Error("Capture response failed validation.")
+      setCheckpointIDs((prev) => [id, ...prev])
+      toast.show({ message: `Checkpoint captured: ${safeCheckpointDisplayText(id, 256)}`, variant: "success" })
+    } catch {
+      toast.show({ message: "Checkpoint capture failed.", variant: "error" })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function restore(checkpointID: string) {
+    if (busy()) return
+    setBusy(true)
+    try {
+      const response = await (sdk.client as any).experimental.checkpoint.restore(
+        { sessionID: props.sessionID, checkpointID },
+        { throwOnError: true },
+      )
+      const body = response.data as unknown
+      if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("Restore response failed validation.")
+      const guarded = (body as { guarded?: unknown }).guarded
+      if (guarded !== true) throw new Error("Restore was not Guard-mediated.")
+      toast.show({ message: `Restored checkpoint ${safeCheckpointDisplayText(checkpointID, 256)} (Guard-mediated).`, variant: "success" })
+    } catch (error) {
+      toast.show({
+        message: `Checkpoint restore failed or requires Guard admission: ${error instanceof Error ? error.message : String(error)}`,
+        variant: "error",
+      })
+    } finally {
+      setBusy(false)
+    }
+  }
 
   async function preview(checkpointID: string) {
     if (busy()) return
@@ -208,18 +253,33 @@ export function DialogCheckpoint(props: { sessionID: string }) {
       <Show when={!error()} fallback={<box paddingLeft={2} paddingRight={2}><text>{error()}</text></box>}>
         <Show
           when={checkpointIDs().length > 0}
-          fallback={<box paddingLeft={2} paddingRight={2} gap={1}><text>No checkpoints are available for this Session.</text><text>Capture remains unavailable until Guarded HostKernel effects pass acceptance.</text></box>}
+          fallback={
+            <box paddingLeft={2} paddingRight={2} gap={1}>
+              <text>No checkpoints are available for this Session.</text>
+              <text fg={busy() ? theme.textMuted : theme.text} onMouseUp={() => void capture()}>
+                {busy() ? "Busy…" : "+ Capture checkpoint (code + conversation)"}
+              </text>
+            </box>
+          }
         >
-          <DialogSelect
-            title="Checkpoints · read-only"
-            options={checkpointIDs().map((checkpointID) => ({
-              title: safeCheckpointDisplayText(checkpointID, 256),
-              value: checkpointID,
-              description: busy() ? "Loading preview…" : "Inspect a digest-bound restore preview. Restore stays unavailable.",
-              disabled: busy(),
-            }))}
-            onSelect={(option) => void preview(option.value)}
-          />
+          <box flexDirection="column" gap={1}>
+            <text
+              fg={busy() ? theme.textMuted : theme.text}
+              onMouseUp={() => void capture()}
+            >
+              {busy() ? "Busy…" : "+ Capture checkpoint (code + conversation)"}
+            </text>
+            <DialogSelect
+              title="Checkpoints"
+              options={checkpointIDs().map((checkpointID) => ({
+                title: safeCheckpointDisplayText(checkpointID, 256),
+                value: checkpointID,
+                description: busy() ? "Loading…" : "Enter: Guard-mediated restore of code + conversation",
+                disabled: busy(),
+              }))}
+              onSelect={(option) => void restore(option.value)}
+            />
+          </box>
         </Show>
       </Show>
     </Show>

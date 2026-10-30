@@ -23,7 +23,7 @@ import {
   UnknownProviderReason,
 } from "../schema"
 import { isContextOverflow } from "../provider-error"
-import type { ContextSelectionV1 as ContextSelectionValueV1 } from "@opencode-ai/schema/context-selection-v1"
+import type { ContextSelectionV1 as ContextSelectionValueV1 } from "@horizoncode/schema/context-selection-v1"
 import * as DirectProviderTransport from "./direct-provider-transport"
 
 /** Internal, non-wire pins supplied by Core for one canonical direct request. */

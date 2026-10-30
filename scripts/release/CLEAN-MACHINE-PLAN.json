@@ -6,7 +6,7 @@
   "candidate_rules": {
     "stale_legacy_output_allowed": false,
     "stale_paths": [
-      "packages/opencode/dist"
+      "packages/horizoncode/dist"
     ],
     "required_inputs": [
       "clean buildable source revision",

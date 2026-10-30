@@ -1,0 +1,11 @@
+{
+  "task_id": "task-005",
+  "model_id": "openrouter/gpt-5.6-luna",
+  "verified_success": false,
+  "duration_ms": 58000,
+  "tool_errors": 2,
+  "failure_category": "model",
+  "session_id": "ses_a1b2c3",
+  "turns": 5,
+  "cost_usd": 0.0121
+}

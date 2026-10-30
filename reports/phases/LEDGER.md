@@ -1,3 +1,26 @@
+## 2026-10-29 13:15 UTC — scorer correction: 2 verified, 0 regressions, 4 fixed of 6
+
+| Phase | Scope | State | Evidence |
+|---|---|---|---|
+| P9 scoring honesty | separate `missing` from `failed`; requires complete set for verified; `partial_verification` status | VERIFIED | re-scored 6 `verify-tests.log` files; 11099 + 15503 verified, 9296 + 11211 partial, 11820 + 13410 unfixed |
+| P9 baseline probe | try first four P2P labels before env_blocked | VERIFIED | `scripts/e2e/nemotron-bench.sh` (syntax + next run) |
+| P7 verification discipline | product harness prompt (all 3 ids) + bench prompt + exact venv interpreter | VERIFIED | `bun test test/agent/` 5/5; the agent then ran `tests/runtests.py` with the venv python |
+| P5 web search | Core enablement (3 bugs) + kernel `resource: "."` + stateless-MCP + `data.web` counter | PARTIAL | kernel builds; live matrix not yet green (agent died mid-run) |
+
+## 2026-10-29 11:20 UTC — round 15: terminal effects green, benchmark measured
+
+| Phase | Lead | Workers | Scope / rev | Blocked on | State | Next dispatch |
+|---|---|---|---|---|---|---|
+| P7 terminal effects | parent | 0 | `normalize_model_terminal_arguments`, challenge/batch classifier agreement, subset approval, batch membership | — | VERIFIED | add regression test for the classifier agreement |
+| P5 provider lifecycle | parent | 0 | models.dev snapshot seeding, `horizonHarness` strip, nvidia route | — | VERIFIED | — |
+| P9 benchmark | parent | 0 | SWE-bench harness (clone/env/baseline/gold calibration/serve/mode/prompt/patch/tests) | runner is Django-only | PARTIAL | pytest runner for matplotlib/xarray |
+| P7 slash matrix | parent | 0 | 22 TUI commands | no agent delivered the matrix | QUEUED | drive each command in the PTY journey |
+| P7 CLI embed | parent | 0 | `horizoncode run` effects | Location registration requires ServerAuth | BLOCKED | design decision needed |
+
+Evidence: `E2E_V1_LIVE_PROVIDER=PASS read=completed write=completed bash=completed`,
+`E2E_V1_TUI_PTY_JOURNEY=PASS` (7/7), kernel `tool_batch_guard_matrix` 9/9,
+`effect_direct_write` 2/2, `tool_batch_multi_call` 8/8, analytics over 8 run records.
+
 # V1 phase execution ledger — 2026-10-22 (parent orchestration)
 
 ## 2026-10-28 16:05 UTC — all three P8 cases addressed; skips 3 -> 1

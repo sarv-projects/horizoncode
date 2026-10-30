@@ -6,8 +6,8 @@ import { randomUUID } from "node:crypto"
 import { mkdir } from "node:fs/promises"
 import path from "node:path"
 import { onCleanup, onMount } from "solid-js"
-import { HorizonCodingProfile } from "@opencode-ai/core/config/coding-profile"
-import type { CapabilityTier } from "@opencode-ai/core/config/coding-profile"
+import { HorizonCodingProfile } from "@horizoncode/core/config/coding-profile"
+import type { CapabilityTier } from "@horizoncode/core/config/coding-profile"
 import * as ExternalEditorProfile from "../../../schema/src/external-editor-profile-v1"
 import { DialogEditorSettings } from "../../src/component/dialog-editor-settings"
 import { DialogSessionSettings, projectCapabilityChipsViewV1 } from "../../src/routes/session/dialog-settings"
@@ -200,7 +200,7 @@ test("Escape cancels editor settings without writing a profile selection", async
 
 test("adds the next immutable built-in editor revision with the current selection CAS", async () => {
   ensureToSorted()
-  const root = path.resolve(import.meta.dir, `../../../opencode/.agent-tmp/p4-editor-settings-add-${randomUUID()}`)
+  const root = path.resolve(import.meta.dir, `../../../horizoncode/.agent-tmp/p4-editor-settings-add-${randomUUID()}`)
   const state = path.join(root, "state")
   await mkdir(state, { recursive: true })
   await Bun.write(path.join(state, "kv.json"), "{}")
@@ -297,7 +297,7 @@ test("adds the next immutable built-in editor revision with the current selectio
 
 test("reloads global selection after an editor-profile CAS conflict without retrying the write", async () => {
   ensureToSorted()
-  const root = path.resolve(import.meta.dir, `../../../opencode/.agent-tmp/p4-editor-settings-conflict-${randomUUID()}`)
+  const root = path.resolve(import.meta.dir, `../../../horizoncode/.agent-tmp/p4-editor-settings-conflict-${randomUUID()}`)
   const state = path.join(root, "state")
   await mkdir(state, { recursive: true })
   await Bun.write(path.join(state, "kv.json"), "{}")

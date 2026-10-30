@@ -79,7 +79,7 @@ assert_static_count_check "$VERIFY" 04b-p8-baseline-nonempty "$PY_COUNT"
 assert_static_count_check "$VERIFY" 04e-p8-admission-policy-nonempty "$PY_COUNT"
 assert_static_count_check "$VERIFY" 04g-p8-rc0-budget-nonempty "$PY_COUNT"
 assert_static_count_check "$VERIFY" 04i-p8-eval-harness-nonempty "$PY_COUNT"
-assert_static_step_check "$VERIFY" 04j-p8-eval-harness-ok must '^OK( \(skipped=[0-9]+\))?$'
+assert_static_step_check "$VERIFY" 04j-p8-eval-harness-ok must '^OK$'
 assert_static_run_step "$VERIFY" 04h-p8-eval-harness 'python3 -m unittest -v test_eval_harness' '"$ROOT/scripts/eval"'
 assert_static_count_check "$VERIFY" 05b-p9-release-readiness-nonempty "$PY_COUNT"
 assert_static_count_check "$RUST_VERIFY" 01a-host-run-nonempty "$RUST_COUNT"
